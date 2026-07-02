@@ -52,10 +52,24 @@ not proxied from mission-control.
   plane. Composer has @mention autocomplete; channel settings manage people +
   agents (adding an agent requires access to it). New "Channels" nav surface.
 
+- **People pickers**, one searchable `UserPicker` (over `GET /api/users`, everyone
+  who has signed in) replaces every type-an-email field: board sharing, board
+  creation invites, teams, and channel members.
+- **Label picker**, ticket labels are tag chips + the shared combobox: the board's
+  existing labels surface for reuse, and typing creates a new one (Enter or comma).
+  Replaces the raw comma-separated text input.
+- **Display names**, users can set how they appear (Settings → profile; updates the
+  live session, no re-login). Member lists, channel messages, and avatars prefer
+  the name and show the email as secondary.
+- **Consistent control sizing**, one `sm`/`md` scale (`h-9`/`h-11`) shared by
+  Button, Input, Select, and Combobox via a `size` prop — mixed-height form rows
+  and hand-set `h-8`/`h-9` overrides are gone.
+
 ### Fixed
 - SSE event streams no longer crash the server when a client disconnects before
   the Redis subscriber finishes connecting (unhandled rejection in the
   board/channel event stream).
+- Ticket labels no longer require hand-typed comma lists (see label picker).
 
 ### Changed
 - Sessions are Redis-backed (opaque sid → `sess:<sid>`), not HMAC cookies.

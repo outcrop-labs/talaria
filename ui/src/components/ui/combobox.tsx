@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/cn'
+import { controlSizes, type ControlSize } from './control'
 
 export interface ComboOption {
   value: string
@@ -23,6 +24,8 @@ function fuzzy(q: string, text: string): boolean {
 
 // A searchable dropdown for picking option(s). Fuzzy filter as you type.
 // Single mode: selecting closes + reports the value. Multi: toggles, stays open.
+// allowCreate: the search text becomes a pickable "Create" row (Enter or comma
+// commits it) — the tag-input mode.
 export function Combobox({
   options,
   selected,
@@ -31,6 +34,9 @@ export function Combobox({
   placeholder = 'Select…',
   disabled,
   className,
+  size = 'md',
+  allowCreate = false,
+  triggerLabel,
 }: {
   options: ComboOption[]
   selected: string[]
@@ -39,6 +45,10 @@ export function Combobox({
   placeholder?: string
   disabled?: boolean
   className?: string
+  size?: ControlSize
+  allowCreate?: boolean
+  /** Override the trigger content (e.g. a constant "Add label…" for tag inputs). */
+  triggerLabel?: React.ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
@@ -65,7 +75,26 @@ export function Combobox({
     }
   }
 
-  const triggerLabel = () => {
+  // A trimmed query that matches no existing option can be created.
+  const creatable = allowCreate ? q.trim().replace(/,+$/, '') : ''
+  const canCreate =
+    !!creatable && !options.some((o) => o.value.toLowerCase() === creatable.toLowerCase()) && !selectedSet.has(creatable)
+
+  const create = () => {
+    if (!canCreate) return
+    toggle(creatable)
+    setQ('')
+  }
+
+  const onSearchKeyDown = (e: React.KeyboardEvent) => {
+    if (!allowCreate) return
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault()
+      create()
+    }
+  }
+
+  const defaultTriggerLabel = () => {
     if (selected.length === 0) return <span className="text-muted">{placeholder}</span>
     if (!multiple) return <span className="truncate text-fg">{byValue(selected[0]!)?.label ?? selected[0]}</span>
     const labels = selected.map((v) => byValue(v)?.label ?? v)
@@ -83,9 +112,12 @@ export function Combobox({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
-        className="flex h-9 w-full items-center gap-2 rounded-lg border border-line bg-[var(--theme-input)] px-2 text-sm outline-none transition-colors hover:border-[var(--theme-accent-border)] disabled:opacity-50"
+        className={cn(
+          controlSizes[size],
+          'flex w-full items-center gap-2 rounded-xl border border-line bg-[var(--theme-input)] px-2.5 text-sm outline-none transition-colors hover:border-[var(--theme-accent-border)] disabled:opacity-50',
+        )}
       >
-        <span className="min-w-0 flex-1 text-left">{triggerLabel()}</span>
+        <span className="min-w-0 flex-1 text-left">{triggerLabel ?? defaultTriggerLabel()}</span>
         <span className="text-muted">▾</span>
       </button>
 
@@ -102,11 +134,23 @@ export function Combobox({
               autoFocus
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search…"
+              onKeyDown={onSearchKeyDown}
+              placeholder={allowCreate ? 'Search or create…' : 'Search…'}
               className="w-full border-b border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted"
             />
             <ul className="max-h-56 overflow-y-auto p-1">
-              {filtered.length === 0 && <li className="px-2 py-2 text-xs text-muted">No matches</li>}
+              {filtered.length === 0 && !canCreate && <li className="px-2 py-2 text-xs text-muted">No matches</li>}
+              {canCreate && (
+                <li>
+                  <button
+                    type="button"
+                    onClick={create}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-fg transition-colors hover:bg-card2"
+                  >
+                    <span className="text-accent">＋</span> Create “{creatable}”
+                  </button>
+                </li>
+              )}
               {filtered.map((o) => (
                 <li key={o.value}>
                   <button

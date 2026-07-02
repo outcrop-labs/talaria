@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
+import { UserPicker } from '@/components/app/user-picker'
 import { useAgents } from '@/lib/agents'
 import { useTeams } from '@/lib/teams'
 import { createBoard, setBoardAgents, shareBoard } from '@/lib/boards'
@@ -27,7 +28,6 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
   const [allowAll, setAllowAll] = useState(false)
   const [agents, setAgents] = useState<string[]>([])
   const [invites, setInvites] = useState<Invite[]>([])
-  const [email, setEmail] = useState('')
   const [role, setRole] = useState<'editor' | 'viewer'>('editor')
   const [busy, setBusy] = useState(false)
 
@@ -37,15 +37,13 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
     setAllowAll(false)
     setAgents([])
     setInvites([])
-    setEmail('')
     onClose()
   }
 
-  const addInvite = () => {
+  const addInvite = (email: string) => {
     const e = email.trim().toLowerCase()
     if (!e || invites.some((i) => i.email === e)) return
     setInvites((prev) => [...prev, { email: e, role }])
-    setEmail('')
   }
 
   const create = async () => {
@@ -86,7 +84,7 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
         </Field>
 
         <Field label="Owner">
-          <Select value={teamId} onChange={(e) => setTeamId(e.target.value)} className="h-9 w-full">
+          <Select value={teamId} onChange={(e) => setTeamId(e.target.value)} className="w-full">
             <option value="">Personal</option>
             {teams.map((t) => (
               <option key={t.id} value={t.id}>{t.name}</option>
@@ -106,12 +104,11 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
 
         <Field label="Invite (optional)">
           <div className="flex items-center gap-2">
-            <Input value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addInvite()} placeholder="teammate@email.com" className="h-9 flex-1 text-sm" />
-            <Select value={role} onChange={(e) => setRole(e.target.value as 'editor' | 'viewer')} className="h-9">
+            <UserPicker className="min-w-0 flex-1" size="sm" onPick={(u) => u.email && addInvite(u.email)} />
+            <Select value={role} onChange={(e) => setRole(e.target.value as 'editor' | 'viewer')} size="sm" className="shrink-0">
               <option value="editor">Editor</option>
               <option value="viewer">Viewer</option>
             </Select>
-            <Button variant="outline" size="sm" onClick={addInvite} disabled={!email.trim()}>Add</Button>
           </div>
           {invites.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">

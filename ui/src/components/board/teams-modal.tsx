@@ -1,11 +1,10 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Modal } from '@/components/ui/modal'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { InlineCreate } from '@/components/ui/inline-create'
 import { Select } from '@/components/ui/select'
 import { Avatar } from '@/components/ui/avatar'
+import { UserPicker } from '@/components/app/user-picker'
 import { cn } from '@/lib/cn'
 import { addTeamMember, createTeam, removeTeamMember, useTeamMembers, useTeams, type TeamRole } from '@/lib/teams'
 
@@ -64,17 +63,15 @@ export function TeamsModal({ open, onClose }: { open: boolean; onClose: () => vo
 function TeamMembers({ teamId, canManage }: { teamId: string; canManage: boolean }) {
   const qc = useQueryClient()
   const { data: members = [] } = useTeamMembers(teamId)
-  const [email, setEmail] = useState('')
   const [role, setRole] = useState<TeamRole>('member')
   const [err, setErr] = useState<string | null>(null)
   const refresh = () => qc.invalidateQueries({ queryKey: ['team-members', teamId] })
 
-  const add = async () => {
+  const add = async (email: string) => {
     setErr(null)
-    const res = await addTeamMember(teamId, email.trim(), role)
+    const res = await addTeamMember(teamId, email, role)
     const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
     if (!res.ok || !data.ok) return setErr(data.error ?? 'Could not add')
-    setEmail('')
     refresh()
     void qc.invalidateQueries({ queryKey: ['teams'] })
   }
@@ -83,20 +80,29 @@ function TeamMembers({ teamId, canManage }: { teamId: string; canManage: boolean
     <div>
       {canManage && (
         <div className="flex items-center gap-2">
-          <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="teammate@email.com" className="h-9 min-w-0 flex-1 text-sm" />
-          <Select value={role} onChange={(e) => setRole(e.target.value as TeamRole)} className="h-9 shrink-0">
+          <UserPicker
+            className="min-w-0 flex-1"
+            size="sm"
+            exclude={members.map((m) => m.userId)}
+            onPick={(u) => {
+              if (u.email) void add(u.email)
+            }}
+          />
+          <Select value={role} onChange={(e) => setRole(e.target.value as TeamRole)} size="sm" className="shrink-0">
             <option value="member">Member</option>
             <option value="owner">Owner</option>
           </Select>
-          <Button size="sm" onClick={() => void add()} disabled={!email.trim()} className="shrink-0">Add</Button>
         </div>
       )}
       {err && <div className="mt-1 text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
       <ul className="mt-4 space-y-1.5">
         {members.map((m) => (
           <li key={m.userId} className="flex items-center gap-2 rounded-lg px-1 py-2">
-            <Avatar name={m.email ?? m.name} className="h-6 w-6" />
-            <span className="min-w-0 flex-1 truncate text-sm text-fg">{m.email ?? m.name ?? m.userId}</span>
+            <Avatar name={m.name ?? m.email} className="h-6 w-6" />
+            <span className="min-w-0 flex-1 truncate text-sm text-fg">
+              {m.name ?? m.email ?? m.userId}
+              {m.name && m.email && <span className="ml-1.5 text-xs text-muted">{m.email}</span>}
+            </span>
             <span className="text-xs text-muted">{m.role}</span>
             {canManage && m.role !== 'owner' && (
               <button onClick={() => void removeTeamMember(teamId, m.userId).then(refresh)} className="text-xs text-muted hover:text-[color:var(--theme-danger)]">

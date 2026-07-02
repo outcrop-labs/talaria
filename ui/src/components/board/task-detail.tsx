@@ -9,6 +9,7 @@ import { CloseButton } from '@/components/ui/close-button'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { Select } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
+import { LabelPicker } from '@/components/board/label-picker'
 import { Markdown } from '@/components/ui/markdown'
 import { useAgents } from '@/lib/agents'
 import { useSession } from '@/lib/session'
@@ -60,7 +61,6 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
   const { data: boardTasks = [] } = useBoardTasks(board.id)
 
   const [title, setTitle] = useState('')
-  const [tags, setTags] = useState('')
   const [tab, setTab] = useState<'comments' | 'activity'>('comments')
   const commentRef = useRef<RichEditorHandle>(null)
 
@@ -71,7 +71,6 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
     if (data?.task && loadedRef.current !== data.task.id) {
       loadedRef.current = data.task.id
       setTitle(data.task.title)
-      setTags(data.task.tags.join(', '))
     }
   }, [data?.task])
 
@@ -236,12 +235,12 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                 <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
                 <CloseButton onClick={onClose} className="-mr-1 ml-auto" />
                 <Prop label="Status">
-                  <Select value={t.status} disabled={!canEdit} onChange={(e) => save({ status: e.target.value as TaskStatus })} className="w-full">
+                  <Select value={t.status} disabled={!canEdit} onChange={(e) => save({ status: e.target.value as TaskStatus })} size="sm" className="w-full">
                     {MOVE.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
                   </Select>
                 </Prop>
                 <Prop label="Priority">
-                  <Select value={t.priority} disabled={!canEdit} onChange={(e) => save({ priority: e.target.value as Priority })} className="w-full">
+                  <Select value={t.priority} disabled={!canEdit} onChange={(e) => save({ priority: e.target.value as Priority })} size="sm" className="w-full">
                     {PRIORITIES.map((p) => <option key={p} value={p}>{PRIORITY_ICON[p]} {p}</option>)}
                   </Select>
                 </Prop>
@@ -252,25 +251,26 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     onChange={(arr) => canEdit && save({ assignees: arr })}
                     disabled={!canEdit}
                     multiple
+                    size="sm"
                     placeholder="Unassigned"
                   />
                 </Prop>
                 <div className="grid grid-cols-2 gap-2">
                   <Prop label="Effort">
                     <Select value={t.effort ?? ''} disabled={!canEdit}
-                      onChange={(e) => save({ effort: (e.target.value || null) as Effort | null })} className="w-full">
+                      onChange={(e) => save({ effort: (e.target.value || null) as Effort | null })} size="sm" className="w-full">
                       <option value="">—</option>
                       {EFFORTS.map((ef) => <option key={ef} value={ef}>{EFFORT_LABEL[ef]}</option>)}
                     </Select>
                   </Prop>
                   <Prop label="Time spent">
-                    <div className="flex h-8 items-center text-sm text-fg">{formatDuration(t.timeSpentSeconds)}</div>
+                    <div className="flex h-9 items-center text-sm text-fg">{formatDuration(t.timeSpentSeconds)}</div>
                   </Prop>
                 </div>
                 <Prop label="Due date">
                   <Input type="date" value={t.dueDate ? t.dueDate.slice(0, 10) : ''} disabled={!canEdit}
                     onChange={(e) => save({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
-                    className="h-8 w-full text-sm" />
+                    size="sm" className="w-full" />
                 </Prop>
                 <Prop label={`Blocked by (${data!.blockedBy.length})`}>
                   <div className="space-y-1">
@@ -293,6 +293,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                           .map((bt) => ({ value: bt.id, label: `${bt.ticketRef ? bt.ticketRef + ' ' : ''}${bt.title}`, sub: STATUS_LABEL[bt.status] }))}
                         selected={[]}
                         onChange={async (arr) => { if (arr[0]) { await addDependency(taskId, arr[0]); refresh() } }}
+                        size="sm"
                         placeholder="Add dependency…"
                       />
                     )}
@@ -310,9 +311,13 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                   </Prop>
                 )}
                 <Prop label="Labels">
-                  <Input value={tags} disabled={!canEdit} onChange={(e) => setTags(e.target.value)}
-                    onBlur={() => save({ tags: tags.split(',').map((s) => s.trim()).filter(Boolean) })}
-                    placeholder="comma, separated" className="h-8 w-full text-sm" />
+                  <LabelPicker
+                    value={t.tags}
+                    options={boardTasks.flatMap((bt) => bt.tags)}
+                    onChange={(next) => save({ tags: next })}
+                    disabled={!canEdit}
+                    size="sm"
+                  />
                 </Prop>
                 <Prop label={`Watchers (${data!.watchers.length})`}>
                   <div className="space-y-1">

@@ -66,7 +66,8 @@ export function InlineCreate({
             }
           }}
           onBlur={submit}
-          className={size === 'sm' ? 'h-9 pr-8 text-sm' : 'pr-9'}
+          size={size}
+          className={size === 'sm' ? 'pr-8' : 'pr-9'}
         />
         {/* Enter hint — pressing Enter (or clicking) submits. mousedown fires
             before the input's blur so the value is still there. */}

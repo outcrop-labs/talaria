@@ -6,6 +6,7 @@ import { Markdown } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMessage } from '@/lib/channels'
+import { useUsers } from '@/lib/users'
 import type { AgentModel } from '@/lib/agents'
 
 // One channel: live message feed + composer. Agents reply when @mentioned;
@@ -22,6 +23,7 @@ export function ChannelView({
   fleet: AgentModel[]
 }) {
   const { data: messages = [] } = useChannelMessages(channelId)
+  const { data: users = [] } = useUsers()
   useChannelEvents(channelId)
   const [error, setError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -31,6 +33,9 @@ export function ChannelView({
   }, [messages])
 
   const labelFor = (model: string) => fleet.find((a) => a.id === model)?.label ?? model
+  // Human authors are stored by email (stable identity); show their display name.
+  const userLabel = (author: string) =>
+    users.find((u) => u.email === author)?.name ?? (author.split('@')[0] || author)
 
   const send = async (text: string) => {
     setError(null)
@@ -55,7 +60,7 @@ export function ChannelView({
             }
           />
         ) : (
-          messages.map((m) => <MessageRow key={m.id} message={m} labelFor={labelFor} />)
+          messages.map((m) => <MessageRow key={m.id} message={m} labelFor={labelFor} userLabel={userLabel} />)
         )}
         {error && (
           <div className="text-center text-sm" style={{ color: 'var(--theme-danger)' }}>
@@ -74,8 +79,16 @@ export function ChannelView({
   )
 }
 
-function MessageRow({ message: m, labelFor }: { message: ChannelMessage; labelFor: (model: string) => string }) {
-  const name = m.authorType === 'agent' ? labelFor(m.author) : (m.author.split('@')[0] ?? m.author)
+function MessageRow({
+  message: m,
+  labelFor,
+  userLabel,
+}: {
+  message: ChannelMessage
+  labelFor: (model: string) => string
+  userLabel: (author: string) => string
+}) {
+  const name = m.authorType === 'agent' ? labelFor(m.author) : userLabel(m.author)
   const time = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const live = m.status === 'streaming'
   return (

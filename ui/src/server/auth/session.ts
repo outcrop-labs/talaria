@@ -43,6 +43,18 @@ export async function getSessionUser(request: Request): Promise<SessionUser | nu
   }
 }
 
+/** Merge changes into the live session (e.g. a display-name edit) so the
+ *  updated identity shows without re-login. Keeps the existing TTL. */
+export async function updateSessionUser(request: Request, patch: Partial<SessionUser>): Promise<SessionUser | null> {
+  const sid = parseCookies(request)[SESSION_COOKIE]
+  if (!sid) return null
+  const raw = await getRedis().get(key(sid))
+  if (!raw) return null
+  const next = { ...(JSON.parse(raw) as SessionUser), ...patch }
+  await getRedis().set(key(sid), JSON.stringify(next), 'KEEPTTL')
+  return next
+}
+
 /** Delete the session behind the request's cookie (logout). */
 export async function destroySession(request: Request): Promise<void> {
   const sid = parseCookies(request)[SESSION_COOKIE]
