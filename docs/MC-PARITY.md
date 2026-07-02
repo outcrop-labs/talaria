@@ -1,10 +1,15 @@
-# Mission-control parity map + Talaria roadmap
+# Mission-control lift-source map + Talaria roadmap
 
-Goal: match mission-control's capabilities in Talaria's own stack (Postgres/Redis,
-no MC runtime dependency), plus our additions — **multiple boards, teams, and
-board-scoped agents**. MC is a lift source, not a backend.
+> **Lift-source reference.** This documents an upstream we rip features FROM, not a
+> backend we run. Mission-control's capabilities (task queue, cost, activity, and
+> the rest) were rebuilt in Talaria's own Postgres and Redis. We do not proxy or run
+> a live mission-control; this map is the dissection we used to plan what to lift.
 
-Source: full dissection of `vendor/mission-control` (2026-07-01) — ~151 API
+Goal: rebuild mission-control's capabilities in Talaria's own stack (Postgres/Redis,
+no MC runtime dependency), plus our own additions (**multiple boards, teams, and
+board-scoped agents**). MC is a lift source, not a backend.
+
+Source: full dissection of `vendor/mission-control` (2026-07-01), roughly 151 API
 endpoints, 50+ tables, 48+ UI surfaces. Legend: ✅ done · 🟡 partial · ⬜ todo ·
 ⚪ out of scope / deferred (MC/openclaw-specific).
 
@@ -19,7 +24,7 @@ endpoints, 50+ tables, 48+ UI surfaces. Legend: ✅ done · 🟡 partial · ⬜ 
 
 ## Tasks / boards (the PM suite)
 - ✅ Boards (multiple), membership + **sharing by email** (owner/editor/viewer).
-- ✅ **Board-scoped agents** (our addition — only certain agents assignable).
+- ✅ **Board-scoped agents** (our addition, only certain agents assignable).
 - ✅ Tickets: refs (BOARD-N), status, priority, assignee, due, tags, description,
   estimate/actual hours, outcome/resolution/error, comments (threaded, markdown),
   activity log, watchers.
@@ -46,7 +51,7 @@ endpoints, 50+ tables, 48+ UI surfaces. Legend: ✅ done · 🟡 partial · ⬜ 
 - ⬜ Notifications (@mention/assignment/status/due) + bell + subscriptions.
 - ⬜ Standup reports (daily agent rollup).
 - ⬜ Alerts (rules on agent/task/session fields → notify/webhook).
-- ⬜ System monitor (cpu/mem/disk/gpu/network) — pairs with local-inference (P2.5).
+- ⬜ System monitor (cpu/mem/disk/gpu/network), pairs with local-inference (P2.5).
 - ⬜ Gateway health history.
 - ⬜ Global admin views: cross-team boards/tasks + per-agent workload.
 
@@ -58,7 +63,7 @@ endpoints, 50+ tables, 48+ UI surfaces. Legend: ✅ done · 🟡 partial · ⬜ 
 - ⚪ Super-admin tenants / OS-user provisioning.
 
 ## Automation / integrations
-- ⬜ Cron jobs (schedule agent tasks) — we have the /schedule + /loop harness ideas.
+- ⬜ Cron jobs (schedule agent tasks); we have the /schedule + /loop harness ideas.
 - ⬜ Webhooks (outbound events).
 - ⚪ GitHub, Slack/Discord channels, terminal, office view, security scan, MCP audit.
 
@@ -71,7 +76,7 @@ endpoints, 50+ tables, 48+ UI surfaces. Legend: ✅ done · 🟡 partial · ⬜ 
 ## Build order (autonomous)
 1. **Teams** + board ownership by team (our multi-tenant core).
 2. **Task UX depth**: filters, grouping, drag-and-drop, list view, bulk, inline edit.
-3. **Attachments** (image/video) + full markdown everywhere — reviewable by agents.
+3. **Attachments** (image/video) + full markdown everywhere, reviewable by agents.
 4. **Notifications + @mentions + subscriptions**; global **Activity** feed.
 5. **Token/cost ledger** (heartbeat reporting) + **Cost** views.
 6. **Admin UI** (users/roles/per-agent/teams) + **global admin** cross-team views.

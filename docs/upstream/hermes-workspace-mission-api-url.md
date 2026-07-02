@@ -1,4 +1,11 @@
-# Upstream PR — hermes-workspace: `HERMES_MISSION_API_URL`
+# Upstream PR: hermes-workspace `HERMES_MISSION_API_URL`
+
+> **Lift-source reference (legacy Phase-1).** This is an upstream integration note from the old Phase-1
+> setup, where Talaria drove a mission-control fleet through a bridge in front of hermes-workspace. That
+> conductor/mission-control bridge is now legacy. Today Talaria owns its own UI and its own state
+> (Postgres/Redis), and the fleet engine is the gateway plane (`:8642`); we lift features from these
+> upstreams, we don't proxy or run them as the product. Kept here because the technical write-up still
+> documents hermes-workspace internals we studied.
 
 Target: [`outsourc-e/hermes-workspace`](https://github.com/outsourc-e/hermes-workspace)
 Patch: [`hermes-workspace-mission-api-url.patch`](./hermes-workspace-mission-api-url.patch)
@@ -6,7 +13,7 @@ Patch: [`hermes-workspace-mission-api-url.patch`](./hermes-workspace-mission-api
 
 ## Title
 
-`feat: HERMES_MISSION_API_URL — decouple Conductor mission dispatch from the dashboard URL`
+`feat: HERMES_MISSION_API_URL, decouple Conductor mission dispatch from the dashboard URL`
 
 ## Body
 
@@ -68,8 +75,10 @@ missions to a mission-control fleet (create/poll/cancel).
 
 ### Real-world use
 
-This is the sanctioned integration point for **Talaria** (https://github.com/outcrop-labs/talaria), a
-small MIT bridge that lets hermes-workspace drive a
-[mission-control](https://github.com/builderz-labs/mission-control) fleet as its orchestration brain.
-Talaria currently proxies the whole dashboard to answer conductor calls; with this var it only needs
-to answer the mission calls, which is cleaner and lower-risk for everyone.
+This was the sanctioned integration point for the Phase-1 **Talaria** bridge
+(https://github.com/outcrop-labs/talaria), which let hermes-workspace drive a
+[mission-control](https://github.com/builderz-labs/mission-control) fleet as its orchestration brain. In
+that Phase-1 setup the bridge proxied the whole dashboard to answer conductor calls; with this var it
+only needs to answer the mission calls, which is cleaner and lower-risk for everyone. (Talaria has since
+grown its own UI and state and lifted these capabilities into its own stack; this note stays as upstream
+reference.)
