@@ -6,6 +6,7 @@
 import { describeAgent, proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
 import { addNotification } from './notifications'
+import { estimateTokens, recordUsage } from './usage'
 import {
   insertChannelMessage,
   listChannelAgents,
@@ -121,10 +122,23 @@ async function streamReply(
     return
   }
   let content = ''
+  let usage: { promptTokens: number; completionTokens: number } | null = null
   let lastFlush = 0
+  const ledger = () => {
+    const promptChars = messages.reduce((n, m) => n + m.content.length, 0)
+    void recordUsage({
+      agentModel: model,
+      source: 'channel',
+      refId: channelId,
+      promptTokens: usage?.promptTokens ?? estimateTokens(promptChars),
+      completionTokens: usage?.completionTokens ?? estimateTokens(content.length),
+      estimated: !usage,
+    }).catch(() => {})
+  }
   try {
     for await (const ev of parseAgentStream(upstream.body)) {
       if (ev.type === 'content') content += ev.text
+      else if (ev.type === 'usage') usage = ev
       const now = Date.now()
       if (now - lastFlush > 400) {
         lastFlush = now
@@ -132,7 +146,9 @@ async function streamReply(
       }
     }
     await updateChannelMessage(channelId, messageId, content, 'complete')
+    ledger()
   } catch {
     await updateChannelMessage(channelId, messageId, content, 'error')
+    ledger()
   }
 }

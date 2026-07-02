@@ -75,7 +75,8 @@ export const Route = createFileRoute('/api/chat')({
         // Tee: one branch relays to the client, one persists server-side
         // (detached, so it completes even if the client disconnects).
         const [toClient, toStore] = upstream.body.tee()
-        void persistAssistantStream(toStore, assistantId, convId)
+        const promptChars = messages.reduce((n, m) => n + m.content.length, 0)
+        void persistAssistantStream(toStore, assistantId, convId, { agentModel, promptChars })
         return new Response(toClient, { status: upstream.status, headers })
       },
     },

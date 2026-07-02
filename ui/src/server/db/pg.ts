@@ -248,6 +248,21 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now()
    )`,
   `create index if not exists notifications_user_idx on notifications(user_id, created_at desc)`,
+  // Token ledger — one row per completed agent generation (1:1 chat or channel
+  // reply). Real counts when the gateway reports usage; char-based estimates
+  // (flagged) otherwise. Future: cost attribution per ticket / per LLM API.
+  `create table if not exists usage_events (
+     id uuid primary key default gen_random_uuid(),
+     agent_model text not null,
+     source text not null,
+     ref_id uuid,
+     prompt_tokens integer not null default 0,
+     completion_tokens integer not null default 0,
+     estimated boolean not null default false,
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists usage_events_agent_idx on usage_events(agent_model, created_at desc)`,
+  `create index if not exists usage_events_created_idx on usage_events(created_at desc)`,
 ]
 
 function ensureMigrated(): Promise<void> {

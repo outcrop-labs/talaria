@@ -56,7 +56,9 @@ export async function proxyChat(payload: ChatPayload): Promise<Response> {
   const upstream = await fetch(`${url}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, stream: true }),
+    // include_usage: the final chunk reports token counts for the ledger
+    // (gateways that don't support it just ignore the option).
+    body: JSON.stringify({ ...payload, stream: true, stream_options: { include_usage: true } }),
   })
   return new Response(upstream.body, {
     status: upstream.status,
