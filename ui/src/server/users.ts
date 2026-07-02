@@ -72,6 +72,53 @@ export async function listUsers(): Promise<Array<{ id: string; email: string | n
   return rows as unknown as Array<{ id: string; email: string | null; name: string | null }>
 }
 
+export interface AdminUser {
+  id: string
+  email: string | null
+  name: string | null
+  role: Role
+  lastSeenAt: string
+  createdAt: string
+  /** Empty = all agents (open by default); non-empty = restricted to these. */
+  agentModels: string[]
+  /** Email is in AUTH_ADMIN_EMAILS — role is pinned to admin at every login. */
+  pinnedAdmin: boolean
+}
+
+/** The admin console's user list: roles, activity, and agent allow-lists. */
+export async function listUsersAdmin(): Promise<AdminUser[]> {
+  const sql = await db()
+  const rows = await sql`
+    select u.id, u.email, u.name, u.role,
+           u.last_seen_at as "lastSeenAt", u.created_at as "createdAt",
+           coalesce(array_agg(a.agent_model) filter (where a.agent_model is not null), '{}') as "agentModels"
+    from users u left join user_agent_access a on a.user_id = u.id
+    group by u.id
+    order by lower(coalesce(u.email, u.name, '')) asc
+  `
+  const admins = adminEmails()
+  return (rows as unknown as AdminUser[]).map((u) => ({
+    ...u,
+    pinnedAdmin: !!u.email && admins.includes(u.email.toLowerCase()),
+  }))
+}
+
+export async function setUserRole(userId: string, role: Role): Promise<void> {
+  const sql = await db()
+  await sql`update users set role = ${role} where id = ${userId}`
+}
+
+/** Replace a user's agent allow-list. Empty = all agents (open by default). */
+export async function setUserAgentAccess(userId: string, models: string[]): Promise<void> {
+  const sql = await db()
+  await sql.begin(async (tx) => {
+    await tx`delete from user_agent_access where user_id = ${userId}`
+    for (const m of models) {
+      await tx`insert into user_agent_access (user_id, agent_model) values (${userId}, ${m}) on conflict do nothing`
+    }
+  })
+}
+
 /** The set of agent models a user may use: 'all' or an explicit allow-list. */
 export async function allowedAgents(userId: string, role: Role): Promise<'all' | string[]> {
   if (role === 'admin') return 'all'

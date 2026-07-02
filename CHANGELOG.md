@@ -73,6 +73,10 @@ not proxied from mission-control.
   or char-based estimates flagged `~` when the gateway doesn't report. The `/cost`
   page is live: today/7d/30d token tiles, a 14-day daily strip, and a per-agent
   breakdown. Dollar cost lands with per-LLM pricing attribution (see ROADMAP).
+- **Admin console**, `/admin` is live: everyone who has signed in, with role
+  management (member/admin; `AUTH_ADMIN_EMAILS` admins are pinned, no
+  self-demotion) and the per-person agent allow-list UI (empty = all agents) that
+  the access model always supported. Admin-gated `GET/PUT /api/admin/users`.
 
 ### Fixed
 - SSE event streams no longer crash the server when a client disconnects before

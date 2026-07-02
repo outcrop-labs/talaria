@@ -47,6 +47,7 @@ import { Route as ApiAuthPasswordRouteImport } from './routes/api/auth/password'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
 import { Route as ApiAuthGoogleRouteImport } from './routes/api/auth/google'
 import { Route as ApiAgentsRegisterRouteImport } from './routes/api/agents.register'
+import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as AppBoardsBoardIdRouteImport } from './routes/_app/boards/$boardId'
 import { Route as ApiTeamsIdMembersRouteImport } from './routes/api/teams.$id.members'
 import { Route as ApiTasksIdWatchersRouteImport } from './routes/api/tasks.$id.watchers'
@@ -254,6 +255,11 @@ const ApiAgentsRegisterRoute = ApiAgentsRegisterRouteImport.update({
   path: '/register',
   getParentRoute: () => ApiAgentsRoute,
 } as any)
+const ApiAdminUsersRoute = ApiAdminUsersRouteImport.update({
+  id: '/api/admin/users',
+  path: '/api/admin/users',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppBoardsBoardIdRoute = AppBoardsBoardIdRouteImport.update({
   id: '/boards/$boardId',
   path: '/boards/$boardId',
@@ -368,6 +374,7 @@ export interface FileRoutesByFullPath {
   '/api/teams': typeof ApiTeamsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
   '/api/auth/logout': typeof ApiAuthLogoutRoute
@@ -424,6 +431,7 @@ export interface FileRoutesByTo {
   '/api/users': typeof ApiUsersRoute
   '/': typeof AppIndexRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
   '/api/auth/logout': typeof ApiAuthLogoutRoute
@@ -482,6 +490,7 @@ export interface FileRoutesById {
   '/api/users': typeof ApiUsersRoute
   '/_app/': typeof AppIndexRoute
   '/_app/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
   '/api/auth/logout': typeof ApiAuthLogoutRoute
@@ -540,6 +549,7 @@ export interface FileRouteTypes {
     | '/api/teams'
     | '/api/users'
     | '/boards/$boardId'
+    | '/api/admin/users'
     | '/api/agents/register'
     | '/api/auth/google'
     | '/api/auth/logout'
@@ -596,6 +606,7 @@ export interface FileRouteTypes {
     | '/api/users'
     | '/'
     | '/boards/$boardId'
+    | '/api/admin/users'
     | '/api/agents/register'
     | '/api/auth/google'
     | '/api/auth/logout'
@@ -653,6 +664,7 @@ export interface FileRouteTypes {
     | '/api/users'
     | '/_app/'
     | '/_app/boards/$boardId'
+    | '/api/admin/users'
     | '/api/agents/register'
     | '/api/auth/google'
     | '/api/auth/logout'
@@ -696,6 +708,7 @@ export interface RootRouteChildren {
   ApiProfileRoute: typeof ApiProfileRoute
   ApiTeamsRoute: typeof ApiTeamsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
+  ApiAdminUsersRoute: typeof ApiAdminUsersRoute
   ApiAuthGoogleRoute: typeof ApiAuthGoogleRouteWithChildren
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
   ApiAuthPasswordRoute: typeof ApiAuthPasswordRoute
@@ -971,6 +984,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/agents/register'
       preLoaderRoute: typeof ApiAgentsRegisterRouteImport
       parentRoute: typeof ApiAgentsRoute
+    }
+    '/api/admin/users': {
+      id: '/api/admin/users'
+      path: '/api/admin/users'
+      fullPath: '/api/admin/users'
+      preLoaderRoute: typeof ApiAdminUsersRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_app/boards/$boardId': {
       id: '/_app/boards/$boardId'
@@ -1286,6 +1306,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiProfileRoute: ApiProfileRoute,
   ApiTeamsRoute: ApiTeamsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
+  ApiAdminUsersRoute: ApiAdminUsersRoute,
   ApiAuthGoogleRoute: ApiAuthGoogleRouteWithChildren,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
   ApiAuthPasswordRoute: ApiAuthPasswordRoute,
