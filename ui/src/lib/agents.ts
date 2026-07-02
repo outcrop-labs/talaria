@@ -1,7 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import type { AgentModel } from '@/server/gateway'
 
-export type { AgentModel }
+export interface AgentModel {
+  id: string
+  label: string
+  role: string
+  /** Requestable model tiers (alias names); the main model is implicit. */
+  tiers?: string[]
+}
 
 export function useAgents() {
   return useQuery({

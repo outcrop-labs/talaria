@@ -11,7 +11,7 @@ export async function persistAssistantStream(
   stream: ReadableStream<Uint8Array>,
   messageId: string,
   conversationId: string,
-  usageMeta?: { agentModel: string; promptChars: number },
+  usageMeta?: { agentModel: string; promptChars: number; tier?: string | null },
 ): Promise<void> {
   let content = ''
   let reasoning = ''
@@ -28,6 +28,7 @@ export async function persistAssistantStream(
       agentModel: usageMeta.agentModel,
       source: 'chat',
       refId: conversationId,
+      tier: usageMeta.tier ?? null,
       promptTokens: usage?.promptTokens ?? estimateTokens(usageMeta.promptChars),
       completionTokens: usage?.completionTokens ?? estimateTokens(content.length + reasoning.length),
       estimated: !usage,

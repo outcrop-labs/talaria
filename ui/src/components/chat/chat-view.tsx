@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Markdown } from '@/components/ui/markdown'
 import { Disclosure } from '@/components/ui/disclosure'
@@ -28,18 +29,22 @@ const toDisplay = (m: StoredMessage): DisplayMessage => ({
 export function ChatView({
   agentModel,
   agentLabel,
+  tiers = [],
   conversationId,
   newChatSignal,
   onCreated,
 }: {
   agentModel: string
   agentLabel: string
+  /** Requestable model tiers for this agent (alias names). */
+  tiers?: string[]
   conversationId: string | null
   newChatSignal: number
   onCreated: (id: string) => void
 }) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [input, setInput] = useState('')
+  const [tier, setTier] = useState('') // '' = the agent's main model
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -119,7 +124,7 @@ export function ChatView({
     abortRef.current = ctrl
     try {
       for await (const ev of streamChat(
-        { model: agentModel, conversationId: convIdRef.current ?? undefined, content: text },
+        { model: agentModel, conversationId: convIdRef.current ?? undefined, content: text, tier: tier || undefined },
         (meta) => {
           if (!convIdRef.current) {
             convIdRef.current = meta.conversationId
@@ -182,6 +187,22 @@ export function ChatView({
             placeholder={`Message ${agentLabel}…`}
             className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
           />
+          {tiers.length > 0 && (
+            <Select
+              value={tier}
+              onChange={(e) => setTier(e.target.value)}
+              size="sm"
+              className="shrink-0 self-center"
+              title="Model tier for this turn"
+            >
+              <option value="">main</option>
+              {tiers.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </Select>
+          )}
           {streaming ? (
             <Button variant="outline" onClick={stop}>Stop</Button>
           ) : (

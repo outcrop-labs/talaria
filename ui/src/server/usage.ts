@@ -8,6 +8,8 @@ export interface UsageInput {
   agentModel: string
   source: 'chat' | 'channel'
   refId?: string | null
+  /** Alias tier the request was routed to (null = the agent's main model). */
+  tier?: string | null
   promptTokens: number
   completionTokens: number
   estimated: boolean
@@ -16,30 +18,42 @@ export interface UsageInput {
 /** Rough token estimate when the gateway doesn't report usage. */
 export const estimateTokens = (chars: number): number => Math.ceil(chars / 4)
 
-/** Which model class serves this agent's generations right now — the current
- *  version's MAIN endpoint. (Per-alias attribution lands when Talaria routes
- *  tiers itself; the main model is what serves the ordinary turn today.) */
+/** Which model class serves this generation: the requested TIER's endpoint
+ *  when a tier was routed, else the agent's current MAIN endpoint. */
 const classCache = new Map<string, { at: number; value: { endpointClass: string; llmModel: string } | null }>()
-async function classifyAgent(agentModel: string): Promise<{ endpointClass: string; llmModel: string } | null> {
-  const hit = classCache.get(agentModel)
+async function classifyAgent(
+  agentModel: string,
+  tier: string | null,
+): Promise<{ endpointClass: string; llmModel: string } | null> {
+  const cacheKey = `${agentModel}:${tier ?? ''}`
+  const hit = classCache.get(cacheKey)
   if (hit && Date.now() - hit.at < 60_000) return hit.value
   const sql = await db()
-  const rows = await sql`
-    select e.class, (v.config->'main'->>'model') as model
-    from agent_defs d
-    join agent_versions v on v.agent_id = d.id and v.version = d.current_version
-    left join llm_endpoints e on e.name = (v.config->'main'->>'endpoint')
-    where d.model = ${agentModel}
-  `
+  const rows = tier
+    ? await sql`
+        select e.class, (a->>'model') as model
+        from agent_defs d
+        join agent_versions v on v.agent_id = d.id and v.version = d.current_version
+        cross join lateral jsonb_array_elements(coalesce(v.config->'aliases','[]'::jsonb)) a
+        left join llm_endpoints e on e.name = (a->>'endpoint')
+        where d.model = ${agentModel} and a->>'name' = ${tier}
+      `
+    : await sql`
+        select e.class, (v.config->'main'->>'model') as model
+        from agent_defs d
+        join agent_versions v on v.agent_id = d.id and v.version = d.current_version
+        left join llm_endpoints e on e.name = (v.config->'main'->>'endpoint')
+        where d.model = ${agentModel}
+      `
   const r = rows[0] as { class: string | null; model: string | null } | undefined
   const value = r?.class && r.model ? { endpointClass: r.class, llmModel: r.model } : null
-  classCache.set(agentModel, { at: Date.now(), value })
+  classCache.set(cacheKey, { at: Date.now(), value })
   return value
 }
 
 export async function recordUsage(u: UsageInput): Promise<void> {
   const sql = await db()
-  const cls = await classifyAgent(u.agentModel).catch(() => null)
+  const cls = await classifyAgent(u.agentModel, u.tier ?? null).catch(() => null)
   await sql`
     insert into usage_events (agent_model, source, ref_id, prompt_tokens, completion_tokens, estimated, endpoint_class, llm_model)
     values (${u.agentModel}, ${u.source}, ${u.refId ?? null},

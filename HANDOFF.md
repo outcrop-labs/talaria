@@ -159,12 +159,19 @@ Full project-management suite, all live in `ui/`:
   long-form `{source, mode}` entries (dex/dewey `gh_token` — caught live as a
   bogus /run/secrets directory, fixed by re-render + force-recreate).
 
+- **Tier routing** - the manifest lists `<base>-<alias>` entries (Hermes
+  `api_server` resolves them); `server/fleet-agents.ts` filters gateway models
+  to definition-backed agents + exposes tiers, `routedModelFor` validates;
+  `/api/chat` takes `tier`, the composer has a tier select, and
+  `usage_events` attributes tier turns by the ALIAS endpoint (verified:
+  glm turn → cloud/glm).
+
 ## Next up (in order)
 
-1. Per-alias tier routing + attribution (Talaria requesting `<base>-<alias>`
-   models); decommission cleanup in the legacy stack when ready.
-2. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
-   inference.
+1. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
+   inference. Channel-side tier mentions (e.g. `@sam:opus`) later.
+2. Decommission cleanup in the legacy stack when ready (commit the retired
+   compose there; repoint or retire `sync-agent-state.sh`).
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
    ticket), tracked follow-up to the auto-accumulated time-spent field.
 3. Plan chat (turn a channel conversation into tickets on a board).

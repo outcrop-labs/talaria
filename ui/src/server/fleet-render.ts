@@ -18,7 +18,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
-import type { AgentDef, AgentVersion } from './agent-defs'
+import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const STACK_DIR = () => process.env.TALARIA_STACK_DIR ?? '/home/jon/packledger-services/ai/orchestration'
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
@@ -208,13 +208,18 @@ export async function renderFleet(): Promise<RenderResult> {
 }
 
 /** The gateway-plane manifest: every enabled agent (managed or legacy), keys
- *  drawn from the stack's .env (HERMES_KEY_<SLUG>). Written where the bridge
- *  watches it, so topology changes apply without a restart. */
+ *  drawn from the stack's .env (HERMES_KEY_<SLUG>) — plus one entry per model
+ *  tier (`<base>-<alias>`): the agent's own gateway resolves the alias to its
+ *  provider/model, so Talaria can route a request to a specific tier. Written
+ *  where the bridge watches it, so topology changes apply without a restart. */
 async function writeFleetManifest(result: RenderResult): Promise<void> {
   const sql = await db()
   const defs = (await sql`
-    select slug, department, model from agent_defs where enabled order by slug
-  `) as unknown as Array<{ slug: string; department: string; model: string }>
+    select d.slug, d.department, d.model, v.config
+    from agent_defs d
+    left join agent_versions v on v.agent_id = d.id and v.version = d.current_version
+    where d.enabled order by d.slug
+  `) as unknown as Array<{ slug: string; department: string; model: string; config: AgentConfig | null }>
 
   const env = await readFile(join(STACK_DIR(), '.env'), 'utf8').catch(() => '')
   const keys = new Map<string, string>()
@@ -223,10 +228,14 @@ async function writeFleetManifest(result: RenderResult): Promise<void> {
     if (m) keys.set(m[1]!.toLowerCase(), m[2]!.trim())
   }
 
-  const manifest = defs.map((d) => {
+  const manifest = defs.flatMap((d) => {
     const key = keys.get(d.slug) ?? ''
     if (!key) result.warnings.push(`${d.slug}: no HERMES_KEY_${d.slug.toUpperCase()} in stack .env`)
-    return { model: d.model, url: `http://agent-${d.department}:8642`, key }
+    const url = `http://agent-${d.department}:8642`
+    return [
+      { model: d.model, url, key },
+      ...(d.config?.aliases ?? []).map((a) => ({ model: `${d.model}-${a.name}`, url, key })),
+    ]
   })
   const json = JSON.stringify(manifest)
   for (const path of [join(FLEET_DIR(), 'fleet.json'), BRIDGE_MANIFEST()]) {
