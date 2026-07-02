@@ -32,6 +32,12 @@ export async function fleetStop(department: string): Promise<string> {
   return stderr.trim()
 }
 
+/** Restart a managed agent so a re-rendered config.yaml takes effect. */
+export async function fleetRestart(department: string): Promise<string> {
+  const { stderr } = await run('docker', composeArgs(['restart', `agent-${department}`]), { timeout: 120_000 })
+  return stderr.trim()
+}
+
 export async function fleetRemove(department: string): Promise<string> {
   const { stderr } = await run('docker', composeArgs(['rm', '-sf', `agent-${department}`]), { timeout: 60_000 })
   return stderr.trim()

@@ -55,9 +55,44 @@ function CostPage() {
               <StatCard label="Generations · 30 days" value={t?.month.generations ?? 0} sub="chat turns + channel replies" />
             </div>
 
+            {t && t.split.local + t.split.cloud > 0 && (
+              <Panel className="p-4">
+                <h2 className="mb-1 text-sm font-semibold text-fg">Local vs cloud · 30 days</h2>
+                <p className="mb-3 text-xs text-muted">
+                  {formatTokens(t.split.local)} on your own hardware · {formatTokens(t.split.cloud)} on cloud APIs —{' '}
+                  {Math.round((t.split.local / (t.split.local + t.split.cloud)) * 100)}% local
+                </p>
+                <div className="flex h-3 overflow-hidden rounded-full" role="img" aria-label="Local vs cloud token share">
+                  <div
+                    style={{
+                      width: `${(t.split.local / (t.split.local + t.split.cloud)) * 100}%`,
+                      background: 'var(--theme-success)',
+                    }}
+                  />
+                  <div className="ml-0.5 flex-1" style={{ background: 'var(--theme-accent)' }} />
+                </div>
+                <div className="mt-2 flex gap-4 text-xs text-muted">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-success)' }} /> local
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-accent)' }} /> cloud
+                  </span>
+                </div>
+              </Panel>
+            )}
+
             {perDay.length > 1 && (
               <Panel className="p-4">
-                <h2 className="mb-3 text-sm font-semibold text-fg">Tokens per day · last 14 days</h2>
+                <div className="mb-3 flex items-baseline gap-4">
+                  <h2 className="text-sm font-semibold text-fg">Tokens per day · last 14 days</h2>
+                  <span className="inline-flex items-center gap-1.5 text-xs text-muted">
+                    <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-success)' }} /> local
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-xs text-muted">
+                    <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-accent)' }} /> cloud
+                  </span>
+                </div>
                 <DailyBars days={perDay} />
               </Panel>
             )}
@@ -76,6 +111,9 @@ function CostPage() {
                       </span>
                       <span className="w-20 text-right text-xs text-muted">{formatTokens(a.prompt)} in</span>
                       <span className="w-20 text-right text-xs text-muted">{formatTokens(a.completion)} out</span>
+                      <span className="w-16 text-right text-xs" style={{ color: 'var(--theme-success)' }}>
+                        {a.localShare === null ? '—' : `${Math.round(a.localShare * 100)}% local`}
+                      </span>
                       <span className="w-20 text-right text-sm text-fg">{formatTokens(a.prompt + a.completion)}</span>
                       <span className="w-16 text-right text-xs text-muted">{a.generations} gen</span>
                       <span className="w-20 text-right text-xs text-muted">{relativeTime(a.lastUsed)}</span>
@@ -98,21 +136,37 @@ function CostPage() {
   )
 }
 
-/** Single-series daily bar strip. One hue (theme accent); exact numbers on hover. */
-function DailyBars({ days }: { days: Array<CostTotals & { day: string }> }) {
+/** Daily strip, stacked local (bottom) + cloud (top). Unattributed tokens fall
+ *  into the cloud segment's hue at reduced opacity via the remainder. */
+function DailyBars({ days }: { days: Array<CostTotals & { day: string; local: number; cloud: number }> }) {
   const max = Math.max(...days.map((d) => d.prompt + d.completion), 1)
   return (
-    <div className="flex items-end gap-1" style={{ height: '5.5rem' }} role="img" aria-label="Tokens per day">
+    <div className="flex items-end gap-1" style={{ height: '5.5rem' }} role="img" aria-label="Tokens per day, local vs cloud">
       {days.map((d) => {
         const v = d.prompt + d.completion
-        const h = Math.max((v / max) * 100, v > 0 ? 3 : 1)
+        const other = Math.max(v - d.local - d.cloud, 0)
+        const title = `${d.day}: ${formatTokens(v)} tokens — ${formatTokens(d.local)} local, ${formatTokens(d.cloud)} cloud${
+          other ? `, ${formatTokens(other)} unattributed` : ''
+        } (${d.generations} generations)`
+        const px = (n: number) => `${Math.max((n / max) * 100, n > 0 ? 2 : 0)}%`
         return (
-          <div key={d.day} className="group flex h-full min-w-0 flex-1 flex-col justify-end text-center">
-            <div
-              className="mx-auto w-full max-w-7 rounded-t bg-accent transition-all group-hover:brightness-110"
-              style={{ height: `${h}%`, opacity: v > 0 ? 1 : 0.25 }}
-              title={`${d.day}: ${formatTokens(v)} tokens (${formatTokens(d.prompt)} in, ${formatTokens(d.completion)} out, ${d.generations} generations)`}
-            />
+          <div key={d.day} className="group flex h-full min-w-0 flex-1 flex-col justify-end text-center" title={title}>
+            {other > 0 && (
+              <div className="mx-auto w-full max-w-7 rounded-t opacity-40" style={{ height: px(other), background: 'var(--theme-accent)' }} />
+            )}
+            {d.cloud > 0 && (
+              <div
+                className={`mx-auto w-full max-w-7 ${other ? 'mt-px' : 'rounded-t'}`}
+                style={{ height: px(d.cloud), background: 'var(--theme-accent)' }}
+              />
+            )}
+            {d.local > 0 && (
+              <div
+                className={`mx-auto w-full max-w-7 ${d.cloud || other ? 'mt-px' : 'rounded-t'}`}
+                style={{ height: px(d.local), background: 'var(--theme-success)' }}
+              />
+            )}
+            {v === 0 && <div className="mx-auto w-full max-w-7 rounded-t bg-accent opacity-25" style={{ height: '1%' }} />}
             <div className="mt-1 truncate text-[9px] text-muted">
               {new Date(`${d.day}T00:00:00`).toLocaleDateString([], { weekday: 'narrow' })}
             </div>

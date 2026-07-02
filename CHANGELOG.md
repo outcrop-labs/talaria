@@ -94,6 +94,17 @@ not proxied from mission-control.
   managed agents, one-click **Migrate** for legacy ones (stop old → render →
   start managed → health-gate). Pilot migrated: `sam-support` runs Talaria-managed
   with memories intact, answering through the gateway.
+- **Agent harness (phase C1: config control)**, edit an agent **in-app** — soul,
+  main model, alias tiers, fallback chain, all against the endpoint registry —
+  and save as a new immutable version; **Save & apply** re-renders and restarts
+  the managed container. Reverts re-publish an old payload as a new version
+  (history is append-only). Structured edits are merged into the raw Hermes
+  config so rendering stays faithful.
+- **Local vs cloud in the ledger**, every generation now records the serving
+  model's endpoint class (from the agent's current main endpoint) + model id.
+  `/cost` shows the 30-day local/cloud share bar, a stacked per-day strip, and a
+  per-agent "% local" column — the view for optimizing the small-model/frontier
+  mixture.
 
 ### Fixed
 - SSE event streams no longer crash the server when a client disconnects before

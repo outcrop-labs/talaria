@@ -8,9 +8,15 @@ export interface CostTotals {
 }
 
 export interface CostOverview {
-  totals: { today: CostTotals; week: CostTotals; month: CostTotals; estimatedShare: number }
-  perAgent: Array<CostTotals & { agentModel: string; lastUsed: string | null }>
-  perDay: Array<CostTotals & { day: string }>
+  totals: {
+    today: CostTotals
+    week: CostTotals
+    month: CostTotals
+    estimatedShare: number
+    split: { local: number; cloud: number }
+  }
+  perAgent: Array<CostTotals & { agentModel: string; lastUsed: string | null; localShare: number | null }>
+  perDay: Array<CostTotals & { day: string; local: number; cloud: number }>
 }
 
 export function useCost() {

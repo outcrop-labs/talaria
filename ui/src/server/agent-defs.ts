@@ -155,6 +155,41 @@ export async function upsertAgentDef(input: {
   return rows[0] as unknown as AgentDef
 }
 
+/** Structured edits (from the UI) applied onto a previous version's config.
+ *  The raw Hermes config is updated in the same stroke so rendering reflects
+ *  the edit: model/base_url/api_key come from the endpoint registry; extra raw
+ *  keys (e.g. context_length env refs) survive when the endpoint is unchanged. */
+export async function applyConfigEdits(
+  prev: AgentConfig,
+  edits: { main: ModelTarget; aliases: Array<ModelTarget & { name: string }>; fallbacks: ModelTarget[] },
+): Promise<AgentConfig> {
+  const endpoints = new Map((await listEndpoints()).map((e) => [e.name, e]))
+  const prevRaw = (prev.raw ?? {}) as Record<string, unknown>
+
+  const block = (t: ModelTarget, prevBlock?: unknown): Record<string, unknown> => {
+    const ep = endpoints.get(t.endpoint)
+    if (!ep) throw new Error(`unknown endpoint "${t.endpoint}"`)
+    const prevB = (prevBlock ?? {}) as Record<string, unknown>
+    const samePlace = prevB.provider === ep.provider && (prevB.base_url ?? null) === (ep.baseUrl ?? null)
+    return {
+      ...(samePlace ? prevB : {}),
+      provider: ep.provider,
+      model: t.model,
+      ...(ep.baseUrl ? { base_url: ep.baseUrl } : {}),
+      ...(!samePlace && ep.apiKeyEnv ? { api_key: `\${${ep.apiKeyEnv}}` } : {}),
+    }
+  }
+
+  const prevAliases = (prevRaw.model_aliases ?? {}) as Record<string, unknown>
+  const raw: Record<string, unknown> = {
+    ...prevRaw,
+    model: block(edits.main, prevRaw.model),
+    model_aliases: Object.fromEntries(edits.aliases.map((a) => [a.name, block(a, prevAliases[a.name])])),
+    fallback_providers: edits.fallbacks.map((f) => block(f)),
+  }
+  return { ...prev, main: edits.main, aliases: edits.aliases, fallbacks: edits.fallbacks, raw }
+}
+
 /** Key-order-insensitive stringify — Postgres jsonb reorders object keys, so a
  *  plain JSON.stringify comparison would see every round-trip as a change. */
 function canonical(v: unknown): string {

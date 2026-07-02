@@ -117,12 +117,22 @@ Full project-management suite, all live in `ui/`:
   legacy compose has `agent-support` behind a `retired-migrated-to-talaria`
   profile + its depends_on entries commented (prewarm, openwebui).
 
+- **Agent harness (phase C1)** - in-app config control + the cost split.
+  `POST /api/fleet/defs/:id/edit` saves soul/main/aliases/fallbacks as a new
+  version (`applyConfigEdits` merges structured edits into the raw config,
+  preserving extra keys when the endpoint is unchanged); `apply: true`
+  re-renders + `docker compose restart`s the managed container. Reverts append
+  (`POST .../versions {revertTo}`). Editor modal on `/agents`. Ledger:
+  `usage_events.endpoint_class`/`llm_model` stamped per generation from the
+  agent's current MAIN endpoint (60s cache in `usage.ts`); `/cost` shows the
+  local/cloud share bar, stacked daily strip, per-agent "% local".
+
 ## Next up (in order)
 
-1. **Harness phase C**: in-app editing (soul/tiers/escalations) → new version →
-   re-render → restart; templates (role-ready base agents); create/destroy from
-   UI; usage_events endpoint-class attribution + /cost local-vs-cloud split.
-   Migrate the remaining 7 agents as each checks out.
+1. **Harness phase C2**: templates (role-ready base agents), create/destroy
+   agents from the UI (allocate HERMES_KEY_*, seed volumes), migrate the
+   remaining 7 legacy agents as each checks out. Per-alias tier routing +
+   attribution (Talaria requesting `<base>-<alias>` models).
 2. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
    inference.
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
