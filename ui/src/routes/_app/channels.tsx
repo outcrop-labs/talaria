@@ -7,6 +7,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { InlineCreate } from '@/components/ui/inline-create'
 import { ChannelView } from '@/components/chat/channel-view'
 import { ChannelSettingsModal } from '@/components/chat/channel-settings'
+import { PlanModal } from '@/components/chat/plan-modal'
 import { useAgents } from '@/lib/agents'
 import { useSession } from '@/lib/session'
 import { createChannel, useChannelDetail, useChannels } from '@/lib/channels'
@@ -26,6 +27,7 @@ function ChannelsPage() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [planOpen, setPlanOpen] = useState(false)
 
   useEffect(() => {
     if (!selectedId && channels[0]) setSelectedId(channels[0].id)
@@ -86,6 +88,11 @@ function ChannelsPage() {
                   {detail.agents.length > 0 && ` · ${detail.agents.length} ${detail.agents.length === 1 ? 'agent' : 'agents'}`}
                 </span>
               )}
+              {(detail?.agents.length ?? 0) > 0 && (
+                <Button variant="outline" size="sm" onClick={() => setPlanOpen(true)}>
+                  Plan
+                </Button>
+              )}
               <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
                 Settings
               </Button>
@@ -109,6 +116,16 @@ function ChannelsPage() {
           />
         )}
       </main>
+
+      {selected && detail && planOpen && (
+        <PlanModal
+          open={planOpen}
+          onClose={() => setPlanOpen(false)}
+          channelId={selected.id}
+          channelAgents={detail.agents}
+          fleet={fleet}
+        />
+      )}
 
       {selected && detail && (
         <ChannelSettingsModal

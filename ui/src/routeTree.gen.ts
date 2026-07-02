@@ -69,6 +69,7 @@ import { Route as ApiTasksIdDependenciesRouteImport } from './routes/api/tasks.$
 import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.comments'
 import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
 import { Route as ApiFleetEndpointsIdRouteImport } from './routes/api/fleet.endpoints.$id'
+import { Route as ApiChannelsIdPlanRouteImport } from './routes/api/channels.$id.plan'
 import { Route as ApiChannelsIdMessagesRouteImport } from './routes/api/channels.$id.messages'
 import { Route as ApiChannelsIdMembersRouteImport } from './routes/api/channels.$id.members'
 import { Route as ApiChannelsIdEventsRouteImport } from './routes/api/channels.$id.events'
@@ -385,6 +386,11 @@ const ApiFleetEndpointsIdRoute = ApiFleetEndpointsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ApiFleetEndpointsRoute,
 } as any)
+const ApiChannelsIdPlanRoute = ApiChannelsIdPlanRouteImport.update({
+  id: '/plan',
+  path: '/plan',
+  getParentRoute: () => ApiChannelsIdRoute,
+} as any)
 const ApiChannelsIdMessagesRoute = ApiChannelsIdMessagesRouteImport.update({
   id: '/messages',
   path: '/messages',
@@ -530,6 +536,7 @@ export interface FileRoutesByFullPath {
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
+  '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
@@ -607,6 +614,7 @@ export interface FileRoutesByTo {
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
+  '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
@@ -686,6 +694,7 @@ export interface FileRoutesById {
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
+  '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
@@ -765,6 +774,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/events'
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
+    | '/api/channels/$id/plan'
     | '/api/fleet/endpoints/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
@@ -842,6 +852,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/events'
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
+    | '/api/channels/$id/plan'
     | '/api/fleet/endpoints/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
@@ -920,6 +931,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/events'
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
+    | '/api/channels/$id/plan'
     | '/api/fleet/endpoints/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
@@ -1386,6 +1398,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFleetEndpointsIdRouteImport
       parentRoute: typeof ApiFleetEndpointsRoute
     }
+    '/api/channels/$id/plan': {
+      id: '/api/channels/$id/plan'
+      path: '/plan'
+      fullPath: '/api/channels/$id/plan'
+      preLoaderRoute: typeof ApiChannelsIdPlanRouteImport
+      parentRoute: typeof ApiChannelsIdRoute
+    }
     '/api/channels/$id/messages': {
       id: '/api/channels/$id/messages'
       path: '/messages'
@@ -1603,6 +1622,7 @@ interface ApiChannelsIdRouteChildren {
   ApiChannelsIdEventsRoute: typeof ApiChannelsIdEventsRoute
   ApiChannelsIdMembersRoute: typeof ApiChannelsIdMembersRoute
   ApiChannelsIdMessagesRoute: typeof ApiChannelsIdMessagesRoute
+  ApiChannelsIdPlanRoute: typeof ApiChannelsIdPlanRoute
 }
 
 const ApiChannelsIdRouteChildren: ApiChannelsIdRouteChildren = {
@@ -1610,6 +1630,7 @@ const ApiChannelsIdRouteChildren: ApiChannelsIdRouteChildren = {
   ApiChannelsIdEventsRoute: ApiChannelsIdEventsRoute,
   ApiChannelsIdMembersRoute: ApiChannelsIdMembersRoute,
   ApiChannelsIdMessagesRoute: ApiChannelsIdMessagesRoute,
+  ApiChannelsIdPlanRoute: ApiChannelsIdPlanRoute,
 }
 
 const ApiChannelsIdRouteWithChildren = ApiChannelsIdRoute._addFileChildren(
