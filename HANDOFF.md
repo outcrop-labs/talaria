@@ -55,13 +55,24 @@ Full project-management suite, all live in `ui/`:
   to the named agent. Create lands in `inbox`, always unassigned. Unnamed key callers
   (legacy plugin heartbeat/report) keep their old access on `PUT /api/tasks/:id`.
   See [`mcp/README.md`](./mcp/README.md) for client config.
+- **Chat (1:1)** - the home surface: agent picker over the gateway plane's
+  `/v1/models`, durable server-owned conversations in Postgres, streamed replies
+  that survive a reload (teed persist).
+- **Group chat (channels)** - Slack-style channels (`/channels`) where teammates and
+  fleet agents are members. Tables `channels` / `channel_members` / `channel_agents` /
+  `channel_messages` (per-channel `msg_seq` counter — many concurrent writers).
+  Agents reply when **@mentioned** (label or model id, `server/channel-replies.ts`):
+  transcript → gateway `proxyChat`, streamed into the channel row-by-flush and
+  published over `channel:<id>` pub/sub → SSE. Composer autocompletes mentions.
+  Adding an agent to a channel requires the adder's access to that agent.
 
 ## Next up (in order)
 
-1. Chat (agent picker + streaming over the gateway plane), agent/human group chats
-   (mini-Slack), notifications + @mentions, cost/token ledger, admin console.
+1. Notifications + user @mentions (channels parse agent mentions only today),
+   cost/token ledger, admin console (the 6-line stub pages under `_app/`).
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
    ticket), tracked follow-up to the auto-accumulated time-spent field.
+3. Plan chat (turn a channel conversation into tickets on a board).
 
 ## Dev environment
 
