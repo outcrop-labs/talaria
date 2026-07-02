@@ -4,7 +4,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
 import { StatCard } from '@/components/ui/stat-card'
 import { relativeTime } from '@/lib/fleet'
-import { agentLabel, formatTokens, useCost, type CostOverview, type CostTotals } from '@/lib/cost'
+import { agentLabel, formatCost, formatTokens, useCost, type CostOverview, type CostTotals } from '@/lib/cost'
 
 export const Route = createFileRoute('/_app/cost')({
   component: CostPage,
@@ -52,8 +52,19 @@ function CostPage() {
                 value={approx + formatTokens(total(t?.month))}
                 sub={`${formatTokens(t?.month.prompt ?? 0)} in · ${formatTokens(t?.month.completion ?? 0)} out`}
               />
-              <StatCard label="Generations · 30 days" value={t?.month.generations ?? 0} sub="chat turns + channel replies" />
+              <StatCard
+                label="Cloud spend · 30 days"
+                value={formatCost(t?.month.cost ?? 0)}
+                sub={`today ${formatCost(t?.today.cost ?? 0)} · ${t?.month.generations ?? 0} generations`}
+              />
             </div>
+
+            {(t?.unpricedCloudTokens ?? 0) > 0 && (
+              <p className="text-xs" style={{ color: 'var(--theme-danger)' }}>
+                {formatTokens(t!.unpricedCloudTokens)} cloud tokens have no price configured — set per-model pricing on
+                the Models page so spend is complete.
+              </p>
+            )}
 
             {t && t.split.local + t.split.cloud + t.split.other > 0 && (
               <SplitPanel split={t.split} perModel={data.perModel} />
@@ -92,6 +103,7 @@ function CostPage() {
                         {a.localShare === null ? '—' : `${Math.round(a.localShare * 100)}% local`}
                       </span>
                       <span className="w-20 text-right text-sm text-fg">{formatTokens(a.prompt + a.completion)}</span>
+                      <span className="w-16 text-right text-xs text-muted">{formatCost(a.cost)}</span>
                       <span className="w-16 text-right text-xs text-muted">{a.generations} gen</span>
                       <span className="w-20 text-right text-xs text-muted">{relativeTime(a.lastUsed)}</span>
                     </li>
@@ -170,6 +182,7 @@ function SplitPanel({
             <span className="text-fg">{s.label}</span>
             <span>
               {formatTokens(s.tokens)} · {s.endpointClass ?? 'unattributed'}
+              {s.endpointClass === 'cloud' && (s.cost === null ? ' · unpriced' : ` · ${formatCost(s.cost)}`)}
             </span>
           </span>
         ))}

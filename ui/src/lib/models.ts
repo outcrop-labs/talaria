@@ -13,6 +13,9 @@ export const PROVIDER_PRESETS: Array<{
   baseUrl?: string
   apiKeyEnv?: string
   models: string[]
+  /** Per-model $/MTok overrides. Usually unnecessary — prices auto-fetch from
+   *  the public OpenRouter catalog server-side; overrides always win. */
+  modelPrices?: Record<string, { in: number; out: number }>
   /** Show the base-URL field (local/custom endpoints only). */
   configurableUrl?: boolean
 }> = [
@@ -215,6 +218,7 @@ export const addEndpoint = (e: {
   class: 'local' | 'cloud'
   apiKeyEnv?: string | null
   models?: string[]
+  modelPrices?: Record<string, { in: number; out: number }>
 }) =>
   fetch('/api/fleet/endpoints', {
     method: 'POST',
@@ -232,6 +236,7 @@ export const patchEndpoint = (
     priceInPerMtok?: number | null
     priceOutPerMtok?: number | null
     models?: string[]
+    modelPrices?: Record<string, { in?: number; out?: number }>
     force?: boolean
   },
 ) =>

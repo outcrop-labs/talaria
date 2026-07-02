@@ -4,12 +4,16 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { deleteEndpoint, listEndpoints, updateEndpoint } from '@/server/agent-defs'
 import { cascadeRemoval, modelUsage, type ModelUsage } from '@/server/fleet-cascade'
+import { refreshAutoPrices } from '@/server/price-oracle'
 
 const Patch = z.object({
   class: z.enum(['local', 'cloud']).optional(),
   priceInPerMtok: z.number().nonnegative().nullish(),
   priceOutPerMtok: z.number().nonnegative().nullish(),
   models: z.array(z.string().min(1).max(120)).max(100).optional(),
+  modelPrices: z
+    .record(z.string().max(120), z.object({ in: z.number().nonnegative().optional(), out: z.number().nonnegative().optional() }))
+    .optional(),
   /** Second step of the double opt-in: cascade the removal into agent configs. */
   force: z.boolean().optional(),
 })
@@ -58,7 +62,10 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
           priceInPerMtok: parsed.data.priceInPerMtok,
           priceOutPerMtok: parsed.data.priceOutPerMtok,
           models: parsed.data.models,
+          modelPrices: parsed.data.modelPrices,
         })
+        // New catalog models get auto-priced immediately (public catalog).
+        if (parsed.data.models) await refreshAutoPrices().catch(() => {})
         return json({
           ok: true,
           cascaded: cascade.changed,

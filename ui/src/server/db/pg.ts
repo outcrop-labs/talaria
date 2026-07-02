@@ -325,6 +325,29 @@ const MIGRATIONS: string[] = [
    join agent_versions v on v.agent_id = d.id and v.version = d.current_version
    join llm_endpoints e on e.name = (v.config->'main'->>'endpoint')
    where u.endpoint_class is null and u.agent_model = d.model`,
+  // Auto-fetched prices (OpenRouter public catalog) - separate from user
+  // overrides so a refresh never clobbers a hand-set rate.
+  `alter table llm_endpoints add column if not exists auto_prices jsonb not null default '{}'`,
+  // Pricing: per-model $/MTok overrides on the endpoint ({model: {in, out}});
+  // endpoint-level price_in/out stay as the fallback. Cost is computed at read
+  // time, so price edits reprice history automatically.
+  `alter table llm_endpoints add column if not exists model_prices jsonb not null default '{}'`,
+  // The serving ENDPOINT name per generation - exact price lookup.
+  `alter table usage_events add column if not exists endpoint text`,
+  // Backfill endpoint by matching the recorded llm_model across the agent's
+  // current main + alias targets. No-op once set.
+  `update usage_events u set endpoint = t.ep
+   from (
+     select d.model as agent_model, x.model as llm_model, x.endpoint as ep
+     from agent_defs d
+     join agent_versions v on v.agent_id = d.id and v.version = d.current_version
+     cross join lateral (
+       select v.config->'main'->>'model' as model, v.config->'main'->>'endpoint' as endpoint
+       union all
+       select a->>'model', a->>'endpoint' from jsonb_array_elements(coalesce(v.config->'aliases','[]'::jsonb)) a
+     ) x
+   ) t
+   where u.endpoint is null and u.agent_model = t.agent_model and u.llm_model = t.llm_model`,
 ]
 
 function ensureMigrated(): Promise<void> {

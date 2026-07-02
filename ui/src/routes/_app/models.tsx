@@ -168,25 +168,50 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
         size="sm"
       />
       {available?.note && <div className="mt-2 text-xs text-muted">Provider catalog unavailable: {available.note}</div>}
-      {ep.class === 'cloud' && (
-        <div className="mt-4 flex items-center gap-2 text-xs text-muted">
-          <span>Pricing $/1M tokens:</span>
-          <Input
-            size="sm"
-            type="number"
-            defaultValue={ep.priceInPerMtok ?? ''}
-            placeholder="in"
-            className="w-24"
-            onBlur={(e) => void run(patchEndpoint(ep.id, { priceInPerMtok: e.target.value === '' ? null : Number(e.target.value) }))}
-          />
-          <Input
-            size="sm"
-            type="number"
-            defaultValue={ep.priceOutPerMtok ?? ''}
-            placeholder="out"
-            className="w-24"
-            onBlur={(e) => void run(patchEndpoint(ep.id, { priceOutPerMtok: e.target.value === '' ? null : Number(e.target.value) }))}
-          />
+      {ep.class === 'cloud' && ep.models.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Pricing · $/1M tokens (in / out)</div>
+          <div className="space-y-1.5">
+            {ep.models.map((m) => {
+              const p = ep.modelPrices?.[m]
+              const auto = ep.autoPrices?.[m]
+              const overridden = p?.in !== undefined || p?.out !== undefined
+              const setPrice = (key: 'in' | 'out', raw: string) => {
+                const next = { ...(ep.modelPrices ?? {}) }
+                const entry = { ...(next[m] ?? {}) }
+                if (raw === '') delete entry[key]
+                else entry[key] = Number(raw)
+                if (entry.in === undefined && entry.out === undefined) delete next[m]
+                else next[m] = entry
+                void run(patchEndpoint(ep.id, { modelPrices: next }))
+              }
+              return (
+                <div key={m} className="flex items-center gap-2 text-xs">
+                  <span className="min-w-0 flex-1 truncate text-fg">{m}</span>
+                  {/* Auto rates come from the public OpenRouter catalog; typing a
+                      value overrides them, clearing it falls back to auto. */}
+                  {!overridden && auto && <span className="shrink-0 text-muted" style={{ color: 'var(--theme-success)' }}>auto</span>}
+                  {!overridden && !auto && <span className="shrink-0 text-muted">unpriced</span>}
+                  <Input
+                    size="sm"
+                    type="number"
+                    defaultValue={p?.in ?? ''}
+                    placeholder={auto ? String(auto.in) : 'in'}
+                    className="w-20 shrink-0"
+                    onBlur={(e) => setPrice('in', e.target.value.trim())}
+                  />
+                  <Input
+                    size="sm"
+                    type="number"
+                    defaultValue={p?.out ?? ''}
+                    placeholder={auto ? String(auto.out) : 'out'}
+                    className="w-20 shrink-0"
+                    onBlur={(e) => setPrice('out', e.target.value.trim())}
+                  />
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
       {err && (
@@ -221,6 +246,7 @@ function AddProviderModal({ open, onClose }: { open: boolean; onClose: () => voi
         class: preset.configurableUrl ? inferClass(url) : preset.class,
         apiKeyEnv: (apiKeyEnv.trim() || preset.apiKeyEnv) ?? null,
         models: preset.models,
+        modelPrices: preset.modelPrices,
       })
       if (r.error) return setErr(r.error)
       await qc.invalidateQueries({ queryKey: ['fleet-endpoints'] })

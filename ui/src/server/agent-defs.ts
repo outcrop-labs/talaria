@@ -16,6 +16,12 @@ export interface LlmEndpoint {
   priceOutPerMtok: number | null
   /** Curated model ids offered by the agent editor's picker. */
   models: string[]
+  /** Per-model $/MTok overrides: { "<model>": { in, out } }. Endpoint-level
+   *  price_in/out are the fallback. */
+  modelPrices: Record<string, { in?: number; out?: number }>
+  /** Auto-fetched $/MTok from the public OpenRouter catalog (price-oracle).
+   *  Read-only from the UI; modelPrices overrides always win. */
+  autoPrices: Record<string, { in: number; out: number }>
 }
 
 export interface AgentDef {
@@ -68,7 +74,8 @@ export async function listEndpoints(): Promise<LlmEndpoint[]> {
   return (await sql`
     select id, name, provider, base_url as "baseUrl", class, api_key_env as "apiKeyEnv",
            context_length as "contextLength", price_in_per_mtok as "priceInPerMtok",
-           price_out_per_mtok as "priceOutPerMtok", models
+           price_out_per_mtok as "priceOutPerMtok", models, model_prices as "modelPrices",
+           auto_prices as "autoPrices"
     from llm_endpoints order by (class = 'local') desc, name asc
   `) as unknown as LlmEndpoint[]
 }
@@ -100,6 +107,7 @@ export async function updateEndpoint(
     priceInPerMtok?: number | null
     priceOutPerMtok?: number | null
     models?: string[]
+    modelPrices?: Record<string, { in?: number; out?: number }>
   },
 ): Promise<void> {
   const sql = await db()
@@ -110,6 +118,8 @@ export async function updateEndpoint(
     await sql`update llm_endpoints set price_out_per_mtok = ${patch.priceOutPerMtok}, updated_at = now() where id = ${id}`
   if (patch.models)
     await sql`update llm_endpoints set models = ${sql.json(patch.models)}, updated_at = now() where id = ${id}`
+  if (patch.modelPrices)
+    await sql`update llm_endpoints set model_prices = ${sql.json(patch.modelPrices)}, updated_at = now() where id = ${id}`
 }
 
 /** Create a user-defined endpoint (Models tab). Name must be fresh. */
@@ -120,12 +130,13 @@ export async function createEndpoint(e: {
   class: 'local' | 'cloud'
   apiKeyEnv?: string | null
   models?: string[]
+  modelPrices?: Record<string, { in?: number; out?: number }>
 }): Promise<void> {
   const sql = await db()
   await sql`
-    insert into llm_endpoints (name, provider, base_url, class, api_key_env, models)
+    insert into llm_endpoints (name, provider, base_url, class, api_key_env, models, model_prices)
     values (${e.name}, ${e.provider}, ${e.baseUrl ?? null}, ${e.class}, ${e.apiKeyEnv ?? null},
-            ${sql.json(e.models ?? [])})
+            ${sql.json(e.models ?? [])}, ${sql.json(e.modelPrices ?? {})})
   `
 }
 
