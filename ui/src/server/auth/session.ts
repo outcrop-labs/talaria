@@ -55,6 +55,32 @@ export async function updateSessionUser(request: Request, patch: Partial<Session
   return next
 }
 
+/** Patch EVERY live session belonging to a user (e.g. an admin role change
+ *  must not wait for re-login). SCAN-based — session counts are tiny here. */
+export async function updateSessionsForUser(userId: string, patch: Partial<SessionUser>): Promise<number> {
+  const redis = getRedis()
+  let cursor = '0'
+  let updated = 0
+  do {
+    const [next, keys] = await redis.scan(cursor, 'MATCH', 'sess:*', 'COUNT', 100)
+    cursor = next
+    for (const k of keys) {
+      const raw = await redis.get(k)
+      if (!raw) continue
+      try {
+        const u = JSON.parse(raw) as SessionUser
+        if (u.id === userId) {
+          await redis.set(k, JSON.stringify({ ...u, ...patch }), 'KEEPTTL')
+          updated++
+        }
+      } catch {
+        /* skip malformed */
+      }
+    }
+  } while (cursor !== '0')
+  return updated
+}
+
 /** Delete the session behind the request's cookie (logout). */
 export async function destroySession(request: Request): Promise<void> {
   const sid = parseCookies(request)[SESSION_COOKIE]

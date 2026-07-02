@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { getSessionUser, updateSessionsForUser } from '@/server/auth/session'
 import { listUsersAdmin, setUserAgentAccess, setUserRole } from '@/server/users'
 
 // Admin console API. GET → all users with roles + agent allow-lists.
@@ -31,7 +31,11 @@ export const Route = createFileRoute('/api/admin/users')({
         if (parsed.data.role === 'member' && parsed.data.userId === user.id) {
           return json({ error: 'you cannot demote yourself' }, { status: 400 })
         }
-        if (parsed.data.role) await setUserRole(parsed.data.userId, parsed.data.role)
+        if (parsed.data.role) {
+          await setUserRole(parsed.data.userId, parsed.data.role)
+          // Live sessions pick the role up immediately — no re-login dance.
+          await updateSessionsForUser(parsed.data.userId, { role: parsed.data.role })
+        }
         if (parsed.data.agentModels) await setUserAgentAccess(parsed.data.userId, parsed.data.agentModels)
         return json({ ok: true })
       },
