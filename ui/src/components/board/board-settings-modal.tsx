@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
+import { UserPicker } from '@/components/app/user-picker'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
 import {
@@ -168,43 +169,33 @@ function GeneralTab({
 function PeopleTab({ board }: { board: Board }) {
   const qc = useQueryClient()
   const { data: members = [] } = useBoardMembers(board.id)
-  const [email, setEmail] = useState('')
   const [role, setRole] = useState<'editor' | 'viewer'>('editor')
   const [err, setErr] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
   const refresh = () => qc.invalidateQueries({ queryKey: ['board-members', board.id] })
 
-  const invite = async () => {
+  const invite = async (email: string) => {
     setErr(null)
-    setBusy(true)
-    try {
-      const res = await shareBoard(board.id, email.trim(), role)
-      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
-      if (!res.ok || !data.ok) return setErr(data.error ?? 'Could not share')
-      setEmail('')
-      refresh()
-    } finally {
-      setBusy(false)
-    }
+    const res = await shareBoard(board.id, email, role)
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+    if (!res.ok || !data.ok) return setErr(data.error ?? 'Could not share')
+    refresh()
   }
 
   return (
     <div>
       <div className="flex items-center gap-2">
-        <Input
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && invite()}
-          placeholder="teammate@email.com"
-          className="h-9 min-w-0 flex-1"
+        <UserPicker
+          className="min-w-0 flex-1"
+          size="sm"
+          exclude={members.map((m) => m.userId)}
+          onPick={(u) => {
+            if (u.email) void invite(u.email)
+          }}
         />
-        <Select value={role} onChange={(e) => setRole(e.target.value as 'editor' | 'viewer')} className="h-9 shrink-0">
+        <Select value={role} onChange={(e) => setRole(e.target.value as 'editor' | 'viewer')} size="sm" className="shrink-0">
           <option value="editor">Editor</option>
           <option value="viewer">Viewer</option>
         </Select>
-        <Button size="sm" onClick={() => void invite()} disabled={busy || !email.trim()} className="shrink-0">
-          Invite
-        </Button>
       </div>
       {err && <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
 
@@ -212,8 +203,11 @@ function PeopleTab({ board }: { board: Board }) {
         <div className="mb-1 text-xs uppercase tracking-wide text-muted">People with access</div>
         {members.map((m) => (
           <div key={m.userId} className="flex items-center gap-2 rounded-lg px-1 py-1.5">
-            <Avatar name={m.email ?? m.name} className="h-7 w-7" />
-            <span className="min-w-0 flex-1 truncate text-sm text-fg">{m.email ?? m.name ?? m.userId}</span>
+            <Avatar name={m.name ?? m.email} className="h-7 w-7" />
+            <span className="min-w-0 flex-1 truncate text-sm text-fg">
+              {m.name ?? m.email ?? m.userId}
+              {m.name && m.email && <span className="ml-1.5 text-xs text-muted">{m.email}</span>}
+            </span>
             <span className="text-xs text-muted">{m.role}</span>
             {m.role !== 'owner' && (
               <button

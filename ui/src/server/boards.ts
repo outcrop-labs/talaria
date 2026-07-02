@@ -174,3 +174,19 @@ export async function boardAllowsAgent(boardId: string, model: string): Promise<
   const cfg = await getBoardAgentConfig(boardId)
   return cfg.allowAll || cfg.models.includes(model)
 }
+
+/** Boards an agent may work on (allow-all boards + boards listing it). The
+ *  agent-facing shape carries no membership role. */
+export async function listBoardsForAgent(model: string): Promise<Array<Omit<Board, 'role'>>> {
+  const sql = await db()
+  const rows = await sql`
+    select distinct b.id, b.name, b.owner_id as "ownerId", b.team_id as "teamId", t.name as "teamName",
+           b.created_at as "createdAt", b.updated_at as "updatedAt", b.archived_at as "archivedAt"
+    from boards b
+    left join board_agents a on a.board_id = b.id and a.agent_model = ${model}
+    left join teams t on t.id = b.team_id
+    where (b.allow_all_agents or a.agent_model is not null) and b.archived_at is null
+    order by b.updated_at desc
+  `
+  return rows as unknown as Array<Omit<Board, 'role'>>
+}

@@ -2,15 +2,22 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { createBoard, listBoards } from '@/server/boards'
+import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { createBoard, listBoards, listBoardsForAgent } from '@/server/boards'
 import { teamRole } from '@/server/teams'
 
 // GET /api/boards → boards the user owns or that are shared with them.
+// Agent-key + x-agent-name → boards whose policy allows that agent.
 // POST /api/boards { name } → create a board (user becomes owner).
 export const Route = createFileRoute('/api/boards')({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        if (checkAgentKey(request)) {
+          const agent = agentName(request)
+          if (!agent) return json({ error: 'x-agent-name required' }, { status: 400 })
+          return json({ boards: await listBoardsForAgent(agent) })
+        }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         const archived = new URL(request.url).searchParams.get('archived') === '1'

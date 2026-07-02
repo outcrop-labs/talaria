@@ -7,6 +7,7 @@ import { CreateBoardModal } from '@/components/board/create-board-modal'
 import { cn } from '@/lib/cn'
 import { NAV } from '@/lib/nav'
 import { useBoards, useArchivedBoards, type Board } from '@/lib/boards'
+import { useNotifications } from '@/lib/notifications'
 import type { SessionUser } from '@/lib/session'
 
 // The main application menu. The Boards item expands to the user's boards
@@ -16,6 +17,7 @@ export function NavRail({ user }: { user: SessionUser }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const [creating, setCreating] = useState(false)
   const [teamsOpen, setTeamsOpen] = useState(false)
+  const unread = useNotifications().data?.unread ?? 0
 
   return (
     <nav className="flex h-full w-52 shrink-0 flex-col gap-4 overflow-y-auto border-r border-line-subtle bg-sidebar px-2 py-4">
@@ -36,6 +38,9 @@ export function NavRail({ user }: { user: SessionUser }) {
                   >
                     <span className="nav-ico w-4 text-center text-muted">{item.icon}</span>
                     <span className="flex-1 truncate">{item.label}</span>
+                    {item.to === '/inbox' && unread > 0 && (
+                      <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-surface">{unread}</span>
+                    )}
                     {item.adminOnly && <span className="text-[10px] text-accent">admin</span>}
                   </Link>
                   {item.to === '/boards' && pathname.startsWith('/boards') && (

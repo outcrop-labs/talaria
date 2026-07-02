@@ -44,7 +44,12 @@ export async function upsertUser(identity: Identity): Promise<User> {
     values (${identity.sub}, ${identity.email}, ${identity.name}, ${identity.picture}, ${role}, now())
     on conflict (sub) do update set
       email = excluded.email,
-      name = excluded.name,
+      -- a display name the user set (≠ email) survives logins; the provider
+      -- identity only fills the unfriendly defaults (empty, or name = email).
+      name = case
+        when users.name is null or users.name = '' or users.name = users.email then excluded.name
+        else users.name
+      end,
       picture = excluded.picture,
       last_seen_at = now(),
       -- promote admin-listed users; otherwise keep whatever role they have.
@@ -52,6 +57,19 @@ export async function upsertUser(identity: Identity): Promise<User> {
     returning id, sub, email, name, picture, role
   `
   return rows[0] as User
+}
+
+/** Set a user's display name (profile setting). */
+export async function setUserName(userId: string, name: string): Promise<void> {
+  const sql = await db()
+  await sql`update users set name = ${name} where id = ${userId}`
+}
+
+/** Everyone who has signed in — for people pickers (share, invite, channels). */
+export async function listUsers(): Promise<Array<{ id: string; email: string | null; name: string | null }>> {
+  const sql = await db()
+  const rows = await sql`select id, email, name from users order by lower(coalesce(email, name, '')) asc`
+  return rows as unknown as Array<{ id: string; email: string | null; name: string | null }>
 }
 
 /** The set of agent models a user may use: 'all' or an explicit allow-list. */

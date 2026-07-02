@@ -1,8 +1,9 @@
 import { forwardRef } from 'react'
 import { cn } from '@/lib/cn'
+import { controlSizes, type ControlSize } from './control'
 
 type Variant = 'primary' | 'outline' | 'ghost' | 'danger'
-type Size = 'sm' | 'md'
+type Size = ControlSize
 
 const base =
   'inline-flex items-center justify-center gap-2 rounded-xl font-medium transition-all disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2'
@@ -16,8 +17,8 @@ const variants: Record<Variant, string> = {
 }
 
 const sizes: Record<Size, string> = {
-  sm: 'h-9 px-3 text-sm',
-  md: 'h-11 px-4',
+  sm: `${controlSizes.sm} px-3`,
+  md: `${controlSizes.md} px-4`,
 }
 
 /** Shared button styling — reuse this on <a>/<label> etc. so links match buttons

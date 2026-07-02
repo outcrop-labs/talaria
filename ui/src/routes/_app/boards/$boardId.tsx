@@ -71,14 +71,14 @@ function BoardPage() {
             <List size={15} />
           </button>
         </div>
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" className="h-8 w-44 text-sm" />
-        <Select value={assignee} onChange={(e) => setAssignee(e.target.value)} className="h-8">
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" size="sm" className="w-44" />
+        <Select value={assignee} onChange={(e) => setAssignee(e.target.value)} size="sm">
           <option value="">Any assignee</option>
           {boardAgents.map((a) => (
             <option key={a.id} value={a.id}>{a.label}</option>
           ))}
         </Select>
-        <Select value={priority} onChange={(e) => setPriority(e.target.value)} className="h-8">
+        <Select value={priority} onChange={(e) => setPriority(e.target.value)} size="sm">
           <option value="">Any priority</option>
           {PRIORITIES.map((p) => (
             <option key={p} value={p}>{p}</option>
