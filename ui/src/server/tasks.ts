@@ -55,17 +55,15 @@ export async function getTaskFull(id: string): Promise<{
 } | null> {
   const task = await getTask(id)
   if (!task) return null
-  const [blockedBy, blocks] = await listDependencies(id)
-  return {
-    task,
-    comments: await listComments(id),
-    activity: await listActivity(id),
-    watchers: await listWatchers(id),
-    reviews: await listReviews(id),
-    blockedBy,
-    blocks,
-    usage: await taskUsage(id),
-  }
+  const [[blockedBy, blocks], comments, activity, watchers, reviews, usage] = await Promise.all([
+    listDependencies(id),
+    listComments(id),
+    listActivity(id),
+    listWatchers(id),
+    listReviews(id),
+    taskUsage(id),
+  ])
+  return { task, comments, activity, watchers, reviews, blockedBy, blocks, usage }
 }
 
 export async function createTask(input: {

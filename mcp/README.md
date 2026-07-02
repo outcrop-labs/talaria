@@ -19,6 +19,7 @@ bypass them.
 | `comment` | Comment on a ticket |
 | `report_outcome` | Record outcome/resolution and hand the ticket to **quality review** |
 | `add_time` | Add seconds to the auto-accumulated time-spent |
+| `log_usage` | Report LLM tokens burned on a ticket (prompt/completion, optional model tier) — feeds the ticket's cost rollup and the fleet ledger |
 | `add_dependency` | Mark a ticket blocked by another on the same board |
 
 ## Setup

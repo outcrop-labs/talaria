@@ -6,9 +6,10 @@ together in real time, with sensible human-in-the-loop guardrails. Talaria has i
 [`ui/`](./ui)), its own Postgres/Redis state, and every agent is a full
 [Hermes](https://github.com/outsourc-e/hermes-workspace) agent.
 
-> ⚠️ **Work in progress, not production ready.** Only the PM suite, the fleet engine (gateway plane), and
-> auth are shipped today. Almost everything else on this page is still on the way. Kick the tires, follow
-> along, but don't bet your business on it yet.
+> ⚠️ **Work in progress, not production ready.** Shipping today: the PM suite, chat + channels with plan
+> chat, the fleet engine and full agent harness (versioned internals included), the token ledger with
+> auto-priced costs, and the ops surfaces. Kick the tires, follow along, but don't bet your business on
+> it yet.
 
 **Status legend:** ✅ shipped · 🚧 in progress · 🔭 planned.
 
@@ -36,16 +37,29 @@ The project management suite, the fleet engine, and auth are live and running:
   no complete tool: the guardrails hold at the protocol layer, and each agent only sees boards whose
   policy allows it.
 - **Group chat** ✅. Slack-style channels where teammates and fleet agents are real members. @mention an
-  agent and its reply streams into the channel for everyone, live over SSE. Composer autocompletes
-  mentions; channel settings manage people and agents.
+  agent (or `@agent:tier` to pick a model tier) and its reply streams into the channel for everyone, live
+  over SSE. Composer autocompletes mentions; channel settings manage people and agents.
+- **Plan chat** ✅. Hit **Plan** in a channel: an agent drafts tickets from the conversation, you review,
+  edit, and create the keepers onto any board — into inbox, never assigned.
+- **Agent harness** ✅. Talaria is the fleet's source of truth: import an existing Hermes stack, render and
+  orchestrate every agent (`docker compose` project owned by Talaria), edit souls/models/tiers/fallbacks
+  and MCP servers in-app as immutable, revertible config versions, create new agents from templates, and
+  retire them — all from `/agents`, `/models`, and `/mcp`.
+- **Versioned agent internals** ✅. Soul, model config, and MCP servers are version-controlled in-app
+  (diffable history, reverts); skills and memory are managed live on the real mounts (`/skills`,
+  `/memory`). Nothing shifts silently.
+- **Token ledger + auto-priced costs** ✅. Every generation lands in the ledger, classified local vs cloud
+  and attributed to the serving model/endpoint (tier-aware). Prices auto-fetch from a public catalog —
+  zero config — with manual overrides; `/cost` shows spend, the local/cloud mixture, and per-agent $;
+  agents report per-ticket token spend over MCP and tickets show tokens · $.
+- **Ops surfaces** ✅. `/activity` (one merged workspace feed), `/alerts` (live-derived health: containers,
+  gateway, ledger blind spots, stuck work), `/inference` (local backends probed live + local throughput).
 
 ## Next / planned
 
 Roughly in the order we're chasing it. Full detail in
 [`docs/PHASE2-UI-PLAN.md`](./docs/PHASE2-UI-PLAN.md).
 
-- **Plan chat** 🔭. Humans and agents plan together, then turn the conversation into realistic tickets
-  (missions) and drop them onto any connected kanban.
 - **Design and creative** 🔭. Agents and humans making creative work side by side.
 - **Finance** 🔭. Agent and human finance that plugs into the big accounting and HR platforms.
 - **Agentic coding** 🔭. Agent-driven coding right in the app (probably
@@ -53,9 +67,6 @@ Roughly in the order we're chasing it. Full detail in
 - **Personal + base agents** 🔭. Role-ready base agents pre-configured for common business roles (support,
   sales, finance, dev, ops), plus per-person Docker-based Hermes personal assistants with their own
   skills, tools, and memories.
-- **Versioned agent internals** 🔭. Each agent's soul, memory, skills, tools, and MCP servers are managed
-  in-app and version controlled. Every change is tracked, diffable, and revertible, so nothing shifts
-  under you silently. (We do manage your agents, we just do it in the open and always undoably.)
 - **Marketplace** 🔭. A per-agent marketplace for MCP servers, skills, and tools.
 - **Connectors** 🔭. Chat connectors (Slack, Mattermost, Matrix) for outbound notifications and autonomous
   outreach, an MCP connector to pull Talaria's agents into desktop/terminal apps, and accounting/HR/ops
@@ -64,12 +75,13 @@ Roughly in the order we're chasing it. Full detail in
   Run them all on one server, or connect out to other hosted Talaria instances.
 - **Artifacts linked to tickets** 🔭. Spin up artifacts on the fly and pin them to the tickets they belong
   to, right from chats, plans, and work sessions.
-- **Run your own LLMs** 🔭. Manage local inference (Ollama, vLLM, llama.cpp, and friends) right alongside
-  hosted models.
+- **Run your own LLMs** 🚧. Local backends already register alongside hosted providers (auto-classed by
+  URL), get probed live on `/inference`, and split the cost view. Next: managing the inference containers
+  themselves (Ollama, vLLM, llama.cpp) from Talaria.
 - **Container orchestration** 🔭. A [Dokploy](https://dokploy.com)-style backend for the containers Talaria
   spins up (personal agents, services), self-hosted.
-- **Analytics / ROI** 🔭. Full agent analytics plus analytics across work, chats, and projects, with token
-  cost and ROI running through all of it.
+- **Analytics / ROI** 🚧. The ledger, auto-priced costs, local/cloud mixture, and per-ticket spend ship
+  today; full analytics across work, chats, and projects (board rollups, trends, ROI) is next.
 - **Permissions** 🚧. Real, fine-grained access control for agents and people, growing from the guardrails
   we already ship.
 - **Open source, free forever + managed cloud** 🔭. The whole thing is OSS and self-hostable (MIT); a

@@ -168,10 +168,37 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
         size="sm"
       />
       {available?.note && <div className="mt-2 text-xs text-muted">Provider catalog unavailable: {available.note}</div>}
-      {ep.class === 'cloud' && ep.models.length > 0 && (
+      {ep.class === 'cloud' && (
         <div className="mt-4">
           <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Pricing · $/1M tokens (in / out)</div>
           <div className="space-y-1.5">
+            {/* Endpoint default: the fallback rate when a model has neither an
+                override nor an auto price. Editable so a stale value can be fixed. */}
+            <div className="flex items-center gap-2 text-xs">
+              <span className="min-w-0 flex-1 truncate text-muted">endpoint default (fallback)</span>
+              <Input
+                size="sm"
+                type="number"
+                defaultValue={ep.priceInPerMtok ?? ''}
+                placeholder="in"
+                className="w-20 shrink-0"
+                onBlur={(e) => {
+                  const v = e.target.value.trim()
+                  void run(patchEndpoint(ep.id, { priceInPerMtok: v === '' ? null : Number(v) }))
+                }}
+              />
+              <Input
+                size="sm"
+                type="number"
+                defaultValue={ep.priceOutPerMtok ?? ''}
+                placeholder="out"
+                className="w-20 shrink-0"
+                onBlur={(e) => {
+                  const v = e.target.value.trim()
+                  void run(patchEndpoint(ep.id, { priceOutPerMtok: v === '' ? null : Number(v) }))
+                }}
+              />
+            </div>
             {ep.models.map((m) => {
               const p = ep.modelPrices?.[m]
               const auto = ep.autoPrices?.[m]

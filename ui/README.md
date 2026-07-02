@@ -93,32 +93,29 @@ only these safe operations is the next milestone, see [`../ROADMAP.md`](../ROADM
 
 ## Where this is headed
 
-The PM suite ships today. From here we grow this app into the full multiplayer
-workspace from the [top-level README](../README.md), with human-in-the-loop
-guardrails throughout:
+Shipped: the PM suite, the agent MCP (`talaria-mcp`), group chat with tier
+mentions, plan chat (conversation → reviewed tickets), the full agent harness
+(import/render/orchestrate/create/retire; souls, models, tiers, and MCP servers
+as immutable revertible versions; skills + memory managed live), the priced
+token ledger (auto-fetched rates, local/cloud split, per-agent and per-ticket
+spend), and the ops surfaces (`/activity`, `/alerts`, `/inference`).
 
-- **Agent MCP** 🚧 (`talaria-mcp`): the next milestone. Exposes only the safe
-  create/triage tools so agents can work the boards without ever self-assigning or
-  self-completing.
-- **Group chat** 🔭: multi-agent and human channels, Slack-style, with your agents
-  as real members. We lift the chat/agent UX from hermes-workspace into this app.
-- **Plan chat** 🔭: humans and agents plan together, then turn the conversation into
-  real tickets dropped onto any connected board.
+Still growing toward the full multiplayer workspace from the
+[top-level README](../README.md):
+
 - **On-the-fly artifacts** 🔭: spin up artifacts and pin them to the tickets they
   belong to, straight from chats and work sessions.
-- **Agent internals in-app** 🔭: manage each agent's soul, memory, skills, tools, and
-  MCP servers right here, version controlled and easy to roll back.
-- **Analytics + ROI** 🔭: token cost and ROI tied to the work agents actually shipped,
-  across boards, chats, and projects.
+- **Design/creative + finance surfaces** 🔭 and in-app agentic coding.
+- **Analytics + ROI** 🚧: board-level cost rollups and trends on top of the
+  per-ticket spend that ships today.
 
 ## TODO / backlog
 
 - **More auth providers:** GitHub, Microsoft/Entra, generic OIDC. Each drops into
   the provider registry.
 - **Hash password credentials** (bcrypt/argon2) instead of plaintext `AUTH_USERS`.
-- **Local-inference monitoring:** surface self-hosted inference stacks
-  (Ollama, vLLM, llama.cpp, LM Studio, TGI, and friends): health, loaded models,
-  GPU/VRAM, tokens/sec, so Talaria becomes an all-in-one self-hosted Hermes
-  super-dashboard.
+- **Deeper local-inference monitoring:** `/inference` ships health, latency,
+  served models, and throughput today; add GPU/VRAM and tokens/sec so Talaria
+  becomes an all-in-one self-hosted Hermes super-dashboard.
 - **Multitenancy:** run several businesses from one Talaria and swap between them in
   a click.

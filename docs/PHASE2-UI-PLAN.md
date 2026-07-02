@@ -138,14 +138,15 @@ Early task: a **component inventory** pass to mark each as lift-as-is / adapt / 
   design system (Mercury) decided and built; the `ui/` shell, login, and auth are live. Both lift sources
   are vendored under [`vendor/`](../vendor) (gitignored). Still open: the per-component
   lift/adapt/rebuild map (weighted toward mission-control's Next-to-TanStack ports).
-- **P2.1 Simple view MVP. 🚧 in progress.** Shell + branding + auth done; the agent MCP
-  (`talaria-mcp`, [`mcp/`](../mcp)) shipped with safe create/triage tools only; the agent picker +
-  streaming chat over the gateway plane (`/v1/models`, model-routed chat) is live as the home surface;
-  and **group chat channels** (humans + @mentioned agents, streamed over SSE) shipped at `/channels`.
-  **Next up:** notifications + user @mentions, then the cost/token ledger.
-- **P2.2 Advanced view MVP.** Fleet dashboard (agents + cost) + task board, served from Talaria's own
-  Postgres, behind the mode toggle.
-- **P2.3 Missions + sessions + activity** in both views; polish the simple-to-advanced handoff.
+- **P2.1 Simple view MVP. ✅.** Shell + branding + auth; the agent MCP (`talaria-mcp`,
+  [`mcp/`](../mcp)) with safe tools only (now incl. `log_usage`); streaming chat (any model tier) as the
+  home surface; group chat channels with @mentions, `@agent:tier` mentions, and **plan chat**
+  (conversation → reviewed tickets); notifications + inbox.
+- **P2.2 Advanced view MVP. ✅.** Fleet overview, the agent harness (import/render/orchestrate/
+  create/retire, versioned config + MCP edits, skills/memory), the Models registry with auto-fetched
+  pricing, and the priced cost view — all on Talaria's own Postgres.
+- **P2.3 Activity + alerts. ✅** `/activity` (merged feed) and `/alerts` (derived health) shipped;
+  missions/sessions views remain open.
 - **P2.4 Identity + release.** Branding, docs, one deployable image. Talaria is the whole front door on
   its own state (the old dashboard-plane / mission-control-bridge scaffolding stays legacy).
 - **P2.5 (later) All-in-one self-hosted super-dashboard.** Beyond the Hermes fleet, monitor local

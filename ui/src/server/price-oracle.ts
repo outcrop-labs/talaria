@@ -14,13 +14,24 @@ interface OrModel {
 const normalize = (s: string) => s.toLowerCase().replace(/\./g, '-')
 
 let lastRefresh = 0
+let lastAttempt = 0 // failure backoff: don't hammer an unreachable catalog
 let refreshing: Promise<void> | null = null
-const MIN_INTERVAL_MS = 6 * 60 * 60 * 1000 // 6h
+const MIN_INTERVAL_MS = 6 * 60 * 60 * 1000 // 6h between successful refreshes
+const RETRY_INTERVAL_MS = 10 * 60 * 1000 // 10min between attempts after a failure
 
-async function fetchCatalog(): Promise<Map<string, Array<{ vendor: string; in: number; out: number }>>> {
+interface Catalog {
+  /** Keyed by the FULL normalized id ("anthropic/claude-opus-4-8") — for
+   *  vendor-prefixed model ids (OpenRouter-style endpoints). */
+  byId: Map<string, { in: number; out: number }>
+  /** Keyed by the normalized suffix ("claude-opus-4-8") — for bare ids. */
+  bySuffix: Map<string, Array<{ vendor: string; in: number; out: number }>>
+}
+
+async function fetchCatalog(): Promise<Catalog> {
   const r = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(15_000) })
   if (!r.ok) throw new Error(`openrouter ${r.status}`)
   const models = ((await r.json()) as { data?: OrModel[] }).data ?? []
+  const byId = new Map<string, { in: number; out: number }>()
   const bySuffix = new Map<string, Array<{ vendor: string; in: number; out: number }>>()
   for (const m of models) {
     const inTok = Number(m.pricing?.prompt)
@@ -28,23 +39,21 @@ async function fetchCatalog(): Promise<Map<string, Array<{ vendor: string; in: n
     if (!Number.isFinite(inTok) || !Number.isFinite(outTok)) continue
     const [vendor, ...rest] = m.id.split('/')
     const suffix = normalize(rest.join('/') || vendor!)
-    const entry = { vendor: normalize(vendor!), in: inTok * 1e6, out: outTok * 1e6 }
+    const price = { in: inTok * 1e6, out: outTok * 1e6 }
+    byId.set(normalize(m.id), price)
     const list = bySuffix.get(suffix) ?? []
-    list.push(entry)
+    list.push({ vendor: normalize(vendor!), ...price })
     bySuffix.set(suffix, list)
   }
-  return bySuffix
+  return { byId, bySuffix }
 }
 
-/** Pick a price for a model on a provider. Exact vendor match wins; otherwise
- *  accept only an unambiguous candidate (all same price). Null = no match —
- *  stays unpriced/manual rather than guessing. */
-function match(
-  catalog: Map<string, Array<{ vendor: string; in: number; out: number }>>,
-  provider: string,
-  model: string,
-): { in: number; out: number } | null {
-  const candidates = catalog.get(normalize(model))
+/** Pick a price for a model on a provider. Vendor-prefixed ids match the full
+ *  catalog id; bare ids match by suffix (exact vendor wins, else only an
+ *  unambiguous candidate). Null = no match — stays unpriced, never guessed. */
+function match(catalog: Catalog, provider: string, model: string): { in: number; out: number } | null {
+  if (model.includes('/')) return catalog.byId.get(normalize(model)) ?? null
+  const candidates = catalog.bySuffix.get(normalize(model))
   if (!candidates?.length) return null
   const vendorHit = candidates.find((c) => c.vendor === normalize(provider))
   if (vendorHit) return { in: vendorHit.in, out: vendorHit.out }
@@ -55,6 +64,7 @@ function match(
 
 /** Refresh auto_prices for every cloud endpoint's catalog models. */
 export async function refreshAutoPrices(): Promise<{ priced: number; endpoints: number }> {
+  lastAttempt = Date.now()
   const catalog = await fetchCatalog()
   const sql = await db()
   const endpoints = (await sql`
@@ -77,9 +87,12 @@ export async function refreshAutoPrices(): Promise<{ priced: number; endpoints: 
   return { priced, endpoints: endpoints.length }
 }
 
-/** Fire-and-forget refresh, at most every 6h. Call from hot read paths. */
+/** Fire-and-forget refresh: at most every 6h after a success, and no retry
+ *  storm when offline (10min backoff between failed attempts). Call from hot
+ *  read paths. */
 export function maybeRefreshAutoPrices(): void {
-  if (refreshing || Date.now() - lastRefresh < MIN_INTERVAL_MS) return
+  const now = Date.now()
+  if (refreshing || now - lastRefresh < MIN_INTERVAL_MS || now - lastAttempt < RETRY_INTERVAL_MS) return
   refreshing = refreshAutoPrices()
     .catch(() => {}) // offline/unreachable → prices stay as they were
     .finally(() => {

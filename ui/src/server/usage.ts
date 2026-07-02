@@ -6,6 +6,10 @@ import { db } from './db/pg'
 
 export interface UsageInput {
   agentModel: string
+  /** 'chat'/'channel' rows are gateway-metered by Talaria; 'ticket' rows are
+   *  agent-SELF-REPORTED (MCP log_usage) for work done outside Talaria's
+   *  request path — by design they add to the same totals (that spend is just
+   *  as real), guarded by the agent key + board policy rather than metering. */
   source: 'chat' | 'channel' | 'ticket'
   refId?: string | null
   /** Ticket this spend belongs to (agent-reported via MCP log_usage). */
@@ -122,7 +126,8 @@ export interface TaskUsage {
   promptTokens: number
   completionTokens: number
   cost: number
-  /** Cloud tokens with no configured rate (cost understated when > 0). */
+  /** Tokens with no $ figure: unpriced cloud AND unattributed rows (agent name
+   *  didn't resolve to a def). Cost is understated when > 0. */
   unpricedTokens: number
   perModel: Array<{ llmModel: string | null; tokens: number; cost: number | null }>
 }
@@ -135,7 +140,7 @@ export async function taskUsage(taskId: string): Promise<TaskUsage> {
      select coalesce(sum(prompt_tokens),0)::int as prompt,
             coalesce(sum(completion_tokens),0)::int as completion,
             coalesce(sum(cost),0)::float as cost,
-            coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud' and cost is null), 0)::bigint as unpriced
+            coalesce(sum(prompt_tokens + completion_tokens) filter (where cost is null), 0)::bigint as unpriced
      from priced where task_id = $1`,
     [taskId],
   )
@@ -173,62 +178,64 @@ export async function costOverview(): Promise<CostOverview> {
               coalesce(sum(cost), 0)::float as cost
        from priced where created_at > now() - interval '${interval}'`,
     )
-  const [today] = await window('1 day')
-  const [week] = await window('7 days')
-  const [month] = await window('30 days')
-  const [est] = await sql`
-    select count(*) filter (where estimated)::int as est, count(*)::int as all_n
-    from usage_events where created_at > now() - interval '30 days'
-  `
-
-  const [split] = await sql`
-    select coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local'), 0)::bigint as local,
-           coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud'), 0)::bigint as cloud,
-           coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class is null), 0)::bigint as other
-    from usage_events where created_at > now() - interval '30 days'
-  `
-  // Cloud tokens we can't price (no per-model or endpoint rate) — shown, not $0.
-  const [unpriced] = await sql.unsafe(
-    `with priced as (${PRICED})
-     select coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as tokens
-     from priced where created_at > now() - interval '30 days'
-       and endpoint_class = 'cloud' and cost is null`,
-  )
-  const perModel = await sql.unsafe(
-    `with priced as (${PRICED})
-     select llm_model as "llmModel", endpoint_class as "endpointClass",
-            coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as tokens,
-            sum(cost)::float as cost
-     from priced where created_at > now() - interval '30 days'
-     group by llm_model, endpoint_class
-     order by (endpoint_class = 'local') desc nulls last, tokens desc`,
-  )
-
-  const perAgent = await sql.unsafe(
-    `with priced as (${PRICED})
-     select agent_model as "agentModel",
-            coalesce(sum(prompt_tokens),0)::int as prompt,
-            coalesce(sum(completion_tokens),0)::int as completion,
-            count(*)::int as generations,
-            max(created_at) as "lastUsed",
-            coalesce(sum(cost), 0)::float as cost,
-            case when count(*) filter (where endpoint_class is not null) = 0 then null
-                 else sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local')::float
-                      / nullif(sum(prompt_tokens + completion_tokens) filter (where endpoint_class is not null), 0)
-            end as "localShare"
-     from priced where created_at > now() - interval '30 days'
-     group by agent_model order by sum(prompt_tokens) + sum(completion_tokens) desc`,
-  )
-  const perDay = await sql`
-    select to_char(date_trunc('day', created_at), 'YYYY-MM-DD') as day,
-           coalesce(sum(prompt_tokens),0)::int as prompt,
-           coalesce(sum(completion_tokens),0)::int as completion,
-           count(*)::int as generations,
-           coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local'), 0)::int as local,
-           coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud'), 0)::int as cloud
-    from usage_events where created_at > now() - interval '14 days'
-    group by 1 order by 1 asc
-  `
+  // Independent aggregates — fan out concurrently (alerts + /cost call this on
+  // every load; nine sequential round-trips added up).
+  const [[today], [week], [month], [est], [split], [unpriced], perModel, perAgent, perDay] = await Promise.all([
+    window('1 day'),
+    window('7 days'),
+    window('30 days'),
+    sql`
+      select count(*) filter (where estimated)::int as est, count(*)::int as all_n
+      from usage_events where created_at > now() - interval '30 days'
+    `,
+    sql`
+      select coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local'), 0)::bigint as local,
+             coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud'), 0)::bigint as cloud,
+             coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class is null), 0)::bigint as other
+      from usage_events where created_at > now() - interval '30 days'
+    `,
+    // Cloud tokens we can't price (no per-model or endpoint rate) — shown, not $0.
+    sql.unsafe(
+      `with priced as (${PRICED})
+       select coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as tokens
+       from priced where created_at > now() - interval '30 days'
+         and endpoint_class = 'cloud' and cost is null`,
+    ),
+    sql.unsafe(
+      `with priced as (${PRICED})
+       select llm_model as "llmModel", endpoint_class as "endpointClass",
+              coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as tokens,
+              sum(cost)::float as cost
+       from priced where created_at > now() - interval '30 days'
+       group by llm_model, endpoint_class
+       order by (endpoint_class = 'local') desc nulls last, tokens desc`,
+    ),
+    sql.unsafe(
+      `with priced as (${PRICED})
+       select agent_model as "agentModel",
+              coalesce(sum(prompt_tokens),0)::int as prompt,
+              coalesce(sum(completion_tokens),0)::int as completion,
+              count(*)::int as generations,
+              max(created_at) as "lastUsed",
+              coalesce(sum(cost), 0)::float as cost,
+              case when count(*) filter (where endpoint_class is not null) = 0 then null
+                   else sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local')::float
+                        / nullif(sum(prompt_tokens + completion_tokens) filter (where endpoint_class is not null), 0)
+              end as "localShare"
+       from priced where created_at > now() - interval '30 days'
+       group by agent_model order by sum(prompt_tokens) + sum(completion_tokens) desc`,
+    ),
+    sql`
+      select to_char(date_trunc('day', created_at), 'YYYY-MM-DD') as day,
+             coalesce(sum(prompt_tokens),0)::int as prompt,
+             coalesce(sum(completion_tokens),0)::int as completion,
+             count(*)::int as generations,
+             coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local'), 0)::int as local,
+             coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud'), 0)::int as cloud
+      from usage_events where created_at > now() - interval '14 days'
+      group by 1 order by 1 asc
+    `,
+  ])
 
   const t = (r: unknown) => {
     const x = r as { prompt: number; completion: number; generations: number; cost: number | null }

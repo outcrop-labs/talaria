@@ -64,8 +64,9 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
           models: parsed.data.models,
           modelPrices: parsed.data.modelPrices,
         })
-        // New catalog models get auto-priced immediately (public catalog).
-        if (parsed.data.models) await refreshAutoPrices().catch(() => {})
+        // New catalog models get auto-priced in the background (never block an
+        // interactive save on the external catalog fetch).
+        if (parsed.data.models) void refreshAutoPrices().catch(() => {})
         return json({
           ok: true,
           cascaded: cascade.changed,

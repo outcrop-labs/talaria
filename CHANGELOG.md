@@ -145,6 +145,41 @@ not proxied from mission-control.
   tier select, and the API validates tiers against the agent's definition. The
   ledger attributes tier-routed turns by the **alias's** endpoint — a `glm`
   turn lands as cloud/glm while main-model turns stay local.
+- **Auto-fetched pricing**, zero-config rates: a server-side price oracle pulls
+  OpenRouter's public model catalog (no key) and prices every matched cloud
+  model automatically (`llm_endpoints.auto_prices`, refreshed in the background
+  and on provider/model changes). Cost coalesces user override → auto → endpoint
+  default; the pricing grid shows an "auto" tag with fetched rates as
+  placeholders. No exact match → honestly unpriced, never guessed.
+- **Channel tier mentions**, `@Dex:deepseek` routes that reply to the tier; the
+  composer autocompletes `Label:tier`; unknown tiers fall back to main; the
+  ledger attributes the turn to the alias endpoint.
+- **Activity** (`/activity`), one merged, user-scoped feed — ticket events,
+  channel messages, agent config versions — with kind filters. A read model
+  over existing tables; nothing new stored.
+- **Alerts** (`/alerts`), live-derived health: down/unhealthy managed
+  containers, unreachable gateway plane, unpriced cloud usage,
+  estimate-dominated ledger, failed and week-stale blocked tickets. Severity
+  ranked, deep-linked, nothing to configure.
+- **Skills** (`/skills`), the fleet's skills as they exist on disk (shared
+  stack dir + each agent's dept/fleet mount): parsed descriptions, live
+  SKILL.md editing, admin create/delete. Hermes reads skills per invocation,
+  so edits apply on the next run — no restart.
+- **Memory** (`/memory`), each managed agent's `memories/MEMORY.md` read and
+  written through its running container — no second copy to drift.
+- **MCP** (`/mcp`), per-agent MCP servers from the versioned config: add and
+  remove as NEW immutable config versions (optionally applied live), untouched
+  entries preserved byte-for-byte; plus a talaria-mcp explainer.
+- **Inference** (`/inference`), your own hardware: local backends probed live
+  (status, latency, serving-now models) plus local token throughput.
+- **Per-ticket token spend**, agents report tokens burned on a ticket
+  (`POST /api/tasks/:id/usage`, MCP tool `log_usage`, board policy enforced,
+  tier-aware); reports are first-class priced ledger rows; the ticket rail
+  shows tokens · $ · per-model.
+- **Plan chat**, a channel's **Plan** button turns the conversation into
+  tickets: a chosen agent (any tier) drafts structured proposals from the
+  transcript, a human edits/prunes them in a review modal and creates the
+  keepers — into inbox, never assigned.
 
 ### Fixed
 - SSE event streams no longer crash the server when a client disconnects before

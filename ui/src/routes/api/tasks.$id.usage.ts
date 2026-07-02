@@ -5,7 +5,10 @@ import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole } from '@/server/boards'
 import { getTask, logActivity } from '@/server/tasks'
+import { routedModelFor } from '@/server/fleet-agents'
 import { recordUsage, taskUsage } from '@/server/usage'
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const Body = z.object({
   promptTokens: z.number().int().min(0).max(100_000_000),
@@ -22,6 +25,8 @@ export const Route = createFileRoute('/api/tasks/$id/usage')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
+        // Agents pass taskId verbatim — a non-UUID must 404, not 500 on the cast.
+        if (!UUID_RE.test(params.id)) return json({ error: 'not found' }, { status: 404 })
         const task = await getTask(params.id)
         if (!task) return json({ error: 'not found' }, { status: 404 })
         if (checkAgentKey(request)) {
@@ -36,6 +41,7 @@ export const Route = createFileRoute('/api/tasks/$id/usage')({
         return json(await taskUsage(params.id))
       },
       POST: async ({ request, params }) => {
+        if (!UUID_RE.test(params.id)) return json({ error: 'not found' }, { status: 404 })
         const task = await getTask(params.id)
         if (!task) return json({ error: 'not found' }, { status: 404 })
         // Usage is agent-reported (agents know what they burned); humans don't
@@ -48,6 +54,12 @@ export const Route = createFileRoute('/api/tasks/$id/usage')({
         }
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        // A tier must be one of the agent's real alias names — reject typos and
+        // routed-model ids loudly instead of silently recording an
+        // unattributable (and therefore unpriceable) row.
+        if (parsed.data.tier && !(await routedModelFor(name, parsed.data.tier).catch(() => null))) {
+          return json({ error: `unknown tier "${parsed.data.tier}" for ${name} — use an alias name or omit` }, { status: 400 })
+        }
 
         await recordUsage({
           agentModel: name,

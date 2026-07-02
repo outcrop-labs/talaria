@@ -68,24 +68,36 @@ export function PlanModal({
     }
   }
 
+  const [createdCount, setCreatedCount] = useState(0)
+
+  // Idempotent: each success unticks its proposal, so a retry after a mid-loop
+  // failure only creates what's still pending — never duplicates.
   const createAll = async () => {
     if (!boardId || included.length === 0) return
     setPhase('creating')
     setNote(null)
-    try {
-      for (const p of included) {
+    let failed: string | null = null
+    for (const p of included) {
+      try {
         await createTask(boardId, {
           title: p.title,
           description: p.description || undefined,
           priority: p.priority,
           effort: p.effort,
         })
+        setCreatedCount((n) => n + 1)
+        setProposals((prev) => prev?.map((x) => (x === p ? { ...x, include: false } : x)) ?? null)
+      } catch {
+        failed = p.title
+        break
       }
-      await qc.invalidateQueries({ queryKey: ['tasks', boardId] })
-      setPhase('done')
-    } catch {
-      setNote('some tickets failed to create')
+    }
+    await qc.invalidateQueries({ queryKey: ['tasks', boardId] })
+    if (failed) {
+      setNote(`"${failed}" failed to create — the ones before it are done; retry creates only what's left`)
       setPhase('idle')
+    } else {
+      setPhase('done')
     }
   }
 
@@ -98,7 +110,7 @@ export function PlanModal({
         {phase === 'done' ? (
           <>
             <p className="text-sm text-fg">
-              Created {included.length} ticket{included.length === 1 ? '' : 's'} in{' '}
+              Created {createdCount} ticket{createdCount === 1 ? '' : 's'} in{' '}
               <span className="font-medium">{editable.find((b) => b.id === boardId)?.name}</span> — they're in the
               inbox, ready to assign.
             </p>
