@@ -53,6 +53,8 @@ everything, with your agents right there beside you.
 - **Finance** 🔭. Agent and human finance that plugs into the big accounting and HR platforms.
 - **Coding** 🔭. Agent-driven coding right in the app (probably [opencode](https://github.com/sst/opencode)
   wired into the UI).
+- **Artifacts that stick around** 🔭. Spin up artifacts on the fly and pin them to the tickets they
+  belong to, right from chats, plans, and work sessions. No more good work getting lost in a chat scroll.
 
 ## The agents, treated like first-class team members
 
