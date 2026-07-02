@@ -7,8 +7,17 @@ import { join } from 'node:path'
 import type { LlmEndpoint } from './agent-defs'
 import { STACK_DIR } from './fleet-render'
 
+/** Env names the catalog fetch may read. Only provider-key-shaped vars — an
+ *  endpoint pairs an admin-chosen env name with an admin-chosen base URL, so
+ *  without this gate an admin could exfiltrate ANY env value (GH_TOKEN,
+ *  HERMES_KEY_*, LITELLM_MASTER_KEY) to an arbitrary host. Cross-provider
+ *  key-to-wrong-host remains possible for *_API_KEY names — that's the same
+ *  residual class as agent-config rendering and is part of the admin trust
+ *  model; everything else is refused here. */
+export const KEY_ENV_RE = /^(LLM_API_KEY|[A-Z][A-Z0-9_]*_API_KEY)$/
+
 async function resolveKey(envVar: string | null | undefined): Promise<string | null> {
-  if (!envVar) return null
+  if (!envVar || !KEY_ENV_RE.test(envVar)) return null
   if (process.env[envVar]) return process.env[envVar]!.trim()
   const env = await readFile(join(STACK_DIR(), '.env'), 'utf8').catch(() => '')
   const m = new RegExp(`^${envVar}=(.*)$`, 'm').exec(env)

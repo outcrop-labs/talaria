@@ -155,7 +155,7 @@ export async function addEndpointModels(name: string, models: string[]): Promise
     update llm_endpoints
     set models = (
       select coalesce(jsonb_agg(distinct m), '[]'::jsonb)
-      from jsonb_array_elements_text(models || ${sql.json(models)}) as m
+      from jsonb_array_elements_text(models || ${sql.json(models)}::jsonb) as m
     ), updated_at = now()
     where name = ${name}
   `

@@ -32,12 +32,12 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
         const parsed = Patch.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
 
-        let cascaded: string[] = []
+        let cascade: { changed: string[]; renderError?: string } = { changed: [] }
         if (parsed.data.models) {
           const ep = (await listEndpoints()).find((e) => e.id === params.id)
           if (!ep) return json({ error: 'not found' }, { status: 404 })
           const removed = ep.models.filter((m) => !parsed.data.models!.includes(m))
-          const usage = (await Promise.all(removed.map((m) => modelUsage(ep.name, m)))).flat()
+          const usage = removed.length ? await modelUsage(ep.name, removed) : []
           const mains = usage.filter((u) => u.asMain)
           if (mains.length) {
             return json(
@@ -49,8 +49,8 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
             return json({ needsForce: true, affected: summarize(usage) }, { status: 409 })
           }
           if (usage.length) {
-            const actor = user.email ?? user.name ?? 'admin'
-            for (const m of removed) cascaded.push(...(await cascadeRemoval(ep.name, m, actor)))
+            // One batched cascade: one new version per agent, one render, one restart wave.
+            cascade = await cascadeRemoval(ep.name, removed, user.email ?? user.name ?? 'admin')
           }
         }
         await updateEndpoint(params.id, {
@@ -59,7 +59,13 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
           priceOutPerMtok: parsed.data.priceOutPerMtok,
           models: parsed.data.models,
         })
-        return json({ ok: true, cascaded: [...new Set(cascaded)] })
+        return json({
+          ok: true,
+          cascaded: cascade.changed,
+          ...(cascade.renderError
+            ? { error: `agents reconfigured but re-render failed (${cascade.renderError}) — fix and re-render from /agents` }
+            : {}),
+        })
       },
       DELETE: async ({ request, params }) => {
         const user = await getSessionUser(request)
@@ -79,11 +85,17 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
         }
         if (usage.length && !force) return json({ needsForce: true, affected: summarize(usage) }, { status: 409 })
 
-        let cascaded: string[] = []
-        if (usage.length) cascaded = await cascadeRemoval(ep.name, null, user.email ?? user.name ?? 'admin')
+        let cascade: { changed: string[]; renderError?: string } = { changed: [] }
+        if (usage.length) cascade = await cascadeRemoval(ep.name, null, user.email ?? user.name ?? 'admin')
         const res = await deleteEndpoint(params.id)
         if (!res.ok) return json({ error: `still in use by: ${res.usedBy!.join(', ')}` }, { status: 400 })
-        return json({ ok: true, cascaded })
+        return json({
+          ok: true,
+          cascaded: cascade.changed,
+          ...(cascade.renderError
+            ? { error: `agents reconfigured but re-render failed (${cascade.renderError}) — fix and re-render from /agents` }
+            : {}),
+        })
       },
     },
   },

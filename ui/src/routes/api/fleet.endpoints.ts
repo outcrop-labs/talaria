@@ -9,9 +9,11 @@ const Body = z.object({
   provider: z.string().min(2).max(40),
   baseUrl: z.string().url().max(300).nullish(),
   class: z.enum(['local', 'cloud']),
+  // Provider-key-shaped names only (see provider-catalog KEY_ENV_RE) — the
+  // catalog fetch sends this var's VALUE to the endpoint's base URL.
   apiKeyEnv: z
     .string()
-    .regex(/^[A-Z][A-Z0-9_]*$/)
+    .regex(/^(LLM_API_KEY|[A-Z][A-Z0-9_]*_API_KEY)$/)
     .max(80)
     .nullish(),
   models: z.array(z.string().min(1).max(120)).max(100).optional(),

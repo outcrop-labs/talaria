@@ -114,6 +114,14 @@ export function Combobox({
   }
 
   const onSearchKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      // Close just the dropdown — without this, the event reaches the Modal's
+      // document-level listener and closes the whole dialog (losing edits).
+      e.preventDefault()
+      e.stopPropagation()
+      setOpen(false)
+      return
+    }
     if (!allowCreate) return
     if (e.key === 'Enter' || e.key === ',') {
       e.preventDefault()

@@ -46,9 +46,17 @@ export function ModelPicker({
       selected={cur ? [cur] : []}
       onChange={([v]) => {
         if (!v) return
-        const [endpoint, model] = v.split(SEP)
-        if (endpoint && model) onChange({ ...value, endpoint, model })
+        if (v.includes(SEP)) {
+          const [endpoint, model] = v.split(SEP)
+          if (endpoint && model) onChange({ ...value, endpoint, model })
+        } else {
+          // Typed via "Create" — a model id not in any catalog (e.g. a model
+          // released five minutes ago). Keep the row's current endpoint.
+          const endpoint = value.endpoint || endpoints[0]?.name
+          if (endpoint) onChange({ ...value, endpoint, model: v })
+        }
       }}
+      allowCreate
       size={size}
       placeholder="Pick a model…"
       className={className}

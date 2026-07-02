@@ -204,6 +204,10 @@ export interface EndpointOpResult {
 const j = async (r: Response): Promise<EndpointOpResult> =>
   (await r.json().catch(() => ({ error: `request failed (${r.status})` }))) as EndpointOpResult
 
+// fetch() itself rejects on network failure (server restarting, offline) —
+// surface that as a normal error instead of an unhandled rejection.
+const netErr = (): EndpointOpResult => ({ error: 'network error — is the server up?' })
+
 export const addEndpoint = (e: {
   name: string
   provider: string
@@ -217,7 +221,9 @@ export const addEndpoint = (e: {
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(e),
-  }).then(j)
+  })
+    .then(j)
+    .catch(netErr)
 
 export const patchEndpoint = (
   id: string,
@@ -234,7 +240,11 @@ export const patchEndpoint = (
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(patch),
-  }).then(j)
+  })
+    .then(j)
+    .catch(netErr)
 
 export const removeEndpoint = (id: string, force = false) =>
-  fetch(`/api/fleet/endpoints/${id}${force ? '?force=1' : ''}`, { method: 'DELETE', credentials: 'same-origin' }).then(j)
+  fetch(`/api/fleet/endpoints/${id}${force ? '?force=1' : ''}`, { method: 'DELETE', credentials: 'same-origin' })
+    .then(j)
+    .catch(netErr)

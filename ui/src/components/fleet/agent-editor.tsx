@@ -9,6 +9,45 @@ import { saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget } from
 
 type AliasRow = ModelTarget & { name: string }
 
+// Module-scope (NOT inside the modal component): an inline component would get
+// a new identity every render, remounting the row and dropping input focus on
+// each keystroke.
+function TargetRow({
+  endpoints,
+  value,
+  onChange,
+  onRemove,
+  namePlaceholder,
+  name,
+  onName,
+}: {
+  endpoints: LlmEndpoint[]
+  value: ModelTarget
+  onChange: (t: ModelTarget) => void
+  onRemove?: () => void
+  namePlaceholder?: string
+  name?: string
+  onName?: (n: string) => void
+}) {
+  const epClass = endpoints.find((e) => e.name === value.endpoint)?.class ?? 'cloud'
+  return (
+    <div className="flex items-center gap-2">
+      {onName !== undefined && (
+        <Input value={name ?? ''} onChange={(e) => onName(e.target.value)} placeholder={namePlaceholder} size="sm" className="w-28 shrink-0" />
+      )}
+      <ModelPicker endpoints={endpoints} value={value} onChange={onChange} size="sm" className="min-w-0 flex-1" />
+      <span className="w-10 shrink-0 text-xs" style={{ color: epClass === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}>
+        {epClass}
+      </span>
+      {onRemove && (
+        <Button variant="ghost" size="sm" className="shrink-0" onClick={onRemove}>
+          ✕
+        </Button>
+      )}
+    </div>
+  )
+}
+
 // Edit an agent's configurable surface — soul, main model, alias tiers,
 // fallback chain. Saving creates a NEW version; "apply" re-renders and
 // restarts the managed container so it takes effect immediately.
@@ -46,45 +85,12 @@ export function AgentEditorModal({
     }
   }
 
-  const epClass = (name: string) => endpoints.find((e) => e.name === name)?.class ?? 'cloud'
-
-  const TargetRow = ({
-    value,
-    onChange,
-    onRemove,
-    namePlaceholder,
-    name,
-    onName,
-  }: {
-    value: ModelTarget
-    onChange: (t: ModelTarget) => void
-    onRemove?: () => void
-    namePlaceholder?: string
-    name?: string
-    onName?: (n: string) => void
-  }) => (
-    <div className="flex items-center gap-2">
-      {onName !== undefined && (
-        <Input value={name ?? ''} onChange={(e) => onName(e.target.value)} placeholder={namePlaceholder} size="sm" className="w-28 shrink-0" />
-      )}
-      <ModelPicker endpoints={endpoints} value={value} onChange={onChange} size="sm" className="min-w-0 flex-1" />
-      <span className="w-10 shrink-0 text-xs" style={{ color: epClass(value.endpoint) === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}>
-        {epClass(value.endpoint)}
-      </span>
-      {onRemove && (
-        <Button variant="ghost" size="sm" className="shrink-0" onClick={onRemove}>
-          ✕
-        </Button>
-      )}
-    </div>
-  )
-
   return (
     <Modal open={open} onClose={onClose} title={`Edit ${def.displayName} (v${def.currentVersion} → v${def.currentVersion + 1})`} width="max-w-2xl">
       <div className="space-y-5">
         <section>
           <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Main model</div>
-          <TargetRow value={main} onChange={setMain} />
+          <TargetRow endpoints={endpoints} value={main} onChange={setMain} />
         </section>
 
         <section>
@@ -92,6 +98,7 @@ export function AgentEditorModal({
           <div className="space-y-1.5">
             {aliases.map((a, i) => (
               <TargetRow
+                endpoints={endpoints}
                 key={i}
                 value={a}
                 name={a.name}
@@ -112,6 +119,7 @@ export function AgentEditorModal({
           <div className="space-y-1.5">
             {fallbacks.map((f, i) => (
               <TargetRow
+                endpoints={endpoints}
                 key={i}
                 value={f}
                 onChange={(t) => setFallbacks(fallbacks.map((x, j) => (j === i ? t : x)))}
