@@ -1,0 +1,119 @@
+// Derived system alerts — computed from live state on every read, no tables.
+// Sources: managed-container reality (docker), gateway reachability, the token
+// ledger's blind spots (unpriced cloud usage, estimated counts), and stuck
+// tickets on boards the requesting user can access.
+import { db } from './db/pg'
+import { listAgents } from './gateway'
+import { containerStatus } from './fleet-docker'
+import { costOverview } from './usage'
+
+export type AlertSeverity = 'critical' | 'warning' | 'info'
+
+export interface Alert {
+  severity: AlertSeverity
+  title: string
+  detail: string
+  href: string
+}
+
+const fmt = (n: number) => n.toLocaleString('en-US')
+
+export async function computeAlerts(userId: string): Promise<Alert[]> {
+  const sql = await db()
+  const alerts: Alert[] = []
+
+  // ── Fleet: every enabled managed agent should have a running container ─────
+  const managed = (await sql`
+    select slug, department, display_name as "displayName" from agent_defs
+    where managed and enabled order by slug
+  `) as unknown as Array<{ slug: string; department: string; displayName: string }>
+  if (managed.length) {
+    const states = await containerStatus(managed.map((m) => m.department)).catch(() => null)
+    if (states) {
+      for (const m of managed) {
+        const st = states.find((s) => s.department === m.department)?.managed
+        if (!st || st.state !== 'running') {
+          alerts.push({
+            severity: 'critical',
+            title: `${m.displayName} is down`,
+            detail: st ? `container ${st.name} is ${st.state} (${st.status})` : 'no managed container exists — render + up from /agents',
+            href: '/agents',
+          })
+        } else if (/unhealthy/i.test(st.status)) {
+          alerts.push({
+            severity: 'warning',
+            title: `${m.displayName} is unhealthy`,
+            detail: st.status,
+            href: '/agents',
+          })
+        }
+      }
+    }
+  }
+
+  // ── Gateway plane reachability ──────────────────────────────────────────────
+  const { source } = await listAgents().catch(() => ({ source: 'mock' as const }))
+  if (source !== 'gateway') {
+    alerts.push({
+      severity: 'critical',
+      title: 'Gateway plane unreachable',
+      detail: 'The fleet multiplexer on :8642 is not answering — chat and channel replies will fail.',
+      href: '/fleet',
+    })
+  }
+
+  // ── Ledger blind spots ──────────────────────────────────────────────────────
+  const cost = await costOverview().catch(() => null)
+  if (cost) {
+    if (cost.totals.unpricedCloudTokens > 0) {
+      alerts.push({
+        severity: 'warning',
+        title: 'Unpriced cloud usage',
+        detail: `${fmt(cost.totals.unpricedCloudTokens)} cloud tokens (30d) have no rate — spend is understated. Set prices on /models.`,
+        href: '/models',
+      })
+    }
+    if (cost.totals.month.generations >= 5 && cost.totals.estimatedShare > 0.5) {
+      alerts.push({
+        severity: 'warning',
+        title: 'Token counts are mostly estimates',
+        detail: `${Math.round(cost.totals.estimatedShare * 100)}% of the last 30 days' generations lack real usage from the gateway.`,
+        href: '/cost',
+      })
+    }
+  }
+
+  // ── Stuck work (scoped to boards this user can see) ────────────────────────
+  const stuck = (await sql`
+    select t.id, t.title, t.status, b.id as board_id, b.name as board,
+           extract(day from now() - t.updated_at)::int as days
+    from tasks t
+    join boards b on b.id = t.board_id
+    left join board_members m on m.board_id = b.id and m.user_id = ${userId}
+    left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
+    where (m.user_id is not null or tm.user_id is not null)
+      and b.archived_at is null and t.archived_at is null
+      and (t.status = 'failed' or (t.status = 'blocked' and t.updated_at < now() - interval '7 days'))
+    order by t.updated_at asc limit 20
+  `) as unknown as Array<{ id: string; title: string; status: string; board_id: string; board: string; days: number }>
+  for (const t of stuck) {
+    alerts.push(
+      t.status === 'failed'
+        ? {
+            severity: 'warning',
+            title: `Failed: ${t.title}`,
+            detail: `on ${t.board} — needs a human decision`,
+            href: `/boards/${t.board_id}/${t.id}`,
+          }
+        : {
+            severity: 'info',
+            title: `Blocked ${t.days}d: ${t.title}`,
+            detail: `on ${t.board} — blocked for ${t.days} days`,
+            href: `/boards/${t.board_id}/${t.id}`,
+          },
+    )
+  }
+
+  const rank: Record<AlertSeverity, number> = { critical: 0, warning: 1, info: 2 }
+  return alerts.sort((a, b) => rank[a.severity] - rank[b.severity])
+}
