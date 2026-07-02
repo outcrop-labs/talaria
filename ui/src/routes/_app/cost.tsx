@@ -4,7 +4,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
 import { StatCard } from '@/components/ui/stat-card'
 import { relativeTime } from '@/lib/fleet'
-import { agentLabel, formatTokens, useCost, type CostTotals } from '@/lib/cost'
+import { agentLabel, formatTokens, useCost, type CostOverview, type CostTotals } from '@/lib/cost'
 
 export const Route = createFileRoute('/_app/cost')({
   component: CostPage,
@@ -55,31 +55,8 @@ function CostPage() {
               <StatCard label="Generations · 30 days" value={t?.month.generations ?? 0} sub="chat turns + channel replies" />
             </div>
 
-            {t && t.split.local + t.split.cloud > 0 && (
-              <Panel>
-                <h2 className="mb-2 text-sm font-semibold text-fg">Local vs cloud · 30 days</h2>
-                <p className="mb-4 text-xs text-muted">
-                  {formatTokens(t.split.local)} on your own hardware · {formatTokens(t.split.cloud)} on cloud APIs —{' '}
-                  {Math.round((t.split.local / (t.split.local + t.split.cloud)) * 100)}% local
-                </p>
-                <div className="flex h-3 overflow-hidden rounded-full" role="img" aria-label="Local vs cloud token share">
-                  <div
-                    style={{
-                      width: `${(t.split.local / (t.split.local + t.split.cloud)) * 100}%`,
-                      background: 'var(--theme-success)',
-                    }}
-                  />
-                  <div className="ml-0.5 flex-1" style={{ background: 'var(--theme-accent)' }} />
-                </div>
-                <div className="mt-2 flex gap-4 text-xs text-muted">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-success)' }} /> local
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-accent)' }} /> cloud
-                  </span>
-                </div>
-              </Panel>
+            {t && t.split.local + t.split.cloud + t.split.other > 0 && (
+              <SplitPanel split={t.split} perModel={data.perModel} />
             )}
 
             {perDay.length > 1 && (
@@ -133,6 +110,71 @@ function CostPage() {
         )}
       </div>
     </div>
+  )
+}
+
+/** Segment colors: hue family = class (green local, bronze cloud), lightness
+ *  step = model within the family. Identity is never color-alone — every
+ *  segment has a legend chip with the model name and exact tokens. */
+const segmentColor = (cls: 'local' | 'cloud' | null, idxInClass: number): string => {
+  if (cls === null) return 'var(--theme-line)'
+  const base = cls === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)'
+  const lighten = Math.min(idxInClass * 22, 66)
+  return lighten ? `color-mix(in oklab, ${base}, white ${lighten}%)` : base
+}
+
+/** The local-vs-cloud share, segmented by serving model. The three class
+ *  totals (local + cloud + unattributed) always reconcile with the 30-day
+ *  token tile. */
+function SplitPanel({
+  split,
+  perModel,
+}: {
+  split: { local: number; cloud: number; other: number }
+  perModel: CostOverview['perModel']
+}) {
+  const total = split.local + split.cloud + split.other
+  const attributed = split.local + split.cloud
+  // Per-model segments in class order; lightness index counted within class.
+  let li = 0
+  let ci = 0
+  const segments = perModel
+    .filter((m) => m.tokens > 0)
+    .map((m) => ({
+      ...m,
+      color: segmentColor(m.endpointClass, m.endpointClass === 'local' ? li++ : m.endpointClass === 'cloud' ? ci++ : 0),
+      label: m.llmModel ?? 'unattributed',
+    }))
+
+  return (
+    <Panel>
+      <h2 className="mb-2 text-sm font-semibold text-fg">Local vs cloud · 30 days</h2>
+      <p className="mb-4 text-xs text-muted">
+        {formatTokens(split.local)} on your own hardware · {formatTokens(split.cloud)} on cloud APIs
+        {split.other > 0 && ` · ${formatTokens(split.other)} unattributed`}
+        {attributed > 0 && ` — ${Math.round((split.local / total) * 100)}% local`}
+      </p>
+      <div className="flex h-3 gap-0.5 overflow-hidden rounded-full" role="img" aria-label="Token share by serving model">
+        {segments.map((s) => (
+          <div
+            key={s.label}
+            title={`${s.label}: ${formatTokens(s.tokens)} tokens (${s.endpointClass ?? 'unattributed'})`}
+            style={{ width: `${(s.tokens / total) * 100}%`, background: s.color, minWidth: s.tokens > 0 ? 4 : 0 }}
+          />
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-muted">
+        {segments.map((s) => (
+          <span key={s.label} className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: s.color }} />
+            <span className="text-fg">{s.label}</span>
+            <span>
+              {formatTokens(s.tokens)} · {s.endpointClass ?? 'unattributed'}
+            </span>
+          </span>
+        ))}
+      </div>
+    </Panel>
   )
 }
 

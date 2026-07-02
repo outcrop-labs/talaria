@@ -13,8 +13,9 @@ export interface CostOverview {
     week: CostTotals
     month: CostTotals
     estimatedShare: number
-    split: { local: number; cloud: number }
+    split: { local: number; cloud: number; other: number }
   }
+  perModel: Array<{ llmModel: string | null; endpointClass: 'local' | 'cloud' | null; tokens: number }>
   perAgent: Array<CostTotals & { agentModel: string; lastUsed: string | null; localShare: number | null }>
   perDay: Array<CostTotals & { day: string; local: number; cloud: number }>
 }

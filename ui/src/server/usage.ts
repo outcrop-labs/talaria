@@ -68,9 +68,12 @@ export interface CostOverview {
     week: { prompt: number; completion: number; generations: number }
     month: { prompt: number; completion: number; generations: number }
     estimatedShare: number // 0..1 of the month's generations that are estimates
-    /** 30-day local-vs-cloud token split (unattributed rows excluded). */
-    split: { local: number; cloud: number }
+    /** 30-day local-vs-cloud token split; `other` = unattributed rows, so the
+     *  three always sum to the 30-day total. */
+    split: { local: number; cloud: number; other: number }
   }
+  /** 30-day tokens per serving model (class + model), largest first. */
+  perModel: Array<{ llmModel: string | null; endpointClass: 'local' | 'cloud' | null; tokens: number }>
   perAgent: Array<{
     agentModel: string
     prompt: number
@@ -102,8 +105,16 @@ export async function costOverview(): Promise<CostOverview> {
 
   const [split] = await sql`
     select coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local'), 0)::bigint as local,
-           coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud'), 0)::bigint as cloud
+           coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud'), 0)::bigint as cloud,
+           coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class is null), 0)::bigint as other
     from usage_events where created_at > now() - interval '30 days'
+  `
+  const perModel = await sql`
+    select llm_model as "llmModel", endpoint_class as "endpointClass",
+           coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as tokens
+    from usage_events where created_at > now() - interval '30 days'
+    group by llm_model, endpoint_class
+    order by (endpoint_class = 'local') desc nulls last, tokens desc
   `
 
   const perAgent = await sql`
@@ -132,15 +143,16 @@ export async function costOverview(): Promise<CostOverview> {
 
   const t = (r: unknown) => r as { prompt: number; completion: number; generations: number }
   const e = est as { est: number; all_n: number }
-  const s = split as { local: string | number; cloud: string | number }
+  const s = split as { local: string | number; cloud: string | number; other: string | number }
   return {
     totals: {
       today: t(today),
       week: t(week),
       month: t(month),
       estimatedShare: e.all_n ? e.est / e.all_n : 0,
-      split: { local: Number(s.local), cloud: Number(s.cloud) },
+      split: { local: Number(s.local), cloud: Number(s.cloud), other: Number(s.other) },
     },
+    perModel: (perModel as unknown as CostOverview['perModel']).map((m) => ({ ...m, tokens: Number(m.tokens) })),
     perAgent: perAgent as unknown as CostOverview['perAgent'],
     perDay: perDay as unknown as CostOverview['perDay'],
   }
