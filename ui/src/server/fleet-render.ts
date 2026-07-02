@@ -92,8 +92,12 @@ export async function renderFleet(): Promise<RenderResult> {
   const targets = await managedAgents()
   const result: RenderResult = { agents: [], files: [], warnings: [] }
 
+  // Parse in YAML 1.1 — docker compose's own dialect (go-yaml). This matters:
+  // `mode: 0400` is OCTAL in 1.1 (256) but decimal 400 in 1.2, which would
+  // silently turn a root-only secret into a group-writable one.
   const sourceCompose = parseYaml(await readFile(join(STACK_DIR(), 'docker-compose.yml'), 'utf8'), {
     merge: true,
+    version: '1.1',
   }) as { services?: Record<string, ComposeService>; secrets?: Record<string, unknown> }
 
   const services: Record<string, ComposeService> = {}
