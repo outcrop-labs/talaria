@@ -2,33 +2,41 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { checkAgentKey } from '@/server/agent-auth'
-import { boardRole } from '@/server/boards'
+import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { boardAllowsAgent, boardRole } from '@/server/boards'
 import { addComment, getTask, listComments } from '@/server/tasks'
 
-// GET → a task's comments (board member). POST → add a comment (member or agent).
+/** Board access for either a session user or a board-allowed named agent. */
+async function commentAuthor(request: Request, boardId: string): Promise<string | Response> {
+  if (checkAgentKey(request)) {
+    const name = agentName(request)
+    // Unnamed agent-key callers keep the legacy generic author.
+    if (!name) return 'agent'
+    if (!(await boardAllowsAgent(boardId, name))) return json({ error: 'forbidden' }, { status: 403 })
+    return name
+  }
+  const user = await getSessionUser(request)
+  if (!user || !(await boardRole(user.id, boardId))) return json({ error: 'forbidden' }, { status: 403 })
+  return user.email ?? user.name ?? 'user'
+}
+
+// GET → a task's comments (board member or board-allowed agent).
+// POST → add a comment (member or agent).
 export const Route = createFileRoute('/api/tasks/$id/comments')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         const task = await getTask(params.id)
         if (!task) return json({ error: 'not found' }, { status: 404 })
-        if (!(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
+        const who = await commentAuthor(request, task.boardId)
+        if (who instanceof Response) return who
         return json({ comments: await listComments(params.id) })
       },
       POST: async ({ request, params }) => {
         const task = await getTask(params.id)
         if (!task) return json({ error: 'not found' }, { status: 404 })
-
-        const agent = checkAgentKey(request)
-        let author = 'agent'
-        if (!agent) {
-          const user = await getSessionUser(request)
-          if (!user || !(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
-          author = user.email ?? user.name ?? 'user'
-        }
+        const author = await commentAuthor(request, task.boardId)
+        if (author instanceof Response) return author
 
         const parsed = z
           .object({ content: z.string().min(1).max(20_000), parentId: z.string().uuid().optional() })

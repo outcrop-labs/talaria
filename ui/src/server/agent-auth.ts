@@ -18,3 +18,11 @@ export function checkAgentKey(request: Request): boolean {
   const bearer = auth?.startsWith('Bearer ') ? auth.slice(7).trim() : null
   return (!!xkey && eq(xkey, expected)) || (!!bearer && eq(bearer, expected))
 }
+
+/** The calling agent's self-declared name (its fleet model id), from x-agent-name.
+ *  The shared key authenticates the fleet; the name scopes board policy and
+ *  attributes activity. Only meaningful alongside checkAgentKey(). */
+export function agentName(request: Request): string | null {
+  const name = request.headers.get('x-agent-name')?.trim()
+  return name && name.length <= 200 ? name : null
+}

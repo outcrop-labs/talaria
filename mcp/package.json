@@ -1,0 +1,24 @@
+{
+  "name": "talaria-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing Talaria's safe agent tools (create/triage tickets — never assign or complete)",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "talaria-mcp": "dist/index.js" },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "@types/node": "^22.15.0"
+  }
+}
