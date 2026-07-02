@@ -131,6 +131,13 @@ not proxied from mission-control.
   and drops the agent from the fleet manifest; state volume + version history
   stay.
 
+- **Pricing**, real dollars in the ledger: per-model $/MTok prices live on each
+  provider (Models page grid; endpoint-level rates as fallback; Anthropic preset
+  ships with official prices), every generation records its serving endpoint,
+  and cost computes at read time — editing a price reprices history instantly.
+  `/cost` gains a **Cloud spend** tile (30d + today), per-model $ in the split
+  legend, a per-agent $ column, and a loud warning for **unpriced** cloud tokens
+  (never silently $0). Local tokens are $0 by definition.
 - **Model-tier routing**, chat any agent on any of its configured tiers: the
   fleet manifest now carries one gateway entry per alias (`<base>-<alias>`,
   resolved by the agent's own Hermes gateway), `/api/agents` returns real

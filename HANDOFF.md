@@ -166,6 +166,13 @@ Full project-management suite, all live in `ui/`:
   `usage_events` attributes tier turns by the ALIAS endpoint (verified:
   glm turn → cloud/glm).
 
+- **Pricing** - `llm_endpoints.model_prices` jsonb ({model: {in, out}} $/MTok,
+  endpoint price_in/out fallback); `usage_events.endpoint` stamps the serving
+  endpoint (backfilled); cost is computed AT READ TIME in `usage.ts` (PRICED
+  CTE: local = $0, unpriced cloud = NULL -> surfaced as unpricedCloudTokens).
+  Models page has the per-model price grid; Anthropic preset seeds official
+  rates. GLM/DeepSeek rates left unpriced deliberately - set them on /models.
+
 ## Next up (in order)
 
 1. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,

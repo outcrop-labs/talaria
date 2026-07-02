@@ -49,6 +49,7 @@ export interface LlmEndpoint {
   priceInPerMtok?: number | null
   priceOutPerMtok?: number | null
   models: string[]
+  modelPrices?: Record<string, { in?: number; out?: number }>
 }
 
 export function useFleetDefs(enabled: boolean) {

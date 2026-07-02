@@ -13,6 +13,8 @@ export const PROVIDER_PRESETS: Array<{
   baseUrl?: string
   apiKeyEnv?: string
   models: string[]
+  /** Per-model $/MTok — seeded only where we have authoritative numbers. */
+  modelPrices?: Record<string, { in: number; out: number }>
   /** Show the base-URL field (local/custom endpoints only). */
   configurableUrl?: boolean
 }> = [
@@ -23,6 +25,12 @@ export const PROVIDER_PRESETS: Array<{
     class: 'cloud',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
     models: ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    // $/MTok in/out per platform.claude.com pricing.
+    modelPrices: {
+      'claude-opus-4-8': { in: 5, out: 25 },
+      'claude-sonnet-4-6': { in: 3, out: 15 },
+      'claude-haiku-4-5': { in: 1, out: 5 },
+    },
   },
   {
     key: 'openai',
@@ -215,6 +223,7 @@ export const addEndpoint = (e: {
   class: 'local' | 'cloud'
   apiKeyEnv?: string | null
   models?: string[]
+  modelPrices?: Record<string, { in: number; out: number }>
 }) =>
   fetch('/api/fleet/endpoints', {
     method: 'POST',
@@ -232,6 +241,7 @@ export const patchEndpoint = (
     priceInPerMtok?: number | null
     priceOutPerMtok?: number | null
     models?: string[]
+    modelPrices?: Record<string, { in?: number; out?: number }>
     force?: boolean
   },
 ) =>

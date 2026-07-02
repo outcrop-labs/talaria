@@ -17,6 +17,9 @@ const Body = z.object({
     .max(80)
     .nullish(),
   models: z.array(z.string().min(1).max(120)).max(100).optional(),
+  modelPrices: z
+    .record(z.string().max(120), z.object({ in: z.number().nonnegative().optional(), out: z.number().nonnegative().optional() }))
+    .optional(),
 })
 
 // The model-backend registry (Models tab). GET → all endpoints. POST → add one.
