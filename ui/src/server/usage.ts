@@ -8,6 +8,8 @@ export interface UsageInput {
   agentModel: string
   source: 'chat' | 'channel'
   refId?: string | null
+  /** Alias tier the request was routed to (null = the agent's main model). */
+  tier?: string | null
   promptTokens: number
   completionTokens: number
   estimated: boolean
@@ -16,30 +18,42 @@ export interface UsageInput {
 /** Rough token estimate when the gateway doesn't report usage. */
 export const estimateTokens = (chars: number): number => Math.ceil(chars / 4)
 
-/** Which model class serves this agent's generations right now — the current
- *  version's MAIN endpoint. (Per-alias attribution lands when Talaria routes
- *  tiers itself; the main model is what serves the ordinary turn today.) */
+/** Which model class serves this generation: the requested TIER's endpoint
+ *  when a tier was routed, else the agent's current MAIN endpoint. */
 const classCache = new Map<string, { at: number; value: { endpointClass: string; llmModel: string } | null }>()
-async function classifyAgent(agentModel: string): Promise<{ endpointClass: string; llmModel: string } | null> {
-  const hit = classCache.get(agentModel)
+async function classifyAgent(
+  agentModel: string,
+  tier: string | null,
+): Promise<{ endpointClass: string; llmModel: string } | null> {
+  const cacheKey = `${agentModel}:${tier ?? ''}`
+  const hit = classCache.get(cacheKey)
   if (hit && Date.now() - hit.at < 60_000) return hit.value
   const sql = await db()
-  const rows = await sql`
-    select e.class, (v.config->'main'->>'model') as model
-    from agent_defs d
-    join agent_versions v on v.agent_id = d.id and v.version = d.current_version
-    left join llm_endpoints e on e.name = (v.config->'main'->>'endpoint')
-    where d.model = ${agentModel}
-  `
+  const rows = tier
+    ? await sql`
+        select e.class, (a->>'model') as model
+        from agent_defs d
+        join agent_versions v on v.agent_id = d.id and v.version = d.current_version
+        cross join lateral jsonb_array_elements(coalesce(v.config->'aliases','[]'::jsonb)) a
+        left join llm_endpoints e on e.name = (a->>'endpoint')
+        where d.model = ${agentModel} and a->>'name' = ${tier}
+      `
+    : await sql`
+        select e.class, (v.config->'main'->>'model') as model
+        from agent_defs d
+        join agent_versions v on v.agent_id = d.id and v.version = d.current_version
+        left join llm_endpoints e on e.name = (v.config->'main'->>'endpoint')
+        where d.model = ${agentModel}
+      `
   const r = rows[0] as { class: string | null; model: string | null } | undefined
   const value = r?.class && r.model ? { endpointClass: r.class, llmModel: r.model } : null
-  classCache.set(agentModel, { at: Date.now(), value })
+  classCache.set(cacheKey, { at: Date.now(), value })
   return value
 }
 
 export async function recordUsage(u: UsageInput): Promise<void> {
   const sql = await db()
-  const cls = await classifyAgent(u.agentModel).catch(() => null)
+  const cls = await classifyAgent(u.agentModel, u.tier ?? null).catch(() => null)
   await sql`
     insert into usage_events (agent_model, source, ref_id, prompt_tokens, completion_tokens, estimated, endpoint_class, llm_model)
     values (${u.agentModel}, ${u.source}, ${u.refId ?? null},
@@ -54,9 +68,12 @@ export interface CostOverview {
     week: { prompt: number; completion: number; generations: number }
     month: { prompt: number; completion: number; generations: number }
     estimatedShare: number // 0..1 of the month's generations that are estimates
-    /** 30-day local-vs-cloud token split (unattributed rows excluded). */
-    split: { local: number; cloud: number }
+    /** 30-day local-vs-cloud token split; `other` = unattributed rows, so the
+     *  three always sum to the 30-day total. */
+    split: { local: number; cloud: number; other: number }
   }
+  /** 30-day tokens per serving model (class + model), largest first. */
+  perModel: Array<{ llmModel: string | null; endpointClass: 'local' | 'cloud' | null; tokens: number }>
   perAgent: Array<{
     agentModel: string
     prompt: number
@@ -88,8 +105,16 @@ export async function costOverview(): Promise<CostOverview> {
 
   const [split] = await sql`
     select coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'local'), 0)::bigint as local,
-           coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud'), 0)::bigint as cloud
+           coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud'), 0)::bigint as cloud,
+           coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class is null), 0)::bigint as other
     from usage_events where created_at > now() - interval '30 days'
+  `
+  const perModel = await sql`
+    select llm_model as "llmModel", endpoint_class as "endpointClass",
+           coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as tokens
+    from usage_events where created_at > now() - interval '30 days'
+    group by llm_model, endpoint_class
+    order by (endpoint_class = 'local') desc nulls last, tokens desc
   `
 
   const perAgent = await sql`
@@ -118,15 +143,16 @@ export async function costOverview(): Promise<CostOverview> {
 
   const t = (r: unknown) => r as { prompt: number; completion: number; generations: number }
   const e = est as { est: number; all_n: number }
-  const s = split as { local: string | number; cloud: string | number }
+  const s = split as { local: string | number; cloud: string | number; other: string | number }
   return {
     totals: {
       today: t(today),
       week: t(week),
       month: t(month),
       estimatedShare: e.all_n ? e.est / e.all_n : 0,
-      split: { local: Number(s.local), cloud: Number(s.cloud) },
+      split: { local: Number(s.local), cloud: Number(s.cloud), other: Number(s.other) },
     },
+    perModel: (perModel as unknown as CostOverview['perModel']).map((m) => ({ ...m, tokens: Number(m.tokens) })),
     perAgent: perAgent as unknown as CostOverview['perAgent'],
     perDay: perDay as unknown as CostOverview['perDay'],
   }

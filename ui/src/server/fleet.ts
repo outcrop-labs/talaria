@@ -5,7 +5,7 @@
 // this grows from usage stats into full fleet telemetry.
 
 import { db } from './db/pg'
-import { listAgents } from './gateway'
+import { listFleetAgents } from './fleet-agents'
 import { registryByName, seedFleetNames, type AgentStatus } from './agents-registry'
 
 export interface FleetAgentStat {
@@ -27,7 +27,7 @@ export interface FleetOverview {
 }
 
 export async function getFleetOverview(): Promise<FleetOverview> {
-  const { agents, source } = await listAgents()
+  const { agents, source } = await listFleetAgents()
   // Seed the registry from the fleet so every agent shows (offline until it
   // heartbeats to Talaria), then read owned status.
   await seedFleetNames(agents.map((a) => a.id))

@@ -131,6 +131,14 @@ not proxied from mission-control.
   and drops the agent from the fleet manifest; state volume + version history
   stay.
 
+- **Model-tier routing**, chat any agent on any of its configured tiers: the
+  fleet manifest now carries one gateway entry per alias (`<base>-<alias>`,
+  resolved by the agent's own Hermes gateway), `/api/agents` returns real
+  agents (not raw gateway models) with their tiers, the chat composer gains a
+  tier select, and the API validates tiers against the agent's definition. The
+  ledger attributes tier-routed turns by the **alias's** endpoint — a `glm`
+  turn lands as cloud/glm while main-model turns stay local.
+
 ### Fixed
 - SSE event streams no longer crash the server when a client disconnects before
   the Redis subscriber finishes connecting (unhandled rejection in the

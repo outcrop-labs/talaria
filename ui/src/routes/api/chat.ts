@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { proxyChat } from '@/server/gateway'
+import { routedModelFor } from '@/server/fleet-agents'
 import { getSessionUser } from '@/server/auth/session'
 import { allowedAgents, canUseAgent } from '@/server/users'
 import {
@@ -19,6 +20,8 @@ const Body = z.object({
   model: z.string().min(1),
   conversationId: z.string().uuid().optional(),
   content: z.string().min(1).max(100_000),
+  /** Model tier (alias name) to route this turn to; omit for the main model. */
+  tier: z.string().max(60).optional(),
 })
 
 const titleFrom = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 80)
@@ -52,6 +55,11 @@ export const Route = createFileRoute('/api/chat')({
           return json({ error: 'forbidden: no access to this agent' }, { status: 403 })
         }
 
+        // Tier routing: validate against the agent's defined aliases, then
+        // request `<base>-<tier>` — the agent's own gateway resolves the alias.
+        const routedModel = await routedModelFor(agentModel, parsed.data.tier)
+        if (!routedModel) return json({ error: `unknown tier "${parsed.data.tier}" for ${agentModel}` }, { status: 400 })
+
         if (!convId) convId = await createConversation(user.id, agentModel, titleFrom(content))
 
         // Build gateway history from the DB (prior turns), then record this turn.
@@ -62,7 +70,7 @@ export const Route = createFileRoute('/api/chat')({
         const messages = [...prior, { role: 'user' as const, content }]
         const assistantId = await insertStreamingAssistant(convId, userSeq + 1)
 
-        const upstream = await proxyChat({ model: agentModel, messages })
+        const upstream = await proxyChat({ model: routedModel, messages })
         const headers = new Headers({
           'Content-Type': upstream.headers.get('content-type') ?? 'text/event-stream',
           'Cache-Control': 'no-cache',
@@ -76,7 +84,11 @@ export const Route = createFileRoute('/api/chat')({
         // (detached, so it completes even if the client disconnects).
         const [toClient, toStore] = upstream.body.tee()
         const promptChars = messages.reduce((n, m) => n + m.content.length, 0)
-        void persistAssistantStream(toStore, assistantId, convId, { agentModel, promptChars })
+        void persistAssistantStream(toStore, assistantId, convId, {
+          agentModel,
+          promptChars,
+          tier: parsed.data.tier ?? null,
+        })
         return new Response(toClient, { status: upstream.status, headers })
       },
     },

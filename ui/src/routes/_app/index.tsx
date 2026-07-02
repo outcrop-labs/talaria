@@ -51,6 +51,7 @@ function ChatPage() {
             key={selectedAgent}
             agentModel={selectedAgent}
             agentLabel={current.label}
+            tiers={current.tiers ?? []}
             conversationId={selectedConversationId}
             newChatSignal={newChatSignal}
             onCreated={onCreated}

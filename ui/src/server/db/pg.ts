@@ -316,6 +316,15 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now(),
      unique (agent_id, version)
    )`,
+  // Backfill ledger attribution for rows recorded before endpoint_class
+  // existed: they were all main-model turns, so the agent's current main
+  // endpoint is historically accurate. No-op once attributed.
+  `update usage_events u
+   set endpoint_class = e.class, llm_model = (v.config->'main'->>'model')
+   from agent_defs d
+   join agent_versions v on v.agent_id = d.id and v.version = d.current_version
+   join llm_endpoints e on e.name = (v.config->'main'->>'endpoint')
+   where u.endpoint_class is null and u.agent_model = d.model`,
 ]
 
 function ensureMigrated(): Promise<void> {
