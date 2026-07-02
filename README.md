@@ -2,6 +2,10 @@
 
 > *Talaria: the winged sandals of Hermes, the thing that carries him between worlds.*
 
+> ⚠️ **Work in progress, not production ready.** Talaria is under heavy active development. A lot of what's
+> described below is still on the way, and things will change and break along the way. Kick the tires and
+> follow along, but please don't bet your business on it yet.
+
 Talaria is the nerve center for a lean, agent-powered business. It's one workspace where your people and
 your AI agents share the same stuff (boards, chats, plans, design, finance, code) and actually run the
 company together, in real time, with sensible guardrails so a human stays in the loop on the calls that
@@ -33,6 +37,9 @@ everything, with your agents right there beside you.
   Public business agents keep full logs. You decide what gets shared.
 - **Show the ROI.** 🔭 Watch, in real time, how your agent stack moves the business, with token costs tied
   to the work it actually shipped.
+- **Run many businesses from one place.** 🔭 Business multitenancy is coming soon, so you can spin Talaria
+  up for several companies and swap between them in a click. Run them all on one server if you want, or
+  connect out to other hosted Talaria instances.
 
 ## The workspace, where the work happens
 
@@ -71,29 +78,34 @@ everything, with your agents right there beside you.
 
 ## Under the hood, the fleet engine
 
-Underneath the app is Talaria's fleet runtime: two planes sitting in front of your agents. You declare a
-fleet once and Talaria routes to it, and every node stays a full Hermes agent. Talaria keeps its own
-Postgres and Redis as the source of truth. We ripped mission-control's capabilities into our own stack
-instead of proxying a running copy.
+Talaria has its own UI. We're building it by ripping the good parts out of hermes-workspace (mostly the
+chat and agent UX) and wiring them into our own app. We do not run hermes-workspace, it's just a parts
+bin we pull from. Same story with mission-control: we lifted its capabilities (task queue, cost,
+activity) into our own Postgres and Redis instead of proxying a running copy. Talaria is the whole
+surface now, and it owns its own state.
+
+Underneath the app is the fleet runtime: a gateway plane that multiplexes your Hermes agents so Talaria
+can talk to the whole fleet through one endpoint. You declare a fleet once, and every node stays a full
+Hermes agent.
 
 ```
-                         Talaria UI  +  hermes-workspace
-              gateway plane │            │ dashboard plane
-                            ▼            ▼
-        ┌──────────────────────────┐  ┌──────────────────────────────┐
-        │ GATEWAY PLANE  :8642      │  │ DASHBOARD PLANE  :9119        │
-        │ fleet multiplexer         │  │ management bridge             │
-        │ • /v1/models = whole fleet│  │ • serves conductor + kanban   │
-        │ • /v1/chat routed by model│  │ • proxies everything else     │
-        │   → the right agent, per- │  │   through untouched           │
-        │   agent key, SSE streamed │  │                               │
-        └──────────────┬───────────┘  └───────────────┬──────────────┘
-          per-agent     │                 register /   │
-          routing       ▼                 heartbeat /  ▼
-   ┌────────┬────────┬────────┐           report    Talaria's own Postgres/Redis
-   ▼        ▼        ▼        ▼                       (boards, tickets, teams, cost,
- agent-1  agent-2  …      agent-N                     activity, owned not proxied)
- gateway  gateway         gateway
+                     Talaria UI  (our own app)
+                           │
+                           ▼
+         ┌──────────────────────────────┐
+         │ GATEWAY PLANE  :8642          │
+         │ fleet multiplexer             │
+         │ • /v1/models = whole fleet    │
+         │ • /v1/chat routed by model    │
+         │   to the right agent, per-    │
+         │   agent key, SSE streamed     │
+         └───────────────┬──────────────┘
+           per-agent      │                     Talaria's own Postgres/Redis
+           routing        ▼                     (boards, tickets, teams, cost,
+   ┌────────┬────────┬────────┐                 activity, owned not proxied)
+   ▼        ▼        ▼        ▼                          ▲
+ agent-1  agent-2  …      agent-N ──────────────────────┘
+ gateway  gateway         gateway     register / heartbeat / report
    (each a full Hermes agent)
 ```
 
@@ -109,7 +121,7 @@ instead of proxying a running copy.
 | Path | Piece | What it does |
 |---|---|---|
 | [`ui/`](./ui) | **Talaria app** (Vite + TanStack Start) ✅ | The product: boards, tickets, teams, multiplayer, auth. Keeps state in Postgres/Redis. |
-| [`bridge/`](./bridge) | **talaria-bridge** (Node/TS) ✅ | The fleet engine. Gateway plane multiplexes the fleet, dashboard plane bridges conductor and kanban and proxies the rest. |
+| [`bridge/`](./bridge) | **talaria-bridge** (Node/TS) ✅ | The gateway plane: multiplexes the fleet (`/v1/models`, model-routed chat) so Talaria can reach every agent. (An old Phase 1 mission-control bridge lives here too, now legacy.) |
 | [`stack/fleet.json`](./stack/fleet.example.json) | **fleet manifest** | Lists your agents (model → gateway url + key). Gitignored, it holds keys. |
 | [`plugin/talaria/`](./plugin/talaria) | **Talaria Hermes plugin** ✅ | Rides on each agent: registers, heartbeats for work, reports up to `quality_review` (never `done`). |
 | [`adapter/`](./adapter) | **mission-control adapter** ✅ | Makes Hermes a first-class framework inside mission-control (lift source). |
@@ -167,7 +179,6 @@ Talaria routes traffic, it never rewrites your agents.
   read-only, and the plugin does nothing until you configure it.
 - **Human sign-off is never skipped.** Agents report up to `quality_review`. The final `done` is a
   human's call.
-- **Allowlist, not denylist.** Anything the dashboard plane doesn't recognize passes straight through.
 
 ## License and vision
 
