@@ -4,6 +4,7 @@
 // heartbeat and report via PUT /api/tasks/:id.
 import { db } from './db/pg'
 import { publishBoard } from './realtime'
+import { taskUsage, type TaskUsage } from './usage'
 import type { Effort, Priority, QualityReview, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
 
 async function taskBoardId(id: string): Promise<string | null> {
@@ -50,6 +51,7 @@ export async function getTaskFull(id: string): Promise<{
   reviews: QualityReview[]
   blockedBy: TaskLink[]
   blocks: TaskLink[]
+  usage: TaskUsage
 } | null> {
   const task = await getTask(id)
   if (!task) return null
@@ -62,6 +64,7 @@ export async function getTaskFull(id: string): Promise<{
     reviews: await listReviews(id),
     blockedBy,
     blocks,
+    usage: await taskUsage(id),
   }
 }
 

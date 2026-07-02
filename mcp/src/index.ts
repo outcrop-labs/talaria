@@ -162,6 +162,22 @@ server.registerTool(
 )
 
 server.registerTool(
+  'log_usage',
+  {
+    description:
+      "Report the LLM tokens you burned working a ticket. Feeds the ticket's cost rollup and the fleet ledger.",
+    inputSchema: {
+      taskId: z.string(),
+      promptTokens: z.number().int().min(0).describe('Prompt/input tokens used'),
+      completionTokens: z.number().int().min(0).describe('Completion/output tokens used'),
+      tier: z.string().optional().describe('Model tier the work ran on (alias name), if not your main model'),
+      estimated: z.boolean().optional().describe('True when the counts are estimates'),
+    },
+  },
+  async ({ taskId, ...body }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/usage`, body)),
+)
+
+server.registerTool(
   'add_dependency',
   {
     description: 'Mark a ticket as blocked by another ticket on the same board.',

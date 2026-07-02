@@ -63,6 +63,7 @@ import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as AppBoardsBoardIdRouteImport } from './routes/_app/boards/$boardId'
 import { Route as ApiTeamsIdMembersRouteImport } from './routes/api/teams.$id.members'
 import { Route as ApiTasksIdWatchersRouteImport } from './routes/api/tasks.$id.watchers'
+import { Route as ApiTasksIdUsageRouteImport } from './routes/api/tasks.$id.usage'
 import { Route as ApiTasksIdReviewRouteImport } from './routes/api/tasks.$id.review'
 import { Route as ApiTasksIdDependenciesRouteImport } from './routes/api/tasks.$id.dependencies'
 import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.comments'
@@ -354,6 +355,11 @@ const ApiTasksIdWatchersRoute = ApiTasksIdWatchersRouteImport.update({
   path: '/watchers',
   getParentRoute: () => ApiTasksIdRoute,
 } as any)
+const ApiTasksIdUsageRoute = ApiTasksIdUsageRouteImport.update({
+  id: '/usage',
+  path: '/usage',
+  getParentRoute: () => ApiTasksIdRoute,
+} as any)
 const ApiTasksIdReviewRoute = ApiTasksIdReviewRouteImport.update({
   id: '/review',
   path: '/review',
@@ -529,6 +535,7 @@ export interface FileRoutesByFullPath {
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
+  '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
@@ -605,6 +612,7 @@ export interface FileRoutesByTo {
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
+  '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
@@ -683,6 +691,7 @@ export interface FileRoutesById {
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
+  '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
@@ -761,6 +770,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
     | '/api/tasks/$id/review'
+    | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
     | '/api/fleet/agents/$id/control'
@@ -837,6 +847,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
     | '/api/tasks/$id/review'
+    | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
     | '/api/fleet/agents/$id/control'
@@ -914,6 +925,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
     | '/api/tasks/$id/review'
+    | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
     | '/api/fleet/agents/$id/control'
@@ -1332,6 +1344,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTasksIdWatchersRouteImport
       parentRoute: typeof ApiTasksIdRoute
     }
+    '/api/tasks/$id/usage': {
+      id: '/api/tasks/$id/usage'
+      path: '/usage'
+      fullPath: '/api/tasks/$id/usage'
+      preLoaderRoute: typeof ApiTasksIdUsageRouteImport
+      parentRoute: typeof ApiTasksIdRoute
+    }
     '/api/tasks/$id/review': {
       id: '/api/tasks/$id/review'
       path: '/review'
@@ -1720,6 +1739,7 @@ interface ApiTasksIdRouteChildren {
   ApiTasksIdCommentsRoute: typeof ApiTasksIdCommentsRoute
   ApiTasksIdDependenciesRoute: typeof ApiTasksIdDependenciesRoute
   ApiTasksIdReviewRoute: typeof ApiTasksIdReviewRoute
+  ApiTasksIdUsageRoute: typeof ApiTasksIdUsageRoute
   ApiTasksIdWatchersRoute: typeof ApiTasksIdWatchersRoute
 }
 
@@ -1727,6 +1747,7 @@ const ApiTasksIdRouteChildren: ApiTasksIdRouteChildren = {
   ApiTasksIdCommentsRoute: ApiTasksIdCommentsRoute,
   ApiTasksIdDependenciesRoute: ApiTasksIdDependenciesRoute,
   ApiTasksIdReviewRoute: ApiTasksIdReviewRoute,
+  ApiTasksIdUsageRoute: ApiTasksIdUsageRoute,
   ApiTasksIdWatchersRoute: ApiTasksIdWatchersRoute,
 }
 

@@ -119,6 +119,14 @@ export function useBoardMembers(boardId: string | null) {
   })
 }
 
+export interface TaskUsage {
+  promptTokens: number
+  completionTokens: number
+  cost: number
+  unpricedTokens: number
+  perModel: Array<{ llmModel: string | null; tokens: number; cost: number | null }>
+}
+
 export interface TaskFull {
   task: Task
   comments: TaskComment[]
@@ -127,6 +135,7 @@ export interface TaskFull {
   reviews: import('@/lib/task-const').QualityReview[]
   blockedBy: TaskLink[]
   blocks: TaskLink[]
+  usage: TaskUsage
 }
 
 export function useTask(taskId: string | null) {

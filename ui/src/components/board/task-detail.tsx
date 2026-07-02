@@ -12,6 +12,7 @@ import { Combobox } from '@/components/ui/combobox'
 import { LabelPicker } from '@/components/board/label-picker'
 import { Markdown } from '@/components/ui/markdown'
 import { useAgents } from '@/lib/agents'
+import { formatCost, formatTokens } from '@/lib/cost'
 import { useSession } from '@/lib/session'
 import {
   addComment,
@@ -267,6 +268,24 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     <div className="flex h-9 items-center text-sm text-fg">{formatDuration(t.timeSpentSeconds)}</div>
                   </Prop>
                 </div>
+                {/* Agent-reported token spend (MCP log_usage) — priced like the ledger. */}
+                {data!.usage.promptTokens + data!.usage.completionTokens > 0 && (
+                  <Prop label="Tokens">
+                    <div className="space-y-1 text-sm text-fg">
+                      <div>
+                        {formatTokens(data!.usage.promptTokens + data!.usage.completionTokens)}
+                        {data!.usage.cost > 0 && <span className="text-muted"> · {formatCost(data!.usage.cost)}</span>}
+                        {data!.usage.unpricedTokens > 0 && <span className="text-muted"> · partly unpriced</span>}
+                      </div>
+                      {data!.usage.perModel.map((m) => (
+                        <div key={m.llmModel ?? '?'} className="truncate text-xs text-muted">
+                          {m.llmModel ?? 'unattributed'} · {formatTokens(m.tokens)}
+                          {m.cost !== null && m.cost > 0 && ` · ${formatCost(m.cost)}`}
+                        </div>
+                      ))}
+                    </div>
+                  </Prop>
+                )}
                 <Prop label="Due date">
                   <Input type="date" value={t.dueDate ? t.dueDate.slice(0, 10) : ''} disabled={!canEdit}
                     onChange={(e) => save({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}

@@ -6,8 +6,10 @@ import { db } from './db/pg'
 
 export interface UsageInput {
   agentModel: string
-  source: 'chat' | 'channel'
+  source: 'chat' | 'channel' | 'ticket'
   refId?: string | null
+  /** Ticket this spend belongs to (agent-reported via MCP log_usage). */
+  taskId?: string | null
   /** Alias tier the request was routed to (null = the agent's main model). */
   tier?: string | null
   promptTokens: number
@@ -58,8 +60,8 @@ export async function recordUsage(u: UsageInput): Promise<void> {
   const sql = await db()
   const cls = await classifyAgent(u.agentModel, u.tier ?? null).catch(() => null)
   await sql`
-    insert into usage_events (agent_model, source, ref_id, prompt_tokens, completion_tokens, estimated, endpoint_class, llm_model, endpoint)
-    values (${u.agentModel}, ${u.source}, ${u.refId ?? null},
+    insert into usage_events (agent_model, source, ref_id, task_id, prompt_tokens, completion_tokens, estimated, endpoint_class, llm_model, endpoint)
+    values (${u.agentModel}, ${u.source}, ${u.refId ?? null}, ${u.taskId ?? null},
             ${Math.max(0, Math.round(u.promptTokens))}, ${Math.max(0, Math.round(u.completionTokens))},
             ${u.estimated}, ${cls?.endpointClass ?? null}, ${cls?.llmModel ?? null}, ${cls?.endpoint ?? null})
   `
@@ -115,6 +117,50 @@ const PRICED = `
   from usage_events u
   left join llm_endpoints e on e.name = u.endpoint
 `
+
+export interface TaskUsage {
+  promptTokens: number
+  completionTokens: number
+  cost: number
+  /** Cloud tokens with no configured rate (cost understated when > 0). */
+  unpricedTokens: number
+  perModel: Array<{ llmModel: string | null; tokens: number; cost: number | null }>
+}
+
+/** Token spend reported against one ticket (agents via MCP log_usage). */
+export async function taskUsage(taskId: string): Promise<TaskUsage> {
+  const sql = await db()
+  const [totals] = await sql.unsafe(
+    `with priced as (${PRICED})
+     select coalesce(sum(prompt_tokens),0)::int as prompt,
+            coalesce(sum(completion_tokens),0)::int as completion,
+            coalesce(sum(cost),0)::float as cost,
+            coalesce(sum(prompt_tokens + completion_tokens) filter (where endpoint_class = 'cloud' and cost is null), 0)::bigint as unpriced
+     from priced where task_id = $1`,
+    [taskId],
+  )
+  const perModel = await sql.unsafe(
+    `with priced as (${PRICED})
+     select llm_model as "llmModel",
+            coalesce(sum(prompt_tokens + completion_tokens),0)::bigint as tokens,
+            sum(cost)::float as cost
+     from priced where task_id = $1
+     group by llm_model order by tokens desc`,
+    [taskId],
+  )
+  const t = totals as unknown as { prompt: number; completion: number; cost: number; unpriced: string | number }
+  return {
+    promptTokens: t.prompt,
+    completionTokens: t.completion,
+    cost: Number(t.cost),
+    unpricedTokens: Number(t.unpriced),
+    perModel: (perModel as unknown as TaskUsage['perModel']).map((m) => ({
+      ...m,
+      tokens: Number(m.tokens),
+      cost: m.cost === null ? null : Number(m.cost),
+    })),
+  }
+}
 
 export async function costOverview(): Promise<CostOverview> {
   const sql = await db()
