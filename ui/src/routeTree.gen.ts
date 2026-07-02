@@ -22,7 +22,9 @@ import { Route as ApiConversationsRouteImport } from './routes/api/conversations
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiChannelsRouteImport } from './routes/api/channels'
 import { Route as ApiBoardsRouteImport } from './routes/api/boards'
+import { Route as ApiAlertsRouteImport } from './routes/api/alerts'
 import { Route as ApiAgentsRouteImport } from './routes/api/agents'
+import { Route as ApiActivityRouteImport } from './routes/api/activity'
 import { Route as AppSkillsRouteImport } from './routes/_app/skills'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppModelsRouteImport } from './routes/_app/models'
@@ -141,9 +143,19 @@ const ApiBoardsRoute = ApiBoardsRouteImport.update({
   path: '/api/boards',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAlertsRoute = ApiAlertsRouteImport.update({
+  id: '/api/alerts',
+  path: '/api/alerts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAgentsRoute = ApiAgentsRouteImport.update({
   id: '/api/agents',
   path: '/api/agents',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiActivityRoute = ApiActivityRouteImport.update({
+  id: '/api/activity',
+  path: '/api/activity',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppSkillsRoute = AppSkillsRouteImport.update({
@@ -430,7 +442,9 @@ export interface FileRoutesByFullPath {
   '/models': typeof AppModelsRoute
   '/settings': typeof AppSettingsRoute
   '/skills': typeof AppSkillsRoute
+  '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
+  '/api/alerts': typeof ApiAlertsRoute
   '/api/boards': typeof ApiBoardsRouteWithChildren
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
@@ -497,7 +511,9 @@ export interface FileRoutesByTo {
   '/models': typeof AppModelsRoute
   '/settings': typeof AppSettingsRoute
   '/skills': typeof AppSkillsRoute
+  '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
+  '/api/alerts': typeof ApiAlertsRoute
   '/api/boards': typeof ApiBoardsRouteWithChildren
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
@@ -567,7 +583,9 @@ export interface FileRoutesById {
   '/_app/models': typeof AppModelsRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/skills': typeof AppSkillsRoute
+  '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
+  '/api/alerts': typeof ApiAlertsRoute
   '/api/boards': typeof ApiBoardsRouteWithChildren
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
@@ -638,7 +656,9 @@ export interface FileRouteTypes {
     | '/models'
     | '/settings'
     | '/skills'
+    | '/api/activity'
     | '/api/agents'
+    | '/api/alerts'
     | '/api/boards'
     | '/api/channels'
     | '/api/chat'
@@ -705,7 +725,9 @@ export interface FileRouteTypes {
     | '/models'
     | '/settings'
     | '/skills'
+    | '/api/activity'
     | '/api/agents'
+    | '/api/alerts'
     | '/api/boards'
     | '/api/channels'
     | '/api/chat'
@@ -774,7 +796,9 @@ export interface FileRouteTypes {
     | '/_app/models'
     | '/_app/settings'
     | '/_app/skills'
+    | '/api/activity'
     | '/api/agents'
+    | '/api/alerts'
     | '/api/boards'
     | '/api/channels'
     | '/api/chat'
@@ -830,7 +854,9 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRoute
+  ApiActivityRoute: typeof ApiActivityRoute
   ApiAgentsRoute: typeof ApiAgentsRouteWithChildren
+  ApiAlertsRoute: typeof ApiAlertsRoute
   ApiBoardsRoute: typeof ApiBoardsRouteWithChildren
   ApiChannelsRoute: typeof ApiChannelsRouteWithChildren
   ApiChatRoute: typeof ApiChatRoute
@@ -943,11 +969,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBoardsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/alerts': {
+      id: '/api/alerts'
+      path: '/api/alerts'
+      fullPath: '/api/alerts'
+      preLoaderRoute: typeof ApiAlertsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/agents': {
       id: '/api/agents'
       path: '/api/agents'
       fullPath: '/api/agents'
       preLoaderRoute: typeof ApiAgentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/activity': {
+      id: '/api/activity'
+      path: '/api/activity'
+      fullPath: '/api/activity'
+      preLoaderRoute: typeof ApiActivityRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/skills': {
@@ -1565,7 +1605,9 @@ const ApiTasksIdRouteWithChildren = ApiTasksIdRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
+  ApiActivityRoute: ApiActivityRoute,
   ApiAgentsRoute: ApiAgentsRouteWithChildren,
+  ApiAlertsRoute: ApiAlertsRoute,
   ApiBoardsRoute: ApiBoardsRouteWithChildren,
   ApiChannelsRoute: ApiChannelsRouteWithChildren,
   ApiChatRoute: ApiChatRoute,
