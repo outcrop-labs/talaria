@@ -1,0 +1,47 @@
+import { createFileRoute } from '@tanstack/react-router'
+import { json } from '@tanstack/react-start'
+import { z } from 'zod'
+import { getSessionUser } from '@/server/auth/session'
+import { createAgent } from '@/server/fleet-create'
+import { fleetUp, waitHealthy } from '@/server/fleet-docker'
+import { renderFleet } from '@/server/fleet-render'
+
+const Body = z.object({
+  slug: z.string().min(2).max(30),
+  department: z.string().min(2).max(40),
+  displayName: z.string().min(1).max(60),
+  templateId: z.string().uuid(),
+  start: z.boolean().optional(),
+})
+
+// POST → create a new agent from a template (an existing agent's definition):
+// fresh gateway key, re-stamped config, starter soul, v1. Optionally render +
+// start it immediately. Admin.
+export const Route = createFileRoute('/api/fleet/create')({
+  server: {
+    handlers: {
+      POST: async ({ request }) => {
+        const user = await getSessionUser(request)
+        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const parsed = Body.safeParse(await request.json().catch(() => null))
+        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        try {
+          const { def, keyCreated } = await createAgent({
+            ...parsed.data,
+            createdBy: user.email ?? user.name ?? 'admin',
+          })
+          const render = await renderFleet()
+          let healthy: boolean | undefined
+          if (parsed.data.start) {
+            await fleetUp(def.department)
+            healthy = await waitHealthy(def.department)
+          }
+          return json({ ok: true, def, keyCreated, healthy, warnings: render.warnings })
+        } catch (e) {
+          return json({ error: (e as Error).message }, { status: 400 })
+        }
+      },
+    },
+  },
+})

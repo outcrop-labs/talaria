@@ -33,6 +33,7 @@ export interface AgentDef {
   displayName: string
   enabled: boolean
   managed: boolean
+  source: 'imported' | 'created'
   currentVersion: number
   latest: AgentVersion | null
 }
@@ -114,7 +115,23 @@ export async function saveAgentEdit(
   return (await r.json().catch(() => ({ error: `save failed (${r.status})` }))) as { error?: string }
 }
 
-export type FleetAction = 'migrate' | 'up' | 'stop' | 'legacy-start' | 'legacy-stop'
+export type FleetAction = 'migrate' | 'up' | 'stop' | 'legacy-start' | 'legacy-stop' | 'retire'
+
+export async function createFleetAgent(input: {
+  slug: string
+  department: string
+  displayName: string
+  templateId: string
+  start?: boolean
+}): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {
+  const r = await fetch('/api/fleet/create', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return (await r.json().catch(() => ({ error: `create failed (${r.status})` }))) as { error?: string }
+}
 
 export async function controlAgent(id: string, action: FleetAction): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {
   const r = await fetch(`/api/fleet/agents/${id}/control`, {

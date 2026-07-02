@@ -42,7 +42,7 @@ interface RenderTarget {
 async function managedAgents(): Promise<RenderTarget[]> {
   const sql = await db()
   const rows = (await sql`
-    select d.id, d.slug, d.department, d.model, d.display_name as "displayName", d.enabled, d.managed,
+    select d.id, d.slug, d.department, d.model, d.display_name as "displayName", d.enabled, d.managed, d.source,
            d.current_version as "currentVersion", d.created_at as "createdAt", d.updated_at as "updatedAt",
            v.id as vid, v.version, v.soul, v.config, v.note, v.created_by as "createdBy", v.created_at as vcreated
     from agent_defs d
@@ -96,11 +96,18 @@ export async function renderFleet(): Promise<RenderResult> {
   }) as { services?: Record<string, ComposeService> }
 
   const services: Record<string, ComposeService> = {}
-  const volumes: Record<string, { external: true; name: string }> = {}
+  const volumes: Record<string, { external: true; name: string } | Record<string, never>> = {}
+
+  // Chassis for created agents: any standard agent service block from the
+  // source stack (env/anatomy shared via its anchor), re-stamped per agent.
+  const chassisName =
+    process.env.TALARIA_CHASSIS_SERVICE ??
+    (sourceCompose.services?.['agent-support'] ? 'agent-support' : Object.keys(sourceCompose.services ?? {}).find((s) => s.startsWith('agent-')))
 
   for (const { def, version } of targets) {
     const agentDir = join(FLEET_DIR(), 'agents', def.slug)
     await mkdir(agentDir, { recursive: true })
+    await mkdir(join(agentDir, 'skills'), { recursive: true })
 
     const raw = (version.config as { raw?: unknown }).raw
     await writeFile(
@@ -114,17 +121,37 @@ export async function renderFleet(): Promise<RenderResult> {
     result.files.push(join(agentDir, 'config.yaml'), join(agentDir, 'SOUL.md'))
 
     const serviceName = `agent-${def.department}`
-    const source = sourceCompose.services?.[serviceName]
+    const created = (def as AgentDef & { source?: string }).source === 'created'
+    const source = sourceCompose.services?.[created ? (chassisName ?? '') : serviceName]
     if (!source) {
-      result.warnings.push(`${def.slug}: no source service ${serviceName} in the stack compose — skipped`)
+      result.warnings.push(`${def.slug}: no ${created ? 'chassis' : `source service ${serviceName}`} in the stack compose — skipped`)
       continue
     }
     const svc: ComposeService = JSON.parse(JSON.stringify(source)) as ComposeService
     delete svc.build // images are prebuilt; Talaria doesn't rebuild
     delete svc.depends_on // deps (redis, mcp servers) run in the legacy project
     delete svc.ports // the bridge reaches agents over the network; host ports retire
+
+    if (created) {
+      // Re-stamp the chassis identity for a brand-new agent.
+      const env = (svc.environment ?? {}) as Record<string, unknown>
+      env.API_SERVER_KEY = `\${HERMES_KEY_${def.slug.toUpperCase()}}`
+      env.API_SERVER_MODEL_NAME = def.model
+      env.MM_BOT_TOKEN = `\${MM_TOKEN_${def.slug.toUpperCase()}:-}`
+      svc.environment = env
+    }
+
     if (Array.isArray(svc.volumes)) {
       svc.volumes = svc.volumes.map((v) => {
+        const [, dest] = String(v).split(':')
+        if (created && dest === '/opt/data') {
+          // Fresh state volume in the talaria-fleet project (compose creates it).
+          volumes[`hermes-${def.department}`] = {}
+          return `hermes-${def.department}:/opt/data`
+        }
+        if (created && dest === '/opt/dept-skills') {
+          return `${join(agentDir, 'skills')}:/opt/dept-skills:ro`
+        }
         const { entry, namedVolume } = rewriteMount(String(v), agentDir)
         if (namedVolume) volumes[namedVolume] = { external: true, name: `${SOURCE_COMPOSE_PROJECT}_${namedVolume}` }
         return entry

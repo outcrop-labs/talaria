@@ -9,6 +9,7 @@ import { Markdown } from '@/components/ui/markdown'
 import { useFleet, relativeTime, STATUS_COLOR } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
 import { AgentEditorModal } from '@/components/fleet/agent-editor'
+import { CreateAgentModal } from '@/components/fleet/create-agent-modal'
 import {
   controlAgent,
   importFleet,
@@ -108,6 +109,7 @@ function DefinitionsPanel() {
   const byDept = new Map(containers.map((c) => [c.department, c]))
   const [busy, setBusy] = useState(false)
   const [summary, setSummary] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
 
   const runImport = async () => {
     setBusy(true)
@@ -135,10 +137,20 @@ function DefinitionsPanel() {
             Talaria-owned agent configs — soul, model tiers, escalations — versioned per agent.
           </p>
         </div>
-        <Button variant="outline" size="sm" className="ml-auto shrink-0" onClick={() => void runImport()} disabled={busy}>
-          {busy ? 'Importing…' : defs.length ? 'Re-import from stack' : 'Import from stack'}
-        </Button>
+        <div className="ml-auto flex shrink-0 gap-2">
+          {defs.length > 0 && (
+            <Button size="sm" onClick={() => setCreating(true)}>
+              New agent
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={() => void runImport()} disabled={busy}>
+            {busy ? 'Importing…' : defs.length ? 'Re-import from stack' : 'Import from stack'}
+          </Button>
+        </div>
       </div>
+      {creating && (
+        <CreateAgentModal open={creating} onClose={() => setCreating(false)} templates={defs.filter((d) => d.enabled)} />
+      )}
       {summary && <div className="mb-3 text-xs text-muted">{summary}</div>}
 
       {defs.length === 0 ? (
@@ -218,21 +230,38 @@ function DefRow({
               </span>
             </span>
             <span className="ml-auto shrink-0 text-xs text-muted">v{d.currentVersion}</span>
-            <Button variant="ghost" size="sm" className="shrink-0" onClick={() => setEditing(true)}>
-              Edit
-            </Button>
-            {pending ? (
+            {!d.enabled ? (
+              <span className="shrink-0 text-xs text-muted">retired</span>
+            ) : (
+              <Button variant="ghost" size="sm" className="shrink-0" onClick={() => setEditing(true)}>
+                Edit
+              </Button>
+            )}
+            {!d.enabled ? null : pending ? (
               <span className="shrink-0 text-xs text-muted">{pending}…</span>
             ) : d.managed ? (
-              running ? (
-                <Button variant="outline" size="sm" className="shrink-0" onClick={() => void act('stop', 'stopping')}>
-                  Stop
+              <>
+                {running ? (
+                  <Button variant="outline" size="sm" className="shrink-0" onClick={() => void act('stop', 'stopping')}>
+                    Stop
+                  </Button>
+                ) : (
+                  <Button size="sm" className="shrink-0" onClick={() => void act('up', 'starting')}>
+                    Start
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => {
+                    if (confirm(`Retire ${d.displayName}? The container is removed and it leaves the fleet; its state volume and version history stay.`))
+                      void act('retire', 'retiring')
+                  }}
+                >
+                  Retire
                 </Button>
-              ) : (
-                <Button size="sm" className="shrink-0" onClick={() => void act('up', 'starting')}>
-                  Start
-                </Button>
-              )
+              </>
             ) : (
               <>
                 {live.state &&

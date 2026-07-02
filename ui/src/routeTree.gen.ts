@@ -40,6 +40,7 @@ import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
 import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
 import { Route as ApiFleetDefsRouteImport } from './routes/api/fleet.defs'
+import { Route as ApiFleetCreateRouteImport } from './routes/api/fleet.create'
 import { Route as ApiFleetContainersRouteImport } from './routes/api/fleet.containers'
 import { Route as ApiConversationsIdRouteImport } from './routes/api/conversations.$id'
 import { Route as ApiChannelsIdRouteImport } from './routes/api/channels.$id'
@@ -224,6 +225,11 @@ const ApiFleetRenderRoute = ApiFleetRenderRouteImport.update({
 const ApiFleetDefsRoute = ApiFleetDefsRouteImport.update({
   id: '/defs',
   path: '/defs',
+  getParentRoute: () => ApiFleetRoute,
+} as any)
+const ApiFleetCreateRoute = ApiFleetCreateRouteImport.update({
+  id: '/create',
+  path: '/create',
   getParentRoute: () => ApiFleetRoute,
 } as any)
 const ApiFleetContainersRoute = ApiFleetContainersRouteImport.update({
@@ -421,6 +427,7 @@ export interface FileRoutesByFullPath {
   '/api/channels/$id': typeof ApiChannelsIdRouteWithChildren
   '/api/conversations/$id': typeof ApiConversationsIdRoute
   '/api/fleet/containers': typeof ApiFleetContainersRoute
+  '/api/fleet/create': typeof ApiFleetCreateRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
@@ -484,6 +491,7 @@ export interface FileRoutesByTo {
   '/api/channels/$id': typeof ApiChannelsIdRouteWithChildren
   '/api/conversations/$id': typeof ApiConversationsIdRoute
   '/api/fleet/containers': typeof ApiFleetContainersRoute
+  '/api/fleet/create': typeof ApiFleetCreateRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
@@ -549,6 +557,7 @@ export interface FileRoutesById {
   '/api/channels/$id': typeof ApiChannelsIdRouteWithChildren
   '/api/conversations/$id': typeof ApiConversationsIdRoute
   '/api/fleet/containers': typeof ApiFleetContainersRoute
+  '/api/fleet/create': typeof ApiFleetCreateRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
@@ -614,6 +623,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id'
     | '/api/conversations/$id'
     | '/api/fleet/containers'
+    | '/api/fleet/create'
     | '/api/fleet/defs'
     | '/api/fleet/render'
     | '/api/tasks/$id'
@@ -677,6 +687,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id'
     | '/api/conversations/$id'
     | '/api/fleet/containers'
+    | '/api/fleet/create'
     | '/api/fleet/defs'
     | '/api/fleet/render'
     | '/api/tasks/$id'
@@ -741,6 +752,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id'
     | '/api/conversations/$id'
     | '/api/fleet/containers'
+    | '/api/fleet/create'
     | '/api/fleet/defs'
     | '/api/fleet/render'
     | '/api/tasks/$id'
@@ -1006,6 +1018,13 @@ declare module '@tanstack/react-router' {
       path: '/defs'
       fullPath: '/api/fleet/defs'
       preLoaderRoute: typeof ApiFleetDefsRouteImport
+      parentRoute: typeof ApiFleetRoute
+    }
+    '/api/fleet/create': {
+      id: '/api/fleet/create'
+      path: '/create'
+      fullPath: '/api/fleet/create'
+      preLoaderRoute: typeof ApiFleetCreateRouteImport
       parentRoute: typeof ApiFleetRoute
     }
     '/api/fleet/containers': {
@@ -1380,6 +1399,7 @@ const ApiFleetDefsRouteWithChildren = ApiFleetDefsRoute._addFileChildren(
 
 interface ApiFleetRouteChildren {
   ApiFleetContainersRoute: typeof ApiFleetContainersRoute
+  ApiFleetCreateRoute: typeof ApiFleetCreateRoute
   ApiFleetDefsRoute: typeof ApiFleetDefsRouteWithChildren
   ApiFleetRenderRoute: typeof ApiFleetRenderRoute
   ApiFleetAgentsIdControlRoute: typeof ApiFleetAgentsIdControlRoute
@@ -1387,6 +1407,7 @@ interface ApiFleetRouteChildren {
 
 const ApiFleetRouteChildren: ApiFleetRouteChildren = {
   ApiFleetContainersRoute: ApiFleetContainersRoute,
+  ApiFleetCreateRoute: ApiFleetCreateRoute,
   ApiFleetDefsRoute: ApiFleetDefsRouteWithChildren,
   ApiFleetRenderRoute: ApiFleetRenderRoute,
   ApiFleetAgentsIdControlRoute: ApiFleetAgentsIdControlRoute,

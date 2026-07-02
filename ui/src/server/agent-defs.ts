@@ -24,6 +24,8 @@ export interface AgentDef {
   displayName: string
   enabled: boolean
   managed: boolean
+  /** 'imported' reuses the legacy stack's volumes/chassis; 'created' is fresh. */
+  source: 'imported' | 'created'
   currentVersion: number
   createdAt: string
   updatedAt: string
@@ -105,7 +107,7 @@ export async function updateEndpoint(
 export async function listAgentDefs(): Promise<Array<AgentDef & { latest: AgentVersion | null }>> {
   const sql = await db()
   const defs = (await sql`
-    select id, slug, department, model, display_name as "displayName", enabled, managed,
+    select id, slug, department, model, display_name as "displayName", enabled, managed, source,
            current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
     from agent_defs order by slug asc
   `) as unknown as AgentDef[]
@@ -129,7 +131,7 @@ export async function listVersions(agentId: string): Promise<AgentVersion[]> {
 export async function getAgentDef(id: string): Promise<AgentDef | null> {
   const sql = await db()
   const rows = await sql`
-    select id, slug, department, model, display_name as "displayName", enabled, managed,
+    select id, slug, department, model, display_name as "displayName", enabled, managed, source,
            current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
     from agent_defs where id = ${id}
   `
@@ -140,16 +142,17 @@ export async function upsertAgentDef(input: {
   slug: string
   department: string
   displayName: string
+  source?: 'imported' | 'created'
 }): Promise<AgentDef> {
   const sql = await db()
   const model = `${input.slug}-${input.department}`
   const rows = await sql`
-    insert into agent_defs (slug, department, model, display_name)
-    values (${input.slug}, ${input.department}, ${model}, ${input.displayName})
+    insert into agent_defs (slug, department, model, display_name, source)
+    values (${input.slug}, ${input.department}, ${model}, ${input.displayName}, ${input.source ?? 'imported'})
     on conflict (slug) do update set
       department = excluded.department, model = excluded.model,
       display_name = excluded.display_name, updated_at = now()
-    returning id, slug, department, model, display_name as "displayName", enabled, managed,
+    returning id, slug, department, model, display_name as "displayName", enabled, managed, source,
               current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
   `
   return rows[0] as unknown as AgentDef

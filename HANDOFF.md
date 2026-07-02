@@ -127,13 +127,26 @@ Full project-management suite, all live in `ui/`:
   agent's current MAIN endpoint (60s cache in `usage.ts`); `/cost` shows the
   local/cloud share bar, stacked daily strip, per-agent "% local".
 
+- **Agent harness (phase C2)** - create/retire from the UI. `fleet-create.ts`:
+  template = any existing agent's latest version; `restampSlug` rewrites every
+  identity string (X-Agent-Name headers, hook args) to the new slug; fresh
+  `HERMES_KEY_<SLUG>` appended to the stack `.env`; starter soul. Renderer
+  handles `source='created'` defs via a chassis (default `agent-support`
+  service block, env `TALARIA_CHASSIS_SERVICE`) with fresh non-external state
+  volume + fleet-local dept-skills dir. `retire` action: disable + remove
+  container + re-render (bridge drops it live). Verified full loop with a test
+  agent (created "remy", answered via gateway, retired; def row remains as
+  `retired` with history — re-enable is SQL-only for now).
+
 ## Next up (in order)
 
-1. **Harness phase C2**: templates (role-ready base agents), create/destroy
-   agents from the UI (allocate HERMES_KEY_*, seed volumes), migrate the
-   remaining 7 legacy agents as each checks out. Per-alias tier routing +
-   attribution (Talaria requesting `<base>-<alias>` models).
-2. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
+1. **Models tab** (user-requested): System-area page to add/remove common
+   providers (Anthropic, OpenRouter, DeepSeek, OpenAI, local vLLM/Ollama) and
+   custom endpoints + per-provider model catalogs; replace the agent editor's
+   clunky selects with a nicer grouped picker.
+2. Migrate the remaining 7 legacy agents (one click each on /agents); per-alias
+   tier routing + attribution (Talaria requesting `<base>-<alias>` models).
+3. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
    inference.
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
    ticket), tracked follow-up to the auto-accumulated time-spent field.
