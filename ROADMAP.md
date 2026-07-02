@@ -31,14 +31,16 @@ The project management suite, the fleet engine, and auth are live and running:
   stateless HMAC sessions, and a login screen that renders only what's enabled.
 - **Guardrails** ✅. Agents can create and triage work, but they can't assign it to themselves or mark
   their own work done. Assigned and done stay a human's call; agents report up to `quality_review`.
+- **Agent MCP (`talaria-mcp`)** ✅. An MCP server ([`mcp/`](./mcp)) exposing only the safe tools — list,
+  read, create (into inbox), triage, comment, report outcome, log time, link dependencies. No assign tool,
+  no complete tool: the guardrails hold at the protocol layer, and each agent only sees boards whose
+  policy allows it.
 
 ## Next / planned
 
 Roughly in the order we're chasing it. Full detail in
 [`docs/PHASE2-UI-PLAN.md`](./docs/PHASE2-UI-PLAN.md).
 
-- **Agent MCP (`talaria-mcp`)** 🚧. Expose only the safe create/triage tools to agents over MCP, so the
-  guardrails hold at the protocol layer. This is the immediate next thing.
 - **Group chat** 🔭. Multi-agent and human channels, Slack-style, except your agents are real members.
 - **Plan chat** 🔭. Humans and agents plan together, then turn the conversation into realistic tickets
   (missions) and drop them onto any connected kanban.

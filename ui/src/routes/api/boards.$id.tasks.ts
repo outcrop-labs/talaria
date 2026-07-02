@@ -2,24 +2,46 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
 import { createTask, listBoardTasks, EFFORTS, PRIORITIES } from '@/server/tasks'
 
-// GET → the board's tasks (any member). POST → create a card (owner/editor).
+/** Resolves who's calling: a board-allowed agent (by key + name), an editing
+ *  user, or nobody. Agents must pass the board's agent policy. */
+async function taskActor(
+  request: Request,
+  boardId: string,
+  requireEdit: boolean,
+): Promise<{ actor: string; agent: boolean } | Response> {
+  if (checkAgentKey(request)) {
+    const agent = agentName(request)
+    if (!agent) return json({ error: 'x-agent-name required' }, { status: 400 })
+    if (!(await boardAllowsAgent(boardId, agent))) {
+      return json({ error: `agent "${agent}" is not allowed on this board` }, { status: 403 })
+    }
+    return { actor: agent, agent: true }
+  }
+  const user = await getSessionUser(request)
+  if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+  const role = await boardRole(user.id, boardId)
+  if (requireEdit ? !canEdit(role) : !role) return json({ error: 'forbidden' }, { status: 403 })
+  return { actor: user.email ?? user.name ?? 'user', agent: false }
+}
+
+// GET → the board's tasks (any member, or a board-allowed agent).
+// POST → create a card (owner/editor, or a board-allowed agent → inbox).
 export const Route = createFileRoute('/api/boards/$id/tasks')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        const includeArchived = new URL(request.url).searchParams.get('archived') === '1'
+        const who = await taskActor(request, params.id, false)
+        if (who instanceof Response) return who
+        const includeArchived = !who.agent && new URL(request.url).searchParams.get('archived') === '1'
         return json({ tasks: await listBoardTasks(params.id, includeArchived) })
       },
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
+        const who = await taskActor(request, params.id, true)
+        if (who instanceof Response) return who
         const parsed = z
           .object({
             title: z.string().min(1).max(300),
@@ -31,6 +53,10 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
           })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        // Guardrail: agents create into inbox only — assignment stays a human call.
+        if (who.agent && parsed.data.assignees?.length) {
+          return json({ error: 'agents cannot assign tickets' }, { status: 403 })
+        }
         for (const a of parsed.data.assignees ?? []) {
           if (!(await boardAllowsAgent(params.id, a))) {
             return json({ error: `agent "${a}" is not allowed on this board` }, { status: 400 })
@@ -44,7 +70,7 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
           effort: parsed.data.effort ?? null,
           assignees: parsed.data.assignees ?? [],
           dueDate: parsed.data.dueDate ?? null,
-          createdBy: user.email ?? user.name ?? 'user',
+          createdBy: who.actor,
         })
         return json({ task })
       },

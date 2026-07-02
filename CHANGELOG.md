@@ -33,6 +33,17 @@ not proxied from mission-control.
 - **Agent guardrails**, on `PUT /api/tasks/:id`, agents may triage but cannot
   self-assign (`assigned` → 403) or self-complete (`done` → `quality_review`), and
   cannot change assignees.
+- **Agent MCP (`talaria-mcp`)** ([`mcp/`](./mcp)), an MCP server exposing only the
+  safe tools (`list_boards`, `list_tickets`, `get_ticket`, `create_ticket`,
+  `triage_ticket`, `comment`, `report_outcome`, `add_time`, `add_dependency`) — no
+  assign, no complete; guardrails hold by construction. Identity via
+  `TALARIA_AGENT_KEY` + `TALARIA_AGENT_NAME`.
+- **Agent-authed task API**, the fleet key plus a new `x-agent-name` header opens
+  an agent path on boards list, board tasks (list + create → `inbox`, never
+  assigned), ticket detail, comments, and add-dependency. Every agent call is
+  checked against the board's agent policy and attributed to the named agent in
+  activity/comments. Named agents on `PUT /api/tasks/:id` are policy-checked too;
+  unnamed key callers (legacy plugin heartbeat/report) keep their old access.
 
 ### Changed
 - Sessions are Redis-backed (opaque sid → `sess:<sid>`), not HMAC cookies.
