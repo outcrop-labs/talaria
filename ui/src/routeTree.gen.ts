@@ -14,8 +14,10 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as ApiUsersRouteImport } from './routes/api/users'
 import { Route as ApiTeamsRouteImport } from './routes/api/teams'
+import { Route as ApiSkillsRouteImport } from './routes/api/skills'
 import { Route as ApiProfileRouteImport } from './routes/api/profile'
 import { Route as ApiNotificationsRouteImport } from './routes/api/notifications'
+import { Route as ApiMcpRouteImport } from './routes/api/mcp'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
 import { Route as ApiCostRouteImport } from './routes/api/cost'
 import { Route as ApiConversationsRouteImport } from './routes/api/conversations'
@@ -41,6 +43,7 @@ import { Route as AppAdminRouteImport } from './routes/_app/admin'
 import { Route as AppActivityRouteImport } from './routes/_app/activity'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
+import { Route as ApiMemoryIdRouteImport } from './routes/api/memory.$id'
 import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
 import { Route as ApiFleetEndpointsRouteImport } from './routes/api/fleet.endpoints'
 import { Route as ApiFleetDefsRouteImport } from './routes/api/fleet.defs'
@@ -62,6 +65,7 @@ import { Route as ApiTasksIdWatchersRouteImport } from './routes/api/tasks.$id.w
 import { Route as ApiTasksIdReviewRouteImport } from './routes/api/tasks.$id.review'
 import { Route as ApiTasksIdDependenciesRouteImport } from './routes/api/tasks.$id.dependencies'
 import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.comments'
+import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
 import { Route as ApiFleetEndpointsIdRouteImport } from './routes/api/fleet.endpoints.$id'
 import { Route as ApiChannelsIdMessagesRouteImport } from './routes/api/channels.$id.messages'
 import { Route as ApiChannelsIdMembersRouteImport } from './routes/api/channels.$id.members'
@@ -76,6 +80,7 @@ import { Route as ApiAgentsIdHeartbeatRouteImport } from './routes/api/agents.$i
 import { Route as AppBoardsBoardIdTaskIdRouteImport } from './routes/_app/boards/$boardId.$taskId'
 import { Route as ApiFleetEndpointsIdAvailableRouteImport } from './routes/api/fleet.endpoints.$id.available'
 import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.defs.$id.versions'
+import { Route as ApiFleetDefsIdMcpRouteImport } from './routes/api/fleet.defs.$id.mcp'
 import { Route as ApiFleetDefsIdEditRouteImport } from './routes/api/fleet.defs.$id.edit'
 import { Route as ApiFleetAgentsIdControlRouteImport } from './routes/api/fleet.agents.$id.control'
 
@@ -103,6 +108,11 @@ const ApiTeamsRoute = ApiTeamsRouteImport.update({
   path: '/api/teams',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiSkillsRoute = ApiSkillsRouteImport.update({
+  id: '/api/skills',
+  path: '/api/skills',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiProfileRoute = ApiProfileRouteImport.update({
   id: '/api/profile',
   path: '/api/profile',
@@ -111,6 +121,11 @@ const ApiProfileRoute = ApiProfileRouteImport.update({
 const ApiNotificationsRoute = ApiNotificationsRouteImport.update({
   id: '/api/notifications',
   path: '/api/notifications',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMcpRoute = ApiMcpRouteImport.update({
+  id: '/api/mcp',
+  path: '/api/mcp',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiFleetRoute = ApiFleetRouteImport.update({
@@ -238,6 +253,11 @@ const ApiTasksIdRoute = ApiTasksIdRouteImport.update({
   path: '/api/tasks/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiMemoryIdRoute = ApiMemoryIdRouteImport.update({
+  id: '/api/memory/$id',
+  path: '/api/memory/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiFleetRenderRoute = ApiFleetRenderRouteImport.update({
   id: '/render',
   path: '/render',
@@ -343,6 +363,11 @@ const ApiTasksIdCommentsRoute = ApiTasksIdCommentsRouteImport.update({
   path: '/comments',
   getParentRoute: () => ApiTasksIdRoute,
 } as any)
+const ApiSkillsOwnerNameRoute = ApiSkillsOwnerNameRouteImport.update({
+  id: '/$owner/$name',
+  path: '/$owner/$name',
+  getParentRoute: () => ApiSkillsRoute,
+} as any)
 const ApiFleetEndpointsIdRoute = ApiFleetEndpointsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -414,6 +439,11 @@ const ApiFleetDefsIdVersionsRoute = ApiFleetDefsIdVersionsRouteImport.update({
   path: '/$id/versions',
   getParentRoute: () => ApiFleetDefsRoute,
 } as any)
+const ApiFleetDefsIdMcpRoute = ApiFleetDefsIdMcpRouteImport.update({
+  id: '/$id/mcp',
+  path: '/$id/mcp',
+  getParentRoute: () => ApiFleetDefsRoute,
+} as any)
 const ApiFleetDefsIdEditRoute = ApiFleetDefsIdEditRouteImport.update({
   id: '/$id/edit',
   path: '/$id/edit',
@@ -451,8 +481,10 @@ export interface FileRoutesByFullPath {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/mcp': typeof ApiMcpRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
+  '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
@@ -471,6 +503,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/boards/': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -485,6 +518,7 @@ export interface FileRoutesByFullPath {
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
@@ -492,6 +526,7 @@ export interface FileRoutesByFullPath {
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
+  '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
 }
@@ -520,8 +555,10 @@ export interface FileRoutesByTo {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/mcp': typeof ApiMcpRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
+  '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
   '/': typeof AppIndexRoute
@@ -541,6 +578,7 @@ export interface FileRoutesByTo {
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/boards': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -555,6 +593,7 @@ export interface FileRoutesByTo {
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
@@ -562,6 +601,7 @@ export interface FileRoutesByTo {
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
+  '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
 }
@@ -592,8 +632,10 @@ export interface FileRoutesById {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/mcp': typeof ApiMcpRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
+  '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
   '/_app/': typeof AppIndexRoute
@@ -613,6 +655,7 @@ export interface FileRoutesById {
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/_app/boards/': typeof AppBoardsIndexRoute
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -627,6 +670,7 @@ export interface FileRoutesById {
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
@@ -634,6 +678,7 @@ export interface FileRoutesById {
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
+  '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
 }
@@ -665,8 +710,10 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/mcp'
     | '/api/notifications'
     | '/api/profile'
+    | '/api/skills'
     | '/api/teams'
     | '/api/users'
     | '/boards/$boardId'
@@ -685,6 +732,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
     | '/api/fleet/render'
+    | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/boards/'
     | '/boards/$boardId/$taskId'
@@ -699,6 +747,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
     | '/api/fleet/endpoints/$id'
+    | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
     | '/api/tasks/$id/review'
@@ -706,6 +755,7 @@ export interface FileRouteTypes {
     | '/api/teams/$id/members'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/defs/$id/edit'
+    | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
   fileRoutesByTo: FileRoutesByTo
@@ -734,8 +784,10 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/mcp'
     | '/api/notifications'
     | '/api/profile'
+    | '/api/skills'
     | '/api/teams'
     | '/api/users'
     | '/'
@@ -755,6 +807,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
     | '/api/fleet/render'
+    | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/boards'
     | '/boards/$boardId/$taskId'
@@ -769,6 +822,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
     | '/api/fleet/endpoints/$id'
+    | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
     | '/api/tasks/$id/review'
@@ -776,6 +830,7 @@ export interface FileRouteTypes {
     | '/api/teams/$id/members'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/defs/$id/edit'
+    | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
   id:
@@ -805,8 +860,10 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/mcp'
     | '/api/notifications'
     | '/api/profile'
+    | '/api/skills'
     | '/api/teams'
     | '/api/users'
     | '/_app/'
@@ -826,6 +883,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
     | '/api/fleet/render'
+    | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/_app/boards/'
     | '/_app/boards/$boardId/$taskId'
@@ -840,6 +898,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
     | '/api/fleet/endpoints/$id'
+    | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
     | '/api/tasks/$id/review'
@@ -847,6 +906,7 @@ export interface FileRouteTypes {
     | '/api/teams/$id/members'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/defs/$id/edit'
+    | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
   fileRoutesById: FileRoutesById
@@ -863,8 +923,10 @@ export interface RootRouteChildren {
   ApiConversationsRoute: typeof ApiConversationsRouteWithChildren
   ApiCostRoute: typeof ApiCostRoute
   ApiFleetRoute: typeof ApiFleetRouteWithChildren
+  ApiMcpRoute: typeof ApiMcpRoute
   ApiNotificationsRoute: typeof ApiNotificationsRoute
   ApiProfileRoute: typeof ApiProfileRoute
+  ApiSkillsRoute: typeof ApiSkillsRouteWithChildren
   ApiTeamsRoute: typeof ApiTeamsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
@@ -873,6 +935,7 @@ export interface RootRouteChildren {
   ApiAuthPasswordRoute: typeof ApiAuthPasswordRoute
   ApiAuthProvidersRoute: typeof ApiAuthProvidersRoute
   ApiAuthSessionRoute: typeof ApiAuthSessionRoute
+  ApiMemoryIdRoute: typeof ApiMemoryIdRoute
   ApiTasksIdRoute: typeof ApiTasksIdRouteWithChildren
 }
 
@@ -913,6 +976,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTeamsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/skills': {
+      id: '/api/skills'
+      path: '/api/skills'
+      fullPath: '/api/skills'
+      preLoaderRoute: typeof ApiSkillsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/profile': {
       id: '/api/profile'
       path: '/api/profile'
@@ -925,6 +995,13 @@ declare module '@tanstack/react-router' {
       path: '/api/notifications'
       fullPath: '/api/notifications'
       preLoaderRoute: typeof ApiNotificationsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/mcp': {
+      id: '/api/mcp'
+      path: '/api/mcp'
+      fullPath: '/api/mcp'
+      preLoaderRoute: typeof ApiMcpRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/fleet': {
@@ -1102,6 +1179,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTasksIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/memory/$id': {
+      id: '/api/memory/$id'
+      path: '/api/memory/$id'
+      fullPath: '/api/memory/$id'
+      preLoaderRoute: typeof ApiMemoryIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/fleet/render': {
       id: '/api/fleet/render'
       path: '/render'
@@ -1249,6 +1333,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTasksIdCommentsRouteImport
       parentRoute: typeof ApiTasksIdRoute
     }
+    '/api/skills/$owner/$name': {
+      id: '/api/skills/$owner/$name'
+      path: '/$owner/$name'
+      fullPath: '/api/skills/$owner/$name'
+      preLoaderRoute: typeof ApiSkillsOwnerNameRouteImport
+      parentRoute: typeof ApiSkillsRoute
+    }
     '/api/fleet/endpoints/$id': {
       id: '/api/fleet/endpoints/$id'
       path: '/$id'
@@ -1345,6 +1436,13 @@ declare module '@tanstack/react-router' {
       path: '/$id/versions'
       fullPath: '/api/fleet/defs/$id/versions'
       preLoaderRoute: typeof ApiFleetDefsIdVersionsRouteImport
+      parentRoute: typeof ApiFleetDefsRoute
+    }
+    '/api/fleet/defs/$id/mcp': {
+      id: '/api/fleet/defs/$id/mcp'
+      path: '/$id/mcp'
+      fullPath: '/api/fleet/defs/$id/mcp'
+      preLoaderRoute: typeof ApiFleetDefsIdMcpRouteImport
       parentRoute: typeof ApiFleetDefsRoute
     }
     '/api/fleet/defs/$id/edit': {
@@ -1504,11 +1602,13 @@ const ApiConversationsRouteWithChildren =
 
 interface ApiFleetDefsRouteChildren {
   ApiFleetDefsIdEditRoute: typeof ApiFleetDefsIdEditRoute
+  ApiFleetDefsIdMcpRoute: typeof ApiFleetDefsIdMcpRoute
   ApiFleetDefsIdVersionsRoute: typeof ApiFleetDefsIdVersionsRoute
 }
 
 const ApiFleetDefsRouteChildren: ApiFleetDefsRouteChildren = {
   ApiFleetDefsIdEditRoute: ApiFleetDefsIdEditRoute,
+  ApiFleetDefsIdMcpRoute: ApiFleetDefsIdMcpRoute,
   ApiFleetDefsIdVersionsRoute: ApiFleetDefsIdVersionsRoute,
 }
 
@@ -1558,6 +1658,18 @@ const ApiFleetRouteChildren: ApiFleetRouteChildren = {
 
 const ApiFleetRouteWithChildren = ApiFleetRoute._addFileChildren(
   ApiFleetRouteChildren,
+)
+
+interface ApiSkillsRouteChildren {
+  ApiSkillsOwnerNameRoute: typeof ApiSkillsOwnerNameRoute
+}
+
+const ApiSkillsRouteChildren: ApiSkillsRouteChildren = {
+  ApiSkillsOwnerNameRoute: ApiSkillsOwnerNameRoute,
+}
+
+const ApiSkillsRouteWithChildren = ApiSkillsRoute._addFileChildren(
+  ApiSkillsRouteChildren,
 )
 
 interface ApiTeamsRouteChildren {
@@ -1614,8 +1726,10 @@ const rootRouteChildren: RootRouteChildren = {
   ApiConversationsRoute: ApiConversationsRouteWithChildren,
   ApiCostRoute: ApiCostRoute,
   ApiFleetRoute: ApiFleetRouteWithChildren,
+  ApiMcpRoute: ApiMcpRoute,
   ApiNotificationsRoute: ApiNotificationsRoute,
   ApiProfileRoute: ApiProfileRoute,
+  ApiSkillsRoute: ApiSkillsRouteWithChildren,
   ApiTeamsRoute: ApiTeamsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,
@@ -1624,6 +1738,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthPasswordRoute: ApiAuthPasswordRoute,
   ApiAuthProvidersRoute: ApiAuthProvidersRoute,
   ApiAuthSessionRoute: ApiAuthSessionRoute,
+  ApiMemoryIdRoute: ApiMemoryIdRoute,
   ApiTasksIdRoute: ApiTasksIdRouteWithChildren,
 }
 export const routeTree = rootRouteImport
