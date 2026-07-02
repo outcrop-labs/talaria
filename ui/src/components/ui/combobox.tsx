@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/cn'
 import { controlSizes, type ControlSize } from './control'
@@ -55,14 +56,38 @@ export function Combobox({
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
   const ref = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  // The panel renders in a body portal (fixed) — ancestors like .mercury-panel
+  // create stacking contexts (backdrop-filter), which would cage an absolute
+  // dropdown's z-index below the next card. Flips upward near the bottom edge.
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null)
 
   useEffect(() => {
     if (!open) return
+    const place = () => {
+      const r = ref.current?.getBoundingClientRect()
+      if (!r) return
+      const spaceBelow = window.innerHeight - r.bottom
+      const flip = spaceBelow < 320 && r.top > spaceBelow
+      setPos(
+        flip
+          ? { bottom: window.innerHeight - r.top + 4, left: r.left, width: r.width }
+          : { top: r.bottom + 4, left: r.left, width: r.width },
+      )
+    }
+    place()
     const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (!ref.current?.contains(t) && !panelRef.current?.contains(t)) setOpen(false)
     }
     document.addEventListener('mousedown', onClick)
-    return () => document.removeEventListener('mousedown', onClick)
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      document.removeEventListener('mousedown', onClick)
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
   }, [open])
 
   const filtered = useMemo(() => options.filter((o) => fuzzy(q, o.label + ' ' + (o.sub ?? ''))), [options, q])
@@ -131,15 +156,19 @@ export function Combobox({
         <span className="text-muted">▾</span>
       </button>
 
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.14 }}
-            className="mercury-panel absolute left-0 z-30 mt-1 w-full overflow-hidden rounded-xl"
-          >
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+          {open && pos && (
+            <motion.div
+              ref={panelRef}
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.14 }}
+              className="mercury-panel fixed z-[60] overflow-hidden rounded-xl"
+              style={{ top: pos.top, bottom: pos.bottom, left: pos.left, width: pos.width }}
+            >
             <input
               autoFocus
               value={q}
@@ -181,9 +210,11 @@ export function Combobox({
                 </li>
               ))}
             </ul>
-          </motion.div>
+            </motion.div>
+          )}
+          </AnimatePresence>,
+          document.body,
         )}
-      </AnimatePresence>
     </div>
   )
 }
