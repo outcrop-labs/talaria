@@ -38,7 +38,9 @@ import { Route as AppAdminRouteImport } from './routes/_app/admin'
 import { Route as AppActivityRouteImport } from './routes/_app/activity'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
+import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
 import { Route as ApiFleetDefsRouteImport } from './routes/api/fleet.defs'
+import { Route as ApiFleetContainersRouteImport } from './routes/api/fleet.containers'
 import { Route as ApiConversationsIdRouteImport } from './routes/api/conversations.$id'
 import { Route as ApiChannelsIdRouteImport } from './routes/api/channels.$id'
 import { Route as ApiBoardsIdRouteImport } from './routes/api/boards.$id'
@@ -67,6 +69,7 @@ import { Route as ApiAuthGoogleCallbackRouteImport } from './routes/api/auth/goo
 import { Route as ApiAgentsIdHeartbeatRouteImport } from './routes/api/agents.$id.heartbeat'
 import { Route as AppBoardsBoardIdTaskIdRouteImport } from './routes/_app/boards/$boardId.$taskId'
 import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.defs.$id.versions'
+import { Route as ApiFleetAgentsIdControlRouteImport } from './routes/api/fleet.agents.$id.control'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -212,9 +215,19 @@ const ApiTasksIdRoute = ApiTasksIdRouteImport.update({
   path: '/api/tasks/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiFleetRenderRoute = ApiFleetRenderRouteImport.update({
+  id: '/render',
+  path: '/render',
+  getParentRoute: () => ApiFleetRoute,
+} as any)
 const ApiFleetDefsRoute = ApiFleetDefsRouteImport.update({
   id: '/defs',
   path: '/defs',
+  getParentRoute: () => ApiFleetRoute,
+} as any)
+const ApiFleetContainersRoute = ApiFleetContainersRouteImport.update({
+  id: '/containers',
+  path: '/containers',
   getParentRoute: () => ApiFleetRoute,
 } as any)
 const ApiConversationsIdRoute = ApiConversationsIdRouteImport.update({
@@ -357,6 +370,11 @@ const ApiFleetDefsIdVersionsRoute = ApiFleetDefsIdVersionsRouteImport.update({
   path: '/$id/versions',
   getParentRoute: () => ApiFleetDefsRoute,
 } as any)
+const ApiFleetAgentsIdControlRoute = ApiFleetAgentsIdControlRouteImport.update({
+  id: '/agents/$id/control',
+  path: '/agents/$id/control',
+  getParentRoute: () => ApiFleetRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -396,7 +414,9 @@ export interface FileRoutesByFullPath {
   '/api/boards/$id': typeof ApiBoardsIdRouteWithChildren
   '/api/channels/$id': typeof ApiChannelsIdRouteWithChildren
   '/api/conversations/$id': typeof ApiConversationsIdRoute
+  '/api/fleet/containers': typeof ApiFleetContainersRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
+  '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/boards/': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -415,6 +435,7 @@ export interface FileRoutesByFullPath {
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
 }
 export interface FileRoutesByTo {
@@ -455,7 +476,9 @@ export interface FileRoutesByTo {
   '/api/boards/$id': typeof ApiBoardsIdRouteWithChildren
   '/api/channels/$id': typeof ApiChannelsIdRouteWithChildren
   '/api/conversations/$id': typeof ApiConversationsIdRoute
+  '/api/fleet/containers': typeof ApiFleetContainersRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
+  '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/boards': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -474,6 +497,7 @@ export interface FileRoutesByTo {
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
 }
 export interface FileRoutesById {
@@ -516,7 +540,9 @@ export interface FileRoutesById {
   '/api/boards/$id': typeof ApiBoardsIdRouteWithChildren
   '/api/channels/$id': typeof ApiChannelsIdRouteWithChildren
   '/api/conversations/$id': typeof ApiConversationsIdRoute
+  '/api/fleet/containers': typeof ApiFleetContainersRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
+  '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/_app/boards/': typeof AppBoardsIndexRoute
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -535,6 +561,7 @@ export interface FileRoutesById {
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
 }
 export interface FileRouteTypes {
@@ -577,7 +604,9 @@ export interface FileRouteTypes {
     | '/api/boards/$id'
     | '/api/channels/$id'
     | '/api/conversations/$id'
+    | '/api/fleet/containers'
     | '/api/fleet/defs'
+    | '/api/fleet/render'
     | '/api/tasks/$id'
     | '/boards/'
     | '/boards/$boardId/$taskId'
@@ -596,6 +625,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/review'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/fleet/agents/$id/control'
     | '/api/fleet/defs/$id/versions'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -636,7 +666,9 @@ export interface FileRouteTypes {
     | '/api/boards/$id'
     | '/api/channels/$id'
     | '/api/conversations/$id'
+    | '/api/fleet/containers'
     | '/api/fleet/defs'
+    | '/api/fleet/render'
     | '/api/tasks/$id'
     | '/boards'
     | '/boards/$boardId/$taskId'
@@ -655,6 +687,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/review'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/fleet/agents/$id/control'
     | '/api/fleet/defs/$id/versions'
   id:
     | '__root__'
@@ -696,7 +729,9 @@ export interface FileRouteTypes {
     | '/api/boards/$id'
     | '/api/channels/$id'
     | '/api/conversations/$id'
+    | '/api/fleet/containers'
     | '/api/fleet/defs'
+    | '/api/fleet/render'
     | '/api/tasks/$id'
     | '/_app/boards/'
     | '/_app/boards/$boardId/$taskId'
@@ -715,6 +750,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/review'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/fleet/agents/$id/control'
     | '/api/fleet/defs/$id/versions'
   fileRoutesById: FileRoutesById
 }
@@ -946,11 +982,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTasksIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/fleet/render': {
+      id: '/api/fleet/render'
+      path: '/render'
+      fullPath: '/api/fleet/render'
+      preLoaderRoute: typeof ApiFleetRenderRouteImport
+      parentRoute: typeof ApiFleetRoute
+    }
     '/api/fleet/defs': {
       id: '/api/fleet/defs'
       path: '/defs'
       fullPath: '/api/fleet/defs'
       preLoaderRoute: typeof ApiFleetDefsRouteImport
+      parentRoute: typeof ApiFleetRoute
+    }
+    '/api/fleet/containers': {
+      id: '/api/fleet/containers'
+      path: '/containers'
+      fullPath: '/api/fleet/containers'
+      preLoaderRoute: typeof ApiFleetContainersRouteImport
       parentRoute: typeof ApiFleetRoute
     }
     '/api/conversations/$id': {
@@ -1149,6 +1199,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFleetDefsIdVersionsRouteImport
       parentRoute: typeof ApiFleetDefsRoute
     }
+    '/api/fleet/agents/$id/control': {
+      id: '/api/fleet/agents/$id/control'
+      path: '/agents/$id/control'
+      fullPath: '/api/fleet/agents/$id/control'
+      preLoaderRoute: typeof ApiFleetAgentsIdControlRouteImport
+      parentRoute: typeof ApiFleetRoute
+    }
   }
 }
 
@@ -1301,11 +1358,17 @@ const ApiFleetDefsRouteWithChildren = ApiFleetDefsRoute._addFileChildren(
 )
 
 interface ApiFleetRouteChildren {
+  ApiFleetContainersRoute: typeof ApiFleetContainersRoute
   ApiFleetDefsRoute: typeof ApiFleetDefsRouteWithChildren
+  ApiFleetRenderRoute: typeof ApiFleetRenderRoute
+  ApiFleetAgentsIdControlRoute: typeof ApiFleetAgentsIdControlRoute
 }
 
 const ApiFleetRouteChildren: ApiFleetRouteChildren = {
+  ApiFleetContainersRoute: ApiFleetContainersRoute,
   ApiFleetDefsRoute: ApiFleetDefsRouteWithChildren,
+  ApiFleetRenderRoute: ApiFleetRenderRoute,
+  ApiFleetAgentsIdControlRoute: ApiFleetAgentsIdControlRoute,
 }
 
 const ApiFleetRouteWithChildren = ApiFleetRoute._addFileChildren(

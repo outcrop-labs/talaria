@@ -4,7 +4,7 @@
  * See stack/.env.example for the canonical list. Everything has a sensible
  * default so the bridge boots in pure pass-through mode with zero config.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, watchFile } from "node:fs";
 
 /**
  * One agent in the fleet manifest. Talaria multiplexes a fleet of Hermes agents,
@@ -102,6 +102,26 @@ function loadFleet(): FleetAgent[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Hot-reload the fleet manifest: watch TALARIA_FLEET_FILE and swap cfg.fleet
+ * in place on change, so Talaria can re-render the fleet (add/remove agents)
+ * without a bridge restart. Mutates the array the gateway plane closes over.
+ */
+export function watchFleet(cfg: TalariaConfig): void {
+  const filePath = process.env.TALARIA_FLEET_FILE;
+  if (!filePath) return;
+  // watchFile (polling) — bind-mounted files often miss inotify events.
+  watchFile(filePath, { interval: 2000 }, () => {
+    const next = loadFleet();
+    if (!next.length) {
+      console.warn(`[talaria] fleet manifest ${filePath} empty/invalid — keeping ${cfg.fleet.length} agents`);
+      return;
+    }
+    cfg.fleet.splice(0, cfg.fleet.length, ...next);
+    console.log(`[talaria] fleet manifest reloaded — ${next.length} agents (${next.map((a) => a.model).join(", ")})`);
+  });
 }
 
 function readSecret(fileEnv: string, valueEnv: string): string {

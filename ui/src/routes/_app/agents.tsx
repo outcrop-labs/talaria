@@ -8,7 +8,16 @@ import { Disclosure } from '@/components/ui/disclosure'
 import { Markdown } from '@/components/ui/markdown'
 import { useFleet, relativeTime, STATUS_COLOR } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
-import { importFleet, useFleetDefs, type AgentDef, type ModelTarget } from '@/lib/fleet-defs'
+import {
+  controlAgent,
+  importFleet,
+  useFleetContainers,
+  useFleetDefs,
+  type AgentContainers,
+  type AgentDef,
+  type FleetAction,
+  type ModelTarget,
+} from '@/lib/fleet-defs'
 
 export const Route = createFileRoute('/_app/agents')({
   component: AgentsRoster,
@@ -93,6 +102,8 @@ function DefinitionsPanel() {
   const qc = useQueryClient()
   const { data } = useFleetDefs(true)
   const defs = data?.defs ?? []
+  const { data: containers = [] } = useFleetContainers(true)
+  const byDept = new Map(containers.map((c) => [c.department, c]))
   const [busy, setBusy] = useState(false)
   const [summary, setSummary] = useState<string | null>(null)
 
@@ -135,7 +146,7 @@ function DefinitionsPanel() {
       ) : (
         <ul className="divide-y divide-line-subtle">
           {defs.map((d) => (
-            <DefRow key={d.id} def={d} />
+            <DefRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} />
           ))}
         </ul>
       )}
@@ -143,8 +154,36 @@ function DefinitionsPanel() {
   )
 }
 
-function DefRow({ def: d }: { def: AgentDef }) {
+/** The container the agent actually lives in right now. */
+function liveContainer(d: AgentDef, c: AgentContainers | null) {
+  const managed = c?.managed ?? null
+  const legacy = c?.legacy ?? null
+  if (d.managed) return { where: 'talaria' as const, state: managed }
+  return { where: 'legacy' as const, state: legacy }
+}
+
+function DefRow({ def: d, containers }: { def: AgentDef; containers: AgentContainers | null }) {
+  const qc = useQueryClient()
   const cfg = d.latest?.config
+  const [pending, setPending] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const live = liveContainer(d, containers)
+  const running = live.state?.state === 'running'
+
+  const act = async (action: FleetAction, label: string) => {
+    setErr(null)
+    setPending(label)
+    try {
+      const r = await controlAgent(d.id, action)
+      if (r.error) setErr(r.error)
+      else if (action === 'migrate' && r.healthy === false) setErr('started but not healthy yet — check logs')
+      await qc.invalidateQueries({ queryKey: ['fleet-containers'] })
+      await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+    } finally {
+      setPending(null)
+    }
+  }
+
   return (
     <li className="py-3">
       <div className="flex items-start gap-3">
@@ -153,11 +192,63 @@ function DefRow({ def: d }: { def: AgentDef }) {
           <div className="flex items-baseline gap-2">
             <span className="text-sm font-medium text-fg">{d.displayName}</span>
             <span className="truncate text-xs text-muted">{d.model}</span>
-            <span className="ml-auto shrink-0 text-xs text-muted">
-              v{d.currentVersion}
-              {!d.managed && ' · imported'}
+            <span
+              className="inline-flex items-center gap-1 text-xs"
+              title={live.state?.status ?? 'no container'}
+            >
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{
+                  background: running ? 'var(--theme-success)' : live.state ? 'var(--theme-danger)' : 'var(--theme-line)',
+                }}
+              />
+              <span className="text-muted">
+                {live.state ? live.state.state : 'no container'} · {d.managed ? 'talaria-managed' : 'legacy stack'}
+              </span>
             </span>
+            <span className="ml-auto shrink-0 text-xs text-muted">v{d.currentVersion}</span>
+            {pending ? (
+              <span className="shrink-0 text-xs text-muted">{pending}…</span>
+            ) : d.managed ? (
+              running ? (
+                <Button variant="outline" size="sm" className="shrink-0" onClick={() => void act('stop', 'stopping')}>
+                  Stop
+                </Button>
+              ) : (
+                <Button size="sm" className="shrink-0" onClick={() => void act('up', 'starting')}>
+                  Start
+                </Button>
+              )
+            ) : (
+              <>
+                {live.state &&
+                  (running ? (
+                    <Button variant="ghost" size="sm" className="shrink-0" onClick={() => void act('legacy-stop', 'stopping')}>
+                      Stop
+                    </Button>
+                  ) : (
+                    <Button variant="ghost" size="sm" className="shrink-0" onClick={() => void act('legacy-start', 'starting')}>
+                      Start
+                    </Button>
+                  ))}
+                <Button
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => {
+                    if (confirm(`Migrate ${d.displayName} to Talaria management? The legacy container stops; state (memories, plans) carries over via its volume.`))
+                      void act('migrate', 'migrating')
+                  }}
+                >
+                  Migrate
+                </Button>
+              </>
+            )}
           </div>
+          {err && (
+            <div className="mt-1 text-xs" style={{ color: 'var(--theme-danger)' }}>
+              {err}
+            </div>
+          )}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {cfg?.main && <TargetChip t={cfg.main} name="main" />}
             {cfg?.aliases?.map((a) => <TargetChip key={a.name} t={a} name={a.name} />)}

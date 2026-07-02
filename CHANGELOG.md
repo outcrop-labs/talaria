@@ -85,6 +85,15 @@ not proxied from mission-control.
   (`agents.yaml`, per-agent `config.yaml` + `SOUL.md`). `/agents` grows an
   admin-only **Definitions** panel showing each agent's tiers (local/cloud chips),
   fallback chain, soul, and version. Rendering + spin up/down land in phase B.
+- **Agent harness (phase B)**, Talaria renders and runs the fleet: versions
+  materialize into a gitignored `fleet/` dir (per-agent `config.yaml` emitted as
+  YAML 1.1 so PyYAML sees exactly the original semantics, `SOUL.md`, a generated
+  compose that reuses the legacy `ai_hermes-<dept>` volumes so memories survive,
+  and the gateway manifest — which the bridge now **hot-reloads**, no restart).
+  `/agents` gains live container status and lifecycle buttons: start/stop for
+  managed agents, one-click **Migrate** for legacy ones (stop old → render →
+  start managed → health-gate). Pilot migrated: `sam-support` runs Talaria-managed
+  with memories intact, answering through the gateway.
 
 ### Fixed
 - SSE event streams no longer crash the server when a client disconnects before

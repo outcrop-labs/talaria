@@ -66,3 +66,44 @@ export async function importFleet(): Promise<{
   if (!r.ok) return null
   return ((await r.json()) as { result: { agents: []; errors: [] } }).result
 }
+
+export interface ContainerState {
+  name: string
+  state: string
+  status: string
+}
+
+export interface AgentContainers {
+  department: string
+  managed: ContainerState | null
+  legacy: ContainerState | null
+}
+
+export function useFleetContainers(enabled: boolean) {
+  return useQuery({
+    queryKey: ['fleet-containers'],
+    enabled,
+    refetchInterval: 10_000,
+    queryFn: async (): Promise<AgentContainers[]> => {
+      const r = await fetch('/api/fleet/containers', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { containers: AgentContainers[] }).containers
+    },
+  })
+}
+
+export type FleetAction = 'migrate' | 'up' | 'stop' | 'legacy-start' | 'legacy-stop'
+
+export async function controlAgent(id: string, action: FleetAction): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {
+  const r = await fetch(`/api/fleet/agents/${id}/control`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
+  return (await r.json().catch(() => ({ error: `control failed (${r.status})` }))) as {
+    ok?: boolean
+    healthy?: boolean
+    error?: string
+  }
+}
