@@ -64,12 +64,18 @@ not proxied from mission-control.
 - **Consistent control sizing**, one `sm`/`md` scale (`h-9`/`h-11`) shared by
   Button, Input, Select, and Combobox via a `size` prop — mixed-height form rows
   and hand-set `h-8`/`h-9` overrides are gone.
+- **Notifications + user @mentions**, the channel composer autocompletes human
+  members alongside agents; @mentioning a person drops a notification in their
+  **Inbox** (new nav surface with an unread badge). `GET/PUT /api/notifications`;
+  mention tokens are the email localpart, dashed name, or first name.
 
 ### Fixed
 - SSE event streams no longer crash the server when a client disconnects before
   the Redis subscriber finishes connecting (unhandled rejection in the
   board/channel event stream).
 - Ticket labels no longer require hand-typed comma lists (see label picker).
+- Logging in no longer clobbers a user-set display name (the provider identity
+  only fills the unfriendly defaults).
 
 ### Changed
 - Sessions are Redis-backed (opaque sid → `sess:<sid>`), not HMAC cookies.

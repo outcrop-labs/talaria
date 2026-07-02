@@ -96,6 +96,7 @@ function ChannelsPage() {
                 channelId={selected.id}
                 channelName={selected.name}
                 channelAgents={detail?.agents ?? []}
+                members={detail?.members ?? []}
                 fleet={fleet}
               />
             </div>

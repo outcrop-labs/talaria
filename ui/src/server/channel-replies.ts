@@ -5,13 +5,53 @@
 // it type in real time. Runs detached from the sender's request.
 import { describeAgent, proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
+import { addNotification } from './notifications'
 import {
   insertChannelMessage,
   listChannelAgents,
+  listChannelMembers,
   listChannelMessages,
   updateChannelMessage,
   type ChannelMessage,
 } from './channels'
+
+/** Tokens a member answers to: email localpart, dashed full name, first name. */
+export function userMentionTokens(name: string | null, email: string | null): string[] {
+  const tokens = new Set<string>()
+  const local = email?.split('@')[0]?.toLowerCase()
+  if (local) tokens.add(local)
+  const n = name?.trim().toLowerCase()
+  if (n) {
+    tokens.add(n.replace(/\s+/g, '-'))
+    tokens.add(n.split(/\s+/)[0]!)
+  }
+  return [...tokens]
+}
+
+/** Notify channel members the message @mentions (never the sender). */
+export async function notifyUserMentions(
+  channelId: string,
+  channelName: string,
+  senderUserId: string,
+  senderLabel: string,
+  content: string,
+): Promise<void> {
+  const mentions = new Set(
+    [...content.matchAll(/@([a-z0-9][a-z0-9-]*)/gi)].map((m) => m[1]!.toLowerCase()),
+  )
+  if (mentions.size === 0) return
+  const members = await listChannelMembers(channelId)
+  for (const m of members) {
+    if (m.userId === senderUserId) continue
+    if (!userMentionTokens(m.name, m.email).some((t) => mentions.has(t))) continue
+    await addNotification(m.userId, {
+      kind: 'mention',
+      title: `${senderLabel} mentioned you in #${channelName}`,
+      body: content.length > 200 ? `${content.slice(0, 200)}…` : content,
+      href: '/channels',
+    })
+  }
+}
 
 /** Channel agents @mentioned in the text — matched on model id ("@dex-developer")
  *  or label ("@Dex"), case-insensitive. */
