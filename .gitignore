@@ -22,3 +22,6 @@ vendor/
 # Fleet manifest (agent gateways + per-agent keys) — never commit
 stack/fleet.json
 fleet.json
+
+# Rendered fleet (talaria-managed agent configs + compose) — never committed
+/fleet/

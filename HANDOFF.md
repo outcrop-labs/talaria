@@ -102,17 +102,28 @@ Full project-management suite, all live in `ui/`:
   stack's pain is 6 hand-edited places per agent — the renderer (phase B)
   generates all of them from the version payload.
 
+- **Agent harness (phase B)** - the renderer + orchestrator. `server/fleet-render.ts`
+  materializes managed versions into gitignored `fleet/` (config.yaml as **YAML
+  1.1** — PyYAML semantics; generated compose derived from the source stack's
+  resolved service block: external volumes `ai_hermes-<dept>`, external network
+  `ai_default`, no build/depends_on/host-ports) and writes the gateway manifest
+  to `stack/fleet.json`, which the bridge **hot-reloads** (watchFleet, 2s poll).
+  `server/fleet-docker.ts` drives `docker compose -p talaria-fleet` (⚠️ `-p` is
+  mandatory — the stack .env sets `COMPOSE_PROJECT_NAME=ai` and would hijack the
+  project, orphaning the whole legacy stack). Lifecycle API
+  `POST /api/fleet/agents/:id/control` (migrate/up/stop/legacy-*), containers
+  API, and live status + buttons on `/agents`. **Pilot done: sam-support is
+  Talaria-managed** (`talaria-fleet-agent-support-1`), memories intact; the
+  legacy compose has `agent-support` behind a `retired-migrated-to-talaria`
+  profile + its depends_on entries commented (prewarm, openwebui).
+
 ## Next up (in order)
 
-1. **Harness phase B**: render versions → gitignored `fleet/` (config.yaml,
-   SOUL.md, generated compose reusing `hermes-<dept>` volumes + `ai_default`
-   network, bridge `fleet.json` incl. alias entries, `fleet/.env` secrets);
-   docker compose up/stop per agent from the app; bridge fleet hot-reload;
-   migrate `sam-support` as the pilot.
-2. **Harness phase C**: in-app editing (soul/tiers/escalations) → new version →
-   restart; templates (role-ready base agents); create/destroy from UI;
-   usage_events endpoint-class attribution + /cost local-vs-cloud split.
-3. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
+1. **Harness phase C**: in-app editing (soul/tiers/escalations) → new version →
+   re-render → restart; templates (role-ready base agents); create/destroy from
+   UI; usage_events endpoint-class attribution + /cost local-vs-cloud split.
+   Migrate the remaining 7 agents as each checks out.
+2. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
    inference.
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
    ticket), tracked follow-up to the auto-accumulated time-spent field.

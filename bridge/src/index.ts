@@ -12,7 +12,7 @@
 import http from "node:http";
 import httpProxy from "http-proxy";
 
-import { loadConfig } from "./config.js";
+import { loadConfig, watchFleet } from "./config.js";
 import { MissionControlClient } from "./missionControl.js";
 import { isMissionRoute, handleMission, MISSION_ROUTES } from "./intercept.js";
 import { isKanbanRoute, handleKanban } from "./kanban.js";
@@ -104,3 +104,5 @@ server.listen(cfg.port, () => {
 
 // Second plane: the fleet multiplexer (no-op if no fleet manifest is configured).
 startGatewayPlane(cfg);
+// Talaria re-renders the manifest when the fleet changes — pick it up live.
+watchFleet(cfg);
