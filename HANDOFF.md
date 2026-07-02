@@ -138,15 +138,21 @@ Full project-management suite, all live in `ui/`:
   agent (created "remy", answered via gateway, retired; def row remains as
   `retired` with history — re-enable is SQL-only for now).
 
+- **Models tab** - `/models` (System nav): endpoint registry management with
+  provider presets (`lib/models.ts` PROVIDER_PRESETS), per-endpoint model
+  catalogs (`llm_endpoints.models` jsonb, seeded by the importer), pricing,
+  class toggle. Removal is guarded: `fleet-cascade.ts` computes the blast
+  radius (`modelUsage`); the API returns 409 `needsForce` for the double
+  opt-in, then `cascadeRemoval` strips the tier from each affected agent as a
+  NEW version, re-renders, restarts running managed agents. MAIN usage always
+  refuses. Agent editor uses `ModelPicker` (one combobox over all catalogs,
+  `␟` separator).
+
 ## Next up (in order)
 
-1. **Models tab** (user-requested): System-area page to add/remove common
-   providers (Anthropic, OpenRouter, DeepSeek, OpenAI, local vLLM/Ollama) and
-   custom endpoints + per-provider model catalogs; replace the agent editor's
-   clunky selects with a nicer grouped picker.
-2. Migrate the remaining 7 legacy agents (one click each on /agents); per-alias
+1. Migrate the remaining 7 legacy agents (one click each on /agents); per-alias
    tier routing + attribution (Talaria requesting `<base>-<alias>` models).
-3. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
+2. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
    inference.
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
    ticket), tracked follow-up to the auto-accumulated time-spent field.

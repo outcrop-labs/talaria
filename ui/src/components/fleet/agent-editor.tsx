@@ -3,8 +3,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
-import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { ModelPicker } from '@/components/fleet/model-picker'
 import { saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
 
 type AliasRow = ModelTarget & { name: string }
@@ -67,14 +67,7 @@ export function AgentEditorModal({
       {onName !== undefined && (
         <Input value={name ?? ''} onChange={(e) => onName(e.target.value)} placeholder={namePlaceholder} size="sm" className="w-28 shrink-0" />
       )}
-      <Select value={value.endpoint} onChange={(e) => onChange({ ...value, endpoint: e.target.value })} size="sm" className="w-44 shrink-0">
-        {endpoints.map((e) => (
-          <option key={e.name} value={e.name}>
-            {e.name} · {e.class}
-          </option>
-        ))}
-      </Select>
-      <Input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} placeholder="model id" size="sm" className="min-w-0 flex-1" />
+      <ModelPicker endpoints={endpoints} value={value} onChange={onChange} size="sm" className="min-w-0 flex-1" />
       <span className="w-10 shrink-0 text-xs" style={{ color: epClass(value.endpoint) === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}>
         {epClass(value.endpoint)}
       </span>

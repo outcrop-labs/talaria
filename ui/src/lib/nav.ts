@@ -46,6 +46,7 @@ export const NAV: NavSection[] = [
   {
     title: 'System',
     items: [
+      { to: '/models', label: 'Models', icon: '▤' },
       { to: '/inference', label: 'Inference', icon: '▚' },
       { to: '/settings', label: 'Settings', icon: '⚙' },
       { to: '/admin', label: 'Admin', icon: '⛨', adminOnly: true },

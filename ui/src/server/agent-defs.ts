@@ -14,6 +14,8 @@ export interface LlmEndpoint {
   contextLength: number | null
   priceInPerMtok: number | null
   priceOutPerMtok: number | null
+  /** Curated model ids offered by the agent editor's picker. */
+  models: string[]
 }
 
 export interface AgentDef {
@@ -66,7 +68,7 @@ export async function listEndpoints(): Promise<LlmEndpoint[]> {
   return (await sql`
     select id, name, provider, base_url as "baseUrl", class, api_key_env as "apiKeyEnv",
            context_length as "contextLength", price_in_per_mtok as "priceInPerMtok",
-           price_out_per_mtok as "priceOutPerMtok"
+           price_out_per_mtok as "priceOutPerMtok", models
     from llm_endpoints order by (class = 'local') desc, name asc
   `) as unknown as LlmEndpoint[]
 }
@@ -93,7 +95,12 @@ export async function ensureEndpoint(e: {
 
 export async function updateEndpoint(
   id: string,
-  patch: { class?: 'local' | 'cloud'; priceInPerMtok?: number | null; priceOutPerMtok?: number | null },
+  patch: {
+    class?: 'local' | 'cloud'
+    priceInPerMtok?: number | null
+    priceOutPerMtok?: number | null
+    models?: string[]
+  },
 ): Promise<void> {
   const sql = await db()
   if (patch.class) await sql`update llm_endpoints set class = ${patch.class}, updated_at = now() where id = ${id}`
@@ -101,6 +108,57 @@ export async function updateEndpoint(
     await sql`update llm_endpoints set price_in_per_mtok = ${patch.priceInPerMtok}, updated_at = now() where id = ${id}`
   if (patch.priceOutPerMtok !== undefined)
     await sql`update llm_endpoints set price_out_per_mtok = ${patch.priceOutPerMtok}, updated_at = now() where id = ${id}`
+  if (patch.models)
+    await sql`update llm_endpoints set models = ${sql.json(patch.models)}, updated_at = now() where id = ${id}`
+}
+
+/** Create a user-defined endpoint (Models tab). Name must be fresh. */
+export async function createEndpoint(e: {
+  name: string
+  provider: string
+  baseUrl?: string | null
+  class: 'local' | 'cloud'
+  apiKeyEnv?: string | null
+  models?: string[]
+}): Promise<void> {
+  const sql = await db()
+  await sql`
+    insert into llm_endpoints (name, provider, base_url, class, api_key_env, models)
+    values (${e.name}, ${e.provider}, ${e.baseUrl ?? null}, ${e.class}, ${e.apiKeyEnv ?? null},
+            ${sql.json(e.models ?? [])})
+  `
+}
+
+/** Remove an endpoint. Refused while any agent's CURRENT version targets it. */
+export async function deleteEndpoint(id: string): Promise<{ ok: boolean; usedBy?: string[] }> {
+  const sql = await db()
+  const ep = (await sql`select name from llm_endpoints where id = ${id}`) as unknown as Array<{ name: string }>
+  const name = ep[0]?.name
+  if (!name) return { ok: true }
+  const users = (await sql`
+    select d.slug from agent_defs d
+    join agent_versions v on v.agent_id = d.id and v.version = d.current_version
+    where v.config->'main'->>'endpoint' = ${name}
+       or exists (select 1 from jsonb_array_elements(coalesce(v.config->'aliases','[]'::jsonb)) a where a->>'endpoint' = ${name})
+       or exists (select 1 from jsonb_array_elements(coalesce(v.config->'fallbacks','[]'::jsonb)) f where f->>'endpoint' = ${name})
+  `) as unknown as Array<{ slug: string }>
+  if (users.length) return { ok: false, usedBy: users.map((u) => u.slug) }
+  await sql`delete from llm_endpoints where id = ${id}`
+  return { ok: true }
+}
+
+/** Merge model ids into an endpoint's catalog (importer feeds this). */
+export async function addEndpointModels(name: string, models: string[]): Promise<void> {
+  if (!models.length) return
+  const sql = await db()
+  await sql`
+    update llm_endpoints
+    set models = (
+      select coalesce(jsonb_agg(distinct m), '[]'::jsonb)
+      from jsonb_array_elements_text(models || ${sql.json(models)}) as m
+    ), updated_at = now()
+    where name = ${name}
+  `
 }
 
 // ── Definitions + versions ───────────────────────────────────────────────────

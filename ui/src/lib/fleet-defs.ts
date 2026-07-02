@@ -44,7 +44,11 @@ export interface LlmEndpoint {
   provider: string
   baseUrl: string | null
   class: 'local' | 'cloud'
+  apiKeyEnv?: string | null
   contextLength: number | null
+  priceInPerMtok?: number | null
+  priceOutPerMtok?: number | null
+  models: string[]
 }
 
 export function useFleetDefs(enabled: boolean) {
