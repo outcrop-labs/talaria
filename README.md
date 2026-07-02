@@ -49,6 +49,9 @@ everything, with your agents right there beside you.
 
 ## The agents, treated like first-class team members
 
+- **Role-ready base agents** 🔭. Spin up pre-built agents made for common business roles (support, sales,
+  finance, dev, ops, and so on) right from Talaria. They come already configured and ready to get to
+  work, so you can hire a whole starter team in a few clicks and tweak from there.
 - **Personal assistants** 🔭. Spin up a Docker-based Hermes agent for each person, hook it to your
   company's model profiles, and let it keep its own skills, tools, and memories.
 - **Versioned identity** 🔭. Each agent's soul, memory, skills, and tools are version controlled and
