@@ -89,10 +89,31 @@ Full project-management suite, all live in `ui/`:
   no self-demotion) + per-person agent allow-lists (`user_agent_access`; empty =
   all agents). `GET/PUT /api/admin/users`, admin-gated.
 
+- **Agent harness (phase A)** - Talaria as the fleet's source of truth. Tables
+  `llm_endpoints` (class local|cloud, feeds the cost split), `agent_defs`,
+  `agent_versions` (immutable payloads: soul + config jsonb incl. `raw` full
+  config.yaml). Importer `server/fleet-import.ts` ingests `TALARIA_STACK_DIR`
+  (default `~/packledger-services/ai/orchestration`): `agents.yaml` roster +
+  per-department `config.yaml`/`SOUL.md`; idempotent (canonical-JSON compare —
+  jsonb reorders keys). Admin API `GET/POST /api/fleet/defs`,
+  `GET /api/fleet/defs/:id/versions`; Definitions panel on `/agents`.
+  Key context: Hermes `model_aliases` = one container serving all model tiers
+  (that + `fallback_providers` replace per-tier scaffolding); the external
+  stack's pain is 6 hand-edited places per agent — the renderer (phase B)
+  generates all of them from the version payload.
+
 ## Next up (in order)
 
-1. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
-   inference (agents page is a thin list already).
+1. **Harness phase B**: render versions → gitignored `fleet/` (config.yaml,
+   SOUL.md, generated compose reusing `hermes-<dept>` volumes + `ai_default`
+   network, bridge `fleet.json` incl. alias entries, `fleet/.env` secrets);
+   docker compose up/stop per agent from the app; bridge fleet hot-reload;
+   migrate `sam-support` as the pilot.
+2. **Harness phase C**: in-app editing (soul/tiers/escalations) → new version →
+   restart; templates (role-ready base agents); create/destroy from UI;
+   usage_events endpoint-class attribution + /cost local-vs-cloud split.
+3. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
+   inference.
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
    ticket), tracked follow-up to the auto-accumulated time-spent field.
 3. Plan chat (turn a channel conversation into tickets on a board).

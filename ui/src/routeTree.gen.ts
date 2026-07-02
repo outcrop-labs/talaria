@@ -38,6 +38,7 @@ import { Route as AppAdminRouteImport } from './routes/_app/admin'
 import { Route as AppActivityRouteImport } from './routes/_app/activity'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
+import { Route as ApiFleetDefsRouteImport } from './routes/api/fleet.defs'
 import { Route as ApiConversationsIdRouteImport } from './routes/api/conversations.$id'
 import { Route as ApiChannelsIdRouteImport } from './routes/api/channels.$id'
 import { Route as ApiBoardsIdRouteImport } from './routes/api/boards.$id'
@@ -65,6 +66,7 @@ import { Route as ApiBoardsIdAgentsRouteImport } from './routes/api/boards.$id.a
 import { Route as ApiAuthGoogleCallbackRouteImport } from './routes/api/auth/google.callback'
 import { Route as ApiAgentsIdHeartbeatRouteImport } from './routes/api/agents.$id.heartbeat'
 import { Route as AppBoardsBoardIdTaskIdRouteImport } from './routes/_app/boards/$boardId.$taskId'
+import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.defs.$id.versions'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -210,6 +212,11 @@ const ApiTasksIdRoute = ApiTasksIdRouteImport.update({
   path: '/api/tasks/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiFleetDefsRoute = ApiFleetDefsRouteImport.update({
+  id: '/defs',
+  path: '/defs',
+  getParentRoute: () => ApiFleetRoute,
+} as any)
 const ApiConversationsIdRoute = ApiConversationsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -345,6 +352,11 @@ const AppBoardsBoardIdTaskIdRoute = AppBoardsBoardIdTaskIdRouteImport.update({
   path: '/$taskId',
   getParentRoute: () => AppBoardsBoardIdRoute,
 } as any)
+const ApiFleetDefsIdVersionsRoute = ApiFleetDefsIdVersionsRouteImport.update({
+  id: '/$id/versions',
+  path: '/$id/versions',
+  getParentRoute: () => ApiFleetDefsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -368,7 +380,7 @@ export interface FileRoutesByFullPath {
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
-  '/api/fleet': typeof ApiFleetRoute
+  '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/teams': typeof ApiTeamsRouteWithChildren
@@ -384,6 +396,7 @@ export interface FileRoutesByFullPath {
   '/api/boards/$id': typeof ApiBoardsIdRouteWithChildren
   '/api/channels/$id': typeof ApiChannelsIdRouteWithChildren
   '/api/conversations/$id': typeof ApiConversationsIdRoute
+  '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/boards/': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -402,6 +415,7 @@ export interface FileRoutesByFullPath {
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
@@ -424,7 +438,7 @@ export interface FileRoutesByTo {
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
-  '/api/fleet': typeof ApiFleetRoute
+  '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/teams': typeof ApiTeamsRouteWithChildren
@@ -441,6 +455,7 @@ export interface FileRoutesByTo {
   '/api/boards/$id': typeof ApiBoardsIdRouteWithChildren
   '/api/channels/$id': typeof ApiChannelsIdRouteWithChildren
   '/api/conversations/$id': typeof ApiConversationsIdRoute
+  '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/boards': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -459,6 +474,7 @@ export interface FileRoutesByTo {
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -483,7 +499,7 @@ export interface FileRoutesById {
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
-  '/api/fleet': typeof ApiFleetRoute
+  '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/teams': typeof ApiTeamsRouteWithChildren
@@ -500,6 +516,7 @@ export interface FileRoutesById {
   '/api/boards/$id': typeof ApiBoardsIdRouteWithChildren
   '/api/channels/$id': typeof ApiChannelsIdRouteWithChildren
   '/api/conversations/$id': typeof ApiConversationsIdRoute
+  '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/_app/boards/': typeof AppBoardsIndexRoute
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -518,6 +535,7 @@ export interface FileRoutesById {
   '/api/tasks/$id/review': typeof ApiTasksIdReviewRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -559,6 +577,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id'
     | '/api/channels/$id'
     | '/api/conversations/$id'
+    | '/api/fleet/defs'
     | '/api/tasks/$id'
     | '/boards/'
     | '/boards/$boardId/$taskId'
@@ -577,6 +596,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/review'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/fleet/defs/$id/versions'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -616,6 +636,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id'
     | '/api/channels/$id'
     | '/api/conversations/$id'
+    | '/api/fleet/defs'
     | '/api/tasks/$id'
     | '/boards'
     | '/boards/$boardId/$taskId'
@@ -634,6 +655,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/review'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/fleet/defs/$id/versions'
   id:
     | '__root__'
     | '/_app'
@@ -674,6 +696,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id'
     | '/api/channels/$id'
     | '/api/conversations/$id'
+    | '/api/fleet/defs'
     | '/api/tasks/$id'
     | '/_app/boards/'
     | '/_app/boards/$boardId/$taskId'
@@ -692,6 +715,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/review'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/fleet/defs/$id/versions'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -703,7 +727,7 @@ export interface RootRouteChildren {
   ApiChatRoute: typeof ApiChatRoute
   ApiConversationsRoute: typeof ApiConversationsRouteWithChildren
   ApiCostRoute: typeof ApiCostRoute
-  ApiFleetRoute: typeof ApiFleetRoute
+  ApiFleetRoute: typeof ApiFleetRouteWithChildren
   ApiNotificationsRoute: typeof ApiNotificationsRoute
   ApiProfileRoute: typeof ApiProfileRoute
   ApiTeamsRoute: typeof ApiTeamsRouteWithChildren
@@ -922,6 +946,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTasksIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/fleet/defs': {
+      id: '/api/fleet/defs'
+      path: '/defs'
+      fullPath: '/api/fleet/defs'
+      preLoaderRoute: typeof ApiFleetDefsRouteImport
+      parentRoute: typeof ApiFleetRoute
+    }
     '/api/conversations/$id': {
       id: '/api/conversations/$id'
       path: '/$id'
@@ -1111,6 +1142,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppBoardsBoardIdTaskIdRouteImport
       parentRoute: typeof AppBoardsBoardIdRoute
     }
+    '/api/fleet/defs/$id/versions': {
+      id: '/api/fleet/defs/$id/versions'
+      path: '/$id/versions'
+      fullPath: '/api/fleet/defs/$id/versions'
+      preLoaderRoute: typeof ApiFleetDefsIdVersionsRouteImport
+      parentRoute: typeof ApiFleetDefsRoute
+    }
   }
 }
 
@@ -1250,6 +1288,30 @@ const ApiConversationsRouteChildren: ApiConversationsRouteChildren = {
 const ApiConversationsRouteWithChildren =
   ApiConversationsRoute._addFileChildren(ApiConversationsRouteChildren)
 
+interface ApiFleetDefsRouteChildren {
+  ApiFleetDefsIdVersionsRoute: typeof ApiFleetDefsIdVersionsRoute
+}
+
+const ApiFleetDefsRouteChildren: ApiFleetDefsRouteChildren = {
+  ApiFleetDefsIdVersionsRoute: ApiFleetDefsIdVersionsRoute,
+}
+
+const ApiFleetDefsRouteWithChildren = ApiFleetDefsRoute._addFileChildren(
+  ApiFleetDefsRouteChildren,
+)
+
+interface ApiFleetRouteChildren {
+  ApiFleetDefsRoute: typeof ApiFleetDefsRouteWithChildren
+}
+
+const ApiFleetRouteChildren: ApiFleetRouteChildren = {
+  ApiFleetDefsRoute: ApiFleetDefsRouteWithChildren,
+}
+
+const ApiFleetRouteWithChildren = ApiFleetRoute._addFileChildren(
+  ApiFleetRouteChildren,
+)
+
 interface ApiTeamsRouteChildren {
   ApiTeamsIdMembersRoute: typeof ApiTeamsIdMembersRoute
 }
@@ -1301,7 +1363,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiChatRoute: ApiChatRoute,
   ApiConversationsRoute: ApiConversationsRouteWithChildren,
   ApiCostRoute: ApiCostRoute,
-  ApiFleetRoute: ApiFleetRoute,
+  ApiFleetRoute: ApiFleetRouteWithChildren,
   ApiNotificationsRoute: ApiNotificationsRoute,
   ApiProfileRoute: ApiProfileRoute,
   ApiTeamsRoute: ApiTeamsRouteWithChildren,

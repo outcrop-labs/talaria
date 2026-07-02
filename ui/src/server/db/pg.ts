@@ -263,6 +263,50 @@ const MIGRATIONS: string[] = [
    )`,
   `create index if not exists usage_events_agent_idx on usage_events(agent_model, created_at desc)`,
   `create index if not exists usage_events_created_idx on usage_events(created_at desc)`,
+  // ── Agent harness: Talaria as the single source of truth for the fleet ──────
+  // LLM endpoint registry — the model backends agents draw from. class drives
+  // the local-vs-cloud ledger split; api_key_env names the env var (never the key).
+  `create table if not exists llm_endpoints (
+     id uuid primary key default gen_random_uuid(),
+     name text unique not null,
+     provider text not null,
+     base_url text,
+     class text not null default 'cloud',
+     api_key_env text,
+     context_length integer,
+     price_in_per_mtok numeric,
+     price_out_per_mtok numeric,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // Agent definitions — one row per agent identity. `managed` flips true once
+  // Talaria renders + orchestrates the agent (Phase B); imported-only until then.
+  `create table if not exists agent_defs (
+     id uuid primary key default gen_random_uuid(),
+     slug text unique not null,
+     department text not null,
+     model text unique not null,
+     display_name text not null,
+     enabled boolean not null default true,
+     managed boolean not null default false,
+     current_version integer not null default 0,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // Immutable version payloads — soul + structured config (main model, aliases,
+  // fallbacks, toolsets, mcp servers, plugins, and the full raw config for
+  // faithful rendering). Every edit is a new version: diffable, revertible.
+  `create table if not exists agent_versions (
+     id uuid primary key default gen_random_uuid(),
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     version integer not null,
+     soul text not null default '',
+     config jsonb not null default '{}',
+     note text,
+     created_by text,
+     created_at timestamptz not null default now(),
+     unique (agent_id, version)
+   )`,
 ]
 
 function ensureMigrated(): Promise<void> {
