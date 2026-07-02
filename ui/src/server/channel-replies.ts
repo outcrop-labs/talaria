@@ -7,6 +7,7 @@ import { describeAgent, proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
 import { addNotification } from './notifications'
 import { estimateTokens, recordUsage } from './usage'
+import { routedModelFor } from './fleet-agents'
 import {
   insertChannelMessage,
   listChannelAgents,
@@ -55,16 +56,21 @@ export async function notifyUserMentions(
 }
 
 /** Channel agents @mentioned in the text — matched on model id ("@dex-developer")
- *  or label ("@Dex"), case-insensitive. */
-export function mentionedAgents(content: string, channelAgents: string[]): string[] {
-  const mentions = new Set(
-    [...content.matchAll(/@([a-z0-9][a-z0-9-]*)/gi)].map((m) => m[1]!.toLowerCase()),
-  )
-  if (mentions.size === 0) return []
-  return channelAgents.filter((model) => {
+ *  or label ("@Dex"), case-insensitive. "@Dex:opus" requests a model tier; the
+ *  first mention of an agent wins (one reply per agent per message). */
+export function mentionedAgents(content: string, channelAgents: string[]): Array<{ model: string; tier: string | null }> {
+  const mentions = [...content.matchAll(/@([a-z0-9][a-z0-9-]*)(?::([a-z0-9-]+))?/gi)].map((m) => ({
+    token: m[1]!.toLowerCase(),
+    tier: m[2]?.toLowerCase() ?? null,
+  }))
+  if (mentions.length === 0) return []
+  const hits: Array<{ model: string; tier: string | null }> = []
+  for (const model of channelAgents) {
     const { label } = describeAgent(model)
-    return mentions.has(model.toLowerCase()) || mentions.has(label.toLowerCase())
-  })
+    const hit = mentions.find((m) => m.token === model.toLowerCase() || m.token === label.toLowerCase())
+    if (hit) hits.push({ model, tier: hit.tier })
+  }
+  return hits
 }
 
 /** The channel transcript as OpenAI-style history from one agent's point of
@@ -100,10 +106,13 @@ function systemPrompt(model: string, channelName: string, channelAgents: string[
 export async function triggerAgentReplies(channelId: string, channelName: string, content: string): Promise<void> {
   const agents = await listChannelAgents(channelId)
   const mentioned = mentionedAgents(content, agents)
-  for (const model of mentioned) {
+  for (const { model, tier } of mentioned) {
+    // An unknown tier falls back to the agent's main model — a typo shouldn't
+    // swallow the reply.
+    const routed = (tier ? await routedModelFor(model, tier).catch(() => null) : null) ?? model
     const history = await listChannelMessages(channelId, -1, 60)
     const row = await insertChannelMessage(channelId, 'agent', model, '', 'streaming')
-    void streamReply(channelId, row.id, model, [
+    void streamReply(channelId, row.id, model, routed, [
       { role: 'system', content: systemPrompt(model, channelName, agents) },
       ...transcriptFor(model, history),
     ]).catch(() => updateChannelMessage(channelId, row.id, '', 'error'))
@@ -114,9 +123,10 @@ async function streamReply(
   channelId: string,
   messageId: string,
   model: string,
+  routedModel: string,
   messages: Array<{ role: string; content: string }>,
 ): Promise<void> {
-  const upstream = await proxyChat({ model, messages })
+  const upstream = await proxyChat({ model: routedModel, messages })
   if (!upstream.ok || !upstream.body) {
     await updateChannelMessage(channelId, messageId, `(gateway error ${upstream.status})`, 'error')
     return
@@ -130,6 +140,8 @@ async function streamReply(
       agentModel: model,
       source: 'channel',
       refId: channelId,
+      // Attribute tier turns to the ALIAS endpoint, mirroring /api/chat.
+      tier: routedModel !== model ? routedModel.slice(model.length + 1) : null,
       promptTokens: usage?.promptTokens ?? estimateTokens(promptChars),
       completionTokens: usage?.completionTokens ?? estimateTokens(content.length),
       estimated: !usage,
