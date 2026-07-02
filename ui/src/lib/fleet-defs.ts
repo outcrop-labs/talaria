@@ -92,6 +92,28 @@ export function useFleetContainers(enabled: boolean) {
   })
 }
 
+export interface AgentEdit {
+  soul: string
+  main: ModelTarget
+  aliases: Array<ModelTarget & { name: string }>
+  fallbacks: ModelTarget[]
+  note?: string
+  apply?: boolean
+}
+
+export async function saveAgentEdit(
+  id: string,
+  edit: AgentEdit,
+): Promise<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; error?: string }> {
+  const r = await fetch(`/api/fleet/defs/${id}/edit`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(edit),
+  })
+  return (await r.json().catch(() => ({ error: `save failed (${r.status})` }))) as { error?: string }
+}
+
 export type FleetAction = 'migrate' | 'up' | 'stop' | 'legacy-start' | 'legacy-stop'
 
 export async function controlAgent(id: string, action: FleetAction): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {

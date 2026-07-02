@@ -293,6 +293,10 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now(),
      updated_at timestamptz not null default now()
    )`,
+  // Local-vs-cloud attribution on the token ledger: which upstream model class
+  // served the generation (from the agent's main endpoint at generation time).
+  `alter table usage_events add column if not exists endpoint_class text`,
+  `alter table usage_events add column if not exists llm_model text`,
   // Immutable version payloads — soul + structured config (main model, aliases,
   // fallbacks, toolsets, mcp servers, plugins, and the full raw config for
   // faithful rendering). Every edit is a new version: diffable, revertible.

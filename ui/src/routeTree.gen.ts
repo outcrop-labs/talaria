@@ -69,6 +69,7 @@ import { Route as ApiAuthGoogleCallbackRouteImport } from './routes/api/auth/goo
 import { Route as ApiAgentsIdHeartbeatRouteImport } from './routes/api/agents.$id.heartbeat'
 import { Route as AppBoardsBoardIdTaskIdRouteImport } from './routes/_app/boards/$boardId.$taskId'
 import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.defs.$id.versions'
+import { Route as ApiFleetDefsIdEditRouteImport } from './routes/api/fleet.defs.$id.edit'
 import { Route as ApiFleetAgentsIdControlRouteImport } from './routes/api/fleet.agents.$id.control'
 
 const LoginRoute = LoginRouteImport.update({
@@ -370,6 +371,11 @@ const ApiFleetDefsIdVersionsRoute = ApiFleetDefsIdVersionsRouteImport.update({
   path: '/$id/versions',
   getParentRoute: () => ApiFleetDefsRoute,
 } as any)
+const ApiFleetDefsIdEditRoute = ApiFleetDefsIdEditRouteImport.update({
+  id: '/$id/edit',
+  path: '/$id/edit',
+  getParentRoute: () => ApiFleetDefsRoute,
+} as any)
 const ApiFleetAgentsIdControlRoute = ApiFleetAgentsIdControlRouteImport.update({
   id: '/agents/$id/control',
   path: '/agents/$id/control',
@@ -436,6 +442,7 @@ export interface FileRoutesByFullPath {
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
+  '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
 }
 export interface FileRoutesByTo {
@@ -498,6 +505,7 @@ export interface FileRoutesByTo {
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
+  '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
 }
 export interface FileRoutesById {
@@ -562,6 +570,7 @@ export interface FileRoutesById {
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
+  '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
 }
 export interface FileRouteTypes {
@@ -626,6 +635,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
     | '/api/fleet/agents/$id/control'
+    | '/api/fleet/defs/$id/edit'
     | '/api/fleet/defs/$id/versions'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -688,6 +698,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
     | '/api/fleet/agents/$id/control'
+    | '/api/fleet/defs/$id/edit'
     | '/api/fleet/defs/$id/versions'
   id:
     | '__root__'
@@ -751,6 +762,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
     | '/api/fleet/agents/$id/control'
+    | '/api/fleet/defs/$id/edit'
     | '/api/fleet/defs/$id/versions'
   fileRoutesById: FileRoutesById
 }
@@ -1199,6 +1211,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFleetDefsIdVersionsRouteImport
       parentRoute: typeof ApiFleetDefsRoute
     }
+    '/api/fleet/defs/$id/edit': {
+      id: '/api/fleet/defs/$id/edit'
+      path: '/$id/edit'
+      fullPath: '/api/fleet/defs/$id/edit'
+      preLoaderRoute: typeof ApiFleetDefsIdEditRouteImport
+      parentRoute: typeof ApiFleetDefsRoute
+    }
     '/api/fleet/agents/$id/control': {
       id: '/api/fleet/agents/$id/control'
       path: '/agents/$id/control'
@@ -1346,10 +1365,12 @@ const ApiConversationsRouteWithChildren =
   ApiConversationsRoute._addFileChildren(ApiConversationsRouteChildren)
 
 interface ApiFleetDefsRouteChildren {
+  ApiFleetDefsIdEditRoute: typeof ApiFleetDefsIdEditRoute
   ApiFleetDefsIdVersionsRoute: typeof ApiFleetDefsIdVersionsRoute
 }
 
 const ApiFleetDefsRouteChildren: ApiFleetDefsRouteChildren = {
+  ApiFleetDefsIdEditRoute: ApiFleetDefsIdEditRoute,
   ApiFleetDefsIdVersionsRoute: ApiFleetDefsIdVersionsRoute,
 }
 

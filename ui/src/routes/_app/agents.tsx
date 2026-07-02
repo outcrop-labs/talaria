@@ -8,6 +8,7 @@ import { Disclosure } from '@/components/ui/disclosure'
 import { Markdown } from '@/components/ui/markdown'
 import { useFleet, relativeTime, STATUS_COLOR } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
+import { AgentEditorModal } from '@/components/fleet/agent-editor'
 import {
   controlAgent,
   importFleet,
@@ -16,6 +17,7 @@ import {
   type AgentContainers,
   type AgentDef,
   type FleetAction,
+  type LlmEndpoint,
   type ModelTarget,
 } from '@/lib/fleet-defs'
 
@@ -146,7 +148,7 @@ function DefinitionsPanel() {
       ) : (
         <ul className="divide-y divide-line-subtle">
           {defs.map((d) => (
-            <DefRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} />
+            <DefRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={data?.endpoints ?? []} />
           ))}
         </ul>
       )}
@@ -162,11 +164,20 @@ function liveContainer(d: AgentDef, c: AgentContainers | null) {
   return { where: 'legacy' as const, state: legacy }
 }
 
-function DefRow({ def: d, containers }: { def: AgentDef; containers: AgentContainers | null }) {
+function DefRow({
+  def: d,
+  containers,
+  endpoints,
+}: {
+  def: AgentDef
+  containers: AgentContainers | null
+  endpoints: LlmEndpoint[]
+}) {
   const qc = useQueryClient()
   const cfg = d.latest?.config
   const [pending, setPending] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
   const live = liveContainer(d, containers)
   const running = live.state?.state === 'running'
 
@@ -207,6 +218,9 @@ function DefRow({ def: d, containers }: { def: AgentDef; containers: AgentContai
               </span>
             </span>
             <span className="ml-auto shrink-0 text-xs text-muted">v{d.currentVersion}</span>
+            <Button variant="ghost" size="sm" className="shrink-0" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
             {pending ? (
               <span className="shrink-0 text-xs text-muted">{pending}…</span>
             ) : d.managed ? (
@@ -248,6 +262,9 @@ function DefRow({ def: d, containers }: { def: AgentDef; containers: AgentContai
             <div className="mt-1 text-xs" style={{ color: 'var(--theme-danger)' }}>
               {err}
             </div>
+          )}
+          {editing && (
+            <AgentEditorModal open={editing} onClose={() => setEditing(false)} def={d} endpoints={endpoints} />
           )}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {cfg?.main && <TargetChip t={cfg.main} name="main" />}
