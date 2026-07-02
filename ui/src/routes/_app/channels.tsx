@@ -45,10 +45,10 @@ function ChannelsPage() {
   return (
     <div className="flex h-full min-h-0">
       <aside className="flex h-full w-60 shrink-0 flex-col border-r border-line-subtle bg-sidebar">
-        <div className="border-b border-line-subtle p-3">
+        <div className="border-b border-line-subtle p-4">
           <InlineCreate label="New channel" placeholder="channel name" onSubmit={(v) => void create(v)} className="w-full" />
         </div>
-        <div className="flex-1 overflow-y-auto p-2">
+        <div className="flex-1 overflow-y-auto p-3">
           {channels.length === 0 ? (
             <div className="px-2 py-6 text-center text-xs text-muted">{isLoading ? 'Loading…' : 'No channels yet.'}</div>
           ) : (
@@ -76,7 +76,7 @@ function ChannelsPage() {
       <main className="min-h-0 min-w-0 flex-1">
         {selected ? (
           <div className="flex h-full min-h-0 flex-col">
-            <header className="flex items-center gap-2 border-b border-line-subtle px-4 py-2.5">
+            <header className="flex items-center gap-2 border-b border-line-subtle px-5 py-3">
               <span className="text-sm font-semibold text-fg">#{selected.name}</span>
               {selected.topic && <span className="truncate text-xs text-muted">{selected.topic}</span>}
               <span className="ml-auto" />

@@ -33,8 +33,8 @@ function AgentsRoster() {
   const isAdmin = session?.role === 'admin'
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-5xl space-y-6">
+    <div className="h-full overflow-y-auto p-8">
+      <div className="mx-auto max-w-5xl space-y-8">
         <h1 className="mercury-text text-2xl font-semibold">Agents</h1>
 
         {isAdmin && <DefinitionsPanel />}
@@ -129,7 +129,7 @@ function DefinitionsPanel() {
   }
 
   return (
-    <Panel className="p-4">
+    <Panel className="p-5">
       <div className="mb-3 flex items-center gap-3">
         <div>
           <h2 className="text-sm font-semibold text-fg">Definitions</h2>
@@ -208,7 +208,7 @@ function DefRow({
   }
 
   return (
-    <li className="py-3">
+    <li className="py-4">
       <div className="flex items-start gap-3">
         <Avatar name={d.displayName} className="mt-0.5 h-7 w-7" />
         <div className="min-w-0 flex-1">

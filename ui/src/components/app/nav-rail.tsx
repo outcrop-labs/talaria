@@ -20,7 +20,7 @@ export function NavRail({ user }: { user: SessionUser }) {
   const unread = useNotifications().data?.unread ?? 0
 
   return (
-    <nav className="flex h-full w-52 shrink-0 flex-col gap-4 overflow-y-auto border-r border-line-subtle bg-sidebar px-2 py-4">
+    <nav className="flex h-full w-56 shrink-0 flex-col gap-6 overflow-y-auto border-r border-line-subtle bg-sidebar px-3 py-5">
       {NAV.map((section) => {
         const items = section.items.filter((i) => !i.adminOnly || isAdmin)
         if (items.length === 0) return null
@@ -33,8 +33,8 @@ export function NavRail({ user }: { user: SessionUser }) {
                   <Link
                     to={item.to}
                     activeOptions={{ exact: item.to === '/' }}
-                    className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-muted transition-colors hover:bg-card hover:text-fg"
-                    activeProps={{ className: 'flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm bg-card text-fg [&_.nav-ico]:text-accent' }}
+                    className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted transition-colors hover:bg-card hover:text-fg"
+                    activeProps={{ className: 'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm bg-card text-fg [&_.nav-ico]:text-accent' }}
                   >
                     <span className="nav-ico w-4 text-center text-muted">{item.icon}</span>
                     <span className="flex-1 truncate">{item.label}</span>

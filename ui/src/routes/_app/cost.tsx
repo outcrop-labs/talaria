@@ -22,8 +22,8 @@ function CostPage() {
   const total = (x?: CostTotals) => (x ? x.prompt + x.completion : 0)
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-5xl space-y-6">
+    <div className="h-full overflow-y-auto p-8">
+      <div className="mx-auto max-w-5xl space-y-8">
         <h1 className="mercury-text text-2xl font-semibold">Cost</h1>
 
         {isLoading ? (
@@ -56,7 +56,7 @@ function CostPage() {
             </div>
 
             {t && t.split.local + t.split.cloud > 0 && (
-              <Panel className="p-4">
+              <Panel className="p-5">
                 <h2 className="mb-1 text-sm font-semibold text-fg">Local vs cloud · 30 days</h2>
                 <p className="mb-3 text-xs text-muted">
                   {formatTokens(t.split.local)} on your own hardware · {formatTokens(t.split.cloud)} on cloud APIs —{' '}
@@ -83,7 +83,7 @@ function CostPage() {
             )}
 
             {perDay.length > 1 && (
-              <Panel className="p-4">
+              <Panel className="p-5">
                 <div className="mb-3 flex items-baseline gap-4">
                   <h2 className="text-sm font-semibold text-fg">Tokens per day · last 14 days</h2>
                   <span className="inline-flex items-center gap-1.5 text-xs text-muted">
@@ -97,13 +97,13 @@ function CostPage() {
               </Panel>
             )}
 
-            <Panel className="p-4">
+            <Panel className="p-5">
               <h2 className="mb-3 text-sm font-semibold text-fg">By agent · 30 days</h2>
               <ul className="divide-y divide-line-subtle">
                 {perAgent.map((a) => {
                   const d = agentLabel(a.agentModel)
                   return (
-                    <li key={a.agentModel} className="flex items-center gap-3 py-2">
+                    <li key={a.agentModel} className="flex items-center gap-3 py-2.5">
                       <Avatar name={d.label} className="h-6 w-6" />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm text-fg">{d.label}</span>

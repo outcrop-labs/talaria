@@ -42,8 +42,8 @@ function ModelsPage() {
   const cloud = endpoints.filter((e) => e.class === 'cloud')
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-4xl space-y-6">
+    <div className="h-full overflow-y-auto p-8">
+      <div className="mx-auto max-w-4xl space-y-8">
         <div className="flex items-center gap-3">
           <h1 className="mercury-text text-2xl font-semibold">Models</h1>
           <Button size="sm" className="ml-auto" onClick={() => setAdding(true)}>
@@ -120,7 +120,7 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
   }
 
   return (
-    <Panel className="p-4">
+    <Panel className="p-5">
       <div className="mb-2 flex items-center gap-2">
         <ProviderMark provider={ep.provider} name={ep.name} />
         <span className="text-sm font-semibold text-fg">{ep.name}</span>

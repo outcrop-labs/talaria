@@ -151,7 +151,7 @@ export function ChatView({
 
   return (
     <div className="mx-auto flex h-full w-full max-w-[var(--chat-content-max-width)] flex-col">
-      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-6">
+      <div className="flex-1 space-y-5 overflow-y-auto px-6 py-6">
         {messages.length === 0 ? (
           <div className="grid h-full place-items-center text-center">
             <div>
@@ -172,7 +172,7 @@ export function ChatView({
         <div ref={bottomRef} />
       </div>
 
-      <div className="px-4 pb-6">
+      <div className="px-6 pb-6">
         <div className="mercury-panel flex items-end gap-2 rounded-2xl p-2">
           <Textarea
             rows={1}
