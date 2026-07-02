@@ -13,6 +13,7 @@ export type ChatEvent =
   | { type: 'content'; text: string }
   | { type: 'reasoning'; text: string }
   | { type: 'tool'; id?: string; name: string; label: string; status?: 'running' | 'completed' }
+  | { type: 'usage'; promptTokens: number; completionTokens: number }
 
 function parseToolProgress(payload: string): Extract<ChatEvent, { type: 'tool' }> | null {
   try {
@@ -66,11 +67,20 @@ export async function* parseAgentStream(body: ReadableStream<Uint8Array>): Async
         try {
           const json = JSON.parse(data) as {
             choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>
+            usage?: { prompt_tokens?: number; completion_tokens?: number }
           }
           const d = json.choices?.[0]?.delta
           if (d?.content) yield { type: 'content', text: d.content }
           else if (d?.reasoning || d?.reasoning_content) {
             yield { type: 'reasoning', text: d.reasoning || d.reasoning_content || '' }
+          }
+          // Final chunk carries usage when stream_options.include_usage is honoured.
+          if (json.usage && (json.usage.prompt_tokens || json.usage.completion_tokens)) {
+            yield {
+              type: 'usage',
+              promptTokens: json.usage.prompt_tokens ?? 0,
+              completionTokens: json.usage.completion_tokens ?? 0,
+            }
           }
         } catch {
           /* keep-alive / partial frame */

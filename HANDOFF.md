@@ -78,10 +78,17 @@ Full project-management suite, all live in `ui/`:
   `GET/PUT /api/notifications`; the composer autocompletes members and agents.
   Mention tokens: email localpart / dashed name / first name
   (`userMentionTokens` in `server/channel-replies.ts` — the composer mirrors it).
+- **Token ledger** - `usage_events` (one row per agent generation), recorded from
+  both persist paths (`chat-persist.ts`, `channel-replies.ts`). Real counts via
+  `stream_options.include_usage` (the gateway plane honours it — prompt tokens run
+  ~17-35k/turn because each turn carries the agent's full context); char/4
+  estimates flagged when absent. `GET /api/cost` + the `/cost` page (tiles, 14-day
+  strip, per-agent). Dollar cost needs per-LLM pricing attribution (next-up #2).
 
 ## Next up (in order)
 
-1. Cost/token ledger, admin console (the 6-line stub pages under `_app/`).
+1. Admin console (the remaining 6-line stub pages under `_app/`: admin, activity,
+   alerts, agents detail, skills, memory, mcp, inference).
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
    ticket), tracked follow-up to the auto-accumulated time-spent field.
 3. Plan chat (turn a channel conversation into tickets on a board).

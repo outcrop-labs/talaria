@@ -68,6 +68,11 @@ not proxied from mission-control.
   members alongside agents; @mentioning a person drops a notification in their
   **Inbox** (new nav surface with an unread badge). `GET/PUT /api/notifications`;
   mention tokens are the email localpart, dashed name, or first name.
+- **Token ledger**, every agent generation (1:1 chat turn + channel reply) lands
+  in `usage_events` — real gateway-reported counts (`stream_options.include_usage`),
+  or char-based estimates flagged `~` when the gateway doesn't report. The `/cost`
+  page is live: today/7d/30d token tiles, a 14-day daily strip, and a per-agent
+  breakdown. Dollar cost lands with per-LLM pricing attribution (see ROADMAP).
 
 ### Fixed
 - SSE event streams no longer crash the server when a client disconnects before

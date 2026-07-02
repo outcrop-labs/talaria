@@ -17,6 +17,7 @@ import { Route as ApiTeamsRouteImport } from './routes/api/teams'
 import { Route as ApiProfileRouteImport } from './routes/api/profile'
 import { Route as ApiNotificationsRouteImport } from './routes/api/notifications'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
+import { Route as ApiCostRouteImport } from './routes/api/cost'
 import { Route as ApiConversationsRouteImport } from './routes/api/conversations'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiChannelsRouteImport } from './routes/api/channels'
@@ -101,6 +102,11 @@ const ApiNotificationsRoute = ApiNotificationsRouteImport.update({
 const ApiFleetRoute = ApiFleetRouteImport.update({
   id: '/api/fleet',
   path: '/api/fleet',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCostRoute = ApiCostRouteImport.update({
+  id: '/api/cost',
+  path: '/api/cost',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiConversationsRoute = ApiConversationsRouteImport.update({
@@ -355,6 +361,7 @@ export interface FileRoutesByFullPath {
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
+  '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
@@ -409,6 +416,7 @@ export interface FileRoutesByTo {
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
+  '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
@@ -466,6 +474,7 @@ export interface FileRoutesById {
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
+  '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
@@ -524,6 +533,7 @@ export interface FileRouteTypes {
     | '/api/channels'
     | '/api/chat'
     | '/api/conversations'
+    | '/api/cost'
     | '/api/fleet'
     | '/api/notifications'
     | '/api/profile'
@@ -578,6 +588,7 @@ export interface FileRouteTypes {
     | '/api/channels'
     | '/api/chat'
     | '/api/conversations'
+    | '/api/cost'
     | '/api/fleet'
     | '/api/notifications'
     | '/api/profile'
@@ -634,6 +645,7 @@ export interface FileRouteTypes {
     | '/api/channels'
     | '/api/chat'
     | '/api/conversations'
+    | '/api/cost'
     | '/api/fleet'
     | '/api/notifications'
     | '/api/profile'
@@ -678,6 +690,7 @@ export interface RootRouteChildren {
   ApiChannelsRoute: typeof ApiChannelsRouteWithChildren
   ApiChatRoute: typeof ApiChatRoute
   ApiConversationsRoute: typeof ApiConversationsRouteWithChildren
+  ApiCostRoute: typeof ApiCostRoute
   ApiFleetRoute: typeof ApiFleetRoute
   ApiNotificationsRoute: typeof ApiNotificationsRoute
   ApiProfileRoute: typeof ApiProfileRoute
@@ -747,6 +760,13 @@ declare module '@tanstack/react-router' {
       path: '/api/fleet'
       fullPath: '/api/fleet'
       preLoaderRoute: typeof ApiFleetRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cost': {
+      id: '/api/cost'
+      path: '/api/cost'
+      fullPath: '/api/cost'
+      preLoaderRoute: typeof ApiCostRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/conversations': {
@@ -1260,6 +1280,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiChannelsRoute: ApiChannelsRouteWithChildren,
   ApiChatRoute: ApiChatRoute,
   ApiConversationsRoute: ApiConversationsRouteWithChildren,
+  ApiCostRoute: ApiCostRoute,
   ApiFleetRoute: ApiFleetRoute,
   ApiNotificationsRoute: ApiNotificationsRoute,
   ApiProfileRoute: ApiProfileRoute,
