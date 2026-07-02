@@ -18,6 +18,7 @@ import { Route as ApiSkillsRouteImport } from './routes/api/skills'
 import { Route as ApiProfileRouteImport } from './routes/api/profile'
 import { Route as ApiNotificationsRouteImport } from './routes/api/notifications'
 import { Route as ApiMcpRouteImport } from './routes/api/mcp'
+import { Route as ApiInferenceRouteImport } from './routes/api/inference'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
 import { Route as ApiCostRouteImport } from './routes/api/cost'
 import { Route as ApiConversationsRouteImport } from './routes/api/conversations'
@@ -126,6 +127,11 @@ const ApiNotificationsRoute = ApiNotificationsRouteImport.update({
 const ApiMcpRoute = ApiMcpRouteImport.update({
   id: '/api/mcp',
   path: '/api/mcp',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiInferenceRoute = ApiInferenceRouteImport.update({
+  id: '/api/inference',
+  path: '/api/inference',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiFleetRoute = ApiFleetRouteImport.update({
@@ -481,6 +487,7 @@ export interface FileRoutesByFullPath {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/inference': typeof ApiInferenceRoute
   '/api/mcp': typeof ApiMcpRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
@@ -555,6 +562,7 @@ export interface FileRoutesByTo {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/inference': typeof ApiInferenceRoute
   '/api/mcp': typeof ApiMcpRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
@@ -632,6 +640,7 @@ export interface FileRoutesById {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/inference': typeof ApiInferenceRoute
   '/api/mcp': typeof ApiMcpRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
@@ -710,6 +719,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/inference'
     | '/api/mcp'
     | '/api/notifications'
     | '/api/profile'
@@ -784,6 +794,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/inference'
     | '/api/mcp'
     | '/api/notifications'
     | '/api/profile'
@@ -860,6 +871,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/inference'
     | '/api/mcp'
     | '/api/notifications'
     | '/api/profile'
@@ -923,6 +935,7 @@ export interface RootRouteChildren {
   ApiConversationsRoute: typeof ApiConversationsRouteWithChildren
   ApiCostRoute: typeof ApiCostRoute
   ApiFleetRoute: typeof ApiFleetRouteWithChildren
+  ApiInferenceRoute: typeof ApiInferenceRoute
   ApiMcpRoute: typeof ApiMcpRoute
   ApiNotificationsRoute: typeof ApiNotificationsRoute
   ApiProfileRoute: typeof ApiProfileRoute
@@ -1002,6 +1015,13 @@ declare module '@tanstack/react-router' {
       path: '/api/mcp'
       fullPath: '/api/mcp'
       preLoaderRoute: typeof ApiMcpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/inference': {
+      id: '/api/inference'
+      path: '/api/inference'
+      fullPath: '/api/inference'
+      preLoaderRoute: typeof ApiInferenceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/fleet': {
@@ -1726,6 +1746,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiConversationsRoute: ApiConversationsRouteWithChildren,
   ApiCostRoute: ApiCostRoute,
   ApiFleetRoute: ApiFleetRouteWithChildren,
+  ApiInferenceRoute: ApiInferenceRoute,
   ApiMcpRoute: ApiMcpRoute,
   ApiNotificationsRoute: ApiNotificationsRoute,
   ApiProfileRoute: ApiProfileRoute,
