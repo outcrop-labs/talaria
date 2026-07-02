@@ -44,6 +44,18 @@ not proxied from mission-control.
   checked against the board's agent policy and attributed to the named agent in
   activity/comments. Named agents on `PUT /api/tasks/:id` are policy-checked too;
   unnamed key callers (legacy plugin heartbeat/report) keep their old access.
+- **Group chat (channels)**, Slack-style channels where teammates and fleet
+  agents are members. Channels + members + agents + messages live in Talaria's
+  Postgres; live over Redis pub/sub → SSE (`/api/channels/:id/events`). Agents
+  reply when **@mentioned** (by name or model id): the reply streams into the
+  channel for every member, built from the channel transcript via the gateway
+  plane. Composer has @mention autocomplete; channel settings manage people +
+  agents (adding an agent requires access to it). New "Channels" nav surface.
+
+### Fixed
+- SSE event streams no longer crash the server when a client disconnects before
+  the Redis subscriber finishes connecting (unhandled rejection in the
+  board/channel event stream).
 
 ### Changed
 - Sessions are Redis-backed (opaque sid → `sess:<sid>`), not HMAC cookies.

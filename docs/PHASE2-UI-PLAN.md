@@ -139,9 +139,10 @@ Early task: a **component inventory** pass to mark each as lift-as-is / adapt / 
   are vendored under [`vendor/`](../vendor) (gitignored). Still open: the per-component
   lift/adapt/rebuild map (weighted toward mission-control's Next-to-TanStack ports).
 - **P2.1 Simple view MVP. 🚧 in progress.** Shell + branding + auth done; the agent MCP
-  (`talaria-mcp`, [`mcp/`](../mcp)) shipped with safe create/triage tools only; **next up** is the agent
-  picker + streaming chat over the gateway plane (`/v1/models`, model-routed chat). This is Talaria's own
-  chat surface, built by lifting the chat/agent UX out of hermes-workspace.
+  (`talaria-mcp`, [`mcp/`](../mcp)) shipped with safe create/triage tools only; the agent picker +
+  streaming chat over the gateway plane (`/v1/models`, model-routed chat) is live as the home surface;
+  and **group chat channels** (humans + @mentioned agents, streamed over SSE) shipped at `/channels`.
+  **Next up:** notifications + user @mentions, then the cost/token ledger.
 - **P2.2 Advanced view MVP.** Fleet dashboard (agents + cost) + task board, served from Talaria's own
   Postgres, behind the mode toggle.
 - **P2.3 Missions + sessions + activity** in both views; polish the simple-to-advanced handoff.

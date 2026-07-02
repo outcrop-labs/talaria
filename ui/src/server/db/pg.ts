@@ -198,6 +198,44 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now(),
      primary key (task_id, depends_on_id)
    )`,
+  // Group chat — Slack-style channels where humans and fleet agents are members.
+  // msg_seq is a per-channel counter (like boards.ticket_seq): channels have
+  // many concurrent writers, so max(seq)+1 would race.
+  `create table if not exists channels (
+     id uuid primary key default gen_random_uuid(),
+     name text not null,
+     topic text,
+     created_by uuid references users(id) on delete set null,
+     msg_seq integer not null default 0,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now(),
+     archived_at timestamptz
+   )`,
+  `create table if not exists channel_members (
+     channel_id uuid not null references channels(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     role text not null default 'member',
+     created_at timestamptz not null default now(),
+     primary key (channel_id, user_id)
+   )`,
+  `create table if not exists channel_agents (
+     channel_id uuid not null references channels(id) on delete cascade,
+     agent_model text not null,
+     primary key (channel_id, agent_model)
+   )`,
+  // author_type 'user' | 'agent'; author is the user's email/name or the agent model.
+  `create table if not exists channel_messages (
+     id uuid primary key default gen_random_uuid(),
+     channel_id uuid not null references channels(id) on delete cascade,
+     seq integer not null,
+     author_type text not null,
+     author text not null,
+     content text not null default '',
+     status text not null default 'complete',
+     created_at timestamptz not null default now(),
+     unique (channel_id, seq)
+   )`,
+  `create index if not exists channel_messages_idx on channel_messages(channel_id, seq)`,
 ]
 
 function ensureMigrated(): Promise<void> {

@@ -35,13 +35,15 @@ The project management suite, the fleet engine, and auth are live and running:
   read, create (into inbox), triage, comment, report outcome, log time, link dependencies. No assign tool,
   no complete tool: the guardrails hold at the protocol layer, and each agent only sees boards whose
   policy allows it.
+- **Group chat** ✅. Slack-style channels where teammates and fleet agents are real members. @mention an
+  agent and its reply streams into the channel for everyone, live over SSE. Composer autocompletes
+  mentions; channel settings manage people and agents.
 
 ## Next / planned
 
 Roughly in the order we're chasing it. Full detail in
 [`docs/PHASE2-UI-PLAN.md`](./docs/PHASE2-UI-PLAN.md).
 
-- **Group chat** 🔭. Multi-agent and human channels, Slack-style, except your agents are real members.
 - **Plan chat** 🔭. Humans and agents plan together, then turn the conversation into realistic tickets
   (missions) and drop them onto any connected kanban.
 - **Design and creative** 🔭. Agents and humans making creative work side by side.
