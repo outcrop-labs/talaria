@@ -105,6 +105,14 @@ not proxied from mission-control.
   `/cost` shows the 30-day local/cloud share bar, a stacked per-day strip, and a
   per-agent "% local" column — the view for optimizing the small-model/frontier
   mixture.
+- **Agent harness (phase C2: create/retire)**, spin agents up and down on a
+  whim. **New agent** on `/agents`: pick a template (any existing agent — model
+  tiers/tools/plugins carry over with every identity reference re-stamped to the
+  new slug), Talaria allocates a fresh gateway key into the stack `.env`, writes
+  v1 with a starter soul, renders a fresh-chassis service (own state volume),
+  starts it, and the bridge picks it up live. **Retire** removes the container
+  and drops the agent from the fleet manifest; state volume + version history
+  stay.
 
 ### Fixed
 - SSE event streams no longer crash the server when a client disconnects before

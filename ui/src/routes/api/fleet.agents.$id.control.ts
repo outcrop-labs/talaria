@@ -3,12 +3,12 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { getAgentDef } from '@/server/agent-defs'
-import { fleetStop, fleetUp, legacyControl, waitHealthy } from '@/server/fleet-docker'
+import { fleetRemove, fleetStop, fleetUp, legacyControl, waitHealthy } from '@/server/fleet-docker'
 import { renderFleet } from '@/server/fleet-render'
 import { db } from '@/server/db/pg'
 
 const Body = z.object({
-  action: z.enum(['migrate', 'up', 'stop', 'legacy-start', 'legacy-stop']),
+  action: z.enum(['migrate', 'up', 'stop', 'legacy-start', 'legacy-stop', 'retire']),
 })
 
 // POST { action } → lifecycle control for one agent (admin).
@@ -56,6 +56,15 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
             case 'legacy-stop':
               await legacyControl(def.department, 'stop')
               return json({ ok: true })
+            case 'retire': {
+              // Spin down + drop from the fleet. Container removed; the state
+              // volume and the version history stay (re-enable = SQL for now).
+              await sql`update agent_defs set enabled = false, updated_at = now() where id = ${def.id}`
+              if (def.managed) await fleetRemove(def.department)
+              else await legacyControl(def.department, 'stop').catch(() => {})
+              const render = await renderFleet() // manifest drops it; bridge hot-reloads
+              return json({ ok: true, render: render.agents })
+            }
           }
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 500 })

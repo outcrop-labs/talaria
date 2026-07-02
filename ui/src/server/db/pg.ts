@@ -297,6 +297,9 @@ const MIGRATIONS: string[] = [
   // served the generation (from the agent's main endpoint at generation time).
   `alter table usage_events add column if not exists endpoint_class text`,
   `alter table usage_events add column if not exists llm_model text`,
+  // 'imported' agents reuse the legacy stack's volumes/service chassis;
+  // 'created' agents get fresh talaria-fleet volumes + a templated chassis.
+  `alter table agent_defs add column if not exists source text not null default 'imported'`,
   // Immutable version payloads — soul + structured config (main model, aliases,
   // fallbacks, toolsets, mcp servers, plugins, and the full raw config for
   // faithful rendering). Every edit is a new version: diffable, revertible.
