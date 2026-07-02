@@ -2,66 +2,75 @@
 
 > *Talaria: the winged sandals of Hermes, the thing that carries him between worlds.*
 
-**Talaria is a multiplayer-first agentic business platform.** Humans and AI agents share the same
-boards, tickets, and teams and work them together in real time — with **sensible guardrails** that keep
-a human in the loop on the decisions that matter. Every agent in the fleet is a full
-[**Hermes**](https://github.com/outsourc-e/hermes-workspace) agent: memory, skills, and run loop intact.
-Talaria is the surface your whole organization — people and agents — actually works on.
+**Talaria is the nerve center for a lean, agent-powered business.** It's a collaborative workspace where
+your people and your AI agents share the same surfaces — boards, chats, plans, design, finance, code — and
+run the day-to-day of a company together, in real time, with **sensible guardrails** that keep humans in
+the loop on the decisions that matter. Every agent is a full [**Hermes**](https://github.com/outsourc-e/hermes-workspace)
+agent (memory, skills, run loop intact), and Talaria is the one beautiful place your whole org — human and
+agent — actually works.
 
-- **Multiplayer-first.** Boards are live: teammates and agents see each other's changes as they happen
-  (Redis pub/sub → SSE). Teams, sharing, watchers, comments, activity — collaboration is the default,
-  not a bolt-on.
-- **Agentic business platform.** A polished project-management suite (Plane/Linear-grade) where a ticket
-  is a unit of work an agent can pick up, triage, and drive — not just a card a human moves.
-- **Sensible guardrails.** Agents can create and triage work, but **can't self-assign or sign their own
-  work off as done** — assignment and approval stay human. Boards are restrictive by default about which
-  agents may touch them.
-- **Hermes as the base for all agents.** Talaria doesn't ship a weaker "worker"; every node is a real
-  Hermes agent, reachable through one gateway. Bring the agents you already run.
+You can keep every other tool you already use. Talaria isn't a walled garden — it connects out to the
+ecosystems you rely on. But for the daily work of running the business, this is meant to be the single pane
+of glass: **manage almost everything, in one place, with your agents beside you.**
 
-Status, milestones, and the wishlist live in [`ROADMAP.md`](./ROADMAP.md) and
-[`docs/PHASE2-UI-PLAN.md`](./docs/PHASE2-UI-PLAN.md); the wire-level engine contract is in
-[`PLAN.md`](./PLAN.md) and [`docs/m0-contract.md`](./docs/m0-contract.md). New here? Start with
-[`HANDOFF.md`](./HANDOFF.md).
+> **Status legend:** ✅ shipped · 🚧 in progress · 🔭 planned. Talaria is early — the PM suite and the fleet
+> engine are live today; the rest of this document is the deliberate destination. Milestones live in
+> [`ROADMAP.md`](./ROADMAP.md) and [`docs/PHASE2-UI-PLAN.md`](./docs/PHASE2-UI-PLAN.md); newcomers start with
+> [`HANDOFF.md`](./HANDOFF.md).
 
-## The product: where humans and agents work together
+## What makes it different
 
-The app ([`ui/`](./ui), Vite + TanStack Start, the **Mercury** design system) is Talaria's own front
-end — one login, one design language, one place for the whole team.
+- **Agent + human, not agent *or* human.** Every surface is multiplayer and mixed: people and agents in the
+  same board, the same chat, the same plan. Collaboration is the default, not a bolt-on.
+- **Hermes-first.** ✅ Every agent is a real Hermes agent behind one gateway — no weaker "worker" tier.
+  Alternative agent runtimes are 🔭 planned, but Hermes is the first-class citizen.
+- **Sensible guardrails.** ✅ Agents create and triage work but can't self-assign or sign their own work
+  off — assignment and approval stay human. True fine-grained permissions for **both agents and users** are
+  🚧 expanding from there.
+- **Open source, free forever.** 🔭 The full platform is OSS and self-hostable; a managed cloud service for
+  mature businesses is coming for teams who'd rather not run it themselves.
+- **Privacy-forward.** 🔭 Personal assistant agents track with content **stripped** (metadata only); public
+  business agents keep full logs. You choose what's shared.
+- **Prove the ROI.** 🔭 See in real time how your agentic stack contributes to business efficiency, with
+  token-cost metrics tied to the work it produced.
 
-- **Boards & teams** — shareable kanban boards (personal or team-owned), a consolidated Board settings
-  modal (general / people / agents), and a **restrictive agent policy by default** (allow-all is an
-  explicit opt-in per board).
-- **Tickets** — a rich detail view: WYSIWYG description (markdown under the hood so agents read/write it
-  natively), read/edit + full-screen editor, threaded comments (Ctrl+Enter), an activity log, watchers,
-  and a quality-review approval gate. Every ticket is a **directly-linkable route** you can share.
-- **The work model** — priority, agent-appropriate **effort** (XS–XL, not fake hour estimates),
-  **multiple assignees**, **dependencies** (blocked-by / blocks), labels, due dates, and
-  **auto-accumulated time-spent** (agents log real time per iteration).
-- **Flow** — Inbox → Assigned → In progress → **Blocked** → Quality review → Done, drag-and-drop, plus a
-  list view with configurable, reorderable, sortable columns.
-- **Live + shared** — multiplayer boards over SSE, teams with members, per-agent access.
+## The workspace — where the work happens
 
-Agent/human group chat (mini-Slack with agents), notifications, and a cost/token ledger are next; see
-the roadmap.
+- **Project management** ✅ — Plane/Linear-grade boards, rich tickets (effort, multiple assignees,
+  dependencies, blocked state, auto-accumulated time), teams, watchers, a quality-review gate, list + kanban
+  views, directly-linkable tickets, all live/multiplayer.
+- **Group chat** 🔭 — multi-agent + human channels (think Slack, but your agents are first-class members).
+- **Plan chat** 🔭 — a multi-agent + human planning surface that turns a conversation into **realistic
+  tickets (missions)**, triaged across any connected kanban.
+- **Design & creative suite** 🔭 — agent + human collaboration on creative work.
+- **Finance suite** 🔭 — agent + human finance, connectable to major accounting and HR platforms.
+- **Agentic coding** 🔭 — in-app coding driven by agents (likely [opencode](https://github.com/sst/opencode)
+  surfaced through the UI).
 
-## Sensible guardrails (human-in-the-loop)
+## The agents — first-class citizens
 
-Autonomy without a blast radius. Agents authenticate with an agent key and operate on tickets through a
-guarded API:
+- **Personal assistant agents** 🔭 — a Docker-spawned Hermes agent per user, connected to pre-configured
+  company model profiles, that persists its own skills, tools, and memories.
+- **Versioned agent identity** 🔭 — soul, memory, skills, and tools are version-controlled per agent and
+  synced elegantly across the fleet.
+- **Self-improving, lean** 🔭 — agents create their own skills/tools automatically, and unused ones are
+  auto-archived to keep context lean.
+- **Marketplace** 🔭 — a per-agent marketplace for MCP servers, skills, and tools.
+- **Permissions** 🚧 — true, fine-grained access control for agents *and* humans.
 
-- Agents may **create** tickets and **triage** them — set priority, effort, labels, description, and move
-  work to `in_progress`, `blocked`, or `quality_review`.
-- Agents may **not** move a ticket to `assigned` (assignment is a human decision) or to `done` (they land
-  in `quality_review` for a human to approve). They can't reassign work either.
-- Boards decide **which agents** are even allowed to be assigned; the default is none-until-chosen.
-- The upcoming **`talaria-mcp`** server exposes *only* these safe operations as tools — there is no
-  "assign" or "complete" tool for a model to reach for, so the guardrails hold by construction.
+## Connect everything
 
-## Hermes as the base: the fleet engine
+- **Chat connectors** 🔭 — configurable outbound connectors for notifications and **autonomous agent
+  outreach**: Slack, Mattermost, Matrix, and more.
+- **MCP connector** 🔭 — bring Talaria's agents into your desktop/terminal apps over MCP.
+- **Accounting / HR / ecosystem integrations** 🔭 — plug the finance and ops suites into the platforms you
+  already run.
 
-Under the product sits Talaria's fleet runtime — **two planes** in front of your agents. You declare a
-fleet once and Talaria routes to it; every node stays a full Hermes agent.
+## Under the hood — the fleet engine
+
+Beneath the product sits Talaria's fleet runtime: **two planes** in front of your agents. You declare a fleet
+once and Talaria routes to it; every node stays a full Hermes agent. Talaria owns its **own** Postgres/Redis
+as the system of record — mission-control's capabilities were ripped into our stack, **not** proxied.
 
 ```
                          Talaria UI  +  hermes-workspace
@@ -84,27 +93,42 @@ fleet once and Talaria routes to it; every node stays a full Hermes agent.
    (each a full Hermes agent)
 ```
 
-The **gateway plane** exposes each agent as an OpenAI model, so one workspace's model switcher becomes
-the agent switcher — pick `dex-developer` and you're talking to Dex, `sam-support` and you're talking to
-Sam, each with its own key, memory, and skills. The **dashboard plane** bridges the legacy management
-surfaces. Talaria's **own** Postgres/Redis is the system of record for the platform (boards, tickets,
-teams, activity) — ripped from mission-control's capabilities into our stack, **not** proxied from a
-running MC.
+- **Full local LLM stack control** 🔭 — run and manage your own inference (Ollama, vLLM, llama.cpp, …)
+  alongside hosted models.
+- **Container orchestration** 🔭 — a [Dokploy](https://dokploy.com)-style backend for the containers Talaria
+  spawns (personal agents, services), self-hosted.
+- **Analytics everywhere** 🔭 — full agent analytics plus analytics across work, chats, and projects, with
+  token-cost/ROI woven through.
 
-### The pieces
+### The pieces (today)
 
 | Path | Piece | What it does |
 |---|---|---|
-| [`ui/`](./ui) | **Talaria app** (Vite + TanStack Start) | The product: boards, tickets, teams, multiplayer, auth. Owns state in Postgres/Redis. |
-| [`bridge/`](./bridge) | **talaria-bridge** (Node/TS) | The fleet engine. Gateway plane multiplexes the fleet (`/v1/models`, model-routed chat); dashboard plane bridges conductor + kanban and proxies the rest. |
+| [`ui/`](./ui) | **Talaria app** (Vite + TanStack Start) ✅ | The product: boards, tickets, teams, multiplayer, auth. Owns state in Postgres/Redis. |
+| [`bridge/`](./bridge) | **talaria-bridge** (Node/TS) ✅ | The fleet engine. Gateway plane multiplexes the fleet; dashboard plane bridges conductor + kanban, proxies the rest. |
 | [`stack/fleet.json`](./stack/fleet.example.json) | **fleet manifest** | Declares your agents (model → gateway url + key). Gitignored (holds keys). |
-| [`plugin/talaria/`](./plugin/talaria) | **Talaria Hermes plugin** | Rides on each agent: registers with Talaria, heartbeats for work, reports progress toward `quality_review` (never `done`). |
-| [`adapter/`](./adapter) | **mission-control adapter** | Makes Hermes a first-class framework inside mission-control (lift source). |
-| [`stack/`](./stack) | **docker stack** | Compose wiring the fleet engine + network together. |
+| [`plugin/talaria/`](./plugin/talaria) | **Talaria Hermes plugin** ✅ | Rides on each agent: registers, heartbeats for work, reports toward `quality_review` (never `done`). |
+| [`adapter/`](./adapter) | **mission-control adapter** ✅ | Makes Hermes a first-class framework inside mission-control (lift source). |
+| [`stack/`](./stack) | **docker stack** ✅ | Compose wiring the fleet engine + network together. |
+
+## What's live today
+
+The **project-management suite + the fleet engine** are shipped and running:
+
+- Shareable kanban boards (personal/team), consolidated Board settings, restrictive board-scoped agent policy.
+- Rich tickets: WYSIWYG markdown description, comments (Ctrl+Enter), activity, watchers, quality-review gate,
+  effort (XS–XL), multiple assignees, dependencies, auto-accumulated time-spent, directly-linkable routes.
+- Inbox → Assigned → In progress → Blocked → Quality review → Done; drag-and-drop board + a configurable,
+  reorderable, sortable list view.
+- Multiplayer over Redis pub/sub → SSE. Teams + members. Redis-backed auth (Google OAuth + password).
+- Agent guardrails: agents triage but can't self-assign or self-complete.
+
+**Next up:** the **agent MCP** (`talaria-mcp`) exposing only the safe create/triage tools, then group chat
+and the plan surface.
 
 ## Run it
 
-**The app (Phase 2 UI):**
+**The app:**
 
 ```bash
 cd ui
@@ -113,11 +137,11 @@ npm install
 npm run dev                # http://localhost:5273
 ```
 
-Dev state runs as containers (`talaria-postgres-dev` on `:5544`, `talaria-redis-dev` on `:6399`).
-Default self-host admin: **`jon@packledger.co` / `talaria-dev`**. See [`ui/README.md`](./ui/README.md)
-and [`HANDOFF.md`](./HANDOFF.md) for details and gotchas.
+Dev state runs as containers (`talaria-postgres-dev` :5544, `talaria-redis-dev` :6399). Default self-host
+admin: **`jon@packledger.co` / `talaria-dev`**. Details + gotchas in [`ui/README.md`](./ui/README.md) and
+[`HANDOFF.md`](./HANDOFF.md).
 
-**The fleet engine (bridge + stack):**
+**The fleet engine:**
 
 ```bash
 cp stack/.env.example stack/.env
@@ -126,21 +150,20 @@ docker compose -f stack/docker-compose.yml up -d --build
 ./scripts/verify-stack.sh                       # should print ALL PASS
 ```
 
-See [`stack/README.md`](./stack/README.md) for network prereqs and the pinned build commit.
-
 ## The "don't break anything" promise
 
 Talaria routes; it never rewrites your agents.
 
-- **Every node stays a full Hermes agent.** The gateway plane forwards chat/streaming to each agent's
-  real gateway with that agent's own key — memory, skills, run loop, native subagents all intact.
-- **Nothing is written to your agents.** Talaria never edits a Hermes file or config; the fleet manifest
-  (with per-agent keys) is gitignored and mounted read-only, and the plugin no-ops until configured.
-- **Human sign-off is never bypassed.** Agents report work up to `quality_review`; the final `done` is a
-  human decision (lining up with how PackLedger already runs its Done column).
-- **Allowlist, not denylist.** Anything the dashboard plane doesn't explicitly recognize passes straight
-  through, so future Hermes routes keep working.
+- **Every node stays a full Hermes agent** — chat/streaming forwarded to each agent's real gateway with its
+  own key; memory, skills, run loop intact.
+- **Nothing is written to your agents** — the fleet manifest (with keys) is gitignored + mounted read-only;
+  the plugin no-ops until configured.
+- **Human sign-off is never bypassed** — agents report to `quality_review`; the final `done` is a human call.
+- **Allowlist, not denylist** — anything the dashboard plane doesn't recognize passes straight through.
 
-## License
+## License & vision
 
-MIT (see [`LICENSE`](./LICENSE)). Private for now, going public when it's ready to share.
+Open source, **free forever** (MIT — see [`LICENSE`](./LICENSE)); a managed cloud service for mature
+businesses is planned. Private for now, going public when it's ready. Missing a corner you'd need to run your
+business here? That's the whole point — [open an issue](https://github.com/outcrop-labs/talaria/issues) and
+help shape the nerve center.
