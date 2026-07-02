@@ -66,9 +66,9 @@ function AdminPage() {
       <div className="mx-auto max-w-4xl space-y-8">
         <h1 className="mercury-text text-2xl font-semibold">Admin</h1>
 
-        <Panel className="p-5">
-          <div className="mb-1 text-sm font-semibold text-fg">People</div>
-          <p className="mb-3 text-xs text-muted">
+        <Panel>
+          <div className="mb-2 text-sm font-semibold text-fg">People</div>
+          <p className="mb-4 text-xs text-muted">
             Roles and per-person agent access. An empty agent list means all agents; picking any restricts
             that person to exactly those.
           </p>

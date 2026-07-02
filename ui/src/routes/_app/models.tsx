@@ -120,8 +120,8 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
   }
 
   return (
-    <Panel className="p-5">
-      <div className="mb-2 flex items-center gap-2">
+    <Panel>
+      <div className="mb-4 flex items-center gap-3">
         <ProviderMark provider={ep.provider} name={ep.name} />
         <span className="text-sm font-semibold text-fg">{ep.name}</span>
         <span className="min-w-0 truncate text-xs text-muted">
@@ -160,16 +160,16 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
           Remove
         </Button>
       </div>
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Models</div>
+      <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Models</div>
       <LabelPicker
         value={ep.models}
         options={[...new Set([...ep.models, ...(available?.models ?? [])])]}
         onChange={(models) => void runCascading((force) => patchEndpoint(ep.id, { models, force }))}
         size="sm"
       />
-      {available?.note && <div className="mt-1 text-xs text-muted">Provider catalog unavailable: {available.note}</div>}
+      {available?.note && <div className="mt-2 text-xs text-muted">Provider catalog unavailable: {available.note}</div>}
       {ep.class === 'cloud' && (
-        <div className="mt-3 flex items-center gap-2 text-xs text-muted">
+        <div className="mt-4 flex items-center gap-2 text-xs text-muted">
           <span>Pricing $/1M tokens:</span>
           <Input
             size="sm"

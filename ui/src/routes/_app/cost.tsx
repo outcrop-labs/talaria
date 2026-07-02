@@ -56,9 +56,9 @@ function CostPage() {
             </div>
 
             {t && t.split.local + t.split.cloud > 0 && (
-              <Panel className="p-5">
-                <h2 className="mb-1 text-sm font-semibold text-fg">Local vs cloud · 30 days</h2>
-                <p className="mb-3 text-xs text-muted">
+              <Panel>
+                <h2 className="mb-2 text-sm font-semibold text-fg">Local vs cloud · 30 days</h2>
+                <p className="mb-4 text-xs text-muted">
                   {formatTokens(t.split.local)} on your own hardware · {formatTokens(t.split.cloud)} on cloud APIs —{' '}
                   {Math.round((t.split.local / (t.split.local + t.split.cloud)) * 100)}% local
                 </p>
@@ -83,7 +83,7 @@ function CostPage() {
             )}
 
             {perDay.length > 1 && (
-              <Panel className="p-5">
+              <Panel>
                 <div className="mb-3 flex items-baseline gap-4">
                   <h2 className="text-sm font-semibold text-fg">Tokens per day · last 14 days</h2>
                   <span className="inline-flex items-center gap-1.5 text-xs text-muted">
@@ -97,13 +97,13 @@ function CostPage() {
               </Panel>
             )}
 
-            <Panel className="p-5">
-              <h2 className="mb-3 text-sm font-semibold text-fg">By agent · 30 days</h2>
+            <Panel>
+              <h2 className="mb-4 text-sm font-semibold text-fg">By agent · 30 days</h2>
               <ul className="divide-y divide-line-subtle">
                 {perAgent.map((a) => {
                   const d = agentLabel(a.agentModel)
                   return (
-                    <li key={a.agentModel} className="flex items-center gap-3 py-2.5">
+                    <li key={a.agentModel} className="flex items-center gap-3 py-3">
                       <Avatar name={d.label} className="h-6 w-6" />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm text-fg">{d.label}</span>

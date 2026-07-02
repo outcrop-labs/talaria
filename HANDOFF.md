@@ -68,7 +68,10 @@ Full project-management suite, all live in `ui/`:
 
 - **UI conventions** - one control-size scale (`sm` h-9 / `md` h-11) via `size` props
   on Button/Input/Select/Combobox (`ui/control.ts`) — never hand-set `h-*` on a
-  control. People are added through `UserPicker` (combobox over `/api/users`),
+  control. **Card density is owned by `Panel`** (default `p-6`; override like
+  `p-0` only for flush tables). Card internals: header block `mb-4`, tiny
+  uppercase labels `mb-2`, list rows `py-3`, chip/meta clusters `mt-2.5`. Pages:
+  `p-8` + `space-y-8`. People are added through `UserPicker` (combobox over `/api/users`),
   agents through the multi `Combobox`, ticket labels through `LabelPicker`
   (chips + combobox with `allowCreate`). Users set display names in Settings
   (`PUT /api/profile`); prefer `name ?? email` when rendering people.
