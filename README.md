@@ -171,16 +171,20 @@ docker compose -f stack/docker-compose.yml up -d --build
 ./scripts/verify-stack.sh                       # should print ALL PASS
 ```
 
-## The "don't break anything" promise
+## Safe by design
 
-Talaria routes traffic, it never rewrites your agents.
+Talaria does manage your agents, that's the point, but it does it carefully, in the open, and in a way
+you can always undo.
 
-- **Every node stays a full Hermes agent.** Chat and streaming go to each agent's real gateway with its
-  own key. Memory, skills, run loop, all intact.
-- **Nothing gets written to your agents.** The fleet manifest (with keys) is gitignored and mounted
-  read-only, and the plugin does nothing until you configure it.
-- **Human sign-off is never skipped.** Agents report up to `quality_review`. The final `done` is a
-  human's call.
+- **Every agent is a real Hermes agent** ✅. Chat and streaming go to each agent's real gateway with its
+  own key. No weak "worker" tier.
+- **Version-controlled internals** 🔭. An agent's soul, memory, skills, tools, and MCP servers are
+  managed right in the app and version controlled. Every change is tracked, diffable, and easy to roll
+  back, so nothing shifts under you silently.
+- **Human sign-off is never skipped** ✅. Agents report their work up to `quality_review`. The final
+  `done` is a human's call.
+- **Least privilege** 🚧. Fine-grained permissions decide what each agent and each person is allowed to
+  touch.
 
 ## License and vision
 
