@@ -77,6 +77,14 @@ not proxied from mission-control.
   management (member/admin; `AUTH_ADMIN_EMAILS` admins are pinned, no
   self-demotion) and the per-person agent allow-list UI (empty = all agents) that
   the access model always supported. Admin-gated `GET/PUT /api/admin/users`.
+- **Agent harness (phase A)**, Talaria starts becoming the fleet's source of
+  truth: `llm_endpoints` (model backends classed local/cloud — feeds the coming
+  cost split), `agent_defs` + immutable `agent_versions` (soul, main model,
+  `model_aliases` tiers, fallbacks, plugins, MCP servers — diffable, revertible),
+  and an idempotent importer that ingests the existing `ai/orchestration` stack
+  (`agents.yaml`, per-agent `config.yaml` + `SOUL.md`). `/agents` grows an
+  admin-only **Definitions** panel showing each agent's tiers (local/cloud chips),
+  fallback chain, soul, and version. Rendering + spin up/down land in phase B.
 
 ### Fixed
 - SSE event streams no longer crash the server when a client disconnects before
