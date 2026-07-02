@@ -85,10 +85,14 @@ Full project-management suite, all live in `ui/`:
   estimates flagged when absent. `GET /api/cost` + the `/cost` page (tiles, 14-day
   strip, per-agent). Dollar cost needs per-LLM pricing attribution (next-up #2).
 
+- **Admin console** - `/admin`: user roles (pinned admins via `AUTH_ADMIN_EMAILS`,
+  no self-demotion) + per-person agent allow-lists (`user_agent_access`; empty =
+  all agents). `GET/PUT /api/admin/users`, admin-gated.
+
 ## Next up (in order)
 
-1. Admin console (the remaining 6-line stub pages under `_app/`: admin, activity,
-   alerts, agents detail, skills, memory, mcp, inference).
+1. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
+   inference (agents page is a thin list already).
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
    ticket), tracked follow-up to the auto-accumulated time-spent field.
 3. Plan chat (turn a channel conversation into tickets on a board).
