@@ -42,8 +42,9 @@ export const Route = createFileRoute('/api/fleet/endpoints')({
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         try {
           await createEndpoint({ ...parsed.data, baseUrl: parsed.data.baseUrl ?? null, apiKeyEnv: parsed.data.apiKeyEnv ?? null })
-          // Price the new provider's models right away (public catalog, no key).
-          await refreshAutoPrices().catch(() => {})
+          // Price the new provider's models in the background — never block an
+          // interactive save on a fetch to openrouter.ai (15s worst case offline).
+          void refreshAutoPrices().catch(() => {})
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message.includes('duplicate') ? 'an endpoint with that name exists' : (e as Error).message }, { status: 400 })

@@ -131,21 +131,22 @@ Hermes agent.
 
 ## What works today
 
-The project management suite and the fleet engine are shipped and running:
+The workspace, the fleet harness, and the money view are shipped and running:
 
 - Shareable kanban boards (personal or team), a single Board settings modal, and a restrictive per-board
   agent policy (you opt in to which agents can touch a board).
-- Rich tickets: WYSIWYG markdown description, comments (Ctrl+Enter to send), activity, watchers, a
-  review gate, effort (XS to XL), multiple assignees, dependencies, time that adds itself up, and links
-  straight to any ticket.
-- Inbox, Assigned, In progress, Blocked, Quality review, Done. Drag-and-drop board plus a list view with
-  columns you can show/hide, reorder, and sort.
-- Multiplayer over Redis pub/sub and SSE. Teams and members. Redis-backed auth (Google OAuth or
-  password).
+- Rich tickets: WYSIWYG markdown description, comments, activity, watchers, a review gate, effort,
+  multiple assignees, dependencies, time that adds itself up, per-ticket token spend, and links straight
+  to any ticket. Drag-and-drop board plus a configurable list view; multiplayer over Redis pub/sub + SSE.
+- Chat (1:1, any model tier) and Slack-style channels where agents are real members: @mention an agent —
+  or `@agent:tier` — and the reply streams in live. **Plan** turns a conversation into reviewed tickets.
+- The agent harness: import a Hermes stack, render and run every agent under Talaria's own compose
+  project, edit souls/models/tiers/MCP servers as immutable revertible versions, manage skills and memory
+  live, create agents from templates, retire them — all in-app.
+- The ledger: every generation classified local vs cloud, priced automatically from a public catalog
+  (override anytime), per-agent and per-ticket spend, plus `/activity`, `/alerts`, and `/inference` for
+  ops. The agent MCP (`talaria-mcp`) exposes only the safe board tools.
 - Guardrails: agents triage but can't assign or complete their own work.
-
-Next up: the agent MCP (`talaria-mcp`) that exposes only the safe create/triage tools, then group chat
-and the plan surface.
 
 ## Run it
 

@@ -23,8 +23,10 @@ current fleet engine is the **gateway plane** (fleet multiplexer on `:8642`). Th
 older mission-control bridge / conductor bits are **legacy Phase-1 scaffolding**, kept
 around but not part of Talaria's current identity or architecture.
 
-Heads up: Talaria is a work in progress, not production ready. Only the PM suite, the
-fleet engine (gateway plane), and auth ship today; everything else is on the way.
+Heads up: Talaria is a work in progress, not production ready. Shipping today: the PM
+suite, chat + channels (with plan chat), the fleet engine and full agent harness
+(import/render/orchestrate/create/retire, versioned config + MCP edits, skills/memory
+management), the token ledger with auto-fetched pricing, activity/alerts, and auth.
 
 ## Current state (what's built in Phase 2)
 
@@ -170,18 +172,67 @@ Full project-management suite, all live in `ui/`:
   endpoint price_in/out fallback); `usage_events.endpoint` stamps the serving
   endpoint (backfilled); cost is computed AT READ TIME in `usage.ts` (PRICED
   CTE: local = $0, unpriced cloud = NULL -> surfaced as unpricedCloudTokens).
-  Models page has the per-model price grid; Anthropic preset seeds official
-  rates. GLM/DeepSeek rates left unpriced deliberately - set them on /models.
+  **Auto-fetch**: `server/price-oracle.ts` pulls OpenRouter's public catalog
+  (no key) into `llm_endpoints.auto_prices` (background refresh ≤6h on reads;
+  immediate on provider add / model change); coalesce chain is user override →
+  auto → endpoint default; exact-name match only (vendor-prefix aware,
+  dots↔dashes normalized) — no match stays honestly unpriced (e.g. the bare
+  `glm` litellm alias).
+
+- **Tier mentions in channels** - `@Dex:deepseek` routes that reply to the
+  tier (`mentionedAgents` parses `:tier`, unknown tier falls back to main);
+  composer autocompletes `Label:tier`; ledger attributes by the alias endpoint.
+
+- **Activity + Alerts** - `/activity`: merged user-scoped feed (task_activity +
+  channel messages + agent_versions) via `server/activity-feed.ts`, kind
+  filters, poll. `/alerts`: `server/alerts.ts` computes live (no tables):
+  managed container down/unhealthy, gateway unreachable, unpriced cloud tokens,
+  estimate-heavy ledger, failed/stale-blocked tickets on the user's boards.
+
+- **Agent internals pages** - `/skills`: `server/agent-skills.ts` lists/edits
+  skills on the REAL mounts (shared `<stack>/skills`, imported
+  `<stack>/agents/<dept>/skills`, created `fleet/agents/<slug>/skills`);
+  slug-regex + resolved-prefix traversal guard; edits are live (Hermes reads
+  per invocation). `/memory`: `server/agent-memory.ts` reads/writes
+  `/opt/data/memories/MEMORY.md` through the running container (docker exec;
+  agent writes race human edits — last writer wins, surfaced in UI). `/mcp`:
+  `server/agent-mcp.ts` reads `raw.mcp_servers` from the current version;
+  add/remove → NEW version via `applyMcpEdits` (X-Agent-Name auto-header,
+  untouched entries byte-preserved) + optional render/restart.
+
+- **Inference page** - `/inference`: local endpoints probed live (reuses
+  provider-catalog's /models fetch + docker-hostname fallback), latency +
+  serving-now chips, local throughput tiles + per-model 30d table.
+
+- **Per-ticket token spend** - `usage_events.task_id`;
+  `POST /api/tasks/:id/usage` (agent-key + board policy; humans can't post
+  counts) + MCP tool `log_usage` (tier-aware). Reports are normal priced
+  ledger rows + a task-activity line; ticket rail shows tokens · $ ·
+  per-model via `taskUsage()` in `getTaskFull`.
+
+- **Plan chat** - the **Plan** button in a channel header:
+  `POST /api/channels/:id/plan` sends the transcript to a chosen channel agent
+  (any tier) with a structured prompt; `server/channel-plan.ts` extracts the
+  JSON array (bracket-matching, fence/prose tolerant); the review modal edits
+  proposals, picks a board, creates via the normal boards API (inbox, never
+  assigned).
+
+- **Legacy stack decommissioned (committed)** - the packledger-services repo
+  has the retirement commit: agents behind `retired-migrated-to-talaria`,
+  probe/librechat/openwebui/kanban/monitoring removed, `backup.sh` +
+  `sync-agent-state.sh` repointed at `talaria-fleet-agent-*-1` containers
+  (sync verified live).
 
 ## Next up (in order)
 
-1. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
-   inference. Channel-side tier mentions (e.g. `@sam:opus`) later.
-2. Decommission cleanup in the legacy stack when ready (commit the retired
-   compose there; repoint or retire `sync-agent-state.sh`).
-2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
-   ticket), tracked follow-up to the auto-accumulated time-spent field.
-3. Plan chat (turn a channel conversation into tickets on a board).
+1. **Notifications for alerts** - surface critical alerts as inbox
+   notifications / nav badge (alerts are computed on read today).
+2. **Board-level cost rollups** - per-board token/$ aggregation on /cost from
+   `usage_events.task_id` (per-ticket exists; the board view doesn't yet).
+3. **Re-enable retired agents from the UI** (def rows persist; re-enable is
+   SQL-only today) and surface version diffs (data exists, no diff view).
+4. **Roadmap headliners**: design/creative surfaces, finance connectors,
+   in-app agentic coding (opencode), personal + base agents, multitenancy.
 
 ## Dev environment
 

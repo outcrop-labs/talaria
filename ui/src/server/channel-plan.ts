@@ -23,12 +23,30 @@ Respond with ONLY a JSON array — no prose before or after, no markdown fence. 
 
 Rules: 2-10 tickets. Each independently actionable. Don't invent work nobody discussed. Capture decisions and constraints from the chat in the descriptions.`
 
-/** Extract the first JSON array in a blob of model output (tolerates fences
- *  and prose around it). */
+/** Extract a JSON array of proposals from model output. Tries EVERY '['
+ *  candidate (prose like "[DONE]" or markdown links before the real array must
+ *  not break extraction); field limits mirror the boards API so review-modal
+ *  creates can't 400. */
 export function extractProposals(text: string): TicketProposal[] {
-  const start = text.indexOf('[')
-  if (start === -1) return []
-  // Walk to the matching close bracket (strings may contain brackets).
+  for (let start = text.indexOf('['); start !== -1; start = text.indexOf('[', start + 1)) {
+    const arr = parseArrayAt(text, start)
+    if (!arr) continue
+    const proposals = arr
+      .filter((x): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x))
+      .map((x) => ({
+        title: String(x.title ?? '').slice(0, 300),
+        description: String(x.description ?? '').slice(0, 20_000),
+        priority: PRIORITIES.has(String(x.priority)) ? (String(x.priority) as TicketProposal['priority']) : 'medium',
+        effort: EFFORTS.has(String(x.effort)) ? (String(x.effort) as Exclude<TicketProposal['effort'], null>) : null,
+      }))
+      .filter((p) => p.title.trim().length > 0)
+    if (proposals.length) return proposals
+  }
+  return []
+}
+
+/** Parse a balanced JSON array starting at `start`, or null. */
+function parseArrayAt(text: string, start: number): unknown[] | null {
   let depth = 0
   let inStr = false
   let esc = false
@@ -47,22 +65,14 @@ export function extractProposals(text: string): TicketProposal[] {
     if (ch === '[') depth++
     if (ch === ']' && --depth === 0) {
       try {
-        const arr = JSON.parse(text.slice(start, i + 1)) as unknown[]
-        return arr
-          .filter((x): x is Record<string, unknown> => !!x && typeof x === 'object')
-          .map((x) => ({
-            title: String(x.title ?? '').slice(0, 300),
-            description: String(x.description ?? ''),
-            priority: PRIORITIES.has(String(x.priority)) ? (String(x.priority) as TicketProposal['priority']) : 'medium',
-            effort: EFFORTS.has(String(x.effort)) ? (String(x.effort) as Exclude<TicketProposal['effort'], null>) : null,
-          }))
-          .filter((p) => p.title.trim().length > 0)
+        const v = JSON.parse(text.slice(start, i + 1)) as unknown
+        return Array.isArray(v) ? v : null
       } catch {
-        return []
+        return null
       }
     }
   }
-  return []
+  return null
 }
 
 export async function planFromChannel(
