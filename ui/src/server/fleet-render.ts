@@ -32,6 +32,7 @@ type ComposeService = Record<string, unknown> & {
   ports?: unknown
   volumes?: string[]
   networks?: unknown
+  secrets?: unknown
 }
 
 interface RenderTarget {
@@ -93,9 +94,12 @@ export async function renderFleet(): Promise<RenderResult> {
 
   const sourceCompose = parseYaml(await readFile(join(STACK_DIR(), 'docker-compose.yml'), 'utf8'), {
     merge: true,
-  }) as { services?: Record<string, ComposeService> }
+  }) as { services?: Record<string, ComposeService>; secrets?: Record<string, unknown> }
 
   const services: Record<string, ComposeService> = {}
+  // Secrets referenced by agent services (dex/dewey/dot: litellm_key, gh_token,
+  // anthropic_key) — pass their env-sourced definitions through verbatim.
+  const secrets: Record<string, unknown> = {}
   const volumes: Record<string, { external: true; name: string } | Record<string, never>> = {}
 
   // Chassis for created agents: any standard agent service block from the
@@ -158,6 +162,15 @@ export async function renderFleet(): Promise<RenderResult> {
       })
     }
     svc.networks = ['fleet']
+    if (Array.isArray(svc.secrets)) {
+      // Entries are either "name" or long-form { source, target, mode, … }.
+      for (const s of svc.secrets as Array<string | { source?: string }>) {
+        const name = typeof s === 'string' ? s : s.source
+        const secretDef = name ? sourceCompose.secrets?.[name] : undefined
+        if (name && secretDef) secrets[name] = secretDef
+        else result.warnings.push(`${serviceName}: secret ${name ?? JSON.stringify(s)} not defined in the source compose`)
+      }
+    }
     services[serviceName] = svc
     result.agents.push(def.model)
   }
@@ -166,6 +179,7 @@ export async function renderFleet(): Promise<RenderResult> {
     name: 'talaria-fleet',
     services,
     volumes,
+    ...(Object.keys(secrets).length ? { secrets } : {}),
     networks: { fleet: { external: true, name: `${SOURCE_COMPOSE_PROJECT}_default` } },
   }
   const composePath = join(FLEET_DIR(), 'docker-compose.yml')

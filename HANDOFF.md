@@ -151,10 +151,18 @@ Full project-management suite, all live in `ui/`:
   refuses. Agent editor uses `ModelPicker` (one combobox over all catalogs,
   `␟` separator).
 
+- **Full fleet migrated (2026-07-02)** - all 8 agents run Talaria-managed
+  (`talaria-fleet` project); every legacy `ai-agent-*` container is stopped and
+  retired behind the `retired-migrated-to-talaria` profile in the legacy
+  compose (depends_on refs commented; mattermost-bridge's agent-only
+  depends_on dropped). Renderer passes compose `secrets:` through, including
+  long-form `{source, mode}` entries (dex/dewey `gh_token` — caught live as a
+  bogus /run/secrets directory, fixed by re-render + force-recreate).
+
 ## Next up (in order)
 
-1. Migrate the remaining 7 legacy agents (one click each on /agents); per-alias
-   tier routing + attribution (Talaria requesting `<base>-<alias>` models).
+1. Per-alias tier routing + attribution (Talaria requesting `<base>-<alias>`
+   models); decommission cleanup in the legacy stack when ready.
 2. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
    inference.
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
