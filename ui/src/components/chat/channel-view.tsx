@@ -84,6 +84,14 @@ export function ChannelView({
         channelName={channelName}
         mentionables={[
           ...channelAgents.map((id) => ({ insert: labelFor(id), label: labelFor(id), sub: id })),
+          // Tier mentions: "@Dex:opus" routes the reply to that model tier.
+          ...channelAgents.flatMap((id) =>
+            (fleet.find((a) => a.id === id)?.tiers ?? []).map((t) => ({
+              insert: `${labelFor(id)}:${t}`,
+              label: `${labelFor(id)}:${t}`,
+              sub: 'tier',
+            })),
+          ),
           ...members.map((m) => ({
             // Mirror the server's mention tokens: email localpart, else dashed name.
             insert: m.email?.split('@')[0] ?? (m.name ?? '').toLowerCase().replace(/\s+/g, '-'),
@@ -160,7 +168,7 @@ function Composer({
   // An "@word" immediately before the caret opens the mention menu.
   const mention = useMemo(() => {
     const upto = input.slice(0, caret)
-    const m = /(^|\s)@([a-z0-9-]*)$/i.exec(upto)
+    const m = /(^|\s)@([a-z0-9-]*(?::[a-z0-9-]*)?)$/i.exec(upto)
     if (!m) return null
     const q = m[2]!.toLowerCase()
     const options = mentionables.filter(
