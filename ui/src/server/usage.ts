@@ -97,16 +97,19 @@ export interface CostOverview {
   perDay: Array<{ day: string; prompt: number; completion: number; generations: number; local: number; cloud: number }>
 }
 
-// The priced view: cloud rows get $ from the per-model override or the
-// endpoint default; local rows are $0 (your hardware); cloud rows with no
-// price at all get NULL cost so they can be surfaced as "unpriced".
+// The priced view: cloud rows get $ from the user's per-model override, else
+// the auto-fetched public rate (price-oracle), else the endpoint default;
+// local rows are $0 (your hardware); cloud rows with no price at all get NULL
+// cost so they can be surfaced as "unpriced".
 const PRICED = `
   select u.*,
     case
       when u.endpoint_class = 'local' then 0
       when u.endpoint_class = 'cloud' then
-        (u.prompt_tokens * coalesce((e.model_prices->u.llm_model->>'in')::numeric, e.price_in_per_mtok)
-         + u.completion_tokens * coalesce((e.model_prices->u.llm_model->>'out')::numeric, e.price_out_per_mtok)) / 1e6
+        (u.prompt_tokens * coalesce((e.model_prices->u.llm_model->>'in')::numeric,
+                                    (e.auto_prices->u.llm_model->>'in')::numeric, e.price_in_per_mtok)
+         + u.completion_tokens * coalesce((e.model_prices->u.llm_model->>'out')::numeric,
+                                          (e.auto_prices->u.llm_model->>'out')::numeric, e.price_out_per_mtok)) / 1e6
       else null
     end as cost
   from usage_events u

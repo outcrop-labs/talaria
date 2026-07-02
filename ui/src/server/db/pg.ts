@@ -325,6 +325,9 @@ const MIGRATIONS: string[] = [
    join agent_versions v on v.agent_id = d.id and v.version = d.current_version
    join llm_endpoints e on e.name = (v.config->'main'->>'endpoint')
    where u.endpoint_class is null and u.agent_model = d.model`,
+  // Auto-fetched prices (OpenRouter public catalog) - separate from user
+  // overrides so a refresh never clobbers a hand-set rate.
+  `alter table llm_endpoints add column if not exists auto_prices jsonb not null default '{}'`,
   // Pricing: per-model $/MTok overrides on the endpoint ({model: {in, out}});
   // endpoint-level price_in/out stay as the fallback. Cost is computed at read
   // time, so price edits reprice history automatically.

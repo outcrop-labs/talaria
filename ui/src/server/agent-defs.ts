@@ -19,6 +19,9 @@ export interface LlmEndpoint {
   /** Per-model $/MTok overrides: { "<model>": { in, out } }. Endpoint-level
    *  price_in/out are the fallback. */
   modelPrices: Record<string, { in?: number; out?: number }>
+  /** Auto-fetched $/MTok from the public OpenRouter catalog (price-oracle).
+   *  Read-only from the UI; modelPrices overrides always win. */
+  autoPrices: Record<string, { in: number; out: number }>
 }
 
 export interface AgentDef {
@@ -71,7 +74,8 @@ export async function listEndpoints(): Promise<LlmEndpoint[]> {
   return (await sql`
     select id, name, provider, base_url as "baseUrl", class, api_key_env as "apiKeyEnv",
            context_length as "contextLength", price_in_per_mtok as "priceInPerMtok",
-           price_out_per_mtok as "priceOutPerMtok", models, model_prices as "modelPrices"
+           price_out_per_mtok as "priceOutPerMtok", models, model_prices as "modelPrices",
+           auto_prices as "autoPrices"
     from llm_endpoints order by (class = 'local') desc, name asc
   `) as unknown as LlmEndpoint[]
 }

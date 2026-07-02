@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { createEndpoint, listEndpoints } from '@/server/agent-defs'
+import { maybeRefreshAutoPrices, refreshAutoPrices } from '@/server/price-oracle'
 
 const Body = z.object({
   name: z.string().min(2).max(60),
@@ -30,6 +31,7 @@ export const Route = createFileRoute('/api/fleet/endpoints')({
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        maybeRefreshAutoPrices() // background; persisted rates show on the next load
         return json({ endpoints: await listEndpoints() })
       },
       POST: async ({ request }) => {
@@ -40,6 +42,8 @@ export const Route = createFileRoute('/api/fleet/endpoints')({
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         try {
           await createEndpoint({ ...parsed.data, baseUrl: parsed.data.baseUrl ?? null, apiKeyEnv: parsed.data.apiKeyEnv ?? null })
+          // Price the new provider's models right away (public catalog, no key).
+          await refreshAutoPrices().catch(() => {})
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message.includes('duplicate') ? 'an endpoint with that name exists' : (e as Error).message }, { status: 400 })

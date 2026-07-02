@@ -174,6 +174,8 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
           <div className="space-y-1.5">
             {ep.models.map((m) => {
               const p = ep.modelPrices?.[m]
+              const auto = ep.autoPrices?.[m]
+              const overridden = p?.in !== undefined || p?.out !== undefined
               const setPrice = (key: 'in' | 'out', raw: string) => {
                 const next = { ...(ep.modelPrices ?? {}) }
                 const entry = { ...(next[m] ?? {}) }
@@ -186,12 +188,15 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
               return (
                 <div key={m} className="flex items-center gap-2 text-xs">
                   <span className="min-w-0 flex-1 truncate text-fg">{m}</span>
-                  {p?.in === undefined && p?.out === undefined && <span className="shrink-0 text-muted">unpriced</span>}
+                  {/* Auto rates come from the public OpenRouter catalog; typing a
+                      value overrides them, clearing it falls back to auto. */}
+                  {!overridden && auto && <span className="shrink-0 text-muted" style={{ color: 'var(--theme-success)' }}>auto</span>}
+                  {!overridden && !auto && <span className="shrink-0 text-muted">unpriced</span>}
                   <Input
                     size="sm"
                     type="number"
                     defaultValue={p?.in ?? ''}
-                    placeholder="in"
+                    placeholder={auto ? String(auto.in) : 'in'}
                     className="w-20 shrink-0"
                     onBlur={(e) => setPrice('in', e.target.value.trim())}
                   />
@@ -199,7 +204,7 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
                     size="sm"
                     type="number"
                     defaultValue={p?.out ?? ''}
-                    placeholder="out"
+                    placeholder={auto ? String(auto.out) : 'out'}
                     className="w-20 shrink-0"
                     onBlur={(e) => setPrice('out', e.target.value.trim())}
                   />
