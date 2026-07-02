@@ -73,10 +73,15 @@ Full project-management suite, all live in `ui/`:
   (chips + combobox with `allowCreate`). Users set display names in Settings
   (`PUT /api/profile`); prefer `name ?? email` when rendering people.
 
+- **Notifications** - user @mentions in channels land in the **Inbox** (`/inbox`,
+  unread badge in the nav; 30s poll). `server/notifications.ts` +
+  `GET/PUT /api/notifications`; the composer autocompletes members and agents.
+  Mention tokens: email localpart / dashed name / first name
+  (`userMentionTokens` in `server/channel-replies.ts` — the composer mirrors it).
+
 ## Next up (in order)
 
-1. Notifications + user @mentions (channels parse agent mentions only today),
-   cost/token ledger, admin console (the 6-line stub pages under `_app/`).
+1. Cost/token ledger, admin console (the 6-line stub pages under `_app/`).
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
    ticket), tracked follow-up to the auto-accumulated time-spent field.
 3. Plan chat (turn a channel conversation into tickets on a board).

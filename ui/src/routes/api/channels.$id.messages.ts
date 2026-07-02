@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { channelRole, insertChannelMessage, listChannelMessages } from '@/server/channels'
-import { triggerAgentReplies } from '@/server/channel-replies'
+import { notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
 import { db } from '@/server/db/pg'
 
 // GET ?since=<seq> → the channel's messages (members). POST { content } → post
@@ -28,11 +28,12 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const author = user.email ?? user.name ?? 'user'
         const message = await insertChannelMessage(params.id, 'user', author, parsed.data.content)
-        // Agent replies stream in detached; the sender's POST returns at once.
+        // Agent replies + mention notifications run detached; the POST returns at once.
         const sql = await db()
         const rows = await sql`select name from channels where id = ${params.id}`
         const channelName = (rows[0] as { name: string } | undefined)?.name ?? 'channel'
         void triggerAgentReplies(params.id, channelName, parsed.data.content).catch(() => {})
+        void notifyUserMentions(params.id, channelName, user.id, user.name ?? author, parsed.data.content).catch(() => {})
         return json({ message })
       },
     },

@@ -44,7 +44,12 @@ export async function upsertUser(identity: Identity): Promise<User> {
     values (${identity.sub}, ${identity.email}, ${identity.name}, ${identity.picture}, ${role}, now())
     on conflict (sub) do update set
       email = excluded.email,
-      name = excluded.name,
+      -- a display name the user set (≠ email) survives logins; the provider
+      -- identity only fills the unfriendly defaults (empty, or name = email).
+      name = case
+        when users.name is null or users.name = '' or users.name = users.email then excluded.name
+        else users.name
+      end,
       picture = excluded.picture,
       last_seen_at = now(),
       -- promote admin-listed users; otherwise keep whatever role they have.

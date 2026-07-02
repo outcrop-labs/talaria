@@ -5,21 +5,31 @@ import { Button } from '@/components/ui/button'
 import { Markdown } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
-import { sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMessage } from '@/lib/channels'
+import { sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMember, type ChannelMessage } from '@/lib/channels'
 import { useUsers } from '@/lib/users'
 import type { AgentModel } from '@/lib/agents'
 
+/** A composer mention option: `insert` is the token typed into the message. */
+interface Mentionable {
+  insert: string
+  label: string
+  sub?: string
+}
+
 // One channel: live message feed + composer. Agents reply when @mentioned;
 // their streamed replies arrive over the channel's SSE feed like anyone else's.
+// @mentioning a human member drops a notification in their inbox.
 export function ChannelView({
   channelId,
   channelName,
   channelAgents,
+  members,
   fleet,
 }: {
   channelId: string
   channelName: string
   channelAgents: string[]
+  members: ChannelMember[]
   fleet: AgentModel[]
 }) {
   const { data: messages = [] } = useChannelMessages(channelId)
@@ -72,7 +82,15 @@ export function ChannelView({
 
       <Composer
         channelName={channelName}
-        mentionables={channelAgents.map((id) => ({ id, label: labelFor(id) }))}
+        mentionables={[
+          ...channelAgents.map((id) => ({ insert: labelFor(id), label: labelFor(id), sub: id })),
+          ...members.map((m) => ({
+            // Mirror the server's mention tokens: email localpart, else dashed name.
+            insert: m.email?.split('@')[0] ?? (m.name ?? '').toLowerCase().replace(/\s+/g, '-'),
+            label: m.name ?? m.email ?? m.userId,
+            sub: m.email ?? undefined,
+          })),
+        ].filter((m) => m.insert)}
         onSend={send}
       />
     </div>
@@ -124,14 +142,14 @@ function MessageRow({
   )
 }
 
-/** Composer with @mention autocomplete over the channel's agents. */
+/** Composer with @mention autocomplete over the channel's agents and members. */
 function Composer({
   channelName,
   mentionables,
   onSend,
 }: {
   channelName: string
-  mentionables: Array<{ id: string; label: string }>
+  mentionables: Mentionable[]
   onSend: (text: string) => Promise<void>
 }) {
   const [input, setInput] = useState('')
@@ -146,7 +164,7 @@ function Composer({
     if (!m) return null
     const q = m[2]!.toLowerCase()
     const options = mentionables.filter(
-      (a) => a.label.toLowerCase().startsWith(q) || a.id.toLowerCase().startsWith(q),
+      (a) => a.label.toLowerCase().startsWith(q) || a.insert.toLowerCase().startsWith(q),
     )
     return options.length ? { start: upto.length - m[2]!.length - 1, options } : null
   }, [input, caret, mentionables])
@@ -182,7 +200,7 @@ function Composer({
       }
       if (e.key === 'Tab' || e.key === 'Enter') {
         e.preventDefault()
-        insertMention(mention.options[picked]!.label)
+        insertMention(mention.options[picked]!.insert)
         return
       }
       if (e.key === 'Escape') return setCaret(0)
@@ -201,11 +219,11 @@ function Composer({
         <div className="mercury-panel absolute bottom-full left-4 z-10 mb-1 w-64 overflow-hidden rounded-xl p-1">
           {mention.options.map((a, i) => (
             <button
-              key={a.id}
+              key={`${a.insert}-${a.sub ?? ''}`}
               type="button"
               onMouseDown={(e) => {
                 e.preventDefault()
-                insertMention(a.label)
+                insertMention(a.insert)
               }}
               className={cn(
                 'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm',
@@ -214,7 +232,7 @@ function Composer({
             >
               <Avatar name={a.label} className="h-5 w-5 text-xs" />
               <span className="truncate">{a.label}</span>
-              <span className="ml-auto truncate text-xs text-muted">{a.id}</span>
+              {a.sub && <span className="ml-auto truncate text-xs text-muted">{a.sub}</span>}
             </button>
           ))}
         </div>

@@ -20,6 +20,7 @@ export const NAV: NavSection[] = [
     items: [
       { to: '/', label: 'Chat', icon: '◈' },
       { to: '/channels', label: 'Channels', icon: '⋕' },
+      { to: '/inbox', label: 'Inbox', icon: '⌾' },
       { to: '/boards', label: 'Boards', icon: '⧉' },
     ],
   },
