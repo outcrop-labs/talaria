@@ -348,6 +348,10 @@ const MIGRATIONS: string[] = [
      ) x
    ) t
    where u.endpoint is null and u.agent_model = t.agent_model and u.llm_model = t.llm_model`,
+  // Per-ticket token spend: agents report usage against the ticket they're
+  // working (MCP log_usage → POST /api/tasks/:id/usage).
+  `alter table usage_events add column if not exists task_id uuid`,
+  `create index if not exists usage_events_task_idx on usage_events(task_id) where task_id is not null`,
 ]
 
 function ensureMigrated(): Promise<void> {
