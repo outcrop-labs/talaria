@@ -106,9 +106,16 @@ not proxied from mission-control.
   per-agent "% local" column — the view for optimizing the small-model/frontier
   mixture.
 - **Models tab**, a System-area registry for model backends: one-click presets
-  for common providers (Anthropic, OpenAI, OpenRouter, DeepSeek, local
-  Ollama/vLLM) plus custom OpenAI-compatible endpoints; per-provider **model
-  catalogs** (tag-style editing), local/cloud class, and cloud pricing fields.
+  for **every common US provider** (Anthropic, OpenAI, Google, xAI, Meta,
+  OpenRouter, Groq, Together, Fireworks, Cerebras, Perplexity, DeepInfra,
+  DeepSeek, local Ollama/vLLM) with base URLs and wiring preconfigured — pick,
+  name the key env var, done. Local/cloud is **inferred** (never asked for known
+  providers; LAN/loopback URL heuristic for custom). Provider marks throughout;
+  the provider chooser and the model tier picker are the same searchable
+  combobox. Each provider card offers its **live catalog** (server-side
+  `/models` fetch, keys never leave the box) so you search what the provider
+  actually serves; per-provider **model catalogs** (tag-style add/remove) and
+  cloud pricing fields.
   The agent editor's clunky selects are replaced by **one searchable picker**
   over every catalog. Deleting a model or provider that agents still use warns
   with the blast radius and **double opt-ins**, then cascades: each affected

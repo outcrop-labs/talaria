@@ -7,6 +7,8 @@ export interface ComboOption {
   value: string
   label: string
   sub?: string
+  /** Optional leading mark (e.g. a provider logo). */
+  icon?: React.ReactNode
 }
 
 // Subsequence fuzzy match: chars of `q` appear in order in `text`.
@@ -96,7 +98,15 @@ export function Combobox({
 
   const defaultTriggerLabel = () => {
     if (selected.length === 0) return <span className="text-muted">{placeholder}</span>
-    if (!multiple) return <span className="truncate text-fg">{byValue(selected[0]!)?.label ?? selected[0]}</span>
+    if (!multiple) {
+      const o = byValue(selected[0]!)
+      return (
+        <span className="flex min-w-0 items-center gap-2">
+          {o?.icon}
+          <span className="truncate text-fg">{o?.label ?? selected[0]}</span>
+        </span>
+      )
+    }
     const labels = selected.map((v) => byValue(v)?.label ?? v)
     return (
       <span className="truncate text-fg">
@@ -161,6 +171,7 @@ export function Combobox({
                       selectedSet.has(o.value) && 'bg-card2',
                     )}
                   >
+                    {o.icon}
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-fg">{o.label}</span>
                       {o.sub && <span className="block truncate text-xs text-muted">{o.sub}</span>}

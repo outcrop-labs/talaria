@@ -1,5 +1,6 @@
 import { Combobox } from '@/components/ui/combobox'
 import type { ControlSize } from '@/components/ui/control'
+import { ProviderMark } from '@/components/fleet/provider-mark'
 import type { LlmEndpoint, ModelTarget } from '@/lib/fleet-defs'
 
 // Unit separator — never appears in provider/model ids.
@@ -26,11 +27,18 @@ export function ModelPicker({
       value: `${ep.name}${SEP}${m}`,
       label: m,
       sub: `${ep.name} · ${ep.class}`,
+      icon: <ProviderMark provider={ep.provider} name={ep.name} />,
     })),
   )
   const cur = value.model ? `${value.endpoint}${SEP}${value.model}` : ''
   if (cur && !options.some((o) => o.value === cur)) {
-    options.unshift({ value: cur, label: value.model, sub: `${value.endpoint} · not in catalog` })
+    const ep = endpoints.find((e) => e.name === value.endpoint)
+    options.unshift({
+      value: cur,
+      label: value.model,
+      sub: `${value.endpoint} · not in catalog`,
+      icon: <ProviderMark provider={ep?.provider ?? 'custom'} name={value.endpoint} />,
+    })
   }
   return (
     <Combobox

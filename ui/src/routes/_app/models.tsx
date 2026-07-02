@@ -7,13 +7,17 @@ import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
+import { Combobox } from '@/components/ui/combobox'
 import { LabelPicker } from '@/components/board/label-picker'
+import { ProviderMark } from '@/components/fleet/provider-mark'
 import { useSession } from '@/lib/session'
 import {
   addEndpoint,
+  inferClass,
   patchEndpoint,
   removeEndpoint,
   PROVIDER_PRESETS,
+  useAvailableModels,
   useEndpoints,
   type AffectedAgent,
   type EndpointOpResult,
@@ -88,6 +92,7 @@ const describeAffected = (affected: AffectedAgent[]) =>
 
 function EndpointCard({ ep }: { ep: LlmEndpoint }) {
   const qc = useQueryClient()
+  const { data: available } = useAvailableModels(ep.id)
   const [err, setErr] = useState<string | null>(null)
   const refresh = () => qc.invalidateQueries({ queryKey: ['fleet-endpoints'] })
 
@@ -116,23 +121,34 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
 
   return (
     <Panel className="p-4">
-      <div className="mb-2 flex items-baseline gap-2">
+      <div className="mb-2 flex items-center gap-2">
+        <ProviderMark provider={ep.provider} name={ep.name} />
         <span className="text-sm font-semibold text-fg">{ep.name}</span>
-        <span className="text-xs text-muted">
+        <span className="min-w-0 truncate text-xs text-muted">
           {ep.provider}
           {ep.baseUrl && ` · ${ep.baseUrl}`}
           {ep.apiKeyEnv && ` · key: $${ep.apiKeyEnv}`}
         </span>
         <span className="ml-auto" />
-        <Select
-          value={ep.class}
-          size="sm"
-          onChange={(e) => void run(patchEndpoint(ep.id, { class: e.target.value as 'local' | 'cloud' }))}
-          className="shrink-0"
-        >
-          <option value="local">local</option>
-          <option value="cloud">cloud</option>
-        </Select>
+        {ep.provider === 'custom' ? (
+          // Only custom endpoints can be ambiguous — known providers infer.
+          <Select
+            value={ep.class}
+            size="sm"
+            onChange={(e) => void run(patchEndpoint(ep.id, { class: e.target.value as 'local' | 'cloud' }))}
+            className="shrink-0"
+          >
+            <option value="local">local</option>
+            <option value="cloud">cloud</option>
+          </Select>
+        ) : (
+          <span
+            className="shrink-0 text-xs"
+            style={{ color: ep.class === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}
+          >
+            {ep.class}
+          </span>
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -147,10 +163,11 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
       <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Models</div>
       <LabelPicker
         value={ep.models}
-        options={ep.models}
+        options={[...new Set([...ep.models, ...(available?.models ?? [])])]}
         onChange={(models) => void runCascading((force) => patchEndpoint(ep.id, { models, force }))}
         size="sm"
       />
+      {available?.note && <div className="mt-1 text-xs text-muted">Provider catalog unavailable: {available.note}</div>}
       {ep.class === 'cloud' && (
         <div className="mt-3 flex items-center gap-2 text-xs text-muted">
           <span>Pricing $/1M tokens:</span>
@@ -195,11 +212,13 @@ function AddProviderModal({ open, onClose }: { open: boolean; onClose: () => voi
     setErr(null)
     setBusy(true)
     try {
+      const url = (preset.configurableUrl ? baseUrl.trim() || preset.baseUrl : preset.baseUrl) ?? null
       const r = await addEndpoint({
         name: name.trim() || preset.key,
         provider: preset.provider,
-        baseUrl: (baseUrl.trim() || preset.baseUrl) ?? null,
-        class: preset.class,
+        baseUrl: url,
+        // Users never pick local/cloud — known providers carry it, custom infers from the URL.
+        class: preset.configurableUrl ? inferClass(url) : preset.class,
         apiKeyEnv: (apiKeyEnv.trim() || preset.apiKeyEnv) ?? null,
         models: preset.models,
       })
@@ -216,22 +235,29 @@ function AddProviderModal({ open, onClose }: { open: boolean; onClose: () => voi
       <div className="space-y-4">
         <div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Provider</label>
-          <Select value={presetKey} onChange={(e) => setPresetKey(e.target.value)} className="w-full">
-            {PROVIDER_PRESETS.map((p) => (
-              <option key={p.key} value={p.key}>
-                {p.label}
-              </option>
-            ))}
-          </Select>
+          <Combobox
+            options={PROVIDER_PRESETS.map((p) => ({
+              value: p.key,
+              label: p.label,
+              sub: p.configurableUrl ? undefined : 'preconfigured',
+              icon: <ProviderMark provider={p.provider} name={p.key} />,
+            }))}
+            selected={[presetKey]}
+            onChange={([k]) => k && setPresetKey(k)}
+            placeholder="Pick a provider…"
+          />
         </div>
         <div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={preset.key} />
         </div>
-        {(preset.provider === 'custom' || preset.baseUrl) && (
+        {preset.configurableUrl && (
           <div>
             <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Base URL</label>
             <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={preset.baseUrl ?? 'https://…/v1'} />
+            <p className="mt-1 text-xs text-muted">
+              LAN and loopback hosts count as <span style={{ color: 'var(--theme-success)' }}>local</span> in the cost split — inferred automatically.
+            </p>
           </div>
         )}
         <div>

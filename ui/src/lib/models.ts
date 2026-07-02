@@ -2,8 +2,9 @@
 import { useQuery } from '@tanstack/react-query'
 import type { LlmEndpoint } from '@/lib/fleet-defs'
 
-/** Common providers, one click to add. Model lists are starting points — the
- *  catalog is editable per endpoint. */
+/** Every common US model provider, preconfigured: base URLs and provider
+ *  wiring are baked in so adding one is pick → name the key env → done. Model
+ *  lists are starting points — the catalog is editable per endpoint. */
 export const PROVIDER_PRESETS: Array<{
   key: string
   label: string
@@ -12,6 +13,8 @@ export const PROVIDER_PRESETS: Array<{
   baseUrl?: string
   apiKeyEnv?: string
   models: string[]
+  /** Show the base-URL field (local/custom endpoints only). */
+  configurableUrl?: boolean
 }> = [
   {
     key: 'anthropic',
@@ -30,12 +33,92 @@ export const PROVIDER_PRESETS: Array<{
     models: ['gpt-5.4', 'gpt-5.4-mini'],
   },
   {
+    key: 'google',
+    label: 'Google (Gemini)',
+    provider: 'custom',
+    class: 'cloud',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    apiKeyEnv: 'GEMINI_API_KEY',
+    models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  },
+  {
+    key: 'x-ai',
+    label: 'xAI (Grok)',
+    provider: 'x-ai',
+    class: 'cloud',
+    apiKeyEnv: 'XAI_API_KEY',
+    models: ['grok-4'],
+  },
+  {
+    key: 'meta',
+    label: 'Meta (Llama API)',
+    provider: 'custom',
+    class: 'cloud',
+    baseUrl: 'https://api.llama.com/compat/v1',
+    apiKeyEnv: 'LLAMA_API_KEY',
+    models: ['llama-4-maverick', 'llama-4-scout'],
+  },
+  {
     key: 'openrouter',
     label: 'OpenRouter',
     provider: 'openrouter',
     class: 'cloud',
     apiKeyEnv: 'OPENROUTER_API_KEY',
     models: ['anthropic/claude-sonnet-4-6', 'deepseek/deepseek-v4-pro', 'meta-llama/llama-4-70b'],
+  },
+  {
+    key: 'groq',
+    label: 'Groq',
+    provider: 'custom',
+    class: 'cloud',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    apiKeyEnv: 'GROQ_API_KEY',
+    models: ['llama-4-70b', 'qwen3-32b'],
+  },
+  {
+    key: 'together',
+    label: 'Together AI',
+    provider: 'custom',
+    class: 'cloud',
+    baseUrl: 'https://api.together.xyz/v1',
+    apiKeyEnv: 'TOGETHER_API_KEY',
+    models: [],
+  },
+  {
+    key: 'fireworks',
+    label: 'Fireworks AI',
+    provider: 'custom',
+    class: 'cloud',
+    baseUrl: 'https://api.fireworks.ai/inference/v1',
+    apiKeyEnv: 'FIREWORKS_API_KEY',
+    models: [],
+  },
+  {
+    key: 'cerebras',
+    label: 'Cerebras',
+    provider: 'custom',
+    class: 'cloud',
+    baseUrl: 'https://api.cerebras.ai/v1',
+    apiKeyEnv: 'CEREBRAS_API_KEY',
+    models: [],
+  },
+  {
+    key: 'perplexity',
+    label: 'Perplexity',
+    provider: 'custom',
+    class: 'cloud',
+    baseUrl: 'https://api.perplexity.ai',
+    apiKeyEnv: 'PERPLEXITY_API_KEY',
+    models: ['sonar-pro'],
+  },
+  {
+    key: 'deepinfra',
+    label: 'DeepInfra',
+    provider: 'custom',
+    class: 'cloud',
+    baseUrl: 'https://api.deepinfra.com/v1/openai',
+    apiKeyEnv: 'DEEPINFRA_API_KEY',
+    models: [],
   },
   {
     key: 'deepseek',
@@ -52,6 +135,7 @@ export const PROVIDER_PRESETS: Array<{
     class: 'local',
     baseUrl: 'http://localhost:11434/v1',
     models: [],
+    configurableUrl: true,
   },
   {
     key: 'vllm',
@@ -61,9 +145,34 @@ export const PROVIDER_PRESETS: Array<{
     baseUrl: 'http://localhost:8000/v1',
     apiKeyEnv: 'LLM_API_KEY',
     models: [],
+    configurableUrl: true,
   },
-  { key: 'custom', label: 'Custom (OpenAI-compatible)', provider: 'custom', class: 'cloud', models: [] },
+  { key: 'custom', label: 'Custom (OpenAI-compatible)', provider: 'custom', class: 'cloud', models: [], configurableUrl: true },
 ]
+
+/** Class inference: users never pick local/cloud — LAN/loopback hosts are
+ *  local, everything else (incl. keyless native providers) is cloud. */
+export function inferClass(baseUrl?: string | null): 'local' | 'cloud' {
+  if (!baseUrl) return 'cloud'
+  const host = baseUrl.replace(/^https?:\/\//, '').split(/[/:]/)[0] ?? ''
+  return /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host) || !host.includes('.')
+    ? 'local'
+    : 'cloud'
+}
+
+/** The provider's live catalog — what it offers right now (server-side fetch,
+ *  cached; `note` explains an empty result, e.g. missing key). */
+export function useAvailableModels(endpointId: string) {
+  return useQuery({
+    queryKey: ['available-models', endpointId],
+    staleTime: 15 * 60_000,
+    queryFn: async (): Promise<{ models: string[]; note?: string }> => {
+      const r = await fetch(`/api/fleet/endpoints/${endpointId}/available`, { credentials: 'same-origin' })
+      if (!r.ok) return { models: [] }
+      return r.json()
+    },
+  })
+}
 
 export function useEndpoints(enabled = true) {
   return useQuery({
