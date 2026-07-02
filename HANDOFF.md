@@ -66,6 +66,13 @@ Full project-management suite, all live in `ui/`:
   published over `channel:<id>` pub/sub → SSE. Composer autocompletes mentions.
   Adding an agent to a channel requires the adder's access to that agent.
 
+- **UI conventions** - one control-size scale (`sm` h-9 / `md` h-11) via `size` props
+  on Button/Input/Select/Combobox (`ui/control.ts`) — never hand-set `h-*` on a
+  control. People are added through `UserPicker` (combobox over `/api/users`),
+  agents through the multi `Combobox`, ticket labels through `LabelPicker`
+  (chips + combobox with `allowCreate`). Users set display names in Settings
+  (`PUT /api/profile`); prefer `name ?? email` when rendering people.
+
 ## Next up (in order)
 
 1. Notifications + user @mentions (channels parse agent mentions only today),

@@ -12,7 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as ApiUsersRouteImport } from './routes/api/users'
 import { Route as ApiTeamsRouteImport } from './routes/api/teams'
+import { Route as ApiProfileRouteImport } from './routes/api/profile'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
 import { Route as ApiConversationsRouteImport } from './routes/api/conversations'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
@@ -74,9 +76,19 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
+const ApiUsersRoute = ApiUsersRouteImport.update({
+  id: '/api/users',
+  path: '/api/users',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiTeamsRoute = ApiTeamsRouteImport.update({
   id: '/api/teams',
   path: '/api/teams',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiProfileRoute = ApiProfileRouteImport.update({
+  id: '/api/profile',
+  path: '/api/profile',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiFleetRoute = ApiFleetRouteImport.update({
@@ -331,7 +343,9 @@ export interface FileRoutesByFullPath {
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/fleet': typeof ApiFleetRoute
+  '/api/profile': typeof ApiProfileRoute
   '/api/teams': typeof ApiTeamsRouteWithChildren
+  '/api/users': typeof ApiUsersRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
@@ -381,7 +395,9 @@ export interface FileRoutesByTo {
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/fleet': typeof ApiFleetRoute
+  '/api/profile': typeof ApiProfileRoute
   '/api/teams': typeof ApiTeamsRouteWithChildren
+  '/api/users': typeof ApiUsersRoute
   '/': typeof AppIndexRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/agents/register': typeof ApiAgentsRegisterRoute
@@ -434,7 +450,9 @@ export interface FileRoutesById {
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/fleet': typeof ApiFleetRoute
+  '/api/profile': typeof ApiProfileRoute
   '/api/teams': typeof ApiTeamsRouteWithChildren
+  '/api/users': typeof ApiUsersRoute
   '/_app/': typeof AppIndexRoute
   '/_app/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/agents/register': typeof ApiAgentsRegisterRoute
@@ -488,7 +506,9 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/conversations'
     | '/api/fleet'
+    | '/api/profile'
     | '/api/teams'
+    | '/api/users'
     | '/boards/$boardId'
     | '/api/agents/register'
     | '/api/auth/google'
@@ -538,7 +558,9 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/conversations'
     | '/api/fleet'
+    | '/api/profile'
     | '/api/teams'
+    | '/api/users'
     | '/'
     | '/boards/$boardId'
     | '/api/agents/register'
@@ -590,7 +612,9 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/conversations'
     | '/api/fleet'
+    | '/api/profile'
     | '/api/teams'
+    | '/api/users'
     | '/_app/'
     | '/_app/boards/$boardId'
     | '/api/agents/register'
@@ -631,7 +655,9 @@ export interface RootRouteChildren {
   ApiChatRoute: typeof ApiChatRoute
   ApiConversationsRoute: typeof ApiConversationsRouteWithChildren
   ApiFleetRoute: typeof ApiFleetRoute
+  ApiProfileRoute: typeof ApiProfileRoute
   ApiTeamsRoute: typeof ApiTeamsRouteWithChildren
+  ApiUsersRoute: typeof ApiUsersRoute
   ApiAuthGoogleRoute: typeof ApiAuthGoogleRouteWithChildren
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
   ApiAuthPasswordRoute: typeof ApiAuthPasswordRoute
@@ -663,11 +689,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/api/users': {
+      id: '/api/users'
+      path: '/api/users'
+      fullPath: '/api/users'
+      preLoaderRoute: typeof ApiUsersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/teams': {
       id: '/api/teams'
       path: '/api/teams'
       fullPath: '/api/teams'
       preLoaderRoute: typeof ApiTeamsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/profile': {
+      id: '/api/profile'
+      path: '/api/profile'
+      fullPath: '/api/profile'
+      preLoaderRoute: typeof ApiProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/fleet': {
@@ -1180,7 +1220,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiChatRoute: ApiChatRoute,
   ApiConversationsRoute: ApiConversationsRouteWithChildren,
   ApiFleetRoute: ApiFleetRoute,
+  ApiProfileRoute: ApiProfileRoute,
   ApiTeamsRoute: ApiTeamsRouteWithChildren,
+  ApiUsersRoute: ApiUsersRoute,
   ApiAuthGoogleRoute: ApiAuthGoogleRouteWithChildren,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
   ApiAuthPasswordRoute: ApiAuthPasswordRoute,

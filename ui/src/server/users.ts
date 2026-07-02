@@ -54,6 +54,19 @@ export async function upsertUser(identity: Identity): Promise<User> {
   return rows[0] as User
 }
 
+/** Set a user's display name (profile setting). */
+export async function setUserName(userId: string, name: string): Promise<void> {
+  const sql = await db()
+  await sql`update users set name = ${name} where id = ${userId}`
+}
+
+/** Everyone who has signed in — for people pickers (share, invite, channels). */
+export async function listUsers(): Promise<Array<{ id: string; email: string | null; name: string | null }>> {
+  const sql = await db()
+  const rows = await sql`select id, email, name from users order by lower(coalesce(email, name, '')) asc`
+  return rows as unknown as Array<{ id: string; email: string | null; name: string | null }>
+}
+
 /** The set of agent models a user may use: 'all' or an explicit allow-list. */
 export async function allowedAgents(userId: string, role: Role): Promise<'all' | string[]> {
   if (role === 'admin') return 'all'

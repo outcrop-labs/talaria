@@ -184,7 +184,8 @@ function AddCard({ onAdd }: { onAdd: (title: string) => void }) {
       onKeyDown={(e) => (e.key === 'Enter' ? submit() : e.key === 'Escape' ? setOpen(false) : null)}
       onBlur={submit}
       placeholder="Card title…"
-      className="h-9 w-full text-sm"
+      size="sm"
+      className="w-full"
     />
   )
 }
