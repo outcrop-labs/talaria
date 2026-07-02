@@ -6,7 +6,7 @@ import type { FrameworkAdapter, AgentRegistration, HeartbeatPayload, TaskReport,
  * Hermes framework adapter.
  *
  * Hermes agents (github.com/NousResearch/hermes-agent) connect to Mission Control
- * through Talaria (github.com/PackLedger/talaria): a Hermes plugin registers each
+ * through Talaria (github.com/outcrop-labs/talaria): a Hermes plugin registers each
  * agent, heartbeat-polls `/api/agents/{id}/heartbeat` for assigned work, and reports
  * progress via `PUT /api/tasks/{id}`. A companion bridge lets the hermes-workspace UI
  * drive its Conductor missions here as tasks. This adapter mirrors the other framework

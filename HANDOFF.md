@@ -81,6 +81,7 @@ sudo firewall-cmd --reload
 
 ## Repo note
 
-The repo is being **migrated to a new org** (was `git@github.com:PackLedger/talaria.git`).
-After migration, update the `origin` remote accordingly. This handoff + all docs travel
-with the repo.
+The repo now lives at **`outcrop-labs/talaria`** (`https://github.com/outcrop-labs/talaria`),
+migrated from `PackLedger/talaria` on 2026-07-02. `origin` points there over HTTPS (SSH was
+hanging in this environment; `gh auth setup-git` supplies the credentials). This handoff + all
+docs travel with the repo.

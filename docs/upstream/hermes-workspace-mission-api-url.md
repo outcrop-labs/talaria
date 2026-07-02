@@ -68,7 +68,7 @@ missions to a mission-control fleet (create/poll/cancel).
 
 ### Real-world use
 
-This is the sanctioned integration point for **Talaria** (https://github.com/PackLedger/talaria), a
+This is the sanctioned integration point for **Talaria** (https://github.com/outcrop-labs/talaria), a
 small MIT bridge that lets hermes-workspace drive a
 [mission-control](https://github.com/builderz-labs/mission-control) fleet as its orchestration brain.
 Talaria currently proxies the whole dashboard to answer conductor calls; with this var it only needs

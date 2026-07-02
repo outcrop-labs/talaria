@@ -12,7 +12,7 @@ index 0000000..a6d80c1
 + * Hermes framework adapter.
 + *
 + * Hermes agents (github.com/NousResearch/hermes-agent) connect to Mission Control
-+ * through Talaria (github.com/PackLedger/talaria): a Hermes plugin registers each
++ * through Talaria (github.com/outcrop-labs/talaria): a Hermes plugin registers each
 + * agent, heartbeat-polls `/api/agents/{id}/heartbeat` for assigned work, and reports
 + * progress via `PUT /api/tasks/{id}`. A companion bridge lets the hermes-workspace UI
 + * drive its Conductor missions here as tasks. This adapter mirrors the other framework
@@ -97,7 +97,7 @@ index 4300182..3cd8d92 100644
 +    id: 'hermes',
 +    label: 'Hermes',
 +    description: 'Hermes agents bridged via Talaria — each agent registers, heartbeat-polls for assigned work, and reports progress (the Done transition stays Aegis/human-gated)',
-+    docsUrl: 'https://github.com/PackLedger/talaria',
++    docsUrl: 'https://github.com/outcrop-labs/talaria',
 +    connection: {
 +      connectionMode: 'polling',
 +      heartbeatInterval: 30,
@@ -106,7 +106,7 @@ index 4300182..3cd8d92 100644
 +        'Set TALARIA_MISSION_CONTROL_URL + an x-api-key; the plugin auto-registers and heartbeats',
 +        'The Talaria bridge lets the hermes-workspace UI drive Conductor missions here as tasks',
 +      ],
-+      exampleSnippet: `# Hermes agents connect via the Talaria plugin — github.com/PackLedger/talaria
++      exampleSnippet: `# Hermes agents connect via the Talaria plugin — github.com/outcrop-labs/talaria
 +# In each agent's config.yaml:
 +#   plugins:
 +#     enabled: [talaria]
