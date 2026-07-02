@@ -6,7 +6,14 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import { addVersionIfChanged, ensureEndpoint, upsertAgentDef, type AgentConfig, type ModelTarget } from './agent-defs'
+import {
+  addEndpointModels,
+  addVersionIfChanged,
+  ensureEndpoint,
+  upsertAgentDef,
+  type AgentConfig,
+  type ModelTarget,
+} from './agent-defs'
 
 const STACK_DIR = () =>
   process.env.TALARIA_STACK_DIR ?? '/home/jon/packledger-services/ai/orchestration'
@@ -55,6 +62,7 @@ async function targetOf(block: RawModelBlock): Promise<ModelTarget> {
     apiKeyEnv: keyEnvOf(block.api_key),
     contextLength: typeof block.context_length === 'number' ? block.context_length : null,
   })
+  if (block.model) await addEndpointModels(ep.name, [block.model])
   const ctx = Number(block.context_length)
   return {
     endpoint: ep.name,

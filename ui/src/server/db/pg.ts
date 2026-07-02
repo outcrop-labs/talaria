@@ -300,6 +300,8 @@ const MIGRATIONS: string[] = [
   // 'imported' agents reuse the legacy stack's volumes/service chassis;
   // 'created' agents get fresh talaria-fleet volumes + a templated chassis.
   `alter table agent_defs add column if not exists source text not null default 'imported'`,
+  // Curated model catalog per endpoint — what the agent editor's picker offers.
+  `alter table llm_endpoints add column if not exists models jsonb not null default '[]'`,
   // Immutable version payloads — soul + structured config (main model, aliases,
   // fallbacks, toolsets, mcp servers, plugins, and the full raw config for
   // faithful rendering). Every edit is a new version: diffable, revertible.

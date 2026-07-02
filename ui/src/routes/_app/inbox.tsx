@@ -23,7 +23,7 @@ function InboxPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-2xl p-6">
+    <div className="mx-auto w-full max-w-2xl p-8">
       <div className="mb-4 flex items-center gap-3">
         <h1 className="mercury-text text-lg font-semibold">Inbox</h1>
         {unread > 0 && (
@@ -46,7 +46,7 @@ function InboxPage() {
                 type="button"
                 onClick={() => open(n)}
                 className={cn(
-                  'w-full rounded-xl border border-transparent px-3 py-2.5 text-left transition-colors hover:bg-card',
+                  'w-full rounded-xl border border-transparent px-4 py-3 text-left transition-colors hover:bg-card',
                   !n.readAt && 'border-line-subtle bg-card',
                 )}
               >

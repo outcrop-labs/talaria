@@ -62,13 +62,13 @@ function AdminPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-4xl space-y-6">
+    <div className="h-full overflow-y-auto p-8">
+      <div className="mx-auto max-w-4xl space-y-8">
         <h1 className="mercury-text text-2xl font-semibold">Admin</h1>
 
-        <Panel className="p-4">
-          <div className="mb-1 text-sm font-semibold text-fg">People</div>
-          <p className="mb-3 text-xs text-muted">
+        <Panel>
+          <div className="mb-2 text-sm font-semibold text-fg">People</div>
+          <p className="mb-4 text-xs text-muted">
             Roles and per-person agent access. An empty agent list means all agents; picking any restricts
             that person to exactly those.
           </p>
@@ -79,7 +79,7 @@ function AdminPage() {
           )}
           <ul className="divide-y divide-line-subtle">
             {(users ?? []).map((u) => (
-              <li key={u.id} className="flex items-center gap-3 py-2.5">
+              <li key={u.id} className="flex items-center gap-3 py-3">
                 <Avatar name={u.name ?? u.email} className="h-7 w-7" />
                 <span className="w-56 min-w-0">
                   <span className="block truncate text-sm text-fg">{u.name ?? u.email ?? u.id}</span>

@@ -68,7 +68,10 @@ Full project-management suite, all live in `ui/`:
 
 - **UI conventions** - one control-size scale (`sm` h-9 / `md` h-11) via `size` props
   on Button/Input/Select/Combobox (`ui/control.ts`) — never hand-set `h-*` on a
-  control. People are added through `UserPicker` (combobox over `/api/users`),
+  control. **Card density is owned by `Panel`** (default `p-6`; override like
+  `p-0` only for flush tables). Card internals: header block `mb-4`, tiny
+  uppercase labels `mb-2`, list rows `py-3`, chip/meta clusters `mt-2.5`. Pages:
+  `p-8` + `space-y-8`. People are added through `UserPicker` (combobox over `/api/users`),
   agents through the multi `Combobox`, ticket labels through `LabelPicker`
   (chips + combobox with `allowCreate`). Users set display names in Settings
   (`PUT /api/profile`); prefer `name ?? email` when rendering people.
@@ -138,15 +141,29 @@ Full project-management suite, all live in `ui/`:
   agent (created "remy", answered via gateway, retired; def row remains as
   `retired` with history — re-enable is SQL-only for now).
 
+- **Models tab** - `/models` (System nav): endpoint registry management with
+  provider presets (`lib/models.ts` PROVIDER_PRESETS), per-endpoint model
+  catalogs (`llm_endpoints.models` jsonb, seeded by the importer), pricing,
+  class toggle. Removal is guarded: `fleet-cascade.ts` computes the blast
+  radius (`modelUsage`); the API returns 409 `needsForce` for the double
+  opt-in, then `cascadeRemoval` strips the tier from each affected agent as a
+  NEW version, re-renders, restarts running managed agents. MAIN usage always
+  refuses. Agent editor uses `ModelPicker` (one combobox over all catalogs,
+  `␟` separator).
+
+- **Full fleet migrated (2026-07-02)** - all 8 agents run Talaria-managed
+  (`talaria-fleet` project); every legacy `ai-agent-*` container is stopped and
+  retired behind the `retired-migrated-to-talaria` profile in the legacy
+  compose (depends_on refs commented; mattermost-bridge's agent-only
+  depends_on dropped). Renderer passes compose `secrets:` through, including
+  long-form `{source, mode}` entries (dex/dewey `gh_token` — caught live as a
+  bogus /run/secrets directory, fixed by re-render + force-recreate).
+
 ## Next up (in order)
 
-1. **Models tab** (user-requested): System-area page to add/remove common
-   providers (Anthropic, OpenRouter, DeepSeek, OpenAI, local vLLM/Ollama) and
-   custom endpoints + per-provider model catalogs; replace the agent editor's
-   clunky selects with a nicer grouped picker.
-2. Migrate the remaining 7 legacy agents (one click each on /agents); per-alias
-   tier routing + attribution (Talaria requesting `<base>-<alias>` models).
-3. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
+1. Per-alias tier routing + attribution (Talaria requesting `<base>-<alias>`
+   models); decommission cleanup in the legacy stack when ready.
+2. Remaining stub pages under `_app/`: activity, alerts, skills, memory, mcp,
    inference.
 2. **Token-spend + per-LLM-API attribution per ticket** (graph which APIs completed a
    ticket), tracked follow-up to the auto-accumulated time-spent field.

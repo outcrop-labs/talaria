@@ -58,7 +58,7 @@ export function ChannelView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+      <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
         {messages.length === 0 ? (
           <EmptyState
             icon="#"
@@ -214,7 +214,7 @@ function Composer({
   const trackCaret = () => setCaret(taRef.current?.selectionStart ?? 0)
 
   return (
-    <div className="relative px-4 pb-4">
+    <div className="relative px-6 pb-6">
       {mention && (
         <div className="mercury-panel absolute bottom-full left-4 z-10 mb-1 w-64 overflow-hidden rounded-xl p-1">
           {mention.options.map((a, i) => (

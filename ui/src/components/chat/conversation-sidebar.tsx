@@ -30,7 +30,7 @@ export function ConversationSidebar({
 
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-l border-line-subtle bg-sidebar">
-      <div className="space-y-2 border-b border-line-subtle p-3">
+      <div className="space-y-2 border-b border-line-subtle p-4">
         <AgentPicker
           agents={agents}
           value={selectedAgent}
@@ -43,7 +43,7 @@ export function ConversationSidebar({
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2">
+      <div className="flex-1 overflow-y-auto p-3">
         {agentConvs.length === 0 ? (
           <div className="px-2 py-6 text-center text-xs text-muted">No chats yet with this agent.</div>
         ) : (

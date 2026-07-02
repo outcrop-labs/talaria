@@ -15,8 +15,8 @@ function FleetOverview() {
   const busiest = [...agents].sort((a, b) => b.messages - a.messages)[0]
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-5xl space-y-6">
+    <div className="h-full overflow-y-auto p-8">
+      <div className="mx-auto max-w-5xl space-y-8">
         <h1 className="mercury-text text-2xl font-semibold">Fleet</h1>
 
         {isLoading ? (
@@ -31,8 +31,8 @@ function FleetOverview() {
               <StatCard label="Messages" value={t?.messages ?? 0} sub="all time" />
             </div>
 
-            <Panel className="p-4">
-              <div className="mb-3 flex items-center justify-between">
+            <Panel>
+              <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-fg">Agents by activity</h2>
                 {busiest && busiest.messages > 0 && (
                   <span className="text-xs text-muted">
@@ -42,7 +42,7 @@ function FleetOverview() {
               </div>
               <ul className="divide-y divide-line-subtle">
                 {agents.map((a) => (
-                  <li key={a.id} className="flex items-center gap-3 py-2">
+                  <li key={a.id} className="flex items-center gap-3 py-3">
                     <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: STATUS_COLOR[a.status] }} />
                     <Avatar name={a.label} className="h-6 w-6" />
                     <span className="min-w-0 flex-1">

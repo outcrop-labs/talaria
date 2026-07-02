@@ -33,8 +33,8 @@ function AgentsRoster() {
   const isAdmin = session?.role === 'admin'
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-5xl space-y-6">
+    <div className="h-full overflow-y-auto p-8">
+      <div className="mx-auto max-w-5xl space-y-8">
         <h1 className="mercury-text text-2xl font-semibold">Agents</h1>
 
         {isAdmin && <DefinitionsPanel />}
@@ -42,7 +42,7 @@ function AgentsRoster() {
         {isLoading ? (
           <div className="text-sm text-muted">Loading agents…</div>
         ) : (
-          <Panel className="overflow-hidden">
+          <Panel className="p-0 overflow-hidden">
             <table className="w-full text-sm">
               <thead className="border-b border-line bg-card2 text-xs uppercase tracking-wide text-muted">
                 <tr>
@@ -129,8 +129,8 @@ function DefinitionsPanel() {
   }
 
   return (
-    <Panel className="p-4">
-      <div className="mb-3 flex items-center gap-3">
+    <Panel>
+      <div className="mb-4 flex items-center gap-3">
         <div>
           <h2 className="text-sm font-semibold text-fg">Definitions</h2>
           <p className="text-xs text-muted">
@@ -151,7 +151,7 @@ function DefinitionsPanel() {
       {creating && (
         <CreateAgentModal open={creating} onClose={() => setCreating(false)} templates={defs.filter((d) => d.enabled)} />
       )}
-      {summary && <div className="mb-3 text-xs text-muted">{summary}</div>}
+      {summary && <div className="mb-4 text-xs text-muted">{summary}</div>}
 
       {defs.length === 0 ? (
         <div className="py-4 text-center text-xs text-muted">
@@ -208,7 +208,7 @@ function DefRow({
   }
 
   return (
-    <li className="py-3">
+    <li className="py-4">
       <div className="flex items-start gap-3">
         <Avatar name={d.displayName} className="mt-0.5 h-7 w-7" />
         <div className="min-w-0 flex-1">
@@ -288,14 +288,14 @@ function DefRow({
             )}
           </div>
           {err && (
-            <div className="mt-1 text-xs" style={{ color: 'var(--theme-danger)' }}>
+            <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
               {err}
             </div>
           )}
           {editing && (
             <AgentEditorModal open={editing} onClose={() => setEditing(false)} def={d} endpoints={endpoints} />
           )}
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
             {cfg?.main && <TargetChip t={cfg.main} name="main" />}
             {cfg?.aliases?.map((a) => <TargetChip key={a.name} t={a} name={a.name} />)}
             {!!cfg?.fallbacks?.length && (
@@ -305,7 +305,7 @@ function DefRow({
             )}
           </div>
           {(d.latest?.soul || !!cfg?.mcpServers?.length) && (
-            <div className="mt-1.5">
+            <div className="mt-2.5">
               <Disclosure title="Soul & tools" icon={<span>❖</span>}>
                 {!!cfg?.mcpServers?.length && (
                   <div className="mb-2 text-xs text-muted">MCP: {cfg.mcpServers.join(', ')}</div>

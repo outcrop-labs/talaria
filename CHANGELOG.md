@@ -105,6 +105,23 @@ not proxied from mission-control.
   `/cost` shows the 30-day local/cloud share bar, a stacked per-day strip, and a
   per-agent "% local" column — the view for optimizing the small-model/frontier
   mixture.
+- **Models tab**, a System-area registry for model backends: one-click presets
+  for **every common US provider** (Anthropic, OpenAI, Google, xAI, Meta,
+  OpenRouter, Groq, Together, Fireworks, Cerebras, Perplexity, DeepInfra,
+  DeepSeek, local Ollama/vLLM) with base URLs and wiring preconfigured — pick,
+  name the key env var, done. Local/cloud is **inferred** (never asked for known
+  providers; LAN/loopback URL heuristic for custom). Provider marks throughout;
+  the provider chooser and the model tier picker are the same searchable
+  combobox. Each provider card offers its **live catalog** (server-side
+  `/models` fetch, keys never leave the box) so you search what the provider
+  actually serves; per-provider **model catalogs** (tag-style add/remove) and
+  cloud pricing fields.
+  The agent editor's clunky selects are replaced by **one searchable picker**
+  over every catalog. Deleting a model or provider that agents still use warns
+  with the blast radius and **double opt-ins**, then cascades: each affected
+  agent gets a new version with the tier stripped (revertible), re-rendered,
+  running managed agents restarted. A model that is some agent's **main** is
+  never cascaded — reassign first.
 - **Agent harness (phase C2: create/retire)**, spin agents up and down on a
   whim. **New agent** on `/agents`: pick a template (any existing agent — model
   tiers/tools/plugins carry over with every identity reference re-stamped to the

@@ -45,10 +45,10 @@ function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-lg p-6">
+    <div className="mx-auto w-full max-w-lg p-8">
       <h1 className="mercury-text mb-4 text-lg font-semibold">Settings</h1>
-      <section className="mercury-panel rounded-2xl p-4">
-        <div className="mb-3 flex items-center gap-3">
+      <section className="mercury-panel rounded-2xl p-6">
+        <div className="mb-4 flex items-center gap-3">
           <Avatar src={user?.picture} name={name || user?.email} className="h-10 w-10" />
           <div className="min-w-0">
             <div className="truncate text-sm font-medium text-fg">{name || user?.email}</div>

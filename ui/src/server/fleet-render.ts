@@ -15,7 +15,7 @@
 //     DNS name; depends_on/build/ports dropped (deps run in the old project,
 //     the bridge reaches agents over the network, host ports retire)
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
 import type { AgentDef, AgentVersion } from './agent-defs'
@@ -32,6 +32,7 @@ type ComposeService = Record<string, unknown> & {
   ports?: unknown
   volumes?: string[]
   networks?: unknown
+  secrets?: unknown
 }
 
 interface RenderTarget {
@@ -91,11 +92,18 @@ export async function renderFleet(): Promise<RenderResult> {
   const targets = await managedAgents()
   const result: RenderResult = { agents: [], files: [], warnings: [] }
 
+  // Parse in YAML 1.1 — docker compose's own dialect (go-yaml). This matters:
+  // `mode: 0400` is OCTAL in 1.1 (256) but decimal 400 in 1.2, which would
+  // silently turn a root-only secret into a group-writable one.
   const sourceCompose = parseYaml(await readFile(join(STACK_DIR(), 'docker-compose.yml'), 'utf8'), {
     merge: true,
-  }) as { services?: Record<string, ComposeService> }
+    version: '1.1',
+  }) as { services?: Record<string, ComposeService>; secrets?: Record<string, unknown> }
 
   const services: Record<string, ComposeService> = {}
+  // Secrets referenced by agent services (dex/dewey/dot: litellm_key, gh_token,
+  // anthropic_key) — pass their env-sourced definitions through verbatim.
+  const secrets: Record<string, unknown> = {}
   const volumes: Record<string, { external: true; name: string } | Record<string, never>> = {}
 
   // Chassis for created agents: any standard agent service block from the
@@ -158,6 +166,24 @@ export async function renderFleet(): Promise<RenderResult> {
       })
     }
     svc.networks = ['fleet']
+    if (Array.isArray(svc.secrets)) {
+      // Entries are either "name" or long-form { source, target, mode, … }.
+      // A reference without a resolvable definition is DROPPED (with a warning)
+      // — keeping it would make compose reject the whole file and brick every
+      // fleet operation, not just this agent.
+      svc.secrets = (svc.secrets as Array<string | { source?: string }>).filter((s) => {
+        const name = typeof s === 'string' ? s : s.source
+        const secretDef = name ? sourceCompose.secrets?.[name] : undefined
+        if (name && secretDef) {
+          secrets[name] = secretDef
+          return true
+        }
+        result.warnings.push(
+          `${serviceName}: secret ${name ?? JSON.stringify(s)} not defined in the source compose — dropped from the rendered service`,
+        )
+        return false
+      })
+    }
     services[serviceName] = svc
     result.agents.push(def.model)
   }
@@ -166,6 +192,7 @@ export async function renderFleet(): Promise<RenderResult> {
     name: 'talaria-fleet',
     services,
     volumes,
+    ...(Object.keys(secrets).length ? { secrets } : {}),
     networks: { fleet: { external: true, name: `${SOURCE_COMPOSE_PROJECT}_default` } },
   }
   const composePath = join(FLEET_DIR(), 'docker-compose.yml')
@@ -203,6 +230,7 @@ async function writeFleetManifest(result: RenderResult): Promise<void> {
   })
   const json = JSON.stringify(manifest)
   for (const path of [join(FLEET_DIR(), 'fleet.json'), BRIDGE_MANIFEST()]) {
+    await mkdir(dirname(path), { recursive: true })
     await writeFile(path, json)
     result.files.push(path)
   }
