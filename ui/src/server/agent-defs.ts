@@ -140,7 +140,8 @@ export async function createEndpoint(e: {
   `
 }
 
-/** Remove an endpoint. Refused while any agent's CURRENT version targets it. */
+/** Remove an endpoint. Refused while any ENABLED agent's CURRENT version
+ *  targets it (retired agents don't run — their history must not block). */
 export async function deleteEndpoint(id: string): Promise<{ ok: boolean; usedBy?: string[] }> {
   const sql = await db()
   const ep = (await sql`select name from llm_endpoints where id = ${id}`) as unknown as Array<{ name: string }>
@@ -149,9 +150,10 @@ export async function deleteEndpoint(id: string): Promise<{ ok: boolean; usedBy?
   const users = (await sql`
     select d.slug from agent_defs d
     join agent_versions v on v.agent_id = d.id and v.version = d.current_version
-    where v.config->'main'->>'endpoint' = ${name}
-       or exists (select 1 from jsonb_array_elements(coalesce(v.config->'aliases','[]'::jsonb)) a where a->>'endpoint' = ${name})
-       or exists (select 1 from jsonb_array_elements(coalesce(v.config->'fallbacks','[]'::jsonb)) f where f->>'endpoint' = ${name})
+    where d.enabled
+      and (v.config->'main'->>'endpoint' = ${name}
+        or exists (select 1 from jsonb_array_elements(coalesce(v.config->'aliases','[]'::jsonb)) a where a->>'endpoint' = ${name})
+        or exists (select 1 from jsonb_array_elements(coalesce(v.config->'fallbacks','[]'::jsonb)) f where f->>'endpoint' = ${name}))
   `) as unknown as Array<{ slug: string }>
   if (users.length) return { ok: false, usedBy: users.map((u) => u.slug) }
   await sql`delete from llm_endpoints where id = ${id}`

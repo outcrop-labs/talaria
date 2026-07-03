@@ -23,13 +23,16 @@ export interface ModelUsage {
 const hits = (t: ModelTarget | undefined, endpoint: string, models: string[] | null) =>
   !!t && t.endpoint === endpoint && (models === null || models.includes(t.model))
 
-/** Every agent whose CURRENT version targets endpoint (+models). */
+/** Every ENABLED agent whose CURRENT version targets endpoint (+models).
+ *  Retired (disabled) agents don't run and don't render — their historical
+ *  versions must not block deleting an endpoint. */
 export async function modelUsage(endpoint: string, models: string[] | null): Promise<ModelUsage[]> {
   const sql = await db()
   const rows = (await sql`
     select d.id, d.slug, d.department, d.managed, d.enabled, v.config
     from agent_defs d
     join agent_versions v on v.agent_id = d.id and v.version = d.current_version
+    where d.enabled
   `) as unknown as Array<{ id: string; slug: string; department: string; managed: boolean; enabled: boolean; config: AgentConfig }>
   const out: ModelUsage[] = []
   for (const r of rows) {
