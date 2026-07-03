@@ -84,6 +84,10 @@ Roughly in the order we're chasing it. Full detail in
   today; full analytics across work, chats, and projects (board rollups, trends, ROI) is next.
 - **Permissions** 🚧. Real, fine-grained access control for agents and people, growing from the guardrails
   we already ship.
+- **Output guardrails** 🔭. Platform-level confabulation/safety checks on agent output (today the
+  structural confab-guard lives as a per-agent Hermes plugin, annotate-only). Needs the agents to export
+  tool-call traces to Talaria; then a server-side claims-vs-actions annotator on replies and ticket
+  outcomes, with library-backed semantic rails (NeMo Guardrails / Guardrails AI class) as a later layer.
 - **Open source, free forever + managed cloud** 🔭. The whole thing is OSS and self-hostable (MIT); a
   managed cloud for busier companies comes later.
 - **Other agent runtimes** 🔭. Every agent is a full Hermes agent today; other runtimes are planned.

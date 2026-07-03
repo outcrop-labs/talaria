@@ -223,6 +223,29 @@ Full project-management suite, all live in `ui/`:
   `sync-agent-state.sh` repointed at `talaria-fleet-agent-*-1` containers
   (sync verified live).
 
+- **Direct local inference (2026-07-02)** - the fleet no longer routes pl-main
+  through the nginx `inference-router`; each agent's main goes STRAIGHT to a
+  Spark box (`spark-1` = 192.168.0.77:8001, `spark-2` = .78:8001, both `local`
+  class, key `LLM_API_KEY`), sharded alternately with the OTHER box as first
+  fallback (Hermes `fallback_providers` = failover; static per-agent sharding
+  replaces nginx least_conn). Done entirely through Talaria's own APIs (new
+  endpoints + 8 config versions + re-render/restart). The `inference-router`
+  container still runs for non-fleet consumers (host-port UIs); Talaria's
+  registry no longer lists it. litellm stays for cloud tiers (it carries the
+  US no-train OpenRouter allowlist + the $ref inline hook); its `glm` =
+  `openrouter/z-ai/glm-5.2`, priced by manual override at the litellm-declared
+  $0.95/$3.00 per MTok (allowlisted pools cost more than OpenRouter's default
+  cheapest pool, so the auto rate would understate).
+
+- **Guardrails direction (decided 2026-07-02)** - Hermes' `confab-guard`
+  plugin (a `transform_llm_output` hook flagging claimed-but-not-performed
+  external actions; annotate-only) stays IN the agent runtime for now — its
+  check needs the turn's tool-call trace, which the gateway stream doesn't
+  carry, so Talaria can't replicate it server-side without a trace export.
+  Platform-level guards in Talaria are roadmapped (see ROADMAP); libraries
+  surveyed: NeMo Guardrails / Guardrails AI (semantic rails), DeepEval/Phoenix
+  (offline evals) — none covers the structural confab check.
+
 ## Next up (in order)
 
 1. **Notifications for alerts** - surface critical alerts as inbox
