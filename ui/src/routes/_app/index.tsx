@@ -1,7 +1,9 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
-import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
+import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
@@ -62,6 +64,8 @@ function HomePage() {
           <p className="mt-1 text-sm text-muted">Here's what needs you, and where the fleet stands.</p>
         </div>
 
+        <AssistantCard />
+
         {/* Quick entries into the work surfaces */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <QuickCard to="/chat" icon={<MessageSquare size={18} />} label="Chat" sub="Talk to an agent" />
@@ -120,6 +124,78 @@ function HomePage() {
         )}
       </div>
     </div>
+  )
+}
+
+interface Assistant {
+  id: string
+  slug: string
+  model: string
+  displayName: string
+  enabled: boolean
+}
+
+// The one-button personal assistant: everyone can spin up their own agent
+// (its own container, memory, key) and jump straight into a chat with it.
+function AssistantCard() {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const { data, isLoading } = useQuery({
+    queryKey: ['my-assistant'],
+    queryFn: async (): Promise<Assistant | null> => {
+      const r = await fetch('/api/me/assistant')
+      if (!r.ok) return null
+      return ((await r.json()) as { assistant: Assistant | null }).assistant
+    },
+  })
+
+  const create = async () => {
+    setBusy(true)
+    setErr(null)
+    try {
+      const r = await fetch('/api/me/assistant', { method: 'POST' })
+      const j = (await r.json()) as { assistant?: Assistant; error?: string }
+      if (!r.ok || j.error) setErr(j.error ?? 'could not create your assistant')
+      else {
+        await qc.invalidateQueries({ queryKey: ['my-assistant'] })
+        await qc.invalidateQueries({ queryKey: ['agents'] })
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (isLoading) return null
+  return (
+    <Panel className="flex items-center gap-4">
+      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-accent/15 text-accent">
+        <Sparkles size={20} />
+      </span>
+      {data ? (
+        <>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-fg">{data.displayName}</div>
+            <div className="truncate text-xs text-muted">Your personal assistant — its own memory, skills, and tools.</div>
+          </div>
+          <Button size="sm" onClick={() => void navigate({ to: '/chat' })}>
+            Open chat
+          </Button>
+        </>
+      ) : (
+        <>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-fg">Spin up your assistant</div>
+            <div className="truncate text-xs text-muted">A personal agent that's just yours — memory, skills, and tools of its own.</div>
+            {err && <div className="mt-1 text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
+          </div>
+          <Button size="sm" onClick={() => void create()} disabled={busy}>
+            {busy ? 'Creating…' : 'Create assistant'}
+          </Button>
+        </>
+      )}
+    </Panel>
   )
 }
 

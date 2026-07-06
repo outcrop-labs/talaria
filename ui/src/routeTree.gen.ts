@@ -51,6 +51,7 @@ import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as ApiUploadsIdRouteImport } from './routes/api/uploads.$id'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
 import { Route as ApiMemoryIdRouteImport } from './routes/api/memory.$id'
+import { Route as ApiMeAssistantRouteImport } from './routes/api/me.assistant'
 import { Route as ApiMcpTestRouteImport } from './routes/api/mcp.test'
 import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
 import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
@@ -306,6 +307,11 @@ const ApiTasksIdRoute = ApiTasksIdRouteImport.update({
 const ApiMemoryIdRoute = ApiMemoryIdRouteImport.update({
   id: '/api/memory/$id',
   path: '/api/memory/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMeAssistantRoute = ApiMeAssistantRouteImport.update({
+  id: '/api/me/assistant',
+  path: '/api/me/assistant',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiMcpTestRoute = ApiMcpTestRouteImport.update({
@@ -602,6 +608,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
+  '/api/me/assistant': typeof ApiMeAssistantRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/uploads/$id': typeof ApiUploadsIdRoute
@@ -692,6 +699,7 @@ export interface FileRoutesByTo {
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
+  '/api/me/assistant': typeof ApiMeAssistantRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/uploads/$id': typeof ApiUploadsIdRoute
@@ -784,6 +792,7 @@ export interface FileRoutesById {
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
+  '/api/me/assistant': typeof ApiMeAssistantRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/uploads/$id': typeof ApiUploadsIdRoute
@@ -876,6 +885,7 @@ export interface FileRouteTypes {
     | '/api/fleet/render'
     | '/api/keys/$id'
     | '/api/mcp/test'
+    | '/api/me/assistant'
     | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/api/uploads/$id'
@@ -966,6 +976,7 @@ export interface FileRouteTypes {
     | '/api/fleet/render'
     | '/api/keys/$id'
     | '/api/mcp/test'
+    | '/api/me/assistant'
     | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/api/uploads/$id'
@@ -1057,6 +1068,7 @@ export interface FileRouteTypes {
     | '/api/fleet/render'
     | '/api/keys/$id'
     | '/api/mcp/test'
+    | '/api/me/assistant'
     | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/api/uploads/$id'
@@ -1120,6 +1132,7 @@ export interface RootRouteChildren {
   ApiAuthPasswordRoute: typeof ApiAuthPasswordRoute
   ApiAuthProvidersRoute: typeof ApiAuthProvidersRoute
   ApiAuthSessionRoute: typeof ApiAuthSessionRoute
+  ApiMeAssistantRoute: typeof ApiMeAssistantRoute
   ApiMemoryIdRoute: typeof ApiMemoryIdRoute
   ApiTasksIdRoute: typeof ApiTasksIdRouteWithChildren
   ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
@@ -1420,6 +1433,13 @@ declare module '@tanstack/react-router' {
       path: '/api/memory/$id'
       fullPath: '/api/memory/$id'
       preLoaderRoute: typeof ApiMemoryIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/me/assistant': {
+      id: '/api/me/assistant'
+      path: '/api/me/assistant'
+      fullPath: '/api/me/assistant'
+      preLoaderRoute: typeof ApiMeAssistantRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/mcp/test': {
@@ -2089,6 +2109,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthPasswordRoute: ApiAuthPasswordRoute,
   ApiAuthProvidersRoute: ApiAuthProvidersRoute,
   ApiAuthSessionRoute: ApiAuthSessionRoute,
+  ApiMeAssistantRoute: ApiMeAssistantRoute,
   ApiMemoryIdRoute: ApiMemoryIdRoute,
   ApiTasksIdRoute: ApiTasksIdRouteWithChildren,
   ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,

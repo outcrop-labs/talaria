@@ -398,6 +398,9 @@ const MIGRATIONS: string[] = [
   // Attachment metadata carried on a message ([{id, filename, mime, size}]).
   `alter table messages add column if not exists attachments jsonb not null default '[]'`,
   `alter table channel_messages add column if not exists attachments jsonb not null default '[]'`,
+  // Personal assistants: an agent owned by one user (their own Hermes agent),
+  // spun up from the dashboard. Null = a shared fleet agent.
+  `alter table agent_defs add column if not exists owner_user_id uuid references users(id) on delete set null`,
 ]
 
 function ensureMigrated(): Promise<void> {
