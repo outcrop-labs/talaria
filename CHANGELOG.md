@@ -2,6 +2,46 @@
 
 All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md).
 
+## [Unreleased]: Phase 5 — product IA + elegance (2026-07-06)
+
+Reworking Talaria from a feature grid into a coherent product: two mental
+modes, a real landing, versioned internals, and a self-hostable vocabulary.
+
+### Added
+- **Home / Today** at `/`, the seamless landing. In Talaria's guardrail model a
+  person's job is to triage, review, and unblock the agents' work, so Home
+  surfaces exactly those queues (scoped to your boards) plus unread mentions,
+  quick entries into the work surfaces, and an accurate fleet-health glance
+  (real container status). Chat moves to `/chat`.
+- **Talaria LLM gateway** ([`server/llm-gateway.ts`]), one OpenAI-compatible
+  endpoint over the whole model registry (`/api/llm/v1/{models,chat/completions}`,
+  streaming). Provider keys stay server-side; per-endpoint `request_defaults`
+  merge into every call; usage is metered per key. **Per-user API keys**
+  (`tlk_…`, minted in Settings → API keys, admin-grantable via `can_mint_keys`).
+- **No-train routing as a setting**, a per-cloud-endpoint toggle on /models
+  (OpenRouter no-store allowlist + `data_collection: deny`, or portable deny) —
+  privacy is opt-in, not baked in.
+- **Versioned skills + memory**, every save is an immutable, authored revision
+  (`internal_versions`); recover or load any prior one. Edited in a **WYSIWYG
+  modal** (RichEditor + a history rail) — the raw textareas are gone.
+- **MCP connection testing**, live status chips (Connected / Login required /
+  Unreachable / Error) via a real MCP `initialize` probe carrying the agent's
+  identity, plus a premium add-server modal that tests before saving.
+
+### Changed
+- **Navigation regrouped** into **Work** (Home · Chat · Channels · Boards ·
+  Inbox) and **Manage** (Agents · Models · Compute · Cost · Audit · Alerts) +
+  System — simple for the non-technical surfaces, control grouped for the
+  technical ones. Skills/Memory/MCP/Models moved off the top nav into the Agents
+  page. Fleet overview folded into Agents (`/fleet` → `/agents`).
+- **"Local" → "Self-hosted"** in all user-facing copy (people run models on
+  local machines *and* other on-prem boxes). "Local inference" → **Compute**,
+  "Activity" → **Audit**.
+
+### Removed
+- The dead **`/tasks`** nav item (it matched the boards API route; no page ever
+  existed behind it).
+
 ## [Unreleased]: Phase 2 UI (2026-07-02)
 
 Talaria's own front end ([`ui/`](./ui), Vite + TanStack Start) grows a full,
