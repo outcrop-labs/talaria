@@ -34,6 +34,7 @@ export interface ChannelMessage {
   content: string
   status: 'streaming' | 'complete' | 'error'
   createdAt: string
+  attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
 }
 
 const j = async <T>(r: Response): Promise<T> => {
@@ -95,8 +96,8 @@ const post = (url: string, body: unknown, method = 'POST') =>
 export const createChannel = async (name: string): Promise<Channel> =>
   (await j<{ channel: Channel }>(await post('/api/channels', { name }))).channel
 
-export const sendChannelMessage = async (id: string, content: string): Promise<void> => {
-  await j(await post(`/api/channels/${id}/messages`, { content }))
+export const sendChannelMessage = async (id: string, content: string, attachmentIds: string[] = []): Promise<void> => {
+  await j(await post(`/api/channels/${id}/messages`, { content, attachmentIds }))
 }
 
 export const updateChannel = async (id: string, patch: { name?: string; topic?: string | null }): Promise<void> => {

@@ -15,6 +15,7 @@ export interface StoredMessage {
   tools: ToolCall[]
   status: 'streaming' | 'complete' | 'error'
   seq: number
+  attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
 }
 
 export function useConversations() {

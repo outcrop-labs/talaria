@@ -385,6 +385,19 @@ const MIGRATIONS: string[] = [
   // roster and editable in the manage modal. Distinct from `department` (the
   // routing/mount key) and `display_name` (the person-name).
   `alter table agent_defs add column if not exists role text`,
+  // ── Attachments: uploaded files referenced by chat/channel messages ─────────
+  `create table if not exists uploads (
+     id uuid primary key default gen_random_uuid(),
+     filename text not null,
+     mime text not null,
+     size integer not null,
+     path text not null,
+     uploaded_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now()
+   )`,
+  // Attachment metadata carried on a message ([{id, filename, mime, size}]).
+  `alter table messages add column if not exists attachments jsonb not null default '[]'`,
+  `alter table channel_messages add column if not exists attachments jsonb not null default '[]'`,
 ]
 
 function ensureMigrated(): Promise<void> {

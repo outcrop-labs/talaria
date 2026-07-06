@@ -16,6 +16,7 @@ export interface MessageRow {
   tools: ToolCall[]
   status: 'streaming' | 'complete' | 'error'
   seq: number
+  attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
 }
 
 /** The user's conversations, newest activity first. */
@@ -42,7 +43,7 @@ export async function getConversation(
   `
   if (conv.length === 0) return null
   const messages = await sql`
-    select role, content, reasoning, tools, status, seq
+    select role, content, reasoning, tools, status, seq, attachments
     from messages where conversation_id = ${conversationId} order by seq asc
   `
   return { conversation: conv[0] as unknown as ConversationRow, messages: messages as unknown as MessageRow[] }
@@ -87,11 +88,16 @@ export async function nextSeq(conversationId: string): Promise<number> {
   return (rows[0] as { next: number }).next
 }
 
-export async function insertUserMessage(conversationId: string, seq: number, content: string): Promise<void> {
+export async function insertUserMessage(
+  conversationId: string,
+  seq: number,
+  content: string,
+  attachments: unknown[] = [],
+): Promise<void> {
   const sql = await db()
   await sql`
-    insert into messages (conversation_id, seq, role, content, status)
-    values (${conversationId}, ${seq}, 'user', ${content}, 'complete')
+    insert into messages (conversation_id, seq, role, content, status, attachments)
+    values (${conversationId}, ${seq}, 'user', ${content}, 'complete', ${sql.json(attachments as never)})
   `
 }
 

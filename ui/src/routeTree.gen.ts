@@ -13,6 +13,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as ApiUsersRouteImport } from './routes/api/users'
+import { Route as ApiUploadsRouteImport } from './routes/api/uploads'
 import { Route as ApiTeamsRouteImport } from './routes/api/teams'
 import { Route as ApiSkillsRouteImport } from './routes/api/skills'
 import { Route as ApiProfileRouteImport } from './routes/api/profile'
@@ -47,6 +48,7 @@ import { Route as AppAgentsRouteImport } from './routes/_app/agents'
 import { Route as AppAdminRouteImport } from './routes/_app/admin'
 import { Route as AppActivityRouteImport } from './routes/_app/activity'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
+import { Route as ApiUploadsIdRouteImport } from './routes/api/uploads.$id'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
 import { Route as ApiMemoryIdRouteImport } from './routes/api/memory.$id'
 import { Route as ApiMcpTestRouteImport } from './routes/api/mcp.test'
@@ -113,6 +115,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
 const ApiUsersRoute = ApiUsersRouteImport.update({
   id: '/api/users',
   path: '/api/users',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiUploadsRoute = ApiUploadsRouteImport.update({
+  id: '/api/uploads',
+  path: '/api/uploads',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiTeamsRoute = ApiTeamsRouteImport.update({
@@ -284,6 +291,11 @@ const AppBoardsIndexRoute = AppBoardsIndexRouteImport.update({
   id: '/boards/',
   path: '/boards/',
   getParentRoute: () => AppRoute,
+} as any)
+const ApiUploadsIdRoute = ApiUploadsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiUploadsRoute,
 } as any)
 const ApiTasksIdRoute = ApiTasksIdRouteImport.update({
   id: '/api/tasks/$id',
@@ -563,6 +575,7 @@ export interface FileRoutesByFullPath {
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
+  '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/admin/users': typeof ApiAdminUsersRoute
@@ -584,6 +597,7 @@ export interface FileRoutesByFullPath {
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
+  '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/boards/': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
@@ -649,6 +663,7 @@ export interface FileRoutesByTo {
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
+  '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
   '/': typeof AppIndexRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
@@ -671,6 +686,7 @@ export interface FileRoutesByTo {
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
+  '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/boards': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
@@ -738,6 +754,7 @@ export interface FileRoutesById {
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
+  '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
   '/_app/': typeof AppIndexRoute
   '/_app/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
@@ -760,6 +777,7 @@ export interface FileRoutesById {
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
+  '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/_app/boards/': typeof AppBoardsIndexRoute
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
@@ -828,6 +846,7 @@ export interface FileRouteTypes {
     | '/api/profile'
     | '/api/skills'
     | '/api/teams'
+    | '/api/uploads'
     | '/api/users'
     | '/boards/$boardId'
     | '/api/admin/users'
@@ -849,6 +868,7 @@ export interface FileRouteTypes {
     | '/api/mcp/test'
     | '/api/memory/$id'
     | '/api/tasks/$id'
+    | '/api/uploads/$id'
     | '/boards/'
     | '/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
@@ -914,6 +934,7 @@ export interface FileRouteTypes {
     | '/api/profile'
     | '/api/skills'
     | '/api/teams'
+    | '/api/uploads'
     | '/api/users'
     | '/'
     | '/boards/$boardId'
@@ -936,6 +957,7 @@ export interface FileRouteTypes {
     | '/api/mcp/test'
     | '/api/memory/$id'
     | '/api/tasks/$id'
+    | '/api/uploads/$id'
     | '/boards'
     | '/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
@@ -1002,6 +1024,7 @@ export interface FileRouteTypes {
     | '/api/profile'
     | '/api/skills'
     | '/api/teams'
+    | '/api/uploads'
     | '/api/users'
     | '/_app/'
     | '/_app/boards/$boardId'
@@ -1024,6 +1047,7 @@ export interface FileRouteTypes {
     | '/api/mcp/test'
     | '/api/memory/$id'
     | '/api/tasks/$id'
+    | '/api/uploads/$id'
     | '/_app/boards/'
     | '/_app/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
@@ -1076,6 +1100,7 @@ export interface RootRouteChildren {
   ApiProfileRoute: typeof ApiProfileRoute
   ApiSkillsRoute: typeof ApiSkillsRouteWithChildren
   ApiTeamsRoute: typeof ApiTeamsRouteWithChildren
+  ApiUploadsRoute: typeof ApiUploadsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
   ApiAuthGoogleRoute: typeof ApiAuthGoogleRouteWithChildren
@@ -1117,6 +1142,13 @@ declare module '@tanstack/react-router' {
       path: '/api/users'
       fullPath: '/api/users'
       preLoaderRoute: typeof ApiUsersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/uploads': {
+      id: '/api/uploads'
+      path: '/api/uploads'
+      fullPath: '/api/uploads'
+      preLoaderRoute: typeof ApiUploadsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/teams': {
@@ -1356,6 +1388,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/boards/'
       preLoaderRoute: typeof AppBoardsIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/api/uploads/$id': {
+      id: '/api/uploads/$id'
+      path: '/$id'
+      fullPath: '/api/uploads/$id'
+      preLoaderRoute: typeof ApiUploadsIdRouteImport
+      parentRoute: typeof ApiUploadsRoute
     }
     '/api/tasks/$id': {
       id: '/api/tasks/$id'
@@ -1956,6 +1995,18 @@ const ApiTeamsRouteWithChildren = ApiTeamsRoute._addFileChildren(
   ApiTeamsRouteChildren,
 )
 
+interface ApiUploadsRouteChildren {
+  ApiUploadsIdRoute: typeof ApiUploadsIdRoute
+}
+
+const ApiUploadsRouteChildren: ApiUploadsRouteChildren = {
+  ApiUploadsIdRoute: ApiUploadsIdRoute,
+}
+
+const ApiUploadsRouteWithChildren = ApiUploadsRoute._addFileChildren(
+  ApiUploadsRouteChildren,
+)
+
 interface ApiAuthGoogleRouteChildren {
   ApiAuthGoogleCallbackRoute: typeof ApiAuthGoogleCallbackRoute
 }
@@ -2009,6 +2060,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiProfileRoute: ApiProfileRoute,
   ApiSkillsRoute: ApiSkillsRouteWithChildren,
   ApiTeamsRoute: ApiTeamsRouteWithChildren,
+  ApiUploadsRoute: ApiUploadsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,
   ApiAuthGoogleRoute: ApiAuthGoogleRouteWithChildren,

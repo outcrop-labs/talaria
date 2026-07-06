@@ -7,6 +7,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMember, type ChannelMessage } from '@/lib/channels'
 import { useUsers } from '@/lib/users'
+import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
+import type { Attachment } from '@/lib/attachments'
 import type { AgentModel } from '@/lib/agents'
 
 /** A composer mention option: `insert` is the token typed into the message. */
@@ -47,10 +49,10 @@ export function ChannelView({
   const userLabel = (author: string) =>
     users.find((u) => u.email === author)?.name ?? (author.split('@')[0] || author)
 
-  const send = async (text: string) => {
+  const send = async (text: string, attachmentIds: string[]) => {
     setError(null)
     try {
-      await sendChannelMessage(channelId, text)
+      await sendChannelMessage(channelId, text, attachmentIds)
     } catch (e) {
       setError((e as Error).message)
     }
@@ -138,6 +140,7 @@ function MessageRow({
               <Dot /> <Dot delay={0.15} /> <Dot delay={0.3} />
             </span>
           ) : null}
+          {m.attachments && m.attachments.length > 0 && <MessageAttachments items={m.attachments} />}
           {m.content && live && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-accent align-middle" />}
           {m.status === 'error' && (
             <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
@@ -158,9 +161,10 @@ function Composer({
 }: {
   channelName: string
   mentionables: Mentionable[]
-  onSend: (text: string) => Promise<void>
+  onSend: (text: string, attachmentIds: string[]) => Promise<void>
 }) {
   const [input, setInput] = useState('')
+  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [caret, setCaret] = useState(0)
   const [picked, setPicked] = useState(0)
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -193,9 +197,11 @@ function Composer({
 
   const send = () => {
     const text = input.trim()
-    if (!text) return
+    if (!text && attachments.length === 0) return
+    const atts = attachments
     setInput('')
-    void onSend(text)
+    setAttachments([])
+    void onSend(text, atts.map((a) => a.id))
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -245,24 +251,28 @@ function Composer({
           ))}
         </div>
       )}
-      <div className="mercury-panel flex items-end gap-2 rounded-2xl p-2">
-        <Textarea
-          ref={taRef}
-          rows={1}
-          value={input}
-          onChange={(e) => {
-            setInput(e.target.value)
-            trackCaret()
-          }}
-          onKeyUp={trackCaret}
-          onClick={trackCaret}
-          onKeyDown={onKeyDown}
-          placeholder={`Message #${channelName} — @mention an agent to bring it in`}
-          className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
-        />
-        <Button onClick={send} disabled={!input.trim()}>
-          Send
-        </Button>
+      <div className="mercury-panel rounded-2xl p-2">
+        <PendingAttachments items={attachments} onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} />
+        <div className="flex items-end gap-2">
+          <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} />
+          <Textarea
+            ref={taRef}
+            rows={1}
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value)
+              trackCaret()
+            }}
+            onKeyUp={trackCaret}
+            onClick={trackCaret}
+            onKeyDown={onKeyDown}
+            placeholder={`Message #${channelName} — @mention an agent to bring it in`}
+            className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
+          />
+          <Button onClick={send} disabled={!input.trim() && attachments.length === 0}>
+            Send
+          </Button>
+        </div>
       </div>
     </div>
   )
