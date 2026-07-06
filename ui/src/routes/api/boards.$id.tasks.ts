@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
 import { createTask, listBoardTasks, EFFORTS, PRIORITIES } from '@/server/tasks'
+import { indexTicket } from '@/server/retrieval/sources'
 
 /** Resolves who's calling: a board-allowed agent (by key + name), an editing
  *  user, or nobody. Agents must pass the board's agent policy. */
@@ -72,6 +73,8 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
           dueDate: parsed.data.dueDate ?? null,
           createdBy: who.actor,
         })
+        // Index into the ambient activity brain (board-scoped; retrieval on demand).
+        void indexTicket(task).catch(() => {})
         return json({ task })
       },
     },

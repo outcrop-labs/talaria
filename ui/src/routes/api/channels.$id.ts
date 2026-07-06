@@ -10,6 +10,7 @@ import {
   listChannelMembers,
   updateChannel,
 } from '@/server/channels'
+import { purgeActivityByField } from '@/server/retrieval/sources'
 
 // GET → channel detail (members + agents). PUT → rename / set topic (owner).
 // DELETE → archive (?hard=1 deletes; owner only).
@@ -44,6 +45,9 @@ export const Route = createFileRoute('/api/channels/$id')({
         if ((await channelRole(user.id, params.id)) !== 'owner') return json({ error: 'forbidden' }, { status: 403 })
         const hard = new URL(request.url).searchParams.get('hard') === '1'
         await (hard ? deleteChannel(params.id) : archiveChannel(params.id))
+        // A hard delete removes the channel's messages — purge their activity
+        // points too so nothing is orphaned in the index.
+        if (hard) void purgeActivityByField('channelId', params.id).catch(() => {})
         return json({ ok: true })
       },
     },
