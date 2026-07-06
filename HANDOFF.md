@@ -274,22 +274,41 @@ Full project-management suite, all live in `ui/`:
   **WYSIWYG `InternalEditorModal`**. **MCP probe** (`mcp-probe.ts`,
   `/api/mcp/test`) gives live connection status.
 
+- **Product depth (Phase 6, 2026-07-06)** - **unified agent management modal**
+  (`components/fleet/agent-manage-modal.tsx`: Summary·Config·Skills·Memory·MCP·
+  Versions) reached from the redesigned **grid/list Agents roster** (icon
+  controls; health from real container state; editable `agent_defs.role`;
+  duplicate + typed-slug retire + `unretire`). **Fleet Reconcile**
+  (`fleet-reconcile.ts`, `/api/fleet/reconcile`). **Personal assistants**
+  (`agent_defs.owner_user_id`, `personal-agent.ts`, `/api/me/assistant`, Home
+  card). **Attachments** (`uploads` table + `messages/channel_messages.attachments`,
+  `server/uploads.ts`, `/api/uploads`, `components/chat/attachments.tsx`;
+  images → data-URL vision parts). **Per-view access** (`users.denied_views`,
+  `GATEABLE_VIEWS`, session exposes it, `_app` route-gates). **Audit trail**
+  (`audit_log` + `app_settings`, `server/audit.ts`, `logAudit()` wired into
+  governance mutations; Audit page `audit` source for admins; retention setting
+  in Admin). **Models page** compacted (provider card → Manage modal w/
+  catalog-search add-model). **Modal** now portals to `<body>` (viewport-centered).
+  ⚠️ Dev-server restart flakiness this session: start it via a
+  `run_in_background` Bash task from the `ui/` cwd and poll
+  `until curl .../api/auth/providers; do sleep 4; done` — nohup from the wrong
+  cwd silently no-ops.
+
 ## Next up (in order)
 
-1. **Per-view access control (#50)** + admin settings surface — each primary
-   view assignable per user with route gating; app settings (incl. audit
-   retention) in Admin subviews.
-2. **True audit trail (#51)** — Audit page becomes a real before/after log with
-   configurable retention (Activity is a read model today).
-3. **Universal @mentions (#60)** — one mention primitive (users + agents) across
-   chat, channels, ticket comments, plans, research; permission-scoped.
-4. **Input consistency sweep (#49)** + remaining WYSIWYG conversions (#46);
-   chat/channel attachments + model-switcher redesign (#53).
-5. **New surfaces**: Plan view (#55), Research view (#56); artifact system (#54);
-   personal-assistant self-serve (#52); per-agent Talaria toolkit (#58) +
-   proactive agent outreach (#59).
-6. **Product-ization**: generalize Hermes import to any instance (#44);
-   Talaria-native identity proxy for per-user MCP identity (#42).
+1. **Universal @mentions (#60)** — one mention primitive (users + agents) across
+   chat, channels, ticket comments, plans, research; permission-scoped. (Channels
+   already mention agents + users; extract + extend.)
+2. **Artifact system (#54)** — generate/store docx/xlsx + microsites, attach to
+   tickets, hosted locally.
+3. **Plan view (#55)** + **Research view (#56)** — promote plan-chat to a primary
+   surface; a research surface feeding chat/plan/board.
+4. **Per-agent Talaria toolkit (#58)** + **proactive agent outreach (#59)** —
+   agents that know how to work Talaria and can start conversations.
+5. **Input sweep (#49)** + remaining WYSIWYG (#46).
+6. **Product-ization**: generalize Hermes import to any instance / from-scratch
+   config (rest of #44); Talaria-native identity proxy for per-user MCP identity
+   (#42); inference full-stack monitoring (#48).
 
 _(Full backlog: tasks #41–#60. See memory `talaria-product-vision`.)_
 
