@@ -33,6 +33,8 @@ export interface AgentDef {
   department: string
   model: string
   displayName: string
+  /** Human-readable job title (e.g. "Support Lead"); editable, distinct from department. */
+  role: string | null
   enabled: boolean
   managed: boolean
   /** 'imported' reuses the legacy stack's volumes/chassis; 'created' is fresh. */
@@ -184,7 +186,7 @@ export async function addEndpointModels(name: string, models: string[]): Promise
 export async function listAgentDefs(): Promise<Array<AgentDef & { latest: AgentVersion | null }>> {
   const sql = await db()
   const defs = (await sql`
-    select id, slug, department, model, display_name as "displayName", enabled, managed, source,
+    select id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
            current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
     from agent_defs order by slug asc
   `) as unknown as AgentDef[]
@@ -208,7 +210,7 @@ export async function listVersions(agentId: string): Promise<AgentVersion[]> {
 export async function getAgentDef(id: string): Promise<AgentDef | null> {
   const sql = await db()
   const rows = await sql`
-    select id, slug, department, model, display_name as "displayName", enabled, managed, source,
+    select id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
            current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
     from agent_defs where id = ${id}
   `
@@ -219,20 +221,37 @@ export async function upsertAgentDef(input: {
   slug: string
   department: string
   displayName: string
+  role?: string | null
   source?: 'imported' | 'created'
 }): Promise<AgentDef> {
   const sql = await db()
   const model = `${input.slug}-${input.department}`
   const rows = await sql`
-    insert into agent_defs (slug, department, model, display_name, source)
-    values (${input.slug}, ${input.department}, ${model}, ${input.displayName}, ${input.source ?? 'imported'})
+    insert into agent_defs (slug, department, model, display_name, role, source)
+    values (${input.slug}, ${input.department}, ${model}, ${input.displayName}, ${input.role ?? null}, ${input.source ?? 'imported'})
     on conflict (slug) do update set
       department = excluded.department, model = excluded.model,
-      display_name = excluded.display_name, updated_at = now()
-    returning id, slug, department, model, display_name as "displayName", enabled, managed, source,
+      display_name = excluded.display_name,
+      -- keep an existing role unless a new one is supplied (imports don't carry it)
+      role = coalesce(excluded.role, agent_defs.role), updated_at = now()
+    returning id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
               current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
   `
   return rows[0] as unknown as AgentDef
+}
+
+/** Update editable identity metadata (role, display name). Not versioned —
+ *  this is the agent's identity, not its config payload. */
+export async function updateAgentMeta(id: string, patch: { role?: string | null; displayName?: string }): Promise<void> {
+  const sql = await db()
+  if (patch.role !== undefined) await sql`update agent_defs set role = ${patch.role}, updated_at = now() where id = ${id}`
+  if (patch.displayName) await sql`update agent_defs set display_name = ${patch.displayName}, updated_at = now() where id = ${id}`
+}
+
+/** Re-hire a retired agent: re-enable so it renders + can start again. */
+export async function setAgentEnabled(id: string, enabled: boolean): Promise<void> {
+  const sql = await db()
+  await sql`update agent_defs set enabled = ${enabled}, updated_at = now() where id = ${id}`
 }
 
 /** Structured edits (from the UI) applied onto a previous version's config.

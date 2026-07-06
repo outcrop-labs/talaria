@@ -54,6 +54,7 @@ export async function createAgent(input: {
   slug: string
   department: string
   displayName: string
+  role?: string | null
   templateId: string
   createdBy: string
 }): Promise<{ def: AgentDef; keyCreated: boolean }> {
@@ -74,7 +75,7 @@ export async function createAgent(input: {
 
   const keyCreated = await ensureAgentKey(input.slug)
 
-  const def = await upsertAgentDef({ ...input, source: 'created' })
+  const def = await upsertAgentDef({ slug: input.slug, department: input.department, displayName: input.displayName, role: input.role, source: 'created' })
   await sql`update agent_defs set managed = true, updated_at = now() where id = ${def.id}`
 
   const config = restampSlug(templateVersion.config, fromSlug, input.slug) as AgentConfig

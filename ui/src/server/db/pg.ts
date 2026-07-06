@@ -381,6 +381,10 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now()
    )`,
   `create index if not exists internal_versions_idx on internal_versions(kind, owner_key, created_at desc)`,
+  // A human-readable role/title per agent (e.g. "Support Lead"), shown on the
+  // roster and editable in the manage modal. Distinct from `department` (the
+  // routing/mount key) and `display_name` (the person-name).
+  `alter table agent_defs add column if not exists role text`,
 ]
 
 function ensureMigrated(): Promise<void> {

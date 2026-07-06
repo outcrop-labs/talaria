@@ -13,16 +13,20 @@ export function CreateAgentModal({
   open,
   onClose,
   templates,
+  templateId: preselect,
 }: {
   open: boolean
   onClose: () => void
   templates: AgentDef[]
+  /** Preselect a template (e.g. "Duplicate" from a specific agent). */
+  templateId?: string
 }) {
   const qc = useQueryClient()
   const [displayName, setDisplayName] = useState('')
   const [slug, setSlug] = useState('')
   const [department, setDepartment] = useState('')
-  const [templateId, setTemplateId] = useState(templates[0]?.id ?? '')
+  const [role, setRole] = useState('')
+  const [templateId, setTemplateId] = useState(preselect ?? templates[0]?.id ?? '')
   const [start, setStart] = useState(true)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -38,7 +42,7 @@ export function CreateAgentModal({
     setErr(null)
     setBusy(true)
     try {
-      const r = await createFleetAgent({ slug, department, displayName, templateId, start })
+      const r = await createFleetAgent({ slug, department, displayName, role: role.trim() || null, templateId, start })
       if (r.error) return setErr(r.error)
       if (start && r.healthy === false) setErr('created, but the container is not healthy yet — check /agents')
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
@@ -62,11 +66,20 @@ export function CreateAgentModal({
             <Input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="remy" />
           </div>
         </div>
-        <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Department / role</label>
-          <Input value={department} onChange={(e) => setDepartment(e.target.value)} placeholder="research" />
-          <p className="mt-1 text-xs text-muted">Fleet model id becomes {slug || 'slug'}-{department || 'department'}.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Role</label>
+            <Input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Research Analyst" />
+          </div>
+          <div>
+            <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Department</label>
+            <Input value={department} onChange={(e) => setDepartment(e.target.value)} placeholder="research" />
+          </div>
         </div>
+        <p className="-mt-2 text-xs text-muted">
+          Role is the human-readable title shown on the roster; department is the routing/mount key — the fleet model id
+          becomes {slug || 'slug'}-{department || 'department'}.
+        </p>
         <div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Template</label>
           <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className="w-full">

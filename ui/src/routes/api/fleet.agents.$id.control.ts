@@ -8,7 +8,7 @@ import { renderFleet } from '@/server/fleet-render'
 import { db } from '@/server/db/pg'
 
 const Body = z.object({
-  action: z.enum(['migrate', 'up', 'stop', 'legacy-start', 'legacy-stop', 'retire']),
+  action: z.enum(['migrate', 'up', 'stop', 'legacy-start', 'legacy-stop', 'retire', 'unretire']),
 })
 
 // POST { action } → lifecycle control for one agent (admin).
@@ -58,12 +58,24 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
               return json({ ok: true })
             case 'retire': {
               // Spin down + drop from the fleet. Container removed; the state
-              // volume and the version history stay (re-enable = SQL for now).
+              // volume and the version history stay (re-hire with 'unretire').
               await sql`update agent_defs set enabled = false, updated_at = now() where id = ${def.id}`
               if (def.managed) await fleetRemove(def.department)
               else await legacyControl(def.department, 'stop').catch(() => {})
               const render = await renderFleet() // manifest drops it; bridge hot-reloads
               return json({ ok: true, render: render.agents })
+            }
+            case 'unretire': {
+              // Re-hire: re-enable, re-render (manifest + compose pick it back
+              // up), and start the managed container from its preserved volume.
+              await sql`update agent_defs set enabled = true, updated_at = now() where id = ${def.id}`
+              await renderFleet()
+              if (def.managed) {
+                await fleetUp(def.department)
+                const healthy = await waitHealthy(def.department)
+                return json({ ok: true, healthy })
+              }
+              return json({ ok: true })
             }
           }
         } catch (e) {

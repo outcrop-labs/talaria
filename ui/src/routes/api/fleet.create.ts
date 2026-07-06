@@ -10,6 +10,7 @@ const Body = z.object({
   slug: z.string().min(2).max(30),
   department: z.string().min(2).max(40),
   displayName: z.string().min(1).max(60),
+  role: z.string().max(80).nullish(),
   templateId: z.string().uuid(),
   start: z.boolean().optional(),
 })

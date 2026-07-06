@@ -48,20 +48,11 @@ function TargetRow({
   )
 }
 
-// Edit an agent's configurable surface — soul, main model, alias tiers,
-// fallback chain. Saving creates a NEW version; "apply" re-renders and
-// restarts the managed container so it takes effect immediately.
-export function AgentEditorModal({
-  open,
-  onClose,
-  def,
-  endpoints,
-}: {
-  open: boolean
-  onClose: () => void
-  def: AgentDef
-  endpoints: LlmEndpoint[]
-}) {
+// The agent config surface — soul, main model, alias tiers, fallback chain —
+// as an embeddable form. Saving creates a NEW version; "apply" re-renders and
+// restarts the managed container. Used standalone (AgentEditorModal) and as the
+// Config tab of the unified manage modal.
+export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; endpoints: LlmEndpoint[]; onSaved?: () => void }) {
   const qc = useQueryClient()
   const cfg = def.latest?.config
   const [soul, setSoul] = useState(def.latest?.soul ?? '')
@@ -79,14 +70,13 @@ export function AgentEditorModal({
       const r = await saveAgentEdit(def.id, { soul, main, aliases, fallbacks, note: note || undefined, apply })
       if (r.error) return setErr(r.error)
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
-      onClose()
+      onSaved?.()
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`Edit ${def.displayName} (v${def.currentVersion} → v${def.currentVersion + 1})`} width="max-w-2xl">
       <div className="space-y-5">
         <section>
           <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Main model</div>
@@ -155,6 +145,24 @@ export function AgentEditorModal({
           )}
         </div>
       </div>
+  )
+}
+
+// Standalone config editor (kept for direct use / back-compat).
+export function AgentEditorModal({
+  open,
+  onClose,
+  def,
+  endpoints,
+}: {
+  open: boolean
+  onClose: () => void
+  def: AgentDef
+  endpoints: LlmEndpoint[]
+}) {
+  return (
+    <Modal open={open} onClose={onClose} title={`Edit ${def.displayName} (v${def.currentVersion} → v${def.currentVersion + 1})`} width="max-w-2xl">
+      <AgentConfigForm def={def} endpoints={endpoints} onSaved={onClose} />
     </Modal>
   )
 }

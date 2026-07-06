@@ -31,6 +31,8 @@ export interface AgentDef {
   department: string
   model: string
   displayName: string
+  /** Human-readable job title (e.g. "Support Lead"); editable, shown on the roster. */
+  role: string | null
   enabled: boolean
   managed: boolean
   source: 'imported' | 'created'
@@ -125,12 +127,13 @@ export async function saveAgentEdit(
   return (await r.json().catch(() => ({ error: `save failed (${r.status})` }))) as { error?: string }
 }
 
-export type FleetAction = 'migrate' | 'up' | 'stop' | 'legacy-start' | 'legacy-stop' | 'retire'
+export type FleetAction = 'migrate' | 'up' | 'stop' | 'legacy-start' | 'legacy-stop' | 'retire' | 'unretire'
 
 export async function createFleetAgent(input: {
   slug: string
   department: string
   displayName: string
+  role?: string | null
   templateId: string
   start?: boolean
 }): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {
@@ -141,6 +144,17 @@ export async function createFleetAgent(input: {
     body: JSON.stringify(input),
   })
   return (await r.json().catch(() => ({ error: `create failed (${r.status})` }))) as { error?: string }
+}
+
+/** Update an agent's editable identity (role, display name). */
+export async function patchAgentMeta(id: string, patch: { role?: string | null; displayName?: string }): Promise<{ ok?: boolean; error?: string }> {
+  const r = await fetch(`/api/fleet/defs/${id}`, {
+    method: 'PATCH',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).catch(() => null)
+  return (await r?.json().catch(() => ({ error: 'network error' }))) ?? { error: 'network error' }
 }
 
 export async function controlAgent(id: string, action: FleetAction): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {

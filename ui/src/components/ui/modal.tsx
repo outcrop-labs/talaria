@@ -1,10 +1,16 @@
 import { useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { ReactNode } from 'react'
 import { CloseButton } from './close-button'
 
 // The one modal. Centered panel over a scrim; Esc + backdrop-click close.
 // Reuse for sharing, create dialogs, confirmations.
+//
+// Portaled to <body>: `position: fixed` is relative to the nearest ancestor
+// with a transform/filter/backdrop-filter (the mercury-panel surfaces have
+// backdrop-filter), which would otherwise center the modal inside a card rather
+// than the viewport. The portal escapes any such containing block.
 export function Modal({
   open,
   onClose,
@@ -27,7 +33,9 @@ export function Modal({
     return () => document.removeEventListener('keydown', onKey)
   }, [open, onClose])
 
-  return (
+  if (typeof document === 'undefined') return null
+
+  return createPortal(
     <AnimatePresence>
       {open && (
         <div className="fixed inset-0 z-50 grid place-items-center p-4">
@@ -58,6 +66,7 @@ export function Modal({
           </motion.div>
         </div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   )
 }
