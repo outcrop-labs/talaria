@@ -76,6 +76,7 @@ import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.c
 import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
 import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiFleetEndpointsIdRouteImport } from './routes/api/fleet.endpoints.$id'
+import { Route as ApiFleetDefsIdRouteImport } from './routes/api/fleet.defs.$id'
 import { Route as ApiChannelsIdPlanRouteImport } from './routes/api/channels.$id.plan'
 import { Route as ApiChannelsIdMessagesRouteImport } from './routes/api/channels.$id.messages'
 import { Route as ApiChannelsIdMembersRouteImport } from './routes/api/channels.$id.members'
@@ -429,6 +430,11 @@ const ApiFleetEndpointsIdRoute = ApiFleetEndpointsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ApiFleetEndpointsRoute,
 } as any)
+const ApiFleetDefsIdRoute = ApiFleetDefsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiFleetDefsRoute,
+} as any)
 const ApiChannelsIdPlanRoute = ApiChannelsIdPlanRouteImport.update({
   id: '/plan',
   path: '/plan',
@@ -501,19 +507,19 @@ const ApiFleetEndpointsIdAvailableRoute =
     getParentRoute: () => ApiFleetEndpointsIdRoute,
   } as any)
 const ApiFleetDefsIdVersionsRoute = ApiFleetDefsIdVersionsRouteImport.update({
-  id: '/$id/versions',
-  path: '/$id/versions',
-  getParentRoute: () => ApiFleetDefsRoute,
+  id: '/versions',
+  path: '/versions',
+  getParentRoute: () => ApiFleetDefsIdRoute,
 } as any)
 const ApiFleetDefsIdMcpRoute = ApiFleetDefsIdMcpRouteImport.update({
-  id: '/$id/mcp',
-  path: '/$id/mcp',
-  getParentRoute: () => ApiFleetDefsRoute,
+  id: '/mcp',
+  path: '/mcp',
+  getParentRoute: () => ApiFleetDefsIdRoute,
 } as any)
 const ApiFleetDefsIdEditRoute = ApiFleetDefsIdEditRouteImport.update({
-  id: '/$id/edit',
-  path: '/$id/edit',
-  getParentRoute: () => ApiFleetDefsRoute,
+  id: '/edit',
+  path: '/edit',
+  getParentRoute: () => ApiFleetDefsIdRoute,
 } as any)
 const ApiFleetAgentsIdControlRoute = ApiFleetAgentsIdControlRouteImport.update({
   id: '/agents/$id/control',
@@ -591,6 +597,7 @@ export interface FileRoutesByFullPath {
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
+  '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -677,6 +684,7 @@ export interface FileRoutesByTo {
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
+  '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -765,6 +773,7 @@ export interface FileRoutesById {
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
+  '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -853,6 +862,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
     | '/api/channels/$id/plan'
+    | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
     | '/api/llm/v1/models'
     | '/api/skills/$owner/$name'
@@ -939,6 +949,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
     | '/api/channels/$id/plan'
+    | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
     | '/api/llm/v1/models'
     | '/api/skills/$owner/$name'
@@ -1026,6 +1037,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
     | '/api/channels/$id/plan'
+    | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
     | '/api/llm/v1/models'
     | '/api/skills/$owner/$name'
@@ -1548,6 +1560,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFleetEndpointsIdRouteImport
       parentRoute: typeof ApiFleetEndpointsRoute
     }
+    '/api/fleet/defs/$id': {
+      id: '/api/fleet/defs/$id'
+      path: '/$id'
+      fullPath: '/api/fleet/defs/$id'
+      preLoaderRoute: typeof ApiFleetDefsIdRouteImport
+      parentRoute: typeof ApiFleetDefsRoute
+    }
     '/api/channels/$id/plan': {
       id: '/api/channels/$id/plan'
       path: '/plan'
@@ -1648,24 +1667,24 @@ declare module '@tanstack/react-router' {
     }
     '/api/fleet/defs/$id/versions': {
       id: '/api/fleet/defs/$id/versions'
-      path: '/$id/versions'
+      path: '/versions'
       fullPath: '/api/fleet/defs/$id/versions'
       preLoaderRoute: typeof ApiFleetDefsIdVersionsRouteImport
-      parentRoute: typeof ApiFleetDefsRoute
+      parentRoute: typeof ApiFleetDefsIdRoute
     }
     '/api/fleet/defs/$id/mcp': {
       id: '/api/fleet/defs/$id/mcp'
-      path: '/$id/mcp'
+      path: '/mcp'
       fullPath: '/api/fleet/defs/$id/mcp'
       preLoaderRoute: typeof ApiFleetDefsIdMcpRouteImport
-      parentRoute: typeof ApiFleetDefsRoute
+      parentRoute: typeof ApiFleetDefsIdRoute
     }
     '/api/fleet/defs/$id/edit': {
       id: '/api/fleet/defs/$id/edit'
-      path: '/$id/edit'
+      path: '/edit'
       fullPath: '/api/fleet/defs/$id/edit'
       preLoaderRoute: typeof ApiFleetDefsIdEditRouteImport
-      parentRoute: typeof ApiFleetDefsRoute
+      parentRoute: typeof ApiFleetDefsIdRoute
     }
     '/api/fleet/agents/$id/control': {
       id: '/api/fleet/agents/$id/control'
@@ -1819,16 +1838,28 @@ const ApiConversationsRouteChildren: ApiConversationsRouteChildren = {
 const ApiConversationsRouteWithChildren =
   ApiConversationsRoute._addFileChildren(ApiConversationsRouteChildren)
 
-interface ApiFleetDefsRouteChildren {
+interface ApiFleetDefsIdRouteChildren {
   ApiFleetDefsIdEditRoute: typeof ApiFleetDefsIdEditRoute
   ApiFleetDefsIdMcpRoute: typeof ApiFleetDefsIdMcpRoute
   ApiFleetDefsIdVersionsRoute: typeof ApiFleetDefsIdVersionsRoute
 }
 
-const ApiFleetDefsRouteChildren: ApiFleetDefsRouteChildren = {
+const ApiFleetDefsIdRouteChildren: ApiFleetDefsIdRouteChildren = {
   ApiFleetDefsIdEditRoute: ApiFleetDefsIdEditRoute,
   ApiFleetDefsIdMcpRoute: ApiFleetDefsIdMcpRoute,
   ApiFleetDefsIdVersionsRoute: ApiFleetDefsIdVersionsRoute,
+}
+
+const ApiFleetDefsIdRouteWithChildren = ApiFleetDefsIdRoute._addFileChildren(
+  ApiFleetDefsIdRouteChildren,
+)
+
+interface ApiFleetDefsRouteChildren {
+  ApiFleetDefsIdRoute: typeof ApiFleetDefsIdRouteWithChildren
+}
+
+const ApiFleetDefsRouteChildren: ApiFleetDefsRouteChildren = {
+  ApiFleetDefsIdRoute: ApiFleetDefsIdRouteWithChildren,
 }
 
 const ApiFleetDefsRouteWithChildren = ApiFleetDefsRoute._addFileChildren(

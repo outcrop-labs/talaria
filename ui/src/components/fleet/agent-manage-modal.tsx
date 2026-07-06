@@ -10,7 +10,7 @@ import { cn } from '@/lib/cn'
 import { relativeTime, useFleet } from '@/lib/fleet'
 import { AgentConfigForm } from '@/components/fleet/agent-editor'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
-import type { AgentDef, LlmEndpoint, ModelTarget } from '@/lib/fleet-defs'
+import { patchAgentMeta, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
 
 type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'mcp' | 'versions'
 const TABS: { id: Tab; label: string }[] = [
@@ -60,7 +60,7 @@ export function AgentManageModal({
       </div>
 
       <div className="max-h-[65vh] overflow-y-auto pt-4">
-        {tab === 'summary' && <SummaryTab def={def} />}
+        {tab === 'summary' && <SummaryTab def={def} isAdmin={isAdmin} />}
         {tab === 'config' &&
           (isAdmin ? (
             <AgentConfigForm def={def} endpoints={endpoints} onSaved={onClose} />
@@ -88,12 +88,28 @@ function TargetChip({ t, name }: { t: ModelTarget; name?: string }) {
   )
 }
 
-function SummaryTab({ def }: { def: AgentDef }) {
+function SummaryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
+  const qc = useQueryClient()
   const cfg = def.latest?.config
   const { data: fleet } = useFleet()
   const stat = fleet?.agents.find((a) => a.id === def.model)
+  const [role, setRole] = useState(def.role ?? '')
+  const saveRole = async () => {
+    if (role.trim() === (def.role ?? '')) return
+    await patchAgentMeta(def.id, { role: role.trim() || null })
+    await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+  }
   return (
     <div className="space-y-4 text-sm">
+      {/* Editable role — the human-readable title shown on the roster. */}
+      <div>
+        <div className="mb-1 text-xs uppercase tracking-wide text-muted">Role</div>
+        {isAdmin ? (
+          <Input size="sm" value={role} onChange={(e) => setRole(e.target.value)} onBlur={() => void saveRole()} placeholder="e.g. Support Lead" className="max-w-xs" />
+        ) : (
+          <div className="text-fg">{def.role ?? '—'}</div>
+        )}
+      </div>
       <div className="grid grid-cols-2 gap-3">
         <Stat label="Model id" value={def.model} />
         <Stat label="Department" value={def.department} />

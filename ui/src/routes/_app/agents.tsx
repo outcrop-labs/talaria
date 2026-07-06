@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Play, Square, SlidersHorizontal, Archive, ArrowRightLeft, LayoutGrid, List, Loader2 } from 'lucide-react'
+import { Play, Square, SlidersHorizontal, Archive, ArrowRightLeft, LayoutGrid, List, Loader2, Copy, UserPlus } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -59,6 +59,7 @@ function AgentsPage() {
 
   const [view, setView] = useState<'grid' | 'list'>('grid')
   const [creating, setCreating] = useState(false)
+  const [duplicateFrom, setDuplicateFrom] = useState<AgentDef | null>(null)
   const [importing, setImporting] = useState(false)
   const [summary, setSummary] = useState<string | null>(null)
 
@@ -119,20 +120,23 @@ function AgentsPage() {
         ) : view === 'grid' ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {defs.map((d) => (
-              <AgentTile key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} />
+              <AgentTile key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} onDuplicate={() => setDuplicateFrom(d)} />
             ))}
           </div>
         ) : (
           <Panel className="p-0">
             <ul className="divide-y divide-line-subtle">
               {defs.map((d) => (
-                <AgentListRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} />
+                <AgentListRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} onDuplicate={() => setDuplicateFrom(d)} />
               ))}
             </ul>
           </Panel>
         )}
 
         {creating && <CreateAgentModal open={creating} onClose={() => setCreating(false)} templates={defs.filter((d) => d.enabled)} />}
+        {duplicateFrom && (
+          <CreateAgentModal open onClose={() => setDuplicateFrom(null)} templates={defs} templateId={duplicateFrom.id} />
+        )}
       </div>
     </div>
   )
@@ -209,14 +213,22 @@ function useAgentControls(d: AgentDef) {
   return { pending, act }
 }
 
-/** The control-icon cluster (start/stop · manage · retire/migrate). */
-function Controls({ def: d, running, onManage }: { def: AgentDef; running: boolean; onManage: () => void }) {
+/** The control-icon cluster (start/stop · manage · retire/migrate · re-hire). */
+function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; running: boolean; onManage: () => void; onDuplicate: () => void }) {
   const { pending, act } = useAgentControls(d)
   const [retiring, setRetiring] = useState(false)
-  if (!d.enabled) return <span className="text-xs text-muted">retired</span>
   if (pending) return <Loader2 size={15} className="animate-spin text-muted" />
+  // Retired agents: re-hire (re-enable + start) or duplicate as a template.
+  if (!d.enabled)
+    return (
+      <div className="flex items-center">
+        <IconBtn icon={<Copy size={15} />} title="Duplicate to a new agent" onClick={onDuplicate} />
+        <IconBtn icon={<UserPlus size={15} />} title="Re-hire" onClick={() => void act('unretire', 're-hiring')} />
+      </div>
+    )
   return (
     <div className="flex items-center">
+      <IconBtn icon={<Copy size={15} />} title="Duplicate to a new agent" onClick={onDuplicate} />
       <IconBtn icon={<SlidersHorizontal size={15} />} title="Manage" onClick={onManage} />
       {d.managed ? (
         <>
@@ -283,22 +295,22 @@ function StatusDot({ def: d, containers }: { def: AgentDef; containers: AgentCon
   return <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: HEALTH_COLOR[health] }} title={health} />
 }
 
-function AgentTile({ def: d, containers, endpoints }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[] }) {
+function AgentTile({ def: d, containers, endpoints, onDuplicate }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[]; onDuplicate: () => void }) {
   const [manage, setManage] = useState(false)
   const { running } = healthOf(d, containers)
   return (
     <>
-      <Panel className="flex flex-col gap-3">
+      <Panel className={cn('flex flex-col gap-3', !d.enabled && 'opacity-60')}>
         <div className="flex items-center gap-2.5">
           <Avatar name={d.displayName} className="h-9 w-9" />
           <button type="button" onClick={() => setManage(true)} className="min-w-0 flex-1 text-left">
             <div className="truncate text-sm font-medium text-fg">{d.displayName}</div>
-            <div className="truncate text-xs text-muted">v{d.currentVersion}</div>
+            <div className="truncate text-xs text-muted">{d.role ?? `v${d.currentVersion}`}</div>
           </button>
           <StatusDot def={d} containers={containers} />
         </div>
         <div className="flex justify-end">
-          <Controls def={d} running={running} onManage={() => setManage(true)} />
+          <Controls def={d} running={running} onManage={() => setManage(true)} onDuplicate={onDuplicate} />
         </div>
       </Panel>
       {manage && <AgentManageModal open={manage} onClose={() => setManage(false)} def={d} endpoints={endpoints} isAdmin />}
@@ -306,19 +318,19 @@ function AgentTile({ def: d, containers, endpoints }: { def: AgentDef; container
   )
 }
 
-function AgentListRow({ def: d, containers, endpoints }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[] }) {
+function AgentListRow({ def: d, containers, endpoints, onDuplicate }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[]; onDuplicate: () => void }) {
   const [manage, setManage] = useState(false)
   const { running } = healthOf(d, containers)
   return (
     <>
-      <li className="flex items-center gap-3 px-4 py-3">
+      <li className={cn('flex items-center gap-3 px-4 py-3', !d.enabled && 'opacity-60')}>
         <StatusDot def={d} containers={containers} />
         <Avatar name={d.displayName} className="h-7 w-7" />
         <button type="button" onClick={() => setManage(true)} className="min-w-0 flex-1 text-left">
           <span className="text-sm font-medium text-fg">{d.displayName}</span>
-          <span className="ml-2 text-xs text-muted">v{d.currentVersion}</span>
+          {d.role && <span className="ml-2 text-xs text-muted">{d.role}</span>}
         </button>
-        <Controls def={d} running={running} onManage={() => setManage(true)} />
+        <Controls def={d} running={running} onManage={() => setManage(true)} onDuplicate={onDuplicate} />
       </li>
       {manage && <AgentManageModal open={manage} onClose={() => setManage(false)} def={d} endpoints={endpoints} isAdmin />}
     </>
