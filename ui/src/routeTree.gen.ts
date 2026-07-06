@@ -21,6 +21,7 @@ import { Route as ApiMcpRouteImport } from './routes/api/mcp'
 import { Route as ApiKeysRouteImport } from './routes/api/keys'
 import { Route as ApiInferenceRouteImport } from './routes/api/inference'
 import { Route as ApiHomeRouteImport } from './routes/api/home'
+import { Route as ApiHistoryRouteImport } from './routes/api/history'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
 import { Route as ApiCostRouteImport } from './routes/api/cost'
 import { Route as ApiConversationsRouteImport } from './routes/api/conversations'
@@ -150,6 +151,11 @@ const ApiInferenceRoute = ApiInferenceRouteImport.update({
 const ApiHomeRoute = ApiHomeRouteImport.update({
   id: '/api/home',
   path: '/api/home',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiHistoryRoute = ApiHistoryRouteImport.update({
+  id: '/api/history',
+  path: '/api/history',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiFleetRoute = ApiFleetRouteImport.update({
@@ -536,6 +542,7 @@ export interface FileRoutesByFullPath {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
@@ -619,6 +626,7 @@ export interface FileRoutesByTo {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
@@ -705,6 +713,7 @@ export interface FileRoutesById {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
@@ -792,6 +801,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/history'
     | '/api/home'
     | '/api/inference'
     | '/api/keys'
@@ -875,6 +885,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/history'
     | '/api/home'
     | '/api/inference'
     | '/api/keys'
@@ -960,6 +971,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/history'
     | '/api/home'
     | '/api/inference'
     | '/api/keys'
@@ -1031,6 +1043,7 @@ export interface RootRouteChildren {
   ApiConversationsRoute: typeof ApiConversationsRouteWithChildren
   ApiCostRoute: typeof ApiCostRoute
   ApiFleetRoute: typeof ApiFleetRouteWithChildren
+  ApiHistoryRoute: typeof ApiHistoryRoute
   ApiHomeRoute: typeof ApiHomeRoute
   ApiInferenceRoute: typeof ApiInferenceRoute
   ApiKeysRoute: typeof ApiKeysRouteWithChildren
@@ -1136,6 +1149,13 @@ declare module '@tanstack/react-router' {
       path: '/api/home'
       fullPath: '/api/home'
       preLoaderRoute: typeof ApiHomeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/history': {
+      id: '/api/history'
+      path: '/api/history'
+      fullPath: '/api/history'
+      preLoaderRoute: typeof ApiHistoryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/fleet': {
@@ -1919,6 +1939,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiConversationsRoute: ApiConversationsRouteWithChildren,
   ApiCostRoute: ApiCostRoute,
   ApiFleetRoute: ApiFleetRouteWithChildren,
+  ApiHistoryRoute: ApiHistoryRoute,
   ApiHomeRoute: ApiHomeRoute,
   ApiInferenceRoute: ApiInferenceRoute,
   ApiKeysRoute: ApiKeysRouteWithChildren,

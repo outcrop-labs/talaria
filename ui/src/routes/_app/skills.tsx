@@ -1,12 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/cn'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
 import { Panel } from '@/components/ui/panel'
-import { Textarea } from '@/components/ui/textarea'
+import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { useSession } from '@/lib/session'
 
 export const Route = createFileRoute('/_app/skills')({
@@ -178,22 +178,12 @@ function OwnerPanel({
         )}
       </Panel>
 
-      {selected && <SkillEditor owner={owner.owner} name={selected} isAdmin={isAdmin} onDeleted={() => onSelect(null)} />}
+      {selected && <SkillEditor owner={owner.owner} name={selected} isAdmin={isAdmin} onClose={() => onSelect(null)} />}
     </>
   )
 }
 
-function SkillEditor({
-  owner,
-  name,
-  isAdmin,
-  onDeleted,
-}: {
-  owner: string
-  name: string
-  isAdmin: boolean
-  onDeleted: () => void
-}) {
+function SkillEditor({ owner, name, isAdmin, onClose }: { owner: string; name: string; isAdmin: boolean; onClose: () => void }) {
   const qc = useQueryClient()
   const { data } = useQuery({
     queryKey: ['skill', owner, name],
@@ -203,22 +193,18 @@ function SkillEditor({
       return r.json()
     },
   })
-  const [draft, setDraft] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  useEffect(() => setDraft(null), [owner, name])
 
-  const save = async () => {
-    if (draft === null) return
+  const save = async (content: string) => {
     setBusy(true)
     try {
       await fetch(`/api/skills/${owner}/${name}`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ content: draft }),
+        body: JSON.stringify({ content }),
       })
       await qc.invalidateQueries({ queryKey: ['skills'] })
       await qc.invalidateQueries({ queryKey: ['skill', owner, name] })
-      setDraft(null)
     } finally {
       setBusy(false)
     }
@@ -228,34 +214,25 @@ function SkillEditor({
     if (!confirm(`Delete the "${name}" skill? The whole directory goes away.`)) return
     await fetch(`/api/skills/${owner}/${name}`, { method: 'DELETE' })
     await qc.invalidateQueries({ queryKey: ['skills'] })
-    onDeleted()
+    onClose()
   }
 
-  const content = draft ?? data?.content ?? ''
+  const extras = (data?.files ?? []).filter((f) => f !== 'SKILL.md')
   return (
-    <Panel>
-      <div className="mb-4 flex items-center gap-3">
-        <span className="text-sm font-semibold text-fg">{name} / SKILL.md</span>
-        {data && data.files.length > 1 && (
-          <span className="min-w-0 truncate text-xs text-muted">also: {data.files.filter((f) => f !== 'SKILL.md').join(', ')}</span>
-        )}
-        {isAdmin && (
-          <span className="ml-auto flex gap-2">
-            <Button variant="ghost" size="sm" onClick={() => void remove()}>
-              Delete
-            </Button>
-            <Button size="sm" onClick={() => void save()} disabled={busy || draft === null}>
-              {busy ? 'Saving…' : 'Save'}
-            </Button>
-          </span>
-        )}
-      </div>
-      <Textarea
-        value={content}
-        readOnly={!isAdmin}
-        onChange={(e) => setDraft(e.target.value)}
-        className="min-h-[24rem] font-mono text-xs leading-relaxed"
-      />
-    </Panel>
+    <InternalEditorModal
+      open
+      onClose={onClose}
+      title={`${name} · SKILL.md`}
+      subtitle={
+        (extras.length ? `Bundled files: ${extras.join(', ')}. ` : '') +
+        'Skills are read live — agents pick up edits on their next run.'
+      }
+      value={data?.content ?? ''}
+      editable={isAdmin}
+      saving={busy}
+      onSave={save}
+      history={{ kind: 'skill', owner, name }}
+      footerExtra={isAdmin ? <Button variant="ghost" size="sm" onClick={() => void remove()}>Delete skill</Button> : undefined}
+    />
   )
 }

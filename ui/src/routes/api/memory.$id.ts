@@ -26,7 +26,7 @@ export const Route = createFileRoute('/api/memory/$id')({
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         try {
-          await writeMemory(params.id, parsed.data.content)
+          await writeMemory(params.id, parsed.data.content, user.email ?? user.name ?? 'admin')
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })

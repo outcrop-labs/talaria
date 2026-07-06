@@ -369,6 +369,18 @@ const MIGRATIONS: string[] = [
   // Extra request-body defaults deep-merged into every outbound call to this
   // endpoint (e.g. OpenRouter's provider allowlist / data_collection deny).
   `alter table llm_endpoints add column if not exists request_defaults jsonb not null default '{}'`,
+  // ── Version history for agent internals (skills + memory) ───────────────────
+  // Uniform snapshot store: kind ∈ {skill, memory}; owner_key is "<owner>/<name>"
+  // for a skill or the agent def id for memory. One row per saved revision.
+  `create table if not exists internal_versions (
+     id uuid primary key default gen_random_uuid(),
+     kind text not null,
+     owner_key text not null,
+     content text not null,
+     created_by text,
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists internal_versions_idx on internal_versions(kind, owner_key, created_at desc)`,
 ]
 
 function ensureMigrated(): Promise<void> {
