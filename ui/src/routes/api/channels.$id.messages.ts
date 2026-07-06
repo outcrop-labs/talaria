@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { channelRole, insertChannelMessage, listChannelMessages } from '@/server/channels'
 import { notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
 import { resolveAttachments } from '@/server/uploads'
+import { indexActivity } from '@/server/retrieval/sources'
 import { db } from '@/server/db/pg'
 
 // GET ?since=<seq> → the channel's messages (members). POST { content } → post
@@ -32,10 +33,23 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
         const author = user.email ?? user.name ?? 'user'
         const attachments = await resolveAttachments(parsed.data.attachmentIds ?? [])
         const message = await insertChannelMessage(params.id, 'user', author, parsed.data.content, 'complete', attachments)
+
         // Agent replies + mention notifications run detached; the POST returns at once.
         const sql = await db()
         const rows = await sql`select name from channels where id = ${params.id}`
         const channelName = (rows[0] as { name: string } | undefined)?.name ?? 'channel'
+
+        // Index into the ambient activity brain (retrieval on demand later).
+        if (parsed.data.content.trim()) {
+          void indexActivity({
+            sourceType: 'channel',
+            sourceId: message.id,
+            title: `#${channelName} · ${author}`,
+            text: parsed.data.content,
+            payload: { channelId: params.id },
+            href: '/channels',
+          }).catch(() => {})
+        }
         void triggerAgentReplies(params.id, channelName, parsed.data.content).catch(() => {})
         void notifyUserMentions(params.id, channelName, user.id, user.name ?? author, parsed.data.content).catch(() => {})
         return json({ message })

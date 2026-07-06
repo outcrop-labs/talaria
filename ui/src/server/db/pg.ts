@@ -425,6 +425,44 @@ const MIGRATIONS: string[] = [
      value jsonb not null,
      updated_at timestamptz not null default now()
    )`,
+  // ── Retrieval (RAG) registry ────────────────────────────────────────────────
+  // Talaria owns retrieval as a registry of collections. kind: 'activity' (the
+  // auto ambient workspace index) | 'org-kb' (the auto curated knowledgebase) |
+  // 'custom' (admin/user-created, e.g. departmental). Each maps to one Qdrant
+  // collection. auto collections can't be deleted.
+  `create table if not exists rag_collections (
+     id uuid primary key default gen_random_uuid(),
+     name text not null,
+     kind text not null,
+     qdrant_name text unique not null,
+     description text,
+     auto boolean not null default false,
+     embed_dim integer,
+     created_by text,
+     created_at timestamptz not null default now()
+   )`,
+  // Who a collection is bound to. principal_type: 'all' (everyone) | 'user' |
+  // 'agent'. principal_id null when 'all'. A collection can have many bindings
+  // (sets of users/agents = departmental knowledge).
+  `create table if not exists rag_collection_access (
+     collection_id uuid not null references rag_collections(id) on delete cascade,
+     principal_type text not null,
+     principal_id text,
+     unique (collection_id, principal_type, principal_id)
+   )`,
+  // Index bookkeeping: what's been embedded into which collection, so re-index
+  // is idempotent and deletes propagate. A source doc becomes many chunk points;
+  // point_ids holds their Qdrant ids, content_hash gates re-embedding.
+  `create table if not exists rag_points (
+     id uuid primary key default gen_random_uuid(),
+     collection_id uuid not null references rag_collections(id) on delete cascade,
+     source_type text not null,
+     source_id text not null,
+     point_ids jsonb not null default '[]',
+     content_hash text not null,
+     updated_at timestamptz not null default now(),
+     unique (collection_id, source_type, source_id)
+   )`,
 ]
 
 function ensureMigrated(): Promise<void> {

@@ -162,6 +162,19 @@ server.registerTool(
 )
 
 server.registerTool(
+  'search_knowledge',
+  {
+    description:
+      'Search the workspace and knowledge you have access to (org knowledgebase, departmental collections, and past chats/channels/plans/research). Use it to recall earlier discussion or ground an answer in real docs — e.g. "what did we decide about X a couple weeks ago". Returns ranked snippets with pointers.',
+    inputSchema: {
+      query: z.string().min(1).describe('What to look for, in natural language'),
+      limit: z.number().int().min(1).max(20).optional().describe('Max results (default 8)'),
+    },
+  },
+  async ({ query, limit }) => ok(await api('POST', '/api/rag/search', { query, limit })),
+)
+
+server.registerTool(
   'log_usage',
   {
     description:
