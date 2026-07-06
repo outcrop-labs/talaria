@@ -143,6 +143,13 @@ The workspace, the fleet harness, and the money view are shipped and running:
 - The agent harness: import a Hermes stack, render and run every agent under Talaria's own compose
   project, edit souls/models/tiers/MCP servers as immutable revertible versions, manage skills and memory
   live, create agents from templates, retire them — all in-app.
+- Knowledge & retrieval: an Outline-style markdown drive (`/knowledge`) with spaces, nested docs,
+  version history, org/private/public visibility, and public share links. Marking a doc **official**
+  indexes it into the **organization brain** agents ground on. A separate **workspace-activity brain**
+  ambiently indexes chat/channels (and, over time, plans/research/tickets) as a `search_knowledge` tool
+  agents call on demand — index-don't-copy, permission-scoped. Admins spin up custom **departmental
+  collections** and bind each to specific users or agents (Admin → Retrieval). Qdrant + a self-hosted
+  TEI embedder under the hood.
 - The ledger: every generation classified local vs cloud, priced automatically from a public catalog
   (override anytime), per-agent and per-ticket spend, plus `/activity`, `/alerts`, and `/inference` for
   ops. The agent MCP (`talaria-mcp`) exposes only the safe board tools.
