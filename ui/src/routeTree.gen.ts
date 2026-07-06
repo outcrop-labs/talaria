@@ -50,6 +50,8 @@ import { Route as AppActivityRouteImport } from './routes/_app/activity'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as ApiUploadsIdRouteImport } from './routes/api/uploads.$id'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
+import { Route as ApiRagSearchRouteImport } from './routes/api/rag.search'
+import { Route as ApiRagCollectionsRouteImport } from './routes/api/rag.collections'
 import { Route as ApiMemoryIdRouteImport } from './routes/api/memory.$id'
 import { Route as ApiMeAssistantRouteImport } from './routes/api/me.assistant'
 import { Route as ApiMcpTestRouteImport } from './routes/api/mcp.test'
@@ -79,6 +81,7 @@ import { Route as ApiTasksIdReviewRouteImport } from './routes/api/tasks.$id.rev
 import { Route as ApiTasksIdDependenciesRouteImport } from './routes/api/tasks.$id.dependencies'
 import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.comments'
 import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
+import { Route as ApiRagCollectionsIdRouteImport } from './routes/api/rag.collections.$id'
 import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiFleetEndpointsIdRouteImport } from './routes/api/fleet.endpoints.$id'
 import { Route as ApiFleetDefsIdRouteImport } from './routes/api/fleet.defs.$id'
@@ -305,6 +308,16 @@ const ApiTasksIdRoute = ApiTasksIdRouteImport.update({
   path: '/api/tasks/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiRagSearchRoute = ApiRagSearchRouteImport.update({
+  id: '/api/rag/search',
+  path: '/api/rag/search',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiRagCollectionsRoute = ApiRagCollectionsRouteImport.update({
+  id: '/api/rag/collections',
+  path: '/api/rag/collections',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiMemoryIdRoute = ApiMemoryIdRouteImport.update({
   id: '/api/memory/$id',
   path: '/api/memory/$id',
@@ -449,6 +462,11 @@ const ApiSkillsOwnerNameRoute = ApiSkillsOwnerNameRouteImport.update({
   id: '/$owner/$name',
   path: '/$owner/$name',
   getParentRoute: () => ApiSkillsRoute,
+} as any)
+const ApiRagCollectionsIdRoute = ApiRagCollectionsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiRagCollectionsRoute,
 } as any)
 const ApiLlmV1ModelsRoute = ApiLlmV1ModelsRouteImport.update({
   id: '/api/llm/v1/models',
@@ -617,6 +635,8 @@ export interface FileRoutesByFullPath {
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/me/assistant': typeof ApiMeAssistantRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
+  '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
+  '/api/rag/search': typeof ApiRagSearchRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/boards/': typeof AppBoardsIndexRoute
@@ -635,6 +655,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
@@ -709,6 +730,8 @@ export interface FileRoutesByTo {
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/me/assistant': typeof ApiMeAssistantRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
+  '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
+  '/api/rag/search': typeof ApiRagSearchRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/boards': typeof AppBoardsIndexRoute
@@ -727,6 +750,7 @@ export interface FileRoutesByTo {
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
@@ -803,6 +827,8 @@ export interface FileRoutesById {
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/me/assistant': typeof ApiMeAssistantRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
+  '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
+  '/api/rag/search': typeof ApiRagSearchRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/_app/boards/': typeof AppBoardsIndexRoute
@@ -821,6 +847,7 @@ export interface FileRoutesById {
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
@@ -897,6 +924,8 @@ export interface FileRouteTypes {
     | '/api/mcp/test'
     | '/api/me/assistant'
     | '/api/memory/$id'
+    | '/api/rag/collections'
+    | '/api/rag/search'
     | '/api/tasks/$id'
     | '/api/uploads/$id'
     | '/boards/'
@@ -915,6 +944,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
     | '/api/llm/v1/models'
+    | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
@@ -989,6 +1019,8 @@ export interface FileRouteTypes {
     | '/api/mcp/test'
     | '/api/me/assistant'
     | '/api/memory/$id'
+    | '/api/rag/collections'
+    | '/api/rag/search'
     | '/api/tasks/$id'
     | '/api/uploads/$id'
     | '/boards'
@@ -1007,6 +1039,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
     | '/api/llm/v1/models'
+    | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
@@ -1082,6 +1115,8 @@ export interface FileRouteTypes {
     | '/api/mcp/test'
     | '/api/me/assistant'
     | '/api/memory/$id'
+    | '/api/rag/collections'
+    | '/api/rag/search'
     | '/api/tasks/$id'
     | '/api/uploads/$id'
     | '/_app/boards/'
@@ -1100,6 +1135,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
     | '/api/llm/v1/models'
+    | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
@@ -1147,6 +1183,8 @@ export interface RootRouteChildren {
   ApiAuthSessionRoute: typeof ApiAuthSessionRoute
   ApiMeAssistantRoute: typeof ApiMeAssistantRoute
   ApiMemoryIdRoute: typeof ApiMemoryIdRoute
+  ApiRagCollectionsRoute: typeof ApiRagCollectionsRouteWithChildren
+  ApiRagSearchRoute: typeof ApiRagSearchRoute
   ApiTasksIdRoute: typeof ApiTasksIdRouteWithChildren
   ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
   ApiLlmV1ChatCompletionsRoute: typeof ApiLlmV1ChatCompletionsRoute
@@ -1441,6 +1479,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTasksIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/rag/search': {
+      id: '/api/rag/search'
+      path: '/api/rag/search'
+      fullPath: '/api/rag/search'
+      preLoaderRoute: typeof ApiRagSearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/rag/collections': {
+      id: '/api/rag/collections'
+      path: '/api/rag/collections'
+      fullPath: '/api/rag/collections'
+      preLoaderRoute: typeof ApiRagCollectionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/memory/$id': {
       id: '/api/memory/$id'
       path: '/api/memory/$id'
@@ -1643,6 +1695,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/skills/$owner/$name'
       preLoaderRoute: typeof ApiSkillsOwnerNameRouteImport
       parentRoute: typeof ApiSkillsRoute
+    }
+    '/api/rag/collections/$id': {
+      id: '/api/rag/collections/$id'
+      path: '/$id'
+      fullPath: '/api/rag/collections/$id'
+      preLoaderRoute: typeof ApiRagCollectionsIdRouteImport
+      parentRoute: typeof ApiRagCollectionsRoute
     }
     '/api/llm/v1/models': {
       id: '/api/llm/v1/models'
@@ -2080,6 +2139,17 @@ const ApiAuthGoogleRouteWithChildren = ApiAuthGoogleRoute._addFileChildren(
   ApiAuthGoogleRouteChildren,
 )
 
+interface ApiRagCollectionsRouteChildren {
+  ApiRagCollectionsIdRoute: typeof ApiRagCollectionsIdRoute
+}
+
+const ApiRagCollectionsRouteChildren: ApiRagCollectionsRouteChildren = {
+  ApiRagCollectionsIdRoute: ApiRagCollectionsIdRoute,
+}
+
+const ApiRagCollectionsRouteWithChildren =
+  ApiRagCollectionsRoute._addFileChildren(ApiRagCollectionsRouteChildren)
+
 interface ApiTasksIdRouteChildren {
   ApiTasksIdCommentsRoute: typeof ApiTasksIdCommentsRoute
   ApiTasksIdDependenciesRoute: typeof ApiTasksIdDependenciesRoute
@@ -2132,6 +2202,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthSessionRoute: ApiAuthSessionRoute,
   ApiMeAssistantRoute: ApiMeAssistantRoute,
   ApiMemoryIdRoute: ApiMemoryIdRoute,
+  ApiRagCollectionsRoute: ApiRagCollectionsRouteWithChildren,
+  ApiRagSearchRoute: ApiRagSearchRoute,
   ApiTasksIdRoute: ApiTasksIdRouteWithChildren,
   ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,
   ApiLlmV1ChatCompletionsRoute: ApiLlmV1ChatCompletionsRoute,
