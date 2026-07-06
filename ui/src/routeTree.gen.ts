@@ -20,6 +20,7 @@ import { Route as ApiNotificationsRouteImport } from './routes/api/notifications
 import { Route as ApiMcpRouteImport } from './routes/api/mcp'
 import { Route as ApiKeysRouteImport } from './routes/api/keys'
 import { Route as ApiInferenceRouteImport } from './routes/api/inference'
+import { Route as ApiHomeRouteImport } from './routes/api/home'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
 import { Route as ApiCostRouteImport } from './routes/api/cost'
 import { Route as ApiConversationsRouteImport } from './routes/api/conversations'
@@ -38,6 +39,7 @@ import { Route as AppInferenceRouteImport } from './routes/_app/inference'
 import { Route as AppInboxRouteImport } from './routes/_app/inbox'
 import { Route as AppFleetRouteImport } from './routes/_app/fleet'
 import { Route as AppCostRouteImport } from './routes/_app/cost'
+import { Route as AppChatRouteImport } from './routes/_app/chat'
 import { Route as AppChannelsRouteImport } from './routes/_app/channels'
 import { Route as AppAlertsRouteImport } from './routes/_app/alerts'
 import { Route as AppAgentsRouteImport } from './routes/_app/agents'
@@ -145,6 +147,11 @@ const ApiInferenceRoute = ApiInferenceRouteImport.update({
   path: '/api/inference',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiHomeRoute = ApiHomeRouteImport.update({
+  id: '/api/home',
+  path: '/api/home',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiFleetRoute = ApiFleetRouteImport.update({
   id: '/api/fleet',
   path: '/api/fleet',
@@ -233,6 +240,11 @@ const AppFleetRoute = AppFleetRouteImport.update({
 const AppCostRoute = AppCostRouteImport.update({
   id: '/cost',
   path: '/cost',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppChatRoute = AppChatRouteImport.update({
+  id: '/chat',
+  path: '/chat',
   getParentRoute: () => AppRoute,
 } as any)
 const AppChannelsRoute = AppChannelsRouteImport.update({
@@ -505,6 +517,7 @@ export interface FileRoutesByFullPath {
   '/agents': typeof AppAgentsRoute
   '/alerts': typeof AppAlertsRoute
   '/channels': typeof AppChannelsRoute
+  '/chat': typeof AppChatRoute
   '/cost': typeof AppCostRoute
   '/fleet': typeof AppFleetRoute
   '/inbox': typeof AppInboxRoute
@@ -523,6 +536,7 @@ export interface FileRoutesByFullPath {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRoute
@@ -586,6 +600,7 @@ export interface FileRoutesByTo {
   '/agents': typeof AppAgentsRoute
   '/alerts': typeof AppAlertsRoute
   '/channels': typeof AppChannelsRoute
+  '/chat': typeof AppChatRoute
   '/cost': typeof AppCostRoute
   '/fleet': typeof AppFleetRoute
   '/inbox': typeof AppInboxRoute
@@ -604,6 +619,7 @@ export interface FileRoutesByTo {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRoute
@@ -670,6 +686,7 @@ export interface FileRoutesById {
   '/_app/agents': typeof AppAgentsRoute
   '/_app/alerts': typeof AppAlertsRoute
   '/_app/channels': typeof AppChannelsRoute
+  '/_app/chat': typeof AppChatRoute
   '/_app/cost': typeof AppCostRoute
   '/_app/fleet': typeof AppFleetRoute
   '/_app/inbox': typeof AppInboxRoute
@@ -688,6 +705,7 @@ export interface FileRoutesById {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRoute
@@ -755,6 +773,7 @@ export interface FileRouteTypes {
     | '/agents'
     | '/alerts'
     | '/channels'
+    | '/chat'
     | '/cost'
     | '/fleet'
     | '/inbox'
@@ -773,6 +792,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/home'
     | '/api/inference'
     | '/api/keys'
     | '/api/mcp'
@@ -836,6 +856,7 @@ export interface FileRouteTypes {
     | '/agents'
     | '/alerts'
     | '/channels'
+    | '/chat'
     | '/cost'
     | '/fleet'
     | '/inbox'
@@ -854,6 +875,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/home'
     | '/api/inference'
     | '/api/keys'
     | '/api/mcp'
@@ -919,6 +941,7 @@ export interface FileRouteTypes {
     | '/_app/agents'
     | '/_app/alerts'
     | '/_app/channels'
+    | '/_app/chat'
     | '/_app/cost'
     | '/_app/fleet'
     | '/_app/inbox'
@@ -937,6 +960,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/home'
     | '/api/inference'
     | '/api/keys'
     | '/api/mcp'
@@ -1007,6 +1031,7 @@ export interface RootRouteChildren {
   ApiConversationsRoute: typeof ApiConversationsRouteWithChildren
   ApiCostRoute: typeof ApiCostRoute
   ApiFleetRoute: typeof ApiFleetRouteWithChildren
+  ApiHomeRoute: typeof ApiHomeRoute
   ApiInferenceRoute: typeof ApiInferenceRoute
   ApiKeysRoute: typeof ApiKeysRouteWithChildren
   ApiMcpRoute: typeof ApiMcpRoute
@@ -1104,6 +1129,13 @@ declare module '@tanstack/react-router' {
       path: '/api/inference'
       fullPath: '/api/inference'
       preLoaderRoute: typeof ApiInferenceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/home': {
+      id: '/api/home'
+      path: '/api/home'
+      fullPath: '/api/home'
+      preLoaderRoute: typeof ApiHomeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/fleet': {
@@ -1230,6 +1262,13 @@ declare module '@tanstack/react-router' {
       path: '/cost'
       fullPath: '/cost'
       preLoaderRoute: typeof AppCostRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/chat': {
+      id: '/_app/chat'
+      path: '/chat'
+      fullPath: '/chat'
+      preLoaderRoute: typeof AppChatRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/channels': {
@@ -1616,6 +1655,7 @@ interface AppRouteChildren {
   AppAgentsRoute: typeof AppAgentsRoute
   AppAlertsRoute: typeof AppAlertsRoute
   AppChannelsRoute: typeof AppChannelsRoute
+  AppChatRoute: typeof AppChatRoute
   AppCostRoute: typeof AppCostRoute
   AppFleetRoute: typeof AppFleetRoute
   AppInboxRoute: typeof AppInboxRoute
@@ -1636,6 +1676,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppAgentsRoute: AppAgentsRoute,
   AppAlertsRoute: AppAlertsRoute,
   AppChannelsRoute: AppChannelsRoute,
+  AppChatRoute: AppChatRoute,
   AppCostRoute: AppCostRoute,
   AppFleetRoute: AppFleetRoute,
   AppInboxRoute: AppInboxRoute,
@@ -1878,6 +1919,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiConversationsRoute: ApiConversationsRouteWithChildren,
   ApiCostRoute: ApiCostRoute,
   ApiFleetRoute: ApiFleetRouteWithChildren,
+  ApiHomeRoute: ApiHomeRoute,
   ApiInferenceRoute: ApiInferenceRoute,
   ApiKeysRoute: ApiKeysRouteWithChildren,
   ApiMcpRoute: ApiMcpRoute,

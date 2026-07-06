@@ -1,78 +1,191 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useMemo, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import { ChatView } from '@/components/chat/chat-view'
-import { ConversationSidebar } from '@/components/chat/conversation-sidebar'
-import { useAgents } from '@/lib/agents'
-import { useConversations, type Conversation } from '@/lib/conversations'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
+import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon } from 'lucide-react'
+import { Panel } from '@/components/ui/panel'
+import { EmptyState } from '@/components/ui/empty-state'
+import { relativeTime } from '@/lib/fleet'
+import { useSession } from '@/lib/session'
 
 export const Route = createFileRoute('/_app/')({
-  component: ChatPage,
+  component: HomePage,
 })
 
-function ChatPage() {
-  const qc = useQueryClient()
-  const { data: fleet, isLoading: agentsLoading } = useAgents()
-  const agents = useMemo(() => fleet?.agents ?? [], [fleet])
-  const { data: conversations = [] } = useConversations()
+interface WorkItem {
+  id: string
+  boardId: string
+  board: string
+  ticketRef: string | null
+  title: string
+  status: string
+  updatedAt: string
+}
+interface Queue {
+  count: number
+  items: WorkItem[]
+}
+interface HomeSummary {
+  queues: { triage: Queue; review: Queue; blocked: Queue }
+  unread: number
+  boards: number
+  fleet: { online: number; total: number; down: string[] }
+}
 
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
-  const [newChatSignal, setNewChatSignal] = useState(0)
+const useHome = () =>
+  useQuery({
+    queryKey: ['home'],
+    queryFn: async (): Promise<HomeSummary> => {
+      const r = await fetch('/api/home')
+      if (!r.ok) throw new Error('failed to load')
+      return r.json()
+    },
+    refetchInterval: 30_000,
+  })
 
-  useEffect(() => {
-    if (!selectedAgent && agents[0]) setSelectedAgent(agents[0].id)
-  }, [agents, selectedAgent])
+const greeting = (name?: string | null) => {
+  const who = name?.split(' ')[0] ?? name ?? 'there'
+  return `Welcome back, ${who}`
+}
 
-  const selectConversation = (c: Conversation) => {
-    setSelectedAgent(c.agentModel)
-    setSelectedConversationId(c.id)
-  }
-  const selectAgent = (agentModel: string) => {
-    setSelectedAgent(agentModel)
-    setSelectedConversationId(null)
-    setNewChatSignal((n) => n + 1)
-  }
-  const newChat = () => {
-    if (selectedAgent) selectAgent(selectedAgent)
-  }
-  const onCreated = (id: string) => {
-    setSelectedConversationId(id)
-    void qc.invalidateQueries({ queryKey: ['conversations'] })
-  }
-
-  const current = agents.find((a) => a.id === selectedAgent)
+// Home/Today — the seamless landing. Surfaces the human's real job in Talaria's
+// guardrail model (triage · review · unblock), unread mentions, fleet health,
+// and one-tap entries into the work surfaces.
+function HomePage() {
+  const { data: session } = useSession()
+  const { data, isLoading } = useHome()
+  const navigate = useNavigate()
 
   return (
-    <div className="flex h-full min-h-0">
-      <main className="min-h-0 flex-1">
-        {selectedAgent && current ? (
-          <ChatView
-            key={selectedAgent}
-            agentModel={selectedAgent}
-            agentLabel={current.label}
-            tiers={current.tiers ?? []}
-            conversationId={selectedConversationId}
-            newChatSignal={newChatSignal}
-            onCreated={onCreated}
-          />
-        ) : (
-          <div className="grid h-full place-items-center text-sm text-muted">
-            {agentsLoading ? 'Loading the fleet…' : 'No agents available.'}
-          </div>
-        )}
-      </main>
+    <div className="h-full overflow-y-auto p-8">
+      <div className="mx-auto max-w-5xl space-y-8">
+        <div>
+          <h1 className="mercury-text text-2xl font-semibold">{greeting(session?.name ?? session?.email)}</h1>
+          <p className="mt-1 text-sm text-muted">Here's what needs you, and where the fleet stands.</p>
+        </div>
 
-      <ConversationSidebar
-        agents={agents}
-        conversations={conversations}
-        selectedAgent={selectedAgent}
-        selectedConversationId={selectedConversationId}
-        agentsLoading={agentsLoading}
-        onSelectAgent={selectAgent}
-        onSelectConversation={selectConversation}
-        onNewChat={newChat}
-      />
+        {/* Quick entries into the work surfaces */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <QuickCard to="/chat" icon={<MessageSquare size={18} />} label="Chat" sub="Talk to an agent" />
+          <QuickCard to="/channels" icon={<Hash size={18} />} label="Channels" sub="Team + agents" />
+          <QuickCard to="/boards" icon={<LayoutGrid size={18} />} label="Boards" sub="Move work" />
+          <QuickCard to="/inbox" icon={<InboxIcon size={18} />} label="Inbox" sub={data?.unread ? `${data.unread} unread` : 'Mentions'} badge={data?.unread} />
+        </div>
+
+        {isLoading ? (
+          <div className="text-sm text-muted">Loading your day…</div>
+        ) : (
+          <>
+            {/* The human's queues: triage, review, unblock */}
+            <div className="grid gap-4 lg:grid-cols-3">
+              <QueuePanel
+                title="To triage"
+                hint="New tickets waiting to be assigned"
+                queue={data!.queues.triage}
+                accent="var(--theme-accent)"
+                onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
+              />
+              <QueuePanel
+                title="To review"
+                hint="Agent work awaiting your sign-off"
+                queue={data!.queues.review}
+                accent="var(--theme-success)"
+                onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
+              />
+              <QueuePanel
+                title="Blocked"
+                hint="Stalled — needs you to unblock"
+                queue={data!.queues.blocked}
+                accent="var(--theme-warning)"
+                onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
+              />
+            </div>
+
+            {/* Fleet health glance */}
+            <Panel>
+              <div className="flex items-center gap-3">
+                <span
+                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ background: data!.fleet.down.length ? 'var(--theme-warning)' : 'var(--theme-success)' }}
+                />
+                <span className="text-sm font-semibold text-fg">Fleet</span>
+                <span className="text-sm text-muted">
+                  {data!.fleet.online}/{data!.fleet.total} agents online
+                  {data!.fleet.down.length > 0 && ` · ${data!.fleet.down.slice(0, 3).join(', ')} offline`}
+                </span>
+                <Link to="/agents" className="ml-auto text-xs text-accent hover:underline">
+                  Manage →
+                </Link>
+              </div>
+            </Panel>
+          </>
+        )}
+      </div>
     </div>
+  )
+}
+
+function QuickCard({ to, icon, label, sub, badge }: { to: string; icon: React.ReactNode; label: string; sub: string; badge?: number }) {
+  return (
+    <Link
+      to={to}
+      className="group relative flex flex-col gap-2 rounded-2xl border border-line-subtle bg-card/40 p-4 transition-colors hover:border-accent hover:bg-card"
+    >
+      <span className="text-accent">{icon}</span>
+      <div>
+        <div className="text-sm font-medium text-fg">{label}</div>
+        <div className="truncate text-xs text-muted">{sub}</div>
+      </div>
+      {badge ? (
+        <span className="absolute right-3 top-3 rounded-full bg-accent px-1.5 text-[10px] font-semibold text-surface">{badge}</span>
+      ) : null}
+    </Link>
+  )
+}
+
+function QueuePanel({
+  title,
+  hint,
+  queue,
+  accent,
+  onOpen,
+}: {
+  title: string
+  hint: string
+  queue: Queue
+  accent: string
+  onOpen: (w: WorkItem) => void
+}) {
+  return (
+    <Panel className="flex min-h-[12rem] flex-col">
+      <div className="mb-1 flex items-baseline gap-2">
+        <span className="text-sm font-semibold text-fg">{title}</span>
+        <span className="rounded-full px-1.5 text-xs font-semibold" style={{ background: `color-mix(in srgb, ${accent} 18%, transparent)`, color: accent }}>
+          {queue.count}
+        </span>
+      </div>
+      <p className="mb-3 text-xs text-muted">{hint}</p>
+      {queue.items.length === 0 ? (
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState icon="✓" title="All clear" />
+        </div>
+      ) : (
+        <div className="-mx-2 divide-y divide-line-subtle">
+          {queue.items.map((w) => (
+            <button
+              key={w.id}
+              type="button"
+              onClick={() => onOpen(w)}
+              className="flex w-full items-baseline gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card"
+            >
+              {w.ticketRef && <span className="shrink-0 font-[var(--font-mono)] text-[11px] text-muted">{w.ticketRef}</span>}
+              <span className="min-w-0 flex-1 truncate text-sm text-fg">{w.title}</span>
+              <span className="shrink-0 text-[11px] text-muted">{relativeTime(w.updatedAt)}</span>
+            </button>
+          ))}
+          {queue.count > queue.items.length && (
+            <div className="px-2 pt-2 text-[11px] text-muted">+{queue.count - queue.items.length} more</div>
+          )}
+        </div>
+      )}
+    </Panel>
   )
 }
