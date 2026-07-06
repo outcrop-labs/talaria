@@ -22,6 +22,7 @@ interface AdminUser {
   lastSeenAt: string
   createdAt: string
   agentModels: string[]
+  canMintKeys: boolean
   pinnedAdmin: boolean
 }
 
@@ -45,7 +46,7 @@ function AdminPage() {
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
   const [error, setError] = useState<string | null>(null)
 
-  const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[] }) => {
+  const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean }) => {
     setError(null)
     const r = await fetch('/api/admin/users', {
       method: 'PUT',
@@ -107,6 +108,20 @@ function AdminPage() {
                   placeholder="All agents"
                   className="min-w-0 flex-1"
                 />
+                {/* LLM-gateway key minting: admins always may; this grants members. */}
+                <label
+                  className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
+                  title="May create API keys for the Talaria LLM gateway (Settings → API keys)"
+                >
+                  <input
+                    type="checkbox"
+                    checked={u.role === 'admin' || u.canMintKeys}
+                    disabled={u.role === 'admin'}
+                    onChange={(e) => void update(u.id, { canMintKeys: e.target.checked })}
+                    className="accent-[var(--theme-accent)]"
+                  />
+                  keys
+                </label>
                 <span className="w-20 shrink-0 text-right text-xs text-muted">{relativeTime(u.lastSeenAt)}</span>
               </li>
             ))}

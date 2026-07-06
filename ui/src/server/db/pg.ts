@@ -352,6 +352,23 @@ const MIGRATIONS: string[] = [
   // working (MCP log_usage → POST /api/tasks/:id/usage).
   `alter table usage_events add column if not exists task_id uuid`,
   `create index if not exists usage_events_task_idx on usage_events(task_id) where task_id is not null`,
+  // ── Talaria LLM gateway: one org endpoint over the whole model stack ────────
+  // Per-user API keys (sha256 of the secret; plaintext shown exactly once).
+  `create table if not exists llm_api_keys (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     name text not null,
+     key_hash text unique not null,
+     prefix text not null,
+     created_at timestamptz not null default now(),
+     last_used_at timestamptz,
+     revoked_at timestamptz
+   )`,
+  // Who may mint keys (admins always may; this grants others).
+  `alter table users add column if not exists can_mint_keys boolean not null default false`,
+  // Extra request-body defaults deep-merged into every outbound call to this
+  // endpoint (e.g. OpenRouter's provider allowlist / data_collection deny).
+  `alter table llm_endpoints add column if not exists request_defaults jsonb not null default '{}'`,
 ]
 
 function ensureMigrated(): Promise<void> {

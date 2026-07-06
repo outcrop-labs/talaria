@@ -16,7 +16,7 @@ import { STACK_DIR } from './fleet-render'
  *  model; everything else is refused here. */
 export const KEY_ENV_RE = /^(LLM_API_KEY|[A-Z][A-Z0-9_]*_API_KEY)$/
 
-async function resolveKey(envVar: string | null | undefined): Promise<string | null> {
+export async function resolveKey(envVar: string | null | undefined): Promise<string | null> {
   if (!envVar || !KEY_ENV_RE.test(envVar)) return null
   if (process.env[envVar]) return process.env[envVar]!.trim()
   const env = await readFile(join(STACK_DIR(), '.env'), 'utf8').catch(() => '')
@@ -24,7 +24,7 @@ async function resolveKey(envVar: string | null | undefined): Promise<string | n
   return m ? m[1]!.trim() : null
 }
 
-const NATIVE_BASE: Record<string, string> = {
+export const NATIVE_BASE: Record<string, string> = {
   anthropic: 'https://api.anthropic.com/v1',
   openai: 'https://api.openai.com/v1',
   openrouter: 'https://openrouter.ai/api/v1',
@@ -34,7 +34,7 @@ const NATIVE_BASE: Record<string, string> = {
 
 // Endpoints imported from configs often omit api_key (the provider reads its
 // ambient env var) — assume the conventional name per provider.
-const DEFAULT_KEY_ENV: Record<string, string> = {
+export const DEFAULT_KEY_ENV: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',

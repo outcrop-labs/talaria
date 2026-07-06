@@ -81,6 +81,8 @@ export interface AdminUser {
   createdAt: string
   /** Empty = all agents (open by default); non-empty = restricted to these. */
   agentModels: string[]
+  /** May mint LLM-gateway API keys (admins always may, regardless). */
+  canMintKeys: boolean
   /** Email is in AUTH_ADMIN_EMAILS — role is pinned to admin at every login. */
   pinnedAdmin: boolean
 }
@@ -89,7 +91,7 @@ export interface AdminUser {
 export async function listUsersAdmin(): Promise<AdminUser[]> {
   const sql = await db()
   const rows = await sql`
-    select u.id, u.email, u.name, u.role,
+    select u.id, u.email, u.name, u.role, u.can_mint_keys as "canMintKeys",
            u.last_seen_at as "lastSeenAt", u.created_at as "createdAt",
            coalesce(array_agg(a.agent_model) filter (where a.agent_model is not null), '{}') as "agentModels"
     from users u left join user_agent_access a on a.user_id = u.id
@@ -106,6 +108,12 @@ export async function listUsersAdmin(): Promise<AdminUser[]> {
 export async function setUserRole(userId: string, role: Role): Promise<void> {
   const sql = await db()
   await sql`update users set role = ${role} where id = ${userId}`
+}
+
+/** Grant/revoke the ability to mint LLM-gateway API keys (admins always may). */
+export async function setUserCanMintKeys(userId: string, canMint: boolean): Promise<void> {
+  const sql = await db()
+  await sql`update users set can_mint_keys = ${canMint} where id = ${userId}`
 }
 
 /** Replace a user's agent allow-list. Empty = all agents (open by default). */

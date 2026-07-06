@@ -22,6 +22,9 @@ export interface LlmEndpoint {
   /** Auto-fetched $/MTok from the public OpenRouter catalog (price-oracle).
    *  Read-only from the UI; modelPrices overrides always win. */
   autoPrices: Record<string, { in: number; out: number }>
+  /** Extra request-body defaults deep-merged under every outbound gateway call
+   *  (e.g. OpenRouter provider allowlist). Client-sent fields win. */
+  requestDefaults: Record<string, unknown>
 }
 
 export interface AgentDef {
@@ -75,7 +78,7 @@ export async function listEndpoints(): Promise<LlmEndpoint[]> {
     select id, name, provider, base_url as "baseUrl", class, api_key_env as "apiKeyEnv",
            context_length as "contextLength", price_in_per_mtok as "priceInPerMtok",
            price_out_per_mtok as "priceOutPerMtok", models, model_prices as "modelPrices",
-           auto_prices as "autoPrices"
+           auto_prices as "autoPrices", request_defaults as "requestDefaults"
     from llm_endpoints order by (class = 'local') desc, name asc
   `) as unknown as LlmEndpoint[]
 }
@@ -108,10 +111,13 @@ export async function updateEndpoint(
     priceOutPerMtok?: number | null
     models?: string[]
     modelPrices?: Record<string, { in?: number; out?: number }>
+    requestDefaults?: Record<string, unknown>
   },
 ): Promise<void> {
   const sql = await db()
   if (patch.class) await sql`update llm_endpoints set class = ${patch.class}, updated_at = now() where id = ${id}`
+  if (patch.requestDefaults)
+    await sql`update llm_endpoints set request_defaults = ${sql.json(patch.requestDefaults as never)}, updated_at = now() where id = ${id}`
   if (patch.priceInPerMtok !== undefined)
     await sql`update llm_endpoints set price_in_per_mtok = ${patch.priceInPerMtok}, updated_at = now() where id = ${id}`
   if (patch.priceOutPerMtok !== undefined)
