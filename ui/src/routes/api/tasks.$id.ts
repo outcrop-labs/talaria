@@ -4,7 +4,8 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
-import { deleteTask, getTask, getTaskFull, EFFORTS, PRIORITIES, TASK_STATUSES, updateTask } from '@/server/tasks'
+import { deleteTask, getTask, getTaskFull, listComments, EFFORTS, PRIORITIES, TASK_STATUSES, updateTask } from '@/server/tasks'
+import { indexTicket, unindexActivity } from '@/server/retrieval/sources'
 
 const AllStatuses = [...TASK_STATUSES, 'failed', 'cancelled'] as const
 const Patch = z.object({
@@ -78,6 +79,10 @@ export const Route = createFileRoute('/api/tasks/$id')({
           }
         }
         const updated = await updateTask(params.id, parsed.data, actor)
+        // Keep the activity brain fresh when the ticket's text changed.
+        if (updated && (parsed.data.title !== undefined || parsed.data.description !== undefined)) {
+          void indexTicket(updated).catch(() => {})
+        }
         return json({ task: updated })
       },
       DELETE: async ({ request, params }) => {
@@ -86,7 +91,11 @@ export const Route = createFileRoute('/api/tasks/$id')({
         const task = await getTask(params.id)
         if (!task) return json({ error: 'not found' }, { status: 404 })
         if (!canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
+        // Drop the ticket + its comments from the activity brain before deleting.
+        const comments = await listComments(params.id).catch(() => [])
         await deleteTask(params.id)
+        void unindexActivity('ticket', params.id).catch(() => {})
+        for (const c of comments) void unindexActivity('comment', c.id).catch(() => {})
         return json({ ok: true })
       },
     },

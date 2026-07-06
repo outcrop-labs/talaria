@@ -50,6 +50,13 @@ export async function deletePoints(collection: string, ids: string[]): Promise<v
   await q(`/collections/${collection}/points/delete?wait=true`, 'POST', { points: ids }).catch(() => {})
 }
 
+/** Delete every point matching a payload filter — used to purge a whole
+ *  container's activity (e.g. all points with boardId=X when a board is
+ *  deleted) without enumerating point ids. */
+export async function deleteByFilter(collection: string, filter: Record<string, unknown>): Promise<void> {
+  await q(`/collections/${collection}/points/delete?wait=true`, 'POST', { filter }).catch(() => {})
+}
+
 export interface SearchHit {
   id: string
   score: number

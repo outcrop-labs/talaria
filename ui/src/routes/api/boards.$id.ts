@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { archiveBoard, boardRole, deleteBoard, renameBoard } from '@/server/boards'
+import { purgeActivityByField } from '@/server/retrieval/sources'
 
 // PATCH /api/boards/:id { name?, archived? } → rename/archive (owner/editor).
 // DELETE → owner only.
@@ -27,6 +28,8 @@ export const Route = createFileRoute('/api/boards/$id')({
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if ((await boardRole(user.id, params.id)) !== 'owner') return json({ error: 'forbidden' }, { status: 403 })
         await deleteBoard(params.id)
+        // Purge the board's tickets + comments from the activity brain.
+        void purgeActivityByField('boardId', params.id).catch(() => {})
         return json({ ok: true })
       },
     },

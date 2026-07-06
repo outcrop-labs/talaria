@@ -6,6 +6,7 @@ import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, listMembers } from '@/server/boards'
 import { addComment, getTask, listComments } from '@/server/tasks'
 import { notifyMentions } from '@/server/mentions'
+import { indexTicketComment } from '@/server/retrieval/sources'
 
 /** Board access for either a session user or a board-allowed named agent. */
 async function commentAuthor(request: Request, boardId: string): Promise<string | Response> {
@@ -44,6 +45,16 @@ export const Route = createFileRoute('/api/tasks/$id/comments')({
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const comment = await addComment(params.id, author, parsed.data.content, parsed.data.parentId)
+
+        // Index into the ambient activity brain (board-scoped).
+        void indexTicketComment({
+          id: comment.id,
+          taskId: params.id,
+          boardId: task.boardId,
+          ticketRef: task.ticketRef,
+          author,
+          content: parsed.data.content,
+        }).catch(() => {})
 
         // @mention any board member — they get an inbox notification linking to
         // the ticket. Detached; the POST returns immediately.
