@@ -7,7 +7,7 @@
 // No new tables — this is a read model over what the app already records.
 import { db } from './db/pg'
 
-export type ActivityKind = 'ticket' | 'channel' | 'fleet'
+export type ActivityKind = 'ticket' | 'channel' | 'fleet' | 'audit'
 
 export interface ActivityEvent {
   at: string
@@ -25,12 +25,16 @@ export async function activityFeed(
   userId: string,
   kinds: ActivityKind[],
   limit = 80,
+  isAdmin = false,
 ): Promise<ActivityEvent[]> {
   const sql = await db()
-  const want = new Set(kinds.length ? kinds : (['ticket', 'channel', 'fleet'] as ActivityKind[]))
+  // Audit events are governance data — admins only; default set excludes them.
+  const defaultKinds: ActivityKind[] = ['ticket', 'channel', 'fleet']
+  const want = new Set(kinds.length ? kinds : defaultKinds)
+  if (!isAdmin) want.delete('audit')
   const per = Math.min(limit, 80)
 
-  const [tickets, channels, fleet] = await Promise.all([
+  const [tickets, channels, fleet, audit] = await Promise.all([
     want.has('ticket')
       ? sql`
           select a.created_at as at, a.actor, b.name as board, t.title,
@@ -64,6 +68,13 @@ export async function activityFeed(
           order by v.created_at desc limit ${per}
         `
       : Promise.resolve([]),
+    want.has('audit')
+      ? sql`
+          select created_at as at, actor, action, target_type as "targetType",
+                 target_label as "targetLabel", after
+          from audit_log order by created_at desc limit ${per}
+        `
+      : Promise.resolve([]),
   ])
 
   const events: ActivityEvent[] = [
@@ -90,6 +101,14 @@ export async function activityFeed(
       context: r.agent!,
       detail: `config v${r.version}${r.note ? ` — ${r.note}` : ''}`,
       href: '/agents',
+    })),
+    ...(audit as unknown as Array<Record<string, unknown>>).map((r) => ({
+      at: r.at as string,
+      kind: 'audit' as const,
+      actor: r.actor as string,
+      context: `${r.action}`,
+      detail: `${(r.targetLabel as string) ?? (r.targetType as string)}${r.after ? ` → ${JSON.stringify(r.after)}` : ''}`.slice(0, 200),
+      href: '/activity',
     })),
   ]
 

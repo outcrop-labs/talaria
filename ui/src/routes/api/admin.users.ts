@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser, updateSessionsForUser } from '@/server/auth/session'
 import { listUsersAdmin, setDeniedViews, setUserAgentAccess, setUserCanMintKeys, setUserRole } from '@/server/users'
+import { logAudit } from '@/server/audit'
 
 // Admin console API. GET → all users with roles + agent allow-lists.
 // PUT { userId, role? , agentModels? } → update either. Admins only.
@@ -33,14 +34,25 @@ export const Route = createFileRoute('/api/admin/users')({
         if (parsed.data.role === 'member' && parsed.data.userId === user.id) {
           return json({ error: 'you cannot demote yourself' }, { status: 400 })
         }
+        const actor = user.email ?? user.name ?? 'admin'
         if (parsed.data.role) {
           await setUserRole(parsed.data.userId, parsed.data.role)
           // Live sessions pick the role up immediately — no re-login dance.
           await updateSessionsForUser(parsed.data.userId, { role: parsed.data.role })
+          void logAudit({ actor, action: 'user.role', targetType: 'user', targetId: parsed.data.userId, after: { role: parsed.data.role } })
         }
-        if (parsed.data.agentModels) await setUserAgentAccess(parsed.data.userId, parsed.data.agentModels)
-        if (parsed.data.canMintKeys !== undefined) await setUserCanMintKeys(parsed.data.userId, parsed.data.canMintKeys)
-        if (parsed.data.deniedViews) await setDeniedViews(parsed.data.userId, parsed.data.deniedViews)
+        if (parsed.data.agentModels) {
+          await setUserAgentAccess(parsed.data.userId, parsed.data.agentModels)
+          void logAudit({ actor, action: 'user.agent_access', targetType: 'user', targetId: parsed.data.userId, after: { agentModels: parsed.data.agentModels } })
+        }
+        if (parsed.data.canMintKeys !== undefined) {
+          await setUserCanMintKeys(parsed.data.userId, parsed.data.canMintKeys)
+          void logAudit({ actor, action: 'user.can_mint_keys', targetType: 'user', targetId: parsed.data.userId, after: { canMintKeys: parsed.data.canMintKeys } })
+        }
+        if (parsed.data.deniedViews) {
+          await setDeniedViews(parsed.data.userId, parsed.data.deniedViews)
+          void logAudit({ actor, action: 'user.view_access', targetType: 'user', targetId: parsed.data.userId, after: { deniedViews: parsed.data.deniedViews } })
+        }
         return json({ ok: true })
       },
     },

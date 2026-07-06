@@ -404,6 +404,27 @@ const MIGRATIONS: string[] = [
   // Per-view access: nav routes a member may NOT reach (deny list; empty = all
   // views, the open default). Admins are never restricted.
   `alter table users add column if not exists denied_views text[] not null default '{}'`,
+  // ── Audit trail + app settings ──────────────────────────────────────────────
+  // A real audit log: who did what to which target, with before/after state.
+  `create table if not exists audit_log (
+     id uuid primary key default gen_random_uuid(),
+     actor text not null,
+     action text not null,
+     target_type text not null,
+     target_id text,
+     target_label text,
+     before jsonb,
+     after jsonb,
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists audit_log_created_idx on audit_log(created_at desc)`,
+  `create index if not exists audit_log_target_idx on audit_log(target_type, target_id)`,
+  // Key/value app settings (admin-editable). Audit retention lives here.
+  `create table if not exists app_settings (
+     key text primary key,
+     value jsonb not null,
+     updated_at timestamptz not null default now()
+   )`,
 ]
 
 function ensureMigrated(): Promise<void> {

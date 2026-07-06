@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { getAgentDef } from '@/server/agent-defs'
 import { fleetRemove, fleetStop, fleetUp, legacyControl, waitHealthy } from '@/server/fleet-docker'
 import { renderFleet } from '@/server/fleet-render'
+import { logAudit } from '@/server/audit'
 import { db } from '@/server/db/pg'
 
 const Body = z.object({
@@ -29,6 +30,11 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
         if (!def) return json({ error: 'not found' }, { status: 404 })
 
         const sql = await db()
+        const actor = user.email ?? user.name ?? 'admin'
+        // Lifecycle actions are governance-relevant — record them.
+        if (['migrate', 'retire', 'unretire'].includes(parsed.data.action)) {
+          void logAudit({ actor, action: `agent.${parsed.data.action}`, targetType: 'agent', targetId: def.id, targetLabel: def.displayName })
+        }
         try {
           switch (parsed.data.action) {
             case 'migrate': {
