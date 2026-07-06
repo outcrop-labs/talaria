@@ -61,7 +61,23 @@ function AgentsPage() {
   const [creating, setCreating] = useState(false)
   const [duplicateFrom, setDuplicateFrom] = useState<AgentDef | null>(null)
   const [importing, setImporting] = useState(false)
+  const [reconciling, setReconciling] = useState(false)
   const [summary, setSummary] = useState<string | null>(null)
+
+  const reconcile = async () => {
+    setReconciling(true)
+    setSummary(null)
+    try {
+      const r = (await fetch('/api/fleet/reconcile', { method: 'POST' }).then((x) => x.json()).catch(() => null)) as
+        | { rendered?: number; started?: string[]; alreadyRunning?: string[]; error?: string }
+        | null
+      if (!r || r.error) setSummary(r?.error ?? 'reconcile failed')
+      else setSummary(`Reconciled ${r.rendered} · started ${r.started?.length ?? 0} · already up ${r.alreadyRunning?.length ?? 0}`)
+      await qc.invalidateQueries({ queryKey: ['fleet-containers'] })
+    } finally {
+      setReconciling(false)
+    }
+  }
 
   const runImport = async () => {
     setImporting(true)
@@ -95,9 +111,12 @@ function AgentsPage() {
             </div>
             {isAdmin && (
               <>
-                {defs.length > 0 && (
-                  <Button size="sm" onClick={() => setCreating(true)}>
-                    New agent
+                <Button size="sm" onClick={() => setCreating(true)} disabled={defs.length === 0} title={defs.length === 0 ? 'Import a stack first to seed a template' : undefined}>
+                  New agent
+                </Button>
+                {defs.some((d) => d.managed && d.enabled) && (
+                  <Button variant="outline" size="sm" onClick={() => void reconcile()} disabled={reconciling} title="Render + start every enabled agent that isn't running">
+                    {reconciling ? 'Reconciling…' : 'Reconcile'}
                   </Button>
                 )}
                 <Button variant="outline" size="sm" onClick={() => void runImport()} disabled={importing}>
