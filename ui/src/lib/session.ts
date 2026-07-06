@@ -16,16 +16,26 @@ export function useIsAdmin(user: SessionUser | null | undefined): boolean {
   return user?.role === 'admin'
 }
 
+interface SessionResult {
+  user: SessionUser | null
+  deniedViews: string[]
+}
+
+const fetchSession = async (): Promise<SessionResult> => {
+  const res = await fetch('/api/auth/session', { credentials: 'same-origin' })
+  if (!res.ok) return { user: null, deniedViews: [] }
+  const data = (await res.json()) as { user: SessionUser | null; deniedViews?: string[] }
+  return { user: data.user, deniedViews: data.deniedViews ?? [] }
+}
+
 export function useSession() {
-  return useQuery({
-    queryKey: ['session'],
-    queryFn: async (): Promise<SessionUser | null> => {
-      const res = await fetch('/api/auth/session', { credentials: 'same-origin' })
-      if (!res.ok) return null
-      const data = (await res.json()) as { user: SessionUser | null }
-      return data.user
-    },
-  })
+  return useQuery({ queryKey: ['session'], queryFn: fetchSession, select: (d) => d.user })
+}
+
+/** Views the current user may NOT reach (empty for admins / open access). */
+export function useDeniedViews(): string[] {
+  const { data } = useQuery({ queryKey: ['session'], queryFn: fetchSession, select: (d) => d.deniedViews })
+  return data ?? []
 }
 
 export function useProviders() {

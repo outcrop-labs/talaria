@@ -9,6 +9,7 @@ import { Select } from '@/components/ui/select'
 import { useAgents } from '@/lib/agents'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
+import { GATEABLE_VIEWS } from '@/lib/nav'
 
 export const Route = createFileRoute('/_app/admin')({
   component: AdminPage,
@@ -23,6 +24,7 @@ interface AdminUser {
   createdAt: string
   agentModels: string[]
   canMintKeys: boolean
+  deniedViews: string[]
   pinnedAdmin: boolean
 }
 
@@ -46,7 +48,7 @@ function AdminPage() {
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
   const [error, setError] = useState<string | null>(null)
 
-  const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean }) => {
+  const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[] }) => {
     setError(null)
     const r = await fetch('/api/admin/users', {
       method: 'PUT',
@@ -70,8 +72,8 @@ function AdminPage() {
         <Panel>
           <div className="mb-2 text-sm font-semibold text-fg">People</div>
           <p className="mb-4 text-xs text-muted">
-            Roles and per-person agent access. An empty agent list means all agents; picking any restricts
-            that person to exactly those.
+            Roles, per-person agent access, and which views each member can reach. Empty = all (open by
+            default); pick any to restrict. Admins always have full access.
           </p>
           {error && (
             <div className="mb-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
@@ -79,52 +81,73 @@ function AdminPage() {
             </div>
           )}
           <ul className="divide-y divide-line-subtle">
-            {(users ?? []).map((u) => (
-              <li key={u.id} className="flex items-center gap-3 py-3">
-                <Avatar name={u.name ?? u.email} className="h-7 w-7" />
-                <span className="w-56 min-w-0">
-                  <span className="block truncate text-sm text-fg">{u.name ?? u.email ?? u.id}</span>
-                  <span className="block truncate text-xs text-muted">
-                    {u.name && u.email ? u.email : `seen ${relativeTime(u.lastSeenAt)}`}
-                  </span>
-                </span>
-                <Select
-                  value={u.role}
-                  size="sm"
-                  disabled={u.pinnedAdmin || u.id === me?.id}
-                  title={u.pinnedAdmin ? 'Pinned admin via AUTH_ADMIN_EMAILS' : u.id === me?.id ? 'You cannot demote yourself' : undefined}
-                  onChange={(e) => void update(u.id, { role: e.target.value as 'admin' | 'member' })}
-                  className="w-28 shrink-0"
-                >
-                  <option value="member">Member</option>
-                  <option value="admin">Admin</option>
-                </Select>
-                <Combobox
-                  options={agentOptions}
-                  selected={u.agentModels}
-                  onChange={(models) => void update(u.id, { agentModels: models })}
-                  multiple
-                  size="sm"
-                  placeholder="All agents"
-                  className="min-w-0 flex-1"
-                />
-                {/* LLM-gateway key minting: admins always may; this grants members. */}
-                <label
-                  className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
-                  title="May create API keys for the Talaria LLM gateway (Settings → API keys)"
-                >
-                  <input
-                    type="checkbox"
-                    checked={u.role === 'admin' || u.canMintKeys}
-                    disabled={u.role === 'admin'}
-                    onChange={(e) => void update(u.id, { canMintKeys: e.target.checked })}
-                    className="accent-[var(--theme-accent)]"
-                  />
-                  keys
-                </label>
-                <span className="w-20 shrink-0 text-right text-xs text-muted">{relativeTime(u.lastSeenAt)}</span>
-              </li>
-            ))}
+            {(users ?? []).map((u) => {
+              // Views shown as an ALLOW list (all selected by default); denying =
+              // stored as gateable-minus-allowed.
+              const allowedViews = GATEABLE_VIEWS.filter((v) => !u.deniedViews.includes(v.to)).map((v) => v.to)
+              return (
+                <li key={u.id} className="space-y-2 py-3">
+                  <div className="flex items-center gap-3">
+                    <Avatar name={u.name ?? u.email} className="h-7 w-7" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm text-fg">{u.name ?? u.email ?? u.id}</span>
+                      <span className="block truncate text-xs text-muted">
+                        {u.name && u.email ? u.email : `seen ${relativeTime(u.lastSeenAt)}`}
+                      </span>
+                    </span>
+                    <Select
+                      value={u.role}
+                      size="sm"
+                      disabled={u.pinnedAdmin || u.id === me?.id}
+                      title={u.pinnedAdmin ? 'Pinned admin via AUTH_ADMIN_EMAILS' : u.id === me?.id ? 'You cannot demote yourself' : undefined}
+                      onChange={(e) => void update(u.id, { role: e.target.value as 'admin' | 'member' })}
+                      className="w-28 shrink-0"
+                    >
+                      <option value="member">Member</option>
+                      <option value="admin">Admin</option>
+                    </Select>
+                    <label
+                      className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
+                      title="May create API keys for the Talaria LLM gateway (Settings → API keys)"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={u.role === 'admin' || u.canMintKeys}
+                        disabled={u.role === 'admin'}
+                        onChange={(e) => void update(u.id, { canMintKeys: e.target.checked })}
+                        className="accent-[var(--theme-accent)]"
+                      />
+                      keys
+                    </label>
+                    <span className="w-16 shrink-0 text-right text-xs text-muted">{relativeTime(u.lastSeenAt)}</span>
+                  </div>
+                  {u.role !== 'admin' && (
+                    <div className="flex items-center gap-2 pl-10">
+                      <Combobox
+                        options={agentOptions}
+                        selected={u.agentModels}
+                        onChange={(models) => void update(u.id, { agentModels: models })}
+                        multiple
+                        size="sm"
+                        placeholder="All agents"
+                        className="min-w-0 flex-1"
+                      />
+                      <Combobox
+                        options={GATEABLE_VIEWS.map((v) => ({ value: v.to, label: v.label }))}
+                        selected={allowedViews}
+                        onChange={(views) =>
+                          void update(u.id, { deniedViews: GATEABLE_VIEWS.filter((v) => !views.includes(v.to)).map((v) => v.to) })
+                        }
+                        multiple
+                        size="sm"
+                        placeholder="All views"
+                        className="min-w-0 flex-1"
+                      />
+                    </div>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         </Panel>
       </div>

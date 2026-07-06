@@ -8,13 +8,14 @@ import { cn } from '@/lib/cn'
 import { NAV } from '@/lib/nav'
 import { useBoards, useArchivedBoards, type Board } from '@/lib/boards'
 import { useNotifications } from '@/lib/notifications'
-import type { SessionUser } from '@/lib/session'
+import { useDeniedViews, type SessionUser } from '@/lib/session'
 
 // The main application menu. The Boards item expands to the user's boards
 // (grouped by team) when that section is active.
 export function NavRail({ user }: { user: SessionUser }) {
   const isAdmin = user.role === 'admin'
   const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const denied = useDeniedViews()
   const [creating, setCreating] = useState(false)
   const [teamsOpen, setTeamsOpen] = useState(false)
   const unread = useNotifications().data?.unread ?? 0
@@ -22,7 +23,7 @@ export function NavRail({ user }: { user: SessionUser }) {
   return (
     <nav className="flex h-full w-56 shrink-0 flex-col gap-6 overflow-y-auto border-r border-line-subtle bg-sidebar px-3 py-5">
       {NAV.map((section) => {
-        const items = section.items.filter((i) => !i.adminOnly || isAdmin)
+        const items = section.items.filter((i) => (!i.adminOnly || isAdmin) && !denied.includes(i.to))
         if (items.length === 0) return null
         return (
           <div key={section.title}>
