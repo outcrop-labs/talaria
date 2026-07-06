@@ -133,7 +133,7 @@ export const PROVIDER_PRESETS: Array<{
   },
   {
     key: 'ollama',
-    label: 'Ollama (local)',
+    label: 'Ollama (self-hosted)',
     provider: 'custom',
     class: 'local',
     baseUrl: 'http://localhost:11434/v1',
@@ -142,7 +142,7 @@ export const PROVIDER_PRESETS: Array<{
   },
   {
     key: 'vllm',
-    label: 'vLLM (local)',
+    label: 'vLLM (self-hosted)',
     provider: 'custom',
     class: 'local',
     baseUrl: 'http://localhost:8000/v1',
@@ -237,6 +237,7 @@ export const patchEndpoint = (
     priceOutPerMtok?: number | null
     models?: string[]
     modelPrices?: Record<string, { in?: number; out?: number }>
+    requestDefaults?: Record<string, unknown>
     force?: boolean
   },
 ) =>

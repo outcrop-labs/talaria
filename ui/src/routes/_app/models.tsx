@@ -60,7 +60,7 @@ function ModelsPage() {
           />
         ) : (
           <>
-            <Section title="Local — your hardware" endpoints={local} />
+            <Section title="Self-hosted — your hardware & on-prem" endpoints={local} />
             <Section title="Cloud" endpoints={cloud} />
           </>
         )}
@@ -138,7 +138,7 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
             onChange={(e) => void run(patchEndpoint(ep.id, { class: e.target.value as 'local' | 'cloud' }))}
             className="shrink-0"
           >
-            <option value="local">local</option>
+            <option value="local">self-hosted</option>
             <option value="cloud">cloud</option>
           </Select>
         ) : (
@@ -146,7 +146,7 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
             className="shrink-0 text-xs"
             style={{ color: ep.class === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}
           >
-            {ep.class}
+            {ep.class === 'local' ? 'self-hosted' : 'cloud'}
           </span>
         )}
         <Button
@@ -241,12 +241,57 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
           </div>
         </div>
       )}
+      {ep.class === 'cloud' && <PrivacyRow ep={ep} run={run} />}
       {err && (
         <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
           {err}
         </div>
       )}
     </Panel>
+  )
+}
+
+// The OpenRouter no-train routing default: restrict to a US, no-store/no-train
+// provider pool and deny data collection. Other providers get the portable
+// data_collection:deny (ignored where unsupported).
+const OPENROUTER_NO_TRAIN = {
+  provider: {
+    only: ['fireworks', 'together', 'parasail', 'cloudflare', 'digitalocean', 'wandb'],
+    data_collection: 'deny',
+    allow_fallbacks: true,
+  },
+}
+const GENERIC_NO_TRAIN = { provider: { data_collection: 'deny' } }
+
+// Privacy routing as a SETTING (not a forced default): admins opt an endpoint
+// into no-train routing, which Talaria merges into every call to that backend.
+function PrivacyRow({ ep, run }: { ep: LlmEndpoint; run: (p: Promise<{ error?: string }>) => Promise<void> }) {
+  const on = Boolean((ep.requestDefaults as { provider?: { data_collection?: string } } | undefined)?.provider?.data_collection === 'deny')
+  const toggle = () => {
+    const next = on ? {} : ep.provider === 'openrouter' ? OPENROUTER_NO_TRAIN : GENERIC_NO_TRAIN
+    void run(patchEndpoint(ep.id, { requestDefaults: next }))
+  }
+  return (
+    <div className="mt-4 flex items-start gap-2.5 border-t border-line-subtle pt-3">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        onClick={toggle}
+        className="mt-0.5 h-4 w-7 shrink-0 rounded-full transition-colors"
+        style={{ background: on ? 'var(--theme-success)' : 'var(--theme-line)' }}
+      >
+        <span className="block h-3 w-3 rounded-full bg-white transition-transform" style={{ transform: on ? 'translateX(14px)' : 'translateX(2px)' }} />
+      </button>
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-fg">No-train routing {on && <span style={{ color: 'var(--theme-success)' }}>· on</span>}</div>
+        <div className="text-[11px] text-muted">
+          {ep.provider === 'openrouter'
+            ? 'Restrict to US, no-store provider pools and deny data collection on every request.'
+            : 'Send data_collection: deny with every request (honored where the provider supports it).'}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -309,7 +354,7 @@ function AddProviderModal({ open, onClose }: { open: boolean; onClose: () => voi
             <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Base URL</label>
             <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={preset.baseUrl ?? 'https://…/v1'} />
             <p className="mt-1 text-xs text-muted">
-              LAN and loopback hosts count as <span style={{ color: 'var(--theme-success)' }}>local</span> in the cost split — inferred automatically.
+              LAN and loopback hosts count as <span style={{ color: 'var(--theme-success)' }}>self-hosted</span> in the cost split — inferred automatically.
             </p>
           </div>
         )}
