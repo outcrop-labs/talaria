@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
@@ -68,6 +70,8 @@ function AdminPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-4xl space-y-8">
         <h1 className="mercury-text text-2xl font-semibold">Admin</h1>
+
+        <SettingsPanel />
 
         <Panel>
           <div className="mb-2 text-sm font-semibold text-fg">People</div>
@@ -152,5 +156,53 @@ function AdminPage() {
         </Panel>
       </div>
     </div>
+  )
+}
+
+// App-wide settings (grows over time). Audit retention is the first.
+function SettingsPanel() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: async (): Promise<{ auditRetentionDays: number }> => {
+      const r = await fetch('/api/admin/settings')
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+  })
+  const [days, setDays] = useState('')
+  const value = days !== '' ? days : String(data?.auditRetentionDays ?? '')
+  const save = async () => {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return
+    await fetch('/api/admin/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ auditRetentionDays: n }),
+    })
+    setDays('')
+    await qc.invalidateQueries({ queryKey: ['admin-settings'] })
+  }
+  return (
+    <Panel>
+      <div className="mb-2 text-sm font-semibold text-fg">Settings</div>
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm text-fg">Audit retention</div>
+          <div className="text-xs text-muted">How many days to keep the audit log. 0 = keep forever.</div>
+        </div>
+        <Input
+          size="sm"
+          type="number"
+          value={value}
+          onChange={(e) => setDays(e.target.value)}
+          className="w-24 shrink-0"
+        />
+        <span className="shrink-0 text-xs text-muted">days</span>
+        <Button size="sm" className="shrink-0" onClick={() => void save()} disabled={days === '' || Number(days) === data?.auditRetentionDays}>
+          Save
+        </Button>
+      </div>
+    </Panel>
   )
 }

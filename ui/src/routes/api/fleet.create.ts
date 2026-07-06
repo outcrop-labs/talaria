@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { createAgent } from '@/server/fleet-create'
+import { logAudit } from '@/server/audit'
 import { fleetUp, waitHealthy } from '@/server/fleet-docker'
 import { renderFleet } from '@/server/fleet-render'
 
@@ -32,6 +33,7 @@ export const Route = createFileRoute('/api/fleet/create')({
             ...parsed.data,
             createdBy: user.email ?? user.name ?? 'admin',
           })
+          void logAudit({ actor: user.email ?? user.name ?? 'admin', action: 'agent.create', targetType: 'agent', targetId: def.id, targetLabel: def.displayName, after: { slug: def.slug, department: def.department } })
           const render = await renderFleet()
           let healthy: boolean | undefined
           if (parsed.data.start) {

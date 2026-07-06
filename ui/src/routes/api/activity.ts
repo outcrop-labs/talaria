@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { getSessionUser } from '@/server/auth/session'
 import { activityFeed, type ActivityKind } from '@/server/activity-feed'
 
-const KINDS = new Set(['ticket', 'channel', 'fleet'])
+const KINDS = new Set(['ticket', 'channel', 'fleet', 'audit'])
 
 // The merged workspace activity feed, scoped to the requesting user.
 export const Route = createFileRoute('/api/activity')({
@@ -15,7 +15,7 @@ export const Route = createFileRoute('/api/activity')({
         const kinds = (new URL(request.url).searchParams.get('kinds') ?? '')
           .split(',')
           .filter((k) => KINDS.has(k)) as ActivityKind[]
-        return json({ events: await activityFeed(user.id, kinds) })
+        return json({ events: await activityFeed(user.id, kinds, 80, user.role === 'admin') })
       },
     },
   },
