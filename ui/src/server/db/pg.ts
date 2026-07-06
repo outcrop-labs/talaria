@@ -463,6 +463,36 @@ const MIGRATIONS: string[] = [
      updated_at timestamptz not null default now(),
      unique (collection_id, source_type, source_id)
    )`,
+  // ── Knowledgebase (Outline-style markdown drive) ────────────────────────────
+  // Spaces group docs; docs nest via parent_id. kind: 'human' (freeform) |
+  // 'agent' (OKF-structured for machine consumption). visibility: private
+  // (creator) | org (all members) | public (anyone via the public route).
+  // official docs are indexed into the org-kb RAG collection.
+  `create table if not exists kb_spaces (
+     id uuid primary key default gen_random_uuid(),
+     name text not null,
+     description text,
+     icon text,
+     created_by text,
+     created_at timestamptz not null default now()
+   )`,
+  `create table if not exists kb_docs (
+     id uuid primary key default gen_random_uuid(),
+     space_id uuid not null references kb_spaces(id) on delete cascade,
+     parent_id uuid references kb_docs(id) on delete set null,
+     title text not null default 'Untitled',
+     body text not null default '',
+     kind text not null default 'human',
+     official boolean not null default false,
+     visibility text not null default 'org',
+     public_slug text unique,
+     sort integer not null default 0,
+     created_by text,
+     updated_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `create index if not exists kb_docs_space_idx on kb_docs(space_id, parent_id, sort)`,
 ]
 
 function ensureMigrated(): Promise<void> {
