@@ -8,6 +8,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { Modal } from '@/components/ui/modal'
+import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { InlineCreate } from '@/components/ui/inline-create'
@@ -459,6 +461,7 @@ function DocEditor({
   const [showHistory, setShowHistory] = useState(false)
   const [showToc, setShowToc] = useState(true)
   const [emojiOpen, setEmojiOpen] = useState(false)
+  const [seed, setSeed] = useState(0) // bump to remount the editor (e.g. after restore)
   useEffect(() => {
     if (doc) setTitle(doc.title)
   }, [doc])
@@ -588,7 +591,7 @@ function DocEditor({
       <div className="flex min-h-0 flex-1">
         <div ref={bodyRef} className="min-w-0 flex-1 overflow-y-auto p-6">
           <RichEditor
-            key={docId}
+            key={`${docId}-${seed}`}
             ref={editorRef}
             value={doc.body}
             onSave={() => void saveBody()}
@@ -644,7 +647,18 @@ function DocEditor({
         )}
         {showHistory && (
           <div className="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
-            <HistoryRail docId={docId} />
+            <HistoryRail
+              docId={docId}
+              onRestore={async (content) => {
+                // Snapshots are stored as `# Title\n\n<body>`; split them back out.
+                const m = /^#\s+(.*)\n+([\s\S]*)$/.exec(content)
+                const t = m ? m[1]!.trim() : title
+                const b = m ? m[2]! : content
+                setTitle(t)
+                await save({ title: t, body: b })
+                setSeed((n) => n + 1)
+              }}
+            />
           </div>
         )}
       </div>
@@ -697,8 +711,10 @@ interface Rev {
   createdAt: string
   size: number
 }
-function HistoryRail({ docId }: { docId: string }) {
+function HistoryRail({ docId, onRestore }: { docId: string; onRestore: (content: string) => Promise<void> }) {
   const [revs, setRevs] = useState<Rev[]>([])
+  const [preview, setPreview] = useState<{ rev: Rev; content: string } | null>(null)
+  const [restoring, setRestoring] = useState(false)
   useEffect(() => {
     // kb-doc history keys on the doc id (like memory).
     fetch(`/api/history?kind=kb-doc&id=${docId}`)
@@ -706,6 +722,14 @@ function HistoryRail({ docId }: { docId: string }) {
       .then((d) => setRevs((d as { revisions: Rev[] }).revisions))
       .catch(() => setRevs([]))
   }, [docId])
+
+  const open = async (rev: Rev) => {
+    const r = await fetch(`/api/history?kind=kb-doc&id=${docId}&rev=${rev.id}`)
+    if (!r.ok) return
+    const { content } = (await r.json()) as { content: string }
+    setPreview({ rev, content })
+  }
+
   return (
     <div>
       <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">History</div>
@@ -713,12 +737,51 @@ function HistoryRail({ docId }: { docId: string }) {
         <div className="text-xs text-muted">No saved revisions yet.</div>
       ) : (
         revs.map((r, i) => (
-          <div key={r.id} className="py-1.5 text-xs">
+          <button
+            key={r.id}
+            type="button"
+            onClick={() => void open(r)}
+            className="block w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-card"
+          >
             <div className="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>
             <div className="text-[11px] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>
-          </div>
+          </button>
         ))
       )}
+
+      <Modal
+        open={!!preview}
+        onClose={() => setPreview(null)}
+        title={preview ? `Revision · ${relativeTime(preview.rev.createdAt)}` : 'Revision'}
+        width="max-w-3xl"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setPreview(null)}>
+              Close
+            </Button>
+            <Button
+              size="sm"
+              disabled={restoring}
+              onClick={async () => {
+                if (!preview) return
+                setRestoring(true)
+                try {
+                  await onRestore(preview.content)
+                  setPreview(null)
+                } finally {
+                  setRestoring(false)
+                }
+              }}
+            >
+              {restoring ? 'Restoring…' : 'Restore this version'}
+            </Button>
+          </div>
+        }
+      >
+        <div className="max-h-[60vh] overflow-y-auto">
+          {preview && <Markdown>{preview.content}</Markdown>}
+        </div>
+      </Modal>
     </div>
   )
 }
