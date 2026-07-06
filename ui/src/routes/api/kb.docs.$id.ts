@@ -8,6 +8,7 @@ import { logAudit } from '@/server/audit'
 const Patch = z.object({
   title: z.string().max(200).optional(),
   body: z.string().max(500_000).optional(),
+  icon: z.string().max(16).nullish(),
   visibility: z.enum(['private', 'org', 'public']).optional(),
   parentId: z.string().uuid().nullish(),
   official: z.boolean().optional(),

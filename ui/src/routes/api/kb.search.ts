@@ -1,0 +1,19 @@
+import { createFileRoute } from '@tanstack/react-router'
+import { json } from '@tanstack/react-start'
+import { getSessionUser } from '@/server/auth/session'
+import { searchDocs } from '@/server/kb'
+
+// Full-text search across the knowledgebase (docs the caller can read).
+export const Route = createFileRoute('/api/kb/search')({
+  server: {
+    handlers: {
+      GET: async ({ request }) => {
+        const user = await getSessionUser(request)
+        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const q = new URL(request.url).searchParams.get('q') ?? ''
+        const viewer = user.email ?? user.name ?? ''
+        return json({ hits: await searchDocs(q, viewer) })
+      },
+    },
+  },
+})

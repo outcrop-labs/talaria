@@ -29,3 +29,6 @@ fleet.json
 # uploaded attachments (served from /api/uploads)
 ui/.uploads/
 .uploads/
+
+# Reference repos studied but not vendored
+.reference/

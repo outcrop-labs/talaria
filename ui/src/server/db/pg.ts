@@ -493,6 +493,11 @@ const MIGRATIONS: string[] = [
      updated_at timestamptz not null default now()
    )`,
   `create index if not exists kb_docs_space_idx on kb_docs(space_id, parent_id, sort)`,
+  // Outline-parity: per-doc emoji icon, and a full-text search index over
+  // title + body so the knowledgebase is searchable at scale.
+  `alter table kb_docs add column if not exists icon text`,
+  `create index if not exists kb_docs_fts_idx on kb_docs using gin (
+     to_tsvector('english', coalesce(title,'') || ' ' || coalesce(body,'')))`,
 ]
 
 function ensureMigrated(): Promise<void> {
