@@ -8,7 +8,6 @@ import { Modal } from '@/components/ui/modal'
 import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
-import { LabelPicker } from '@/components/board/label-picker'
 import { ProviderMark } from '@/components/fleet/provider-mark'
 import { useSession } from '@/lib/session'
 import {
@@ -90,7 +89,42 @@ const describeAffected = (affected: AffectedAgent[]) =>
     .map((a) => `  • ${a.slug}${a.aliases.length ? ` — tiers: ${a.aliases.join(', ')}` : ''}${a.fallbacks ? ' — fallback' : ''}`)
     .join('\n')
 
+// Compact provider card — identity + a model count + Manage. Everything
+// detailed (the model list, pricing, privacy) lives in the modal so the main
+// view stays scannable.
 function EndpointCard({ ep }: { ep: LlmEndpoint }) {
+  const [managing, setManaging] = useState(false)
+  return (
+    <>
+      <Panel className="flex items-center gap-3">
+        <ProviderMark provider={ep.provider} name={ep.name} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="text-sm font-semibold text-fg">{ep.name}</span>
+            <span
+              className="shrink-0 text-[11px]"
+              style={{ color: ep.class === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}
+            >
+              {ep.class === 'local' ? 'self-hosted' : 'cloud'}
+            </span>
+          </div>
+          <div className="truncate text-xs text-muted">
+            {ep.models.length} model{ep.models.length === 1 ? '' : 's'}
+            {ep.baseUrl && ` · ${ep.baseUrl}`}
+          </div>
+        </div>
+        <Button variant="outline" size="sm" className="shrink-0" onClick={() => setManaging(true)}>
+          Manage
+        </Button>
+      </Panel>
+      {managing && <EndpointModal ep={ep} onClose={() => setManaging(false)} />}
+    </>
+  )
+}
+
+// The provider's full surface: models (add/remove with catalog search), pricing,
+// class, privacy routing, and removal.
+function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }) {
   const qc = useQueryClient()
   const { data: available } = useAvailableModels(ep.id)
   const [err, setErr] = useState<string | null>(null)
@@ -102,9 +136,6 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
     if (r.error) setErr(r.error)
     await refresh()
   }
-
-  /** Double opt-in: a removal that agents depend on comes back needsForce with
-   *  the blast radius; confirm cascades it (each agent gets a new version). */
   const runCascading = async (op: (force: boolean) => Promise<EndpointOpResult>) => {
     setErr(null)
     let r = await op(false)
@@ -119,135 +150,150 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
     void qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
 
+  const addModel = (id: string) => {
+    if (!id.trim() || ep.models.includes(id.trim())) return
+    void runCascading((force) => patchEndpoint(ep.id, { models: [...ep.models, id.trim()], force }))
+  }
+  const removeModel = (id: string) =>
+    void runCascading((force) => patchEndpoint(ep.id, { models: ep.models.filter((m) => m !== id), force }))
+
   return (
-    <Panel>
-      <div className="mb-4 flex items-center gap-3">
-        <ProviderMark provider={ep.provider} name={ep.name} />
-        <span className="text-sm font-semibold text-fg">{ep.name}</span>
-        <span className="min-w-0 truncate text-xs text-muted">
-          {ep.provider}
-          {ep.baseUrl && ` · ${ep.baseUrl}`}
-          {ep.apiKeyEnv && ` · key: $${ep.apiKeyEnv}`}
-        </span>
-        <span className="ml-auto" />
-        {ep.provider === 'custom' ? (
-          // Only custom endpoints can be ambiguous — known providers infer.
-          <Select
-            value={ep.class}
-            size="sm"
-            onChange={(e) => void run(patchEndpoint(ep.id, { class: e.target.value as 'local' | 'cloud' }))}
-            className="shrink-0"
-          >
-            <option value="local">self-hosted</option>
-            <option value="cloud">cloud</option>
-          </Select>
-        ) : (
-          <span
-            className="shrink-0 text-xs"
-            style={{ color: ep.class === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}
-          >
-            {ep.class === 'local' ? 'self-hosted' : 'cloud'}
-          </span>
+    <Modal open onClose={onClose} title={`${ep.name} · ${ep.provider}`} width="max-w-2xl">
+      <div className="space-y-5">
+        <div className="flex items-center gap-3 text-xs text-muted">
+          {ep.baseUrl && <span className="truncate">{ep.baseUrl}</span>}
+          {ep.apiKeyEnv && <span className="shrink-0">key: ${ep.apiKeyEnv}</span>}
+          <span className="ml-auto" />
+          {ep.provider === 'custom' ? (
+            <Select value={ep.class} size="sm" onChange={(e) => void run(patchEndpoint(ep.id, { class: e.target.value as 'local' | 'cloud' }))}>
+              <option value="local">self-hosted</option>
+              <option value="cloud">cloud</option>
+            </Select>
+          ) : (
+            <span style={{ color: ep.class === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}>
+              {ep.class === 'local' ? 'self-hosted' : 'cloud'}
+            </span>
+          )}
+        </div>
+
+        {/* Models the org can use from this provider */}
+        <section>
+          <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Available models</div>
+          {ep.models.length > 0 ? (
+            <div className="mb-2 divide-y divide-line-subtle">
+              {ep.models.map((m) => (
+                <div key={m} className="flex items-center gap-2 py-1.5 text-sm">
+                  <span className="min-w-0 flex-1 truncate text-fg">{m}</span>
+                  <button type="button" onClick={() => removeModel(m)} className="shrink-0 text-xs text-muted hover:text-[color:var(--theme-danger)]">
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mb-2 text-xs text-muted">No models added yet.</div>
+          )}
+          <ModelAdder catalog={available?.models ?? []} existing={ep.models} onAdd={addModel} />
+          {available?.note && <div className="mt-1.5 text-xs text-muted">Provider catalog unavailable: {available.note}</div>}
+        </section>
+
+        {ep.class === 'cloud' && (
+          <section>
+            <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Pricing · $/1M tokens (in / out)</div>
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="min-w-0 flex-1 truncate text-muted">endpoint default (fallback)</span>
+                <Input size="sm" type="number" defaultValue={ep.priceInPerMtok ?? ''} placeholder="in" className="w-20 shrink-0"
+                  onBlur={(e) => { const v = e.target.value.trim(); void run(patchEndpoint(ep.id, { priceInPerMtok: v === '' ? null : Number(v) })) }} />
+                <Input size="sm" type="number" defaultValue={ep.priceOutPerMtok ?? ''} placeholder="out" className="w-20 shrink-0"
+                  onBlur={(e) => { const v = e.target.value.trim(); void run(patchEndpoint(ep.id, { priceOutPerMtok: v === '' ? null : Number(v) })) }} />
+              </div>
+              {ep.models.map((m) => {
+                const p = ep.modelPrices?.[m]
+                const auto = ep.autoPrices?.[m]
+                const overridden = p?.in !== undefined || p?.out !== undefined
+                const setPrice = (key: 'in' | 'out', raw: string) => {
+                  const next = { ...(ep.modelPrices ?? {}) }
+                  const entry = { ...(next[m] ?? {}) }
+                  if (raw === '') delete entry[key]
+                  else entry[key] = Number(raw)
+                  if (entry.in === undefined && entry.out === undefined) delete next[m]
+                  else next[m] = entry
+                  void run(patchEndpoint(ep.id, { modelPrices: next }))
+                }
+                return (
+                  <div key={m} className="flex items-center gap-2 text-xs">
+                    <span className="min-w-0 flex-1 truncate text-fg">{m}</span>
+                    {!overridden && auto && <span className="shrink-0" style={{ color: 'var(--theme-success)' }}>auto</span>}
+                    {!overridden && !auto && <span className="shrink-0 text-muted">unpriced</span>}
+                    <Input size="sm" type="number" defaultValue={p?.in ?? ''} placeholder={auto ? String(auto.in) : 'in'} className="w-20 shrink-0" onBlur={(e) => setPrice('in', e.target.value.trim())} />
+                    <Input size="sm" type="number" defaultValue={p?.out ?? ''} placeholder={auto ? String(auto.out) : 'out'} className="w-20 shrink-0" onBlur={(e) => setPrice('out', e.target.value.trim())} />
+                  </div>
+                )
+              })}
+            </div>
+          </section>
         )}
-        <Button
-          variant="ghost"
+
+        {ep.class === 'cloud' && <PrivacyRow ep={ep} run={run} />}
+
+        {err && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
+
+        <div className="flex items-center gap-2 border-t border-line-subtle pt-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => confirm(`Remove the ${ep.name} provider?`) && (void runCascading((force) => removeEndpoint(ep.id, force)).then(onClose))}
+          >
+            Remove provider
+          </Button>
+          <span className="ml-auto" />
+          <Button size="sm" onClick={onClose}>Done</Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// Add a model to a provider: search its live catalog, or type any id (multi-
+// model providers serve more than the catalog reports). NOT a label — a model.
+function ModelAdder({ catalog, existing, onAdd }: { catalog: string[]; existing: string[]; onAdd: (id: string) => void }) {
+  const [q, setQ] = useState('')
+  const suggestions = catalog.filter((m) => !existing.includes(m) && m.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 8)
+  const add = (id: string) => {
+    onAdd(id)
+    setQ('')
+  }
+  return (
+    <div className="relative">
+      <div className="flex items-center gap-2">
+        <Input
           size="sm"
-          className="shrink-0"
-          onClick={() => {
-            if (confirm(`Remove the ${ep.name} provider?`)) void runCascading((force) => removeEndpoint(ep.id, force))
-          }}
-        >
-          Remove
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && q.trim() && add(q.trim())}
+          placeholder="Add a model — search the catalog or type an id"
+          className="flex-1"
+        />
+        <Button size="sm" onClick={() => q.trim() && add(q.trim())} disabled={!q.trim()}>
+          Add
         </Button>
       </div>
-      <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Models</div>
-      <LabelPicker
-        value={ep.models}
-        options={[...new Set([...ep.models, ...(available?.models ?? [])])]}
-        onChange={(models) => void runCascading((force) => patchEndpoint(ep.id, { models, force }))}
-        size="sm"
-      />
-      {available?.note && <div className="mt-2 text-xs text-muted">Provider catalog unavailable: {available.note}</div>}
-      {ep.class === 'cloud' && (
-        <div className="mt-4">
-          <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Pricing · $/1M tokens (in / out)</div>
-          <div className="space-y-1.5">
-            {/* Endpoint default: the fallback rate when a model has neither an
-                override nor an auto price. Editable so a stale value can be fixed. */}
-            <div className="flex items-center gap-2 text-xs">
-              <span className="min-w-0 flex-1 truncate text-muted">endpoint default (fallback)</span>
-              <Input
-                size="sm"
-                type="number"
-                defaultValue={ep.priceInPerMtok ?? ''}
-                placeholder="in"
-                className="w-20 shrink-0"
-                onBlur={(e) => {
-                  const v = e.target.value.trim()
-                  void run(patchEndpoint(ep.id, { priceInPerMtok: v === '' ? null : Number(v) }))
-                }}
-              />
-              <Input
-                size="sm"
-                type="number"
-                defaultValue={ep.priceOutPerMtok ?? ''}
-                placeholder="out"
-                className="w-20 shrink-0"
-                onBlur={(e) => {
-                  const v = e.target.value.trim()
-                  void run(patchEndpoint(ep.id, { priceOutPerMtok: v === '' ? null : Number(v) }))
-                }}
-              />
-            </div>
-            {ep.models.map((m) => {
-              const p = ep.modelPrices?.[m]
-              const auto = ep.autoPrices?.[m]
-              const overridden = p?.in !== undefined || p?.out !== undefined
-              const setPrice = (key: 'in' | 'out', raw: string) => {
-                const next = { ...(ep.modelPrices ?? {}) }
-                const entry = { ...(next[m] ?? {}) }
-                if (raw === '') delete entry[key]
-                else entry[key] = Number(raw)
-                if (entry.in === undefined && entry.out === undefined) delete next[m]
-                else next[m] = entry
-                void run(patchEndpoint(ep.id, { modelPrices: next }))
-              }
-              return (
-                <div key={m} className="flex items-center gap-2 text-xs">
-                  <span className="min-w-0 flex-1 truncate text-fg">{m}</span>
-                  {/* Auto rates come from the public OpenRouter catalog; typing a
-                      value overrides them, clearing it falls back to auto. */}
-                  {!overridden && auto && <span className="shrink-0 text-muted" style={{ color: 'var(--theme-success)' }}>auto</span>}
-                  {!overridden && !auto && <span className="shrink-0 text-muted">unpriced</span>}
-                  <Input
-                    size="sm"
-                    type="number"
-                    defaultValue={p?.in ?? ''}
-                    placeholder={auto ? String(auto.in) : 'in'}
-                    className="w-20 shrink-0"
-                    onBlur={(e) => setPrice('in', e.target.value.trim())}
-                  />
-                  <Input
-                    size="sm"
-                    type="number"
-                    defaultValue={p?.out ?? ''}
-                    placeholder={auto ? String(auto.out) : 'out'}
-                    className="w-20 shrink-0"
-                    onBlur={(e) => setPrice('out', e.target.value.trim())}
-                  />
-                </div>
-              )
-            })}
-          </div>
+      {q.trim() && suggestions.length > 0 && (
+        <div className="mercury-panel absolute z-10 mt-1 max-h-52 w-full overflow-y-auto rounded-xl p-1">
+          {suggestions.map((m) => (
+            <button
+              key={m}
+              type="button"
+              onMouseDown={(e) => { e.preventDefault(); add(m) }}
+              className="flex w-full items-center rounded-lg px-2 py-1.5 text-left text-sm text-muted transition-colors hover:bg-card hover:text-fg"
+            >
+              {m}
+            </button>
+          ))}
         </div>
       )}
-      {ep.class === 'cloud' && <PrivacyRow ep={ep} run={run} />}
-      {err && (
-        <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
-          {err}
-        </div>
-      )}
-    </Panel>
+    </div>
   )
 }
 
