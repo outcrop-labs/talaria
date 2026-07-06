@@ -54,6 +54,7 @@ import { Route as ApiMemoryIdRouteImport } from './routes/api/memory.$id'
 import { Route as ApiMcpTestRouteImport } from './routes/api/mcp.test'
 import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
 import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
+import { Route as ApiFleetReconcileRouteImport } from './routes/api/fleet.reconcile'
 import { Route as ApiFleetEndpointsRouteImport } from './routes/api/fleet.endpoints'
 import { Route as ApiFleetDefsRouteImport } from './routes/api/fleet.defs'
 import { Route as ApiFleetCreateRouteImport } from './routes/api/fleet.create'
@@ -320,6 +321,11 @@ const ApiKeysIdRoute = ApiKeysIdRouteImport.update({
 const ApiFleetRenderRoute = ApiFleetRenderRouteImport.update({
   id: '/render',
   path: '/render',
+  getParentRoute: () => ApiFleetRoute,
+} as any)
+const ApiFleetReconcileRoute = ApiFleetReconcileRouteImport.update({
+  id: '/reconcile',
+  path: '/reconcile',
   getParentRoute: () => ApiFleetRoute,
 } as any)
 const ApiFleetEndpointsRoute = ApiFleetEndpointsRouteImport.update({
@@ -592,6 +598,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/create': typeof ApiFleetCreateRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
+  '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
@@ -681,6 +688,7 @@ export interface FileRoutesByTo {
   '/api/fleet/create': typeof ApiFleetCreateRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
+  '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
@@ -772,6 +780,7 @@ export interface FileRoutesById {
   '/api/fleet/create': typeof ApiFleetCreateRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
+  '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
@@ -863,6 +872,7 @@ export interface FileRouteTypes {
     | '/api/fleet/create'
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
+    | '/api/fleet/reconcile'
     | '/api/fleet/render'
     | '/api/keys/$id'
     | '/api/mcp/test'
@@ -952,6 +962,7 @@ export interface FileRouteTypes {
     | '/api/fleet/create'
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
+    | '/api/fleet/reconcile'
     | '/api/fleet/render'
     | '/api/keys/$id'
     | '/api/mcp/test'
@@ -1042,6 +1053,7 @@ export interface FileRouteTypes {
     | '/api/fleet/create'
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
+    | '/api/fleet/reconcile'
     | '/api/fleet/render'
     | '/api/keys/$id'
     | '/api/mcp/test'
@@ -1429,6 +1441,13 @@ declare module '@tanstack/react-router' {
       path: '/render'
       fullPath: '/api/fleet/render'
       preLoaderRoute: typeof ApiFleetRenderRouteImport
+      parentRoute: typeof ApiFleetRoute
+    }
+    '/api/fleet/reconcile': {
+      id: '/api/fleet/reconcile'
+      path: '/reconcile'
+      fullPath: '/api/fleet/reconcile'
+      preLoaderRoute: typeof ApiFleetReconcileRouteImport
       parentRoute: typeof ApiFleetRoute
     }
     '/api/fleet/endpoints': {
@@ -1932,6 +1951,7 @@ interface ApiFleetRouteChildren {
   ApiFleetCreateRoute: typeof ApiFleetCreateRoute
   ApiFleetDefsRoute: typeof ApiFleetDefsRouteWithChildren
   ApiFleetEndpointsRoute: typeof ApiFleetEndpointsRouteWithChildren
+  ApiFleetReconcileRoute: typeof ApiFleetReconcileRoute
   ApiFleetRenderRoute: typeof ApiFleetRenderRoute
   ApiFleetAgentsIdControlRoute: typeof ApiFleetAgentsIdControlRoute
 }
@@ -1941,6 +1961,7 @@ const ApiFleetRouteChildren: ApiFleetRouteChildren = {
   ApiFleetCreateRoute: ApiFleetCreateRoute,
   ApiFleetDefsRoute: ApiFleetDefsRouteWithChildren,
   ApiFleetEndpointsRoute: ApiFleetEndpointsRouteWithChildren,
+  ApiFleetReconcileRoute: ApiFleetReconcileRoute,
   ApiFleetRenderRoute: ApiFleetRenderRoute,
   ApiFleetAgentsIdControlRoute: ApiFleetAgentsIdControlRoute,
 }
