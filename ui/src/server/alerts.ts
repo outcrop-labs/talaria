@@ -58,7 +58,7 @@ export async function computeAlerts(userId: string): Promise<Alert[]> {
       severity: 'critical',
       title: 'Gateway plane unreachable',
       detail: 'The fleet multiplexer on :8642 is not answering — chat and channel replies will fail.',
-      href: '/fleet',
+      href: '/agents',
     })
   }
 

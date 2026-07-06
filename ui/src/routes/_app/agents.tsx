@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Panel } from '@/components/ui/panel'
@@ -26,16 +26,43 @@ export const Route = createFileRoute('/_app/agents')({
   component: AgentsRoster,
 })
 
+const INTERNALS = [
+  { to: '/skills', label: 'Skills' },
+  { to: '/memory', label: 'Memory' },
+  { to: '/mcp', label: 'MCP' },
+  { to: '/models', label: 'Models', adminOnly: true },
+]
+
 function AgentsRoster() {
   const { data, isLoading } = useFleet()
   const agents = data?.agents ?? []
+  const t = data?.totals
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
 
   return (
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-5xl space-y-8">
-        <h1 className="mercury-text text-2xl font-semibold">Agents</h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="mercury-text text-2xl font-semibold">Agents</h1>
+          {t && (
+            <span className="text-sm text-muted">
+              {t.online}/{t.agents} online · {t.activeToday} active today
+            </span>
+          )}
+          {/* Per-agent internals — tabs land here in the next pass. */}
+          <nav className="ml-auto flex items-center gap-1 text-xs">
+            {INTERNALS.filter((i) => !i.adminOnly || isAdmin).map((i) => (
+              <Link
+                key={i.to}
+                to={i.to}
+                className="rounded-lg px-2.5 py-1.5 text-muted transition-colors hover:bg-card hover:text-fg"
+              >
+                {i.label}
+              </Link>
+            ))}
+          </nav>
+        </div>
 
         {isAdmin && <DefinitionsPanel />}
 

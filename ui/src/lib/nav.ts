@@ -1,6 +1,7 @@
-// The main application menu — grouped nav for every surface Talaria is building
-// toward feature parity (chat + conductor/swarm from hermes-workspace; fleet/
-// tasks/cost/activity from mission-control; agent internals; system + admin).
+// The application menu — two mental modes. WORK is where everyone gets things
+// done (chat, channels, boards, inbox); MANAGE is the control plane for the
+// people running the platform (fleet, models, compute, cost, audit, admin).
+// Simple for the non-technical surfaces, full control for the technical ones.
 
 export interface NavItem {
   to: string
@@ -16,38 +17,29 @@ export interface NavSection {
 
 export const NAV: NavSection[] = [
   {
-    title: 'Workspace',
+    title: 'Work',
     items: [
-      { to: '/', label: 'Chat', icon: '◈' },
+      { to: '/', label: 'Home', icon: '◇' },
+      { to: '/chat', label: 'Chat', icon: '◈' },
       { to: '/channels', label: 'Channels', icon: '⋕' },
-      { to: '/inbox', label: 'Inbox', icon: '⌾' },
       { to: '/boards', label: 'Boards', icon: '⧉' },
+      { to: '/inbox', label: 'Inbox', icon: '⌾' },
     ],
   },
   {
-    title: 'Fleet',
+    title: 'Manage',
     items: [
-      { to: '/fleet', label: 'Overview', icon: '⬡' },
       { to: '/agents', label: 'Agents', icon: '◍' },
-      { to: '/tasks', label: 'Tasks', icon: '☰' },
+      { to: '/models', label: 'Models', icon: '▤', adminOnly: true },
+      { to: '/inference', label: 'Compute', icon: '▚' },
       { to: '/cost', label: 'Cost', icon: '⌗' },
-      { to: '/activity', label: 'Activity', icon: '⌁' },
+      { to: '/activity', label: 'Audit', icon: '⌁' },
       { to: '/alerts', label: 'Alerts', icon: '△' },
-    ],
-  },
-  {
-    title: 'Agent',
-    items: [
-      { to: '/skills', label: 'Skills', icon: '✦' },
-      { to: '/memory', label: 'Memory', icon: '❖' },
-      { to: '/mcp', label: 'MCP', icon: '⧈' },
     ],
   },
   {
     title: 'System',
     items: [
-      { to: '/models', label: 'Models', icon: '▤', adminOnly: true },
-      { to: '/inference', label: 'Inference', icon: '▚' },
       { to: '/settings', label: 'Settings', icon: '⚙' },
       { to: '/admin', label: 'Admin', icon: '⛨', adminOnly: true },
     ],
