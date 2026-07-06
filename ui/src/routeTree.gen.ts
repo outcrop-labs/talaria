@@ -58,6 +58,7 @@ import { Route as ApiMeAssistantRouteImport } from './routes/api/me.assistant'
 import { Route as ApiMcpTestRouteImport } from './routes/api/mcp.test'
 import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
 import { Route as ApiKbSpacesRouteImport } from './routes/api/kb.spaces'
+import { Route as ApiKbSearchRouteImport } from './routes/api/kb.search'
 import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
 import { Route as ApiFleetReconcileRouteImport } from './routes/api/fleet.reconcile'
 import { Route as ApiFleetEndpointsRouteImport } from './routes/api/fleet.endpoints'
@@ -85,6 +86,7 @@ import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.c
 import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
 import { Route as ApiRagCollectionsIdRouteImport } from './routes/api/rag.collections.$id'
 import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
+import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
 import { Route as ApiKbPublicSlugRouteImport } from './routes/api/kb.public.$slug'
 import { Route as ApiKbDocsIdRouteImport } from './routes/api/kb.docs.$id'
 import { Route as ApiFleetEndpointsIdRouteImport } from './routes/api/fleet.endpoints.$id'
@@ -103,6 +105,8 @@ import { Route as ApiAgentsIdHeartbeatRouteImport } from './routes/api/agents.$i
 import { Route as AppBoardsBoardIdTaskIdRouteImport } from './routes/_app/boards/$boardId.$taskId'
 import { Route as ApiLlmV1ChatCompletionsRouteImport } from './routes/api/llm.v1.chat.completions'
 import { Route as ApiKbSpacesIdDocsRouteImport } from './routes/api/kb.spaces.$id.docs'
+import { Route as ApiKbDocsIdMoveRouteImport } from './routes/api/kb.docs.$id.move'
+import { Route as ApiKbDocsIdBacklinksRouteImport } from './routes/api/kb.docs.$id.backlinks'
 import { Route as ApiFleetEndpointsIdAvailableRouteImport } from './routes/api/fleet.endpoints.$id.available'
 import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.defs.$id.versions'
 import { Route as ApiFleetDefsIdMcpRouteImport } from './routes/api/fleet.defs.$id.mcp'
@@ -353,6 +357,11 @@ const ApiKbSpacesRoute = ApiKbSpacesRouteImport.update({
   path: '/api/kb/spaces',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiKbSearchRoute = ApiKbSearchRouteImport.update({
+  id: '/api/kb/search',
+  path: '/api/kb/search',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiFleetRenderRoute = ApiFleetRenderRouteImport.update({
   id: '/render',
   path: '/render',
@@ -488,6 +497,11 @@ const ApiLlmV1ModelsRoute = ApiLlmV1ModelsRouteImport.update({
   path: '/api/llm/v1/models',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiKbSpacesIdRoute = ApiKbSpacesIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiKbSpacesRoute,
+} as any)
 const ApiKbPublicSlugRoute = ApiKbPublicSlugRouteImport.update({
   id: '/api/kb/public/$slug',
   path: '/api/kb/public/$slug',
@@ -574,9 +588,19 @@ const ApiLlmV1ChatCompletionsRoute = ApiLlmV1ChatCompletionsRouteImport.update({
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiKbSpacesIdDocsRoute = ApiKbSpacesIdDocsRouteImport.update({
-  id: '/$id/docs',
-  path: '/$id/docs',
-  getParentRoute: () => ApiKbSpacesRoute,
+  id: '/docs',
+  path: '/docs',
+  getParentRoute: () => ApiKbSpacesIdRoute,
+} as any)
+const ApiKbDocsIdMoveRoute = ApiKbDocsIdMoveRouteImport.update({
+  id: '/move',
+  path: '/move',
+  getParentRoute: () => ApiKbDocsIdRoute,
+} as any)
+const ApiKbDocsIdBacklinksRoute = ApiKbDocsIdBacklinksRouteImport.update({
+  id: '/backlinks',
+  path: '/backlinks',
+  getParentRoute: () => ApiKbDocsIdRoute,
 } as any)
 const ApiFleetEndpointsIdAvailableRoute =
   ApiFleetEndpointsIdAvailableRouteImport.update({
@@ -662,6 +686,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
@@ -686,8 +711,9 @@ export interface FileRoutesByFullPath {
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
-  '/api/kb/docs/$id': typeof ApiKbDocsIdRoute
+  '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
+  '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -702,6 +728,8 @@ export interface FileRoutesByFullPath {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
+  '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
 }
@@ -762,6 +790,7 @@ export interface FileRoutesByTo {
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
@@ -786,8 +815,9 @@ export interface FileRoutesByTo {
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
-  '/api/kb/docs/$id': typeof ApiKbDocsIdRoute
+  '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
+  '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -802,6 +832,8 @@ export interface FileRoutesByTo {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
+  '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
 }
@@ -864,6 +896,7 @@ export interface FileRoutesById {
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
@@ -888,8 +921,9 @@ export interface FileRoutesById {
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
-  '/api/kb/docs/$id': typeof ApiKbDocsIdRoute
+  '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
+  '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -904,6 +938,8 @@ export interface FileRoutesById {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
+  '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
 }
@@ -966,6 +1002,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints'
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
+    | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
     | '/api/mcp/test'
@@ -992,6 +1029,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints/$id'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
+    | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
@@ -1006,6 +1044,8 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/kb/docs/$id/backlinks'
+    | '/api/kb/docs/$id/move'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
   fileRoutesByTo: FileRoutesByTo
@@ -1066,6 +1106,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints'
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
+    | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
     | '/api/mcp/test'
@@ -1092,6 +1133,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints/$id'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
+    | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
@@ -1106,6 +1148,8 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/kb/docs/$id/backlinks'
+    | '/api/kb/docs/$id/move'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
   id:
@@ -1167,6 +1211,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints'
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
+    | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
     | '/api/mcp/test'
@@ -1193,6 +1238,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints/$id'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
+    | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
@@ -1207,6 +1253,8 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/kb/docs/$id/backlinks'
+    | '/api/kb/docs/$id/move'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
   fileRoutesById: FileRoutesById
@@ -1241,13 +1289,14 @@ export interface RootRouteChildren {
   ApiAuthPasswordRoute: typeof ApiAuthPasswordRoute
   ApiAuthProvidersRoute: typeof ApiAuthProvidersRoute
   ApiAuthSessionRoute: typeof ApiAuthSessionRoute
+  ApiKbSearchRoute: typeof ApiKbSearchRoute
   ApiKbSpacesRoute: typeof ApiKbSpacesRouteWithChildren
   ApiMeAssistantRoute: typeof ApiMeAssistantRoute
   ApiMemoryIdRoute: typeof ApiMemoryIdRoute
   ApiRagCollectionsRoute: typeof ApiRagCollectionsRouteWithChildren
   ApiRagSearchRoute: typeof ApiRagSearchRoute
   ApiTasksIdRoute: typeof ApiTasksIdRouteWithChildren
-  ApiKbDocsIdRoute: typeof ApiKbDocsIdRoute
+  ApiKbDocsIdRoute: typeof ApiKbDocsIdRouteWithChildren
   ApiKbPublicSlugRoute: typeof ApiKbPublicSlugRoute
   ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
   ApiLlmV1ChatCompletionsRoute: typeof ApiLlmV1ChatCompletionsRoute
@@ -1598,6 +1647,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKbSpacesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/kb/search': {
+      id: '/api/kb/search'
+      path: '/api/kb/search'
+      fullPath: '/api/kb/search'
+      preLoaderRoute: typeof ApiKbSearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/fleet/render': {
       id: '/api/fleet/render'
       path: '/render'
@@ -1787,6 +1843,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiLlmV1ModelsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/kb/spaces/$id': {
+      id: '/api/kb/spaces/$id'
+      path: '/$id'
+      fullPath: '/api/kb/spaces/$id'
+      preLoaderRoute: typeof ApiKbSpacesIdRouteImport
+      parentRoute: typeof ApiKbSpacesRoute
+    }
     '/api/kb/public/$slug': {
       id: '/api/kb/public/$slug'
       path: '/api/kb/public/$slug'
@@ -1908,10 +1971,24 @@ declare module '@tanstack/react-router' {
     }
     '/api/kb/spaces/$id/docs': {
       id: '/api/kb/spaces/$id/docs'
-      path: '/$id/docs'
+      path: '/docs'
       fullPath: '/api/kb/spaces/$id/docs'
       preLoaderRoute: typeof ApiKbSpacesIdDocsRouteImport
-      parentRoute: typeof ApiKbSpacesRoute
+      parentRoute: typeof ApiKbSpacesIdRoute
+    }
+    '/api/kb/docs/$id/move': {
+      id: '/api/kb/docs/$id/move'
+      path: '/move'
+      fullPath: '/api/kb/docs/$id/move'
+      preLoaderRoute: typeof ApiKbDocsIdMoveRouteImport
+      parentRoute: typeof ApiKbDocsIdRoute
+    }
+    '/api/kb/docs/$id/backlinks': {
+      id: '/api/kb/docs/$id/backlinks'
+      path: '/backlinks'
+      fullPath: '/api/kb/docs/$id/backlinks'
+      preLoaderRoute: typeof ApiKbDocsIdBacklinksRouteImport
+      parentRoute: typeof ApiKbDocsIdRoute
     }
     '/api/fleet/endpoints/$id/available': {
       id: '/api/fleet/endpoints/$id/available'
@@ -2239,12 +2316,24 @@ const ApiAuthGoogleRouteWithChildren = ApiAuthGoogleRoute._addFileChildren(
   ApiAuthGoogleRouteChildren,
 )
 
-interface ApiKbSpacesRouteChildren {
+interface ApiKbSpacesIdRouteChildren {
   ApiKbSpacesIdDocsRoute: typeof ApiKbSpacesIdDocsRoute
 }
 
-const ApiKbSpacesRouteChildren: ApiKbSpacesRouteChildren = {
+const ApiKbSpacesIdRouteChildren: ApiKbSpacesIdRouteChildren = {
   ApiKbSpacesIdDocsRoute: ApiKbSpacesIdDocsRoute,
+}
+
+const ApiKbSpacesIdRouteWithChildren = ApiKbSpacesIdRoute._addFileChildren(
+  ApiKbSpacesIdRouteChildren,
+)
+
+interface ApiKbSpacesRouteChildren {
+  ApiKbSpacesIdRoute: typeof ApiKbSpacesIdRouteWithChildren
+}
+
+const ApiKbSpacesRouteChildren: ApiKbSpacesRouteChildren = {
+  ApiKbSpacesIdRoute: ApiKbSpacesIdRouteWithChildren,
 }
 
 const ApiKbSpacesRouteWithChildren = ApiKbSpacesRoute._addFileChildren(
@@ -2282,6 +2371,20 @@ const ApiTasksIdRouteWithChildren = ApiTasksIdRoute._addFileChildren(
   ApiTasksIdRouteChildren,
 )
 
+interface ApiKbDocsIdRouteChildren {
+  ApiKbDocsIdBacklinksRoute: typeof ApiKbDocsIdBacklinksRoute
+  ApiKbDocsIdMoveRoute: typeof ApiKbDocsIdMoveRoute
+}
+
+const ApiKbDocsIdRouteChildren: ApiKbDocsIdRouteChildren = {
+  ApiKbDocsIdBacklinksRoute: ApiKbDocsIdBacklinksRoute,
+  ApiKbDocsIdMoveRoute: ApiKbDocsIdMoveRoute,
+}
+
+const ApiKbDocsIdRouteWithChildren = ApiKbDocsIdRoute._addFileChildren(
+  ApiKbDocsIdRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
@@ -2312,13 +2415,14 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthPasswordRoute: ApiAuthPasswordRoute,
   ApiAuthProvidersRoute: ApiAuthProvidersRoute,
   ApiAuthSessionRoute: ApiAuthSessionRoute,
+  ApiKbSearchRoute: ApiKbSearchRoute,
   ApiKbSpacesRoute: ApiKbSpacesRouteWithChildren,
   ApiMeAssistantRoute: ApiMeAssistantRoute,
   ApiMemoryIdRoute: ApiMemoryIdRoute,
   ApiRagCollectionsRoute: ApiRagCollectionsRouteWithChildren,
   ApiRagSearchRoute: ApiRagSearchRoute,
   ApiTasksIdRoute: ApiTasksIdRouteWithChildren,
-  ApiKbDocsIdRoute: ApiKbDocsIdRoute,
+  ApiKbDocsIdRoute: ApiKbDocsIdRouteWithChildren,
   ApiKbPublicSlugRoute: ApiKbPublicSlugRoute,
   ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,
   ApiLlmV1ChatCompletionsRoute: ApiLlmV1ChatCompletionsRoute,

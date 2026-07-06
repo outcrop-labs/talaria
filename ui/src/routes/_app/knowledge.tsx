@@ -1,7 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Plus, FileText, Bot, Globe, Lock, Users, Star, Trash2, History } from 'lucide-react'
+import {
+  Plus, FileText, Bot, Globe, Lock, Users, Star, Trash2, History,
+  ChevronRight, Search, Link2, ListTree, X,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -11,23 +14,19 @@ import { InlineCreate } from '@/components/ui/inline-create'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import {
-  createDoc,
-  createSpace,
-  deleteDoc,
-  saveDoc,
-  useDoc,
-  useDocs,
-  useSpaces,
-  type KbDocMeta,
+  createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, saveDoc, searchKb, updateSpace, useBacklinks,
+  useDoc, useDocs, useSpaces,
+  type KbDocMeta, type KbSearchHit, type KbSpace,
 } from '@/lib/kb'
 
 export const Route = createFileRoute('/_app/knowledge')({
   component: KnowledgePage,
 })
 
-// The knowledgebase — an Outline-style markdown drive. Spaces on the left, a
-// WYSIWYG doc in the middle. Official docs feed the org brain (agents ground on
-// them); agent-kind docs start from an OKF scaffold.
+// The knowledgebase — an Outline-style markdown drive. A searchable, nestable
+// tree of docs on the left; a WYSIWYG doc with breadcrumb, emoji, table of
+// contents, and backlinks in the middle. Official docs feed the org brain;
+// agent-kind docs start from an OKF scaffold.
 function KnowledgePage() {
   const qc = useQueryClient()
   const { data: spaces = [] } = useSpaces()
@@ -45,17 +44,42 @@ function KnowledgePage() {
     await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
     if (space) setSpaceId(space.id)
   }
-  const newDoc = async (kind: 'human' | 'agent') => {
+  const newDoc = async (kind: 'human' | 'agent', parentId: string | null = null) => {
     if (!activeSpace) return
-    const { doc } = await createDoc(activeSpace.id, { kind, title: 'Untitled' })
+    const { doc } = await createDoc(activeSpace.id, { kind, title: 'Untitled', parentId })
     await qc.invalidateQueries({ queryKey: ['kb-docs', activeSpace.id] })
     if (doc) setDocId(doc.id)
+  }
+  const move = async (id: string, parentId: string | null, sort: number) => {
+    await moveDoc(id, parentId, sort)
+    await qc.invalidateQueries({ queryKey: ['kb-docs', activeSpace?.id] })
+  }
+  const renameSpace = async (id: string, name: string) => {
+    await updateSpace(id, { name })
+    await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
+  }
+  const removeSpace = async (id: string) => {
+    await deleteSpace(id)
+    await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
+    if (spaceId === id) {
+      setSpaceId(null)
+      setDocId(null)
+    }
+  }
+
+  // Jump to a doc from search — switch to its space if needed.
+  const openDoc = (hit: { id: string; spaceId: string }) => {
+    if (hit.spaceId !== activeSpace?.id) setSpaceId(hit.spaceId)
+    setDocId(hit.id)
   }
 
   return (
     <div className="flex h-full min-h-0">
       <aside className="flex h-full w-64 shrink-0 flex-col border-r border-line-subtle bg-sidebar">
         <div className="border-b border-line-subtle p-3">
+          <KbSearch onOpen={openDoc} />
+        </div>
+        <div className="border-b border-line-subtle px-3 py-2">
           <InlineCreate label="New space" placeholder="space name" onSubmit={(v) => void newSpace(v)} className="w-full" />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -64,16 +88,15 @@ function KnowledgePage() {
           ) : (
             spaces.map((s) => (
               <div key={s.id} className="mb-2">
-                <button
-                  type="button"
-                  onClick={() => setSpaceId(s.id)}
-                  className={cn('flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm', activeSpace?.id === s.id ? 'text-fg' : 'text-muted hover:text-fg')}
-                >
-                  <span>{s.icon ?? '📚'}</span>
-                  <span className="truncate font-medium">{s.name}</span>
-                </button>
+                <SpaceRow
+                  space={s}
+                  active={activeSpace?.id === s.id}
+                  onSelect={() => setSpaceId(s.id)}
+                  onRename={(name) => void renameSpace(s.id, name)}
+                  onDelete={() => void removeSpace(s.id)}
+                />
                 {activeSpace?.id === s.id && (
-                  <DocTree docs={docs} activeId={docId} onSelect={setDocId} onNew={newDoc} />
+                  <DocTree docs={docs} activeId={docId} onSelect={setDocId} onNew={newDoc} onMove={move} />
                 )}
               </div>
             ))
@@ -83,7 +106,7 @@ function KnowledgePage() {
 
       <main className="min-h-0 min-w-0 flex-1">
         {docId ? (
-          <DocEditor key={docId} docId={docId} onDeleted={() => setDocId(null)} />
+          <DocEditor key={docId} docId={docId} docs={docs} onDeleted={() => setDocId(null)} onSelect={setDocId} />
         ) : (
           <EmptyState
             icon="❖"
@@ -96,21 +119,196 @@ function KnowledgePage() {
   )
 }
 
-function DocTree({ docs, activeId, onSelect, onNew }: { docs: KbDocMeta[]; activeId: string | null; onSelect: (id: string) => void; onNew: (k: 'human' | 'agent') => void }) {
-  const roots = docs.filter((d) => !d.parentId)
+// ── Space row ───────────────────────────────────────────────────────────────
+function SpaceRow({
+  space, active, onSelect, onRename, onDelete,
+}: {
+  space: KbSpace
+  active: boolean
+  onSelect: () => void
+  onRename: (name: string) => void
+  onDelete: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(space.name)
+  useEffect(() => setName(space.name), [space.name])
+
+  if (editing) {
+    return (
+      <Input
+        size="sm"
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onBlur={() => {
+          setEditing(false)
+          if (name.trim() && name !== space.name) onRename(name.trim())
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+          if (e.key === 'Escape') {
+            setName(space.name)
+            setEditing(false)
+          }
+        }}
+      />
+    )
+  }
   return (
-    <div className="ml-2 mt-0.5 space-y-0.5 border-l border-line-subtle pl-2">
+    <div
+      className={cn('group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm', active ? 'text-fg' : 'text-muted hover:text-fg')}
+    >
+      <button type="button" onClick={onSelect} onDoubleClick={() => setEditing(true)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+        <span>{space.icon ?? '📚'}</span>
+        <span className="truncate font-medium">{space.name}</span>
+      </button>
+      <button
+        type="button"
+        title="Delete space"
+        onClick={() => confirm(`Delete "${space.name}" and all its docs?`) && onDelete()}
+        className="shrink-0 rounded p-0.5 opacity-0 hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
+      >
+        <Trash2 size={12} />
+      </button>
+    </div>
+  )
+}
+
+// ── Search ──────────────────────────────────────────────────────────────────
+function KbSearch({ onOpen }: { onOpen: (hit: KbSearchHit) => void }) {
+  const [q, setQ] = useState('')
+  const [hits, setHits] = useState<KbSearchHit[]>([])
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    const t = q.trim()
+    if (!t) {
+      setHits([])
+      return
+    }
+    let live = true
+    const id = setTimeout(() => {
+      void searchKb(t).then((h) => live && setHits(h))
+    }, 180)
+    return () => {
+      live = false
+      clearTimeout(id)
+    }
+  }, [q])
+
+  return (
+    <div className="relative">
+      <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+      <Input
+        size="sm"
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value)
+          setOpen(true)
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="Search knowledge…"
+        className="pl-7"
+      />
+      {open && hits.length > 0 && (
+        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-80 overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-lg">
+          {hits.map((h) => (
+            <button
+              key={h.id}
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                onOpen(h)
+                setOpen(false)
+              }}
+              className="flex w-full flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left hover:bg-sidebar"
+            >
+              <span className="flex items-center gap-1.5 text-xs text-fg">
+                <span>{h.icon ?? '📄'}</span>
+                <span className="truncate font-medium">{h.title}</span>
+                <span className="ml-auto shrink-0 text-[10px] text-muted">{h.spaceName}</span>
+              </span>
+              {h.snippet && <span className="line-clamp-2 text-[11px] text-muted" dangerouslySetInnerHTML={{ __html: h.snippet }} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Nested tree ─────────────────────────────────────────────────────────────
+type DropPos = 'before' | 'after' | 'inside'
+
+function DocTree({
+  docs, activeId, onSelect, onNew, onMove,
+}: {
+  docs: KbDocMeta[]
+  activeId: string | null
+  onSelect: (id: string) => void
+  onNew: (k: 'human' | 'agent', parentId?: string | null) => void
+  onMove: (id: string, parentId: string | null, sort: number) => void
+}) {
+  const byParent = useMemo(() => {
+    const m = new Map<string | null, KbDocMeta[]>()
+    for (const d of docs) {
+      const k = d.parentId ?? null
+      if (!m.has(k)) m.set(k, [])
+      m.get(k)!.push(d)
+    }
+    for (const list of m.values()) list.sort((a, b) => a.sort - b.sort || a.title.localeCompare(b.title))
+    return m
+  }, [docs])
+
+  const [dragId, setDragId] = useState<string | null>(null)
+
+  // Reparent/reorder: drop 'inside' T nests under it; 'before'/'after' T orders
+  // among T's siblings. Sibling order is persisted by reindexing that group.
+  const drop = (targetId: string, pos: DropPos) => {
+    if (!dragId || dragId === targetId) return
+    const target = docs.find((d) => d.id === targetId)
+    if (!target) return
+    if (pos === 'inside') {
+      const kids = byParent.get(targetId) ?? []
+      onMove(dragId, targetId, kids.length)
+      return
+    }
+    const parent = target.parentId ?? null
+    const sibs = (byParent.get(parent) ?? []).filter((d) => d.id !== dragId)
+    const idx = sibs.findIndex((d) => d.id === targetId)
+    const at = pos === 'before' ? idx : idx + 1
+    sibs.splice(at, 0, docs.find((d) => d.id === dragId)!)
+    sibs.forEach((d, i) => {
+      if (d.id === dragId) onMove(dragId, parent, i)
+      else if (d.sort !== i) void moveDoc(d.id, parent, i)
+    })
+  }
+
+  const roots = byParent.get(null) ?? []
+  return (
+    <div
+      className="ml-2 mt-0.5 space-y-0.5 border-l border-line-subtle pl-2"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        // Drop in the empty tree area → move to root (append).
+        e.preventDefault()
+        if (dragId) onMove(dragId, null, roots.length)
+        setDragId(null)
+      }}
+    >
       {roots.map((d) => (
-        <button
+        <DocRow
           key={d.id}
-          type="button"
-          onClick={() => onSelect(d.id)}
-          className={cn('flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs', activeId === d.id ? 'bg-card text-fg' : 'text-muted hover:text-fg')}
-        >
-          {d.kind === 'agent' ? <Bot size={12} /> : <FileText size={12} />}
-          <span className="min-w-0 flex-1 truncate">{d.title}</span>
-          {d.official && <Star size={11} className="shrink-0 text-[color:var(--theme-warning)]" />}
-        </button>
+          doc={d}
+          depth={0}
+          byParent={byParent}
+          activeId={activeId}
+          onSelect={onSelect}
+          onNew={onNew}
+          dragId={dragId}
+          setDragId={setDragId}
+          onDropRel={drop}
+        />
       ))}
       <div className="flex gap-1 pt-1">
         <button type="button" onClick={() => onNew('human')} className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted hover:text-accent">
@@ -124,17 +322,161 @@ function DocTree({ docs, activeId, onSelect, onNew }: { docs: KbDocMeta[]; activ
   )
 }
 
-function DocEditor({ docId, onDeleted }: { docId: string; onDeleted: () => void }) {
+function DocRow({
+  doc, depth, byParent, activeId, onSelect, onNew, dragId, setDragId, onDropRel,
+}: {
+  doc: KbDocMeta
+  depth: number
+  byParent: Map<string | null, KbDocMeta[]>
+  activeId: string | null
+  onSelect: (id: string) => void
+  onNew: (k: 'human' | 'agent', parentId?: string | null) => void
+  dragId: string | null
+  setDragId: (id: string | null) => void
+  onDropRel: (targetId: string, pos: DropPos) => void
+}) {
+  const kids = byParent.get(doc.id) ?? []
+  const [expanded, setExpanded] = useState(true)
+  const [pos, setPos] = useState<DropPos | null>(null)
+  const hasKids = kids.length > 0
+
+  return (
+    <div>
+      <div
+        draggable
+        onDragStart={(e) => {
+          e.stopPropagation()
+          setDragId(doc.id)
+          e.dataTransfer.effectAllowed = 'move'
+        }}
+        onDragEnd={() => setDragId(null)}
+        onDragOver={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          if (!dragId || dragId === doc.id) return
+          // Top third → before, bottom third → after, middle → nest inside.
+          const r = e.currentTarget.getBoundingClientRect()
+          const y = (e.clientY - r.top) / r.height
+          setPos(y < 0.3 ? 'before' : y > 0.7 ? 'after' : 'inside')
+        }}
+        onDragLeave={() => setPos(null)}
+        onDrop={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          if (pos) onDropRel(doc.id, pos)
+          setPos(null)
+          setDragId(null)
+        }}
+        className={cn(
+          'group relative flex items-center gap-1 rounded-md py-1 pr-1 text-xs',
+          activeId === doc.id ? 'bg-card text-fg' : 'text-muted hover:text-fg',
+          pos === 'inside' && 'ring-1 ring-accent/60',
+        )}
+        style={{ paddingLeft: depth * 12 + 4 }}
+      >
+        {pos === 'before' && <span className="absolute inset-x-1 top-0 h-0.5 rounded bg-accent" />}
+        {pos === 'after' && <span className="absolute inset-x-1 bottom-0 h-0.5 rounded bg-accent" />}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className={cn('shrink-0 rounded p-0.5 hover:bg-sidebar', !hasKids && 'invisible')}
+        >
+          <ChevronRight size={12} className={cn('transition-transform', expanded && 'rotate-90')} />
+        </button>
+        <button type="button" onClick={() => onSelect(doc.id)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+          {doc.icon ? <span className="shrink-0 text-[13px] leading-none">{doc.icon}</span> : doc.kind === 'agent' ? <Bot size={12} className="shrink-0" /> : <FileText size={12} className="shrink-0" />}
+          <span className="min-w-0 flex-1 truncate">{doc.title}</span>
+          {doc.official && <Star size={11} className="shrink-0 text-[color:var(--theme-warning)]" />}
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onNew('human', doc.id)
+            setExpanded(true)
+          }}
+          title="New nested doc"
+          className="shrink-0 rounded p-0.5 text-muted opacity-0 hover:bg-sidebar hover:text-accent group-hover:opacity-100"
+        >
+          <Plus size={12} />
+        </button>
+      </div>
+      {hasKids && expanded && (
+        <div>
+          {kids.map((k) => (
+            <DocRow
+              key={k.id}
+              doc={k}
+              depth={depth + 1}
+              byParent={byParent}
+              activeId={activeId}
+              onSelect={onSelect}
+              onNew={onNew}
+              dragId={dragId}
+              setDragId={setDragId}
+              onDropRel={onDropRel}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Editor ──────────────────────────────────────────────────────────────────
+interface Heading {
+  level: number
+  text: string
+}
+function parseHeadings(md: string): Heading[] {
+  const out: Heading[] = []
+  let inFence = false
+  for (const line of md.split('\n')) {
+    if (/^\s*```/.test(line)) inFence = !inFence
+    if (inFence) continue
+    const m = /^(#{1,3})\s+(.*)$/.exec(line)
+    if (m) out.push({ level: m[1]!.length, text: m[2]!.replace(/[*_`]/g, '').trim() })
+  }
+  return out
+}
+
+function DocEditor({
+  docId, docs, onDeleted, onSelect,
+}: {
+  docId: string
+  docs: KbDocMeta[]
+  onDeleted: () => void
+  onSelect: (id: string) => void
+}) {
   const qc = useQueryClient()
   const { data: doc } = useDoc(docId)
+  const { data: backlinks = [] } = useBacklinks(docId)
   const editorRef = useRef<RichEditorHandle>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
   const [title, setTitle] = useState('')
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const [showToc, setShowToc] = useState(true)
+  const [emojiOpen, setEmojiOpen] = useState(false)
   useEffect(() => {
     if (doc) setTitle(doc.title)
   }, [doc])
+
+  const headings = useMemo(() => parseHeadings(doc?.body ?? ''), [doc?.body])
+
+  // Breadcrumb: walk parentId up from this doc.
+  const trail = useMemo(() => {
+    const chain: KbDocMeta[] = []
+    let cur = docs.find((d) => d.id === docId)
+    const seen = new Set<string>()
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id)
+      chain.unshift(cur)
+      cur = cur.parentId ? docs.find((d) => d.id === cur!.parentId) : undefined
+    }
+    return chain
+  }, [docs, docId])
 
   const save = async (patch: Parameters<typeof saveDoc>[1]) => {
     setSaving(true)
@@ -149,11 +491,57 @@ function DocEditor({ docId, onDeleted }: { docId: string; onDeleted: () => void 
   }
   const saveBody = () => save({ title, body: editorRef.current?.getMarkdown() ?? doc?.body ?? '' })
 
+  // Scroll the rendered editor to the Nth heading (headings render in order).
+  const scrollToHeading = (index: number) => {
+    const nodes = bodyRef.current?.querySelectorAll('.tiptap h1, .tiptap h2, .tiptap h3')
+    nodes?.[index]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   if (!doc) return <div className="p-8 text-sm text-muted">Loading…</div>
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-1 border-b border-line-subtle px-6 pt-2 text-[11px] text-muted">
+        {trail.map((d, i) => (
+          <span key={d.id} className="flex items-center gap-1">
+            {i > 0 && <ChevronRight size={11} className="opacity-50" />}
+            <button
+              type="button"
+              onClick={() => d.id !== docId && onSelect(d.id)}
+              className={cn('max-w-[12rem] truncate', d.id === docId ? 'text-fg' : 'hover:text-fg')}
+            >
+              {d.icon ? `${d.icon} ` : ''}
+              {d.title}
+            </button>
+          </span>
+        ))}
+      </div>
+
       <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => setEmojiOpen((v) => !v)}
+            className="rounded-lg px-1 text-xl leading-none hover:bg-card"
+            title="Set icon"
+          >
+            {doc.icon ?? '📄'}
+          </button>
+          {emojiOpen && (
+            <EmojiPicker
+              onPick={(e) => {
+                void save({ icon: e })
+                setEmojiOpen(false)
+              }}
+              onClear={() => {
+                void save({ icon: null })
+                setEmojiOpen(false)
+              }}
+              onClose={() => setEmojiOpen(false)}
+            />
+          )}
+        </div>
         <Input
           value={title}
           onChange={(e) => {
@@ -179,10 +567,13 @@ function DocEditor({ docId, onDeleted }: { docId: string; onDeleted: () => void 
         >
           <Star size={13} className="mr-1" /> {doc.official ? 'Official' : 'Make official'}
         </Button>
-        <Button variant="ghost" size="sm" className="shrink-0" onClick={() => setShowHistory((v) => !v)}>
+        <Button variant="ghost" size="sm" className="shrink-0" title="Table of contents" onClick={() => setShowToc((v) => !v)}>
+          <ListTree size={14} />
+        </Button>
+        <Button variant="ghost" size="sm" className="shrink-0" title="History" onClick={() => setShowHistory((v) => !v)}>
           <History size={14} />
         </Button>
-        <Button variant="ghost" size="sm" className="shrink-0" onClick={() => confirm(`Delete "${doc.title}"?`) && (void deleteDoc(docId).then(onDeleted))}>
+        <Button variant="ghost" size="sm" className="shrink-0" title="Delete" onClick={() => confirm(`Delete "${doc.title}"?`) && (void deleteDoc(docId).then(onDeleted))}>
           <Trash2 size={14} />
         </Button>
       </div>
@@ -195,7 +586,7 @@ function DocEditor({ docId, onDeleted }: { docId: string; onDeleted: () => void 
       )}
 
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-y-auto p-6">
+        <div ref={bodyRef} className="min-w-0 flex-1 overflow-y-auto p-6">
           <RichEditor
             key={docId}
             ref={editorRef}
@@ -204,7 +595,53 @@ function DocEditor({ docId, onDeleted }: { docId: string; onDeleted: () => void 
             placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents…' : 'Write…'}
             minHeight="60vh"
           />
+
+          {/* Backlinks — docs that reference this one. */}
+          {backlinks.length > 0 && (
+            <div className="mt-8 border-t border-line-subtle pt-4">
+              <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+                <Link2 size={12} /> Linked from
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {backlinks.map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => onSelect(b.id)}
+                    className="flex items-center gap-1.5 rounded-lg border border-line-subtle px-2 py-1 text-xs text-muted hover:text-fg"
+                  >
+                    <span>{b.icon ?? '📄'}</span>
+                    <span className="max-w-[16rem] truncate">{b.title}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
+
+        {showToc && headings.length > 0 && (
+          <div className="w-56 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+            <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-muted">
+              <span>Contents</span>
+              <button type="button" onClick={() => setShowToc(false)} className="hover:text-fg">
+                <X size={12} />
+              </button>
+            </div>
+            <div className="space-y-0.5">
+              {headings.map((h, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => scrollToHeading(i)}
+                  className="block w-full truncate text-left text-xs text-muted hover:text-fg"
+                  style={{ paddingLeft: (h.level - 1) * 10 }}
+                >
+                  {h.text || 'Untitled'}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {showHistory && (
           <div className="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
             <HistoryRail docId={docId} />
@@ -220,6 +657,33 @@ function DocEditor({ docId, onDeleted }: { docId: string; onDeleted: () => void 
           {saving ? 'Saving…' : 'Save'}
         </Button>
       </div>
+    </div>
+  )
+}
+
+// A compact emoji picker — curated common set, no dependency. Click-away closes.
+const EMOJI = '📄 📝 📌 📚 📁 🗂️ 🧭 🧠 💡 ⚙️ 🚀 🔧 🛠️ 🔒 🔑 🎯 ✅ 📊 📈 📉 🧪 🧩 🗺️ 🏷️ 💬 📣 🌐 🔍 ⭐ 🔥 ❤️ ⚠️ 🐛 🤖 👤 🏢 💰 📅 🎨'.split(' ')
+function EmojiPicker({ onPick, onClear, onClose }: { onPick: (e: string) => void; onClear: () => void; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [onClose])
+  return (
+    <div ref={ref} className="absolute left-0 top-full z-30 mt-1 w-56 rounded-xl border border-line bg-card p-2 shadow-lg">
+      <div className="grid grid-cols-8 gap-0.5">
+        {EMOJI.map((e) => (
+          <button key={e} type="button" onClick={() => onPick(e)} className="rounded p-1 text-base hover:bg-sidebar">
+            {e}
+          </button>
+        ))}
+      </div>
+      <button type="button" onClick={onClear} className="mt-1 w-full rounded-md py-1 text-[11px] text-muted hover:text-fg">
+        Remove icon
+      </button>
     </div>
   )
 }
