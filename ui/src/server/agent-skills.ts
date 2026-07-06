@@ -9,6 +9,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { db } from './db/pg'
 import { FLEET_DIR, STACK_DIR } from './fleet-render'
+import { snapshot } from './internal-history'
 
 /** Owner key: 'shared' or an agent slug. */
 export const SHARED = 'shared'
@@ -106,11 +107,12 @@ export async function readSkill(owner: string, name: string): Promise<{ content:
   return { content, files }
 }
 
-export async function writeSkill(owner: string, name: string, content: string): Promise<void> {
+export async function writeSkill(owner: string, name: string, content: string, author?: string | null): Promise<void> {
   const o = await ownerRoot(owner)
   const dir = safeJoin(o.root, name)
   await mkdir(dir, { recursive: true })
   await writeFile(join(dir, 'SKILL.md'), content)
+  await snapshot('skill', `${owner}/${name}`, content, author ?? null).catch(() => {})
 }
 
 export async function deleteSkill(owner: string, name: string): Promise<void> {

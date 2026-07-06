@@ -21,6 +21,7 @@ import { Route as ApiMcpRouteImport } from './routes/api/mcp'
 import { Route as ApiKeysRouteImport } from './routes/api/keys'
 import { Route as ApiInferenceRouteImport } from './routes/api/inference'
 import { Route as ApiHomeRouteImport } from './routes/api/home'
+import { Route as ApiHistoryRouteImport } from './routes/api/history'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
 import { Route as ApiCostRouteImport } from './routes/api/cost'
 import { Route as ApiConversationsRouteImport } from './routes/api/conversations'
@@ -48,6 +49,7 @@ import { Route as AppActivityRouteImport } from './routes/_app/activity'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
 import { Route as ApiMemoryIdRouteImport } from './routes/api/memory.$id'
+import { Route as ApiMcpTestRouteImport } from './routes/api/mcp.test'
 import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
 import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
 import { Route as ApiFleetEndpointsRouteImport } from './routes/api/fleet.endpoints'
@@ -150,6 +152,11 @@ const ApiInferenceRoute = ApiInferenceRouteImport.update({
 const ApiHomeRoute = ApiHomeRouteImport.update({
   id: '/api/home',
   path: '/api/home',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiHistoryRoute = ApiHistoryRouteImport.update({
+  id: '/api/history',
+  path: '/api/history',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiFleetRoute = ApiFleetRouteImport.update({
@@ -286,6 +293,11 @@ const ApiMemoryIdRoute = ApiMemoryIdRouteImport.update({
   id: '/api/memory/$id',
   path: '/api/memory/$id',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMcpTestRoute = ApiMcpTestRouteImport.update({
+  id: '/test',
+  path: '/test',
+  getParentRoute: () => ApiMcpRoute,
 } as any)
 const ApiKeysIdRoute = ApiKeysIdRouteImport.update({
   id: '/$id',
@@ -536,10 +548,11 @@ export interface FileRoutesByFullPath {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
-  '/api/mcp': typeof ApiMcpRoute
+  '/api/mcp': typeof ApiMcpRouteWithChildren
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
@@ -562,6 +575,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/keys/$id': typeof ApiKeysIdRoute
+  '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/boards/': typeof AppBoardsIndexRoute
@@ -619,10 +633,11 @@ export interface FileRoutesByTo {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
-  '/api/mcp': typeof ApiMcpRoute
+  '/api/mcp': typeof ApiMcpRouteWithChildren
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
@@ -646,6 +661,7 @@ export interface FileRoutesByTo {
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/keys/$id': typeof ApiKeysIdRoute
+  '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/boards': typeof AppBoardsIndexRoute
@@ -705,10 +721,11 @@ export interface FileRoutesById {
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
-  '/api/mcp': typeof ApiMcpRoute
+  '/api/mcp': typeof ApiMcpRouteWithChildren
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
@@ -732,6 +749,7 @@ export interface FileRoutesById {
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/keys/$id': typeof ApiKeysIdRoute
+  '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/_app/boards/': typeof AppBoardsIndexRoute
@@ -792,6 +810,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/history'
     | '/api/home'
     | '/api/inference'
     | '/api/keys'
@@ -818,6 +837,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints'
     | '/api/fleet/render'
     | '/api/keys/$id'
+    | '/api/mcp/test'
     | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/boards/'
@@ -875,6 +895,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/history'
     | '/api/home'
     | '/api/inference'
     | '/api/keys'
@@ -902,6 +923,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints'
     | '/api/fleet/render'
     | '/api/keys/$id'
+    | '/api/mcp/test'
     | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/boards'
@@ -960,6 +982,7 @@ export interface FileRouteTypes {
     | '/api/conversations'
     | '/api/cost'
     | '/api/fleet'
+    | '/api/history'
     | '/api/home'
     | '/api/inference'
     | '/api/keys'
@@ -987,6 +1010,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints'
     | '/api/fleet/render'
     | '/api/keys/$id'
+    | '/api/mcp/test'
     | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/_app/boards/'
@@ -1031,10 +1055,11 @@ export interface RootRouteChildren {
   ApiConversationsRoute: typeof ApiConversationsRouteWithChildren
   ApiCostRoute: typeof ApiCostRoute
   ApiFleetRoute: typeof ApiFleetRouteWithChildren
+  ApiHistoryRoute: typeof ApiHistoryRoute
   ApiHomeRoute: typeof ApiHomeRoute
   ApiInferenceRoute: typeof ApiInferenceRoute
   ApiKeysRoute: typeof ApiKeysRouteWithChildren
-  ApiMcpRoute: typeof ApiMcpRoute
+  ApiMcpRoute: typeof ApiMcpRouteWithChildren
   ApiNotificationsRoute: typeof ApiNotificationsRoute
   ApiProfileRoute: typeof ApiProfileRoute
   ApiSkillsRoute: typeof ApiSkillsRouteWithChildren
@@ -1136,6 +1161,13 @@ declare module '@tanstack/react-router' {
       path: '/api/home'
       fullPath: '/api/home'
       preLoaderRoute: typeof ApiHomeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/history': {
+      id: '/api/history'
+      path: '/api/history'
+      fullPath: '/api/history'
+      preLoaderRoute: typeof ApiHistoryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/fleet': {
@@ -1326,6 +1358,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/memory/$id'
       preLoaderRoute: typeof ApiMemoryIdRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api/mcp/test': {
+      id: '/api/mcp/test'
+      path: '/test'
+      fullPath: '/api/mcp/test'
+      preLoaderRoute: typeof ApiMcpTestRouteImport
+      parentRoute: typeof ApiMcpRoute
     }
     '/api/keys/$id': {
       id: '/api/keys/$id'
@@ -1851,6 +1890,17 @@ const ApiKeysRouteChildren: ApiKeysRouteChildren = {
 const ApiKeysRouteWithChildren =
   ApiKeysRoute._addFileChildren(ApiKeysRouteChildren)
 
+interface ApiMcpRouteChildren {
+  ApiMcpTestRoute: typeof ApiMcpTestRoute
+}
+
+const ApiMcpRouteChildren: ApiMcpRouteChildren = {
+  ApiMcpTestRoute: ApiMcpTestRoute,
+}
+
+const ApiMcpRouteWithChildren =
+  ApiMcpRoute._addFileChildren(ApiMcpRouteChildren)
+
 interface ApiSkillsRouteChildren {
   ApiSkillsOwnerNameRoute: typeof ApiSkillsOwnerNameRoute
 }
@@ -1919,10 +1969,11 @@ const rootRouteChildren: RootRouteChildren = {
   ApiConversationsRoute: ApiConversationsRouteWithChildren,
   ApiCostRoute: ApiCostRoute,
   ApiFleetRoute: ApiFleetRouteWithChildren,
+  ApiHistoryRoute: ApiHistoryRoute,
   ApiHomeRoute: ApiHomeRoute,
   ApiInferenceRoute: ApiInferenceRoute,
   ApiKeysRoute: ApiKeysRouteWithChildren,
-  ApiMcpRoute: ApiMcpRoute,
+  ApiMcpRoute: ApiMcpRouteWithChildren,
   ApiNotificationsRoute: ApiNotificationsRoute,
   ApiProfileRoute: ApiProfileRoute,
   ApiSkillsRoute: ApiSkillsRouteWithChildren,

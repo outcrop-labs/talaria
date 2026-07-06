@@ -1,11 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/cn'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
-import { Textarea } from '@/components/ui/textarea'
+import { Markdown } from '@/components/ui/markdown'
+import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { useSession } from '@/lib/session'
 
 export const Route = createFileRoute('/_app/memory')({
@@ -89,27 +90,19 @@ function MemoryEditor({ agentId, label, isAdmin }: { agentId: string; label: str
     },
     retry: false,
   })
-  const [draft, setDraft] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-  useEffect(() => setDraft(null), [agentId])
 
-  const save = async () => {
-    if (draft === null) return
+  const save = async (content: string) => {
     setBusy(true)
-    setErr(null)
     try {
       const r = await fetch(`/api/memory/${agentId}`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ content: draft }),
+        body: JSON.stringify({ content }),
       })
       const j = (await r.json()) as { error?: string }
-      if (j.error) setErr(j.error)
-      else {
-        await qc.invalidateQueries({ queryKey: ['memory', agentId] })
-        setDraft(null)
-      }
+      if (!j.error) await qc.invalidateQueries({ queryKey: ['memory', agentId] })
     } finally {
       setBusy(false)
     }
@@ -118,11 +111,11 @@ function MemoryEditor({ agentId, label, isAdmin }: { agentId: string; label: str
   return (
     <Panel>
       <div className="mb-4 flex items-center gap-3">
-        <span className="text-sm font-semibold text-fg">{label} / MEMORY.md</span>
-        {data?.container && <span className="min-w-0 truncate text-xs text-muted">{data.container} · the agent edits this file too — last writer wins</span>}
-        {isAdmin && (
-          <Button size="sm" className="ml-auto shrink-0" onClick={() => void save()} disabled={busy || draft === null}>
-            {busy ? 'Saving…' : 'Save'}
+        <span className="text-sm font-semibold text-fg">{label} · MEMORY.md</span>
+        {data?.container && <span className="min-w-0 truncate text-xs text-muted">{data.container} · the agent edits this too — last writer wins</span>}
+        {isAdmin && !isLoading && !error && (
+          <Button size="sm" className="ml-auto shrink-0" onClick={() => setEditing(true)}>
+            Edit
           </Button>
         )}
       </div>
@@ -130,19 +123,26 @@ function MemoryEditor({ agentId, label, isAdmin }: { agentId: string; label: str
         <div className="text-sm text-muted">Reading memory…</div>
       ) : error ? (
         <EmptyState icon="❖" title="Can't reach the agent" hint={(error as Error).message} />
-      ) : (
-        <Textarea
-          value={draft ?? data?.content ?? ''}
-          readOnly={!isAdmin}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="(empty — the agent hasn't written anything down yet)"
-          className="min-h-[28rem] font-mono text-xs leading-relaxed"
-        />
-      )}
-      {err && (
-        <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
-          {err}
+      ) : data?.content ? (
+        <div className="max-h-[28rem] overflow-y-auto text-sm">
+          <Markdown>{data.content}</Markdown>
         </div>
+      ) : (
+        <EmptyState icon="❖" title="No memory yet" hint="The agent hasn't written anything down." />
+      )}
+
+      {editing && (
+        <InternalEditorModal
+          open
+          onClose={() => setEditing(false)}
+          title={`${label} · MEMORY.md`}
+          subtitle="The agent maintains this itself; your edits are snapshotted and revertible."
+          value={data?.content ?? ''}
+          editable={isAdmin}
+          saving={busy}
+          onSave={save}
+          history={{ kind: 'memory', id: agentId }}
+        />
       )}
     </Panel>
   )

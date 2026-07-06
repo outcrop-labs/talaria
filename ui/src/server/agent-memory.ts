@@ -4,6 +4,7 @@
 // there's no second copy to drift. Requires the container to be up.
 import { execFile } from 'node:child_process'
 import { db } from './db/pg'
+import { snapshot } from './internal-history'
 
 const MEMORY_PATH = '/opt/data/memories/MEMORY.md'
 
@@ -41,11 +42,13 @@ export async function readMemory(defId: string): Promise<{ content: string; cont
 }
 
 /** Whole-file replace. The agent also writes this file (with a lockfile) — a
- *  concurrent agent write can race a human edit; last writer wins. */
-export async function writeMemory(defId: string, content: string): Promise<void> {
+ *  concurrent agent write can race a human edit; last writer wins. Every save
+ *  is snapshotted so any prior memory is recoverable. */
+export async function writeMemory(defId: string, content: string, author?: string | null): Promise<void> {
   const { department } = await departmentFor(defId)
   const name = container(department)
   await exec(['exec', '-i', name, 'sh', '-c', `cat > ${MEMORY_PATH}`], content).catch((e: Error) => {
     throw new Error(`cannot write memory in ${name}: ${e.message}`)
   })
+  await snapshot('memory', defId, content, author ?? null).catch(() => {})
 }
