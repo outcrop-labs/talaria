@@ -260,16 +260,38 @@ Full project-management suite, all live in `ui/`:
   surveyed: NeMo Guardrails / Guardrails AI (semantic rails), DeepEval/Phoenix
   (offline evals) — none covers the structural confab check.
 
+- **Product IA + elegance pass (Phase 5, 2026-07-06)** - nav regrouped into
+  **Work** (Home · Chat · Channels · Boards · Inbox) and **Manage** (Agents ·
+  Models · Compute · Cost · Audit · Alerts); `/` is now **Home** (triage/review/
+  unblock queues + fleet glance, `server/home.ts`), Chat at `/chat`; dead
+  `/tasks` removed; `/fleet` → `/agents`; Skills/Memory/MCP reached from the
+  Agents-page toolbar. **"Local" → "Self-hosted"** everywhere (DB class value
+  still `local`). **Talaria LLM gateway** (`server/llm-gateway.ts`,
+  `/api/llm/v1`) + per-user `tlk_` keys (`llm-keys.ts`, Settings; grant via
+  `users.can_mint_keys`). **No-train** = per-endpoint toggle writing
+  `llm_endpoints.request_defaults`. **Versioned skills/memory**
+  (`internal_versions`, `internal-history.ts`, `/api/history`) edited in the
+  **WYSIWYG `InternalEditorModal`**. **MCP probe** (`mcp-probe.ts`,
+  `/api/mcp/test`) gives live connection status.
+
 ## Next up (in order)
 
-1. **Notifications for alerts** - surface critical alerts as inbox
-   notifications / nav badge (alerts are computed on read today).
-2. **Board-level cost rollups** - per-board token/$ aggregation on /cost from
-   `usage_events.task_id` (per-ticket exists; the board view doesn't yet).
-3. **Re-enable retired agents from the UI** (def rows persist; re-enable is
-   SQL-only today) and surface version diffs (data exists, no diff view).
-4. **Roadmap headliners**: design/creative surfaces, finance connectors,
-   in-app agentic coding (opencode), personal + base agents, multitenancy.
+1. **Per-view access control (#50)** + admin settings surface — each primary
+   view assignable per user with route gating; app settings (incl. audit
+   retention) in Admin subviews.
+2. **True audit trail (#51)** — Audit page becomes a real before/after log with
+   configurable retention (Activity is a read model today).
+3. **Universal @mentions (#60)** — one mention primitive (users + agents) across
+   chat, channels, ticket comments, plans, research; permission-scoped.
+4. **Input consistency sweep (#49)** + remaining WYSIWYG conversions (#46);
+   chat/channel attachments + model-switcher redesign (#53).
+5. **New surfaces**: Plan view (#55), Research view (#56); artifact system (#54);
+   personal-assistant self-serve (#52); per-agent Talaria toolkit (#58) +
+   proactive agent outreach (#59).
+6. **Product-ization**: generalize Hermes import to any instance (#44);
+   Talaria-native identity proxy for per-user MCP identity (#42).
+
+_(Full backlog: tasks #41–#60. See memory `talaria-product-vision`.)_
 
 ## Dev environment
 
