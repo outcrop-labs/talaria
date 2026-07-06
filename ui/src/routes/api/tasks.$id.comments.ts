@@ -3,8 +3,9 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { boardAllowsAgent, boardRole } from '@/server/boards'
+import { boardAllowsAgent, boardRole, listMembers } from '@/server/boards'
 import { addComment, getTask, listComments } from '@/server/tasks'
+import { notifyMentions } from '@/server/mentions'
 
 /** Board access for either a session user or a board-allowed named agent. */
 async function commentAuthor(request: Request, boardId: string): Promise<string | Response> {
@@ -42,7 +43,25 @@ export const Route = createFileRoute('/api/tasks/$id/comments')({
           .object({ content: z.string().min(1).max(20_000), parentId: z.string().uuid().optional() })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        return json({ comment: await addComment(params.id, author, parsed.data.content, parsed.data.parentId) })
+        const comment = await addComment(params.id, author, parsed.data.content, parsed.data.parentId)
+
+        // @mention any board member — they get an inbox notification linking to
+        // the ticket. Detached; the POST returns immediately.
+        const sender = await getSessionUser(request)
+        void listMembers(task.boardId)
+          .then((members) =>
+            notifyMentions(
+              members,
+              sender?.id ?? '',
+              sender?.name ?? author,
+              parsed.data.content,
+              task.ticketRef ?? 'a ticket',
+              `/boards/${task.boardId}/${params.id}`,
+            ),
+          )
+          .catch(() => {})
+
+        return json({ comment })
       },
     },
   },
