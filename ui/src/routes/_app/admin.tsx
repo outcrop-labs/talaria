@@ -12,6 +12,7 @@ import { useAgents } from '@/lib/agents'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
 import { GATEABLE_VIEWS } from '@/lib/nav'
+import { RetrievalPanel } from '@/components/admin/retrieval-panel'
 
 export const Route = createFileRoute('/_app/admin')({
   component: AdminPage,
@@ -72,6 +73,8 @@ function AdminPage() {
         <h1 className="mercury-text text-2xl font-semibold">Admin</h1>
 
         <SettingsPanel />
+
+        <RetrievalPanel />
 
         <Panel>
           <div className="mb-2 text-sm font-semibold text-fg">People</div>
