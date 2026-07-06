@@ -1,14 +1,16 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { Play, Square, SlidersHorizontal, Archive, ArrowRightLeft, LayoutGrid, List, Loader2 } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
-import { Disclosure } from '@/components/ui/disclosure'
-import { Markdown } from '@/components/ui/markdown'
-import { useFleet, relativeTime, STATUS_COLOR } from '@/lib/fleet'
+import { Input } from '@/components/ui/input'
+import { Modal } from '@/components/ui/modal'
+import { useFleet } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
-import { AgentEditorModal } from '@/components/fleet/agent-editor'
+import { cn } from '@/lib/cn'
+import { AgentManageModal } from '@/components/fleet/agent-manage-modal'
 import { CreateAgentModal } from '@/components/fleet/create-agent-modal'
 import {
   controlAgent,
@@ -19,337 +21,306 @@ import {
   type AgentDef,
   type FleetAction,
   type LlmEndpoint,
-  type ModelTarget,
 } from '@/lib/fleet-defs'
 
 export const Route = createFileRoute('/_app/agents')({
-  component: AgentsRoster,
+  component: AgentsPage,
 })
 
-const INTERNALS = [
-  { to: '/skills', label: 'Skills' },
-  { to: '/memory', label: 'Memory' },
-  { to: '/mcp', label: 'MCP' },
-  { to: '/models', label: 'Models', adminOnly: true },
-]
+// ── Health: one word (up / degraded / down / retired) from container reality ──
+type Health = 'up' | 'degraded' | 'down' | 'retired' | 'legacy'
+const HEALTH_COLOR: Record<Health, string> = {
+  up: 'var(--theme-success)',
+  degraded: 'var(--theme-warning)',
+  down: 'var(--theme-danger)',
+  retired: 'var(--theme-line)',
+  legacy: 'var(--theme-accent)',
+}
+function healthOf(d: AgentDef, c: AgentContainers | null): { health: Health; running: boolean } {
+  if (!d.enabled) return { health: 'retired', running: false }
+  const state = d.managed ? c?.managed ?? null : c?.legacy ?? null
+  const running = state?.state === 'running'
+  if (!d.managed) return { health: 'legacy', running }
+  if (!running) return { health: 'down', running: false }
+  return { health: /unhealthy/i.test(state?.status ?? '') ? 'degraded' : 'up', running: true }
+}
 
-function AgentsRoster() {
-  const { data, isLoading } = useFleet()
-  const agents = data?.agents ?? []
-  const t = data?.totals
+function AgentsPage() {
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
-
-  return (
-    <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto max-w-5xl space-y-8">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="mercury-text text-2xl font-semibold">Agents</h1>
-          {t && (
-            <span className="text-sm text-muted">
-              {t.online}/{t.agents} online · {t.activeToday} active today
-            </span>
-          )}
-          {/* Per-agent internals — tabs land here in the next pass. */}
-          <nav className="ml-auto flex items-center gap-1 text-xs">
-            {INTERNALS.filter((i) => !i.adminOnly || isAdmin).map((i) => (
-              <Link
-                key={i.to}
-                to={i.to}
-                className="rounded-lg px-2.5 py-1.5 text-muted transition-colors hover:bg-card hover:text-fg"
-              >
-                {i.label}
-              </Link>
-            ))}
-          </nav>
-        </div>
-
-        {isAdmin && <DefinitionsPanel />}
-
-        {isLoading ? (
-          <div className="text-sm text-muted">Loading agents…</div>
-        ) : (
-          <Panel className="p-0 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="border-b border-line bg-card2 text-xs uppercase tracking-wide text-muted">
-                <tr>
-                  <th className="px-4 py-2.5 text-left font-semibold">Agent</th>
-                  <th className="px-4 py-2.5 text-left font-semibold">Status</th>
-                  <th className="px-4 py-2.5 text-left font-semibold">Last seen</th>
-                  <th className="px-4 py-2.5 text-right font-semibold">Conversations</th>
-                  <th className="px-4 py-2.5 text-right font-semibold">Messages</th>
-                  <th className="px-4 py-2.5 text-right font-semibold">Last used</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line-subtle">
-                {agents.map((a) => (
-                  <tr key={a.id} className="transition-colors hover:bg-card">
-                    <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-2.5">
-                        <Avatar name={a.label} className="h-7 w-7" />
-                        <div className="min-w-0">
-                          <div className="truncate text-fg">{a.label}</div>
-                          <div className="truncate text-xs text-muted">{a.role}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className="inline-flex items-center gap-1.5 text-xs">
-                        <span className="h-2 w-2 rounded-full" style={{ background: STATUS_COLOR[a.status] }} />
-                        <span className="text-muted">{a.status}</span>
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-muted">{relativeTime(a.lastSeen)}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums text-fg">{a.conversations}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums text-fg">{a.messages}</td>
-                    <td className="px-4 py-2.5 text-right text-muted">{relativeTime(a.lastUsed)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Panel>
-        )}
-      </div>
-    </div>
-  )
-}
-
-/** Endpoint-class chip: where a model tier runs (local plane vs cloud). */
-function TargetChip({ t, name }: { t: ModelTarget; name?: string }) {
-  const local = /inference|vllm|ollama|local/.test(t.endpoint)
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-xs">
-      {name && <span className="font-semibold text-fg">{name}</span>}
-      <span className="text-muted">{t.model}</span>
-      <span className={local ? 'text-[color:var(--theme-success)]' : 'text-accent'}>{local ? 'local' : 'cloud'}</span>
-    </span>
-  )
-}
-
-// The Talaria-owned agent definitions (harness phase A: imported + read-only;
-// rendering/orchestration and in-app editing land next).
-function DefinitionsPanel() {
-  const qc = useQueryClient()
-  const { data } = useFleetDefs(true)
-  const defs = data?.defs ?? []
-  const { data: containers = [] } = useFleetContainers(true)
+  const { data: fleet } = useFleet()
+  const { data: defsData } = useFleetDefs(isAdmin)
+  const { data: containers = [] } = useFleetContainers(isAdmin)
   const byDept = new Map(containers.map((c) => [c.department, c]))
-  const [busy, setBusy] = useState(false)
-  const [summary, setSummary] = useState<string | null>(null)
+  const qc = useQueryClient()
+  const defs = defsData?.defs ?? []
+  const endpoints = defsData?.endpoints ?? []
+  const t = fleet?.totals
+
+  const [view, setView] = useState<'grid' | 'list'>('grid')
   const [creating, setCreating] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [summary, setSummary] = useState<string | null>(null)
 
   const runImport = async () => {
-    setBusy(true)
+    setImporting(true)
     setSummary(null)
     try {
       const r = await importFleet()
       if (!r) return setSummary('import failed')
       const created = r.agents.filter((a) => a.created).length
-      setSummary(
-        `${r.agents.length} agents scanned · ${created} new version${created === 1 ? '' : 's'}` +
-          (r.errors.length ? ` · ${r.errors.length} errors: ${r.errors.join('; ')}` : ''),
-      )
+      setSummary(`${r.agents.length} scanned · ${created} new version${created === 1 ? '' : 's'}${r.errors.length ? ` · ${r.errors.length} errors` : ''}`)
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
     } finally {
-      setBusy(false)
+      setImporting(false)
     }
   }
 
   return (
-    <Panel>
-      <div className="mb-4 flex items-center gap-3">
-        <div>
-          <h2 className="text-sm font-semibold text-fg">Definitions</h2>
-          <p className="text-xs text-muted">
-            Talaria-owned agent configs — soul, model tiers, escalations — versioned per agent.
-          </p>
+    <div className="h-full overflow-y-auto p-8">
+      <div className="mx-auto max-w-5xl space-y-6">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="mercury-text text-2xl font-semibold">Agents</h1>
+          {t && <span className="text-sm text-muted">{t.online}/{t.agents} online · {t.activeToday} active today</span>}
+          <div className="ml-auto flex items-center gap-2">
+            {/* Grid / list toggle */}
+            <div className="flex rounded-lg border border-line-subtle p-0.5">
+              <button type="button" onClick={() => setView('grid')} className={cn('rounded-md p-1.5', view === 'grid' ? 'bg-card text-fg' : 'text-muted')} title="Grid">
+                <LayoutGrid size={15} />
+              </button>
+              <button type="button" onClick={() => setView('list')} className={cn('rounded-md p-1.5', view === 'list' ? 'bg-card text-fg' : 'text-muted')} title="List">
+                <List size={15} />
+              </button>
+            </div>
+            {isAdmin && (
+              <>
+                {defs.length > 0 && (
+                  <Button size="sm" onClick={() => setCreating(true)}>
+                    New agent
+                  </Button>
+                )}
+                <Button variant="outline" size="sm" onClick={() => void runImport()} disabled={importing}>
+                  {importing ? 'Importing…' : defs.length ? 'Re-import' : 'Import'}
+                </Button>
+              </>
+            )}
+          </div>
         </div>
-        <div className="ml-auto flex shrink-0 gap-2">
-          {defs.length > 0 && (
-            <Button size="sm" onClick={() => setCreating(true)}>
-              New agent
-            </Button>
-          )}
-          <Button variant="outline" size="sm" onClick={() => void runImport()} disabled={busy}>
-            {busy ? 'Importing…' : defs.length ? 'Re-import from stack' : 'Import from stack'}
-          </Button>
-        </div>
-      </div>
-      {creating && (
-        <CreateAgentModal open={creating} onClose={() => setCreating(false)} templates={defs.filter((d) => d.enabled)} />
-      )}
-      {summary && <div className="mb-4 text-xs text-muted">{summary}</div>}
+        {summary && <div className="text-xs text-muted">{summary}</div>}
 
-      {defs.length === 0 ? (
-        <div className="py-4 text-center text-xs text-muted">
-          Nothing imported yet — pull the existing stack in to seed definitions.
-        </div>
-      ) : (
-        <ul className="divide-y divide-line-subtle">
-          {defs.map((d) => (
-            <DefRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={data?.endpoints ?? []} />
-          ))}
-        </ul>
-      )}
-    </Panel>
+        {!isAdmin ? (
+          <ReadOnlyRoster fleet={fleet?.agents ?? []} view={view} />
+        ) : defs.length === 0 ? (
+          <Panel>
+            <div className="py-6 text-center text-sm text-muted">
+              Nothing imported yet — pull in a Hermes stack to seed the fleet.
+            </div>
+          </Panel>
+        ) : view === 'grid' ? (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {defs.map((d) => (
+              <AgentTile key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} />
+            ))}
+          </div>
+        ) : (
+          <Panel className="p-0">
+            <ul className="divide-y divide-line-subtle">
+              {defs.map((d) => (
+                <AgentListRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} />
+              ))}
+            </ul>
+          </Panel>
+        )}
+
+        {creating && <CreateAgentModal open={creating} onClose={() => setCreating(false)} templates={defs.filter((d) => d.enabled)} />}
+      </div>
+    </div>
   )
 }
 
-/** The container the agent actually lives in right now. */
-function liveContainer(d: AgentDef, c: AgentContainers | null) {
-  const managed = c?.managed ?? null
-  const legacy = c?.legacy ?? null
-  if (d.managed) return { where: 'talaria' as const, state: managed }
-  return { where: 'legacy' as const, state: legacy }
+// Non-admins get a read-only glance (name + status) — no controls, no internals.
+function ReadOnlyRoster({ fleet, view }: { fleet: Array<{ id: string; label: string; role: string; status: string }>; view: 'grid' | 'list' }) {
+  const dot = (status: string) => (status === 'offline' ? 'var(--theme-line)' : status === 'error' ? 'var(--theme-danger)' : 'var(--theme-success)')
+  if (view === 'list') {
+    return (
+      <Panel className="p-0">
+        <ul className="divide-y divide-line-subtle">
+          {fleet.map((a) => (
+            <li key={a.id} className="flex items-center gap-3 px-4 py-3">
+              <Avatar name={a.label} className="h-7 w-7" />
+              <span className="text-sm text-fg">{a.label}</span>
+              <span className="text-xs text-muted">{a.role}</span>
+              <span className="ml-auto h-2 w-2 rounded-full" style={{ background: dot(a.status) }} title={a.status} />
+            </li>
+          ))}
+        </ul>
+      </Panel>
+    )
+  }
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      {fleet.map((a) => (
+        <Panel key={a.id} className="flex items-center gap-3">
+          <Avatar name={a.label} className="h-9 w-9" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium text-fg">{a.label}</div>
+            <div className="truncate text-xs text-muted">{a.role}</div>
+          </div>
+          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: dot(a.status) }} title={a.status} />
+        </Panel>
+      ))}
+    </div>
+  )
 }
 
-function DefRow({
-  def: d,
-  containers,
-  endpoints,
-}: {
-  def: AgentDef
-  containers: AgentContainers | null
-  endpoints: LlmEndpoint[]
-}) {
-  const qc = useQueryClient()
-  const cfg = d.latest?.config
-  const [pending, setPending] = useState<string | null>(null)
-  const [err, setErr] = useState<string | null>(null)
-  const [editing, setEditing] = useState(false)
-  const live = liveContainer(d, containers)
-  const running = live.state?.state === 'running'
+// A tiny icon button used for the row/tile controls.
+function IconBtn({ icon, title, onClick, danger, disabled }: { icon: React.ReactNode; title: string; onClick: () => void; danger?: boolean; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        'grid h-8 w-8 place-items-center rounded-lg text-muted transition-colors hover:bg-card disabled:opacity-40',
+        danger ? 'hover:text-[color:var(--theme-danger)]' : 'hover:text-fg',
+      )}
+    >
+      {icon}
+    </button>
+  )
+}
 
-  const act = async (action: FleetAction, label: string) => {
-    setErr(null)
+// Shared control logic for a managed/legacy agent def.
+function useAgentControls(d: AgentDef) {
+  const qc = useQueryClient()
+  const [pending, setPending] = useState<string | null>(null)
+  const act = async (action: FleetAction, label: string, confirmMsg?: string) => {
+    if (confirmMsg && !confirm(confirmMsg)) return
     setPending(label)
     try {
-      const r = await controlAgent(d.id, action)
-      if (r.error) setErr(r.error)
-      else if (action === 'migrate' && r.healthy === false) setErr('started but not healthy yet — check logs')
+      await controlAgent(d.id, action)
       await qc.invalidateQueries({ queryKey: ['fleet-containers'] })
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
     } finally {
       setPending(null)
     }
   }
+  return { pending, act }
+}
 
+/** The control-icon cluster (start/stop · manage · retire/migrate). */
+function Controls({ def: d, running, onManage }: { def: AgentDef; running: boolean; onManage: () => void }) {
+  const { pending, act } = useAgentControls(d)
+  const [retiring, setRetiring] = useState(false)
+  if (!d.enabled) return <span className="text-xs text-muted">retired</span>
+  if (pending) return <Loader2 size={15} className="animate-spin text-muted" />
   return (
-    <li className="py-4">
-      <div className="flex items-start gap-3">
-        <Avatar name={d.displayName} className="mt-0.5 h-7 w-7" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            <span className="text-sm font-medium text-fg">{d.displayName}</span>
-            <span className="truncate text-xs text-muted">{d.model}</span>
-            <span
-              className="inline-flex items-center gap-1 text-xs"
-              title={live.state?.status ?? 'no container'}
-            >
-              <span
-                className="h-2 w-2 rounded-full"
-                style={{
-                  background: running ? 'var(--theme-success)' : live.state ? 'var(--theme-danger)' : 'var(--theme-line)',
-                }}
-              />
-              <span className="text-muted">
-                {live.state ? live.state.state : 'no container'} · {d.managed ? 'talaria-managed' : 'legacy stack'}
-              </span>
-            </span>
-            <span className="ml-auto shrink-0 text-xs text-muted">v{d.currentVersion}</span>
-            {!d.enabled ? (
-              <span className="shrink-0 text-xs text-muted">retired</span>
-            ) : (
-              <Button variant="ghost" size="sm" className="shrink-0" onClick={() => setEditing(true)}>
-                Edit
-              </Button>
-            )}
-            {!d.enabled ? null : pending ? (
-              <span className="shrink-0 text-xs text-muted">{pending}…</span>
-            ) : d.managed ? (
-              <>
-                {running ? (
-                  <Button variant="outline" size="sm" className="shrink-0" onClick={() => void act('stop', 'stopping')}>
-                    Stop
-                  </Button>
-                ) : (
-                  <Button size="sm" className="shrink-0" onClick={() => void act('up', 'starting')}>
-                    Start
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="shrink-0"
-                  onClick={() => {
-                    if (confirm(`Retire ${d.displayName}? The container is removed and it leaves the fleet; its state volume and version history stay.`))
-                      void act('retire', 'retiring')
-                  }}
-                >
-                  Retire
-                </Button>
-              </>
-            ) : (
-              <>
-                {live.state &&
-                  (running ? (
-                    <Button variant="ghost" size="sm" className="shrink-0" onClick={() => void act('legacy-stop', 'stopping')}>
-                      Stop
-                    </Button>
-                  ) : (
-                    <Button variant="ghost" size="sm" className="shrink-0" onClick={() => void act('legacy-start', 'starting')}>
-                      Start
-                    </Button>
-                  ))}
-                <Button
-                  size="sm"
-                  className="shrink-0"
-                  onClick={() => {
-                    if (confirm(`Migrate ${d.displayName} to Talaria management? The legacy container stops; state (memories, plans) carries over via its volume.`))
-                      void act('migrate', 'migrating')
-                  }}
-                >
-                  Migrate
-                </Button>
-              </>
-            )}
-          </div>
-          {err && (
-            <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
-              {err}
-            </div>
+    <div className="flex items-center">
+      <IconBtn icon={<SlidersHorizontal size={15} />} title="Manage" onClick={onManage} />
+      {d.managed ? (
+        <>
+          {running ? (
+            <IconBtn icon={<Square size={15} />} title="Stop" onClick={() => void act('stop', 'stopping')} />
+          ) : (
+            <IconBtn icon={<Play size={15} />} title="Start" onClick={() => void act('up', 'starting')} />
           )}
-          {editing && (
-            <AgentEditorModal open={editing} onClose={() => setEditing(false)} def={d} endpoints={endpoints} />
-          )}
-          <div className="mt-2.5 flex flex-wrap items-center gap-2">
-            {cfg?.main && <TargetChip t={cfg.main} name="main" />}
-            {cfg?.aliases?.map((a) => <TargetChip key={a.name} t={a} name={a.name} />)}
-            {!!cfg?.fallbacks?.length && (
-              <span className="text-xs text-muted">
-                ↯ fallback: {cfg.fallbacks.map((f) => f.model).join(' → ')}
-              </span>
-            )}
-          </div>
-          {(d.latest?.soul || !!cfg?.mcpServers?.length) && (
-            <div className="mt-2.5">
-              <Disclosure title="Soul & tools" icon={<span>❖</span>}>
-                {!!cfg?.mcpServers?.length && (
-                  <div className="mb-2 text-xs text-muted">MCP: {cfg.mcpServers.join(', ')}</div>
-                )}
-                {!!cfg?.plugins?.length && (
-                  <div className="mb-2 text-xs text-muted">Plugins: {cfg.plugins.join(', ')}</div>
-                )}
-                {d.latest?.soul && (
-                  <div className="max-h-64 overflow-y-auto rounded-lg border border-line-subtle p-3 text-xs">
-                    <Markdown>{d.latest.soul}</Markdown>
-                  </div>
-                )}
-              </Disclosure>
-            </div>
-          )}
+          <IconBtn icon={<Archive size={15} />} title="Retire" danger onClick={() => setRetiring(true)} />
+          {retiring && <RetireModal def={d} onClose={() => setRetiring(false)} onConfirm={() => void act('retire', 'retiring')} />}
+        </>
+      ) : (
+        <IconBtn
+          icon={<ArrowRightLeft size={15} />}
+          title="Migrate to Talaria"
+          onClick={() => void act('migrate', 'migrating', `Migrate ${d.displayName} to Talaria management? The legacy container stops; state carries over.`)}
+        />
+      )}
+    </div>
+  )
+}
+
+// Retiring removes the container and drops the agent from the fleet — a
+// destructive action, so it's a double opt-in: type the agent's slug to confirm.
+function RetireModal({ def: d, onClose, onConfirm }: { def: AgentDef; onClose: () => void; onConfirm: () => void }) {
+  const [typed, setTyped] = useState('')
+  const match = typed.trim() === d.slug
+  return (
+    <Modal open onClose={onClose} title={`Retire ${d.displayName}?`} width="max-w-md">
+      <div className="space-y-4">
+        <p className="text-sm text-muted">
+          The running container is removed and <span className="text-fg">{d.displayName}</span> leaves the fleet. Its state
+          volume (memories, plans) and version history are kept, so it can be brought back later.
+        </p>
+        <div>
+          <label className="mb-1 block text-xs text-muted">
+            Type <code className="text-fg">{d.slug}</code> to confirm
+          </label>
+          <Input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={d.slug} autoFocus />
+        </div>
+        <div className="flex justify-end gap-2 border-t border-line-subtle pt-3">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={!match}
+            onClick={() => {
+              onConfirm()
+              onClose()
+            }}
+          >
+            Retire agent
+          </Button>
         </div>
       </div>
-    </li>
+    </Modal>
+  )
+}
+
+function StatusDot({ def: d, containers }: { def: AgentDef; containers: AgentContainers | null }) {
+  const { health } = healthOf(d, containers)
+  return <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: HEALTH_COLOR[health] }} title={health} />
+}
+
+function AgentTile({ def: d, containers, endpoints }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[] }) {
+  const [manage, setManage] = useState(false)
+  const { running } = healthOf(d, containers)
+  return (
+    <>
+      <Panel className="flex flex-col gap-3">
+        <div className="flex items-center gap-2.5">
+          <Avatar name={d.displayName} className="h-9 w-9" />
+          <button type="button" onClick={() => setManage(true)} className="min-w-0 flex-1 text-left">
+            <div className="truncate text-sm font-medium text-fg">{d.displayName}</div>
+            <div className="truncate text-xs text-muted">v{d.currentVersion}</div>
+          </button>
+          <StatusDot def={d} containers={containers} />
+        </div>
+        <div className="flex justify-end">
+          <Controls def={d} running={running} onManage={() => setManage(true)} />
+        </div>
+      </Panel>
+      {manage && <AgentManageModal open={manage} onClose={() => setManage(false)} def={d} endpoints={endpoints} isAdmin />}
+    </>
+  )
+}
+
+function AgentListRow({ def: d, containers, endpoints }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[] }) {
+  const [manage, setManage] = useState(false)
+  const { running } = healthOf(d, containers)
+  return (
+    <>
+      <li className="flex items-center gap-3 px-4 py-3">
+        <StatusDot def={d} containers={containers} />
+        <Avatar name={d.displayName} className="h-7 w-7" />
+        <button type="button" onClick={() => setManage(true)} className="min-w-0 flex-1 text-left">
+          <span className="text-sm font-medium text-fg">{d.displayName}</span>
+          <span className="ml-2 text-xs text-muted">v{d.currentVersion}</span>
+        </button>
+        <Controls def={d} running={running} onManage={() => setManage(true)} />
+      </li>
+      {manage && <AgentManageModal open={manage} onClose={() => setManage(false)} def={d} endpoints={endpoints} isAdmin />}
+    </>
   )
 }
