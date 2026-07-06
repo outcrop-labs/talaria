@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { TierPicker } from '@/components/chat/tier-picker'
 import { Markdown } from '@/components/ui/markdown'
 import { Disclosure } from '@/components/ui/disclosure'
 import { streamChat } from '@/lib/chat'
@@ -187,22 +187,7 @@ export function ChatView({
             placeholder={`Message ${agentLabel}…`}
             className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
           />
-          {tiers.length > 0 && (
-            <Select
-              value={tier}
-              onChange={(e) => setTier(e.target.value)}
-              size="sm"
-              className="shrink-0 self-center"
-              title="Model tier for this turn"
-            >
-              <option value="">main</option>
-              {tiers.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </Select>
-          )}
+          {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
           {streaming ? (
             <Button variant="outline" onClick={stop}>Stop</Button>
           ) : (
