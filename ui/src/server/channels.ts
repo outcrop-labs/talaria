@@ -31,6 +31,7 @@ export interface ChannelMessage {
   content: string
   status: 'streaming' | 'complete' | 'error'
   createdAt: string
+  attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
 }
 
 /** Channels the user belongs to, newest activity first. */
@@ -144,7 +145,7 @@ export async function removeChannelAgent(channelId: string, model: string): Prom
 
 // ── Messages ─────────────────────────────────────────────────────────────────
 const MSG_SELECT = `select id, seq, author_type as "authorType", author, content, status,
-  created_at as "createdAt" from channel_messages`
+  created_at as "createdAt", attachments from channel_messages`
 
 /** A channel's messages, oldest first. `sinceSeq` fetches only newer ones. */
 export async function listChannelMessages(channelId: string, sinceSeq = -1, limit = 200): Promise<ChannelMessage[]> {
@@ -163,6 +164,7 @@ export async function insertChannelMessage(
   author: string,
   content: string,
   status: 'streaming' | 'complete' = 'complete',
+  attachments: unknown[] = [],
 ): Promise<ChannelMessage> {
   const sql = await db()
   const row = await sql.begin(async (tx) => {
@@ -171,9 +173,9 @@ export async function insertChannelMessage(
     `
     const seq = (seqRows[0] as { msg_seq: number }).msg_seq
     const rows = await tx`
-      insert into channel_messages (channel_id, seq, author_type, author, content, status)
-      values (${channelId}, ${seq}, ${authorType}, ${author}, ${content}, ${status})
-      returning id, seq, author_type as "authorType", author, content, status, created_at as "createdAt"
+      insert into channel_messages (channel_id, seq, author_type, author, content, status, attachments)
+      values (${channelId}, ${seq}, ${authorType}, ${author}, ${content}, ${status}, ${sql.json(attachments as never)})
+      returning id, seq, author_type as "authorType", author, content, status, created_at as "createdAt", attachments
     `
     return rows[0] as unknown as ChannelMessage
   })

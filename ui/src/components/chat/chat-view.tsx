@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { TierPicker } from '@/components/chat/tier-picker'
+import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { Markdown } from '@/components/ui/markdown'
 import { Disclosure } from '@/components/ui/disclosure'
 import { streamChat } from '@/lib/chat'
 import { mergeTool, type ToolCall } from '@/lib/sse-parse'
 import { loadConversation, type StoredMessage } from '@/lib/conversations'
+import type { Attachment } from '@/lib/attachments'
 
 interface DisplayMessage {
   role: 'user' | 'assistant'
@@ -14,6 +16,7 @@ interface DisplayMessage {
   reasoning?: string
   tools?: ToolCall[]
   status?: 'streaming' | 'complete' | 'error'
+  attachments?: Attachment[]
 }
 
 const toDisplay = (m: StoredMessage): DisplayMessage => ({
@@ -22,6 +25,7 @@ const toDisplay = (m: StoredMessage): DisplayMessage => ({
   reasoning: m.reasoning,
   tools: m.tools,
   status: m.status,
+  attachments: m.attachments,
 })
 
 // A durable chat thread. Server owns history; this loads an existing conversation
@@ -44,6 +48,7 @@ export function ChatView({
 }) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [input, setInput] = useState('')
+  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [tier, setTier] = useState('') // '' = the agent's main model
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -102,12 +107,14 @@ export function ChatView({
 
   const send = async () => {
     const text = input.trim()
-    if (!text || streaming) return
+    if ((!text && attachments.length === 0) || streaming) return
+    const atts = attachments
     setError(null)
     setInput('')
+    setAttachments([])
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: text },
+      { role: 'user', content: text, attachments: atts },
       { role: 'assistant', content: '', reasoning: '', tools: [], status: 'streaming' },
     ])
     setStreaming(true)
@@ -124,7 +131,7 @@ export function ChatView({
     abortRef.current = ctrl
     try {
       for await (const ev of streamChat(
-        { model: agentModel, conversationId: convIdRef.current ?? undefined, content: text, tier: tier || undefined },
+        { model: agentModel, conversationId: convIdRef.current ?? undefined, content: text, tier: tier || undefined, attachmentIds: atts.map((a) => a.id) },
         (meta) => {
           if (!convIdRef.current) {
             convIdRef.current = meta.conversationId
@@ -167,7 +174,7 @@ export function ChatView({
         ) : (
           messages.map((m, i) =>
             m.role === 'user' ? (
-              <UserBubble key={i} content={m.content} />
+              <UserBubble key={i} content={m.content} attachments={m.attachments} />
             ) : (
               <AssistantTurn key={i} message={m} live={(streaming || resuming) && i === messages.length - 1} />
             ),
@@ -178,28 +185,32 @@ export function ChatView({
       </div>
 
       <div className="px-6 pb-6">
-        <div className="mercury-panel flex items-end gap-2 rounded-2xl p-2">
-          <Textarea
-            rows={1}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder={`Message ${agentLabel}…`}
-            className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
-          />
-          {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
-          {streaming ? (
-            <Button variant="outline" onClick={stop}>Stop</Button>
-          ) : (
-            <Button onClick={() => void send()} disabled={!input.trim()}>Send</Button>
-          )}
+        <div className="mercury-panel rounded-2xl p-2">
+          <PendingAttachments items={attachments} onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} />
+          <div className="flex items-end gap-2">
+            <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} disabled={streaming} />
+            <Textarea
+              rows={1}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={onKeyDown}
+              placeholder={`Message ${agentLabel}…`}
+              className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
+            />
+            {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
+            {streaming ? (
+              <Button variant="outline" onClick={stop}>Stop</Button>
+            ) : (
+              <Button onClick={() => void send()} disabled={!input.trim() && attachments.length === 0}>Send</Button>
+            )}
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
-function UserBubble({ content }: { content: string }) {
+function UserBubble({ content, attachments }: { content: string; attachments?: Attachment[] }) {
   return (
     <div className="flex justify-end">
       <div
@@ -207,6 +218,7 @@ function UserBubble({ content }: { content: string }) {
         style={{ background: 'var(--chat-user-bg)', borderColor: 'var(--chat-user-border)' }}
       >
         {content}
+        {attachments && attachments.length > 0 && <MessageAttachments items={attachments} />}
       </div>
     </div>
   )

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { channelRole, insertChannelMessage, listChannelMessages } from '@/server/channels'
 import { notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
+import { resolveAttachments } from '@/server/uploads'
 import { db } from '@/server/db/pg'
 
 // GET ?since=<seq> → the channel's messages (members). POST { content } → post
@@ -23,11 +24,14 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
         const parsed = z
-          .object({ content: z.string().min(1).max(20_000) })
+          .object({ content: z.string().max(20_000).default(''), attachmentIds: z.array(z.string().uuid()).max(10).optional() })
           .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        if (!parsed.success || (!parsed.data.content && !parsed.data.attachmentIds?.length)) {
+          return json({ error: 'bad request' }, { status: 400 })
+        }
         const author = user.email ?? user.name ?? 'user'
-        const message = await insertChannelMessage(params.id, 'user', author, parsed.data.content)
+        const attachments = await resolveAttachments(parsed.data.attachmentIds ?? [])
+        const message = await insertChannelMessage(params.id, 'user', author, parsed.data.content, 'complete', attachments)
         // Agent replies + mention notifications run detached; the POST returns at once.
         const sql = await db()
         const rows = await sql`select name from channels where id = ${params.id}`

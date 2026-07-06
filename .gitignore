@@ -25,3 +25,7 @@ fleet.json
 
 # Rendered fleet (talaria-managed agent configs + compose) — never committed
 /fleet/
+
+# uploaded attachments (served from /api/uploads)
+ui/.uploads/
+.uploads/
