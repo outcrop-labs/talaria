@@ -4,6 +4,13 @@ import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
 import Placeholder from '@tiptap/extension-placeholder'
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight'
+import TaskList from '@tiptap/extension-task-list'
+import TaskItem from '@tiptap/extension-task-item'
+import Table from '@tiptap/extension-table'
+import TableRow from '@tiptap/extension-table-row'
+import TableHeader from '@tiptap/extension-table-header'
+import TableCell from '@tiptap/extension-table-cell'
+import Image from '@tiptap/extension-image'
 import { createLowlight, common } from 'lowlight'
 import { Markdown } from 'tiptap-markdown'
 
@@ -22,6 +29,9 @@ import {
   Heading2,
   List,
   ListOrdered,
+  ListChecks,
+  Table as TableIcon,
+  Image as ImageIcon,
   Quote,
   Code,
   SquareCode,
@@ -67,6 +77,13 @@ export const RichEditor = forwardRef<RichEditorHandle, {
       StarterKit.configure({ heading: { levels: [1, 2, 3] }, codeBlock: false }),
       CodeBlockLowlight.configure({ lowlight }),
       HoverLink.configure({ openOnClick: false, autolink: true }),
+      TaskList,
+      TaskItem.configure({ nested: true }),
+      Table.configure({ resizable: true }),
+      TableRow,
+      TableHeader,
+      TableCell,
+      Image.configure({ inline: false, allowBase64: false }),
       Placeholder.configure({ placeholder: placeholder ?? '' }),
       Markdown.configure({ html: false, breaks: true, transformPastedText: true }),
     ],
@@ -133,6 +150,8 @@ function Toolbar({ editor, onSubmit }: { editor: Editor | null; onSubmit?: () =>
       h2: editor?.isActive('heading', { level: 2 }) ?? false,
       bullet: editor?.isActive('bulletList') ?? false,
       ordered: editor?.isActive('orderedList') ?? false,
+      task: editor?.isActive('taskList') ?? false,
+      table: editor?.isActive('table') ?? false,
       quote: editor?.isActive('blockquote') ?? false,
       code: editor?.isActive('code') ?? false,
       codeBlock: editor?.isActive('codeBlock') ?? false,
@@ -141,6 +160,8 @@ function Toolbar({ editor, onSubmit }: { editor: Editor | null; onSubmit?: () =>
   })
   const [linkOpen, setLinkOpen] = useState(false)
   const [linkUrl, setLinkUrl] = useState('')
+  const [imgOpen, setImgOpen] = useState(false)
+  const [imgUrl, setImgUrl] = useState('')
   if (!editor || !s) return null
 
   const openLinkModal = () => {
@@ -181,6 +202,18 @@ function Toolbar({ editor, onSubmit }: { editor: Editor | null; onSubmit?: () =>
         onApply={applyLink}
         editing={s.link}
       />
+      <ImageModal
+        open={imgOpen}
+        url={imgUrl}
+        onUrl={setImgUrl}
+        onClose={() => setImgOpen(false)}
+        onApply={() => {
+          const url = imgUrl.trim()
+          if (url) editor.chain().focus().setImage({ src: url }).run()
+          setImgOpen(false)
+          setImgUrl('')
+        }}
+      />
       <Btn icon={Bold} title="Bold" active={s.bold} onClick={() => c().toggleBold().run()} />
       <Btn icon={Italic} title="Italic" active={s.italic} onClick={() => c().toggleItalic().run()} />
       <Btn icon={Strikethrough} title="Strikethrough" active={s.strike} onClick={() => c().toggleStrike().run()} />
@@ -188,9 +221,18 @@ function Toolbar({ editor, onSubmit }: { editor: Editor | null; onSubmit?: () =>
       <Btn icon={Heading2} title="Heading" active={s.h2} onClick={() => c().toggleHeading({ level: 2 }).run()} />
       <Btn icon={List} title="Bulleted list" active={s.bullet} onClick={() => c().toggleBulletList().run()} />
       <Btn icon={ListOrdered} title="Numbered list" active={s.ordered} onClick={() => c().toggleOrderedList().run()} />
+      <Btn icon={ListChecks} title="Task list" active={s.task} onClick={() => c().toggleTaskList().run()} />
       <Btn icon={Quote} title="Quote" active={s.quote} onClick={() => c().toggleBlockquote().run()} />
       <Btn icon={Code} title="Inline code" active={s.code} onClick={() => c().toggleCode().run()} />
       <Btn icon={SquareCode} title="Code block" active={s.codeBlock} onClick={() => c().toggleCodeBlock().run()} />
+      <span className="mx-1 h-4 w-px bg-line-subtle" />
+      <Btn
+        icon={TableIcon}
+        title={s.table ? 'Delete table' : 'Insert table'}
+        active={s.table}
+        onClick={() => (s.table ? c().deleteTable().run() : c().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())}
+      />
+      <Btn icon={ImageIcon} title="Insert image" active={false} onClick={() => { setImgUrl(''); setImgOpen(true) }} />
       <Btn icon={LinkIcon} title="Link" active={s.link} onClick={openLinkModal} />
       {onSubmit && (
         <button
@@ -254,6 +296,48 @@ function LinkModal({
           className="w-full"
         />
         <p className="mt-2 text-xs text-muted">Leave empty and apply to remove the link.</p>
+      </form>
+    </Modal>
+  )
+}
+
+function ImageModal({
+  open,
+  url,
+  onUrl,
+  onClose,
+  onApply,
+}: {
+  open: boolean
+  url: string
+  onUrl: (v: string) => void
+  onClose: () => void
+  onApply: () => void
+}) {
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Insert image"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={onApply} disabled={!url.trim()}>
+            Insert
+          </Button>
+        </div>
+      }
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          onApply()
+        }}
+      >
+        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Image URL</label>
+        <Input autoFocus value={url} onChange={(e) => onUrl(e.target.value)} placeholder="https://…/image.png" className="w-full" />
       </form>
     </Modal>
   )
