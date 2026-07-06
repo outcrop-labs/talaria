@@ -401,6 +401,9 @@ const MIGRATIONS: string[] = [
   // Personal assistants: an agent owned by one user (their own Hermes agent),
   // spun up from the dashboard. Null = a shared fleet agent.
   `alter table agent_defs add column if not exists owner_user_id uuid references users(id) on delete set null`,
+  // Per-view access: nav routes a member may NOT reach (deny list; empty = all
+  // views, the open default). Admins are never restricted.
+  `alter table users add column if not exists denied_views text[] not null default '{}'`,
 ]
 
 function ensureMigrated(): Promise<void> {

@@ -83,6 +83,8 @@ export interface AdminUser {
   agentModels: string[]
   /** May mint LLM-gateway API keys (admins always may, regardless). */
   canMintKeys: boolean
+  /** Nav routes this member may NOT reach (empty = all views). */
+  deniedViews: string[]
   /** Email is in AUTH_ADMIN_EMAILS — role is pinned to admin at every login. */
   pinnedAdmin: boolean
 }
@@ -91,7 +93,7 @@ export interface AdminUser {
 export async function listUsersAdmin(): Promise<AdminUser[]> {
   const sql = await db()
   const rows = await sql`
-    select u.id, u.email, u.name, u.role, u.can_mint_keys as "canMintKeys",
+    select u.id, u.email, u.name, u.role, u.can_mint_keys as "canMintKeys", u.denied_views as "deniedViews",
            u.last_seen_at as "lastSeenAt", u.created_at as "createdAt",
            coalesce(array_agg(a.agent_model) filter (where a.agent_model is not null), '{}') as "agentModels"
     from users u left join user_agent_access a on a.user_id = u.id
@@ -138,4 +140,19 @@ export async function allowedAgents(userId: string, role: Role): Promise<'all' |
 
 export function canUseAgent(access: 'all' | string[], model: string): boolean {
   return access === 'all' || access.includes(model)
+}
+
+/** Views a member may NOT reach. Admins are never restricted (always []). */
+export async function deniedViews(userId: string, role: Role): Promise<string[]> {
+  if (role === 'admin') return []
+  const sql = await db()
+  const rows = (await sql`select denied_views as "deniedViews" from users where id = ${userId}`) as unknown as Array<{
+    deniedViews: string[]
+  }>
+  return rows[0]?.deniedViews ?? []
+}
+
+export async function setDeniedViews(userId: string, views: string[]): Promise<void> {
+  const sql = await db()
+  await sql`update users set denied_views = ${views} where id = ${userId}`
 }

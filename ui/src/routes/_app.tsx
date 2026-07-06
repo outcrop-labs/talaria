@@ -1,4 +1,4 @@
-import { createFileRoute, Outlet, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { Brand } from '@/components/brand'
 import { MercuryBackdrop } from '@/components/mercury-backdrop'
@@ -6,7 +6,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { NavRail } from '@/components/app/nav-rail'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
-import { useLogout, useSession } from '@/lib/session'
+import { useDeniedViews, useLogout, useSession } from '@/lib/session'
 
 // Authenticated app shell: header + left nav rail + the active view (Outlet).
 export const Route = createFileRoute('/_app')({
@@ -15,12 +15,22 @@ export const Route = createFileRoute('/_app')({
 
 function AppLayout() {
   const { data: user, isLoading, isSuccess } = useSession()
+  const denied = useDeniedViews()
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
   const navigate = useNavigate()
   const logout = useLogout()
 
   useEffect(() => {
     if (isSuccess && !user) void navigate({ to: '/login' })
   }, [isSuccess, user, navigate])
+
+  // Route gate: a denied view isn't just hidden from the nav — reaching it by
+  // URL bounces to Home. (Match the deepest denied prefix, e.g. /boards/x.)
+  useEffect(() => {
+    if (user && denied.some((v) => pathname === v || pathname.startsWith(v + '/'))) {
+      void navigate({ to: '/' })
+    }
+  }, [user, denied, pathname, navigate])
 
   if (isLoading || !user) {
     return (
