@@ -34,7 +34,7 @@ const useInference = () =>
     refetchInterval: 30_000,
   })
 
-// Your own hardware: local backends probed live, plus what they've served.
+// Your own hardware + on-prem: self-hosted backends probed live, plus what they've served.
 // Every token here is a token you didn't buy from a cloud API.
 function InferencePage() {
   const { data: session } = useSession()
@@ -45,7 +45,7 @@ function InferencePage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-4xl space-y-8">
         <div className="flex items-center gap-3">
-          <h1 className="mercury-text text-2xl font-semibold">Local inference</h1>
+          <h1 className="mercury-text text-2xl font-semibold">Self-hosted compute</h1>
           {session?.role === 'admin' && (
             <Link to="/models" className="ml-auto text-sm text-accent hover:underline">
               Configure on Models →
@@ -58,14 +58,14 @@ function InferencePage() {
         ) : backends.length === 0 ? (
           <EmptyState
             icon="▚"
-            title="No local backends"
-            hint="Add a local provider (Ollama, vLLM, a router) on the Models page — LAN and loopback URLs are classed local automatically."
+            title="No self-hosted backends"
+            hint="Add a self-hosted provider (Ollama, vLLM, a router) on the Models page — LAN and loopback URLs are classed self-hosted automatically."
           />
         ) : (
           <>
             <div className="grid grid-cols-3 gap-4">
-              <StatCard label="Local tokens · today" value={formatTokens(data?.usage.today ?? 0)} />
-              <StatCard label="Local tokens · 30 days" value={formatTokens(data?.usage.month ?? 0)} />
+              <StatCard label="Self-hosted tokens · today" value={formatTokens(data?.usage.today ?? 0)} />
+              <StatCard label="Self-hosted tokens · 30 days" value={formatTokens(data?.usage.month ?? 0)} />
               <StatCard label="Generations · 30 days" value={String(data?.usage.generations ?? 0)} />
             </div>
 
@@ -103,7 +103,7 @@ function InferencePage() {
 
             {(data?.usage.perModel.length ?? 0) > 0 && (
               <Panel>
-                <div className="mb-4 text-sm font-semibold text-fg">Served locally · 30 days</div>
+                <div className="mb-4 text-sm font-semibold text-fg">Served self-hosted · 30 days</div>
                 <div className="divide-y divide-line-subtle">
                   {data!.usage.perModel.map((m) => (
                     <div key={m.llmModel ?? '?'} className="flex items-center gap-3 py-3 text-sm">

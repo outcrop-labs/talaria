@@ -52,6 +52,9 @@ export interface LlmEndpoint {
   modelPrices?: Record<string, { in?: number; out?: number }>
   /** Auto-fetched $/MTok (public OpenRouter catalog); overrides win. */
   autoPrices?: Record<string, { in: number; out: number }>
+  /** Extra request-body defaults merged into gateway/agent calls (e.g. the
+   *  OpenRouter no-train provider allowlist). */
+  requestDefaults?: Record<string, unknown>
 }
 
 export function useFleetDefs(enabled: boolean) {

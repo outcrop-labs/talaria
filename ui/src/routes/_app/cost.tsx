@@ -75,7 +75,7 @@ function CostPage() {
                 <div className="mb-3 flex items-baseline gap-4">
                   <h2 className="text-sm font-semibold text-fg">Tokens per day · last 14 days</h2>
                   <span className="inline-flex items-center gap-1.5 text-xs text-muted">
-                    <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-success)' }} /> local
+                    <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-success)' }} /> self-hosted
                   </span>
                   <span className="inline-flex items-center gap-1.5 text-xs text-muted">
                     <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-accent)' }} /> cloud
@@ -100,7 +100,7 @@ function CostPage() {
                       <span className="w-20 text-right text-xs text-muted">{formatTokens(a.prompt)} in</span>
                       <span className="w-20 text-right text-xs text-muted">{formatTokens(a.completion)} out</span>
                       <span className="w-16 text-right text-xs" style={{ color: 'var(--theme-success)' }}>
-                        {a.localShare === null ? '—' : `${Math.round(a.localShare * 100)}% local`}
+                        {a.localShare === null ? '—' : `${Math.round(a.localShare * 100)}% self-hosted`}
                       </span>
                       <span className="w-20 text-right text-sm text-fg">{formatTokens(a.prompt + a.completion)}</span>
                       <span className="w-16 text-right text-xs text-muted">{formatCost(a.cost)}</span>
@@ -160,11 +160,11 @@ function SplitPanel({
 
   return (
     <Panel>
-      <h2 className="mb-2 text-sm font-semibold text-fg">Local vs cloud · 30 days</h2>
+      <h2 className="mb-2 text-sm font-semibold text-fg">Self-hosted vs cloud · 30 days</h2>
       <p className="mb-4 text-xs text-muted">
         {formatTokens(split.local)} on your own hardware · {formatTokens(split.cloud)} on cloud APIs
         {split.other > 0 && ` · ${formatTokens(split.other)} unattributed`}
-        {attributed > 0 && ` — ${Math.round((split.local / total) * 100)}% local`}
+        {attributed > 0 && ` — ${Math.round((split.local / total) * 100)}% self-hosted`}
       </p>
       <div className="flex h-3 gap-0.5 overflow-hidden rounded-full" role="img" aria-label="Token share by serving model">
         {segments.map((s) => (
