@@ -2,6 +2,50 @@
 
 All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md).
 
+## [Unreleased]: Phase 6 — product depth (2026-07-06)
+
+Turning the elegant shell into a capable product: one place to manage each
+agent, attachments, personal assistants, governance, and a real audit trail.
+
+### Added
+- **Unified agent management modal**, one modal per agent with tabs — Summary ·
+  Config · Skills · Memory · MCP · Versions. Every internal (previously separate
+  top-level pages) lives here: config editing, skills (WYSIWYG + history),
+  memory, MCP with live connection testing, and version history with one-click
+  revert. Read-only for non-admins.
+- **Agents roster redesign**, a toggleable **grid / list** where each agent
+  shows only name, **role**, a health dot (up/degraded/down/retired/legacy from
+  real container state), and icon controls (start/stop · manage · duplicate ·
+  retire/migrate/re-hire). Detail moved into the modal.
+- **Editable agent roles** (`agent_defs.role`) — a human title (e.g. "Support
+  Lead") shown on the roster, set at creation, editable in the modal.
+- **Re-hire + duplicate**, retired agents can be un-retired (re-enable → render →
+  start from the preserved volume); any agent can be duplicated into a new one.
+  Retire is a typed-slug double opt-in.
+- **Fleet Reconcile**, one button renders all managed configs and starts every
+  enabled agent that isn't running (drift + cold start; reboot survival is
+  already handled by `restart: unless-stopped`).
+- **Personal assistants**, everyone can spin up their own Hermes agent (own
+  container, key, memory) from Home — `agent_defs.owner_user_id`,
+  `createPersonalAgent()`, a "Your assistant" card.
+- **Attachments in chat + channels**, images and documents (disk-backed
+  `uploads` table, served from `/api/uploads/:id`); images render inline and are
+  passed to vision models as data-URL content parts.
+- **Per-view access control**, admins grant/revoke each primary view per member
+  (`users.denied_views`); denied views are hidden from the nav and route-gated.
+- **Audit trail + retention**, a real `audit_log` (actor · action · target ·
+  before/after) wired into governance mutations, surfaced to admins on the Audit
+  page; `audit_retention_days` is the first admin-editable app setting.
+- **Chat tier picker**, the composer's raw model-tier `<select>` is now a
+  premium portaled pill.
+
+### Changed
+- **Models page** is compact: provider cards show identity + a model count +
+  Manage; the model list (with a proper catalog-search **add-model** flow, not a
+  LabelPicker), pricing, class, and privacy routing moved into a modal.
+- **Modals center on the viewport** (portaled to `<body>`) instead of within a
+  backdrop-filtered card.
+
 ## [Unreleased]: Phase 5 — product IA + elegance (2026-07-06)
 
 Reworking Talaria from a feature grid into a coherent product: two mental
