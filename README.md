@@ -143,8 +143,11 @@ The workspace, the fleet harness, and the money view are shipped and running:
 - The agent harness: import a Hermes stack, render and run every agent under Talaria's own compose
   project, edit souls/models/tiers/MCP servers as immutable revertible versions, manage skills and memory
   live, create agents from templates, retire them — all in-app.
-- Knowledge & retrieval: an Outline-style markdown drive (`/knowledge`) with spaces, nested docs,
-  version history, org/private/public visibility, and public share links. Marking a doc **official**
+- Knowledge & retrieval: an Outline-style markdown drive (`/knowledge`) — a searchable, nestable tree
+  of docs with drag-to-reparent, emoji icons, breadcrumbs, an auto table-of-contents, and backlinks.
+  Full-text search across the base; every doc is version-controlled (view + restore any revision);
+  org/private/public visibility with public share links. The shared editor does task lists, tables, and
+  images, round-tripping to markdown so agents read/write it cleanly. Marking a doc **official**
   indexes it into the **organization brain** agents ground on. A separate **workspace-activity brain**
   ambiently indexes chat/channels (and, over time, plans/research/tickets) as a `search_knowledge` tool
   agents call on demand — index-don't-copy, permission-scoped. Admins spin up custom **departmental
