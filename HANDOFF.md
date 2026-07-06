@@ -223,19 +223,33 @@ Full project-management suite, all live in `ui/`:
   `sync-agent-state.sh` repointed at `talaria-fleet-agent-*-1` containers
   (sync verified live).
 
-- **Direct local inference (2026-07-02)** - the fleet no longer routes pl-main
-  through the nginx `inference-router`; each agent's main goes STRAIGHT to a
-  Spark box (`spark-1` = 192.168.0.77:8001, `spark-2` = .78:8001, both `local`
-  class, key `LLM_API_KEY`), sharded alternately with the OTHER box as first
-  fallback (Hermes `fallback_providers` = failover; static per-agent sharding
-  replaces nginx least_conn). Done entirely through Talaria's own APIs (new
-  endpoints + 8 config versions + re-render/restart). The `inference-router`
-  container still runs for non-fleet consumers (host-port UIs); Talaria's
-  registry no longer lists it. litellm stays for cloud tiers (it carries the
-  US no-train OpenRouter allowlist + the $ref inline hook); its `glm` =
-  `openrouter/z-ai/glm-5.2`, priced by manual override at the litellm-declared
-  $0.95/$3.00 per MTok (allowlisted pools cost more than OpenRouter's default
-  cheapest pool, so the auto rate would understate).
+- **Local inference topology (settled 2026-07-02)** - the fleet's main model
+  routes through the nginx `inference-router:8000` (LB across the two Spark
+  boxes). That router is DELIBERATE, SEPARATE inference-plane infrastructure
+  (per Jon) — Talaria treats it as one `local` endpoint and does not manage
+  its internals. (A brief direct-to-Spark detour was reverted; agent config
+  versions record both moves.) litellm's `glm` = `openrouter/z-ai/glm-5.2`,
+  manual-priced $0.95/$3.00 per MTok.
+
+- **Talaria LLM gateway (2026-07-02)** - Talaria serves its OWN
+  OpenAI-compatible endpoint over the whole registry:
+  `/api/llm/v1/models` + `/api/llm/v1/chat/completions` (streaming +
+  non-streaming). Model names: bare (`pl-main`, round-robins endpoints that
+  serve it) or endpoint-qualified (`openrouter/z-ai/glm-5.2` — first segment
+  is the ENDPOINT name). Talaria resolves provider keys server-side
+  (provider-catalog `resolveKey`, stack .env; callers never see them) and
+  deep-merges each endpoint's `llm_endpoints.request_defaults` under the
+  client body — the OpenRouter US no-train allowlist now lives THERE
+  (`server/llm-gateway.ts`), not in litellm. Every call is metered:
+  `usage_events` source `gateway`, attributed `api:<key name>`, real usage
+  from the stream's final chunk. Auth: per-user keys `tlk_…` (sha256 in
+  `llm_api_keys`; shown once at mint) — Settings → API keys; minting is
+  admin-always + per-user `users.can_mint_keys` grant (checkbox in /admin).
+  Remaining to migrate off litellm: agents' cloud ALIAS tiers still point at
+  litellm/direct endpoints; pointing them at the gateway needs (a) a
+  host-reachable base URL for containers and (b) dedup so a tier turn isn't
+  double-counted (chat row + gateway row). identity-proxy (Open WebUI
+  binding) is stopped — dead path since Open WebUI retired.
 
 - **Guardrails direction (decided 2026-07-02)** - Hermes' `confab-guard`
   plugin (a `transform_llm_output` hook flagging claimed-but-not-performed

@@ -1,10 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useSession } from '@/lib/session'
+import { relativeTime } from '@/lib/fleet'
 
 export const Route = createFileRoute('/_app/settings')({
   component: SettingsPage,
@@ -69,6 +70,111 @@ function SettingsPage() {
         </div>
         {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
       </section>
+
+      <ApiKeysSection />
     </div>
+  )
+}
+
+interface ApiKey {
+  id: string
+  name: string
+  prefix: string
+  createdAt: string
+  lastUsedAt: string | null
+  revokedAt: string | null
+}
+
+// Personal keys for the Talaria LLM gateway — one org endpoint over the whole
+// model stack. The secret shows exactly once at mint time.
+function ApiKeysSection() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['api-keys'],
+    queryFn: async (): Promise<{ keys: ApiKey[]; canMint: boolean }> => {
+      const r = await fetch('/api/keys')
+      if (!r.ok) throw new Error('failed to load keys')
+      return r.json()
+    },
+  })
+  const [name, setName] = useState('')
+  const [minted, setMinted] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const keys = (data?.keys ?? []).filter((k) => !k.revokedAt)
+  const baseUrl = typeof window !== 'undefined' ? `${window.location.origin}/api/llm/v1` : '/api/llm/v1'
+
+  const mint = async () => {
+    setErr(null)
+    const r = await fetch('/api/keys', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: name.trim() || 'default' }),
+    }).catch(() => null)
+    const j = (await r?.json().catch(() => null)) as { secret?: string; error?: string } | null
+    if (!r?.ok || !j?.secret) return setErr(j?.error ?? 'could not mint a key')
+    setMinted(j.secret)
+    setName('')
+    await qc.invalidateQueries({ queryKey: ['api-keys'] })
+  }
+
+  const revoke = async (id: string) => {
+    if (!confirm('Revoke this key? Anything using it stops working immediately.')) return
+    await fetch(`/api/keys/${id}`, { method: 'DELETE' })
+    await qc.invalidateQueries({ queryKey: ['api-keys'] })
+  }
+
+  return (
+    <section className="mercury-panel mt-6 rounded-2xl p-6">
+      <div className="mb-2 text-sm font-semibold text-fg">API keys · Talaria LLM gateway</div>
+      <p className="mb-4 text-xs text-muted">
+        Connect external tools to the org's model stack: base URL <code className="text-[11px]">{baseUrl}</code>,
+        any model from <code className="text-[11px]">/models</code> (or <code className="text-[11px]">endpoint/model</code> to pin a backend).
+      </p>
+
+      {keys.length > 0 && (
+        <div className="mb-4 divide-y divide-line-subtle">
+          {keys.map((k) => (
+            <div key={k.id} className="flex items-center gap-3 py-3 text-sm">
+              <span className="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
+              <code className="shrink-0 text-xs text-muted">{k.prefix}…</code>
+              <span className="min-w-0 flex-1 truncate text-xs text-muted">
+                {k.lastUsedAt ? `used ${relativeTime(k.lastUsedAt)}` : 'never used'}
+              </span>
+              <Button variant="ghost" size="sm" className="shrink-0" onClick={() => void revoke(k.id)}>
+                Revoke
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {data?.canMint ? (
+        <div className="flex items-center gap-2">
+          <Input
+            size="sm"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="key name (e.g. opencode)"
+            onKeyDown={(e) => e.key === 'Enter' && void mint()}
+          />
+          <Button size="sm" onClick={() => void mint()}>
+            Create key
+          </Button>
+        </div>
+      ) : (
+        <div className="text-xs text-muted">API keys are not enabled for your account — ask an admin.</div>
+      )}
+      {minted && (
+        <div className="mt-3 rounded-lg border border-line-subtle p-3">
+          <div className="mb-1 text-xs text-muted">Copy it now — it won't be shown again.</div>
+          <code className="break-all text-xs text-fg">{minted}</code>
+        </div>
+      )}
+      {err && (
+        <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
+          {err}
+        </div>
+      )}
+    </section>
   )
 }

@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser, updateSessionsForUser } from '@/server/auth/session'
-import { listUsersAdmin, setUserAgentAccess, setUserRole } from '@/server/users'
+import { listUsersAdmin, setUserAgentAccess, setUserCanMintKeys, setUserRole } from '@/server/users'
 
 // Admin console API. GET → all users with roles + agent allow-lists.
 // PUT { userId, role? , agentModels? } → update either. Admins only.
@@ -24,6 +24,7 @@ export const Route = createFileRoute('/api/admin/users')({
             userId: z.string().uuid(),
             role: z.enum(['admin', 'member']).optional(),
             agentModels: z.array(z.string().max(200)).max(100).optional(),
+            canMintKeys: z.boolean().optional(),
           })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
@@ -37,6 +38,7 @@ export const Route = createFileRoute('/api/admin/users')({
           await updateSessionsForUser(parsed.data.userId, { role: parsed.data.role })
         }
         if (parsed.data.agentModels) await setUserAgentAccess(parsed.data.userId, parsed.data.agentModels)
+        if (parsed.data.canMintKeys !== undefined) await setUserCanMintKeys(parsed.data.userId, parsed.data.canMintKeys)
         return json({ ok: true })
       },
     },

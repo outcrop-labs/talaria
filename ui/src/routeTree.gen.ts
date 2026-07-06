@@ -18,6 +18,7 @@ import { Route as ApiSkillsRouteImport } from './routes/api/skills'
 import { Route as ApiProfileRouteImport } from './routes/api/profile'
 import { Route as ApiNotificationsRouteImport } from './routes/api/notifications'
 import { Route as ApiMcpRouteImport } from './routes/api/mcp'
+import { Route as ApiKeysRouteImport } from './routes/api/keys'
 import { Route as ApiInferenceRouteImport } from './routes/api/inference'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
 import { Route as ApiCostRouteImport } from './routes/api/cost'
@@ -45,6 +46,7 @@ import { Route as AppActivityRouteImport } from './routes/_app/activity'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
 import { Route as ApiMemoryIdRouteImport } from './routes/api/memory.$id'
+import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
 import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
 import { Route as ApiFleetEndpointsRouteImport } from './routes/api/fleet.endpoints'
 import { Route as ApiFleetDefsRouteImport } from './routes/api/fleet.defs'
@@ -68,6 +70,7 @@ import { Route as ApiTasksIdReviewRouteImport } from './routes/api/tasks.$id.rev
 import { Route as ApiTasksIdDependenciesRouteImport } from './routes/api/tasks.$id.dependencies'
 import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.comments'
 import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
+import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiFleetEndpointsIdRouteImport } from './routes/api/fleet.endpoints.$id'
 import { Route as ApiChannelsIdPlanRouteImport } from './routes/api/channels.$id.plan'
 import { Route as ApiChannelsIdMessagesRouteImport } from './routes/api/channels.$id.messages'
@@ -81,6 +84,7 @@ import { Route as ApiBoardsIdAgentsRouteImport } from './routes/api/boards.$id.a
 import { Route as ApiAuthGoogleCallbackRouteImport } from './routes/api/auth/google.callback'
 import { Route as ApiAgentsIdHeartbeatRouteImport } from './routes/api/agents.$id.heartbeat'
 import { Route as AppBoardsBoardIdTaskIdRouteImport } from './routes/_app/boards/$boardId.$taskId'
+import { Route as ApiLlmV1ChatCompletionsRouteImport } from './routes/api/llm.v1.chat.completions'
 import { Route as ApiFleetEndpointsIdAvailableRouteImport } from './routes/api/fleet.endpoints.$id.available'
 import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.defs.$id.versions'
 import { Route as ApiFleetDefsIdMcpRouteImport } from './routes/api/fleet.defs.$id.mcp'
@@ -129,6 +133,11 @@ const ApiNotificationsRoute = ApiNotificationsRouteImport.update({
 const ApiMcpRoute = ApiMcpRouteImport.update({
   id: '/api/mcp',
   path: '/api/mcp',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiKeysRoute = ApiKeysRouteImport.update({
+  id: '/api/keys',
+  path: '/api/keys',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiInferenceRoute = ApiInferenceRouteImport.update({
@@ -266,6 +275,11 @@ const ApiMemoryIdRoute = ApiMemoryIdRouteImport.update({
   path: '/api/memory/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiKeysIdRoute = ApiKeysIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiKeysRoute,
+} as any)
 const ApiFleetRenderRoute = ApiFleetRenderRouteImport.update({
   id: '/render',
   path: '/render',
@@ -381,6 +395,11 @@ const ApiSkillsOwnerNameRoute = ApiSkillsOwnerNameRouteImport.update({
   path: '/$owner/$name',
   getParentRoute: () => ApiSkillsRoute,
 } as any)
+const ApiLlmV1ModelsRoute = ApiLlmV1ModelsRouteImport.update({
+  id: '/api/llm/v1/models',
+  path: '/api/llm/v1/models',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiFleetEndpointsIdRoute = ApiFleetEndpointsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -446,6 +465,11 @@ const AppBoardsBoardIdTaskIdRoute = AppBoardsBoardIdTaskIdRouteImport.update({
   path: '/$taskId',
   getParentRoute: () => AppBoardsBoardIdRoute,
 } as any)
+const ApiLlmV1ChatCompletionsRoute = ApiLlmV1ChatCompletionsRouteImport.update({
+  id: '/api/llm/v1/chat/completions',
+  path: '/api/llm/v1/chat/completions',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiFleetEndpointsIdAvailableRoute =
   ApiFleetEndpointsIdAvailableRouteImport.update({
     id: '/available',
@@ -500,6 +524,7 @@ export interface FileRoutesByFullPath {
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/inference': typeof ApiInferenceRoute
+  '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
@@ -522,6 +547,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/boards/': typeof AppBoardsIndexRoute
@@ -538,6 +564,7 @@ export interface FileRoutesByFullPath {
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
@@ -550,6 +577,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
@@ -577,6 +605,7 @@ export interface FileRoutesByTo {
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/inference': typeof ApiInferenceRoute
+  '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
@@ -600,6 +629,7 @@ export interface FileRoutesByTo {
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/boards': typeof AppBoardsIndexRoute
@@ -616,6 +646,7 @@ export interface FileRoutesByTo {
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
@@ -628,6 +659,7 @@ export interface FileRoutesByTo {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -657,6 +689,7 @@ export interface FileRoutesById {
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/inference': typeof ApiInferenceRoute
+  '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
@@ -680,6 +713,7 @@ export interface FileRoutesById {
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/_app/boards/': typeof AppBoardsIndexRoute
@@ -696,6 +730,7 @@ export interface FileRoutesById {
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
@@ -708,6 +743,7 @@ export interface FileRoutesById {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -738,6 +774,7 @@ export interface FileRouteTypes {
     | '/api/cost'
     | '/api/fleet'
     | '/api/inference'
+    | '/api/keys'
     | '/api/mcp'
     | '/api/notifications'
     | '/api/profile'
@@ -760,6 +797,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
     | '/api/fleet/render'
+    | '/api/keys/$id'
     | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/boards/'
@@ -776,6 +814,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/messages'
     | '/api/channels/$id/plan'
     | '/api/fleet/endpoints/$id'
+    | '/api/llm/v1/models'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
@@ -788,6 +827,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/llm/v1/chat/completions'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -815,6 +855,7 @@ export interface FileRouteTypes {
     | '/api/cost'
     | '/api/fleet'
     | '/api/inference'
+    | '/api/keys'
     | '/api/mcp'
     | '/api/notifications'
     | '/api/profile'
@@ -838,6 +879,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
     | '/api/fleet/render'
+    | '/api/keys/$id'
     | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/boards'
@@ -854,6 +896,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/messages'
     | '/api/channels/$id/plan'
     | '/api/fleet/endpoints/$id'
+    | '/api/llm/v1/models'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
@@ -866,6 +909,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/llm/v1/chat/completions'
   id:
     | '__root__'
     | '/_app'
@@ -894,6 +938,7 @@ export interface FileRouteTypes {
     | '/api/cost'
     | '/api/fleet'
     | '/api/inference'
+    | '/api/keys'
     | '/api/mcp'
     | '/api/notifications'
     | '/api/profile'
@@ -917,6 +962,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
     | '/api/fleet/render'
+    | '/api/keys/$id'
     | '/api/memory/$id'
     | '/api/tasks/$id'
     | '/_app/boards/'
@@ -933,6 +979,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/messages'
     | '/api/channels/$id/plan'
     | '/api/fleet/endpoints/$id'
+    | '/api/llm/v1/models'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
@@ -945,6 +992,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/llm/v1/chat/completions'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -960,6 +1008,7 @@ export interface RootRouteChildren {
   ApiCostRoute: typeof ApiCostRoute
   ApiFleetRoute: typeof ApiFleetRouteWithChildren
   ApiInferenceRoute: typeof ApiInferenceRoute
+  ApiKeysRoute: typeof ApiKeysRouteWithChildren
   ApiMcpRoute: typeof ApiMcpRoute
   ApiNotificationsRoute: typeof ApiNotificationsRoute
   ApiProfileRoute: typeof ApiProfileRoute
@@ -974,6 +1023,8 @@ export interface RootRouteChildren {
   ApiAuthSessionRoute: typeof ApiAuthSessionRoute
   ApiMemoryIdRoute: typeof ApiMemoryIdRoute
   ApiTasksIdRoute: typeof ApiTasksIdRouteWithChildren
+  ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
+  ApiLlmV1ChatCompletionsRoute: typeof ApiLlmV1ChatCompletionsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -1039,6 +1090,13 @@ declare module '@tanstack/react-router' {
       path: '/api/mcp'
       fullPath: '/api/mcp'
       preLoaderRoute: typeof ApiMcpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/keys': {
+      id: '/api/keys'
+      path: '/api/keys'
+      fullPath: '/api/keys'
+      preLoaderRoute: typeof ApiKeysRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/inference': {
@@ -1230,6 +1288,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMemoryIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/keys/$id': {
+      id: '/api/keys/$id'
+      path: '/$id'
+      fullPath: '/api/keys/$id'
+      preLoaderRoute: typeof ApiKeysIdRouteImport
+      parentRoute: typeof ApiKeysRoute
+    }
     '/api/fleet/render': {
       id: '/api/fleet/render'
       path: '/render'
@@ -1391,6 +1456,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiSkillsOwnerNameRouteImport
       parentRoute: typeof ApiSkillsRoute
     }
+    '/api/llm/v1/models': {
+      id: '/api/llm/v1/models'
+      path: '/api/llm/v1/models'
+      fullPath: '/api/llm/v1/models'
+      preLoaderRoute: typeof ApiLlmV1ModelsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/fleet/endpoints/$id': {
       id: '/api/fleet/endpoints/$id'
       path: '/$id'
@@ -1481,6 +1553,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/boards/$boardId/$taskId'
       preLoaderRoute: typeof AppBoardsBoardIdTaskIdRouteImport
       parentRoute: typeof AppBoardsBoardIdRoute
+    }
+    '/api/llm/v1/chat/completions': {
+      id: '/api/llm/v1/chat/completions'
+      path: '/api/llm/v1/chat/completions'
+      fullPath: '/api/llm/v1/chat/completions'
+      preLoaderRoute: typeof ApiLlmV1ChatCompletionsRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/fleet/endpoints/$id/available': {
       id: '/api/fleet/endpoints/$id/available'
@@ -1720,6 +1799,17 @@ const ApiFleetRouteWithChildren = ApiFleetRoute._addFileChildren(
   ApiFleetRouteChildren,
 )
 
+interface ApiKeysRouteChildren {
+  ApiKeysIdRoute: typeof ApiKeysIdRoute
+}
+
+const ApiKeysRouteChildren: ApiKeysRouteChildren = {
+  ApiKeysIdRoute: ApiKeysIdRoute,
+}
+
+const ApiKeysRouteWithChildren =
+  ApiKeysRoute._addFileChildren(ApiKeysRouteChildren)
+
 interface ApiSkillsRouteChildren {
   ApiSkillsOwnerNameRoute: typeof ApiSkillsOwnerNameRoute
 }
@@ -1789,6 +1879,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCostRoute: ApiCostRoute,
   ApiFleetRoute: ApiFleetRouteWithChildren,
   ApiInferenceRoute: ApiInferenceRoute,
+  ApiKeysRoute: ApiKeysRouteWithChildren,
   ApiMcpRoute: ApiMcpRoute,
   ApiNotificationsRoute: ApiNotificationsRoute,
   ApiProfileRoute: ApiProfileRoute,
@@ -1803,6 +1894,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthSessionRoute: ApiAuthSessionRoute,
   ApiMemoryIdRoute: ApiMemoryIdRoute,
   ApiTasksIdRoute: ApiTasksIdRouteWithChildren,
+  ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,
+  ApiLlmV1ChatCompletionsRoute: ApiLlmV1ChatCompletionsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
