@@ -117,9 +117,11 @@ function HomePage() {
                   {data!.fleet.online}/{data!.fleet.total} agents online
                   {data!.fleet.down.length > 0 && ` · ${data!.fleet.down.slice(0, 3).join(', ')} offline`}
                 </span>
-                <Link to="/agents" className="ml-auto text-xs text-accent hover:underline">
-                  Manage →
-                </Link>
+                {session?.role === 'admin' && (
+                  <Link to="/agents" className="ml-auto text-xs text-accent hover:underline">
+                    Manage →
+                  </Link>
+                )}
               </div>
             </Panel>
           </>
