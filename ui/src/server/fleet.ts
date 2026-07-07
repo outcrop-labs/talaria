@@ -6,6 +6,8 @@
 
 import { db } from './db/pg'
 import { listFleetAgents } from './fleet-agents'
+import { listAgentDefs } from './agent-defs'
+import { containerStatus } from './fleet-docker'
 import { registryByName, seedFleetNames, type AgentStatus } from './agents-registry'
 
 export interface FleetAgentStat {
@@ -34,6 +36,23 @@ export async function getFleetOverview(): Promise<FleetOverview> {
   const registry = await registryByName()
   const sql = await db()
 
+  // Heartbeats are the ideal liveness signal, but most agents don't heartbeat
+  // to Talaria yet. Container reality (the same source as the roster status
+  // dots) fills the gap, so the "online" count can never disagree with the
+  // green dots on the agents page: running container ⇒ online.
+  const defs = (await listAgentDefs().catch(() => [])).filter((d) => d.enabled)
+  const containers = defs.length
+    ? await containerStatus(defs.map((d) => d.department)).catch(() => [])
+    : []
+  const byDept = new Map(containers.map((c) => [c.department, c]))
+  const containerUp = new Map(
+    defs.map((d) => {
+      const c = byDept.get(d.department)
+      const state = d.managed ? c?.managed : c?.legacy
+      return [d.model, state?.state === 'running'] as const
+    }),
+  )
+
   // Fleet-wide usage (all users) per agent — the ops/maintainer view.
   const rows = await sql`
     select c.agent_model as model,
@@ -49,11 +68,12 @@ export async function getFleetOverview(): Promise<FleetOverview> {
   const stats: FleetAgentStat[] = agents.map((a) => {
     const r = byModel.get(a.id) as { conversations: number; messages: number; last_used: string | null } | undefined
     const reg = registry.get(a.id)
+    const regStatus = reg?.status ?? 'offline'
     return {
       id: a.id,
       label: a.label,
       role: a.role,
-      status: reg?.status ?? 'offline',
+      status: regStatus === 'offline' && containerUp.get(a.id) ? 'idle' : regStatus,
       lastSeen: reg?.lastSeen ?? null,
       lastActivity: reg?.lastActivity ?? null,
       conversations: r?.conversations ?? 0,

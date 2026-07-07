@@ -80,6 +80,20 @@ export async function importFleet(): Promise<{
   return ((await r.json()) as { result: { agents: []; errors: [] } }).result
 }
 
+export interface ReconcileResult {
+  rendered?: number
+  started?: string[]
+  alreadyRunning?: string[]
+  warnings?: string[]
+  error?: string
+}
+
+/** Render configs + start every enabled managed agent that isn't running. */
+export async function reconcileFleet(): Promise<ReconcileResult> {
+  const r = await fetch('/api/fleet/reconcile', { method: 'POST', credentials: 'same-origin' })
+  return (await r.json().catch(() => ({ error: `reconcile failed (${r.status})` }))) as ReconcileResult
+}
+
 export interface ContainerState {
   name: string
   state: string

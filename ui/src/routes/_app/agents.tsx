@@ -1,10 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Play, Square, SlidersHorizontal, Archive, ArrowRightLeft, LayoutGrid, List, Loader2, Copy, UserPlus } from 'lucide-react'
+import { Play, Square, SlidersHorizontal, Archive, ArrowRightLeft, LayoutGrid, List, Loader2, Copy, UserPlus, Plus, Import } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { useFleet } from '@/lib/fleet'
@@ -12,9 +13,9 @@ import { useSession } from '@/lib/session'
 import { cn } from '@/lib/cn'
 import { AgentManageModal } from '@/components/fleet/agent-manage-modal'
 import { CreateAgentModal } from '@/components/fleet/create-agent-modal'
+import { ImportWizard } from '@/components/fleet/import-wizard'
 import {
   controlAgent,
-  importFleet,
   useFleetContainers,
   useFleetDefs,
   type AgentContainers,
@@ -52,7 +53,6 @@ function AgentsPage() {
   const { data: defsData } = useFleetDefs(isAdmin)
   const { data: containers = [] } = useFleetContainers(isAdmin)
   const byDept = new Map(containers.map((c) => [c.department, c]))
-  const qc = useQueryClient()
   const defs = defsData?.defs ?? []
   const endpoints = defsData?.endpoints ?? []
   const t = fleet?.totals
@@ -60,38 +60,7 @@ function AgentsPage() {
   const [view, setView] = useState<'grid' | 'list'>('grid')
   const [creating, setCreating] = useState(false)
   const [duplicateFrom, setDuplicateFrom] = useState<AgentDef | null>(null)
-  const [importing, setImporting] = useState(false)
-  const [reconciling, setReconciling] = useState(false)
-  const [summary, setSummary] = useState<string | null>(null)
-
-  const reconcile = async () => {
-    setReconciling(true)
-    setSummary(null)
-    try {
-      const r = (await fetch('/api/fleet/reconcile', { method: 'POST' }).then((x) => x.json()).catch(() => null)) as
-        | { rendered?: number; started?: string[]; alreadyRunning?: string[]; error?: string }
-        | null
-      if (!r || r.error) setSummary(r?.error ?? 'reconcile failed')
-      else setSummary(`Reconciled ${r.rendered} · started ${r.started?.length ?? 0} · already up ${r.alreadyRunning?.length ?? 0}`)
-      await qc.invalidateQueries({ queryKey: ['fleet-containers'] })
-    } finally {
-      setReconciling(false)
-    }
-  }
-
-  const runImport = async () => {
-    setImporting(true)
-    setSummary(null)
-    try {
-      const r = await importFleet()
-      if (!r) return setSummary('import failed')
-      const created = r.agents.filter((a) => a.created).length
-      setSummary(`${r.agents.length} scanned · ${created} new version${created === 1 ? '' : 's'}${r.errors.length ? ` · ${r.errors.length} errors` : ''}`)
-      await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
-    } finally {
-      setImporting(false)
-    }
-  }
+  const [importOpen, setImportOpen] = useState(false)
 
   return (
     <div className="h-full overflow-y-auto p-8">
@@ -111,30 +80,44 @@ function AgentsPage() {
             </div>
             {isAdmin && (
               <>
-                <Button size="sm" onClick={() => setCreating(true)} disabled={defs.length === 0} title={defs.length === 0 ? 'Import a stack first to seed a template' : undefined}>
-                  New agent
+                <Button
+                  size="sm"
+                  className="w-9 px-0"
+                  onClick={() => setCreating(true)}
+                  disabled={defs.length === 0}
+                  title={defs.length === 0 ? 'Import agents first to seed a template' : 'New agent'}
+                  aria-label="New agent"
+                >
+                  <Plus size={16} />
                 </Button>
-                {defs.some((d) => d.managed && d.enabled) && (
-                  <Button variant="outline" size="sm" onClick={() => void reconcile()} disabled={reconciling} title="Render + start every enabled agent that isn't running">
-                    {reconciling ? 'Reconciling…' : 'Reconcile'}
-                  </Button>
-                )}
-                <Button variant="outline" size="sm" onClick={() => void runImport()} disabled={importing}>
-                  {importing ? 'Importing…' : defs.length ? 'Re-import' : 'Import'}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-9 px-0"
+                  onClick={() => setImportOpen(true)}
+                  title="Import agents"
+                  aria-label="Import agents"
+                >
+                  <Import size={15} />
                 </Button>
               </>
             )}
           </div>
         </div>
-        {summary && <div className="text-xs text-muted">{summary}</div>}
 
         {!isAdmin ? (
           <ReadOnlyRoster fleet={fleet?.agents ?? []} view={view} />
         ) : defs.length === 0 ? (
           <Panel>
-            <div className="py-6 text-center text-sm text-muted">
-              Nothing imported yet — pull in a Hermes stack to seed the fleet.
-            </div>
+            <EmptyState
+              title="No agents yet"
+              hint="Import your existing agents to bring the fleet in."
+              action={
+                <Button size="sm" onClick={() => setImportOpen(true)}>
+                  Import agents
+                </Button>
+              }
+            />
           </Panel>
         ) : view === 'grid' ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -152,6 +135,7 @@ function AgentsPage() {
           </Panel>
         )}
 
+        {importOpen && <ImportWizard onClose={() => setImportOpen(false)} />}
         {creating && <CreateAgentModal open={creating} onClose={() => setCreating(false)} templates={defs.filter((d) => d.enabled)} />}
         {duplicateFrom && (
           <CreateAgentModal open onClose={() => setDuplicateFrom(null)} templates={defs} templateId={duplicateFrom.id} />
@@ -251,13 +235,16 @@ function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; r
       <IconBtn icon={<SlidersHorizontal size={15} />} title="Manage" onClick={onManage} />
       {d.managed ? (
         <>
-          {running ? (
-            <IconBtn icon={<Square size={15} />} title="Stop" onClick={() => void act('stop', 'stopping')} />
-          ) : (
-            <IconBtn icon={<Play size={15} />} title="Start" onClick={() => void act('up', 'starting')} />
-          )}
           <IconBtn icon={<Archive size={15} />} title="Retire" danger onClick={() => setRetiring(true)} />
           {retiring && <RetireModal def={d} onClose={() => setRetiring(false)} onConfirm={() => void act('retire', 'retiring')} />}
+          {/* Start/stop stands apart from the rest — it's the lifecycle switch,
+              not another management action. Filled glyphs so they read at 14px. */}
+          <span aria-hidden className="mx-1.5 h-4 w-px bg-line-subtle" />
+          {running ? (
+            <IconBtn icon={<Square size={14} fill="currentColor" />} title="Stop" onClick={() => void act('stop', 'stopping')} />
+          ) : (
+            <IconBtn icon={<Play size={14} fill="currentColor" />} title="Start" onClick={() => void act('up', 'starting')} />
+          )}
         </>
       ) : (
         <IconBtn
