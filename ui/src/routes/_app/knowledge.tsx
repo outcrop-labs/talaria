@@ -599,7 +599,7 @@ function DocEditor({
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
-  const [showToc, setShowToc] = useState(true)
+  const [showToc, setShowToc] = useState(false)
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [seed, setSeed] = useState(0) // bump to remount the editor (e.g. after restore)
@@ -746,7 +746,7 @@ function DocEditor({
         >
           <Star size={13} className="mr-1" /> {doc.official ? 'Official' : 'Make official'}
         </Button>
-        <Button variant="ghost" size="sm" className="shrink-0" title="Table of contents" onClick={() => setShowToc((v) => !v)}>
+        <Button variant={showToc ? 'outline' : 'ghost'} size="sm" className="shrink-0" title="Table of contents" onClick={() => setShowToc((v) => !v)}>
           <ListTree size={14} />
         </Button>
         <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
@@ -836,7 +836,7 @@ function DocEditor({
           </div>
         )}
 
-        {showToc && headings.length > 0 && (
+        {showToc && (
           <div className="w-56 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
             <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-muted">
               <span>Contents</span>
@@ -844,19 +844,23 @@ function DocEditor({
                 <X size={12} />
               </button>
             </div>
-            <div className="space-y-0.5">
-              {headings.map((h, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => scrollToHeading(i)}
-                  className="block w-full truncate text-left text-xs text-muted hover:text-fg"
-                  style={{ paddingLeft: (h.level - 1) * 10 }}
-                >
-                  {h.text || 'Untitled'}
-                </button>
-              ))}
-            </div>
+            {headings.length === 0 ? (
+              <div className="text-xs text-muted">No headings yet. Add one (H1–H3) and it shows up here.</div>
+            ) : (
+              <div className="space-y-0.5">
+                {headings.map((h, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => scrollToHeading(i)}
+                    className="block w-full truncate text-left text-xs text-muted hover:text-fg"
+                    style={{ paddingLeft: (h.level - 1) * 10 }}
+                  >
+                    {h.text || 'Untitled'}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
         {showHistory && (
