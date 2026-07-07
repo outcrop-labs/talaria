@@ -26,21 +26,29 @@ const CATEGORY_LABEL: Record<string, string> = {
   flags: 'Flags',
 }
 
+// A tiny fallback so the picker still works if the dataset import ever fails.
+const FALLBACK = '📄📝📌📚📁🗂️🧭🧠💡⚙️🚀🔧🔒🔑🎯✅📊📈🧪🗺️🏷️💬📣🌐🔍⭐🔥❤️⚠️🐛🤖👤🏢💰📅🎨'.split('')
+
 async function loadEmoji(): Promise<EmojiEntry[]> {
   if (CACHE) return CACHE
-  const data = (await import('@emoji-mart/data')).default as {
-    emojis: Record<string, { id: string; name: string; keywords: string[]; skins: Array<{ native: string }> }>
-    categories: Array<{ id: string; emojis: string[] }>
+  try {
+    const data = (await import('@emoji-mart/data')).default as {
+      emojis: Record<string, { id: string; name: string; keywords: string[]; skins: Array<{ native: string }> }>
+      categories: Array<{ id: string; emojis: string[] }>
+    }
+    const entries: EmojiEntry[] = []
+    for (const key of Object.keys(data.emojis)) {
+      const e = data.emojis[key]!
+      const native = e.skins?.[0]?.native
+      if (native) entries.push({ id: e.id, native, name: e.name, keywords: e.keywords ?? [] })
+    }
+    CATEGORIES = data.categories.map((c) => ({ id: c.id, label: CATEGORY_LABEL[c.id] ?? c.id, ids: c.emojis }))
+    CACHE = entries
+  } catch {
+    CACHE = FALLBACK.map((native, i) => ({ id: `f${i}`, native, name: native, keywords: [] }))
+    CATEGORIES = [{ id: 'common', label: 'Common', ids: CACHE.map((e) => e.id) }]
   }
-  const entries: EmojiEntry[] = []
-  for (const key of Object.keys(data.emojis)) {
-    const e = data.emojis[key]!
-    const native = e.skins?.[0]?.native
-    if (native) entries.push({ id: e.id, native, name: e.name, keywords: e.keywords ?? [] })
-  }
-  CATEGORIES = data.categories.map((c) => ({ id: c.id, label: CATEGORY_LABEL[c.id] ?? c.id, ids: c.emojis }))
-  CACHE = entries
-  return entries
+  return CACHE
 }
 
 export function EmojiPicker({
