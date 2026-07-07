@@ -443,8 +443,14 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
   const [name, setName] = useState('')
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [mode, setMode] = useState<'read' | 'edit'>('read')
+  const initMode = useRef(false)
   useEffect(() => {
     if (space) setName(space.name)
+    if (space && !initMode.current) {
+      initMode.current = true
+      setMode(space.body.trim() ? 'read' : 'edit')
+    }
   }, [space])
 
   const save = async (patch: Parameters<typeof updateSpace>[1]) => {
@@ -482,35 +488,71 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
             />
           )}
         </div>
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onBlur={() => name.trim() && name !== space.name && void save({ name: name.trim() })}
-          className="min-w-0 flex-1 border-0 bg-transparent text-xl font-semibold focus:border-0"
-          placeholder="Space name"
-        />
+        {mode === 'edit' ? (
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => name.trim() && name !== space.name && void save({ name: name.trim() })}
+            className="min-w-0 flex-1 border-0 bg-transparent text-xl font-semibold focus:border-0"
+            placeholder="Space name"
+          />
+        ) : (
+          <h1 className="min-w-0 flex-1 truncate text-xl font-semibold text-fg">{space.name}</h1>
+        )}
         <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">Folder</span>
+        <div className="flex shrink-0 rounded-md border border-line p-0.5">
+          {(['read', 'edit'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => {
+                if (m === 'read' && mode === 'edit') void saveBody()
+                setMode(m)
+              }}
+              className={cn('rounded px-2 py-0.5 text-[11px] capitalize transition-colors', mode === m ? 'bg-card text-fg' : 'text-muted hover:text-fg')}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
         <Button variant="outline" size="sm" className="shrink-0" onClick={onNewDoc}>
           <Plus size={13} className="mr-1" /> New doc
         </Button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-6">
-        <RichEditor
-          key={spaceId}
-          ref={editorRef}
-          value={space.body}
-          docSearch={docSearch}
-          onSave={() => void saveBody()}
-          placeholder="Write an overview for this space — what lives here, how it's organized…"
-          minHeight="50vh"
-        />
-      </div>
+      {mode === 'edit' ? (
+        <div className="flex min-h-0 flex-1 flex-col p-4">
+          <RichEditor
+            key={spaceId}
+            ref={editorRef}
+            value={space.body}
+            docSearch={docSearch}
+            onSave={() => void saveBody()}
+            placeholder="Write an overview for this space — what lives here, how it's organized…"
+            fill
+            className="flex-1"
+          />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-3xl px-10 py-8">
+            {space.body.trim() ? (
+              <Markdown className="tiptap">{space.body}</Markdown>
+            ) : (
+              <button type="button" onClick={() => setMode('edit')} className="text-sm text-muted hover:text-fg">
+                No overview yet — click to describe this space.
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
         <span>Top-level document · child docs nest under it</span>
         <span className="ml-auto" />
-        <Button size="sm" onClick={() => void saveBody()} disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </Button>
+        {mode === 'edit' && (
+          <Button size="sm" onClick={() => void saveBody()} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        )}
       </div>
     </div>
   )
@@ -553,8 +595,15 @@ function DocEditor({
   const [showToc, setShowToc] = useState(true)
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [seed, setSeed] = useState(0) // bump to remount the editor (e.g. after restore)
+  // Authored docs open in read mode (like tickets); empty ones open in edit.
+  const [mode, setMode] = useState<'read' | 'edit'>('read')
+  const initMode = useRef(false)
   useEffect(() => {
     if (doc) setTitle(doc.title)
+    if (doc && !initMode.current) {
+      initMode.current = true
+      setMode(doc.body.trim() ? 'read' : 'edit')
+    }
   }, [doc])
 
   const headings = useMemo(() => parseHeadings(doc?.body ?? ''), [doc?.body])
@@ -636,17 +685,37 @@ function DocEditor({
             />
           )}
         </div>
-        <Input
-          value={title}
-          onChange={(e) => {
-            setTitle(e.target.value)
-            setDirty(true)
-          }}
-          onBlur={() => dirty && void saveBody()}
-          className="min-w-0 flex-1 border-0 bg-transparent text-lg font-semibold focus:border-0"
-          placeholder="Untitled"
-        />
+        {mode === 'edit' ? (
+          <Input
+            value={title}
+            onChange={(e) => {
+              setTitle(e.target.value)
+              setDirty(true)
+            }}
+            onBlur={() => dirty && void saveBody()}
+            className="min-w-0 flex-1 border-0 bg-transparent text-lg font-semibold focus:border-0"
+            placeholder="Untitled"
+          />
+        ) : (
+          <h1 className="min-w-0 flex-1 truncate text-lg font-semibold text-fg">{doc.title}</h1>
+        )}
         {doc.kind === 'agent' && <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">OKF</span>}
+        {/* Read / Edit toggle — authored docs open in read mode. */}
+        <div className="flex shrink-0 rounded-md border border-line p-0.5">
+          {(['read', 'edit'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => {
+                if (m === 'read' && mode === 'edit') void saveBody() // capture edits on exit
+                setMode(m)
+              }}
+              className={cn('rounded px-2 py-0.5 text-[11px] capitalize transition-colors', mode === m ? 'bg-card text-fg' : 'text-muted hover:text-fg')}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
         <Select value={doc.visibility} size="sm" onChange={(e) => void save({ visibility: e.target.value as 'private' | 'org' | 'public' })} className="shrink-0">
           <option value="private">Private</option>
           <option value="org">Org</option>
@@ -691,40 +760,57 @@ function DocEditor({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1">
-        <div ref={bodyRef} className="min-w-0 flex-1 overflow-y-auto p-6">
-          <RichEditor
-            key={`${docId}-${seed}`}
-            ref={editorRef}
-            value={doc.body}
-            docSearch={docSearch}
-            onSave={() => void saveBody()}
-            placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents…' : 'Write…'}
-            minHeight="60vh"
-          />
+      <div ref={bodyRef} className="flex min-h-0 flex-1">
+        {mode === 'edit' ? (
+          // Edit mode fills the whole panel (fill = stretch + internal scroll).
+          <div className="flex min-w-0 flex-1 flex-col p-4">
+            <RichEditor
+              key={`${docId}-${seed}`}
+              ref={editorRef}
+              value={doc.body}
+              docSearch={docSearch}
+              onSave={() => void saveBody()}
+              placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents…' : 'Write…'}
+              fill
+              className="flex-1"
+            />
+          </div>
+        ) : (
+          // Read mode: rendered markdown, centered like a document, fills the panel.
+          <div className="min-w-0 flex-1 overflow-y-auto">
+            <div className="mx-auto max-w-3xl px-10 py-8">
+              {doc.body.trim() ? (
+                <Markdown className="tiptap">{doc.body}</Markdown>
+              ) : (
+                <button type="button" onClick={() => setMode('edit')} className="text-sm text-muted hover:text-fg">
+                  This document is empty — click to start writing.
+                </button>
+              )}
 
-          {/* Backlinks — docs that reference this one. */}
-          {backlinks.length > 0 && (
-            <div className="mt-8 border-t border-line-subtle pt-4">
-              <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
-                <Link2 size={12} /> Linked from
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {backlinks.map((b) => (
-                  <button
-                    key={b.id}
-                    type="button"
-                    onClick={() => onSelect(b.id)}
-                    className="flex items-center gap-1.5 rounded-lg border border-line-subtle px-2 py-1 text-xs text-muted hover:text-fg"
-                  >
-                    <span>{b.icon ?? '📄'}</span>
-                    <span className="max-w-[16rem] truncate">{b.title}</span>
-                  </button>
-                ))}
-              </div>
+              {/* Backlinks — docs that reference this one. */}
+              {backlinks.length > 0 && (
+                <div className="mt-10 border-t border-line-subtle pt-4">
+                  <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+                    <Link2 size={12} /> Linked from
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {backlinks.map((b) => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => onSelect(b.id)}
+                        className="flex items-center gap-1.5 rounded-lg border border-line-subtle px-2 py-1 text-xs text-muted hover:text-fg"
+                      >
+                        <span>{b.icon ?? '📄'}</span>
+                        <span className="max-w-[16rem] truncate">{b.title}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {showToc && headings.length > 0 && (
           <div className="w-56 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
@@ -771,9 +857,11 @@ function DocEditor({
         <VisibilityIcon v={doc.visibility} />
         <span>edited {relativeTime(doc.updatedAt)}{doc.updatedBy ? ` by ${doc.updatedBy}` : ''}</span>
         <span className="ml-auto" />
-        <Button size="sm" onClick={() => void saveBody()} disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </Button>
+        {mode === 'edit' && (
+          <Button size="sm" onClick={() => void saveBody()} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        )}
       </div>
     </div>
   )
