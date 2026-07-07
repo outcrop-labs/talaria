@@ -26,7 +26,7 @@ export interface Guarded {
   editPolicy: EditPolicy
 }
 
-export async function listEditors(itemType: 'doc' | 'space', itemId: string): Promise<EditorGrant[]> {
+export async function listEditors(itemType: 'doc' | 'space' | 'artifact', itemId: string): Promise<EditorGrant[]> {
   const sql = await db()
   return (await sql`
     select principal_type as "principalType", principal_id as "principalId", role
@@ -36,7 +36,7 @@ export async function listEditors(itemType: 'doc' | 'space', itemId: string): Pr
 
 /** The set of item ids (of a type) a user has any grant on — for filtering
  *  lists (tree, folder list) so granted private items still show. */
-export async function grantedItemIds(itemType: 'doc' | 'space', userId: string): Promise<Set<string>> {
+export async function grantedItemIds(itemType: 'doc' | 'space' | 'artifact', userId: string): Promise<Set<string>> {
   const sql = await db()
   const rows = (await sql`
     select item_id as "itemId" from kb_editors
@@ -45,7 +45,7 @@ export async function grantedItemIds(itemType: 'doc' | 'space', userId: string):
   return new Set(rows.map((r) => r.itemId))
 }
 
-export async function setEditors(itemType: 'doc' | 'space', itemId: string, grants: EditorGrant[]): Promise<void> {
+export async function setEditors(itemType: 'doc' | 'space' | 'artifact', itemId: string, grants: EditorGrant[]): Promise<void> {
   const sql = await db()
   await sql.begin(async (tx) => {
     await tx`delete from kb_editors where item_type = ${itemType} and item_id = ${itemId}`

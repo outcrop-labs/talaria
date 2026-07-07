@@ -30,9 +30,11 @@ import { Route as ApiConversationsRouteImport } from './routes/api/conversations
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiChannelsRouteImport } from './routes/api/channels'
 import { Route as ApiBoardsRouteImport } from './routes/api/boards'
+import { Route as ApiArtifactsRouteImport } from './routes/api/artifacts'
 import { Route as ApiAlertsRouteImport } from './routes/api/alerts'
 import { Route as ApiAgentsRouteImport } from './routes/api/agents'
 import { Route as ApiActivityRouteImport } from './routes/api/activity'
+import { Route as ASlugRouteImport } from './routes/a.$slug'
 import { Route as AppSkillsRouteImport } from './routes/_app/skills'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppModelsRouteImport } from './routes/_app/models'
@@ -45,6 +47,7 @@ import { Route as AppFleetRouteImport } from './routes/_app/fleet'
 import { Route as AppCostRouteImport } from './routes/_app/cost'
 import { Route as AppChatRouteImport } from './routes/_app/chat'
 import { Route as AppChannelsRouteImport } from './routes/_app/channels'
+import { Route as AppArtifactsRouteImport } from './routes/_app/artifacts'
 import { Route as AppAlertsRouteImport } from './routes/_app/alerts'
 import { Route as AppAgentsRouteImport } from './routes/_app/agents'
 import { Route as AppAdminRouteImport } from './routes/_app/admin'
@@ -75,6 +78,7 @@ import { Route as ApiAuthProvidersRouteImport } from './routes/api/auth/provider
 import { Route as ApiAuthPasswordRouteImport } from './routes/api/auth/password'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
 import { Route as ApiAuthGoogleRouteImport } from './routes/api/auth/google'
+import { Route as ApiArtifactsIdRouteImport } from './routes/api/artifacts.$id'
 import { Route as ApiAgentsRegisterRouteImport } from './routes/api/agents.register'
 import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminSettingsRouteImport } from './routes/api/admin.settings'
@@ -103,6 +107,7 @@ import { Route as ApiBoardsIdMembersRouteImport } from './routes/api/boards.$id.
 import { Route as ApiBoardsIdEventsRouteImport } from './routes/api/boards.$id.events'
 import { Route as ApiBoardsIdAgentsRouteImport } from './routes/api/boards.$id.agents'
 import { Route as ApiAuthGoogleCallbackRouteImport } from './routes/api/auth/google.callback'
+import { Route as ApiArtifactsPublicSlugRouteImport } from './routes/api/artifacts.public.$slug'
 import { Route as ApiAgentsIdHeartbeatRouteImport } from './routes/api/agents.$id.heartbeat'
 import { Route as AppBoardsBoardIdTaskIdRouteImport } from './routes/_app/boards/$boardId.$taskId'
 import { Route as ApiLlmV1ChatCompletionsRouteImport } from './routes/api/llm.v1.chat.completions'
@@ -220,6 +225,11 @@ const ApiBoardsRoute = ApiBoardsRouteImport.update({
   path: '/api/boards',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiArtifactsRoute = ApiArtifactsRouteImport.update({
+  id: '/api/artifacts',
+  path: '/api/artifacts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAlertsRoute = ApiAlertsRouteImport.update({
   id: '/api/alerts',
   path: '/api/alerts',
@@ -233,6 +243,11 @@ const ApiAgentsRoute = ApiAgentsRouteImport.update({
 const ApiActivityRoute = ApiActivityRouteImport.update({
   id: '/api/activity',
   path: '/api/activity',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ASlugRoute = ASlugRouteImport.update({
+  id: '/a/$slug',
+  path: '/a/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppSkillsRoute = AppSkillsRouteImport.update({
@@ -293,6 +308,11 @@ const AppChatRoute = AppChatRouteImport.update({
 const AppChannelsRoute = AppChannelsRouteImport.update({
   id: '/channels',
   path: '/channels',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppArtifactsRoute = AppArtifactsRouteImport.update({
+  id: '/artifacts',
+  path: '/artifacts',
   getParentRoute: () => AppRoute,
 } as any)
 const AppAlertsRoute = AppAlertsRouteImport.update({
@@ -445,6 +465,11 @@ const ApiAuthGoogleRoute = ApiAuthGoogleRouteImport.update({
   path: '/api/auth/google',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiArtifactsIdRoute = ApiArtifactsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiArtifactsRoute,
+} as any)
 const ApiAgentsRegisterRoute = ApiAgentsRegisterRouteImport.update({
   id: '/register',
   path: '/register',
@@ -585,6 +610,11 @@ const ApiAuthGoogleCallbackRoute = ApiAuthGoogleCallbackRouteImport.update({
   path: '/callback',
   getParentRoute: () => ApiAuthGoogleRoute,
 } as any)
+const ApiArtifactsPublicSlugRoute = ApiArtifactsPublicSlugRouteImport.update({
+  id: '/public/$slug',
+  path: '/public/$slug',
+  getParentRoute: () => ApiArtifactsRoute,
+} as any)
 const ApiAgentsIdHeartbeatRoute = ApiAgentsIdHeartbeatRouteImport.update({
   id: '/$id/heartbeat',
   path: '/$id/heartbeat',
@@ -654,6 +684,7 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AppAdminRoute
   '/agents': typeof AppAgentsRoute
   '/alerts': typeof AppAlertsRoute
+  '/artifacts': typeof AppArtifactsRoute
   '/channels': typeof AppChannelsRoute
   '/chat': typeof AppChatRoute
   '/cost': typeof AppCostRoute
@@ -666,9 +697,11 @@ export interface FileRoutesByFullPath {
   '/models': typeof AppModelsRoute
   '/settings': typeof AppSettingsRoute
   '/skills': typeof AppSkillsRoute
+  '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
   '/api/alerts': typeof ApiAlertsRoute
+  '/api/artifacts': typeof ApiArtifactsRouteWithChildren
   '/api/boards': typeof ApiBoardsRouteWithChildren
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
@@ -691,6 +724,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
+  '/api/artifacts/$id': typeof ApiArtifactsIdRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/api/auth/password': typeof ApiAuthPasswordRoute
@@ -719,6 +753,7 @@ export interface FileRoutesByFullPath {
   '/boards/': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
+  '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRoute
   '/api/auth/google/callback': typeof ApiAuthGoogleCallbackRoute
   '/api/boards/$id/agents': typeof ApiBoardsIdAgentsRoute
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
@@ -760,6 +795,7 @@ export interface FileRoutesByTo {
   '/admin': typeof AppAdminRoute
   '/agents': typeof AppAgentsRoute
   '/alerts': typeof AppAlertsRoute
+  '/artifacts': typeof AppArtifactsRoute
   '/channels': typeof AppChannelsRoute
   '/chat': typeof AppChatRoute
   '/cost': typeof AppCostRoute
@@ -772,9 +808,11 @@ export interface FileRoutesByTo {
   '/models': typeof AppModelsRoute
   '/settings': typeof AppSettingsRoute
   '/skills': typeof AppSkillsRoute
+  '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
   '/api/alerts': typeof ApiAlertsRoute
+  '/api/artifacts': typeof ApiArtifactsRouteWithChildren
   '/api/boards': typeof ApiBoardsRouteWithChildren
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
@@ -798,6 +836,7 @@ export interface FileRoutesByTo {
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
+  '/api/artifacts/$id': typeof ApiArtifactsIdRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/api/auth/password': typeof ApiAuthPasswordRoute
@@ -826,6 +865,7 @@ export interface FileRoutesByTo {
   '/boards': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
+  '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRoute
   '/api/auth/google/callback': typeof ApiAuthGoogleCallbackRoute
   '/api/boards/$id/agents': typeof ApiBoardsIdAgentsRoute
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
@@ -869,6 +909,7 @@ export interface FileRoutesById {
   '/_app/admin': typeof AppAdminRoute
   '/_app/agents': typeof AppAgentsRoute
   '/_app/alerts': typeof AppAlertsRoute
+  '/_app/artifacts': typeof AppArtifactsRoute
   '/_app/channels': typeof AppChannelsRoute
   '/_app/chat': typeof AppChatRoute
   '/_app/cost': typeof AppCostRoute
@@ -881,9 +922,11 @@ export interface FileRoutesById {
   '/_app/models': typeof AppModelsRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/skills': typeof AppSkillsRoute
+  '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
   '/api/alerts': typeof ApiAlertsRoute
+  '/api/artifacts': typeof ApiArtifactsRouteWithChildren
   '/api/boards': typeof ApiBoardsRouteWithChildren
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
@@ -907,6 +950,7 @@ export interface FileRoutesById {
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
+  '/api/artifacts/$id': typeof ApiArtifactsIdRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/api/auth/password': typeof ApiAuthPasswordRoute
@@ -935,6 +979,7 @@ export interface FileRoutesById {
   '/_app/boards/': typeof AppBoardsIndexRoute
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
+  '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRoute
   '/api/auth/google/callback': typeof ApiAuthGoogleCallbackRoute
   '/api/boards/$id/agents': typeof ApiBoardsIdAgentsRoute
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
@@ -979,6 +1024,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/agents'
     | '/alerts'
+    | '/artifacts'
     | '/channels'
     | '/chat'
     | '/cost'
@@ -991,9 +1037,11 @@ export interface FileRouteTypes {
     | '/models'
     | '/settings'
     | '/skills'
+    | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
     | '/api/alerts'
+    | '/api/artifacts'
     | '/api/boards'
     | '/api/channels'
     | '/api/chat'
@@ -1016,6 +1064,7 @@ export interface FileRouteTypes {
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agents/register'
+    | '/api/artifacts/$id'
     | '/api/auth/google'
     | '/api/auth/logout'
     | '/api/auth/password'
@@ -1044,6 +1093,7 @@ export interface FileRouteTypes {
     | '/boards/'
     | '/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
+    | '/api/artifacts/public/$slug'
     | '/api/auth/google/callback'
     | '/api/boards/$id/agents'
     | '/api/boards/$id/events'
@@ -1085,6 +1135,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/agents'
     | '/alerts'
+    | '/artifacts'
     | '/channels'
     | '/chat'
     | '/cost'
@@ -1097,9 +1148,11 @@ export interface FileRouteTypes {
     | '/models'
     | '/settings'
     | '/skills'
+    | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
     | '/api/alerts'
+    | '/api/artifacts'
     | '/api/boards'
     | '/api/channels'
     | '/api/chat'
@@ -1123,6 +1176,7 @@ export interface FileRouteTypes {
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agents/register'
+    | '/api/artifacts/$id'
     | '/api/auth/google'
     | '/api/auth/logout'
     | '/api/auth/password'
@@ -1151,6 +1205,7 @@ export interface FileRouteTypes {
     | '/boards'
     | '/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
+    | '/api/artifacts/public/$slug'
     | '/api/auth/google/callback'
     | '/api/boards/$id/agents'
     | '/api/boards/$id/events'
@@ -1193,6 +1248,7 @@ export interface FileRouteTypes {
     | '/_app/admin'
     | '/_app/agents'
     | '/_app/alerts'
+    | '/_app/artifacts'
     | '/_app/channels'
     | '/_app/chat'
     | '/_app/cost'
@@ -1205,9 +1261,11 @@ export interface FileRouteTypes {
     | '/_app/models'
     | '/_app/settings'
     | '/_app/skills'
+    | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
     | '/api/alerts'
+    | '/api/artifacts'
     | '/api/boards'
     | '/api/channels'
     | '/api/chat'
@@ -1231,6 +1289,7 @@ export interface FileRouteTypes {
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agents/register'
+    | '/api/artifacts/$id'
     | '/api/auth/google'
     | '/api/auth/logout'
     | '/api/auth/password'
@@ -1259,6 +1318,7 @@ export interface FileRouteTypes {
     | '/_app/boards/'
     | '/_app/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
+    | '/api/artifacts/public/$slug'
     | '/api/auth/google/callback'
     | '/api/boards/$id/agents'
     | '/api/boards/$id/events'
@@ -1298,9 +1358,11 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRoute
+  ASlugRoute: typeof ASlugRoute
   ApiActivityRoute: typeof ApiActivityRoute
   ApiAgentsRoute: typeof ApiAgentsRouteWithChildren
   ApiAlertsRoute: typeof ApiAlertsRoute
+  ApiArtifactsRoute: typeof ApiArtifactsRouteWithChildren
   ApiBoardsRoute: typeof ApiBoardsRouteWithChildren
   ApiChannelsRoute: typeof ApiChannelsRouteWithChildren
   ApiChatRoute: typeof ApiChatRoute
@@ -1490,6 +1552,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBoardsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/artifacts': {
+      id: '/api/artifacts'
+      path: '/api/artifacts'
+      fullPath: '/api/artifacts'
+      preLoaderRoute: typeof ApiArtifactsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/alerts': {
       id: '/api/alerts'
       path: '/api/alerts'
@@ -1509,6 +1578,13 @@ declare module '@tanstack/react-router' {
       path: '/api/activity'
       fullPath: '/api/activity'
       preLoaderRoute: typeof ApiActivityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/a/$slug': {
+      id: '/a/$slug'
+      path: '/a/$slug'
+      fullPath: '/a/$slug'
+      preLoaderRoute: typeof ASlugRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/skills': {
@@ -1593,6 +1669,13 @@ declare module '@tanstack/react-router' {
       path: '/channels'
       fullPath: '/channels'
       preLoaderRoute: typeof AppChannelsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/artifacts': {
+      id: '/_app/artifacts'
+      path: '/artifacts'
+      fullPath: '/artifacts'
+      preLoaderRoute: typeof AppArtifactsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/alerts': {
@@ -1805,6 +1888,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthGoogleRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/artifacts/$id': {
+      id: '/api/artifacts/$id'
+      path: '/$id'
+      fullPath: '/api/artifacts/$id'
+      preLoaderRoute: typeof ApiArtifactsIdRouteImport
+      parentRoute: typeof ApiArtifactsRoute
+    }
     '/api/agents/register': {
       id: '/api/agents/register'
       path: '/register'
@@ -2001,6 +2091,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthGoogleCallbackRouteImport
       parentRoute: typeof ApiAuthGoogleRoute
     }
+    '/api/artifacts/public/$slug': {
+      id: '/api/artifacts/public/$slug'
+      path: '/public/$slug'
+      fullPath: '/api/artifacts/public/$slug'
+      preLoaderRoute: typeof ApiArtifactsPublicSlugRouteImport
+      parentRoute: typeof ApiArtifactsRoute
+    }
     '/api/agents/$id/heartbeat': {
       id: '/api/agents/$id/heartbeat'
       path: '/$id/heartbeat'
@@ -2104,6 +2201,7 @@ interface AppRouteChildren {
   AppAdminRoute: typeof AppAdminRoute
   AppAgentsRoute: typeof AppAgentsRoute
   AppAlertsRoute: typeof AppAlertsRoute
+  AppArtifactsRoute: typeof AppArtifactsRoute
   AppChannelsRoute: typeof AppChannelsRoute
   AppChatRoute: typeof AppChatRoute
   AppCostRoute: typeof AppCostRoute
@@ -2126,6 +2224,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppAdminRoute: AppAdminRoute,
   AppAgentsRoute: AppAgentsRoute,
   AppAlertsRoute: AppAlertsRoute,
+  AppArtifactsRoute: AppArtifactsRoute,
   AppChannelsRoute: AppChannelsRoute,
   AppChatRoute: AppChatRoute,
   AppCostRoute: AppCostRoute,
@@ -2157,6 +2256,20 @@ const ApiAgentsRouteChildren: ApiAgentsRouteChildren = {
 
 const ApiAgentsRouteWithChildren = ApiAgentsRoute._addFileChildren(
   ApiAgentsRouteChildren,
+)
+
+interface ApiArtifactsRouteChildren {
+  ApiArtifactsIdRoute: typeof ApiArtifactsIdRoute
+  ApiArtifactsPublicSlugRoute: typeof ApiArtifactsPublicSlugRoute
+}
+
+const ApiArtifactsRouteChildren: ApiArtifactsRouteChildren = {
+  ApiArtifactsIdRoute: ApiArtifactsIdRoute,
+  ApiArtifactsPublicSlugRoute: ApiArtifactsPublicSlugRoute,
+}
+
+const ApiArtifactsRouteWithChildren = ApiArtifactsRoute._addFileChildren(
+  ApiArtifactsRouteChildren,
 )
 
 interface ApiBoardsIdRouteChildren {
@@ -2448,9 +2561,11 @@ const ApiKbDocsIdRouteWithChildren = ApiKbDocsIdRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
+  ASlugRoute: ASlugRoute,
   ApiActivityRoute: ApiActivityRoute,
   ApiAgentsRoute: ApiAgentsRouteWithChildren,
   ApiAlertsRoute: ApiAlertsRoute,
+  ApiArtifactsRoute: ApiArtifactsRouteWithChildren,
   ApiBoardsRoute: ApiBoardsRouteWithChildren,
   ApiChannelsRoute: ApiChannelsRouteWithChildren,
   ApiChatRoute: ApiChatRoute,

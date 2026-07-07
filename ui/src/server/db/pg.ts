@@ -530,6 +530,30 @@ const MIGRATIONS: string[] = [
   // Docs inherit their audience (visibility / edit policy / grants) from their
   // folder unless individually customized. The creator always keeps ownership.
   `alter table kb_docs add column if not exists perms_inherited boolean not null default true`,
+  // Artifacts — versioned work products (doc/sheet/microsite/file) with their
+  // own hosting, sharing (reusing kb_editors with item_type='artifact' + the
+  // same visibility/edit-policy model), and versioning (internal_versions kind
+  // 'artifact'). Promoting one to "official" mirrors it into the knowledgebase.
+  `create table if not exists artifacts (
+     id uuid primary key default gen_random_uuid(),
+     kind text not null default 'doc',
+     title text not null default 'Untitled',
+     icon text,
+     body text not null default '',
+     content_type text,
+     storage_ref text,
+     visibility text not null default 'private',
+     edit_policy text not null default 'owner',
+     public_slug text unique,
+     official boolean not null default false,
+     kb_doc_id uuid references kb_docs(id) on delete set null,
+     owner_user_id uuid references users(id) on delete set null,
+     created_by text,
+     updated_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `create index if not exists artifacts_owner_idx on artifacts(owner_user_id)`,
 ]
 
 function ensureMigrated(): Promise<void> {
