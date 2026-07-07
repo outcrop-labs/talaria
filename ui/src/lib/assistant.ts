@@ -1,0 +1,61 @@
+// Client for the signed-in user's personal assistant (/api/me/assistant).
+import { useQuery } from '@tanstack/react-query'
+
+export interface Assistant {
+  id: string
+  slug: string
+  model: string
+  department: string
+  displayName: string
+  enabled: boolean
+  personality: string | null
+  running: boolean
+}
+
+export function useAssistant() {
+  return useQuery({
+    queryKey: ['my-assistant'],
+    queryFn: async (): Promise<Assistant | null> => {
+      const r = await fetch('/api/me/assistant', { credentials: 'same-origin' })
+      if (!r.ok) return null
+      return ((await r.json()) as { assistant: Assistant | null }).assistant
+    },
+  })
+}
+
+export interface AssistantResult {
+  assistant?: Assistant
+  error?: string
+}
+
+export async function createAssistant(input: { name?: string; handle?: string; personality?: string }): Promise<AssistantResult> {
+  const r = await fetch('/api/me/assistant', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  }).catch(() => null)
+  return ((await r?.json().catch(() => null)) as AssistantResult | null) ?? { error: 'could not create your assistant' }
+}
+
+export async function updateAssistant(patch: { name?: string; personality?: string }): Promise<AssistantResult> {
+  const r = await fetch('/api/me/assistant', {
+    method: 'PATCH',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).catch(() => null)
+  return ((await r?.json().catch(() => null)) as AssistantResult | null) ?? { error: 'could not update your assistant' }
+}
+
+/** Suggest a handle from a display name: "Maxie!" → "maxie". */
+export function suggestHandle(name: string): string {
+  const base = name
+    .toLowerCase()
+    .replace(/'s assistant$/i, '')
+    .replace(/[^a-z0-9]/g, '')
+    .slice(0, 30)
+  return /^[a-z]/.test(base) && base.length >= 2 ? base : ''
+}
+
+export const HANDLE_RE = /^[a-z][a-z0-9]{1,29}$/

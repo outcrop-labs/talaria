@@ -57,6 +57,8 @@ export async function createAgent(input: {
   role?: string | null
   templateId: string
   createdBy: string
+  /** Override the starter-soul scaffold (e.g. a personalized assistant soul). */
+  soul?: string
 }): Promise<{ def: AgentDef; keyCreated: boolean }> {
   if (!SLUG_RE.test(input.slug)) throw new Error('slug must be short lowercase alphanumeric (e.g. "remy")')
   if (!DEPT_RE.test(input.department)) throw new Error('department must be lowercase-kebab (e.g. "research")')
@@ -80,7 +82,7 @@ export async function createAgent(input: {
 
   const config = restampSlug(templateVersion.config, fromSlug, input.slug) as AgentConfig
   await addVersionIfChanged(def.id, {
-    soul: starterSoul(input.displayName, input.department),
+    soul: input.soul ?? starterSoul(input.displayName, input.department),
     config,
     note: `created from template ${fromSlug}`,
     createdBy: input.createdBy,

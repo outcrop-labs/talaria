@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
+import { AssistantSection } from '@/components/assistant/assistant-section'
 
 export const Route = createFileRoute('/_app/settings')({
   component: SettingsPage,
@@ -71,6 +72,7 @@ function SettingsPage() {
         {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
       </section>
 
+      <AssistantSection />
       <ApiKeysSection />
     </div>
   )

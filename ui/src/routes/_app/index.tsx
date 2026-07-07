@@ -1,11 +1,13 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
+import { AssistantWizard } from '@/components/assistant/assistant-wizard'
 import { relativeTime } from '@/lib/fleet'
+import { useAssistant } from '@/lib/assistant'
 import { useSession } from '@/lib/session'
 
 export const Route = createFileRoute('/_app/')({
@@ -127,45 +129,12 @@ function HomePage() {
   )
 }
 
-interface Assistant {
-  id: string
-  slug: string
-  model: string
-  displayName: string
-  enabled: boolean
-}
-
-// The one-button personal assistant: everyone can spin up their own agent
-// (its own container, memory, key) and jump straight into a chat with it.
+// The personal assistant card: everyone can set up their own agent (its own
+// container, memory, key) through the onboarding wizard, then jump into chat.
 function AssistantCard() {
-  const qc = useQueryClient()
   const navigate = useNavigate()
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-  const { data, isLoading } = useQuery({
-    queryKey: ['my-assistant'],
-    queryFn: async (): Promise<Assistant | null> => {
-      const r = await fetch('/api/me/assistant')
-      if (!r.ok) return null
-      return ((await r.json()) as { assistant: Assistant | null }).assistant
-    },
-  })
-
-  const create = async () => {
-    setBusy(true)
-    setErr(null)
-    try {
-      const r = await fetch('/api/me/assistant', { method: 'POST' })
-      const j = (await r.json()) as { assistant?: Assistant; error?: string }
-      if (!r.ok || j.error) setErr(j.error ?? 'could not create your assistant')
-      else {
-        await qc.invalidateQueries({ queryKey: ['my-assistant'] })
-        await qc.invalidateQueries({ queryKey: ['agents'] })
-      }
-    } finally {
-      setBusy(false)
-    }
-  }
+  const [wizard, setWizard] = useState(false)
+  const { data, isLoading } = useAssistant()
 
   if (isLoading) return null
   return (
@@ -186,15 +155,15 @@ function AssistantCard() {
       ) : (
         <>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-fg">Spin up your assistant</div>
+            <div className="text-sm font-medium text-fg">Set up your assistant</div>
             <div className="truncate text-xs text-muted">A personal agent that's just yours — memory, skills, and tools of its own.</div>
-            {err && <div className="mt-1 text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
           </div>
-          <Button size="sm" onClick={() => void create()} disabled={busy}>
-            {busy ? 'Creating…' : 'Create assistant'}
+          <Button size="sm" onClick={() => setWizard(true)}>
+            Get started
           </Button>
         </>
       )}
+      {wizard && <AssistantWizard onClose={() => setWizard(false)} />}
     </Panel>
   )
 }
