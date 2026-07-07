@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Plus, FileText, Bot, Globe, Lock, Users, Star, Trash2, History,
-  ChevronRight, Search, Link2, ListTree, X,
+  ChevronRight, Search, Link2, ListTree, X, Maximize2, Minimize2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -443,6 +443,7 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
   const [name, setName] = useState('')
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
   const [mode, setMode] = useState<'read' | 'edit'>('read')
   const initMode = useRef(false)
   useEffect(() => {
@@ -452,6 +453,12 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
       setMode(space.body.trim() ? 'read' : 'edit')
     }
   }, [space])
+  useEffect(() => {
+    if (!fullscreen) return
+    const h = (e: KeyboardEvent) => e.key === 'Escape' && setFullscreen(false)
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [fullscreen])
 
   const save = async (patch: Parameters<typeof updateSpace>[1]) => {
     setSaving(true)
@@ -468,7 +475,7 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
   if (!space) return <div className="p-8 text-sm text-muted">Loading…</div>
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
       <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
         <div className="relative shrink-0">
           <button type="button" onClick={() => setEmojiOpen((v) => !v)} className="rounded-lg px-1 text-xl leading-none hover:bg-card" title="Set icon">
@@ -515,45 +522,44 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
             </button>
           ))}
         </div>
+        <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
+          {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </Button>
         <Button variant="outline" size="sm" className="shrink-0" onClick={onNewDoc}>
-          <Plus size={13} className="mr-1" /> New doc
+          <Plus size={13} className="mr-1" /> New
         </Button>
       </div>
       {mode === 'edit' ? (
-        <div className="flex min-h-0 flex-1 flex-col p-4">
-          <RichEditor
-            key={spaceId}
-            ref={editorRef}
-            value={space.body}
-            docSearch={docSearch}
-            slash
-            onSave={() => void saveBody()}
-            placeholder="Write an overview for this space — what lives here, how it's organized…"
-            fill
-            className="flex-1"
-          />
-        </div>
+        <RichEditor
+          key={spaceId}
+          ref={editorRef}
+          value={space.body}
+          docSearch={docSearch}
+          slash
+          prose
+          autosave
+          onSave={() => void saveBody()}
+          placeholder="Write an overview for this space — what lives here, how it's organized…"
+          fill
+          className="min-w-0 flex-1"
+        />
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-3xl px-10 py-8">
-            {space.body.trim() ? (
-              <Markdown className="tiptap">{space.body}</Markdown>
-            ) : (
+        <div className="re-prose min-h-0 flex-1 overflow-y-auto">
+          {space.body.trim() ? (
+            <Markdown className="tiptap">{space.body}</Markdown>
+          ) : (
+            <div className="mx-auto max-w-[46rem] px-6 py-8">
               <button type="button" onClick={() => setMode('edit')} className="text-sm text-muted hover:text-fg">
                 No overview yet — click to describe this space.
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       )}
       <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
         <span>Top-level document · child docs nest under it</span>
         <span className="ml-auto" />
-        {mode === 'edit' && (
-          <Button size="sm" onClick={() => void saveBody()} disabled={saving}>
-            {saving ? 'Saving…' : 'Save'}
-          </Button>
-        )}
+        {mode === 'edit' && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
       </div>
     </div>
   )
@@ -595,6 +601,7 @@ function DocEditor({
   const [showHistory, setShowHistory] = useState(false)
   const [showToc, setShowToc] = useState(true)
   const [emojiOpen, setEmojiOpen] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
   const [seed, setSeed] = useState(0) // bump to remount the editor (e.g. after restore)
   // Authored docs open in read mode (like tickets); empty ones open in edit.
   const [mode, setMode] = useState<'read' | 'edit'>('read')
@@ -606,6 +613,14 @@ function DocEditor({
       setMode(doc.body.trim() ? 'read' : 'edit')
     }
   }, [doc])
+
+  // Esc leaves fullscreen (unless a menu/popup is open and swallows it first).
+  useEffect(() => {
+    if (!fullscreen) return
+    const h = (e: KeyboardEvent) => e.key === 'Escape' && setFullscreen(false)
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [fullscreen])
 
   const headings = useMemo(() => parseHeadings(doc?.body ?? ''), [doc?.body])
 
@@ -644,7 +659,7 @@ function DocEditor({
   if (!doc) return <div className="p-8 text-sm text-muted">Loading…</div>
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
       {/* Breadcrumb */}
       <div className="flex items-center gap-1 border-b border-line-subtle px-6 pt-2 text-[11px] text-muted">
         {trail.map((d, i) => (
@@ -734,6 +749,9 @@ function DocEditor({
         <Button variant="ghost" size="sm" className="shrink-0" title="Table of contents" onClick={() => setShowToc((v) => !v)}>
           <ListTree size={14} />
         </Button>
+        <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
+          {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </Button>
         <Button variant="ghost" size="sm" className="shrink-0" title="History" onClick={() => setShowHistory((v) => !v)}>
           <History size={14} />
         </Button>
@@ -763,35 +781,39 @@ function DocEditor({
 
       <div ref={bodyRef} className="flex min-h-0 flex-1">
         {mode === 'edit' ? (
-          // Edit mode fills the whole panel (fill = stretch + internal scroll).
-          <div className="flex min-w-0 flex-1 flex-col p-4">
-            <RichEditor
-              key={`${docId}-${seed}`}
-              ref={editorRef}
-              value={doc.body}
-              docSearch={docSearch}
-              slash
-              onSave={() => void saveBody()}
-              placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents…' : 'Write…'}
-              fill
-              className="flex-1"
-            />
-          </div>
+          // Flush page surface: the editor fills the panel, text wraps to a
+          // comfortable centered measure, and it autosaves as you type.
+          <RichEditor
+            key={`${docId}-${seed}`}
+            ref={editorRef}
+            value={doc.body}
+            docSearch={docSearch}
+            slash
+            prose
+            autosave
+            onSave={() => void saveBody()}
+            placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents…' : 'Write…'}
+            fill
+            className="min-w-0 flex-1"
+          />
         ) : (
-          // Read mode: rendered markdown, centered like a document, fills the panel.
-          <div className="min-w-0 flex-1 overflow-y-auto">
-            <div className="mx-auto max-w-3xl px-10 py-8">
-              {doc.body.trim() ? (
-                <Markdown className="tiptap">{doc.body}</Markdown>
-              ) : (
+          // Read mode: rendered markdown with the identical measure/typography as
+          // the editor (both use .re-prose), so switching modes doesn't reflow.
+          <div className="re-prose min-w-0 flex-1 overflow-y-auto">
+            {doc.body.trim() ? (
+              <Markdown className="tiptap">{doc.body}</Markdown>
+            ) : (
+              <div className="mx-auto max-w-[46rem] px-6 py-8">
                 <button type="button" onClick={() => setMode('edit')} className="text-sm text-muted hover:text-fg">
                   This document is empty — click to start writing.
                 </button>
-              )}
+              </div>
+            )}
 
-              {/* Backlinks — docs that reference this one. */}
-              {backlinks.length > 0 && (
-                <div className="mt-10 border-t border-line-subtle pt-4">
+            {/* Backlinks — docs that reference this one. */}
+            {backlinks.length > 0 && (
+              <div className="mx-auto max-w-[46rem] px-6 pb-10">
+                <div className="border-t border-line-subtle pt-4">
                   <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
                     <Link2 size={12} /> Linked from
                   </div>
@@ -809,8 +831,8 @@ function DocEditor({
                     ))}
                   </div>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -859,11 +881,7 @@ function DocEditor({
         <VisibilityIcon v={doc.visibility} />
         <span>edited {relativeTime(doc.updatedAt)}{doc.updatedBy ? ` by ${doc.updatedBy}` : ''}</span>
         <span className="ml-auto" />
-        {mode === 'edit' && (
-          <Button size="sm" onClick={() => void saveBody()} disabled={saving}>
-            {saving ? 'Saving…' : 'Save'}
-          </Button>
-        )}
+        {mode === 'edit' && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
       </div>
     </div>
   )

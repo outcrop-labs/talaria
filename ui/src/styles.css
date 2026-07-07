@@ -339,3 +339,17 @@ body {
 /* Divider */
 .tiptap hr { border: 0; border-top: 1px solid var(--theme-line); margin: 1rem 0; }
 .tiptap hr.ProseMirror-selectednode { border-top-color: var(--theme-accent); }
+/* Flush, page-like document surface: the editor (edit) and rendered markdown
+   (read) both fill their panel, but the text wraps to a comfortable centered
+   measure — no "nested box" feel, and read/edit look identical. */
+.re-prose .tiptap {
+  max-width: 46rem;
+  margin-inline: auto;
+  padding: 2rem 1.5rem 6rem;
+  font-size: 0.95rem;
+  line-height: 1.7;
+}
+.re-prose .tiptap h1 { font-size: 1.5rem; margin-top: 1.25rem; }
+.re-prose .tiptap h2 { font-size: 1.25rem; margin-top: 1rem; }
+.re-prose .tiptap h3 { font-size: 1.05rem; margin-top: 0.75rem; }
+.re-prose .tiptap > * + * { margin-top: 0.75rem; }

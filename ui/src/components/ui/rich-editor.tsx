@@ -77,9 +77,15 @@ export const RichEditor = forwardRef<RichEditorHandle, {
   docSearch?: DocSearchFn
   /** Enable the "/" slash-command block menu (document editors). */
   slash?: boolean
+  /** Flush, page-like surface: no box/border, text wrapped to a comfortable
+   *  centered measure. For full-panel document editors. */
+  prose?: boolean
+  /** Save as you type (debounced) instead of only on blur — no Save button. */
+  autosave?: boolean
   className?: string
-}>(function RichEditor({ value, onSave, onSubmit, editable = true, placeholder, minHeight = '5rem', bare = false, fill = false, docSearch, slash = false, className }, ref) {
+}>(function RichEditor({ value, onSave, onSubmit, editable = true, placeholder, minHeight = '5rem', bare = false, fill = false, docSearch, slash = false, prose = false, autosave = false, className }, ref) {
   const lastSaved = useRef<string>(value)
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -111,12 +117,28 @@ export const RichEditor = forwardRef<RichEditorHandle, {
       lastSaved.current = editor.storage.markdown.getMarkdown()
     },
     onBlur: ({ editor }) => {
+      if (saveTimer.current) clearTimeout(saveTimer.current)
       const md = editor.storage.markdown.getMarkdown()
       if (md === lastSaved.current) return
       lastSaved.current = md
       onSave?.(md)
     },
+    onUpdate: ({ editor }) => {
+      // Save as you type — debounced — so there's no Save button to remember.
+      if (!autosave) return
+      if (saveTimer.current) clearTimeout(saveTimer.current)
+      saveTimer.current = setTimeout(() => {
+        const md = editor.storage.markdown.getMarkdown()
+        if (md === lastSaved.current) return
+        lastSaved.current = md
+        onSave?.(md)
+      }, 700)
+    },
   })
+
+  useEffect(() => () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+  }, [])
 
   useImperativeHandle(
     ref,
@@ -135,10 +157,12 @@ export const RichEditor = forwardRef<RichEditorHandle, {
       className={cn(
         'overflow-hidden',
         fill && 'flex h-full min-h-0 flex-col',
-        // Editors always carry the off-bronze-black input surface — never rely on
-        // the background behind them. `bare` only drops the border/rounding.
-        editable && 'bg-[var(--theme-input)]',
-        !bare && cn('rounded-xl border', editable ? 'border-line' : 'border-transparent'),
+        // Editors carry the off-bronze-black input surface so they never rely on
+        // the background behind them — EXCEPT `prose` mode, a flush page-like
+        // document surface (no box, no fill) that inherits the panel.
+        !prose && editable && 'bg-[var(--theme-input)]',
+        !bare && !prose && cn('rounded-xl border', editable ? 'border-line' : 'border-transparent'),
+        prose && 're-prose',
         className,
       )}
       onKeyDown={(e) => {
