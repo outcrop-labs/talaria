@@ -13,6 +13,7 @@ import TableCell from '@tiptap/extension-table-cell'
 import Image from '@tiptap/extension-image'
 import { createLowlight, common } from 'lowlight'
 import { Markdown } from 'tiptap-markdown'
+import { SlashCommands } from '@/components/ui/slash-commands'
 
 const lowlight = createLowlight(common)
 
@@ -26,7 +27,9 @@ import {
   Bold,
   Italic,
   Strikethrough,
+  Heading1,
   Heading2,
+  Heading3,
   List,
   ListOrdered,
   ListChecks,
@@ -72,8 +75,10 @@ export const RichEditor = forwardRef<RichEditorHandle, {
   fill?: boolean
   /** Enable the "link to another doc" toolbar button (KB cross-references). */
   docSearch?: DocSearchFn
+  /** Enable the "/" slash-command block menu (document editors). */
+  slash?: boolean
   className?: string
-}>(function RichEditor({ value, onSave, onSubmit, editable = true, placeholder, minHeight = '5rem', bare = false, fill = false, docSearch, className }, ref) {
+}>(function RichEditor({ value, onSave, onSubmit, editable = true, placeholder, minHeight = '5rem', bare = false, fill = false, docSearch, slash = false, className }, ref) {
   const lastSaved = useRef<string>(value)
 
   const editor = useEditor({
@@ -91,8 +96,12 @@ export const RichEditor = forwardRef<RichEditorHandle, {
       TableHeader,
       TableCell,
       Image.configure({ inline: false, allowBase64: false }),
-      Placeholder.configure({ placeholder: placeholder ?? '' }),
+      Placeholder.configure({
+        placeholder: ({ node }) =>
+          slash && node.type.name === 'paragraph' ? (placeholder ? `${placeholder}  ·  type “/” for blocks` : 'Type “/” for blocks, or just write…') : (placeholder ?? ''),
+      }),
       Markdown.configure({ html: false, breaks: true, transformPastedText: true }),
+      ...(slash ? [SlashCommands] : []),
     ],
     content: value,
     // min-height goes on the contenteditable itself (not a wrapper) so clicking
@@ -154,7 +163,9 @@ function Toolbar({ editor, onSubmit, docSearch }: { editor: Editor | null; onSub
       bold: editor?.isActive('bold') ?? false,
       italic: editor?.isActive('italic') ?? false,
       strike: editor?.isActive('strike') ?? false,
+      h1: editor?.isActive('heading', { level: 1 }) ?? false,
       h2: editor?.isActive('heading', { level: 2 }) ?? false,
+      h3: editor?.isActive('heading', { level: 3 }) ?? false,
       bullet: editor?.isActive('bulletList') ?? false,
       ordered: editor?.isActive('orderedList') ?? false,
       task: editor?.isActive('taskList') ?? false,
@@ -237,7 +248,9 @@ function Toolbar({ editor, onSubmit, docSearch }: { editor: Editor | null; onSub
       <Btn icon={Italic} title="Italic" active={s.italic} onClick={() => c().toggleItalic().run()} />
       <Btn icon={Strikethrough} title="Strikethrough" active={s.strike} onClick={() => c().toggleStrike().run()} />
       <span className="mx-1 h-4 w-px bg-line-subtle" />
-      <Btn icon={Heading2} title="Heading" active={s.h2} onClick={() => c().toggleHeading({ level: 2 }).run()} />
+      <Btn icon={Heading1} title="Big heading" active={s.h1} onClick={() => c().toggleHeading({ level: 1 }).run()} />
+      <Btn icon={Heading2} title="Medium heading" active={s.h2} onClick={() => c().toggleHeading({ level: 2 }).run()} />
+      <Btn icon={Heading3} title="Small heading" active={s.h3} onClick={() => c().toggleHeading({ level: 3 }).run()} />
       <Btn icon={List} title="Bulleted list" active={s.bullet} onClick={() => c().toggleBulletList().run()} />
       <Btn icon={ListOrdered} title="Numbered list" active={s.ordered} onClick={() => c().toggleOrderedList().run()} />
       <Btn icon={ListChecks} title="Task list" active={s.task} onClick={() => c().toggleTaskList().run()} />

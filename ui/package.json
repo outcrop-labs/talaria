@@ -29,6 +29,7 @@
     "@tiptap/pm": "^2.27.2",
     "@tiptap/react": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
+    "@tiptap/suggestion": "^2.27.2",
     "clsx": "^2.1.1",
     "framer-motion": "^12.36.0",
     "highlight.js": "^11.11.1",
