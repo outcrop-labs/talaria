@@ -6,7 +6,7 @@ import { deleteSpace, getSpace, updateSpace } from '@/server/kb'
 import { canEditHuman, canRead, isOwner, listEditors, setEditors } from '@/server/kb-perms'
 import { logAudit } from '@/server/audit'
 
-const Editor = z.object({ principalType: z.enum(['user', 'agent']), principalId: z.string().min(1).max(200) })
+const Editor = z.object({ principalType: z.enum(['user', 'agent']), principalId: z.string().min(1).max(200), role: z.enum(['viewer', 'editor']).default('viewer') })
 const Patch = z.object({
   name: z.string().min(1).max(80).optional(),
   description: z.string().max(400).nullish(),
@@ -27,8 +27,9 @@ export const Route = createFileRoute('/api/kb/spaces/$id')({
         if (!space) return json({ error: 'not found' }, { status: 404 })
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!canRead(space, user.id, user.email ?? user.name)) return json({ error: 'forbidden' }, { status: 403 })
-        return json({ space, editors: await listEditors('space', space.id) })
+        const editors = await listEditors('space', space.id)
+        if (!canRead(space, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
+        return json({ space, editors })
       },
       PUT: async ({ request, params }) => {
         const space = await getSpace(params.id)

@@ -2,9 +2,11 @@ import { useQuery } from '@tanstack/react-query'
 
 export type Visibility = 'private' | 'org' | 'public'
 export type EditPolicy = 'owner' | 'org' | 'restricted'
+export type GrantRole = 'viewer' | 'editor'
 export interface KbEditor {
   principalType: 'user' | 'agent'
   principalId: string
+  role: GrantRole
 }
 
 export interface KbSpace {

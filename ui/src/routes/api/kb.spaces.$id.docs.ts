@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { createDoc, listDocs } from '@/server/kb'
-import { canRead } from '@/server/kb-perms'
+import { canRead, grantedItemIds } from '@/server/kb-perms'
 
 const Body = z.object({
   title: z.string().max(200).optional(),
@@ -18,8 +18,9 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
       GET: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        // Drop others' private docs from the tree (you still can't open them).
-        const docs = (await listDocs(params.id)).filter((d) => canRead(d, user.id, user.email ?? user.name))
+        // Drop others' private docs from the tree, but keep ones shared with you.
+        const granted = await grantedItemIds('doc', user.id)
+        const docs = (await listDocs(params.id)).filter((d) => granted.has(d.id) || canRead(d, user.id, user.email ?? user.name))
         return json({ docs })
       },
       POST: async ({ request, params }) => {

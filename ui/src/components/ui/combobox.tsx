@@ -39,6 +39,7 @@ export function Combobox({
   className,
   size = 'md',
   allowCreate = false,
+  searchable = true,
   triggerLabel,
 }: {
   options: ComboOption[]
@@ -50,6 +51,8 @@ export function Combobox({
   className?: string
   size?: ControlSize
   allowCreate?: boolean
+  /** Show the search field. Off for short option lists (a clean menu). */
+  searchable?: boolean
   /** Override the trigger content (e.g. a constant "Add label…" for tag inputs). */
   triggerLabel?: React.ReactNode
 }) {
@@ -177,14 +180,16 @@ export function Combobox({
               className="mercury-panel fixed z-[60] overflow-hidden rounded-xl"
               style={{ top: pos.top, bottom: pos.bottom, left: pos.left, width: pos.width }}
             >
-            <input
-              autoFocus
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              onKeyDown={onSearchKeyDown}
-              placeholder={allowCreate ? 'Search or create…' : 'Search…'}
-              className="w-full border-b border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted"
-            />
+            {(searchable || allowCreate) && (
+              <input
+                autoFocus
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={onSearchKeyDown}
+                placeholder={allowCreate ? 'Search or create…' : 'Search…'}
+                className="w-full border-b border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted"
+              />
+            )}
             <ul className="max-h-56 overflow-y-auto p-1">
               {filtered.length === 0 && !canCreate && <li className="px-2 py-2 text-xs text-muted">No matches</li>}
               {canCreate && (
