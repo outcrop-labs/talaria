@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Check, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
+import { Steps } from '@/components/ui/steps'
 import { cn } from '@/lib/cn'
 import { importFleet, reconcileFleet, type ReconcileResult } from '@/lib/fleet-defs'
 
@@ -86,27 +87,7 @@ export function ImportWizard({ onClose }: { onClose: () => void }) {
   return (
     <Modal open onClose={onClose} title="Import agents" width="max-w-lg" footer={footer}>
       <div className="space-y-5">
-        {/* Step indicator */}
-        <div className="flex items-center gap-2">
-          {STEPS.map((label, i) => (
-            <div key={label} className="flex items-center gap-2">
-              {i > 0 && <span aria-hidden className="h-px w-6 bg-line-subtle" />}
-              <span
-                className={cn(
-                  'grid h-5 w-5 place-items-center rounded-full text-[10px] font-semibold',
-                  i < step
-                    ? 'bg-accent text-surface'
-                    : i === step
-                      ? 'border border-[var(--theme-accent)] text-accent'
-                      : 'border border-line-subtle text-muted',
-                )}
-              >
-                {i < step ? <Check size={11} /> : i + 1}
-              </span>
-              <span className={cn('text-xs', i === step ? 'font-medium text-fg' : 'text-muted')}>{label}</span>
-            </div>
-          ))}
-        </div>
+        <Steps steps={STEPS} current={step} />
 
         {step === 0 && (
           <div className="space-y-3 text-sm text-muted">
