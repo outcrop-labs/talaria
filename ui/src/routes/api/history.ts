@@ -17,8 +17,8 @@ export const Route = createFileRoute('/api/history')({
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         const q = new URL(request.url).searchParams
         const kind = q.get('kind') as InternalKind | null
-        if (kind !== 'skill' && kind !== 'memory' && kind !== 'kb-doc') return json({ error: 'bad kind' }, { status: 400 })
-        // skill keys on "<owner>/<name>"; memory + kb-doc key on an id.
+        if (kind !== 'skill' && kind !== 'memory' && kind !== 'kb-doc' && kind !== 'kb-space') return json({ error: 'bad kind' }, { status: 400 })
+        // skill keys on "<owner>/<name>"; memory + kb-doc + kb-space key on an id.
         const ownerKey =
           kind === 'skill'
             ? q.get('owner') && q.get('name')

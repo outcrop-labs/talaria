@@ -45,7 +45,7 @@ export const Route = createFileRoute('/api/kb/spaces/$id')({
           return json({ error: 'only the owner can change sharing' }, { status: 403 })
         }
         if (owner && parsed.data.editors !== undefined) await setEditors('space', params.id, parsed.data.editors)
-        const updated = await updateSpace(params.id, parsed.data)
+        const updated = await updateSpace(params.id, parsed.data, user.email ?? user.name ?? 'user')
         return json({ space: updated, editors: await listEditors('space', params.id) })
       },
       DELETE: async ({ request, params }) => {

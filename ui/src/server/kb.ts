@@ -71,6 +71,7 @@ export async function createSpace(input: { name: string; description?: string; i
 export async function updateSpace(
   id: string,
   patch: { name?: string; description?: string | null; icon?: string | null; body?: string; visibility?: 'private' | 'org' | 'public'; editPolicy?: 'owner' | 'org' | 'restricted' },
+  actor?: string,
 ): Promise<KbSpace | null> {
   const sql = await db()
   if (patch.name !== undefined) await sql`update kb_spaces set name = ${patch.name} where id = ${id}`
@@ -84,7 +85,12 @@ export async function updateSpace(
       await sql`update kb_spaces set public_slug = ${randomBytes(8).toString('hex')} where id = ${id} and public_slug is null`
     }
   }
-  return getSpace(id)
+  const next = await getSpace(id)
+  // Version the overview like a doc (name + body snapshot) on content change.
+  if (next && (patch.body !== undefined || patch.name !== undefined)) {
+    await snapshot('kb-space', id, `# ${next.name}\n\n${next.body}`, actor ?? null).catch(() => {})
+  }
+  return next
 }
 
 export async function getPublicSpace(slug: string): Promise<KbSpace | null> {

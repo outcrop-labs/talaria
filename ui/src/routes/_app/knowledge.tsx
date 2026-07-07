@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Plus, FileText, Bot, Globe, Lock, Users, Star, Trash2, History,
-  ChevronRight, Search, Link2, ListTree, X, Maximize2, Minimize2, Share2,
+  ChevronRight, Search, Link2, ListTree, X, Maximize2, Minimize2, MoreHorizontal,
+  type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -114,7 +115,6 @@ function KnowledgePage() {
                     setDocId(null) // open the space's own overview
                   }}
                   onRename={(name) => void renameSpace(s.id, name)}
-                  onDelete={() => void removeSpace(s.id)}
                 />
                 {activeSpace?.id === s.id && (
                   <DocTree docs={docs} activeId={docId} onSelect={setDocId} onNew={newDoc} onMove={move} />
@@ -130,7 +130,7 @@ function KnowledgePage() {
           <DocEditor key={docId} docId={docId} docs={docs} onDeleted={() => setDocId(null)} onSelect={setDocId} />
         ) : activeSpace ? (
           // A top-level folder is itself a document: its editable overview.
-          <SpaceEditor key={activeSpace.id} spaceId={activeSpace.id} onNewDoc={() => void newDoc('human')} />
+          <SpaceEditor key={activeSpace.id} spaceId={activeSpace.id} onNewDoc={() => void newDoc('human')} onDeleted={() => void removeSpace(activeSpace.id)} />
         ) : (
           <EmptyState icon="❖" title="Knowledge" hint="Create a space to start writing." />
         )}
@@ -140,14 +140,61 @@ function KnowledgePage() {
 }
 
 // ── Space row ───────────────────────────────────────────────────────────────
+// A small kebab (⋯) menu that houses secondary controls (delete, etc.) — the
+// per-item settings area, so destructive actions aren't loose in the sidebar.
+interface MenuItem {
+  label: string
+  icon?: LucideIcon
+  danger?: boolean
+  onClick: () => void
+}
+function SettingsMenu({ items }: { items: MenuItem[] }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <Button variant="ghost" size="sm" title="More" onClick={() => setOpen((v) => !v)}>
+        <MoreHorizontal size={14} />
+      </Button>
+      {open && (
+        <div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-line bg-card p-1 shadow-lg">
+          {items.map((it, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                it.onClick()
+              }}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-sidebar',
+                it.danger ? 'text-[color:var(--theme-danger)]' : 'text-fg',
+              )}
+            >
+              {it.icon && <it.icon size={13} />} {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SpaceRow({
-  space, active, onSelect, onRename, onDelete,
+  space, active, onSelect, onRename,
 }: {
   space: KbSpace
   active: boolean
   onSelect: () => void
   onRename: (name: string) => void
-  onDelete: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(space.name)
@@ -181,14 +228,6 @@ function SpaceRow({
       <button type="button" onClick={onSelect} onDoubleClick={() => setEditing(true)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
         <span>{space.icon ?? '📚'}</span>
         <span className="truncate font-medium">{space.name}</span>
-      </button>
-      <button
-        type="button"
-        title="Delete space"
-        onClick={() => confirm(`Delete "${space.name}" and all its docs?`) && onDelete()}
-        className="shrink-0 rounded p-0.5 opacity-0 hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
-      >
-        <Trash2 size={12} />
       </button>
     </div>
   )
@@ -444,18 +483,26 @@ function DocRow({
 }
 
 // ── Space overview (top-level folder = document) ────────────────────────────
-function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => void }) {
+function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewDoc: () => void; onDeleted: () => void }) {
   const qc = useQueryClient()
   const { data: space } = useSpace(spaceId)
   const editorRef = useRef<RichEditorHandle>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
   const [name, setName] = useState('')
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
+  const [showToc, setShowToc] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [seed, setSeed] = useState(0)
   const [mode, setMode] = useState<'read' | 'edit'>('read')
   const isOwner = useIsOwner(space)
   const initMode = useRef(false)
+  const headings = useMemo(() => parseHeadings(space?.body ?? ''), [space?.body])
+  const scrollToHeading = (index: number) => {
+    bodyRef.current?.querySelectorAll('.tiptap h1, .tiptap h2, .tiptap h3')[index]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
   useEffect(() => {
     if (space) setName(space.name)
     if (space && !initMode.current) {
@@ -532,43 +579,98 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
             </button>
           ))}
         </div>
+        <Button variant="outline" size="sm" className="shrink-0" title="Share &amp; permissions" onClick={() => setShareOpen(true)}>
+          <VisibilityIcon v={space.visibility} /> <span className="ml-1.5 capitalize">{space.visibility}</span>
+        </Button>
+        <Button variant={showToc ? 'outline' : 'ghost'} size="sm" className="shrink-0" title="Table of contents" onClick={() => setShowToc((v) => !v)}>
+          <ListTree size={14} />
+        </Button>
         <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
           {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        </Button>
-        <Button variant="outline" size="sm" className="shrink-0" title="Share &amp; permissions" onClick={() => setShareOpen(true)}>
-          <Share2 size={13} />
         </Button>
         <Button variant="outline" size="sm" className="shrink-0" onClick={onNewDoc}>
           <Plus size={13} className="mr-1" /> New
         </Button>
-      </div>
-      {mode === 'edit' ? (
-        <RichEditor
-          key={spaceId}
-          ref={editorRef}
-          value={space.body}
-          docSearch={docSearch}
-          slash
-          prose
-          autosave
-          onSave={() => void saveBody()}
-          placeholder="Write an overview for this space — what lives here, how it's organized…"
-          fill
-          className="min-w-0 flex-1"
+        <SettingsMenu
+          items={[
+            { label: showHistory ? 'Hide history' : 'Version history', icon: History, onClick: () => setShowHistory((v) => !v) },
+            {
+              label: 'Delete folder',
+              icon: Trash2,
+              danger: true,
+              onClick: () => {
+                if (confirm(`Delete "${space.name}" and all its docs?`)) onDeleted()
+              },
+            },
+          ]}
         />
-      ) : (
-        <div className="re-prose min-h-0 flex-1 overflow-y-auto">
-          {space.body.trim() ? (
-            <Markdown className="tiptap">{space.body}</Markdown>
-          ) : (
-            <div className="mx-auto max-w-[46rem] px-6 py-8">
-              <button type="button" onClick={() => setMode('edit')} className="text-sm text-muted hover:text-fg">
-                No overview yet — click to describe this space.
+      </div>
+      <div ref={bodyRef} className="flex min-h-0 flex-1">
+        {mode === 'edit' ? (
+          <RichEditor
+            key={`${spaceId}-${seed}`}
+            ref={editorRef}
+            value={space.body}
+            docSearch={docSearch}
+            slash
+            prose
+            autosave
+            onSave={() => void saveBody()}
+            placeholder="Write an overview for this space — what lives here, how it's organized…"
+            fill
+            className="min-w-0 flex-1"
+          />
+        ) : (
+          <div className="re-prose min-w-0 flex-1 overflow-y-auto">
+            {space.body.trim() ? (
+              <Markdown className="tiptap">{space.body}</Markdown>
+            ) : (
+              <div className="mx-auto max-w-[46rem] px-6 py-8">
+                <button type="button" onClick={() => setMode('edit')} className="text-sm text-muted hover:text-fg">
+                  No overview yet — click to describe this space.
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {showToc && (
+          <div className="w-56 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+            <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-muted">
+              <span>Contents</span>
+              <button type="button" onClick={() => setShowToc(false)} className="hover:text-fg">
+                <X size={12} />
               </button>
             </div>
-          )}
-        </div>
-      )}
+            {headings.length === 0 ? (
+              <div className="text-xs text-muted">No headings yet.</div>
+            ) : (
+              <div className="space-y-0.5">
+                {headings.map((h, i) => (
+                  <button key={i} type="button" onClick={() => scrollToHeading(i)} className="block w-full truncate text-left text-xs text-muted hover:text-fg" style={{ paddingLeft: (h.level - 1) * 10 }}>
+                    {h.text || 'Untitled'}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {showHistory && (
+          <div className="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+            <HistoryRail
+              kind="kb-space"
+              id={spaceId}
+              onRestore={async (content) => {
+                const m = /^#\s+(.*)\n+([\s\S]*)$/.exec(content)
+                const nm = m ? m[1]!.trim() : name
+                const b = m ? m[2]! : content
+                setName(nm)
+                await save({ name: nm, body: b })
+                setSeed((n) => n + 1)
+              }}
+            />
+          </div>
+        )}
+      </div>
       <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
         <span>Top-level document · child docs nest under it</span>
         <span className="ml-auto" />
@@ -778,24 +880,22 @@ function DocEditor({
         <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
           {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         </Button>
-        <Button variant="ghost" size="sm" className="shrink-0" title="History" onClick={() => setShowHistory((v) => !v)}>
-          <History size={14} />
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="shrink-0"
-          title="Delete"
-          onClick={async () => {
-            if (!confirm(`Delete "${doc.title}"?`)) return
-            await deleteDoc(docId)
-            // Refresh the tree immediately (was only updating on reload).
-            await qc.invalidateQueries({ queryKey: ['kb-docs', doc.spaceId] })
-            onDeleted()
-          }}
-        >
-          <Trash2 size={14} />
-        </Button>
+        <SettingsMenu
+          items={[
+            { label: showHistory ? 'Hide history' : 'Version history', icon: History, onClick: () => setShowHistory((v) => !v) },
+            {
+              label: 'Delete document',
+              icon: Trash2,
+              danger: true,
+              onClick: async () => {
+                if (!confirm(`Delete "${doc.title}"?`)) return
+                await deleteDoc(docId)
+                await qc.invalidateQueries({ queryKey: ['kb-docs', doc.spaceId] })
+                onDeleted()
+              },
+            },
+          ]}
+        />
       </div>
 
       {doc.visibility === 'public' && doc.publicSlug && (
@@ -892,7 +992,7 @@ function DocEditor({
         {showHistory && (
           <div className="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
             <HistoryRail
-              docId={docId}
+              id={docId}
               onRestore={async (content) => {
                 // Snapshots are stored as `# Title\n\n<body>`; split them back out.
                 const m = /^#\s+(.*)\n+([\s\S]*)$/.exec(content)
@@ -939,20 +1039,20 @@ interface Rev {
   createdAt: string
   size: number
 }
-function HistoryRail({ docId, onRestore }: { docId: string; onRestore: (content: string) => Promise<void> }) {
+function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb-space'; id: string; onRestore: (content: string) => Promise<void> }) {
   const [revs, setRevs] = useState<Rev[]>([])
   const [preview, setPreview] = useState<{ rev: Rev; content: string } | null>(null)
   const [restoring, setRestoring] = useState(false)
   useEffect(() => {
-    // kb-doc history keys on the doc id (like memory).
-    fetch(`/api/history?kind=kb-doc&id=${docId}`)
+    // Both kb-doc and kb-space history key on the item id (like memory).
+    fetch(`/api/history?kind=${kind}&id=${id}`)
       .then((r) => (r.ok ? r.json() : { revisions: [] }))
       .then((d) => setRevs((d as { revisions: Rev[] }).revisions))
       .catch(() => setRevs([]))
-  }, [docId])
+  }, [kind, id])
 
   const open = async (rev: Rev) => {
-    const r = await fetch(`/api/history?kind=kb-doc&id=${docId}&rev=${rev.id}`)
+    const r = await fetch(`/api/history?kind=${kind}&id=${id}&rev=${rev.id}`)
     if (!r.ok) return
     const { content } = (await r.json()) as { content: string }
     setPreview({ rev, content })
