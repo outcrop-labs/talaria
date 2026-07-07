@@ -23,6 +23,7 @@ export function NavRail({ user }: { user: SessionUser }) {
   return (
     <nav className="flex h-full w-56 shrink-0 flex-col gap-6 overflow-y-auto border-r border-line-subtle bg-sidebar px-3 py-5">
       {NAV.map((section) => {
+        if (section.adminOnly && !isAdmin) return null
         const items = section.items.filter((i) => (!i.adminOnly || isAdmin) && !denied.includes(i.to))
         if (items.length === 0) return null
         return (

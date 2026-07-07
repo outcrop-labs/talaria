@@ -7,6 +7,7 @@ import { NavRail } from '@/components/app/nav-rail'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { useDeniedViews, useLogout, useSession } from '@/lib/session'
+import { ADMIN_VIEWS } from '@/lib/nav'
 
 // Authenticated app shell: header + left nav rail + the active view (Outlet).
 export const Route = createFileRoute('/_app')({
@@ -24,10 +25,12 @@ function AppLayout() {
     if (isSuccess && !user) void navigate({ to: '/login' })
   }, [isSuccess, user, navigate])
 
-  // Route gate: a denied view isn't just hidden from the nav — reaching it by
-  // URL bounces to Home. (Match the deepest denied prefix, e.g. /boards/x.)
+  // Route gate: a denied or role-gated view isn't just hidden from the nav —
+  // reaching it by URL bounces to Home. (Match prefixes, e.g. /boards/x.)
   useEffect(() => {
-    if (user && denied.some((v) => pathname === v || pathname.startsWith(v + '/'))) {
+    if (!user) return
+    const blocked = user.role === 'admin' ? denied : [...denied, ...ADMIN_VIEWS]
+    if (blocked.some((v) => pathname === v || pathname.startsWith(v + '/'))) {
       void navigate({ to: '/' })
     }
   }, [user, denied, pathname, navigate])
