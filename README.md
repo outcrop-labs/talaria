@@ -147,10 +147,13 @@ The workspace, the fleet harness, and the money view are shipped and running:
   of docs with drag-to-reparent, emoji icons, breadcrumbs, an auto table-of-contents, and backlinks.
   Full-text search across the base; every doc is version-controlled (view + restore any revision);
   org/private/public visibility with public share links. The shared editor does task lists, tables, and
-  images, round-tripping to markdown so agents read/write it cleanly. Marking a doc **official**
-  indexes it into the **organization brain** agents ground on. A separate **workspace-activity brain**
-  ambiently indexes chat/channels (and, over time, plans/research/tickets) as a `search_knowledge` tool
-  agents call on demand — index-don't-copy, permission-scoped. Admins spin up custom **departmental
+  images, round-tripping to markdown so agents read/write it cleanly; top-level folders are themselves
+  editable documents with an overview, and you can cross-link any doc with fuzzy search. Every doc syncs
+  to exactly one RAG brain by its visibility: **official** org docs feed the **organization brain** all
+  agents ground on; **private** docs feed the owner's **personal brain** (provisioned with their personal
+  assistant, readable only by them and their agent); drafts ground nobody. A separate **workspace-activity
+  brain** ambiently indexes chat/channels/tickets (plus, over time, plans/research) as a `search_knowledge`
+  tool agents call on demand — index-don't-copy, permission-scoped. Admins spin up custom **departmental
   collections** and bind each to specific users or agents (Admin → Retrieval). Qdrant + a self-hosted
   TEI embedder under the hood.
 - The ledger: every generation classified local vs cloud, priced automatically from a public catalog
