@@ -105,6 +105,7 @@ import { Route as ApiAgentsIdHeartbeatRouteImport } from './routes/api/agents.$i
 import { Route as AppBoardsBoardIdTaskIdRouteImport } from './routes/_app/boards/$boardId.$taskId'
 import { Route as ApiLlmV1ChatCompletionsRouteImport } from './routes/api/llm.v1.chat.completions'
 import { Route as ApiKbSpacesIdDocsRouteImport } from './routes/api/kb.spaces.$id.docs'
+import { Route as ApiKbPublicSpaceSlugRouteImport } from './routes/api/kb.public.space.$slug'
 import { Route as ApiKbDocsIdMoveRouteImport } from './routes/api/kb.docs.$id.move'
 import { Route as ApiKbDocsIdBacklinksRouteImport } from './routes/api/kb.docs.$id.backlinks'
 import { Route as ApiFleetEndpointsIdAvailableRouteImport } from './routes/api/fleet.endpoints.$id.available'
@@ -592,6 +593,11 @@ const ApiKbSpacesIdDocsRoute = ApiKbSpacesIdDocsRouteImport.update({
   path: '/docs',
   getParentRoute: () => ApiKbSpacesIdRoute,
 } as any)
+const ApiKbPublicSpaceSlugRoute = ApiKbPublicSpaceSlugRouteImport.update({
+  id: '/api/kb/public/space/$slug',
+  path: '/api/kb/public/space/$slug',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiKbDocsIdMoveRoute = ApiKbDocsIdMoveRouteImport.update({
   id: '/move',
   path: '/move',
@@ -730,6 +736,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
+  '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
 }
@@ -834,6 +841,7 @@ export interface FileRoutesByTo {
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
+  '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
 }
@@ -940,6 +948,7 @@ export interface FileRoutesById {
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
+  '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
 }
@@ -1046,6 +1055,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints/$id/available'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
+    | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
   fileRoutesByTo: FileRoutesByTo
@@ -1150,6 +1160,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints/$id/available'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
+    | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
   id:
@@ -1255,6 +1266,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints/$id/available'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
+    | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
   fileRoutesById: FileRoutesById
@@ -1299,6 +1311,7 @@ export interface RootRouteChildren {
   ApiKbDocsIdRoute: typeof ApiKbDocsIdRouteWithChildren
   ApiKbPublicSlugRoute: typeof ApiKbPublicSlugRoute
   ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
+  ApiKbPublicSpaceSlugRoute: typeof ApiKbPublicSpaceSlugRoute
   ApiLlmV1ChatCompletionsRoute: typeof ApiLlmV1ChatCompletionsRoute
 }
 
@@ -1976,6 +1989,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKbSpacesIdDocsRouteImport
       parentRoute: typeof ApiKbSpacesIdRoute
     }
+    '/api/kb/public/space/$slug': {
+      id: '/api/kb/public/space/$slug'
+      path: '/api/kb/public/space/$slug'
+      fullPath: '/api/kb/public/space/$slug'
+      preLoaderRoute: typeof ApiKbPublicSpaceSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/kb/docs/$id/move': {
       id: '/api/kb/docs/$id/move'
       path: '/move'
@@ -2425,6 +2445,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKbDocsIdRoute: ApiKbDocsIdRouteWithChildren,
   ApiKbPublicSlugRoute: ApiKbPublicSlugRoute,
   ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,
+  ApiKbPublicSpaceSlugRoute: ApiKbPublicSpaceSlugRoute,
   ApiLlmV1ChatCompletionsRoute: ApiLlmV1ChatCompletionsRoute,
 }
 export const routeTree = rootRouteImport

@@ -3,24 +3,32 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Plus, FileText, Bot, Globe, Lock, Users, Star, Trash2, History,
-  ChevronRight, Search, Link2, ListTree, X, Maximize2, Minimize2,
+  ChevronRight, Search, Link2, ListTree, X, Maximize2, Minimize2, Share2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
 import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { RichEditor, type RichEditorHandle, type DocSearchFn } from '@/components/ui/rich-editor'
 import { InlineCreate } from '@/components/ui/inline-create'
+import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
+import { useSession } from '@/lib/session'
 import {
   createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, saveDoc, searchKb, updateSpace, useBacklinks,
   useDoc, useDocs, useSpace, useSpaces,
   type KbDocMeta, type KbSearchHit, type KbSpace,
 } from '@/lib/kb'
+
+// True when the signed-in user owns this doc/space (only owners can re-share).
+function useIsOwner(item: { ownerUserId: string | null; createdBy: string | null } | null | undefined): boolean {
+  const { data: me } = useSession()
+  if (!item || !me) return false
+  return item.ownerUserId ? item.ownerUserId === me.id : item.createdBy === (me.email ?? me.name)
+}
 
 // Shared cross-reference search for the editor's "link to doc" button.
 const docSearch: DocSearchFn = async (q) => {
@@ -444,7 +452,9 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
   const [mode, setMode] = useState<'read' | 'edit'>('read')
+  const isOwner = useIsOwner(space)
   const initMode = useRef(false)
   useEffect(() => {
     if (space) setName(space.name)
@@ -525,6 +535,9 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
         <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
           {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         </Button>
+        <Button variant="outline" size="sm" className="shrink-0" title="Share &amp; permissions" onClick={() => setShareOpen(true)}>
+          <Share2 size={13} />
+        </Button>
         <Button variant="outline" size="sm" className="shrink-0" onClick={onNewDoc}>
           <Plus size={13} className="mr-1" /> New
         </Button>
@@ -561,6 +574,19 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
         <span className="ml-auto" />
         {mode === 'edit' && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
       </div>
+
+      <PermissionsModal
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        kind="spaces"
+        id={spaceId}
+        label={space.name}
+        visibility={space.visibility}
+        editPolicy={space.editPolicy}
+        publicSlug={space.publicSlug}
+        canManage={isOwner}
+        onSave={(patch) => save(patch)}
+      />
     </div>
   )
 }
@@ -602,7 +628,9 @@ function DocEditor({
   const [showToc, setShowToc] = useState(false)
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
   const [seed, setSeed] = useState(0) // bump to remount the editor (e.g. after restore)
+  const isOwner = useIsOwner(doc)
   // Authored docs open in read mode (like tickets); empty ones open in edit.
   const [mode, setMode] = useState<'read' | 'edit'>('read')
   const initMode = useRef(false)
@@ -732,11 +760,9 @@ function DocEditor({
             </button>
           ))}
         </div>
-        <Select value={doc.visibility} size="sm" onChange={(e) => void save({ visibility: e.target.value as 'private' | 'org' | 'public' })} className="shrink-0">
-          <option value="private">Private</option>
-          <option value="org">Org</option>
-          <option value="public">Public</option>
-        </Select>
+        <Button variant="outline" size="sm" className="shrink-0" title="Share &amp; permissions" onClick={() => setShareOpen(true)}>
+          <VisibilityIcon v={doc.visibility} /> <span className="ml-1.5 capitalize">{doc.visibility}</span>
+        </Button>
         <Button
           variant={doc.official ? 'primary' : 'outline'}
           size="sm"
@@ -887,6 +913,19 @@ function DocEditor({
         <span className="ml-auto" />
         {mode === 'edit' && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
       </div>
+
+      <PermissionsModal
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        kind="docs"
+        id={docId}
+        label={doc.title}
+        visibility={doc.visibility}
+        editPolicy={doc.editPolicy}
+        publicSlug={doc.publicSlug}
+        canManage={isOwner}
+        onSave={(patch) => save(patch)}
+      />
     </div>
   )
 }

@@ -13,6 +13,10 @@ export interface KbSpace {
   description: string | null
   icon: string | null
   body: string
+  visibility: 'private' | 'org' | 'public'
+  publicSlug: string | null
+  editPolicy: 'owner' | 'org' | 'restricted'
+  ownerUserId: string | null
   createdBy: string | null
   createdAt: string
 }
@@ -27,6 +31,8 @@ export interface KbDocMeta {
   official: boolean
   visibility: 'private' | 'org' | 'public'
   publicSlug: string | null
+  editPolicy: 'owner' | 'org' | 'restricted'
+  ownerUserId: string | null
   sort: number
   createdBy: string | null
   updatedBy: string | null
@@ -35,11 +41,11 @@ export interface KbDocMeta {
 
 export interface KbDoc extends KbDocMeta {
   body: string
-  ownerUserId: string | null
 }
 
 // ── Spaces ────────────────────────────────────────────────────────────────────
-const SPACE_COLS = `id, name, description, icon, body, created_by as "createdBy", created_at as "createdAt"`
+const SPACE_COLS = `id, name, description, icon, body, visibility, public_slug as "publicSlug",
+  edit_policy as "editPolicy", owner_user_id as "ownerUserId", created_by as "createdBy", created_at as "createdAt"`
 
 export async function listSpaces(): Promise<KbSpace[]> {
   const sql = await db()
@@ -52,23 +58,39 @@ export async function getSpace(id: string): Promise<KbSpace | null> {
   return rows[0] ?? null
 }
 
-export async function createSpace(input: { name: string; description?: string; icon?: string; createdBy: string }): Promise<KbSpace> {
+export async function createSpace(input: { name: string; description?: string; icon?: string; createdBy: string; ownerUserId?: string | null }): Promise<KbSpace> {
   const sql = await db()
   const rows = (await sql`
-    insert into kb_spaces (name, description, icon, created_by)
-    values (${input.name}, ${input.description ?? null}, ${input.icon ?? null}, ${input.createdBy})
+    insert into kb_spaces (name, description, icon, created_by, owner_user_id)
+    values (${input.name}, ${input.description ?? null}, ${input.icon ?? null}, ${input.createdBy}, ${input.ownerUserId ?? null})
     returning ${sql.unsafe(SPACE_COLS)}
   `) as unknown as KbSpace[]
   return rows[0]!
 }
 
-export async function updateSpace(id: string, patch: { name?: string; description?: string | null; icon?: string | null; body?: string }): Promise<KbSpace | null> {
+export async function updateSpace(
+  id: string,
+  patch: { name?: string; description?: string | null; icon?: string | null; body?: string; visibility?: 'private' | 'org' | 'public'; editPolicy?: 'owner' | 'org' | 'restricted' },
+): Promise<KbSpace | null> {
   const sql = await db()
   if (patch.name !== undefined) await sql`update kb_spaces set name = ${patch.name} where id = ${id}`
   if (patch.description !== undefined) await sql`update kb_spaces set description = ${patch.description} where id = ${id}`
   if (patch.icon !== undefined) await sql`update kb_spaces set icon = ${patch.icon} where id = ${id}`
   if (patch.body !== undefined) await sql`update kb_spaces set body = ${patch.body} where id = ${id}`
+  if (patch.editPolicy !== undefined) await sql`update kb_spaces set edit_policy = ${patch.editPolicy} where id = ${id}`
+  if (patch.visibility !== undefined) {
+    await sql`update kb_spaces set visibility = ${patch.visibility} where id = ${id}`
+    if (patch.visibility === 'public') {
+      await sql`update kb_spaces set public_slug = ${randomBytes(8).toString('hex')} where id = ${id} and public_slug is null`
+    }
+  }
   return getSpace(id)
+}
+
+export async function getPublicSpace(slug: string): Promise<KbSpace | null> {
+  const sql = await db()
+  const rows = (await sql.unsafe(`select ${SPACE_COLS} from kb_spaces where public_slug = $1 and visibility = 'public'`, [slug])) as unknown as KbSpace[]
+  return rows[0] ?? null
 }
 
 export async function deleteSpace(id: string): Promise<void> {
@@ -81,8 +103,8 @@ export async function deleteSpace(id: string): Promise<void> {
 
 // ── Docs ──────────────────────────────────────────────────────────────────────
 const DOC_META = `select id, space_id as "spaceId", parent_id as "parentId", title, icon, kind, official,
-  visibility, public_slug as "publicSlug", sort, created_by as "createdBy", updated_by as "updatedBy",
-  updated_at as "updatedAt" from kb_docs`
+  visibility, public_slug as "publicSlug", edit_policy as "editPolicy", owner_user_id as "ownerUserId", sort,
+  created_by as "createdBy", updated_by as "updatedBy", updated_at as "updatedAt" from kb_docs`
 
 export async function listDocs(spaceId: string): Promise<KbDocMeta[]> {
   const sql = await db()
@@ -93,7 +115,7 @@ export async function getDoc(id: string): Promise<KbDoc | null> {
   const sql = await db()
   const rows = (await sql.unsafe(
     `select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
-            visibility, public_slug as "publicSlug", sort, owner_user_id as "ownerUserId",
+            visibility, public_slug as "publicSlug", edit_policy as "editPolicy", sort, owner_user_id as "ownerUserId",
             created_by as "createdBy", updated_by as "updatedBy",
             updated_at as "updatedAt" from kb_docs where id = $1`,
     [id],
@@ -105,7 +127,7 @@ export async function getPublicDoc(slug: string): Promise<KbDoc | null> {
   const sql = await db()
   const rows = (await sql`
     select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
-           visibility, public_slug as "publicSlug", sort, owner_user_id as "ownerUserId",
+           visibility, public_slug as "publicSlug", edit_policy as "editPolicy", sort, owner_user_id as "ownerUserId",
            created_by as "createdBy", updated_by as "updatedBy", updated_at as "updatedAt"
     from kb_docs where public_slug = ${slug} and visibility = 'public'
   `) as unknown as KbDoc[]
@@ -147,7 +169,7 @@ export async function createDoc(input: {
 
 export async function saveDoc(
   id: string,
-  patch: { title?: string; body?: string; icon?: string | null; visibility?: 'private' | 'org' | 'public'; parentId?: string | null },
+  patch: { title?: string; body?: string; icon?: string | null; visibility?: 'private' | 'org' | 'public'; editPolicy?: 'owner' | 'org' | 'restricted'; parentId?: string | null },
   actor: string,
 ): Promise<KbDoc | null> {
   const sql = await db()
@@ -157,6 +179,7 @@ export async function saveDoc(
   if (patch.title !== undefined) await sql`update kb_docs set title = ${patch.title}, updated_by = ${actor}, updated_at = now() where id = ${id}`
   if (patch.body !== undefined) await sql`update kb_docs set body = ${patch.body}, updated_by = ${actor}, updated_at = now() where id = ${id}`
   if (patch.icon !== undefined) await sql`update kb_docs set icon = ${patch.icon}, updated_at = now() where id = ${id}`
+  if (patch.editPolicy !== undefined) await sql`update kb_docs set edit_policy = ${patch.editPolicy}, updated_at = now() where id = ${id}`
   if (patch.visibility) {
     await sql`update kb_docs set visibility = ${patch.visibility}, updated_at = now() where id = ${id}`
     // Public docs get a stable slug on first publish.

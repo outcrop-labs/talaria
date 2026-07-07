@@ -504,6 +504,26 @@ const MIGRATIONS: string[] = [
   `alter table kb_docs add column if not exists owner_user_id uuid references users(id) on delete set null`,
   // Personal RAG collections belong to a user (created with their assistant).
   `alter table rag_collections add column if not exists owner_user_id uuid references users(id) on delete cascade`,
+  // Permissions: folders (spaces) get the same read-visibility model as docs,
+  // and both docs and folders get an edit policy. edit_policy ∈
+  //   'owner'      — only the owner may edit
+  //   'org'        — any member who can read may edit (agents still need a grant)
+  //   'restricted' — the owner + an explicit editor list (users and/or agents)
+  `alter table kb_spaces add column if not exists owner_user_id uuid references users(id) on delete set null`,
+  `alter table kb_spaces add column if not exists visibility text not null default 'org'`,
+  `alter table kb_spaces add column if not exists public_slug text unique`,
+  `alter table kb_spaces add column if not exists edit_policy text not null default 'org'`,
+  `alter table kb_docs add column if not exists edit_policy text not null default 'org'`,
+  // The explicit editor grants for a doc or space (used when edit_policy =
+  // 'restricted'). principal_type ∈ 'user' | 'agent'.
+  `create table if not exists kb_editors (
+     item_type text not null,
+     item_id uuid not null,
+     principal_type text not null,
+     principal_id text not null,
+     primary key (item_type, item_id, principal_type, principal_id)
+   )`,
+  `create index if not exists kb_editors_item_idx on kb_editors(item_type, item_id)`,
 ]
 
 function ensureMigrated(): Promise<void> {
