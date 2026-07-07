@@ -524,6 +524,9 @@ const MIGRATIONS: string[] = [
      primary key (item_type, item_id, principal_type, principal_id)
    )`,
   `create index if not exists kb_editors_item_idx on kb_editors(item_type, item_id)`,
+  // Each grant now carries a role: 'viewer' (can see) or 'editor' (can see +
+  // edit). Existing rows were all editors.
+  `alter table kb_editors add column if not exists role text not null default 'editor'`,
 ]
 
 function ensureMigrated(): Promise<void> {

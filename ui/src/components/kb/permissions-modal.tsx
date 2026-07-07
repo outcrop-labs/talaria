@@ -1,16 +1,28 @@
-import { useEffect, useState } from 'react'
-import { Globe } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Globe, Lock, Building2, Bot, X, Check, Copy } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
-import { Select } from '@/components/ui/select'
+import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
 import { useUsers } from '@/lib/users'
 import { useAgents } from '@/lib/agents'
-import { fetchEditors, type EditPolicy, type KbEditor, type Visibility } from '@/lib/kb'
+import { fetchEditors, type EditPolicy, type GrantRole, type KbEditor, type Visibility } from '@/lib/kb'
+import { cn } from '@/lib/cn'
 
-// One sharing dialog for both docs and folders — read visibility, edit policy,
-// and (when restricted) the explicit list of human + agent editors. Sharing is
-// owner-only; non-owners see it read-only.
+// Google-Drive-style sharing: a list of people + agents each with a Viewer/
+// Editor role, then a "general access" tier (restricted / org / public).
+// Sharing is owner-only; non-owners see it read-only.
+
+const ROLE_OPTIONS = [
+  { value: 'viewer', label: 'Viewer', sub: 'Can read it' },
+  { value: 'editor', label: 'Editor', sub: 'Can read & edit' },
+]
+const ACCESS_OPTIONS = [
+  { value: 'private', label: 'Restricted', sub: 'Only people you add below' },
+  { value: 'org', label: 'Organization', sub: 'Everyone in the workspace' },
+  { value: 'public', label: 'Anyone with the link', sub: 'Public on the internet' },
+]
+
 export function PermissionsModal({
   open,
   onClose,
@@ -37,28 +49,50 @@ export function PermissionsModal({
   const { data: users = [] } = useUsers()
   const { data: fleet } = useAgents()
   const [vis, setVis] = useState<Visibility>(visibility)
-  const [policy, setPolicy] = useState<EditPolicy>(editPolicy)
-  const [editors, setEditors] = useState<KbEditor[]>([])
+  const [grants, setGrants] = useState<KbEditor[]>([])
+  // General audience role for org/public: editors → edit_policy 'org'.
+  const [orgRole, setOrgRole] = useState<GrantRole>(editPolicy === 'org' ? 'editor' : 'viewer')
   const [saving, setSaving] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     if (!open) return
     setVis(visibility)
-    setPolicy(editPolicy)
-    void fetchEditors(kind, id).then(setEditors)
+    setOrgRole(editPolicy === 'org' ? 'editor' : 'viewer')
+    setCopied(false)
+    void fetchEditors(kind, id).then(setGrants)
   }, [open, kind, id, visibility, editPolicy])
 
-  const userIds = editors.filter((e) => e.principalType === 'user').map((e) => e.principalId)
-  const agentIds = editors.filter((e) => e.principalType === 'agent').map((e) => e.principalId)
-  const setUserIds = (ids: string[]) =>
-    setEditors([...ids.map((principalId) => ({ principalType: 'user' as const, principalId })), ...editors.filter((e) => e.principalType === 'agent')])
-  const setAgentIds = (ids: string[]) =>
-    setEditors([...editors.filter((e) => e.principalType === 'user'), ...ids.map((principalId) => ({ principalType: 'agent' as const, principalId }))])
+  const nameOf = (g: KbEditor) => {
+    if (g.principalType === 'user') {
+      const u = users.find((x) => x.id === g.principalId)
+      return u?.name ?? u?.email ?? g.principalId
+    }
+    return (fleet?.agents ?? []).find((a) => a.id === g.principalId)?.label ?? g.principalId
+  }
+
+  // People/agents not already granted — the "add" picker.
+  const addOptions = useMemo(() => {
+    const has = new Set(grants.map((g) => `${g.principalType}:${g.principalId}`))
+    return [
+      ...users.filter((u) => !has.has(`user:${u.id}`)).map((u) => ({ value: `user:${u.id}`, label: u.name ?? u.email ?? u.id, sub: u.email ?? 'Person', icon: <Avatar name={u.name ?? u.email} className="h-5 w-5 text-[9px]" /> })),
+      ...(fleet?.agents ?? []).filter((a) => !has.has(`agent:${a.id}`)).map((a) => ({ value: `agent:${a.id}`, label: a.label, sub: `Agent · ${a.role}`, icon: <span className="grid h-5 w-5 place-items-center rounded-full bg-card2 text-muted"><Bot size={12} /></span> })),
+    ]
+  }, [users, fleet, grants])
+
+  const addGrant = (val: string) => {
+    const [type, pid] = [val.slice(0, val.indexOf(':')), val.slice(val.indexOf(':') + 1)]
+    if (type !== 'user' && type !== 'agent') return
+    setGrants((g) => [...g, { principalType: type, principalId: pid, role: 'viewer' }])
+  }
+  const setRole = (i: number, role: GrantRole) => setGrants((g) => g.map((x, j) => (j === i ? { ...x, role } : x)))
+  const remove = (i: number) => setGrants((g) => g.filter((_, j) => j !== i))
 
   const save = async () => {
     setSaving(true)
     try {
-      await onSave({ visibility: vis, editPolicy: policy, editors })
+      const editPolicyNext: EditPolicy = vis !== 'private' && orgRole === 'editor' ? 'org' : 'owner'
+      await onSave({ visibility: vis, editPolicy: editPolicyNext, editors: grants })
       onClose()
     } finally {
       setSaving(false)
@@ -66,6 +100,7 @@ export function PermissionsModal({
   }
 
   const publicUrl = publicSlug ? `${typeof window !== 'undefined' ? window.location.origin : ''}/${kind === 'spaces' ? 'kb/space' : 'kb'}/${publicSlug}` : null
+  const AccessIcon = vis === 'public' ? Globe : vis === 'org' ? Building2 : Lock
 
   return (
     <Modal
@@ -85,53 +120,103 @@ export function PermissionsModal({
         </div>
       }
     >
-      <div className="space-y-4">
+      <div className="space-y-5">
+        {/* People & agents */}
         <div>
-          <div className="mb-1 text-xs font-medium text-fg">Who can see it</div>
-          <Select value={vis} disabled={!canManage} onChange={(e) => setVis(e.target.value as Visibility)} className="w-full">
-            <option value="private">Private — only me</option>
-            <option value="org">Organization — everyone in the workspace</option>
-            <option value="public">Public — anyone with the link</option>
-          </Select>
-          {vis === 'public' && publicUrl && (
-            <div className="mt-2 flex items-center gap-2 text-xs text-muted">
-              <Globe size={12} /> <code className="truncate text-fg">{publicUrl}</code>
-            </div>
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">People &amp; agents</div>
+          {canManage && (
+            <Combobox
+              options={addOptions}
+              selected={[]}
+              onChange={(v) => v[0] && addGrant(v[0])}
+              placeholder="Add a person or agent…"
+              size="sm"
+              className="mb-2"
+            />
           )}
-        </div>
-
-        <div>
-          <div className="mb-1 text-xs font-medium text-fg">Who can edit it</div>
-          <Select value={policy} disabled={!canManage} onChange={(e) => setPolicy(e.target.value as EditPolicy)} className="w-full">
-            <option value="owner">Only me</option>
-            <option value="org">Anyone who can see it</option>
-            <option value="restricted">Specific people &amp; agents</option>
-          </Select>
-          <p className="mt-1 text-[11px] text-muted">Agents can only edit when you list them here, even under “anyone.”</p>
-        </div>
-
-        {policy === 'restricted' && (
-          <div className="space-y-2">
-            <Combobox
-              options={users.map((u) => ({ value: u.id, label: u.name ?? u.email ?? u.id }))}
-              selected={userIds}
-              onChange={setUserIds}
-              multiple
-              size="sm"
-              placeholder="People who can edit"
-              className="w-full"
-            />
-            <Combobox
-              options={(fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))}
-              selected={agentIds}
-              onChange={setAgentIds}
-              multiple
-              size="sm"
-              placeholder="Agents who can edit"
-              className="w-full"
-            />
+          <div className="space-y-1">
+            {/* Owner row (implicit editor) */}
+            <div className="flex items-center gap-2.5 rounded-lg px-1 py-1.5">
+              <Avatar name={label} className="h-7 w-7 shrink-0 text-[10px]" />
+              <span className="min-w-0 flex-1 truncate text-sm text-fg">Owner</span>
+              <span className="shrink-0 text-xs text-muted">Owner</span>
+            </div>
+            {grants.map((g, i) => (
+              <div key={`${g.principalType}:${g.principalId}`} className="flex items-center gap-2.5 rounded-lg px-1 py-1">
+                {g.principalType === 'user' ? (
+                  <Avatar name={nameOf(g)} className="h-7 w-7 shrink-0 text-[10px]" />
+                ) : (
+                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-card2 text-muted"><Bot size={14} /></span>
+                )}
+                <span className="min-w-0 flex-1 truncate text-sm text-fg">{nameOf(g)}</span>
+                {canManage ? (
+                  <>
+                    <Combobox
+                      options={ROLE_OPTIONS}
+                      selected={[g.role]}
+                      onChange={(v) => v[0] && setRole(i, v[0] as GrantRole)}
+                      searchable={false}
+                      size="sm"
+                      className="w-28 shrink-0"
+                    />
+                    <button type="button" onClick={() => remove(i)} className="shrink-0 rounded p-1 text-muted hover:text-[color:var(--theme-danger)]" title="Remove">
+                      <X size={14} />
+                    </button>
+                  </>
+                ) : (
+                  <span className="shrink-0 text-xs capitalize text-muted">{g.role}</span>
+                )}
+              </div>
+            ))}
+            {grants.length === 0 && <div className="px-1 py-1 text-xs text-muted">No one else has been added.</div>}
           </div>
-        )}
+        </div>
+
+        {/* General access */}
+        <div className="border-t border-line-subtle pt-4">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">General access</div>
+          <div className="flex items-center gap-2.5">
+            <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-full', vis === 'private' ? 'bg-card2 text-muted' : 'bg-accent/15 text-accent')}>
+              <AccessIcon size={16} />
+            </span>
+            <Combobox
+              options={ACCESS_OPTIONS}
+              selected={[vis]}
+              onChange={(v) => v[0] && setVis(v[0] as Visibility)}
+              searchable={false}
+              disabled={!canManage}
+              size="sm"
+              className="min-w-0 flex-1"
+            />
+            {vis !== 'private' && (
+              <Combobox
+                options={ROLE_OPTIONS}
+                selected={[orgRole]}
+                onChange={(v) => v[0] && setOrgRole(v[0] as GrantRole)}
+                searchable={false}
+                disabled={!canManage}
+                size="sm"
+                className="w-28 shrink-0"
+              />
+            )}
+          </div>
+
+          {vis === 'public' && publicUrl && (
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard?.writeText(publicUrl)
+                setCopied(true)
+              }}
+              className="mt-3 flex w-full items-center gap-2 rounded-lg border border-line-subtle px-3 py-2 text-left text-xs text-muted hover:border-[var(--theme-accent-border)]"
+            >
+              <Globe size={13} className="shrink-0" />
+              <code className="min-w-0 flex-1 truncate text-fg">{publicUrl}</code>
+              {copied ? <Check size={13} className="shrink-0 text-accent" /> : <Copy size={13} className="shrink-0" />}
+            </button>
+          )}
+          <p className="mt-2 text-[11px] text-muted">Agents only edit when given the Editor role here — never by default.</p>
+        </div>
         {!canManage && <p className="text-[11px] text-muted">Only the owner can change sharing.</p>}
       </div>
     </Modal>

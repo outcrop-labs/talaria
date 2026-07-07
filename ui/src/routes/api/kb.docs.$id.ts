@@ -7,7 +7,7 @@ import { deleteDoc, getDoc, saveDoc, setOfficial } from '@/server/kb'
 import { canEditAgent, canEditHuman, canRead, isOwner, listEditors, setEditors } from '@/server/kb-perms'
 import { logAudit } from '@/server/audit'
 
-const Editor = z.object({ principalType: z.enum(['user', 'agent']), principalId: z.string().min(1).max(200) })
+const Editor = z.object({ principalType: z.enum(['user', 'agent']), principalId: z.string().min(1).max(200), role: z.enum(['viewer', 'editor']).default('viewer') })
 const Patch = z.object({
   title: z.string().max(200).optional(),
   body: z.string().max(500_000).optional(),
@@ -30,8 +30,9 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         if (!doc) return json({ error: 'not found' }, { status: 404 })
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!canRead(doc, user.id, user.email ?? user.name)) return json({ error: 'forbidden' }, { status: 403 })
-        return json({ doc, editors: await listEditors('doc', doc.id) })
+        const editors = await listEditors('doc', doc.id)
+        if (!canRead(doc, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
+        return json({ doc, editors })
       },
       PUT: async ({ request, params }) => {
         const doc = await getDoc(params.id)
