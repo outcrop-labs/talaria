@@ -94,9 +94,10 @@ export const updateSpace = (
   patch: Partial<Pick<KbSpace, 'name' | 'description' | 'icon' | 'body' | 'visibility' | 'editPolicy'>> & { editors?: KbEditor[] },
 ) => fetch(`/api/kb/spaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
-/** Fetch the current editor grants for a doc or folder (from its GET route). */
-export const fetchEditors = async (kind: 'docs' | 'spaces', id: string): Promise<KbEditor[]> => {
-  const r = await fetch(`/api/kb/${kind}/${id}`)
+/** Fetch the current editor grants for a doc / folder / artifact (from its GET
+ *  route, which returns `editors`). */
+export const fetchEditors = async (kind: 'docs' | 'spaces' | 'artifacts', id: string): Promise<KbEditor[]> => {
+  const r = await fetch(kind === 'artifacts' ? `/api/artifacts/${id}` : `/api/kb/${kind}/${id}`)
   if (!r.ok) return []
   return ((await r.json()) as { editors?: KbEditor[] }).editors ?? []
 }

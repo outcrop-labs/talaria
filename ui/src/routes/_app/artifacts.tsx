@@ -1,0 +1,281 @@
+import { createFileRoute } from '@tanstack/react-router'
+import { useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, type LucideIcon } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { EmptyState } from '@/components/ui/empty-state'
+import { EmojiPicker } from '@/components/ui/emoji-picker'
+import { Markdown } from '@/components/ui/markdown'
+import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
+import { PermissionsModal } from '@/components/kb/permissions-modal'
+import { cn } from '@/lib/cn'
+import { relativeTime } from '@/lib/fleet'
+import { useSession } from '@/lib/session'
+import { createArtifact, deleteArtifact, saveArtifact, useArtifact, useArtifacts, type ArtifactKind } from '@/lib/artifacts'
+
+export const Route = createFileRoute('/_app/artifacts')({
+  component: ArtifactsPage,
+})
+
+const KIND_ICON: Record<ArtifactKind, LucideIcon> = { doc: FileText, sheet: Table, microsite: Globe2, file: Paperclip }
+
+// Artifacts — versioned work products with their own hosting + sharing. This
+// foundation covers the doc kind (markdown); sheets, microsites, and files, plus
+// cloud-storage connectors and the "make official → knowledgebase" pipeline, are
+// tracked follow-ups.
+function ArtifactsPage() {
+  const qc = useQueryClient()
+  const { data: artifacts = [] } = useArtifacts()
+  const [activeId, setActiveId] = useState<string | null>(null)
+
+  const create = async () => {
+    const { artifact } = await createArtifact({ kind: 'doc', title: 'Untitled' })
+    await qc.invalidateQueries({ queryKey: ['artifacts'] })
+    if (artifact) setActiveId(artifact.id)
+  }
+
+  return (
+    <div className="flex h-full min-h-0">
+      <aside className="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar">
+        <div className="flex items-center justify-between border-b border-line-subtle p-3">
+          <span className="text-sm font-semibold text-fg">Artifacts</span>
+          <Button size="sm" onClick={() => void create()}>
+            <Plus size={13} className="mr-1" /> New
+          </Button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {artifacts.length === 0 ? (
+            <div className="px-2 py-6 text-center text-xs text-muted">No artifacts yet.</div>
+          ) : (
+            artifacts.map((a) => {
+              const Icon = KIND_ICON[a.kind]
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => setActiveId(a.id)}
+                  className={cn('flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm', activeId === a.id ? 'bg-card text-fg' : 'text-muted hover:text-fg')}
+                >
+                  {a.icon ? <span className="text-[15px] leading-none">{a.icon}</span> : <Icon size={14} className="shrink-0" />}
+                  <span className="min-w-0 flex-1 truncate">{a.title}</span>
+                  <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted">{a.kind}</span>
+                </button>
+              )
+            })
+          )}
+        </div>
+      </aside>
+      <main className="min-h-0 min-w-0 flex-1">
+        {activeId ? (
+          <ArtifactEditor key={activeId} id={activeId} onDeleted={() => setActiveId(null)} />
+        ) : (
+          <EmptyState icon="◆" title="Artifacts" hint="Create an artifact, or pick one from the list." />
+        )}
+      </main>
+    </div>
+  )
+}
+
+function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
+  const qc = useQueryClient()
+  const { data: me } = useSession()
+  const { data: artifact } = useArtifact(id)
+  const editorRef = useRef<RichEditorHandle>(null)
+  const [title, setTitle] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const [mode, setMode] = useState<'read' | 'edit'>('read')
+  const [emojiOpen, setEmojiOpen] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [seed, setSeed] = useState(0)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const initMode = useRef(false)
+  useEffect(() => {
+    if (artifact) setTitle(artifact.title)
+    if (artifact && !initMode.current) {
+      initMode.current = true
+      setMode(artifact.body.trim() ? 'read' : 'edit')
+    }
+  }, [artifact])
+  useEffect(() => {
+    if (!fullscreen) return
+    const h = (e: KeyboardEvent) => e.key === 'Escape' && setFullscreen(false)
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [fullscreen])
+
+  const isOwner = !!artifact && !!me && (artifact.ownerUserId ? artifact.ownerUserId === me.id : artifact.createdBy === (me.email ?? me.name))
+
+  const save = async (patch: Parameters<typeof saveArtifact>[1]) => {
+    setSaving(true)
+    try {
+      await saveArtifact(id, patch)
+      await qc.invalidateQueries({ queryKey: ['artifact', id] })
+      await qc.invalidateQueries({ queryKey: ['artifacts'] })
+      setDirty(false)
+    } finally {
+      setSaving(false)
+    }
+  }
+  const saveBody = () => save({ title, body: editorRef.current?.getMarkdown() ?? artifact?.body ?? '' })
+
+  if (!artifact) return <div className="p-8 text-sm text-muted">Loading…</div>
+
+  return (
+    <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
+      <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
+        <div className="relative shrink-0">
+          <button type="button" onClick={() => setEmojiOpen((v) => !v)} className="rounded-lg px-1 text-xl leading-none hover:bg-card" title="Set icon">
+            {artifact.icon ?? '📄'}
+          </button>
+          {emojiOpen && (
+            <EmojiPicker onPick={(e) => { void save({ icon: e }); setEmojiOpen(false) }} onClear={() => { void save({ icon: null }); setEmojiOpen(false) }} onClose={() => setEmojiOpen(false)} />
+          )}
+        </div>
+        {mode === 'edit' ? (
+          <Input
+            value={title}
+            onChange={(e) => { setTitle(e.target.value); setDirty(true) }}
+            onBlur={() => dirty && void saveBody()}
+            className="min-w-0 flex-1 border-0 bg-transparent text-lg font-semibold focus:border-0"
+            placeholder="Untitled"
+          />
+        ) : (
+          <h1 className="min-w-0 flex-1 truncate text-lg font-semibold text-fg">{artifact.title}</h1>
+        )}
+        <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">{artifact.kind}</span>
+        <div className="flex shrink-0 rounded-md border border-line p-0.5">
+          {(['read', 'edit'] as const).map((m) => (
+            <button key={m} type="button" onClick={() => { if (m === 'read' && mode === 'edit') void saveBody(); setMode(m) }} className={cn('rounded px-2 py-0.5 text-[11px] capitalize transition-colors', mode === m ? 'bg-card text-fg' : 'text-muted hover:text-fg')}>
+              {m}
+            </button>
+          ))}
+        </div>
+        <Button variant="outline" size="sm" className="shrink-0 capitalize" title="Share &amp; permissions" onClick={() => setShareOpen(true)}>
+          {artifact.visibility}
+        </Button>
+        <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
+          {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </Button>
+        <div className="relative shrink-0">
+          <Button variant="ghost" size="sm" title="More" onClick={() => setMenuOpen((v) => !v)}>
+            <MoreHorizontal size={14} />
+          </Button>
+          {menuOpen && (
+            <div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-line bg-card p-1 shadow-lg" onMouseLeave={() => setMenuOpen(false)}>
+              <button type="button" onClick={() => { setShowHistory((v) => !v); setMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar">
+                <History size={13} /> {showHistory ? 'Hide history' : 'Version history'}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setMenuOpen(false)
+                  if (!confirm(`Delete "${artifact.title}"?`)) return
+                  await deleteArtifact(id)
+                  await qc.invalidateQueries({ queryKey: ['artifacts'] })
+                  onDeleted()
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[color:var(--theme-danger)] hover:bg-sidebar"
+              >
+                <Trash2 size={13} /> Delete artifact
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex min-h-0 flex-1">
+        {artifact.kind === 'doc' ? (
+          mode === 'edit' ? (
+            <RichEditor key={`${id}-${seed}`} ref={editorRef} value={artifact.body} slash prose autosave onSave={() => void saveBody()} placeholder="Draft your artifact…" fill className="min-w-0 flex-1" />
+          ) : (
+            <div className="re-prose min-w-0 flex-1 overflow-y-auto">
+              {artifact.body.trim() ? (
+                <Markdown className="tiptap">{artifact.body}</Markdown>
+              ) : (
+                <div className="mx-auto max-w-[46rem] px-6 py-8">
+                  <button type="button" onClick={() => setMode('edit')} className="text-sm text-muted hover:text-fg">
+                    Empty artifact — click to start.
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        ) : (
+          <div className="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
+            {artifact.kind} artifacts are coming soon.
+          </div>
+        )}
+        {showHistory && (
+          <div className="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+            <ArtifactHistory
+              id={id}
+              onRestore={async (content) => {
+                const m = /^#\s+(.*)\n+([\s\S]*)$/.exec(content)
+                const t = m ? m[1]!.trim() : title
+                const b = m ? m[2]! : content
+                setTitle(t)
+                await save({ title: t, body: b })
+                setSeed((n) => n + 1)
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
+        <span>edited {relativeTime(artifact.updatedAt)}{artifact.updatedBy ? ` by ${artifact.updatedBy}` : ''}</span>
+        <span className="ml-auto" />
+        {mode === 'edit' && artifact.kind === 'doc' && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
+      </div>
+
+      <PermissionsModal
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        kind="artifacts"
+        id={id}
+        label={artifact.title}
+        visibility={artifact.visibility}
+        editPolicy={artifact.editPolicy}
+        publicSlug={artifact.publicSlug}
+        canManage={isOwner}
+        onSave={(patch) => save(patch)}
+      />
+    </div>
+  )
+}
+
+interface Rev { id: string; createdBy: string | null; createdAt: string; size: number }
+function ArtifactHistory({ id, onRestore }: { id: string; onRestore: (content: string) => Promise<void> }) {
+  const [revs, setRevs] = useState<Rev[]>([])
+  useEffect(() => {
+    fetch(`/api/history?kind=artifact&id=${id}`)
+      .then((r) => (r.ok ? r.json() : { revisions: [] }))
+      .then((d) => setRevs((d as { revisions: Rev[] }).revisions))
+      .catch(() => setRevs([]))
+  }, [id])
+  const restore = async (rev: Rev) => {
+    const r = await fetch(`/api/history?kind=artifact&id=${id}&rev=${rev.id}`)
+    if (!r.ok) return
+    const { content } = (await r.json()) as { content: string }
+    await onRestore(content)
+  }
+  return (
+    <div>
+      <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">History</div>
+      {revs.length === 0 ? (
+        <div className="text-xs text-muted">No saved revisions yet.</div>
+      ) : (
+        revs.map((r, i) => (
+          <button key={r.id} type="button" onClick={() => void restore(r)} className="block w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-card" title="Restore this version">
+            <div className="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>
+            <div className="text-[11px] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>
+          </button>
+        ))
+      )}
+    </div>
+  )
+}

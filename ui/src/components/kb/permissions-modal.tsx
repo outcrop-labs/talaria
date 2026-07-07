@@ -40,7 +40,7 @@ export function PermissionsModal({
 }: {
   open: boolean
   onClose: () => void
-  kind: 'docs' | 'spaces'
+  kind: 'docs' | 'spaces' | 'artifacts'
   id: string
   label: string
   visibility: Visibility
@@ -115,7 +115,8 @@ export function PermissionsModal({
     }
   }
 
-  const publicUrl = publicSlug ? `${typeof window !== 'undefined' ? window.location.origin : ''}/${kind === 'spaces' ? 'kb/space' : 'kb'}/${publicSlug}` : null
+  const publicBase = kind === 'artifacts' ? 'a' : kind === 'spaces' ? 'kb/space' : 'kb'
+  const publicUrl = publicSlug ? `${typeof window !== 'undefined' ? window.location.origin : ''}/${publicBase}/${publicSlug}` : null
   const AccessIcon = vis === 'public' ? Globe : vis === 'org' ? Building2 : Lock
 
   return (
