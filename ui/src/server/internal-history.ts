@@ -4,7 +4,7 @@
 // otherwise live on disk or inside a container with no history of their own.
 import { db } from './db/pg'
 
-export type InternalKind = 'skill' | 'memory' | 'kb-doc'
+export type InternalKind = 'skill' | 'memory' | 'kb-doc' | 'kb-space'
 
 export interface Revision {
   id: string
