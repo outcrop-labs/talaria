@@ -2,7 +2,7 @@
 // (channel posts, KB doc saves, …) don't resolve collection ids themselves.
 // All fire-and-forget friendly — indexing must never block the write it follows.
 import { db } from '../db/pg'
-import { ensureAutoCollections } from './collections'
+import { ensureAutoCollections, personalCollectionFor } from './collections'
 import { indexDocument, unindexDocument, type IndexDoc } from './index'
 import { deleteByFilter } from './qdrant'
 
@@ -28,6 +28,55 @@ export async function indexOrgKb(doc: IndexDoc): Promise<void> {
 export async function unindexOrgKb(sourceType: string, sourceId: string): Promise<void> {
   const id = await autoCollectionId('org-kb')
   if (id) await unindexDocument(id, sourceType, sourceId).catch(() => {})
+}
+
+// ── KB doc ↔ RAG sync ───────────────────────────────────────────────────────
+// A doc lives in exactly one RAG collection, decided by its visibility:
+//   private            → the owner's personal collection (owner + their agent only)
+//   org/public + official → the org brain (grounds everyone)
+//   org/public draft   → nowhere (readable in the UI, not auto-grounding)
+// Every save/visibility/official change re-runs this, removing the doc from the
+// collections it no longer belongs to — so nothing leaks or goes stale.
+export interface KbDocSync {
+  id: string
+  title: string
+  body: string
+  visibility: 'private' | 'org' | 'public'
+  official: boolean
+  ownerUserId: string | null
+}
+
+export async function syncKbDoc(doc: KbDocSync): Promise<void> {
+  const orgId = await autoCollectionId('org-kb')
+  const personal = doc.ownerUserId ? await personalCollectionFor(doc.ownerUserId) : null
+  // Clear from both possible homes first (idempotent), then place it.
+  if (orgId) await unindexDocument(orgId, 'kb-doc', doc.id).catch(() => {})
+  if (personal) await unindexDocument(personal.id, 'kb-doc', doc.id).catch(() => {})
+
+  const idxDoc: IndexDoc = {
+    sourceType: 'kb-doc',
+    sourceId: doc.id,
+    title: doc.title,
+    text: `${doc.title}\n\n${doc.body}`,
+    href: `/knowledge/${doc.id}`,
+  }
+  if (doc.visibility === 'private') {
+    if (personal) await indexDocument(personal.id, idxDoc).catch(() => {})
+    // No personal collection yet (user hasn't spun up an assistant) → the doc
+    // stays private and unindexed until they do, then a save syncs it.
+  } else if (doc.official && orgId) {
+    await indexDocument(orgId, idxDoc).catch(() => {})
+  }
+}
+
+/** Remove a doc from every KB collection it might be in (on delete). */
+export async function unindexKbDoc(id: string, ownerUserId: string | null): Promise<void> {
+  const orgId = await autoCollectionId('org-kb')
+  if (orgId) await unindexDocument(orgId, 'kb-doc', id).catch(() => {})
+  if (ownerUserId) {
+    const personal = await personalCollectionFor(ownerUserId)
+    if (personal) await unindexDocument(personal.id, 'kb-doc', id).catch(() => {})
+  }
 }
 
 export async function unindexActivity(sourceType: string, sourceId: string): Promise<void> {

@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useEditor, useEditorState, EditorContent, mergeAttributes, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
@@ -36,6 +36,7 @@ import {
   Code,
   SquareCode,
   Link as LinkIcon,
+  FileText,
   SendHorizontal,
   type LucideIcon,
 } from 'lucide-react'
@@ -48,6 +49,10 @@ export interface RichEditorHandle {
   getMarkdown: () => string
   clear: () => void
 }
+
+/** Optional cross-reference search: given a query, return docs to link to.
+ *  When provided, the toolbar gains a "link to doc" button with fuzzy search. */
+export type DocSearchFn = (query: string) => Promise<Array<{ id: string; title: string; icon?: string | null; href: string }>>
 
 // WYSIWYG editor for normies; markdown under the hood (agents write/read markdown
 // via the API). Canonical TipTap setup: immediatelyRender:false (SSR-safe),
@@ -65,8 +70,10 @@ export const RichEditor = forwardRef<RichEditorHandle, {
   bare?: boolean
   /** Stretch to fill the parent's height (parent must have a definite height). */
   fill?: boolean
+  /** Enable the "link to another doc" toolbar button (KB cross-references). */
+  docSearch?: DocSearchFn
   className?: string
-}>(function RichEditor({ value, onSave, onSubmit, editable = true, placeholder, minHeight = '5rem', bare = false, fill = false, className }, ref) {
+}>(function RichEditor({ value, onSave, onSubmit, editable = true, placeholder, minHeight = '5rem', bare = false, fill = false, docSearch, className }, ref) {
   const lastSaved = useRef<string>(value)
 
   const editor = useEditor({
@@ -134,13 +141,13 @@ export const RichEditor = forwardRef<RichEditorHandle, {
         }
       }}
     >
-      {editable && <Toolbar editor={editor} onSubmit={onSubmit} />}
+      {editable && <Toolbar editor={editor} onSubmit={onSubmit} docSearch={docSearch} />}
       <EditorContent editor={editor} className={fill ? 'min-h-0 flex-1 overflow-y-auto [&>.tiptap]:min-h-full' : undefined} />
     </div>
   )
 })
 
-function Toolbar({ editor, onSubmit }: { editor: Editor | null; onSubmit?: () => void }) {
+function Toolbar({ editor, onSubmit, docSearch }: { editor: Editor | null; onSubmit?: () => void; docSearch?: DocSearchFn }) {
   const s = useEditorState({
     editor,
     selector: ({ editor }) => ({
@@ -162,7 +169,19 @@ function Toolbar({ editor, onSubmit }: { editor: Editor | null; onSubmit?: () =>
   const [linkUrl, setLinkUrl] = useState('')
   const [imgOpen, setImgOpen] = useState(false)
   const [imgUrl, setImgUrl] = useState('')
+  const [docLinkOpen, setDocLinkOpen] = useState(false)
   if (!editor || !s) return null
+
+  const insertDocLink = (doc: { title: string; icon?: string | null; href: string }) => {
+    const label = `${doc.icon ? doc.icon + ' ' : ''}${doc.title}`
+    const chain = editor.chain().focus()
+    if (editor.state.selection.empty) {
+      chain.insertContent({ type: 'text', text: label, marks: [{ type: 'link', attrs: { href: doc.href } }] }).run()
+    } else {
+      chain.setLink({ href: doc.href }).run()
+    }
+    setDocLinkOpen(false)
+  }
 
   const openLinkModal = () => {
     setLinkUrl((editor.getAttributes('link').href as string | undefined) ?? '')
@@ -234,6 +253,12 @@ function Toolbar({ editor, onSubmit }: { editor: Editor | null; onSubmit?: () =>
       />
       <Btn icon={ImageIcon} title="Insert image" active={false} onClick={() => { setImgUrl(''); setImgOpen(true) }} />
       <Btn icon={LinkIcon} title="Link" active={s.link} onClick={openLinkModal} />
+      {docSearch && (
+        <span className="relative">
+          <Btn icon={FileText} title="Link to a document" active={docLinkOpen} onClick={() => setDocLinkOpen((v) => !v)} />
+          {docLinkOpen && <DocLinkPopover search={docSearch} onPick={insertDocLink} onClose={() => setDocLinkOpen(false)} />}
+        </span>
+      )}
       {onSubmit && (
         <button
           type="button"
@@ -246,6 +271,62 @@ function Toolbar({ editor, onSubmit }: { editor: Editor | null; onSubmit?: () =>
           Send
         </button>
       )}
+    </div>
+  )
+}
+
+// Fuzzy doc-picker popover for cross-references. Debounced search over the
+// caller-provided function; click a result to insert a link.
+function DocLinkPopover({
+  search,
+  onPick,
+  onClose,
+}: {
+  search: DocSearchFn
+  onPick: (doc: { title: string; icon?: string | null; href: string }) => void
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState<Array<{ id: string; title: string; icon?: string | null; href: string }>>([])
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [onClose])
+  useEffect(() => {
+    let live = true
+    const id = setTimeout(() => {
+      void search(q).then((r) => live && setResults(r))
+    }, 160)
+    return () => {
+      live = false
+      clearTimeout(id)
+    }
+  }, [q, search])
+  return (
+    <div ref={ref} className="absolute left-0 top-full z-30 mt-1 w-72 rounded-xl border border-line bg-card p-1.5 shadow-lg">
+      <Input autoFocus size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search documents…" className="mb-1.5" />
+      <div className="max-h-64 overflow-y-auto">
+        {results.length === 0 ? (
+          <div className="px-2 py-3 text-center text-xs text-muted">{q.trim() ? 'No matches.' : 'Type to search docs.'}</div>
+        ) : (
+          results.map((d) => (
+            <button
+              key={d.id}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onPick(d)}
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-sidebar hover:text-fg"
+            >
+              <span>{d.icon ?? '📄'}</span>
+              <span className="min-w-0 flex-1 truncate">{d.title}</span>
+            </button>
+          ))
+        )}
+      </div>
     </div>
   )
 }

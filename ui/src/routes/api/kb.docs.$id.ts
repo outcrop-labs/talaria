@@ -24,8 +24,11 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         const doc = await getDoc(params.id)
         if (!doc) return json({ error: 'not found' }, { status: 404 })
+        // A private doc is readable only by its owner (by user id, or the
+        // author string for docs created before owner ids were tracked).
         const author = user.email ?? user.name
-        if (doc.visibility === 'private' && doc.createdBy !== author) return json({ error: 'forbidden' }, { status: 403 })
+        const mine = doc.ownerUserId ? doc.ownerUserId === user.id : doc.createdBy === author
+        if (doc.visibility === 'private' && !mine) return json({ error: 'forbidden' }, { status: 403 })
         return json({ doc })
       },
       PUT: async ({ request, params }) => {

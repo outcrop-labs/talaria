@@ -11,15 +11,23 @@ import { Select } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
-import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
+import { EmojiPicker } from '@/components/ui/emoji-picker'
+import { RichEditor, type RichEditorHandle, type DocSearchFn } from '@/components/ui/rich-editor'
 import { InlineCreate } from '@/components/ui/inline-create'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import {
   createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, saveDoc, searchKb, updateSpace, useBacklinks,
-  useDoc, useDocs, useSpaces,
+  useDoc, useDocs, useSpace, useSpaces,
   type KbDocMeta, type KbSearchHit, type KbSpace,
 } from '@/lib/kb'
+
+// Shared cross-reference search for the editor's "link to doc" button.
+const docSearch: DocSearchFn = async (q) => {
+  if (!q.trim()) return []
+  const hits = await searchKb(q)
+  return hits.map((h) => ({ id: h.id, title: h.title, icon: h.icon, href: `/knowledge/${h.id}` }))
+}
 
 export const Route = createFileRoute('/_app/knowledge')({
   component: KnowledgePage,
@@ -93,7 +101,10 @@ function KnowledgePage() {
                 <SpaceRow
                   space={s}
                   active={activeSpace?.id === s.id}
-                  onSelect={() => setSpaceId(s.id)}
+                  onSelect={() => {
+                    setSpaceId(s.id)
+                    setDocId(null) // open the space's own overview
+                  }}
                   onRename={(name) => void renameSpace(s.id, name)}
                   onDelete={() => void removeSpace(s.id)}
                 />
@@ -109,12 +120,11 @@ function KnowledgePage() {
       <main className="min-h-0 min-w-0 flex-1">
         {docId ? (
           <DocEditor key={docId} docId={docId} docs={docs} onDeleted={() => setDocId(null)} onSelect={setDocId} />
+        ) : activeSpace ? (
+          // A top-level folder is itself a document: its editable overview.
+          <SpaceEditor key={activeSpace.id} spaceId={activeSpace.id} onNewDoc={() => void newDoc('human')} />
         ) : (
-          <EmptyState
-            icon="❖"
-            title={activeSpace ? `${activeSpace.name}` : 'Knowledge'}
-            hint={activeSpace ? 'Pick a doc, or create one below the space.' : 'Create a space to start writing.'}
-          />
+          <EmptyState icon="❖" title="Knowledge" hint="Create a space to start writing." />
         )}
       </main>
     </div>
@@ -425,6 +435,87 @@ function DocRow({
   )
 }
 
+// ── Space overview (top-level folder = document) ────────────────────────────
+function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => void }) {
+  const qc = useQueryClient()
+  const { data: space } = useSpace(spaceId)
+  const editorRef = useRef<RichEditorHandle>(null)
+  const [name, setName] = useState('')
+  const [emojiOpen, setEmojiOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    if (space) setName(space.name)
+  }, [space])
+
+  const save = async (patch: Parameters<typeof updateSpace>[1]) => {
+    setSaving(true)
+    try {
+      await updateSpace(spaceId, patch)
+      await qc.invalidateQueries({ queryKey: ['kb-space', spaceId] })
+      await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
+    } finally {
+      setSaving(false)
+    }
+  }
+  const saveBody = () => save({ name: name.trim() || 'Untitled', body: editorRef.current?.getMarkdown() ?? space?.body ?? '' })
+
+  if (!space) return <div className="p-8 text-sm text-muted">Loading…</div>
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
+        <div className="relative shrink-0">
+          <button type="button" onClick={() => setEmojiOpen((v) => !v)} className="rounded-lg px-1 text-xl leading-none hover:bg-card" title="Set icon">
+            {space.icon ?? '📚'}
+          </button>
+          {emojiOpen && (
+            <EmojiPicker
+              onPick={(e) => {
+                void save({ icon: e })
+                setEmojiOpen(false)
+              }}
+              onClear={() => {
+                void save({ icon: null })
+                setEmojiOpen(false)
+              }}
+              onClose={() => setEmojiOpen(false)}
+            />
+          )}
+        </div>
+        <Input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => name.trim() && name !== space.name && void save({ name: name.trim() })}
+          className="min-w-0 flex-1 border-0 bg-transparent text-xl font-semibold focus:border-0"
+          placeholder="Space name"
+        />
+        <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">Folder</span>
+        <Button variant="outline" size="sm" className="shrink-0" onClick={onNewDoc}>
+          <Plus size={13} className="mr-1" /> New doc
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-6">
+        <RichEditor
+          key={spaceId}
+          ref={editorRef}
+          value={space.body}
+          docSearch={docSearch}
+          onSave={() => void saveBody()}
+          placeholder="Write an overview for this space — what lives here, how it's organized…"
+          minHeight="50vh"
+        />
+      </div>
+      <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
+        <span>Top-level document · child docs nest under it</span>
+        <span className="ml-auto" />
+        <Button size="sm" onClick={() => void saveBody()} disabled={saving}>
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 // ── Editor ──────────────────────────────────────────────────────────────────
 interface Heading {
   level: number
@@ -576,7 +667,19 @@ function DocEditor({
         <Button variant="ghost" size="sm" className="shrink-0" title="History" onClick={() => setShowHistory((v) => !v)}>
           <History size={14} />
         </Button>
-        <Button variant="ghost" size="sm" className="shrink-0" title="Delete" onClick={() => confirm(`Delete "${doc.title}"?`) && (void deleteDoc(docId).then(onDeleted))}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="shrink-0"
+          title="Delete"
+          onClick={async () => {
+            if (!confirm(`Delete "${doc.title}"?`)) return
+            await deleteDoc(docId)
+            // Refresh the tree immediately (was only updating on reload).
+            await qc.invalidateQueries({ queryKey: ['kb-docs', doc.spaceId] })
+            onDeleted()
+          }}
+        >
           <Trash2 size={14} />
         </Button>
       </div>
@@ -594,6 +697,7 @@ function DocEditor({
             key={`${docId}-${seed}`}
             ref={editorRef}
             value={doc.body}
+            docSearch={docSearch}
             onSave={() => void saveBody()}
             placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents…' : 'Write…'}
             minHeight="60vh"
@@ -671,33 +775,6 @@ function DocEditor({
           {saving ? 'Saving…' : 'Save'}
         </Button>
       </div>
-    </div>
-  )
-}
-
-// A compact emoji picker — curated common set, no dependency. Click-away closes.
-const EMOJI = '📄 📝 📌 📚 📁 🗂️ 🧭 🧠 💡 ⚙️ 🚀 🔧 🛠️ 🔒 🔑 🎯 ✅ 📊 📈 📉 🧪 🧩 🗺️ 🏷️ 💬 📣 🌐 🔍 ⭐ 🔥 ❤️ ⚠️ 🐛 🤖 👤 🏢 💰 📅 🎨'.split(' ')
-function EmojiPicker({ onPick, onClear, onClose }: { onPick: (e: string) => void; onClear: () => void; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
-    }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [onClose])
-  return (
-    <div ref={ref} className="absolute left-0 top-full z-30 mt-1 w-56 rounded-xl border border-line bg-card p-2 shadow-lg">
-      <div className="grid grid-cols-8 gap-0.5">
-        {EMOJI.map((e) => (
-          <button key={e} type="button" onClick={() => onPick(e)} className="rounded p-1 text-base hover:bg-sidebar">
-            {e}
-          </button>
-        ))}
-      </div>
-      <button type="button" onClick={onClear} className="mt-1 w-full rounded-md py-1 text-[11px] text-muted hover:text-fg">
-        Remove icon
-      </button>
     </div>
   )
 }

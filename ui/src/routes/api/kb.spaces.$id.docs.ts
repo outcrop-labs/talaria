@@ -31,6 +31,7 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
             title: parsed.data.title,
             kind: parsed.data.kind,
             createdBy: user.email ?? user.name ?? 'user',
+            ownerUserId: user.id,
           }),
         })
       },

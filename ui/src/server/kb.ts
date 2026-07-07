@@ -5,13 +5,14 @@
 import { randomBytes } from 'node:crypto'
 import { db } from './db/pg'
 import { snapshot } from './internal-history'
-import { indexOrgKb, unindexOrgKb } from './retrieval/sources'
+import { syncKbDoc, unindexKbDoc } from './retrieval/sources'
 
 export interface KbSpace {
   id: string
   name: string
   description: string | null
   icon: string | null
+  body: string
   createdBy: string | null
   createdAt: string
 }
@@ -34,15 +35,21 @@ export interface KbDocMeta {
 
 export interface KbDoc extends KbDocMeta {
   body: string
+  ownerUserId: string | null
 }
 
 // ── Spaces ────────────────────────────────────────────────────────────────────
+const SPACE_COLS = `id, name, description, icon, body, created_by as "createdBy", created_at as "createdAt"`
+
 export async function listSpaces(): Promise<KbSpace[]> {
   const sql = await db()
-  return (await sql`
-    select id, name, description, icon, created_by as "createdBy", created_at as "createdAt"
-    from kb_spaces order by name asc
-  `) as unknown as KbSpace[]
+  return (await sql.unsafe(`select ${SPACE_COLS} from kb_spaces order by name asc`)) as unknown as KbSpace[]
+}
+
+export async function getSpace(id: string): Promise<KbSpace | null> {
+  const sql = await db()
+  const rows = (await sql.unsafe(`select ${SPACE_COLS} from kb_spaces where id = $1`, [id])) as unknown as KbSpace[]
+  return rows[0] ?? null
 }
 
 export async function createSpace(input: { name: string; description?: string; icon?: string; createdBy: string }): Promise<KbSpace> {
@@ -50,28 +57,25 @@ export async function createSpace(input: { name: string; description?: string; i
   const rows = (await sql`
     insert into kb_spaces (name, description, icon, created_by)
     values (${input.name}, ${input.description ?? null}, ${input.icon ?? null}, ${input.createdBy})
-    returning id, name, description, icon, created_by as "createdBy", created_at as "createdAt"
+    returning ${sql.unsafe(SPACE_COLS)}
   `) as unknown as KbSpace[]
   return rows[0]!
 }
 
-export async function updateSpace(id: string, patch: { name?: string; description?: string | null; icon?: string | null }): Promise<KbSpace | null> {
+export async function updateSpace(id: string, patch: { name?: string; description?: string | null; icon?: string | null; body?: string }): Promise<KbSpace | null> {
   const sql = await db()
   if (patch.name !== undefined) await sql`update kb_spaces set name = ${patch.name} where id = ${id}`
   if (patch.description !== undefined) await sql`update kb_spaces set description = ${patch.description} where id = ${id}`
   if (patch.icon !== undefined) await sql`update kb_spaces set icon = ${patch.icon} where id = ${id}`
-  const rows = (await sql`
-    select id, name, description, icon, created_by as "createdBy", created_at as "createdAt"
-    from kb_spaces where id = ${id}
-  `) as unknown as KbSpace[]
-  return rows[0] ?? null
+  if (patch.body !== undefined) await sql`update kb_spaces set body = ${patch.body} where id = ${id}`
+  return getSpace(id)
 }
 
 export async function deleteSpace(id: string): Promise<void> {
   const sql = await db()
-  // Unindex any official docs first.
-  const docs = (await sql`select id from kb_docs where space_id = ${id} and official`) as unknown as Array<{ id: string }>
-  for (const d of docs) await unindexOrgKb('kb-doc', d.id).catch(() => {})
+  // Unindex every doc in the space (org brain + any personal collections).
+  const docs = (await sql`select id, owner_user_id as "ownerUserId" from kb_docs where space_id = ${id}`) as unknown as Array<{ id: string; ownerUserId: string | null }>
+  for (const d of docs) await unindexKbDoc(d.id, d.ownerUserId).catch(() => {})
   await sql`delete from kb_spaces where id = ${id}`
 }
 
@@ -89,7 +93,8 @@ export async function getDoc(id: string): Promise<KbDoc | null> {
   const sql = await db()
   const rows = (await sql.unsafe(
     `select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
-            visibility, public_slug as "publicSlug", sort, created_by as "createdBy", updated_by as "updatedBy",
+            visibility, public_slug as "publicSlug", sort, owner_user_id as "ownerUserId",
+            created_by as "createdBy", updated_by as "updatedBy",
             updated_at as "updatedAt" from kb_docs where id = $1`,
     [id],
   )) as unknown as KbDoc[]
@@ -100,8 +105,8 @@ export async function getPublicDoc(slug: string): Promise<KbDoc | null> {
   const sql = await db()
   const rows = (await sql`
     select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
-           visibility, public_slug as "publicSlug", sort, created_by as "createdBy", updated_by as "updatedBy",
-           updated_at as "updatedAt"
+           visibility, public_slug as "publicSlug", sort, owner_user_id as "ownerUserId",
+           created_by as "createdBy", updated_by as "updatedBy", updated_at as "updatedAt"
     from kb_docs where public_slug = ${slug} and visibility = 'public'
   `) as unknown as KbDoc[]
   return rows[0] ?? null
@@ -128,12 +133,13 @@ export async function createDoc(input: {
   title?: string
   kind?: 'human' | 'agent'
   createdBy: string
+  ownerUserId?: string | null
 }): Promise<KbDoc> {
   const sql = await db()
   const body = input.kind === 'agent' ? OKF_TEMPLATE : ''
   const rows = (await sql`
-    insert into kb_docs (space_id, parent_id, title, body, kind, created_by, updated_by)
-    values (${input.spaceId}, ${input.parentId ?? null}, ${input.title ?? 'Untitled'}, ${body}, ${input.kind ?? 'human'}, ${input.createdBy}, ${input.createdBy})
+    insert into kb_docs (space_id, parent_id, title, body, kind, created_by, updated_by, owner_user_id)
+    values (${input.spaceId}, ${input.parentId ?? null}, ${input.title ?? 'Untitled'}, ${body}, ${input.kind ?? 'human'}, ${input.createdBy}, ${input.createdBy}, ${input.ownerUserId ?? null})
     returning id
   `) as unknown as Array<{ id: string }>
   return (await getDoc(rows[0]!.id))!
@@ -161,39 +167,44 @@ export async function saveDoc(
   if (patch.parentId !== undefined) await sql`update kb_docs set parent_id = ${patch.parentId}, updated_at = now() where id = ${id}`
 
   const next = await getDoc(id)
-  // Snapshot the version + keep the org brain fresh if this doc is official.
-  if (next && (patch.body !== undefined || patch.title !== undefined)) {
-    await snapshot('kb-doc', id, `# ${next.title}\n\n${next.body}`, actor).catch(() => {})
-    if (next.official) await reindexOfficial(next).catch(() => {})
+  if (next) {
+    // Snapshot on content change; re-route RAG on any content/visibility change.
+    if (patch.body !== undefined || patch.title !== undefined) {
+      await snapshot('kb-doc', id, `# ${next.title}\n\n${next.body}`, actor).catch(() => {})
+    }
+    if (patch.body !== undefined || patch.title !== undefined || patch.visibility !== undefined) {
+      await syncKbDoc(next).catch(() => {})
+    }
   }
   return next
 }
 
 export async function deleteDoc(id: string): Promise<void> {
   const sql = await db()
-  await unindexOrgKb('kb-doc', id).catch(() => {})
+  const doc = await getDoc(id)
+  await unindexKbDoc(id, doc?.ownerUserId ?? null).catch(() => {})
   await sql`delete from kb_docs where id = ${id}`
 }
 
-/** Mark a doc official (→ org brain) or not (→ removed from it). */
+/** Mark a doc official (→ org brain) or not. Re-routes its RAG placement. */
 export async function setOfficial(id: string, official: boolean, actor: string): Promise<KbDoc | null> {
   const sql = await db()
   await sql`update kb_docs set official = ${official}, updated_by = ${actor}, updated_at = now() where id = ${id}`
   const doc = await getDoc(id)
   if (!doc) return null
-  if (official) await reindexOfficial(doc).catch(() => {})
-  else await unindexOrgKb('kb-doc', id).catch(() => {})
+  await syncKbDoc(doc).catch(() => {})
   return doc
 }
 
-async function reindexOfficial(doc: KbDoc): Promise<void> {
-  await indexOrgKb({
-    sourceType: 'kb-doc',
-    sourceId: doc.id,
-    title: doc.title,
-    text: `${doc.title}\n\n${doc.body}`,
-    href: `/knowledge/${doc.id}`,
-  })
+/** Index a user's existing private docs into their (freshly created) personal
+ *  RAG collection — called when they spin up their assistant. */
+export async function syncUserPrivateDocs(userId: string): Promise<void> {
+  const sql = await db()
+  const ids = (await sql`select id from kb_docs where owner_user_id = ${userId} and visibility = 'private'`) as unknown as Array<{ id: string }>
+  for (const { id } of ids) {
+    const doc = await getDoc(id)
+    if (doc) await syncKbDoc(doc).catch(() => {})
+  }
 }
 
 /** Reparent + reorder a doc within its space (the sidebar tree drag target).
