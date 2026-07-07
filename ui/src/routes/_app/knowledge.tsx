@@ -526,6 +526,7 @@ function SpaceEditor({ spaceId, onNewDoc }: { spaceId: string; onNewDoc: () => v
             ref={editorRef}
             value={space.body}
             docSearch={docSearch}
+            slash
             onSave={() => void saveBody()}
             placeholder="Write an overview for this space — what lives here, how it's organized…"
             fill
@@ -769,6 +770,7 @@ function DocEditor({
               ref={editorRef}
               value={doc.body}
               docSearch={docSearch}
+              slash
               onSave={() => void saveBody()}
               placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents…' : 'Write…'}
               fill
