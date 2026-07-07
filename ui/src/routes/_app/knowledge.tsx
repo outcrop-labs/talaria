@@ -127,7 +127,7 @@ function KnowledgePage() {
 
       <main className="min-h-0 min-w-0 flex-1">
         {docId ? (
-          <DocEditor key={docId} docId={docId} docs={docs} onDeleted={() => setDocId(null)} onSelect={setDocId} />
+          <DocEditor key={docId} docId={docId} docs={docs} onDeleted={() => setDocId(null)} onSelect={setDocId} folderName={activeSpace?.name} />
         ) : activeSpace ? (
           // A top-level folder is itself a document: its editable overview.
           <SpaceEditor key={activeSpace.id} spaceId={activeSpace.id} onNewDoc={() => void newDoc('human')} onDeleted={() => void removeSpace(activeSpace.id)} />
@@ -711,12 +711,13 @@ function parseHeadings(md: string): Heading[] {
 }
 
 function DocEditor({
-  docId, docs, onDeleted, onSelect,
+  docId, docs, onDeleted, onSelect, folderName,
 }: {
   docId: string
   docs: KbDocMeta[]
   onDeleted: () => void
   onSelect: (id: string) => void
+  folderName?: string
 }) {
   const qc = useQueryClient()
   const { data: doc } = useDoc(docId)
@@ -1024,6 +1025,9 @@ function DocEditor({
         editPolicy={doc.editPolicy}
         publicSlug={doc.publicSlug}
         canManage={isOwner}
+        inheritable
+        inherited={doc.permsInherited}
+        folderName={folderName}
         onSave={(patch) => save(patch)}
       />
     </div>

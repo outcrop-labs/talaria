@@ -6,6 +6,29 @@ import { randomBytes } from 'node:crypto'
 import { db } from './db/pg'
 import { snapshot } from './internal-history'
 import { syncKbDoc, unindexKbDoc } from './retrieval/sources'
+import { listEditors, type EditorGrant, type Guarded } from './kb-perms'
+
+/** Resolve a doc's effective audience: when it inherits, visibility / edit
+ *  policy / grants come from its folder, but ownership always stays with the
+ *  doc's own creator (so the author never loses edit rights). */
+export async function effectiveDocPerms(doc: KbDoc): Promise<{ perms: Guarded; grants: EditorGrant[] }> {
+  if (!doc.permsInherited) {
+    return {
+      perms: { visibility: doc.visibility, editPolicy: doc.editPolicy, ownerUserId: doc.ownerUserId, createdBy: doc.createdBy },
+      grants: await listEditors('doc', doc.id),
+    }
+  }
+  const space = await getSpace(doc.spaceId)
+  return {
+    perms: {
+      visibility: space?.visibility ?? doc.visibility,
+      editPolicy: space?.editPolicy ?? doc.editPolicy,
+      ownerUserId: doc.ownerUserId,
+      createdBy: doc.createdBy,
+    },
+    grants: space ? await listEditors('space', doc.spaceId) : [],
+  }
+}
 
 export interface KbSpace {
   id: string
@@ -32,6 +55,7 @@ export interface KbDocMeta {
   visibility: 'private' | 'org' | 'public'
   publicSlug: string | null
   editPolicy: 'owner' | 'org' | 'restricted'
+  permsInherited: boolean
   ownerUserId: string | null
   sort: number
   createdBy: string | null
@@ -109,7 +133,8 @@ export async function deleteSpace(id: string): Promise<void> {
 
 // ── Docs ──────────────────────────────────────────────────────────────────────
 const DOC_META = `select id, space_id as "spaceId", parent_id as "parentId", title, icon, kind, official,
-  visibility, public_slug as "publicSlug", edit_policy as "editPolicy", owner_user_id as "ownerUserId", sort,
+  visibility, public_slug as "publicSlug", edit_policy as "editPolicy", perms_inherited as "permsInherited",
+  owner_user_id as "ownerUserId", sort,
   created_by as "createdBy", updated_by as "updatedBy", updated_at as "updatedAt" from kb_docs`
 
 export async function listDocs(spaceId: string): Promise<KbDocMeta[]> {
@@ -121,7 +146,8 @@ export async function getDoc(id: string): Promise<KbDoc | null> {
   const sql = await db()
   const rows = (await sql.unsafe(
     `select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
-            visibility, public_slug as "publicSlug", edit_policy as "editPolicy", sort, owner_user_id as "ownerUserId",
+            visibility, public_slug as "publicSlug", edit_policy as "editPolicy", perms_inherited as "permsInherited",
+            sort, owner_user_id as "ownerUserId",
             created_by as "createdBy", updated_by as "updatedBy",
             updated_at as "updatedAt" from kb_docs where id = $1`,
     [id],
@@ -133,7 +159,8 @@ export async function getPublicDoc(slug: string): Promise<KbDoc | null> {
   const sql = await db()
   const rows = (await sql`
     select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
-           visibility, public_slug as "publicSlug", edit_policy as "editPolicy", sort, owner_user_id as "ownerUserId",
+           visibility, public_slug as "publicSlug", edit_policy as "editPolicy", perms_inherited as "permsInherited",
+           sort, owner_user_id as "ownerUserId",
            created_by as "createdBy", updated_by as "updatedBy", updated_at as "updatedAt"
     from kb_docs where public_slug = ${slug} and visibility = 'public'
   `) as unknown as KbDoc[]
@@ -175,7 +202,7 @@ export async function createDoc(input: {
 
 export async function saveDoc(
   id: string,
-  patch: { title?: string; body?: string; icon?: string | null; visibility?: 'private' | 'org' | 'public'; editPolicy?: 'owner' | 'org' | 'restricted'; parentId?: string | null },
+  patch: { title?: string; body?: string; icon?: string | null; visibility?: 'private' | 'org' | 'public'; editPolicy?: 'owner' | 'org' | 'restricted'; permsInherited?: boolean; parentId?: string | null },
   actor: string,
 ): Promise<KbDoc | null> {
   const sql = await db()
@@ -185,6 +212,7 @@ export async function saveDoc(
   if (patch.title !== undefined) await sql`update kb_docs set title = ${patch.title}, updated_by = ${actor}, updated_at = now() where id = ${id}`
   if (patch.body !== undefined) await sql`update kb_docs set body = ${patch.body}, updated_by = ${actor}, updated_at = now() where id = ${id}`
   if (patch.icon !== undefined) await sql`update kb_docs set icon = ${patch.icon}, updated_at = now() where id = ${id}`
+  if (patch.permsInherited !== undefined) await sql`update kb_docs set perms_inherited = ${patch.permsInherited}, updated_at = now() where id = ${id}`
   if (patch.editPolicy !== undefined) await sql`update kb_docs set edit_policy = ${patch.editPolicy}, updated_at = now() where id = ${id}`
   if (patch.visibility) {
     await sql`update kb_docs set visibility = ${patch.visibility}, updated_at = now() where id = ${id}`
@@ -201,11 +229,18 @@ export async function saveDoc(
     if (patch.body !== undefined || patch.title !== undefined) {
       await snapshot('kb-doc', id, `# ${next.title}\n\n${next.body}`, actor).catch(() => {})
     }
-    if (patch.body !== undefined || patch.title !== undefined || patch.visibility !== undefined) {
-      await syncKbDoc(next).catch(() => {})
+    if (patch.body !== undefined || patch.title !== undefined || patch.visibility !== undefined || patch.permsInherited !== undefined) {
+      await syncDocEffective(next).catch(() => {})
     }
   }
   return next
+}
+
+/** Sync a doc into RAG using its EFFECTIVE visibility (inherited from the folder
+ *  when applicable) — so an inherited-private doc never lands in the org brain. */
+async function syncDocEffective(doc: KbDoc): Promise<void> {
+  const { perms } = await effectiveDocPerms(doc)
+  await syncKbDoc({ ...doc, visibility: perms.visibility })
 }
 
 export async function deleteDoc(id: string): Promise<void> {
@@ -221,7 +256,7 @@ export async function setOfficial(id: string, official: boolean, actor: string):
   await sql`update kb_docs set official = ${official}, updated_by = ${actor}, updated_at = now() where id = ${id}`
   const doc = await getDoc(id)
   if (!doc) return null
-  await syncKbDoc(doc).catch(() => {})
+  await syncDocEffective(doc).catch(() => {})
   return doc
 }
 

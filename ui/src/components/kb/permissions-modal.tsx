@@ -33,6 +33,9 @@ export function PermissionsModal({
   editPolicy,
   publicSlug,
   canManage,
+  inheritable = false,
+  inherited = false,
+  folderName,
   onSave,
 }: {
   open: boolean
@@ -44,12 +47,17 @@ export function PermissionsModal({
   editPolicy: EditPolicy
   publicSlug: string | null
   canManage: boolean
-  onSave: (patch: { visibility: Visibility; editPolicy: EditPolicy; editors: KbEditor[] }) => Promise<void>
+  /** Docs can inherit their folder's access; folders can't. */
+  inheritable?: boolean
+  inherited?: boolean
+  folderName?: string
+  onSave: (patch: { visibility: Visibility; editPolicy: EditPolicy; editors: KbEditor[]; permsInherited?: boolean }) => Promise<void>
 }) {
   const { data: users = [] } = useUsers()
   const { data: fleet } = useAgents()
   const [vis, setVis] = useState<Visibility>(visibility)
   const [grants, setGrants] = useState<KbEditor[]>([])
+  const [inh, setInh] = useState(inherited)
   // General audience role for org/public: editors → edit_policy 'org'.
   const [orgRole, setOrgRole] = useState<GrantRole>(editPolicy === 'org' ? 'editor' : 'viewer')
   const [saving, setSaving] = useState(false)
@@ -59,9 +67,12 @@ export function PermissionsModal({
     if (!open) return
     setVis(visibility)
     setOrgRole(editPolicy === 'org' ? 'editor' : 'viewer')
+    setInh(inherited)
     setCopied(false)
     void fetchEditors(kind, id).then(setGrants)
-  }, [open, kind, id, visibility, editPolicy])
+  }, [open, kind, id, visibility, editPolicy, inherited])
+
+  const showInheritBanner = inheritable && inh
 
   const nameOf = (g: KbEditor) => {
     if (g.principalType === 'user') {
@@ -91,8 +102,13 @@ export function PermissionsModal({
   const save = async () => {
     setSaving(true)
     try {
-      const editPolicyNext: EditPolicy = vis !== 'private' && orgRole === 'editor' ? 'org' : 'owner'
-      await onSave({ visibility: vis, editPolicy: editPolicyNext, editors: grants })
+      if (inheritable && inh) {
+        // Still inheriting — just make sure it's marked inherited (reset case).
+        await onSave({ visibility: vis, editPolicy: 'owner', editors: [], permsInherited: true })
+      } else {
+        const editPolicyNext: EditPolicy = vis !== 'private' && orgRole === 'editor' ? 'org' : 'owner'
+        await onSave({ visibility: vis, editPolicy: editPolicyNext, editors: grants, ...(inheritable ? { permsInherited: false } : {}) })
+      }
       onClose()
     } finally {
       setSaving(false)
@@ -121,6 +137,21 @@ export function PermissionsModal({
       }
     >
       <div className="space-y-5">
+        {showInheritBanner ? (
+          <div className="rounded-xl border border-line-subtle bg-card/50 p-4 text-sm">
+            <div className="mb-1 font-medium text-fg">Access follows the folder{folderName ? ` “${folderName}”` : ''}</div>
+            <p className="mb-3 text-xs text-muted">
+              This document shares whoever the folder is shared with. Customize it to give this doc its own,
+              more or less restrictive, access.
+            </p>
+            {canManage && (
+              <Button variant="outline" size="sm" onClick={() => setInh(false)}>
+                Customize for this doc
+              </Button>
+            )}
+          </div>
+        ) : (
+          <>
         {/* People & agents */}
         <div>
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">People &amp; agents</div>
@@ -216,7 +247,14 @@ export function PermissionsModal({
             </button>
           )}
           <p className="mt-2 text-[11px] text-muted">Agents only edit when given the Editor role here — never by default.</p>
+          {inheritable && canManage && (
+            <button type="button" onClick={() => setInh(true)} className="mt-2 text-[11px] text-accent hover:underline">
+              Reset to folder defaults
+            </button>
+          )}
         </div>
+          </>
+        )}
         {!canManage && <p className="text-[11px] text-muted">Only the owner can change sharing.</p>}
       </div>
     </Modal>
