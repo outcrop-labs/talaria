@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as KbSlugRouteImport } from './routes/kb.$slug'
 import { Route as ApiUsersRouteImport } from './routes/api/users'
 import { Route as ApiUploadsRouteImport } from './routes/api/uploads'
 import { Route as ApiTeamsRouteImport } from './routes/api/teams'
@@ -49,6 +50,7 @@ import { Route as AppAgentsRouteImport } from './routes/_app/agents'
 import { Route as AppAdminRouteImport } from './routes/_app/admin'
 import { Route as AppActivityRouteImport } from './routes/_app/activity'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
+import { Route as KbSpaceSlugRouteImport } from './routes/kb.space.$slug'
 import { Route as ApiUploadsIdRouteImport } from './routes/api/uploads.$id'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
 import { Route as ApiRagSearchRouteImport } from './routes/api/rag.search'
@@ -127,6 +129,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AppRoute,
+} as any)
+const KbSlugRoute = KbSlugRouteImport.update({
+  id: '/kb/$slug',
+  path: '/kb/$slug',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ApiUsersRoute = ApiUsersRouteImport.update({
   id: '/api/users',
@@ -312,6 +319,11 @@ const AppBoardsIndexRoute = AppBoardsIndexRouteImport.update({
   id: '/boards/',
   path: '/boards/',
   getParentRoute: () => AppRoute,
+} as any)
+const KbSpaceSlugRoute = KbSpaceSlugRouteImport.update({
+  id: '/kb/space/$slug',
+  path: '/kb/space/$slug',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ApiUploadsIdRoute = ApiUploadsIdRouteImport.update({
   id: '/$id',
@@ -674,6 +686,7 @@ export interface FileRoutesByFullPath {
   '/api/teams': typeof ApiTeamsRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
+  '/kb/$slug': typeof KbSlugRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
@@ -702,6 +715,7 @@ export interface FileRoutesByFullPath {
   '/api/rag/search': typeof ApiRagSearchRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/uploads/$id': typeof ApiUploadsIdRoute
+  '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards/': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
@@ -778,6 +792,7 @@ export interface FileRoutesByTo {
   '/api/teams': typeof ApiTeamsRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
+  '/kb/$slug': typeof KbSlugRoute
   '/': typeof AppIndexRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/admin/settings': typeof ApiAdminSettingsRoute
@@ -807,6 +822,7 @@ export interface FileRoutesByTo {
   '/api/rag/search': typeof ApiRagSearchRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/uploads/$id': typeof ApiUploadsIdRoute
+  '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
@@ -885,6 +901,7 @@ export interface FileRoutesById {
   '/api/teams': typeof ApiTeamsRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
+  '/kb/$slug': typeof KbSlugRoute
   '/_app/': typeof AppIndexRoute
   '/_app/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/admin/settings': typeof ApiAdminSettingsRoute
@@ -914,6 +931,7 @@ export interface FileRoutesById {
   '/api/rag/search': typeof ApiRagSearchRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/uploads/$id': typeof ApiUploadsIdRoute
+  '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/_app/boards/': typeof AppBoardsIndexRoute
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
@@ -993,6 +1011,7 @@ export interface FileRouteTypes {
     | '/api/teams'
     | '/api/uploads'
     | '/api/users'
+    | '/kb/$slug'
     | '/boards/$boardId'
     | '/api/admin/settings'
     | '/api/admin/users'
@@ -1021,6 +1040,7 @@ export interface FileRouteTypes {
     | '/api/rag/search'
     | '/api/tasks/$id'
     | '/api/uploads/$id'
+    | '/kb/space/$slug'
     | '/boards/'
     | '/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
@@ -1097,6 +1117,7 @@ export interface FileRouteTypes {
     | '/api/teams'
     | '/api/uploads'
     | '/api/users'
+    | '/kb/$slug'
     | '/'
     | '/boards/$boardId'
     | '/api/admin/settings'
@@ -1126,6 +1147,7 @@ export interface FileRouteTypes {
     | '/api/rag/search'
     | '/api/tasks/$id'
     | '/api/uploads/$id'
+    | '/kb/space/$slug'
     | '/boards'
     | '/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
@@ -1203,6 +1225,7 @@ export interface FileRouteTypes {
     | '/api/teams'
     | '/api/uploads'
     | '/api/users'
+    | '/kb/$slug'
     | '/_app/'
     | '/_app/boards/$boardId'
     | '/api/admin/settings'
@@ -1232,6 +1255,7 @@ export interface FileRouteTypes {
     | '/api/rag/search'
     | '/api/tasks/$id'
     | '/api/uploads/$id'
+    | '/kb/space/$slug'
     | '/_app/boards/'
     | '/_app/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
@@ -1294,6 +1318,7 @@ export interface RootRouteChildren {
   ApiTeamsRoute: typeof ApiTeamsRouteWithChildren
   ApiUploadsRoute: typeof ApiUploadsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
+  KbSlugRoute: typeof KbSlugRoute
   ApiAdminSettingsRoute: typeof ApiAdminSettingsRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
   ApiAuthGoogleRoute: typeof ApiAuthGoogleRouteWithChildren
@@ -1308,6 +1333,7 @@ export interface RootRouteChildren {
   ApiRagCollectionsRoute: typeof ApiRagCollectionsRouteWithChildren
   ApiRagSearchRoute: typeof ApiRagSearchRoute
   ApiTasksIdRoute: typeof ApiTasksIdRouteWithChildren
+  KbSpaceSlugRoute: typeof KbSpaceSlugRoute
   ApiKbDocsIdRoute: typeof ApiKbDocsIdRouteWithChildren
   ApiKbPublicSlugRoute: typeof ApiKbPublicSlugRoute
   ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
@@ -1337,6 +1363,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/kb/$slug': {
+      id: '/kb/$slug'
+      path: '/kb/$slug'
+      fullPath: '/kb/$slug'
+      preLoaderRoute: typeof KbSlugRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/users': {
       id: '/api/users'
@@ -1596,6 +1629,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/boards/'
       preLoaderRoute: typeof AppBoardsIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/kb/space/$slug': {
+      id: '/kb/space/$slug'
+      path: '/kb/space/$slug'
+      fullPath: '/kb/space/$slug'
+      preLoaderRoute: typeof KbSpaceSlugRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/uploads/$id': {
       id: '/api/uploads/$id'
@@ -2428,6 +2468,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiTeamsRoute: ApiTeamsRouteWithChildren,
   ApiUploadsRoute: ApiUploadsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
+  KbSlugRoute: KbSlugRoute,
   ApiAdminSettingsRoute: ApiAdminSettingsRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,
   ApiAuthGoogleRoute: ApiAuthGoogleRouteWithChildren,
@@ -2442,6 +2483,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiRagCollectionsRoute: ApiRagCollectionsRouteWithChildren,
   ApiRagSearchRoute: ApiRagSearchRoute,
   ApiTasksIdRoute: ApiTasksIdRouteWithChildren,
+  KbSpaceSlugRoute: KbSpaceSlugRoute,
   ApiKbDocsIdRoute: ApiKbDocsIdRouteWithChildren,
   ApiKbPublicSlugRoute: ApiKbPublicSlugRoute,
   ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,
