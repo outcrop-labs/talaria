@@ -145,7 +145,6 @@ export async function renderFleet(): Promise<RenderResult> {
       const env = (svc.environment ?? {}) as Record<string, unknown>
       env.API_SERVER_KEY = `\${HERMES_KEY_${def.slug.toUpperCase()}}`
       env.API_SERVER_MODEL_NAME = def.model
-      env.MM_BOT_TOKEN = `\${MM_TOKEN_${def.slug.toUpperCase()}:-}`
       svc.environment = env
     }
 
