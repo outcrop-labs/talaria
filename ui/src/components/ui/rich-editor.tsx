@@ -14,6 +14,7 @@ import Image from '@tiptap/extension-image'
 import { createLowlight, common } from 'lowlight'
 import { Markdown } from 'tiptap-markdown'
 import { SlashCommands } from '@/components/ui/slash-commands'
+import { BlockEscape } from '@/components/ui/editor-behavior'
 
 const lowlight = createLowlight(common)
 
@@ -107,6 +108,7 @@ export const RichEditor = forwardRef<RichEditorHandle, {
           slash && node.type.name === 'paragraph' ? (placeholder ? `${placeholder}  ·  type “/” for blocks` : 'Type “/” for blocks, or just write…') : (placeholder ?? ''),
       }),
       Markdown.configure({ html: false, breaks: true, transformPastedText: true }),
+      BlockEscape,
       ...(slash ? [SlashCommands] : []),
     ],
     content: value,
