@@ -1,11 +1,23 @@
 import { useQuery } from '@tanstack/react-query'
 
+export type Visibility = 'private' | 'org' | 'public'
+export type EditPolicy = 'owner' | 'org' | 'restricted'
+export interface KbEditor {
+  principalType: 'user' | 'agent'
+  principalId: string
+}
+
 export interface KbSpace {
   id: string
   name: string
   description: string | null
   icon: string | null
   body: string
+  visibility: Visibility
+  publicSlug: string | null
+  editPolicy: EditPolicy
+  ownerUserId: string | null
+  createdBy: string | null
 }
 
 export const useSpace = (id: string | null) =>
@@ -26,8 +38,10 @@ export interface KbDocMeta {
   icon: string | null
   kind: 'human' | 'agent'
   official: boolean
-  visibility: 'private' | 'org' | 'public'
+  visibility: Visibility
   publicSlug: string | null
+  editPolicy: EditPolicy
+  ownerUserId: string | null
   sort: number
   createdBy: string | null
   updatedBy: string | null
@@ -72,16 +86,27 @@ export const useDoc = (id: string | null) =>
 export const createSpace = (name: string) =>
   fetch('/api/kb/spaces', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) }).then((r) => r.json())
 
-export const updateSpace = (id: string, patch: Partial<Pick<KbSpace, 'name' | 'description' | 'icon' | 'body'>>) =>
-  fetch(`/api/kb/spaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+export const updateSpace = (
+  id: string,
+  patch: Partial<Pick<KbSpace, 'name' | 'description' | 'icon' | 'body' | 'visibility' | 'editPolicy'>> & { editors?: KbEditor[] },
+) => fetch(`/api/kb/spaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+
+/** Fetch the current editor grants for a doc or folder (from its GET route). */
+export const fetchEditors = async (kind: 'docs' | 'spaces', id: string): Promise<KbEditor[]> => {
+  const r = await fetch(`/api/kb/${kind}/${id}`)
+  if (!r.ok) return []
+  return ((await r.json()) as { editors?: KbEditor[] }).editors ?? []
+}
 
 export const deleteSpace = (id: string) => fetch(`/api/kb/spaces/${id}`, { method: 'DELETE' })
 
 export const createDoc = (spaceId: string, input: { title?: string; kind?: 'human' | 'agent'; parentId?: string | null }) =>
   fetch(`/api/kb/spaces/${spaceId}/docs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) }).then((r) => r.json())
 
-export const saveDoc = (id: string, patch: Partial<Pick<KbDoc, 'title' | 'body' | 'icon' | 'visibility' | 'official'>>) =>
-  fetch(`/api/kb/docs/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+export const saveDoc = (
+  id: string,
+  patch: Partial<Pick<KbDoc, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy' | 'official'>> & { editors?: KbEditor[] },
+) => fetch(`/api/kb/docs/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
 export const deleteDoc = (id: string) => fetch(`/api/kb/docs/${id}`, { method: 'DELETE' })
 
