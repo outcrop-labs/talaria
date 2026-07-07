@@ -2,8 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { createDoc, listDocs } from '@/server/kb'
-import { canRead, grantedItemIds } from '@/server/kb-perms'
+import { createDoc, getSpace, listDocs } from '@/server/kb'
+import { canRead, grantedItemIds, listEditors } from '@/server/kb-perms'
 
 const Body = z.object({
   title: z.string().max(200).optional(),
@@ -18,9 +18,16 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
       GET: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        // Drop others' private docs from the tree, but keep ones shared with you.
+        // Gate the whole tree on folder access first.
+        const space = await getSpace(params.id)
+        if (!space) return json({ docs: [] })
+        if (!canRead(space, user.id, user.email ?? user.name, await listEditors('space', params.id))) return json({ docs: [] })
+        // Inherited docs are as visible as the (readable) folder, so they show.
+        // Customized docs are filtered by their own audience (or an explicit grant).
         const granted = await grantedItemIds('doc', user.id)
-        const docs = (await listDocs(params.id)).filter((d) => granted.has(d.id) || canRead(d, user.id, user.email ?? user.name))
+        const docs = (await listDocs(params.id)).filter(
+          (d) => d.permsInherited || granted.has(d.id) || canRead(d, user.id, user.email ?? user.name),
+        )
         return json({ docs })
       },
       POST: async ({ request, params }) => {

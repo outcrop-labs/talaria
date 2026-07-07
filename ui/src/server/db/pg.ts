@@ -527,6 +527,9 @@ const MIGRATIONS: string[] = [
   // Each grant now carries a role: 'viewer' (can see) or 'editor' (can see +
   // edit). Existing rows were all editors.
   `alter table kb_editors add column if not exists role text not null default 'editor'`,
+  // Docs inherit their audience (visibility / edit policy / grants) from their
+  // folder unless individually customized. The creator always keeps ownership.
+  `alter table kb_docs add column if not exists perms_inherited boolean not null default true`,
 ]
 
 function ensureMigrated(): Promise<void> {

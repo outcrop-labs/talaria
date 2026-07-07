@@ -43,6 +43,7 @@ export interface KbDocMeta {
   visibility: Visibility
   publicSlug: string | null
   editPolicy: EditPolicy
+  permsInherited: boolean
   ownerUserId: string | null
   sort: number
   createdBy: string | null
@@ -107,7 +108,7 @@ export const createDoc = (spaceId: string, input: { title?: string; kind?: 'huma
 
 export const saveDoc = (
   id: string,
-  patch: Partial<Pick<KbDoc, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy' | 'official'>> & { editors?: KbEditor[] },
+  patch: Partial<Pick<KbDoc, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy' | 'permsInherited' | 'official'>> & { editors?: KbEditor[] },
 ) => fetch(`/api/kb/docs/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
 export const deleteDoc = (id: string) => fetch(`/api/kb/docs/${id}`, { method: 'DELETE' })
