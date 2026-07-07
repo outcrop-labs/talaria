@@ -498,6 +498,12 @@ const MIGRATIONS: string[] = [
   `alter table kb_docs add column if not exists icon text`,
   `create index if not exists kb_docs_fts_idx on kb_docs using gin (
      to_tsvector('english', coalesce(title,'') || ' ' || coalesce(body,'')))`,
+  // Spaces double as top-level documents: an editable overview body. And docs
+  // carry their owner's user id so private docs can route to a personal RAG.
+  `alter table kb_spaces add column if not exists body text not null default ''`,
+  `alter table kb_docs add column if not exists owner_user_id uuid references users(id) on delete set null`,
+  // Personal RAG collections belong to a user (created with their assistant).
+  `alter table rag_collections add column if not exists owner_user_id uuid references users(id) on delete cascade`,
 ]
 
 function ensureMigrated(): Promise<void> {

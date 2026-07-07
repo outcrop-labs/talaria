@@ -7,6 +7,8 @@ import { createAgent } from './fleet-create'
 import { setAgentEnabled } from './agent-defs'
 import { fleetUp, waitHealthy } from './fleet-docker'
 import { renderFleet } from './fleet-render'
+import { ensurePersonalCollection } from './retrieval/collections'
+import { syncUserPrivateDocs } from './kb'
 
 export interface PersonalAgent {
   id: string
@@ -44,6 +46,9 @@ export async function createPersonalAgent(user: {
   const existing = await personalAgentFor(user.id)
   if (existing) {
     if (!existing.enabled) await setAgentEnabled(existing.id, true)
+    // Make sure their personal RAG exists + their agent is bound to it.
+    await ensurePersonalCollection(user.id, { agentModel: existing.model }).catch(() => {})
+    void syncUserPrivateDocs(user.id).catch(() => {})
     return existing
   }
 
@@ -70,6 +75,11 @@ export async function createPersonalAgent(user: {
   // Mark ownership + grant the user access to their own agent.
   await sql`update agent_defs set owner_user_id = ${user.id} where id = ${def.id}`
   await sql`insert into user_agent_access (user_id, agent_model) values (${user.id}, ${def.model}) on conflict do nothing`
+
+  // Personal RAG: a private collection bound to the user + this agent, seeded
+  // with any private docs they already have.
+  await ensurePersonalCollection(user.id, { name: `${displayName} · knowledge`, agentModel: def.model }).catch(() => {})
+  void syncUserPrivateDocs(user.id).catch(() => {})
 
   await renderFleet()
   await fleetUp(def.department).catch(() => {})

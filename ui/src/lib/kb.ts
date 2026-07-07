@@ -5,7 +5,19 @@ export interface KbSpace {
   name: string
   description: string | null
   icon: string | null
+  body: string
 }
+
+export const useSpace = (id: string | null) =>
+  useQuery({
+    queryKey: ['kb-space', id],
+    enabled: !!id,
+    queryFn: async (): Promise<KbSpace | null> => {
+      const r = await fetch(`/api/kb/spaces/${id}`)
+      if (!r.ok) return null
+      return ((await r.json()) as { space: KbSpace }).space
+    },
+  })
 export interface KbDocMeta {
   id: string
   spaceId: string
@@ -60,7 +72,7 @@ export const useDoc = (id: string | null) =>
 export const createSpace = (name: string) =>
   fetch('/api/kb/spaces', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) }).then((r) => r.json())
 
-export const updateSpace = (id: string, patch: Partial<Pick<KbSpace, 'name' | 'description' | 'icon'>>) =>
+export const updateSpace = (id: string, patch: Partial<Pick<KbSpace, 'name' | 'description' | 'icon' | 'body'>>) =>
   fetch(`/api/kb/spaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
 export const deleteSpace = (id: string) => fetch(`/api/kb/spaces/${id}`, { method: 'DELETE' })

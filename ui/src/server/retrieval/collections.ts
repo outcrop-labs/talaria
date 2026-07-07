@@ -8,7 +8,7 @@ import { db } from '../db/pg'
 import { embedDim } from './embed'
 import { ensureCollection, deleteCollection } from './qdrant'
 
-export type CollectionKind = 'activity' | 'org-kb' | 'custom'
+export type CollectionKind = 'activity' | 'org-kb' | 'custom' | 'personal'
 
 export interface RagCollection {
   id: string
@@ -50,7 +50,7 @@ export async function listCollections(): Promise<Array<RagCollection & { binding
   const cols = (await sql`
     select id, name, kind, qdrant_name as "qdrantName", description, auto,
            created_by as "createdBy", created_at as "createdAt"
-    from rag_collections order by auto desc, name asc
+    from rag_collections where kind <> 'personal' order by auto desc, name asc
   `) as unknown as RagCollection[]
   const access = (await sql`
     select collection_id as "collectionId", principal_type as "principalType", principal_id as "principalId"
@@ -92,6 +92,52 @@ export async function createCollection(input: {
   const col = rows[0]!
   await setBindings(col.id, input.bindings ?? [{ principalType: 'all', principalId: null }])
   return col
+}
+
+/** The user's personal RAG collection, if they have one. */
+export async function personalCollectionFor(userId: string): Promise<RagCollection | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select id, name, kind, qdrant_name as "qdrantName", description, auto,
+           created_by as "createdBy", created_at as "createdAt"
+    from rag_collections where kind = 'personal' and owner_user_id = ${userId} limit 1
+  `) as unknown as RagCollection[]
+  return rows[0] ?? null
+}
+
+/** Create (or return) a user's personal RAG collection, bound to them and —
+ *  when given — their personal agent. Their private KB docs sync here; nobody
+ *  else is bound, so nobody else can retrieve from it. */
+export async function ensurePersonalCollection(userId: string, opts: { name?: string; agentModel?: string } = {}): Promise<RagCollection> {
+  const existing = await personalCollectionFor(userId)
+  if (existing) {
+    if (opts.agentModel) await addBinding(existing.id, { principalType: 'agent', principalId: opts.agentModel })
+    return existing
+  }
+  const sql = await db()
+  const dim = await embedDim()
+  const qdrantName = `talaria_personal_${userId.replace(/-/g, '').slice(0, 24)}`
+  await ensureCollection(qdrantName, dim)
+  const rows = (await sql`
+    insert into rag_collections (name, kind, qdrant_name, description, auto, embed_dim, created_by, owner_user_id)
+    values (${opts.name ?? 'My knowledge'}, 'personal', ${qdrantName}, 'Your private docs — visible only to you and your personal assistant.', false, ${dim}, ${userId}, ${userId})
+    returning id, name, kind, qdrant_name as "qdrantName", description, auto, created_by as "createdBy", created_at as "createdAt"
+  `) as unknown as RagCollection[]
+  const col = rows[0]!
+  const bindings: AccessBinding[] = [{ principalType: 'user', principalId: userId }]
+  if (opts.agentModel) bindings.push({ principalType: 'agent', principalId: opts.agentModel })
+  await setBindings(col.id, bindings)
+  return col
+}
+
+/** Add a single access binding without disturbing the others. */
+async function addBinding(collectionId: string, binding: AccessBinding): Promise<void> {
+  const sql = await db()
+  await sql`
+    insert into rag_collection_access (collection_id, principal_type, principal_id)
+    values (${collectionId}, ${binding.principalType}, ${binding.principalId ?? null})
+    on conflict do nothing
+  `
 }
 
 export async function deleteCollectionById(id: string): Promise<{ ok: boolean; error?: string }> {
