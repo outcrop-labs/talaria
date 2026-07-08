@@ -216,9 +216,26 @@ async function ensureArtifactsSpace(actor: string): Promise<string> {
 
 /** Render an artifact's content as markdown for the KB mirror. */
 function artifactToMarkdown(a: Artifact): string {
-  // doc + microsite bodies are already text/markdown; sheets render as-is until
-  // a proper table serializer lands; files have no text body.
-  return a.kind === 'file' ? '' : a.body
+  if (a.kind === 'file') return '' // no text body
+  if (a.kind === 'sheet') return sheetToMarkdownTable(a.body)
+  return a.body // doc + microsite are already text/markdown
+}
+
+/** A sheet's JSON grid (`string[][]`, row 0 = header) → a GFM markdown table. */
+function sheetToMarkdownTable(body: string): string {
+  let grid: string[][]
+  try {
+    const g = JSON.parse(body)
+    grid = Array.isArray(g) ? g.map((r: unknown[]) => (Array.isArray(r) ? r.map((c) => String(c ?? '')) : [])) : []
+  } catch {
+    return body
+  }
+  if (!grid.length) return ''
+  const esc = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ')
+  const [head = [], ...rows] = grid
+  const cols = head.length
+  const line = (cells: string[]) => `| ${Array.from({ length: cols }, (_, i) => esc(cells[i] ?? '')).join(' | ')} |`
+  return [line(head), `| ${Array.from({ length: cols }, () => '---').join(' | ')} |`, ...rows.map(line)].join('\n')
 }
 
 export async function setArtifactOfficial(id: string, official: boolean, actor: string): Promise<Artifact | null> {
