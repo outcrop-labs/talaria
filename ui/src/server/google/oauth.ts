@@ -15,13 +15,15 @@ const USERINFO_ENDPOINT = 'https://openidconnect.googleapis.com/v1/userinfo'
 
 // Least-privilege for export/import: drive.file grants access only to files the
 // app itself creates or the user explicitly opens with it — not the whole Drive.
-export const DRIVE_SCOPES = [
+export const WORKSPACE_SCOPES = [
   'openid',
   'email',
   // Create + manage files the app itself makes (export).
   'https://www.googleapis.com/auth/drive.file',
   // Read metadata + content of the user's Drive files (browse + import).
   'https://www.googleapis.com/auth/drive.readonly',
+  // View + edit calendar events (agenda + create).
+  'https://www.googleapis.com/auth/calendar.events',
 ]
 
 /** Whether the Google integration can run at all (same client as login). */
@@ -38,7 +40,7 @@ export function googleConnectUrl(redirectUri: string, state: string): string {
     client_id: cfg.clientId,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: DRIVE_SCOPES.join(' '),
+    scope: WORKSPACE_SCOPES.join(' '),
     state,
     access_type: 'offline',
     // Force a refresh token even if the user has consented before.
@@ -95,7 +97,7 @@ export async function completeGoogleConnect(
   await saveConnection(userId, {
     googleSub: info.sub,
     email: info.email ?? null,
-    scope: tokens.scope ?? DRIVE_SCOPES.join(' '),
+    scope: tokens.scope ?? WORKSPACE_SCOPES.join(' '),
     refreshToken: tokens.refresh_token ?? null,
     accessToken: tokens.access_token,
     expiresInSeconds: tokens.expires_in ?? null,

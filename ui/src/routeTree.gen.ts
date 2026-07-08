@@ -125,6 +125,7 @@ import { Route as ApiKbDocsIdMoveRouteImport } from './routes/api/kb.docs.$id.mo
 import { Route as ApiKbDocsIdBacklinksRouteImport } from './routes/api/kb.docs.$id.backlinks'
 import { Route as ApiIntegrationsGoogleDriveImportRouteImport } from './routes/api/integrations/google.drive.import'
 import { Route as ApiIntegrationsGoogleDriveFilesRouteImport } from './routes/api/integrations/google.drive.files'
+import { Route as ApiIntegrationsGoogleCalendarEventsRouteImport } from './routes/api/integrations/google.calendar.events'
 import { Route as ApiFleetEndpointsIdAvailableRouteImport } from './routes/api/fleet.endpoints.$id.available'
 import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.defs.$id.versions'
 import { Route as ApiFleetDefsIdMcpRouteImport } from './routes/api/fleet.defs.$id.mcp'
@@ -718,6 +719,12 @@ const ApiIntegrationsGoogleDriveFilesRoute =
     path: '/drive/files',
     getParentRoute: () => ApiIntegrationsGoogleRoute,
   } as any)
+const ApiIntegrationsGoogleCalendarEventsRoute =
+  ApiIntegrationsGoogleCalendarEventsRouteImport.update({
+    id: '/calendar/events',
+    path: '/calendar/events',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
 const ApiFleetEndpointsIdAvailableRoute =
   ApiFleetEndpointsIdAvailableRouteImport.update({
     id: '/available',
@@ -885,6 +892,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/integrations/google/calendar/events': typeof ApiIntegrationsGoogleCalendarEventsRoute
   '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
@@ -1011,6 +1019,7 @@ export interface FileRoutesByTo {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/integrations/google/calendar/events': typeof ApiIntegrationsGoogleCalendarEventsRoute
   '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
@@ -1139,6 +1148,7 @@ export interface FileRoutesById {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/integrations/google/calendar/events': typeof ApiIntegrationsGoogleCalendarEventsRoute
   '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
@@ -1267,6 +1277,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/integrations/google/calendar/events'
     | '/api/integrations/google/drive/files'
     | '/api/integrations/google/drive/import'
     | '/api/kb/docs/$id/backlinks'
@@ -1393,6 +1404,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/integrations/google/calendar/events'
     | '/api/integrations/google/drive/files'
     | '/api/integrations/google/drive/import'
     | '/api/kb/docs/$id/backlinks'
@@ -1520,6 +1532,7 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/integrations/google/calendar/events'
     | '/api/integrations/google/drive/files'
     | '/api/integrations/google/drive/import'
     | '/api/kb/docs/$id/backlinks'
@@ -2394,6 +2407,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiIntegrationsGoogleDriveFilesRouteImport
       parentRoute: typeof ApiIntegrationsGoogleRoute
     }
+    '/api/integrations/google/calendar/events': {
+      id: '/api/integrations/google/calendar/events'
+      path: '/calendar/events'
+      fullPath: '/api/integrations/google/calendar/events'
+      preLoaderRoute: typeof ApiIntegrationsGoogleCalendarEventsRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
     '/api/fleet/endpoints/$id/available': {
       id: '/api/fleet/endpoints/$id/available'
       path: '/available'
@@ -2825,6 +2845,7 @@ const ApiAuthGoogleRouteWithChildren = ApiAuthGoogleRoute._addFileChildren(
 interface ApiIntegrationsGoogleRouteChildren {
   ApiIntegrationsGoogleCallbackRoute: typeof ApiIntegrationsGoogleCallbackRoute
   ApiIntegrationsGoogleConnectRoute: typeof ApiIntegrationsGoogleConnectRoute
+  ApiIntegrationsGoogleCalendarEventsRoute: typeof ApiIntegrationsGoogleCalendarEventsRoute
   ApiIntegrationsGoogleDriveFilesRoute: typeof ApiIntegrationsGoogleDriveFilesRoute
   ApiIntegrationsGoogleDriveImportRoute: typeof ApiIntegrationsGoogleDriveImportRoute
 }
@@ -2832,6 +2853,8 @@ interface ApiIntegrationsGoogleRouteChildren {
 const ApiIntegrationsGoogleRouteChildren: ApiIntegrationsGoogleRouteChildren = {
   ApiIntegrationsGoogleCallbackRoute: ApiIntegrationsGoogleCallbackRoute,
   ApiIntegrationsGoogleConnectRoute: ApiIntegrationsGoogleConnectRoute,
+  ApiIntegrationsGoogleCalendarEventsRoute:
+    ApiIntegrationsGoogleCalendarEventsRoute,
   ApiIntegrationsGoogleDriveFilesRoute: ApiIntegrationsGoogleDriveFilesRoute,
   ApiIntegrationsGoogleDriveImportRoute: ApiIntegrationsGoogleDriveImportRoute,
 }
