@@ -174,6 +174,54 @@ server.registerTool(
   async ({ query, limit }) => ok(await api('POST', '/api/rag/search', { query, limit })),
 )
 
+// ── Documents (artifacts) ─────────────────────────────────────────────────
+// A "document" here is a doc-kind artifact: rich markdown, versioned, shareable,
+// and hostable — Talaria's Google-Docs equivalent. Agents author these.
+server.registerTool(
+  'create_document',
+  {
+    description:
+      "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. It's versioned, shareable, and hostable. Returns the document id (use update_document to keep editing it).",
+    inputSchema: {
+      title: z.string().min(1).max(200).describe('Document title'),
+      markdown: z.string().max(1_000_000).optional().describe('Initial body as markdown (headings, lists, tables, code, links)'),
+      visibility: z.enum(['private', 'org', 'public']).optional().describe("Who can see it (default 'org' — the workspace)"),
+    },
+  },
+  async ({ title, markdown, visibility }) => ok(await api('POST', '/api/artifacts', { kind: 'doc', title, body: markdown, visibility })),
+)
+
+server.registerTool(
+  'update_document',
+  {
+    description: 'Edit a document you created (or were granted Editor access to): replace its title and/or markdown body. Each save is versioned.',
+    inputSchema: {
+      documentId: z.string().describe('Document id (from create_document or list_documents)'),
+      title: z.string().max(200).optional(),
+      markdown: z.string().max(1_000_000).optional().describe('New full markdown body'),
+    },
+  },
+  async ({ documentId, title, markdown }) => ok(await api('PUT', `/api/artifacts/${encodeURIComponent(documentId)}`, { title, body: markdown })),
+)
+
+server.registerTool(
+  'list_documents',
+  {
+    description: 'List the documents (artifacts) you can access — the workspace-visible ones plus any shared with you.',
+    inputSchema: {},
+  },
+  async () => ok(await api('GET', '/api/artifacts')),
+)
+
+server.registerTool(
+  'get_document',
+  {
+    description: "Read one document's full content (markdown body + metadata).",
+    inputSchema: { documentId: z.string().describe('Document id') },
+  },
+  async ({ documentId }) => ok(await api('GET', `/api/artifacts/${encodeURIComponent(documentId)}`)),
+)
+
 server.registerTool(
   'log_usage',
   {

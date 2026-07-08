@@ -29,9 +29,16 @@ export const Route = createFileRoute('/api/artifacts/$id')({
       GET: async ({ request, params }) => {
         const artifact = await getArtifact(params.id)
         if (!artifact) return json({ error: 'not found' }, { status: 404 })
+        const editors = await listEditors('artifact', artifact.id)
+        // Agents (over MCP) read org/public artifacts + ones granted to them.
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          const allowed = artifact.visibility !== 'private' || editors.some((e) => e.principalType === 'agent' && e.principalId === name)
+          if (!name || !allowed) return json({ error: 'forbidden' }, { status: 403 })
+          return json({ artifact, editors })
+        }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const editors = await listEditors('artifact', artifact.id)
         if (!canRead(guarded(artifact), user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
         return json({ artifact, editors })
       },
