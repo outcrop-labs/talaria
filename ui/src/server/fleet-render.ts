@@ -18,6 +18,7 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
+import { materializeAgentSecrets } from './agent-secrets'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
@@ -34,6 +35,7 @@ const BRIDGE_MANIFEST = () =>
 const LEGACY_DOCKER_PROJECT = 'ai'
 
 type ComposeService = Record<string, unknown> & {
+  env_file?: string[]
   build?: unknown
   depends_on?: unknown
   ports?: unknown
@@ -176,6 +178,14 @@ export async function renderFleet(): Promise<RenderResult> {
       }),
       ...(extras?.volumes ?? []),
     ]
+
+    // Per-agent secrets (UI-configured, DB-encrypted) materialize into the
+    // agent dir and load via env_file — nothing hand-edited in fleet/.env.
+    if (await materializeAgentSecrets(def.id, def.slug)) {
+      svc.env_file = [join(agentDir, 'secrets.env')]
+    } else {
+      delete svc.env_file
+    }
 
     svc.networks = ['fleet']
     if (extras?.secrets) {

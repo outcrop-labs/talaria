@@ -580,6 +580,17 @@ const MIGRATIONS: string[] = [
   // Preferred model for AI drafting (muse) — a gateway model id, e.g.
   // "pl-main" or "anthropic/claude-sonnet-5". Null = the server default.
   `alter table users add column if not exists preferred_model text`,
+  // Per-agent secrets, configured in the UI and stored ENCRYPTED (secretbox).
+  // Materialized only at render time into the agent's env file — no hand
+  // edits to fleet/.env required for per-agent credentials.
+  `create table if not exists agent_secrets (
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     name text not null,
+     value_enc text not null,
+     updated_by text,
+     updated_at timestamptz not null default now(),
+     primary key (agent_id, name)
+   )`,
 
   // Per-user Google (Workspace) connection for Drive/Docs. Tokens are stored
   // ENCRYPTED (see server/secretbox.ts) — refresh_token is a live credential, not
