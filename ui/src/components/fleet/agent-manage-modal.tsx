@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { stringify as stringifyYaml } from 'yaml'
 import { Loader2, Check, Lock, X, RotateCcw, Plug } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -454,6 +455,7 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
     },
   })
   const [busy, setBusy] = useState<number | null>(null)
+  const [configOpen, setConfigOpen] = useState(false)
   const revert = async (v: number) => {
     if (!confirm(`Revert ${def.displayName} to v${v}? This publishes it as a new version.`)) return
     setBusy(v)
@@ -470,6 +472,25 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
     <div className="text-sm text-muted">No version history.</div>
   ) : (
     <div className="divide-y divide-line-subtle">
+      <div className="flex items-center gap-2 pb-2.5">
+        <span className="text-xs text-muted">Reverting publishes the old content as a new version.</span>
+        <Button variant="outline" size="sm" className="ml-auto" onClick={() => setConfigOpen(true)}>
+          Config history
+        </Button>
+      </div>
+      {configOpen && (
+        <InternalEditorModal
+          open
+          onClose={() => setConfigOpen(false)}
+          title={`${def.displayName} · config`}
+          subtitle="The rendered model/tool config per version — click a revision to see what changed."
+          value={stringifyYaml(def.latest?.config ?? {})}
+          editable={false}
+          onSave={() => {}}
+          history={{ kind: 'config', id: def.id }}
+          mode="plain"
+        />
+      )}
       {versions.map((v) => (
         <div key={v.version} className="flex items-center gap-3 py-2.5 text-sm">
           <span className={cn('w-12 shrink-0 font-[var(--font-mono)]', v.version === def.currentVersion ? 'text-accent' : 'text-muted')}>v{v.version}</span>
