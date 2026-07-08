@@ -12,7 +12,35 @@ import { open, seal } from '../secretbox'
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const REVOKE_ENDPOINT = 'https://oauth2.googleapis.com/revoke'
 // Refresh a little early so a token doesn't expire mid-request.
-const EXPIRY_SKEW_MS = 60_000
+export const EXPIRY_SKEW_MS = 60_000
+
+/** Exchange a refresh token for a fresh access token. Throws; a revoked token
+ *  throws with name 'InvalidGrant' so callers can clear the dead connection.
+ *  Shared by the per-user and org connections. */
+export async function requestRefresh(refreshToken: string): Promise<{ accessToken: string; expiresIn: number | null }> {
+  const cfg = getAuthConfig().google
+  const res = await fetch(TOKEN_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: cfg.clientId,
+      client_secret: cfg.clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    const err = new Error(`google token refresh failed: ${res.status} ${body}`)
+    if (body.includes('invalid_grant')) err.name = 'InvalidGrant'
+    throw err
+  }
+  const tokens = (await res.json()) as { access_token?: string; expires_in?: number }
+  if (!tokens.access_token) throw new Error('google token refresh: no access_token')
+  return { accessToken: tokens.access_token, expiresIn: tokens.expires_in ?? null }
+}
+
+export { REVOKE_ENDPOINT }
 
 export interface GoogleConnectionStatus {
   connected: boolean
@@ -134,34 +162,22 @@ export async function getAccessToken(userId: string, nowMs: number): Promise<str
   }
 
   const refreshToken = open(row.refresh_token_enc)
-  const cfg = getAuthConfig().google
-  const res = await fetch(TOKEN_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: cfg.clientId,
-      client_secret: cfg.clientSecret,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    }),
-  })
-  if (!res.ok) {
-    const body = await res.text()
-    // A revoked/expired refresh token (invalid_grant) means the connection is
-    // dead — clear it so the UI prompts a reconnect instead of erroring forever.
-    if (body.includes('invalid_grant')) {
+  let refreshed
+  try {
+    refreshed = await requestRefresh(refreshToken)
+  } catch (err) {
+    // A revoked/expired refresh token means the connection is dead — clear it so
+    // the UI prompts a reconnect instead of erroring forever.
+    if ((err as Error).name === 'InvalidGrant') {
       await sql`update google_connections set refresh_token_enc = null where user_id = ${userId}`
     }
-    throw new Error(`google token refresh failed: ${res.status} ${body}`)
+    throw err
   }
-  const tokens = (await res.json()) as { access_token?: string; expires_in?: number }
-  if (!tokens.access_token) throw new Error('google token refresh: no access_token')
-
-  const expiresAt = tokens.expires_in ? new Date(nowMs + tokens.expires_in * 1000).toISOString() : null
+  const expiresAt = refreshed.expiresIn ? new Date(nowMs + refreshed.expiresIn * 1000).toISOString() : null
   await sql`
     update google_connections
-    set access_token_enc = ${seal(tokens.access_token)}, access_expires_at = ${expiresAt}, updated_at = now()
+    set access_token_enc = ${seal(refreshed.accessToken)}, access_expires_at = ${expiresAt}, updated_at = now()
     where user_id = ${userId}
   `
-  return tokens.access_token
+  return refreshed.accessToken
 }

@@ -598,6 +598,22 @@ const MIGRATIONS: string[] = [
   // Where an artifact has been mirrored into the owner's Google Drive.
   `alter table artifacts add column if not exists google_file_id text`,
   `alter table artifacts add column if not exists google_file_url text`,
+
+  // A single SHARED org-wide Google connection (admin-configured). General
+  // fleet agents (no human owner) act as this identity for Drive/Docs; personal
+  // assistants act as their own owner. Singleton: id is pinned to 1.
+  `create table if not exists google_org_connection (
+     id integer primary key default 1 check (id = 1),
+     google_sub text not null,
+     email text,
+     scope text not null default '',
+     refresh_token_enc text,
+     access_token_enc text,
+     access_expires_at timestamptz,
+     connected_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
 ]
 
 function ensureMigrated(): Promise<void> {

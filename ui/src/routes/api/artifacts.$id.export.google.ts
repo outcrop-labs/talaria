@@ -5,14 +5,15 @@ import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { getArtifact, guarded, recordGoogleExport } from '@/server/artifacts'
 import { canRead, listEditors } from '@/server/kb-perms'
 import { isConnected } from '@/server/google/connections'
-import { exportArtifactToDrive } from '@/server/google/drive'
+import { exportArtifactToDrive, exportArtifactWithToken } from '@/server/google/drive'
+import { resolveAgentGoogle } from '@/server/google/agent-google'
 
 // POST /api/artifacts/$id/export/google — mirror an artifact into Google Drive.
 //
-// Per-user OAuth: the file is created in the Google account of whoever's
-// connection we use. A human exports into their OWN Drive; an agent exports into
-// its artifact OWNER's Drive (identity proxy — the agent acts as the human it
-// works for), never its own, since agents have no Google account.
+// Whose Drive it lands in depends on the caller (per-user OAuth):
+//   human            → their own connected Drive
+//   personal agent   → its OWNER's Drive (acts as the human it works for)
+//   general agent    → the shared ORG Drive (no human owner of its own)
 export const Route = createFileRoute('/api/artifacts/$id/export/google')({
   server: {
     handlers: {
@@ -21,31 +22,32 @@ export const Route = createFileRoute('/api/artifacts/$id/export/google')({
         if (!artifact) return json({ error: 'not found' }, { status: 404 })
         const editors = await listEditors('artifact', artifact.id)
 
-        // Resolve WHO reads and WHOSE Drive we write to.
-        let driveUserId: string | null
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          const allowed =
-            artifact.visibility !== 'private' || editors.some((e) => e.principalType === 'agent' && e.principalId === name)
-          if (!name || !allowed) return json({ error: 'forbidden' }, { status: 403 })
-          // The agent acts as the artifact's owner.
-          driveUserId = artifact.ownerUserId
-          if (!driveUserId) return json({ error: 'no_owner', message: 'This artifact has no human owner whose Drive to export into.' }, { status: 409 })
-        } else {
-          const user = await getSessionUser(request)
-          if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-          if (!canRead(guarded(artifact), user.id, user.email ?? user.name, editors)) {
-            return json({ error: 'forbidden' }, { status: 403 })
-          }
-          driveUserId = user.id
-        }
-
-        if (!(await isConnected(driveUserId))) {
-          return json({ error: 'not_connected', message: 'Connect a Google account first (Settings → Integrations).' }, { status: 409 })
-        }
-
         try {
-          const file = await exportArtifactToDrive(driveUserId, artifact, Date.now())
+          let file
+          if (checkAgentKey(request)) {
+            const name = agentName(request)
+            const allowed =
+              artifact.visibility !== 'private' || editors.some((e) => e.principalType === 'agent' && e.principalId === name)
+            if (!name || !allowed) return json({ error: 'forbidden' }, { status: 403 })
+            // Resolve the agent's Google identity (owner for personal assistants,
+            // shared org account for general fleet agents).
+            const google = await resolveAgentGoogle(name, Date.now())
+            if (!google) {
+              return json({ error: 'not_connected', message: 'No Google account is connected for this agent (its owner, or the org account).' }, { status: 409 })
+            }
+            file = await exportArtifactWithToken(google.token, artifact)
+          } else {
+            const user = await getSessionUser(request)
+            if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+            if (!canRead(guarded(artifact), user.id, user.email ?? user.name, editors)) {
+              return json({ error: 'forbidden' }, { status: 403 })
+            }
+            if (!(await isConnected(user.id))) {
+              return json({ error: 'not_connected', message: 'Connect a Google account first (Settings → Integrations).' }, { status: 409 })
+            }
+            file = await exportArtifactToDrive(user.id, artifact, Date.now())
+          }
+
           await recordGoogleExport(artifact.id, file.id, file.url)
           return json({ file })
         } catch (err) {

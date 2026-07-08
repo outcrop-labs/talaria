@@ -26,9 +26,13 @@ engineering-facing tracker.
     `calendar.events` scope; hidden until Google is connected.
   - ✅ **Gmail** — Home Mail panel (recent mail + link out) + Compose/send as the
     user. `gmail.readonly` + `gmail.send` (restricted scopes).
-  - ⏳ **Agent Workspace tools** — needs a per-agent→user identity binding so an
-    agent can act on its owner's Calendar/Gmail (deeper #42). Export already works
-    (artifacts carry an owner); Calendar/Gmail don't, so they're human-first now.
+  - ✅ **Agent identity proxy (Drive)** — personal assistants act as their owner,
+    general agents share an admin-connected **org Google account** (Admin →
+    Organization Google account). `resolveAgentGoogle()` binds an agent (by unique
+    `model`) to a connection. Export routes to owner/org accordingly.
+  - ⏳ **Agent Calendar/Gmail** — same identity binding, but outbound actions
+    (send email, create event w/ invites) go through a **confirm-sends** human
+    approval step. Read + draft first.
   - ⏳ **Cloud-storage connectors** — S3 behind the `storage_ref` abstraction.
   - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
 

@@ -8,6 +8,7 @@
 import { getAuthConfig } from '../auth/config'
 import { resolveOrigin } from '../auth/google'
 import { saveConnection } from './connections'
+import { saveOrgConnection } from './org-connection'
 
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
@@ -37,6 +38,9 @@ export function googleIntegrationEnabled(): boolean {
 export const googleConnectRedirectUri = (request: Request) =>
   `${resolveOrigin(request)}/api/integrations/google/callback`
 
+export const googleOrgConnectRedirectUri = (request: Request) =>
+  `${resolveOrigin(request)}/api/integrations/google/org/callback`
+
 export function googleConnectUrl(redirectUri: string, state: string): string {
   const cfg = getAuthConfig().google
   const params = new URLSearchParams({
@@ -59,16 +63,17 @@ interface UserInfo {
   email?: string
 }
 
-/** Exchange the connect code, resolve the Google identity, and store the
- *  connection (encrypted) for the given Talaria user. */
-export async function completeGoogleConnect(
-  userId: string,
-  code: string,
-  redirectUri: string,
-  nowMs: number,
-): Promise<{ email: string | null }> {
-  const cfg = getAuthConfig().google
+interface ExchangedTokens {
+  access_token?: string
+  refresh_token?: string
+  expires_in?: number
+  scope?: string
+}
 
+/** Exchange an auth code for tokens + the Google identity. Shared by the
+ *  per-user and org connect flows. */
+async function exchangeConnectCode(code: string, redirectUri: string): Promise<{ tokens: ExchangedTokens; info: UserInfo }> {
+  const cfg = getAuthConfig().google
   const tokenRes = await fetch(TOKEN_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -83,20 +88,22 @@ export async function completeGoogleConnect(
   if (!tokenRes.ok) {
     throw new Error(`google connect token exchange failed: ${tokenRes.status} ${await tokenRes.text()}`)
   }
-  const tokens = (await tokenRes.json()) as {
-    access_token?: string
-    refresh_token?: string
-    expires_in?: number
-    scope?: string
-  }
+  const tokens = (await tokenRes.json()) as ExchangedTokens
   if (!tokens.access_token) throw new Error('google connect: no access_token')
 
-  const infoRes = await fetch(USERINFO_ENDPOINT, {
-    headers: { Authorization: `Bearer ${tokens.access_token}` },
-  })
+  const infoRes = await fetch(USERINFO_ENDPOINT, { headers: { Authorization: `Bearer ${tokens.access_token}` } })
   if (!infoRes.ok) throw new Error(`google userinfo failed: ${infoRes.status}`)
-  const info = (await infoRes.json()) as UserInfo
+  return { tokens, info: (await infoRes.json()) as UserInfo }
+}
 
+/** Exchange the connect code and store the connection (encrypted) for a user. */
+export async function completeGoogleConnect(
+  userId: string,
+  code: string,
+  redirectUri: string,
+  nowMs: number,
+): Promise<{ email: string | null }> {
+  const { tokens, info } = await exchangeConnectCode(code, redirectUri)
   await saveConnection(userId, {
     googleSub: info.sub,
     email: info.email ?? null,
@@ -104,6 +111,27 @@ export async function completeGoogleConnect(
     refreshToken: tokens.refresh_token ?? null,
     accessToken: tokens.access_token,
     expiresInSeconds: tokens.expires_in ?? null,
+    nowMs,
+  })
+  return { email: info.email ?? null }
+}
+
+/** Exchange the connect code and store it as the SHARED org connection. */
+export async function completeGoogleOrgConnect(
+  connectedBy: string | null,
+  code: string,
+  redirectUri: string,
+  nowMs: number,
+): Promise<{ email: string | null }> {
+  const { tokens, info } = await exchangeConnectCode(code, redirectUri)
+  await saveOrgConnection({
+    googleSub: info.sub,
+    email: info.email ?? null,
+    scope: tokens.scope ?? WORKSPACE_SCOPES.join(' '),
+    refreshToken: tokens.refresh_token ?? null,
+    accessToken: tokens.access_token,
+    expiresInSeconds: tokens.expires_in ?? null,
+    connectedBy,
     nowMs,
   })
   return { email: info.email ?? null }

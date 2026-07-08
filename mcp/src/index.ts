@@ -226,7 +226,7 @@ server.registerTool(
   'export_to_google_doc',
   {
     description:
-      "Export a document (or sheet/file artifact) into Google Drive as a native Google Doc / Sheet. It lands in the Drive of the document's human owner — you act on their behalf — so they must have connected Google in Talaria. Returns the Drive file link. Use it to hand a finished deliverable to a human in a format they can edit in Google.",
+      "Export a document (or sheet/file artifact) into Google Drive as a native Google Doc / Sheet. It lands in the Google Drive of whoever you act for: if you're someone's personal assistant, their Drive; otherwise the shared organization Google account. Returns the Drive file link. Use it to hand a finished deliverable to a human in a format they can edit in Google. (Requires that Google account to be connected in Talaria.)",
     inputSchema: {
       documentId: z.string().describe('Document/artifact id (from create_document or list_documents)'),
     },

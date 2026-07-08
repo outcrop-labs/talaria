@@ -84,7 +84,11 @@ function buildMultipart(metadata: object, media: MediaPart): { body: Buffer; bou
 /** Export an artifact into the given user's Drive. Returns the created file, or
  *  throws with a caller-friendly message when the user isn't connected. */
 export async function exportArtifactToDrive(userId: string, artifact: Artifact, nowMs: number): Promise<DriveFile> {
-  const token = await requireToken(userId, nowMs)
+  return exportArtifactWithToken(await requireToken(userId, nowMs), artifact)
+}
+
+/** Export an artifact using an already-resolved access token (per-user or org). */
+export async function exportArtifactWithToken(token: string, artifact: Artifact): Promise<DriveFile> {
   const mapped = await mediaFor(artifact)
   if (!mapped) {
     const err = new Error('not_exportable')
