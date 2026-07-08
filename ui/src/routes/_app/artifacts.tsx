@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, type LucideIcon } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -13,7 +13,7 @@ import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
-import { createArtifact, deleteArtifact, saveArtifact, useArtifact, useArtifacts, type ArtifactKind } from '@/lib/artifacts'
+import { createArtifact, deleteArtifact, saveArtifact, uploadFile, useArtifact, useArtifacts, type ArtifactKind } from '@/lib/artifacts'
 
 export const Route = createFileRoute('/_app/artifacts')({
   component: ArtifactsPage,
@@ -28,6 +28,7 @@ const KIND_ICON: Record<ArtifactKind, LucideIcon> = { doc: FileText, sheet: Tabl
 const NEW_KINDS: { kind: ArtifactKind; label: string; icon: LucideIcon }[] = [
   { kind: 'doc', label: 'Document', icon: FileText },
   { kind: 'microsite', label: 'Microsite', icon: Globe2 },
+  { kind: 'file', label: 'File upload', icon: Paperclip },
 ]
 
 function ArtifactsPage() {
@@ -148,6 +149,19 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
     if (htmlTimer.current) clearTimeout(htmlTimer.current)
     htmlTimer.current = setTimeout(() => void save({ body: v }), 700)
   }
+  const [uploading, setUploading] = useState(false)
+  const onPickFile = async (file: File | null | undefined) => {
+    if (!file) return
+    setUploading(true)
+    try {
+      const up = await uploadFile(file)
+      await save({ storageRef: up.id, contentType: up.mime, ...(!artifact?.title || artifact.title === 'Untitled' ? { title: up.filename } : {}) })
+    } catch {
+      /* surfaced by the empty state staying put */
+    } finally {
+      setUploading(false)
+    }
+  }
 
   if (!artifact) return <div className="p-8 text-sm text-muted">Loading…</div>
 
@@ -260,6 +274,42 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
               <button type="button" onClick={() => setMode('edit')} className="hover:text-fg">Empty microsite — switch to Edit to write HTML.</button>
             </div>
           )
+        ) : artifact.kind === 'file' ? (
+          <div className="min-w-0 flex-1 overflow-y-auto p-8">
+            {artifact.storageRef ? (
+              <div className="mx-auto max-w-2xl">
+                {artifact.contentType?.startsWith('image/') ? (
+                  <img src={`/api/uploads/${artifact.storageRef}`} alt={artifact.title} className="mb-4 max-h-[60vh] rounded-xl border border-line-subtle" />
+                ) : (
+                  <div className="mb-4 flex items-center gap-3 rounded-xl border border-line-subtle p-4">
+                    <Paperclip size={20} className="shrink-0 text-muted" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm text-fg">{artifact.title}</div>
+                      <div className="text-xs text-muted">{artifact.contentType ?? 'file'}</div>
+                    </div>
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <a href={`/api/uploads/${artifact.storageRef}`} target="_blank" rel="noreferrer" className={buttonClasses({ size: 'sm' })}>
+                    Download
+                  </a>
+                  {isOwner && (
+                    <label className={cn(buttonClasses({ size: 'sm', variant: 'outline' }), 'cursor-pointer')}>
+                      <input type="file" className="hidden" onChange={(e) => void onPickFile(e.target.files?.[0])} />
+                      Replace file
+                    </label>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <label className="mx-auto flex max-w-lg cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-line-subtle p-12 text-center hover:border-[var(--theme-accent-border)]">
+                <input type="file" className="hidden" onChange={(e) => void onPickFile(e.target.files?.[0])} />
+                <Paperclip size={22} className="text-muted" />
+                <div className="text-sm text-fg">{uploading ? 'Uploading…' : 'Click to upload a file'}</div>
+                <div className="text-xs text-muted">Up to 25 MB · stored and hosted by Talaria</div>
+              </label>
+            )}
+          </div>
         ) : (
           <div className="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
             {artifact.kind} artifacts are coming soon.

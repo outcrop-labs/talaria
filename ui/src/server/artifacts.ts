@@ -75,7 +75,7 @@ export async function createArtifact(input: { kind?: ArtifactKind; title?: strin
 
 export async function saveArtifact(
   id: string,
-  patch: { title?: string; body?: string; icon?: string | null; visibility?: Visibility; editPolicy?: EditPolicy },
+  patch: { title?: string; body?: string; icon?: string | null; storageRef?: string | null; contentType?: string | null; visibility?: Visibility; editPolicy?: EditPolicy },
   actor: string,
 ): Promise<Artifact | null> {
   const sql = await db()
@@ -84,6 +84,8 @@ export async function saveArtifact(
   if (patch.title !== undefined) await sql`update artifacts set title = ${patch.title}, updated_by = ${actor}, updated_at = now() where id = ${id}`
   if (patch.body !== undefined) await sql`update artifacts set body = ${patch.body}, updated_by = ${actor}, updated_at = now() where id = ${id}`
   if (patch.icon !== undefined) await sql`update artifacts set icon = ${patch.icon}, updated_at = now() where id = ${id}`
+  if (patch.storageRef !== undefined) await sql`update artifacts set storage_ref = ${patch.storageRef}, updated_by = ${actor}, updated_at = now() where id = ${id}`
+  if (patch.contentType !== undefined) await sql`update artifacts set content_type = ${patch.contentType}, updated_at = now() where id = ${id}`
   if (patch.editPolicy !== undefined) await sql`update artifacts set edit_policy = ${patch.editPolicy}, updated_at = now() where id = ${id}`
   if (patch.visibility !== undefined) {
     await sql`update artifacts set visibility = ${patch.visibility}, updated_at = now() where id = ${id}`

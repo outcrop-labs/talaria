@@ -122,6 +122,7 @@ import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.d
 import { Route as ApiFleetDefsIdMcpRouteImport } from './routes/api/fleet.defs.$id.mcp'
 import { Route as ApiFleetDefsIdEditRouteImport } from './routes/api/fleet.defs.$id.edit'
 import { Route as ApiFleetAgentsIdControlRouteImport } from './routes/api/fleet.agents.$id.control'
+import { Route as ApiArtifactsPublicSlugDownloadRouteImport } from './routes/api/artifacts.public.$slug.download'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -688,6 +689,12 @@ const ApiFleetAgentsIdControlRoute = ApiFleetAgentsIdControlRouteImport.update({
   path: '/agents/$id/control',
   getParentRoute: () => ApiFleetRoute,
 } as any)
+const ApiArtifactsPublicSlugDownloadRoute =
+  ApiArtifactsPublicSlugDownloadRouteImport.update({
+    id: '/download',
+    path: '/download',
+    getParentRoute: () => ApiArtifactsPublicSlugRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -767,7 +774,7 @@ export interface FileRoutesByFullPath {
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
   '/api/artifacts/$id/links': typeof ApiArtifactsIdLinksRoute
-  '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRoute
+  '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRouteWithChildren
   '/api/auth/google/callback': typeof ApiAuthGoogleCallbackRoute
   '/api/boards/$id/agents': typeof ApiBoardsIdAgentsRoute
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
@@ -792,6 +799,7 @@ export interface FileRoutesByFullPath {
   '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
@@ -881,7 +889,7 @@ export interface FileRoutesByTo {
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
   '/api/artifacts/$id/links': typeof ApiArtifactsIdLinksRoute
-  '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRoute
+  '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRouteWithChildren
   '/api/auth/google/callback': typeof ApiAuthGoogleCallbackRoute
   '/api/boards/$id/agents': typeof ApiBoardsIdAgentsRoute
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
@@ -906,6 +914,7 @@ export interface FileRoutesByTo {
   '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
@@ -997,7 +1006,7 @@ export interface FileRoutesById {
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
   '/api/artifacts/$id/links': typeof ApiArtifactsIdLinksRoute
-  '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRoute
+  '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRouteWithChildren
   '/api/auth/google/callback': typeof ApiAuthGoogleCallbackRoute
   '/api/boards/$id/agents': typeof ApiBoardsIdAgentsRoute
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
@@ -1022,6 +1031,7 @@ export interface FileRoutesById {
   '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
@@ -1138,6 +1148,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/artifacts/public/$slug/download'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/defs/$id/edit'
     | '/api/fleet/defs/$id/mcp'
@@ -1252,6 +1263,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/artifacts/public/$slug/download'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/defs/$id/edit'
     | '/api/fleet/defs/$id/mcp'
@@ -1367,6 +1379,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/artifacts/public/$slug/download'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/defs/$id/edit'
     | '/api/fleet/defs/$id/mcp'
@@ -2220,6 +2233,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFleetAgentsIdControlRouteImport
       parentRoute: typeof ApiFleetRoute
     }
+    '/api/artifacts/public/$slug/download': {
+      id: '/api/artifacts/public/$slug/download'
+      path: '/download'
+      fullPath: '/api/artifacts/public/$slug/download'
+      preLoaderRoute: typeof ApiArtifactsPublicSlugDownloadRouteImport
+      parentRoute: typeof ApiArtifactsPublicSlugRoute
+    }
   }
 }
 
@@ -2308,16 +2328,30 @@ const ApiArtifactsIdRouteWithChildren = ApiArtifactsIdRoute._addFileChildren(
   ApiArtifactsIdRouteChildren,
 )
 
+interface ApiArtifactsPublicSlugRouteChildren {
+  ApiArtifactsPublicSlugDownloadRoute: typeof ApiArtifactsPublicSlugDownloadRoute
+}
+
+const ApiArtifactsPublicSlugRouteChildren: ApiArtifactsPublicSlugRouteChildren =
+  {
+    ApiArtifactsPublicSlugDownloadRoute: ApiArtifactsPublicSlugDownloadRoute,
+  }
+
+const ApiArtifactsPublicSlugRouteWithChildren =
+  ApiArtifactsPublicSlugRoute._addFileChildren(
+    ApiArtifactsPublicSlugRouteChildren,
+  )
+
 interface ApiArtifactsRouteChildren {
   ApiArtifactsIdRoute: typeof ApiArtifactsIdRouteWithChildren
   ApiArtifactsForRoute: typeof ApiArtifactsForRoute
-  ApiArtifactsPublicSlugRoute: typeof ApiArtifactsPublicSlugRoute
+  ApiArtifactsPublicSlugRoute: typeof ApiArtifactsPublicSlugRouteWithChildren
 }
 
 const ApiArtifactsRouteChildren: ApiArtifactsRouteChildren = {
   ApiArtifactsIdRoute: ApiArtifactsIdRouteWithChildren,
   ApiArtifactsForRoute: ApiArtifactsForRoute,
-  ApiArtifactsPublicSlugRoute: ApiArtifactsPublicSlugRoute,
+  ApiArtifactsPublicSlugRoute: ApiArtifactsPublicSlugRouteWithChildren,
 }
 
 const ApiArtifactsRouteWithChildren = ApiArtifactsRoute._addFileChildren(

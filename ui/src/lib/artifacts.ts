@@ -49,8 +49,17 @@ export const createArtifact = (input: { kind?: ArtifactKind; title?: string }) =
 
 export const saveArtifact = (
   id: string,
-  patch: Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy' | 'official'>> & { editors?: KbEditor[] },
+  patch: Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'storageRef' | 'contentType' | 'visibility' | 'editPolicy' | 'official'>> & { editors?: KbEditor[] },
 ) => fetch(`/api/artifacts/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+
+/** Upload a file (reuses the shared uploads store) → returns its id + metadata. */
+export const uploadFile = async (file: File): Promise<{ id: string; filename: string; mime: string; size: number }> => {
+  const form = new FormData()
+  form.append('file', file)
+  const r = await fetch('/api/uploads', { method: 'POST', body: form })
+  if (!r.ok) throw new Error('upload failed')
+  return r.json()
+}
 
 export const deleteArtifact = (id: string) => fetch(`/api/artifacts/${id}`, { method: 'DELETE' })
 
