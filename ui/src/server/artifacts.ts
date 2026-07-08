@@ -7,6 +7,7 @@ import { randomBytes } from 'node:crypto'
 import { db } from './db/pg'
 import { snapshot } from './internal-history'
 import type { EditPolicy, Guarded, Visibility } from './kb-perms'
+import { createDoc, createSpace, deleteDoc, getDoc, listSpaces, saveDoc, setOfficial as setKbDocOfficial } from './kb'
 
 export type ArtifactKind = 'doc' | 'sheet' | 'microsite' | 'file'
 
@@ -88,11 +89,63 @@ export async function saveArtifact(
   const next = await getArtifact(id)
   if (next && (patch.body !== undefined || patch.title !== undefined)) {
     await snapshot('artifact', id, `# ${next.title}\n\n${next.body}`, actor).catch(() => {})
+    await remirrorIfOfficial(id, actor).catch(() => {})
   }
   return next
 }
 
 export async function deleteArtifact(id: string): Promise<void> {
+  const a = await getArtifact(id)
+  if (a?.kbDocId) await deleteDoc(a.kbDocId).catch(() => {})
   const sql = await db()
   await sql`delete from artifacts where id = ${id}`
+}
+
+// ── Promotion to the knowledgebase ──────────────────────────────────────────
+// "Making an artifact official" mirrors it into the KB (as an official doc in a
+// system "Artifacts" folder) so it grounds the org brain. The link is kept in
+// artifacts.kb_doc_id; un-officializing removes the mirror.
+const ARTIFACTS_SPACE = 'Artifacts'
+
+async function ensureArtifactsSpace(actor: string): Promise<string> {
+  const existing = (await listSpaces()).find((s) => s.name === ARTIFACTS_SPACE)
+  if (existing) return existing.id
+  const space = await createSpace({ name: ARTIFACTS_SPACE, icon: '◆', description: 'Official artifacts, mirrored into the knowledgebase.', createdBy: actor })
+  return space.id
+}
+
+/** Render an artifact's content as markdown for the KB mirror. */
+function artifactToMarkdown(a: Artifact): string {
+  // doc + microsite bodies are already text/markdown; sheets render as-is until
+  // a proper table serializer lands; files have no text body.
+  return a.kind === 'file' ? '' : a.body
+}
+
+export async function setArtifactOfficial(id: string, official: boolean, actor: string): Promise<Artifact | null> {
+  const sql = await db()
+  const a = await getArtifact(id)
+  if (!a) return null
+
+  if (official) {
+    const spaceId = await ensureArtifactsSpace(actor)
+    const md = artifactToMarkdown(a)
+    let kbDocId = a.kbDocId
+    if (!kbDocId || !(await getDoc(kbDocId))) {
+      const doc = await createDoc({ spaceId, title: a.title, kind: 'human', createdBy: actor, ownerUserId: a.ownerUserId })
+      kbDocId = doc.id
+    }
+    await saveDoc(kbDocId, { title: a.title, body: md }, actor)
+    await setKbDocOfficial(kbDocId, true, actor) // → org brain
+    await sql`update artifacts set official = true, kb_doc_id = ${kbDocId}, updated_at = now() where id = ${id}`
+  } else {
+    if (a.kbDocId) await deleteDoc(a.kbDocId).catch(() => {})
+    await sql`update artifacts set official = false, kb_doc_id = null, updated_at = now() where id = ${id}`
+  }
+  return getArtifact(id)
+}
+
+/** Keep the KB mirror fresh when an already-official artifact's content changes. */
+export async function remirrorIfOfficial(id: string, actor: string): Promise<void> {
+  const a = await getArtifact(id)
+  if (a?.official && a.kbDocId) await saveDoc(a.kbDocId, { title: a.title, body: artifactToMarkdown(a) }, actor).catch(() => {})
 }

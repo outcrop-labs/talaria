@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, type LucideIcon } from 'lucide-react'
+import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, type LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -157,6 +157,17 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
         <Button variant="outline" size="sm" className="shrink-0 capitalize" title="Share &amp; permissions" onClick={() => setShareOpen(true)}>
           {artifact.visibility}
         </Button>
+        {isOwner && (
+          <Button
+            variant={artifact.official ? 'primary' : 'outline'}
+            size="sm"
+            className="shrink-0"
+            title="Official artifacts are mirrored into the knowledgebase and ground the org brain"
+            onClick={() => void save({ official: !artifact.official })}
+          >
+            <Star size={13} className="mr-1" /> {artifact.official ? 'Official' : 'Make official'}
+          </Button>
+        )}
         <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
           {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         </Button>

@@ -3,8 +3,9 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { deleteArtifact, getArtifact, guarded, saveArtifact } from '@/server/artifacts'
+import { deleteArtifact, getArtifact, guarded, saveArtifact, setArtifactOfficial } from '@/server/artifacts'
 import { canEditAgent, canEditHuman, canRead, isOwner, listEditors, setEditors } from '@/server/kb-perms'
+import { logAudit } from '@/server/audit'
 
 const Editor = z.object({ principalType: z.enum(['user', 'agent']), principalId: z.string().min(1).max(200), role: z.enum(['viewer', 'editor']).default('viewer') })
 const Patch = z.object({
@@ -14,6 +15,7 @@ const Patch = z.object({
   visibility: z.enum(['private', 'org', 'public']).optional(),
   editPolicy: z.enum(['owner', 'org', 'restricted']).optional(),
   editors: z.array(Editor).max(200).optional(),
+  official: z.boolean().optional(),
 })
 
 // One artifact. Read/edit gated by its audience; sharing owner-only; agents
@@ -47,6 +49,7 @@ export const Route = createFileRoute('/api/artifacts/$id')({
           parsed.data.visibility = undefined
           parsed.data.editPolicy = undefined
           parsed.data.editors = undefined
+          parsed.data.official = undefined
         } else {
           const user = await getSessionUser(request)
           if (!user) return json({ error: 'unauthorized' }, { status: 401 })
@@ -57,9 +60,14 @@ export const Route = createFileRoute('/api/artifacts/$id')({
           if (!owner && sharing) return json({ error: 'only the owner can change sharing' }, { status: 403 })
         }
 
+        if (!owner) parsed.data.official = undefined
         if (owner && parsed.data.editors !== undefined) await setEditors('artifact', params.id, parsed.data.editors)
-        const updated = await saveArtifact(params.id, parsed.data, actor)
+        let updated = await saveArtifact(params.id, parsed.data, actor)
         if (!updated) return json({ error: 'not found' }, { status: 404 })
+        if (parsed.data.official !== undefined && parsed.data.official !== updated.official) {
+          updated = (await setArtifactOfficial(params.id, parsed.data.official, actor)) ?? updated
+          void logAudit({ actor, action: parsed.data.official ? 'artifact.officialize' : 'artifact.deofficialize', targetType: 'artifact', targetId: params.id, targetLabel: updated.title })
+        }
         return json({ artifact: updated, editors: await listEditors('artifact', params.id) })
       },
       DELETE: async ({ request, params }) => {
