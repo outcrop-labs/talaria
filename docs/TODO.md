@@ -46,9 +46,13 @@ engineering-facing tracker.
   - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
 
 ## High-value, ready to pick up
-- **Per-agent Talaria toolkit (#58)** — give each agent MCP tools + skills to
-  work *inside* Talaria (comment on tickets, edit KB docs they're granted as an
-  Editor, search knowledge). Leverages the agent-editor grants already shipped.
+- **Per-agent Talaria toolkit (#58)** — *in progress.* Agents already have tickets
+  (comment/triage/create/report/deps/time), artifacts (create/update/list/get),
+  RAG `search_knowledge`, and Google. ✅ **Knowledgebase tools** now added:
+  `list_kb_spaces` / `list_kb_docs` / `read_kb_doc` / `edit_kb_doc` — browse + read
+  by effective audience, edit only where granted Editor (sharing stays human-only).
+  ⏳ Remaining: a "Talaria toolkit" onboarding skill; channel post/read tools
+  (overlaps #59).
 - **Plan view (#55)** — a first-class planning surface that turns conversations
   into reviewed tickets and feeds boards/chat. Self-contained.
 - **Research view (#56)** — informs chats / plans / boards; when built, wire its

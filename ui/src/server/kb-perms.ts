@@ -100,3 +100,10 @@ export function canEditHuman(item: Guarded, userId: string | null, author: strin
 export function canEditAgent(agentModel: string, grants: EditorGrant[]): boolean {
   return grants.some((g) => g.principalType === 'agent' && g.principalId === agentModel && g.role === 'editor')
 }
+
+/** Can this agent (by model) read the item? Org/public visibility, or any grant
+ *  (viewer or editor) on a private item. Mirrors canRead for humans. */
+export function canReadAgent(item: Guarded, agentModel: string, grants: EditorGrant[] = []): boolean {
+  if (item.visibility !== 'private') return true
+  return grants.some((g) => g.principalType === 'agent' && g.principalId === agentModel)
+}

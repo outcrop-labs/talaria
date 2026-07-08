@@ -2,8 +2,9 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { createDoc, getSpace, listDocs } from '@/server/kb'
-import { canRead, grantedItemIds, listEditors } from '@/server/kb-perms'
+import { canRead, canReadAgent, grantedItemIds, grantedItemIdsForAgent, listEditors } from '@/server/kb-perms'
 
 const Body = z.object({
   title: z.string().max(200).optional(),
@@ -16,11 +17,21 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
+        const space = await getSpace(params.id)
+        if (!space) return json({ docs: [] })
+        // Agents (over MCP): gate the tree on agent space-access, then filter docs
+        // by their own audience (inherited from the readable folder, or granted).
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+          if (!canReadAgent(space, name, await listEditors('space', params.id))) return json({ docs: [] })
+          const grantedA = await grantedItemIdsForAgent('doc', name)
+          const docsA = (await listDocs(params.id)).filter((d) => d.permsInherited || grantedA.has(d.id) || canReadAgent(d, name))
+          return json({ docs: docsA })
+        }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         // Gate the whole tree on folder access first.
-        const space = await getSpace(params.id)
-        if (!space) return json({ docs: [] })
         if (!canRead(space, user.id, user.email ?? user.name, await listEditors('space', params.id))) return json({ docs: [] })
         // Inherited docs are as visible as the (readable) folder, so they show.
         // Customized docs are filtered by their own audience (or an explicit grant).
