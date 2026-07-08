@@ -14,6 +14,7 @@ import {
   deleteBoard,
   renameBoard,
   setBoardAgents,
+  setBoardJudgeMode,
   shareBoard,
   unshareBoard,
   useBoardAgents,
@@ -104,6 +105,26 @@ function GeneralTab({
           onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
           className="w-full"
         />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">QA judge</label>
+        <Select
+          value={board.judgeMode ?? 'inherit'}
+          onChange={async (e) => {
+            await setBoardJudgeMode(board.id, e.target.value as 'inherit' | 'off' | 'advisory' | 'enforcing')
+            refreshBoards()
+          }}
+          className="w-full"
+        >
+          <option value="inherit">Default (follow the org setting)</option>
+          <option value="off">Off — no automated review</option>
+          <option value="advisory">Advisory — judge posts a verdict, human decides</option>
+          <option value="enforcing">Enforcing — auto-send failing work back to the agent (up to 3×), then a human</option>
+        </Select>
+        <div className="mt-1 text-[11px] text-muted">
+          When an agent hands a ticket to quality review, the judge reviews it. Enforcing bounces “revise” verdicts back to the agent with the issues before a human sees them.
+        </div>
       </div>
 
       <div className="rounded-xl border border-line-subtle p-3">
