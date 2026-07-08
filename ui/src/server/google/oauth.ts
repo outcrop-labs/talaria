@@ -18,7 +18,10 @@ const USERINFO_ENDPOINT = 'https://openidconnect.googleapis.com/v1/userinfo'
 export const DRIVE_SCOPES = [
   'openid',
   'email',
+  // Create + manage files the app itself makes (export).
   'https://www.googleapis.com/auth/drive.file',
+  // Read metadata + content of the user's Drive files (browse + import).
+  'https://www.googleapis.com/auth/drive.readonly',
 ]
 
 /** Whether the Google integration can run at all (same client as login). */
