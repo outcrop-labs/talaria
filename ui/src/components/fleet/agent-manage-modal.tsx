@@ -10,15 +10,17 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { cn } from '@/lib/cn'
 import { relativeTime, useFleet } from '@/lib/fleet'
 import { AgentConfigForm } from '@/components/fleet/agent-editor'
+import { CronsPanel } from '@/components/fleet/agent-crons'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { patchAgentMeta, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
 
-type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'mcp' | 'versions'
+type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'mcp' | 'versions'
 const TABS: { id: Tab; label: string }[] = [
   { id: 'summary', label: 'Summary' },
   { id: 'config', label: 'Config' },
   { id: 'skills', label: 'Skills' },
   { id: 'memory', label: 'Memory' },
+  { id: 'crons', label: 'Crons' },
   { id: 'mcp', label: 'MCP' },
   { id: 'versions', label: 'Versions' },
 ]
@@ -70,6 +72,12 @@ export function AgentManageModal({
           ))}
         {tab === 'skills' && <SkillsTab slug={def.slug} isAdmin={isAdmin} />}
         {tab === 'memory' && <MemoryTab def={def} isAdmin={isAdmin} />}
+        {tab === 'crons' && (
+          <CronsPanel
+            agentId={def.id}
+            intro="Recurring jobs the agent runs on its own native scheduler — they keep firing even when Talaria is down."
+          />
+        )}
         {tab === 'mcp' && <McpTab def={def} isAdmin={isAdmin} />}
         {tab === 'versions' && <VersionsTab def={def} isAdmin={isAdmin} />}
       </div>

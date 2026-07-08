@@ -69,6 +69,7 @@ import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
 import { Route as ApiFleetReconcileRouteImport } from './routes/api/fleet.reconcile'
 import { Route as ApiFleetEndpointsRouteImport } from './routes/api/fleet.endpoints'
 import { Route as ApiFleetDefsRouteImport } from './routes/api/fleet.defs'
+import { Route as ApiFleetCronsRouteImport } from './routes/api/fleet.crons'
 import { Route as ApiFleetCreateRouteImport } from './routes/api/fleet.create'
 import { Route as ApiFleetContainersRouteImport } from './routes/api/fleet.containers'
 import { Route as ApiConversationsIdRouteImport } from './routes/api/conversations.$id'
@@ -123,8 +124,10 @@ import { Route as ApiFleetEndpointsIdAvailableRouteImport } from './routes/api/f
 import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.defs.$id.versions'
 import { Route as ApiFleetDefsIdMcpRouteImport } from './routes/api/fleet.defs.$id.mcp'
 import { Route as ApiFleetDefsIdEditRouteImport } from './routes/api/fleet.defs.$id.edit'
+import { Route as ApiFleetAgentsIdCronsRouteImport } from './routes/api/fleet.agents.$id.crons'
 import { Route as ApiFleetAgentsIdControlRouteImport } from './routes/api/fleet.agents.$id.control'
 import { Route as ApiArtifactsPublicSlugDownloadRouteImport } from './routes/api/artifacts.public.$slug.download'
+import { Route as ApiFleetAgentsIdCronsJobIdRouteImport } from './routes/api/fleet.agents.$id.crons.$jobId'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -425,6 +428,11 @@ const ApiFleetDefsRoute = ApiFleetDefsRouteImport.update({
   path: '/defs',
   getParentRoute: () => ApiFleetRoute,
 } as any)
+const ApiFleetCronsRoute = ApiFleetCronsRouteImport.update({
+  id: '/crons',
+  path: '/crons',
+  getParentRoute: () => ApiFleetRoute,
+} as any)
 const ApiFleetCreateRoute = ApiFleetCreateRouteImport.update({
   id: '/create',
   path: '/create',
@@ -696,6 +704,11 @@ const ApiFleetDefsIdEditRoute = ApiFleetDefsIdEditRouteImport.update({
   path: '/edit',
   getParentRoute: () => ApiFleetDefsIdRoute,
 } as any)
+const ApiFleetAgentsIdCronsRoute = ApiFleetAgentsIdCronsRouteImport.update({
+  id: '/agents/$id/crons',
+  path: '/agents/$id/crons',
+  getParentRoute: () => ApiFleetRoute,
+} as any)
 const ApiFleetAgentsIdControlRoute = ApiFleetAgentsIdControlRouteImport.update({
   id: '/agents/$id/control',
   path: '/agents/$id/control',
@@ -706,6 +719,12 @@ const ApiArtifactsPublicSlugDownloadRoute =
     id: '/download',
     path: '/download',
     getParentRoute: () => ApiArtifactsPublicSlugRoute,
+  } as any)
+const ApiFleetAgentsIdCronsJobIdRoute =
+  ApiFleetAgentsIdCronsJobIdRouteImport.update({
+    id: '/$jobId',
+    path: '/$jobId',
+    getParentRoute: () => ApiFleetAgentsIdCronsRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -769,6 +788,7 @@ export interface FileRoutesByFullPath {
   '/api/conversations/$id': typeof ApiConversationsIdRoute
   '/api/fleet/containers': typeof ApiFleetContainersRoute
   '/api/fleet/create': typeof ApiFleetCreateRoute
+  '/api/fleet/crons': typeof ApiFleetCronsRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
@@ -815,6 +835,7 @@ export interface FileRoutesByFullPath {
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
+  '/api/fleet/agents/$id/crons': typeof ApiFleetAgentsIdCronsRouteWithChildren
   '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
@@ -824,6 +845,7 @@ export interface FileRoutesByFullPath {
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
+  '/api/fleet/agents/$id/crons/$jobId': typeof ApiFleetAgentsIdCronsJobIdRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
@@ -886,6 +908,7 @@ export interface FileRoutesByTo {
   '/api/conversations/$id': typeof ApiConversationsIdRoute
   '/api/fleet/containers': typeof ApiFleetContainersRoute
   '/api/fleet/create': typeof ApiFleetCreateRoute
+  '/api/fleet/crons': typeof ApiFleetCronsRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
@@ -932,6 +955,7 @@ export interface FileRoutesByTo {
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
+  '/api/fleet/agents/$id/crons': typeof ApiFleetAgentsIdCronsRouteWithChildren
   '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
@@ -941,6 +965,7 @@ export interface FileRoutesByTo {
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
+  '/api/fleet/agents/$id/crons/$jobId': typeof ApiFleetAgentsIdCronsJobIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -1005,6 +1030,7 @@ export interface FileRoutesById {
   '/api/conversations/$id': typeof ApiConversationsIdRoute
   '/api/fleet/containers': typeof ApiFleetContainersRoute
   '/api/fleet/create': typeof ApiFleetCreateRoute
+  '/api/fleet/crons': typeof ApiFleetCronsRoute
   '/api/fleet/defs': typeof ApiFleetDefsRouteWithChildren
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
@@ -1051,6 +1077,7 @@ export interface FileRoutesById {
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
+  '/api/fleet/agents/$id/crons': typeof ApiFleetAgentsIdCronsRouteWithChildren
   '/api/fleet/defs/$id/edit': typeof ApiFleetDefsIdEditRoute
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
@@ -1060,6 +1087,7 @@ export interface FileRoutesById {
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
+  '/api/fleet/agents/$id/crons/$jobId': typeof ApiFleetAgentsIdCronsJobIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -1124,6 +1152,7 @@ export interface FileRouteTypes {
     | '/api/conversations/$id'
     | '/api/fleet/containers'
     | '/api/fleet/create'
+    | '/api/fleet/crons'
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
     | '/api/fleet/reconcile'
@@ -1170,6 +1199,7 @@ export interface FileRouteTypes {
     | '/api/teams/$id/members'
     | '/api/artifacts/public/$slug/download'
     | '/api/fleet/agents/$id/control'
+    | '/api/fleet/agents/$id/crons'
     | '/api/fleet/defs/$id/edit'
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
@@ -1179,6 +1209,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
+    | '/api/fleet/agents/$id/crons/$jobId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -1241,6 +1272,7 @@ export interface FileRouteTypes {
     | '/api/conversations/$id'
     | '/api/fleet/containers'
     | '/api/fleet/create'
+    | '/api/fleet/crons'
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
     | '/api/fleet/reconcile'
@@ -1287,6 +1319,7 @@ export interface FileRouteTypes {
     | '/api/teams/$id/members'
     | '/api/artifacts/public/$slug/download'
     | '/api/fleet/agents/$id/control'
+    | '/api/fleet/agents/$id/crons'
     | '/api/fleet/defs/$id/edit'
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
@@ -1296,6 +1329,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
+    | '/api/fleet/agents/$id/crons/$jobId'
   id:
     | '__root__'
     | '/_app'
@@ -1359,6 +1393,7 @@ export interface FileRouteTypes {
     | '/api/conversations/$id'
     | '/api/fleet/containers'
     | '/api/fleet/create'
+    | '/api/fleet/crons'
     | '/api/fleet/defs'
     | '/api/fleet/endpoints'
     | '/api/fleet/reconcile'
@@ -1405,6 +1440,7 @@ export interface FileRouteTypes {
     | '/api/teams/$id/members'
     | '/api/artifacts/public/$slug/download'
     | '/api/fleet/agents/$id/control'
+    | '/api/fleet/agents/$id/crons'
     | '/api/fleet/defs/$id/edit'
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
@@ -1414,6 +1450,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
+    | '/api/fleet/agents/$id/crons/$jobId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -1887,6 +1924,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFleetDefsRouteImport
       parentRoute: typeof ApiFleetRoute
     }
+    '/api/fleet/crons': {
+      id: '/api/fleet/crons'
+      path: '/crons'
+      fullPath: '/api/fleet/crons'
+      preLoaderRoute: typeof ApiFleetCronsRouteImport
+      parentRoute: typeof ApiFleetRoute
+    }
     '/api/fleet/create': {
       id: '/api/fleet/create'
       path: '/create'
@@ -2265,6 +2309,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFleetDefsIdEditRouteImport
       parentRoute: typeof ApiFleetDefsIdRoute
     }
+    '/api/fleet/agents/$id/crons': {
+      id: '/api/fleet/agents/$id/crons'
+      path: '/agents/$id/crons'
+      fullPath: '/api/fleet/agents/$id/crons'
+      preLoaderRoute: typeof ApiFleetAgentsIdCronsRouteImport
+      parentRoute: typeof ApiFleetRoute
+    }
     '/api/fleet/agents/$id/control': {
       id: '/api/fleet/agents/$id/control'
       path: '/agents/$id/control'
@@ -2278,6 +2329,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/artifacts/public/$slug/download'
       preLoaderRoute: typeof ApiArtifactsPublicSlugDownloadRouteImport
       parentRoute: typeof ApiArtifactsPublicSlugRoute
+    }
+    '/api/fleet/agents/$id/crons/$jobId': {
+      id: '/api/fleet/agents/$id/crons/$jobId'
+      path: '/$jobId'
+      fullPath: '/api/fleet/agents/$id/crons/$jobId'
+      preLoaderRoute: typeof ApiFleetAgentsIdCronsJobIdRouteImport
+      parentRoute: typeof ApiFleetAgentsIdCronsRoute
     }
   }
 }
@@ -2531,24 +2589,41 @@ const ApiFleetEndpointsRouteChildren: ApiFleetEndpointsRouteChildren = {
 const ApiFleetEndpointsRouteWithChildren =
   ApiFleetEndpointsRoute._addFileChildren(ApiFleetEndpointsRouteChildren)
 
+interface ApiFleetAgentsIdCronsRouteChildren {
+  ApiFleetAgentsIdCronsJobIdRoute: typeof ApiFleetAgentsIdCronsJobIdRoute
+}
+
+const ApiFleetAgentsIdCronsRouteChildren: ApiFleetAgentsIdCronsRouteChildren = {
+  ApiFleetAgentsIdCronsJobIdRoute: ApiFleetAgentsIdCronsJobIdRoute,
+}
+
+const ApiFleetAgentsIdCronsRouteWithChildren =
+  ApiFleetAgentsIdCronsRoute._addFileChildren(
+    ApiFleetAgentsIdCronsRouteChildren,
+  )
+
 interface ApiFleetRouteChildren {
   ApiFleetContainersRoute: typeof ApiFleetContainersRoute
   ApiFleetCreateRoute: typeof ApiFleetCreateRoute
+  ApiFleetCronsRoute: typeof ApiFleetCronsRoute
   ApiFleetDefsRoute: typeof ApiFleetDefsRouteWithChildren
   ApiFleetEndpointsRoute: typeof ApiFleetEndpointsRouteWithChildren
   ApiFleetReconcileRoute: typeof ApiFleetReconcileRoute
   ApiFleetRenderRoute: typeof ApiFleetRenderRoute
   ApiFleetAgentsIdControlRoute: typeof ApiFleetAgentsIdControlRoute
+  ApiFleetAgentsIdCronsRoute: typeof ApiFleetAgentsIdCronsRouteWithChildren
 }
 
 const ApiFleetRouteChildren: ApiFleetRouteChildren = {
   ApiFleetContainersRoute: ApiFleetContainersRoute,
   ApiFleetCreateRoute: ApiFleetCreateRoute,
+  ApiFleetCronsRoute: ApiFleetCronsRoute,
   ApiFleetDefsRoute: ApiFleetDefsRouteWithChildren,
   ApiFleetEndpointsRoute: ApiFleetEndpointsRouteWithChildren,
   ApiFleetReconcileRoute: ApiFleetReconcileRoute,
   ApiFleetRenderRoute: ApiFleetRenderRoute,
   ApiFleetAgentsIdControlRoute: ApiFleetAgentsIdControlRoute,
+  ApiFleetAgentsIdCronsRoute: ApiFleetAgentsIdCronsRouteWithChildren,
 }
 
 const ApiFleetRouteWithChildren = ApiFleetRoute._addFileChildren(
