@@ -2,12 +2,12 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { buildCopilotMessages, copilotModelFor, type CopilotKind } from '@/server/copilot'
+import { buildMuseMessages, museModelFor, type MuseKind } from '@/server/muse'
 import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '@/server/llm-gateway'
 import { estimateTokens } from '@/server/usage'
 
 const Body = z.object({
-  kind: z.enum(['soul', 'personality', 'skill', 'memory', 'cron', 'document']),
+  kind: z.enum(['soul', 'personality', 'skill', 'memory', 'cron', 'agent', 'document']),
   instruction: z.string().trim().min(1).max(8_000),
   current: z.string().max(300_000).optional(),
   context: z.string().max(2_000).optional(),
@@ -19,9 +19,9 @@ const Body = z.object({
 
 // POST → stream a drafted document (or cron JSON) as plain text chunks.
 // Runs on the caller's preferred model via the gateway machinery, metered as
-// `copilot:<user>`. Any signed-in user; what they can DO with the draft is
+// `muse:<user>`. Any signed-in user; what they can DO with the draft is
 // still governed by the save endpoints' own authorization.
-export const Route = createFileRoute('/api/copilot')({
+export const Route = createFileRoute('/api/muse')({
   server: {
     handlers: {
       POST: async ({ request }) => {
@@ -30,12 +30,12 @@ export const Route = createFileRoute('/api/copilot')({
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
 
-        const model = await copilotModelFor(user.id)
+        const model = await museModelFor(user.id)
         if (!model) return json({ error: 'no models configured — add an endpoint first' }, { status: 400 })
         const route = await resolveRoute(model)
         if (!route) return json({ error: `model "${model}" is not routable` }, { status: 400 })
 
-        const messages = buildCopilotMessages({ ...parsed.data, kind: parsed.data.kind as CopilotKind })
+        const messages = buildMuseMessages({ ...parsed.data, kind: parsed.data.kind as MuseKind })
         let upstream
         try {
           upstream = await buildUpstream(route, { model, messages, stream: true, temperature: 0.4 })
@@ -85,7 +85,7 @@ export const Route = createFileRoute('/api/copilot')({
           },
           flush() {
             void recordGatewayUsage({
-              caller: `copilot:${user.email ?? user.name ?? user.id}`,
+              caller: `muse:${user.email ?? user.name ?? user.id}`,
               endpoint: route.endpoint,
               upstreamModel: route.upstreamModel,
               promptTokens: usage?.prompt_tokens ?? estimateTokens(promptChars),
@@ -100,7 +100,7 @@ export const Route = createFileRoute('/api/copilot')({
           headers: {
             'content-type': 'text/plain; charset=utf-8',
             'cache-control': 'no-cache',
-            'x-copilot-model': model,
+            'x-muse-model': model,
           },
         })
       },

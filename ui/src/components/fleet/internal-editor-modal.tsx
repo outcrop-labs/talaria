@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { relativeTime } from '@/lib/fleet'
-import { streamCopilot, type CopilotKind } from '@/lib/copilot'
+import { streamMuse, type MuseKind } from '@/lib/muse'
 import { cn } from '@/lib/cn'
 
 interface Revision {
@@ -127,7 +127,7 @@ export function InternalEditorModal({
   history,
   footerExtra,
   mode = 'rich',
-  copilot,
+  muse,
 }: {
   open: boolean
   onClose: () => void
@@ -146,7 +146,7 @@ export function InternalEditorModal({
   mode?: 'rich' | 'plain'
   /** Enable AI drafting for this document: prompt → streamed proposal →
    *  review diff → accept, iterating with the conversation retained. */
-  copilot?: { kind: CopilotKind; context?: string }
+  muse?: { kind: MuseKind; context?: string }
 }) {
   const ref = useRef<RichEditorHandle>(null)
   const [dirty, setDirty] = useState(false)
@@ -155,14 +155,14 @@ export function InternalEditorModal({
   const [showHistory, setShowHistory] = useState(true)
   const [diffing, setDiffing] = useState<{ rev: Revision; content: string; diff: DiffLine[] | null } | null>(null)
 
-  // ── Copilot: prompt → streamed proposal → review/accept, iteratively ───────
-  const [copilotOpen, setCopilotOpen] = useState(false)
+  // ── Muse: prompt → streamed proposal → review/accept, iteratively ───────
+  const [museOpen, setMuseOpen] = useState(false)
   const [instruction, setInstruction] = useState('')
   const [generating, setGenerating] = useState(false)
   const [proposal, setProposal] = useState<string | null>(null)
   const [proposalDiff, setProposalDiff] = useState<DiffLine[] | null | 'text'>('text')
   const [chat, setChat] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
-  const [copilotError, setCopilotError] = useState<string | null>(null)
+  const [museError, setMuseError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const streamRef = useRef<HTMLPreElement | null>(null)
 
@@ -175,17 +175,17 @@ export function InternalEditorModal({
 
   const generate = async () => {
     const instr = instruction.trim()
-    if (!instr || !copilot) return
+    if (!instr || !muse) return
     setGenerating(true)
-    setCopilotError(null)
+    setMuseError(null)
     setDiffing(null)
     setProposal('')
     setProposalDiff('text')
     const ac = new AbortController()
     abortRef.current = ac
     try {
-      const full = await streamCopilot(
-        { kind: copilot.kind, context: copilot.context, current: editorText(), instruction: instr, chat },
+      const full = await streamMuse(
+        { kind: muse.kind, context: muse.context, current: editorText(), instruction: instr, chat },
         (piece) => setProposal((p) => (p ?? '') + piece),
         ac.signal,
       )
@@ -193,7 +193,7 @@ export function InternalEditorModal({
       setInstruction('')
     } catch (e) {
       if (!ac.signal.aborted) {
-        setCopilotError((e as Error).message)
+        setMuseError((e as Error).message)
         setProposal(null)
       }
     } finally {
@@ -412,7 +412,7 @@ export function InternalEditorModal({
             </div>
           )}
         </div>
-        {copilotOpen && copilot && editable && (
+        {museOpen && muse && editable && (
           <div className="flex items-end gap-2.5">
             <Sparkles size={14} className="mb-3 shrink-0 text-accent" />
             <Textarea
@@ -439,16 +439,16 @@ export function InternalEditorModal({
             </Button>
           </div>
         )}
-        {copilotError && <p className="text-xs text-[color:var(--theme-danger)]">{copilotError}</p>}
+        {museError && <p className="text-xs text-[color:var(--theme-danger)]">{museError}</p>}
         <div className="flex items-center gap-2 border-t border-line-subtle pt-3">
-          {copilot && editable && (
+          {muse && editable && (
             <Button
-              variant={copilotOpen ? 'outline' : 'ghost'}
+              variant={museOpen ? 'outline' : 'ghost'}
               size="sm"
-              onClick={() => setCopilotOpen((v) => !v)}
+              onClick={() => setMuseOpen((v) => !v)}
               title="Draft with AI — uses your preferred model (Settings)"
             >
-              <Sparkles size={14} className="mr-1.5" /> Copilot
+              <Sparkles size={14} className="mr-1.5" /> Muse
             </Button>
           )}
           {history && (
