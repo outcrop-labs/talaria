@@ -632,6 +632,10 @@ const MIGRATIONS: string[] = [
      decided_by uuid references users(id) on delete set null
    )`,
   `create index if not exists google_pending_owner_idx on google_pending_actions(owner_user_id, status)`,
+  // Org-scoped pending actions (drafted by a general agent for the shared org
+  // Google account) have no owner — an admin approves them instead.
+  `alter table google_pending_actions add column if not exists is_org boolean not null default false`,
+  `create index if not exists google_pending_org_idx on google_pending_actions(is_org, status)`,
 ]
 
 function ensureMigrated(): Promise<void> {

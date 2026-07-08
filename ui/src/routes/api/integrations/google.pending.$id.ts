@@ -17,7 +17,7 @@ export const Route = createFileRoute('/api/integrations/google/pending/$id')({
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
 
-        const outcome = await decideAction(params.id, user.id, parsed.data.decision, Date.now())
+        const outcome = await decideAction(params.id, { id: user.id, isAdmin: user.role === 'admin' }, parsed.data.decision, Date.now())
         if (!outcome) return json({ error: 'not found' }, { status: 404 })
         if (outcome.status === 'forbidden') return json({ error: 'forbidden' }, { status: 403 })
         if (outcome.status === 'not_connected') return json({ error: 'not_connected', message: outcome.message }, { status: 409 })

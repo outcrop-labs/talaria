@@ -41,12 +41,14 @@ land in the user's own Drive, governed by Google's own sharing.
 - **Agents** export via the `export_to_google_doc` MCP tool — into their owner's
   Drive (personal assistant) or the shared org Drive (general agent). See the
   identity-proxy note above.
-- **Agent Calendar & Gmail (personal assistant only, confirm-sends):** an
-  assistant can `read_calendar` / `read_recent_email` for its owner freely, but
-  `draft_calendar_event` / `draft_email` do **not** act immediately — they queue
-  a **pending action** the owner approves on Home (**Needs your approval**). On
-  approve it runs as the owner's Google; reject drops it. General agents can't
-  touch a human's mail or calendar at all.
+- **Agent Calendar & Gmail (confirm-sends):** an agent can `read_calendar` /
+  `read_recent_email` freely, but `draft_calendar_event` / `draft_email` do
+  **not** act immediately — they queue a **pending action** a human approves on
+  Home (**Needs your approval**). On approve it runs; reject drops it.
+  - A **personal assistant** reads/drafts on **its owner's** Google — the
+    **owner** approves.
+  - A **general agent** reads/drafts on the **shared org** Google — an **admin**
+    approves (org actions are tagged `org` in the approvals panel).
 
 ## Security
 

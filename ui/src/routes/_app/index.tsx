@@ -492,6 +492,7 @@ interface PendingAction {
   kind: string
   summary: string | null
   agentModel: string | null
+  isOrg: boolean
   createdAt: string
 }
 
@@ -545,6 +546,7 @@ function ApprovalsPanel() {
         {pending.map((a) => (
           <div key={a.id} className="flex items-center gap-3 py-2.5">
             <span className="shrink-0 rounded border border-line-subtle px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">{kindLabel(a.kind)}</span>
+            {a.isOrg && <span className="shrink-0 rounded bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted" title="Shared org account">org</span>}
             <span className="min-w-0 flex-1 truncate text-sm text-fg">{a.summary ?? '(action)'}</span>
             {a.agentModel && <span className="hidden shrink-0 text-[11px] text-muted sm:block">{a.agentModel}</span>}
             <div className="flex shrink-0 items-center gap-1">

@@ -2,8 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { listUpcomingEvents } from '@/server/google/calendar'
-import { resolveAgentOwnerUser } from '@/server/google/agent-google'
+import { listUpcomingEventsWithToken } from '@/server/google/calendar'
+import { resolveAgentGoogle, resolveAgentPrincipal } from '@/server/google/agent-google'
 import { queueAction } from '@/server/google/pending-actions'
 import { googleFail } from '@/server/google/errors'
 
@@ -17,9 +17,10 @@ const Draft = z.object({
   attendees: z.array(z.string().email()).max(50).optional(),
 })
 
-// Agent-facing calendar for a PERSONAL ASSISTANT acting as its owner.
-// GET  → read the owner's upcoming events (free)
-// POST → DRAFT an event; it's queued for the owner to approve, not created now.
+// Agent-facing calendar. A personal assistant acts as its owner; a general fleet
+// agent acts on the shared ORG calendar.
+// GET  → read upcoming events (free)
+// POST → DRAFT an event; queued for approval (the owner, or an admin for org).
 export const Route = createFileRoute('/api/integrations/google/agent/calendar')({
   server: {
     handlers: {
@@ -27,10 +28,10 @@ export const Route = createFileRoute('/api/integrations/google/agent/calendar')(
         if (!checkAgentKey(request)) return json({ error: 'unauthorized' }, { status: 401 })
         const name = agentName(request)
         if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
-        const owner = await resolveAgentOwnerUser(name)
-        if (!owner) return json({ error: 'not_personal', message: 'Calendar access is only for a personal assistant acting for its owner.' }, { status: 403 })
+        const google = await resolveAgentGoogle(name, Date.now())
+        if (!google) return json({ error: 'not_connected', message: 'No Google account is connected for this agent (its owner, or the org account).' }, { status: 409 })
         try {
-          return json({ events: await listUpcomingEvents(owner, Date.now()) })
+          return json({ events: await listUpcomingEventsWithToken(google.token, Date.now()) })
         } catch (err) {
           return googleFail(err as Error, 'Calendar')
         }
@@ -39,18 +40,21 @@ export const Route = createFileRoute('/api/integrations/google/agent/calendar')(
         if (!checkAgentKey(request)) return json({ error: 'unauthorized' }, { status: 401 })
         const name = agentName(request)
         if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
-        const owner = await resolveAgentOwnerUser(name)
-        if (!owner) return json({ error: 'not_personal', message: 'Only a personal assistant can draft events for its owner.' }, { status: 403 })
         const parsed = Draft.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const principal = await resolveAgentPrincipal(name)
         const action = await queueAction({
           kind: 'calendar_create',
           summary: `Event: ${parsed.data.summary} (${parsed.data.start})`,
           payload: parsed.data,
           agentModel: name,
-          ownerUserId: owner,
+          ownerUserId: principal.ownerUserId,
+          isOrg: principal.isOrg,
         })
-        return json({ pending: { id: action.id, status: 'pending' }, message: 'Drafted — waiting for the owner to approve.' })
+        return json({
+          pending: { id: action.id, status: 'pending' },
+          message: principal.isOrg ? 'Drafted — waiting for an admin to approve.' : 'Drafted — waiting for the owner to approve.',
+        })
       },
     },
   },

@@ -234,15 +234,16 @@ server.registerTool(
   async ({ documentId }) => ok(await api('POST', `/api/artifacts/${encodeURIComponent(documentId)}/export/google`)),
 )
 
-// ── Calendar & Gmail (personal assistant, acting for its owner) ─────────────
-// Reads are immediate; anything outbound is DRAFTED and waits for the owner to
-// approve in Talaria before it actually sends. Only works when you're a person's
-// personal assistant (you act as them).
+// ── Calendar & Gmail (acts as your owner, or the shared org account) ────────
+// Reads are immediate; anything outbound is DRAFTED and waits for a human to
+// approve in Talaria before it sends. A personal assistant acts as its owner
+// (the owner approves); a general agent acts on the shared org account (an admin
+// approves).
 server.registerTool(
   'read_calendar',
   {
     description:
-      "Read your owner's upcoming Google Calendar events. Only works if you're a personal assistant acting for a specific person who has connected Google.",
+      "Read upcoming Google Calendar events — your owner's if you're a personal assistant, otherwise the shared org calendar. Requires that Google account to be connected in Talaria.",
     inputSchema: {},
   },
   async () => ok(await api('GET', '/api/integrations/google/agent/calendar')),
@@ -252,7 +253,7 @@ server.registerTool(
   'draft_calendar_event',
   {
     description:
-      "Draft a Google Calendar event for your owner. It is NOT created immediately — it's queued for your owner to approve in Talaria first (confirm-sends). Times are RFC3339 (e.g. 2026-07-08T15:00:00Z), or YYYY-MM-DD with allDay=true.",
+      "Draft a Google Calendar event (on your owner's calendar, or the shared org calendar). It is NOT created immediately — it's queued for a human to approve in Talaria first (confirm-sends). Times are RFC3339 (e.g. 2026-07-08T15:00:00Z), or YYYY-MM-DD with allDay=true.",
     inputSchema: {
       summary: z.string().min(1).max(500).describe('Event title'),
       start: z.string().describe('Start — RFC3339 dateTime or YYYY-MM-DD'),
@@ -270,7 +271,7 @@ server.registerTool(
   'read_recent_email',
   {
     description:
-      "Read your owner's recent Gmail (metadata + snippets). Optional Gmail search `q` (e.g. 'from:boss', 'is:unread'). Only works if you're a personal assistant for a person who has connected Google.",
+      "Read recent Gmail (metadata + snippets) — your owner's if you're a personal assistant, otherwise the shared org mailbox. Optional Gmail search `q` (e.g. 'from:boss', 'is:unread'). Requires that Google account connected in Talaria.",
     inputSchema: { q: z.string().optional().describe("Gmail search query (default 'in:inbox')") },
   },
   async ({ q }) => ok(await api('GET', `/api/integrations/google/agent/gmail${q ? `?q=${encodeURIComponent(q)}` : ''}`)),
@@ -280,7 +281,7 @@ server.registerTool(
   'draft_email',
   {
     description:
-      "Draft an email to send AS your owner. It is NOT sent immediately — it's queued for your owner to approve in Talaria first (confirm-sends). Use this to prepare correspondence; your owner reviews and sends with one click.",
+      "Draft an email to send (AS your owner, or from the shared org account). It is NOT sent immediately — it's queued for a human to approve in Talaria first (confirm-sends). Use this to prepare correspondence; a human reviews and sends with one click.",
     inputSchema: {
       to: z.string().describe('Recipient email(s), comma-separated'),
       subject: z.string().max(500).optional(),
