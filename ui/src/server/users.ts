@@ -154,6 +154,35 @@ export function canUseAgent(access: 'all' | string[], model: string): boolean {
   return access === 'all' || access.includes(model)
 }
 
+/** model → owner_user_id for every PERSONAL assistant (owner_user_id set). */
+export async function personalAssistantOwners(): Promise<Map<string, string>> {
+  const sql = await db()
+  const rows = (await sql`
+    select model, owner_user_id as "ownerUserId" from agent_defs where owner_user_id is not null
+  `) as unknown as Array<{ model: string; ownerUserId: string }>
+  return new Map(rows.map((r) => [r.model, r.ownerUserId]))
+}
+
+/** Owner-aware USE gate. A personal assistant is usable ONLY by its owner —
+ *  otherwise another user could drive it and, through its identity-proxied tools
+ *  (Google, memory, the owner's private soul), read the OWNER's account/context.
+ *  Non-personal agents fall back to the per-user access list. Returns a predicate
+ *  so a listing can filter many models with one pair of queries. */
+export async function usableAgentGate(userId: string, role: Role): Promise<(model: string) => boolean> {
+  const access = await allowedAgents(userId, role)
+  const owners = await personalAssistantOwners()
+  return (model: string) => {
+    const owner = owners.get(model)
+    if (owner && owner !== userId) return false // someone else's personal assistant
+    return canUseAgent(access, model)
+  }
+}
+
+/** Owner-aware single-model check (chat, channels). See usableAgentGate. */
+export async function canUseAgentModel(userId: string, role: Role, model: string): Promise<boolean> {
+  return (await usableAgentGate(userId, role))(model)
+}
+
 /** Views a member may NOT reach. Admins are never restricted (always []). */
 export async function deniedViews(userId: string, role: Role): Promise<string[]> {
   if (role === 'admin') return []

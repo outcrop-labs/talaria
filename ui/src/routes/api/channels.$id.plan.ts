@@ -5,7 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { channelRole, listChannelAgents } from '@/server/channels'
 import { planFromChannel } from '@/server/channel-plan'
 import { routedModelFor } from '@/server/fleet-agents'
-import { allowedAgents, canUseAgent } from '@/server/users'
+import { canUseAgentModel } from '@/server/users'
 
 const Body = z.object({
   agentModel: z.string().min(1).max(200),
@@ -29,8 +29,7 @@ export const Route = createFileRoute('/api/channels/$id/plan')({
         if (!agents.includes(parsed.data.agentModel)) {
           return json({ error: 'that agent is not in this channel' }, { status: 400 })
         }
-        const access = await allowedAgents(user.id, user.role)
-        if (!canUseAgent(access, parsed.data.agentModel)) {
+        if (!(await canUseAgentModel(user.id, user.role, parsed.data.agentModel))) {
           return json({ error: 'you do not have access to that agent' }, { status: 403 })
         }
         const routed =
