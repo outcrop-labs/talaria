@@ -1,14 +1,13 @@
 // Agent skills as files — the way Hermes actually consumes them. Every agent
-// mounts two skill roots read-only:
-//   /opt/skills       ← <stack>/skills            (shared across the fleet)
-//   /opt/dept-skills  ← <stack>/agents/<department>/skills   (imported agents)
-//                     ← <fleet>/agents/<slug>/skills          (created agents)
+// mounts two skill roots read-only, both Talaria-owned:
+//   /opt/skills       ← <fleet>/skills                (shared across the fleet)
+//   /opt/dept-skills  ← <fleet>/agents/<slug>/skills  (the agent's own)
 // Hermes reads skills per invocation, so edits here are live — no restart.
 // Each skill is a directory holding a SKILL.md (plus optional support files).
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { db } from './db/pg'
-import { FLEET_DIR, STACK_DIR } from './fleet-render'
+import { FLEET_DIR } from './fleet-render'
 import { snapshot } from './internal-history'
 
 /** Owner key: 'shared' or an agent slug. */
@@ -19,7 +18,6 @@ interface OwnerInfo {
   owner: string
   label: string
   root: string
-  /** Imported agents' dept skills live in the legacy stack dir (their live mount). */
   source: 'shared' | 'imported' | 'created'
 }
 
@@ -30,15 +28,12 @@ async function owners(): Promise<OwnerInfo[]> {
     from agent_defs where enabled order by slug
   `) as unknown as Array<{ slug: string; department: string; displayName: string; source: string }>
   return [
-    { owner: SHARED, label: 'Shared (all agents)', root: join(STACK_DIR(), 'skills'), source: 'shared' as const },
+    { owner: SHARED, label: 'Shared (all agents)', root: join(FLEET_DIR(), 'skills'), source: 'shared' as const },
     ...defs.map((d) => ({
       owner: d.slug,
       label: d.displayName,
       source: d.source as 'imported' | 'created',
-      root:
-        d.source === 'created'
-          ? join(FLEET_DIR(), 'agents', d.slug, 'skills')
-          : join(STACK_DIR(), 'agents', d.department, 'skills'),
+      root: join(FLEET_DIR(), 'agents', d.slug, 'skills'),
     })),
   ]
 }

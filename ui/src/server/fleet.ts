@@ -48,7 +48,7 @@ export async function getFleetOverview(): Promise<FleetOverview> {
   const containerUp = new Map(
     defs.map((d) => {
       const c = byDept.get(d.department)
-      const state = d.managed ? c?.managed : c?.legacy
+      const state = c?.managed
       return [d.model, state?.state === 'running'] as const
     }),
   )

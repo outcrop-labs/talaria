@@ -44,7 +44,7 @@ export function CreateAgentModal({
   const [role, setRole] = useState('')
   const [soul, setSoul] = useState('')
   const [skills, setSkills] = useState<AgentDraft['skills']>([])
-  const [templateId, setTemplateId] = useState(preselect ?? templates[0]?.id ?? '')
+  const [templateId, setTemplateId] = useState(preselect ?? templates[0]?.id ?? '')  // '' = platform defaults
   const [start, setStart] = useState(true)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -104,7 +104,7 @@ export function CreateAgentModal({
         department,
         displayName,
         role: role.trim() || null,
-        templateId,
+        ...(templateId ? { templateId } : {}),
         ...(soul.trim() ? { soul } : {}),
         ...(skills.length ? { skills } : {}),
         start,
@@ -200,6 +200,7 @@ export function CreateAgentModal({
             Chassis template <span className="normal-case">— model tiers, tools, and plugins carry over</span>
           </label>
           <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className="w-full">
+            <option value="">Platform defaults — chassis + first local model</option>
             {templates.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.displayName} — {t.department} (v{t.currentVersion})
@@ -256,7 +257,7 @@ export function CreateAgentModal({
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={() => void create()} disabled={busy || generating || !slug || !department || !displayName || !templateId}>
+          <Button onClick={() => void create()} disabled={busy || generating || !slug || !department || !displayName}>
             {busy ? 'Creating…' : 'Create agent'}
           </Button>
         </div>

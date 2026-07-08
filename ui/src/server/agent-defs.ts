@@ -37,7 +37,7 @@ export interface AgentDef {
   role: string | null
   enabled: boolean
   managed: boolean
-  /** 'imported' reuses the legacy stack's volumes/chassis; 'created' is fresh. */
+  /** 'imported' keeps its pre-Talaria state volume name; 'created' is fresh. */
   source: 'imported' | 'created'
   currentVersion: number
   createdAt: string
