@@ -257,6 +257,7 @@ function Composer({
           <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} />
           <Textarea
             ref={taRef}
+            autoGrow
             rows={1}
             value={input}
             onChange={(e) => {

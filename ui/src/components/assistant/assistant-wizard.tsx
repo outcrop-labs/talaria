@@ -183,7 +183,9 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
               ))}
             </div>
             <Textarea
-              rows={4}
+              autoGrow
+              rows={3}
+              className="max-h-60"
               value={personality}
               onChange={(e) => setPersonality(e.target.value)}
               placeholder="Optional — e.g. “Be direct and keep things short. Remind me about loose ends.”"

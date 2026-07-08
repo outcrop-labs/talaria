@@ -211,8 +211,8 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
   }
 
   return (
-    <div className="space-y-3">
-      <p className="text-xs text-muted">
+    <div className="space-y-4">
+      <p className="text-xs leading-relaxed text-muted">
         Skills are step-by-step playbooks your assistant follows for recurring jobs — weekly summaries, travel
         planning, whatever you teach it.
       </p>
@@ -358,8 +358,8 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
     return <EmptyState icon="◌" title="Memory unavailable" hint={assistant.running ? data.error : 'Start your assistant to read its memory.'} />
 
   return (
-    <div className="space-y-3">
-      <p className="text-xs text-muted">
+    <div className="space-y-4">
+      <p className="text-xs leading-relaxed text-muted">
         What it remembers about you and your work — it updates this itself as you go, and you can edit or prune it any
         time. Every save is snapshotted, so nothing is ever lost.
       </p>

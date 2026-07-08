@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Check, History, RotateCcw, Sparkles, Square, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { relativeTime } from '@/lib/fleet'
@@ -413,21 +413,28 @@ export function InternalEditorModal({
           )}
         </div>
         {copilotOpen && copilot && editable && (
-          <div className="flex items-center gap-2">
-            <Sparkles size={14} className="shrink-0 text-accent" />
-            <Input
-              size="sm"
+          <div className="flex items-end gap-2.5">
+            <Sparkles size={14} className="mb-3 shrink-0 text-accent" />
+            <Textarea
+              autoGrow
+              rows={1}
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !generating && void generate()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  if (!generating && instruction.trim()) void generate()
+                }
+              }}
               placeholder={
                 proposal !== null
                   ? 'Refine the proposal — e.g. “shorter, and add a step for weekends”'
                   : 'Describe what you want — it drafts from the current version'
               }
+              className="max-h-40 text-sm"
               autoFocus
             />
-            <Button size="sm" className="shrink-0" onClick={() => void generate()} disabled={generating || !instruction.trim()}>
+            <Button className="shrink-0" onClick={() => void generate()} disabled={generating || !instruction.trim()}>
               {generating ? 'Drafting…' : proposal !== null ? 'Refine' : 'Draft'}
             </Button>
           </div>
