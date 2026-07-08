@@ -26,6 +26,8 @@ export interface Artifact {
   kbDocId: string | null
   folderId: string | null
   ownerUserId: string | null
+  googleFileId: string | null
+  googleFileUrl: string | null
   createdBy: string | null
   updatedBy: string | null
   createdAt: string
@@ -34,12 +36,14 @@ export interface Artifact {
 
 const COLS = `id, kind, title, icon, body, content_type as "contentType", storage_ref as "storageRef",
   visibility, edit_policy as "editPolicy", public_slug as "publicSlug", official, kb_doc_id as "kbDocId",
-  folder_id as "folderId", owner_user_id as "ownerUserId", created_by as "createdBy", updated_by as "updatedBy",
+  folder_id as "folderId", owner_user_id as "ownerUserId", google_file_id as "googleFileId", google_file_url as "googleFileUrl",
+  created_by as "createdBy", updated_by as "updatedBy",
   created_at as "createdAt", updated_at as "updatedAt"`
 // Table-qualified for joins (artifact_links also has created_by / created_at).
 const COLS_A = `a.id, a.kind, a.title, a.icon, a.body, a.content_type as "contentType", a.storage_ref as "storageRef",
   a.visibility, a.edit_policy as "editPolicy", a.public_slug as "publicSlug", a.official, a.kb_doc_id as "kbDocId",
-  a.folder_id as "folderId", a.owner_user_id as "ownerUserId", a.created_by as "createdBy", a.updated_by as "updatedBy",
+  a.folder_id as "folderId", a.owner_user_id as "ownerUserId", a.google_file_id as "googleFileId", a.google_file_url as "googleFileUrl",
+  a.created_by as "createdBy", a.updated_by as "updatedBy",
   a.created_at as "createdAt", a.updated_at as "updatedAt"`
 
 /** The Guarded view a permission check needs. */
@@ -259,6 +263,12 @@ export async function setArtifactOfficial(id: string, official: boolean, actor: 
     await sql`update artifacts set official = false, kb_doc_id = null, updated_at = now() where id = ${id}`
   }
   return getArtifact(id)
+}
+
+/** Record where an artifact was mirrored into Google Drive (last export wins). */
+export async function recordGoogleExport(id: string, fileId: string, url: string): Promise<void> {
+  const sql = await db()
+  await sql`update artifacts set google_file_id = ${fileId}, google_file_url = ${url}, updated_at = now() where id = ${id}`
 }
 
 /** Keep the KB mirror fresh when an already-official artifact's content changes. */

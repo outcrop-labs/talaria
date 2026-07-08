@@ -223,6 +223,18 @@ server.registerTool(
 )
 
 server.registerTool(
+  'export_to_google_doc',
+  {
+    description:
+      "Export a document (or sheet/file artifact) into Google Drive as a native Google Doc / Sheet. It lands in the Drive of the document's human owner — you act on their behalf — so they must have connected Google in Talaria. Returns the Drive file link. Use it to hand a finished deliverable to a human in a format they can edit in Google.",
+    inputSchema: {
+      documentId: z.string().describe('Document/artifact id (from create_document or list_documents)'),
+    },
+  },
+  async ({ documentId }) => ok(await api('POST', `/api/artifacts/${encodeURIComponent(documentId)}/export/google`)),
+)
+
+server.registerTool(
   'log_usage',
   {
     description:

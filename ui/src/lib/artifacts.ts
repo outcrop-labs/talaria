@@ -18,6 +18,8 @@ export interface Artifact {
   kbDocId: string | null
   folderId: string | null
   ownerUserId: string | null
+  googleFileId: string | null
+  googleFileUrl: string | null
   createdBy: string | null
   updatedBy: string | null
   createdAt: string

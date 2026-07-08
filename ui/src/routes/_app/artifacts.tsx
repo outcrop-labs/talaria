@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, X, type LucideIcon } from 'lucide-react'
+import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, X, Upload, ExternalLink, type LucideIcon } from 'lucide-react'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -319,6 +319,29 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
     }
   }
 
+  const [exporting, setExporting] = useState(false)
+  const exportToGoogle = async () => {
+    setMenuOpen(false)
+    setExporting(true)
+    try {
+      const r = await fetch(`/api/artifacts/${id}/export/google`, { method: 'POST' })
+      const j = (await r.json().catch(() => null)) as { file?: { url: string }; error?: string; message?: string } | null
+      if (r.ok && j?.file?.url) {
+        await qc.invalidateQueries({ queryKey: ['artifact', id] })
+        window.open(j.file.url, '_blank', 'noopener')
+      } else if (j?.error === 'not_connected') {
+        if (confirm('Connect a Google account to export to Drive. Go to Settings now?')) {
+          window.location.href = '/settings'
+        }
+      } else {
+        alert(j?.message ?? 'Export to Google Drive failed.')
+      }
+    } finally {
+      setExporting(false)
+    }
+  }
+  const googleLabel = artifact?.kind === 'sheet' ? 'Export to Google Sheets' : artifact?.kind === 'file' ? 'Export to Google Drive' : 'Export to Google Docs'
+
   if (!artifact) return <div className="p-8 text-sm text-muted">Loading…</div>
 
   return (
@@ -377,6 +400,14 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
               <button type="button" onClick={() => { setShowHistory((v) => !v); setMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar">
                 <History size={13} /> {showHistory ? 'Hide history' : 'Version history'}
               </button>
+              <button type="button" disabled={exporting} onClick={() => void exportToGoogle()} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar disabled:opacity-50">
+                <Upload size={13} /> {exporting ? 'Exporting…' : googleLabel}
+              </button>
+              {artifact.googleFileUrl && (
+                <a href={artifact.googleFileUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar">
+                  <ExternalLink size={13} /> Open in Google Drive
+                </a>
+              )}
               <button
                 type="button"
                 onClick={async () => {
