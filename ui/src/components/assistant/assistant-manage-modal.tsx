@@ -5,6 +5,7 @@ import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/empty-state'
+import { CronsPanel } from '@/components/fleet/agent-crons'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { cn } from '@/lib/cn'
 import { HANDLE_RE, updateAssistant, type Assistant } from '@/lib/assistant'
@@ -13,7 +14,7 @@ import { HANDLE_RE, updateAssistant, type Assistant } from '@/lib/assistant'
 // admin manage modal. General (handle, model tier, on/off), Skills (live
 // SKILL.md edits), Memory (what it remembers). All server calls are
 // owner-scoped; nothing here needs the admin role.
-const TABS = ['General', 'Skills', 'Memory'] as const
+const TABS = ['General', 'Schedules', 'Skills', 'Memory'] as const
 type Tab = (typeof TABS)[number]
 
 export function AssistantManageModal({ assistant, onClose }: { assistant: Assistant; onClose: () => void }) {
@@ -37,6 +38,12 @@ export function AssistantManageModal({ assistant, onClose }: { assistant: Assist
           ))}
         </div>
         {tab === 'General' && <GeneralTab assistant={assistant} />}
+        {tab === 'Schedules' && (
+          <CronsPanel
+            agentId={assistant.id}
+            intro="Recurring jobs your assistant runs on its own — a morning brief, a Friday recap, a reminder sweep. Write each one as a self-contained instruction."
+          />
+        )}
         {tab === 'Skills' && <SkillsTab assistant={assistant} />}
         {tab === 'Memory' && <MemoryTab assistant={assistant} />}
       </div>

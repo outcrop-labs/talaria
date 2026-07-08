@@ -3,8 +3,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
-import { Textarea } from '@/components/ui/textarea'
 import { ModelPicker } from '@/components/fleet/model-picker'
+import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
 
 type AliasRow = ModelTarget & { name: string }
@@ -61,6 +61,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
   const [fallbacks, setFallbacks] = useState<ModelTarget[]>(cfg?.fallbacks ?? [])
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [soulOpen, setSoulOpen] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   const save = async (apply: boolean) => {
@@ -123,8 +124,43 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
         </section>
 
         <section>
-          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Soul</div>
-          <Textarea value={soul} onChange={(e) => setSoul(e.target.value)} rows={12} className="font-[var(--font-mono)] text-xs" />
+          <div className="mb-1.5 flex items-center text-xs font-semibold uppercase tracking-wide text-muted">
+            Soul
+            <Button variant="outline" size="sm" className="ml-auto" onClick={() => setSoulOpen(true)}>
+              Open workspace
+            </Button>
+          </div>
+          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line-subtle p-3 font-[var(--font-mono)] text-xs text-muted">
+            {soul || 'No soul yet.'}
+          </pre>
+          {soulOpen && (
+            <InternalEditorModal
+              open
+              onClose={() => setSoulOpen(false)}
+              title={`${def.displayName} · SOUL.md`}
+              subtitle="Who the agent is. Saving publishes a soul-only version on top of the last saved config."
+              value={soul}
+              editable
+              saving={busy}
+              onSave={async (md) => {
+                // Soul-only publish: model targets come from the LAST SAVED
+                // version, not the form — pending model edits stay drafts.
+                const base = def.latest?.config
+                const r = await saveAgentEdit(def.id, {
+                  soul: md,
+                  main: base?.main ?? main,
+                  aliases: base?.aliases ?? aliases,
+                  fallbacks: base?.fallbacks ?? fallbacks,
+                  note: 'soul edited',
+                  apply: true,
+                })
+                if (r.error) throw new Error(r.error)
+                setSoul(md)
+                await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+              }}
+              history={{ kind: 'soul', id: def.id }}
+            />
+          )}
         </section>
 
         {err && (

@@ -9,6 +9,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from './assistant-wizard'
 import { AssistantManageModal } from './assistant-manage-modal'
+import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { updateAssistant, useAssistant } from '@/lib/assistant'
 
 // Settings › Your assistant — the member-facing controls for their personal
@@ -20,6 +21,7 @@ export function AssistantSection() {
   const { data: assistant, isLoading } = useAssistant()
   const [wizard, setWizard] = useState(false)
   const [manage, setManage] = useState(false)
+  const [personaEditor, setPersonaEditor] = useState(false)
   const [name, setName] = useState('')
   const [personality, setPersonality] = useState('')
   const [busy, setBusy] = useState(false)
@@ -99,7 +101,12 @@ export function AssistantSection() {
       <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
       <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} className="mb-4" />
 
-      <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Personality</label>
+      <div className="mb-1 flex items-center">
+        <label className="text-[11px] uppercase tracking-wide text-muted">Personality</label>
+        <button type="button" className="ml-auto text-xs text-accent hover:underline" onClick={() => setPersonaEditor(true)}>
+          Open editor
+        </button>
+      </div>
       <Textarea
         rows={4}
         value={personality}
@@ -107,6 +114,29 @@ export function AssistantSection() {
         placeholder="How it should come across — tone, priorities, pet peeves."
         maxLength={4000}
       />
+      {personaEditor && (
+        <InternalEditorModal
+          open
+          onClose={() => setPersonaEditor(false)}
+          title={`${assistant.displayName} · Personality`}
+          subtitle="How your assistant comes across. Every save is versioned and applies right away — your assistant restarts with it."
+          value={assistant.personality ?? ''}
+          editable
+          saving={busy}
+          onSave={async (md) => {
+            setBusy(true)
+            try {
+              const r = await updateAssistant({ personality: md })
+              if (!r.assistant) throw new Error(r.error ?? 'could not save')
+              setPersonality(md)
+              await qc.invalidateQueries({ queryKey: ['my-assistant'] })
+            } finally {
+              setBusy(false)
+            }
+          }}
+          history={{ kind: 'personality', id: assistant.id }}
+        />
+      )}
       <div className="mt-3 flex items-center gap-3">
         <Button size="sm" onClick={() => void save()} disabled={busy || !dirty || !name.trim()}>
           {busy ? 'Saving…' : 'Save'}
