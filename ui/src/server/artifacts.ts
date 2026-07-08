@@ -24,6 +24,7 @@ export interface Artifact {
   publicSlug: string | null
   official: boolean
   kbDocId: string | null
+  folderId: string | null
   ownerUserId: string | null
   createdBy: string | null
   updatedBy: string | null
@@ -33,12 +34,12 @@ export interface Artifact {
 
 const COLS = `id, kind, title, icon, body, content_type as "contentType", storage_ref as "storageRef",
   visibility, edit_policy as "editPolicy", public_slug as "publicSlug", official, kb_doc_id as "kbDocId",
-  owner_user_id as "ownerUserId", created_by as "createdBy", updated_by as "updatedBy",
+  folder_id as "folderId", owner_user_id as "ownerUserId", created_by as "createdBy", updated_by as "updatedBy",
   created_at as "createdAt", updated_at as "updatedAt"`
 // Table-qualified for joins (artifact_links also has created_by / created_at).
 const COLS_A = `a.id, a.kind, a.title, a.icon, a.body, a.content_type as "contentType", a.storage_ref as "storageRef",
   a.visibility, a.edit_policy as "editPolicy", a.public_slug as "publicSlug", a.official, a.kb_doc_id as "kbDocId",
-  a.owner_user_id as "ownerUserId", a.created_by as "createdBy", a.updated_by as "updatedBy",
+  a.folder_id as "folderId", a.owner_user_id as "ownerUserId", a.created_by as "createdBy", a.updated_by as "updatedBy",
   a.created_at as "createdAt", a.updated_at as "updatedAt"`
 
 /** The Guarded view a permission check needs. */
@@ -75,12 +76,13 @@ export async function createArtifact(input: { kind?: ArtifactKind; title?: strin
 
 export async function saveArtifact(
   id: string,
-  patch: { title?: string; body?: string; icon?: string | null; storageRef?: string | null; contentType?: string | null; visibility?: Visibility; editPolicy?: EditPolicy },
+  patch: { title?: string; body?: string; icon?: string | null; storageRef?: string | null; contentType?: string | null; folderId?: string | null; visibility?: Visibility; editPolicy?: EditPolicy },
   actor: string,
 ): Promise<Artifact | null> {
   const sql = await db()
   const prev = await getArtifact(id)
   if (!prev) return null
+  if (patch.folderId !== undefined) await sql`update artifacts set folder_id = ${patch.folderId}, updated_at = now() where id = ${id}`
   if (patch.title !== undefined) await sql`update artifacts set title = ${patch.title}, updated_by = ${actor}, updated_at = now() where id = ${id}`
   if (patch.body !== undefined) await sql`update artifacts set body = ${patch.body}, updated_by = ${actor}, updated_at = now() where id = ${id}`
   if (patch.icon !== undefined) await sql`update artifacts set icon = ${patch.icon}, updated_at = now() where id = ${id}`
@@ -106,6 +108,58 @@ export async function deleteArtifact(id: string): Promise<void> {
   if (a?.kbDocId) await deleteDoc(a.kbDocId).catch(() => {})
   const sql = await db()
   await sql`delete from artifacts where id = ${id}`
+}
+
+// ── Folders (organize artifacts into a nestable tree) ───────────────────────
+export interface ArtifactFolder {
+  id: string
+  name: string
+  icon: string | null
+  parentId: string | null
+  createdBy: string | null
+  createdAt: string
+}
+const FOLDER_COLS = `id, name, icon, parent_id as "parentId", created_by as "createdBy", created_at as "createdAt"`
+
+export async function listFolders(): Promise<ArtifactFolder[]> {
+  const sql = await db()
+  return (await sql.unsafe(`select ${FOLDER_COLS} from artifact_folders order by name asc`)) as unknown as ArtifactFolder[]
+}
+
+export async function createFolder(input: { name: string; parentId?: string | null; createdBy: string }): Promise<ArtifactFolder> {
+  const sql = await db()
+  const rows = (await sql`
+    insert into artifact_folders (name, parent_id, created_by)
+    values (${input.name}, ${input.parentId ?? null}, ${input.createdBy})
+    returning ${sql.unsafe(FOLDER_COLS)}
+  `) as unknown as ArtifactFolder[]
+  return rows[0]!
+}
+
+/** Rename / set icon / reparent a folder. Rejects parent cycles. */
+export async function updateFolder(id: string, patch: { name?: string; icon?: string | null; parentId?: string | null }): Promise<ArtifactFolder | null> {
+  const sql = await db()
+  if (patch.parentId !== undefined && patch.parentId) {
+    if (patch.parentId === id) return null
+    let cur: string | null = patch.parentId
+    for (let i = 0; i < 100 && cur; i++) {
+      if (cur === id) return null // cycle
+      const rows = (await sql`select parent_id as "parentId" from artifact_folders where id = ${cur}`) as unknown as Array<{ parentId: string | null }>
+      cur = rows[0]?.parentId ?? null
+    }
+  }
+  if (patch.name !== undefined) await sql`update artifact_folders set name = ${patch.name} where id = ${id}`
+  if (patch.icon !== undefined) await sql`update artifact_folders set icon = ${patch.icon} where id = ${id}`
+  if (patch.parentId !== undefined) await sql`update artifact_folders set parent_id = ${patch.parentId} where id = ${id}`
+  const rows = (await sql.unsafe(`select ${FOLDER_COLS} from artifact_folders where id = $1`, [id])) as unknown as ArtifactFolder[]
+  return rows[0] ?? null
+}
+
+/** Delete a folder — its artifacts and child folders fall back to the root
+ *  (on delete set null), so nothing is lost. */
+export async function deleteFolder(id: string): Promise<void> {
+  const sql = await db()
+  await sql`delete from artifact_folders where id = ${id}`
 }
 
 // ── Attachments (attach an artifact to anything) ────────────────────────────

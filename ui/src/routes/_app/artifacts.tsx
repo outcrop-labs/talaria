@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, type LucideIcon } from 'lucide-react'
+import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, X, type LucideIcon } from 'lucide-react'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -13,7 +13,7 @@ import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
-import { createArtifact, deleteArtifact, saveArtifact, uploadFile, useArtifact, useArtifacts, type ArtifactKind } from '@/lib/artifacts'
+import { createArtifact, createFolder, deleteArtifact, deleteFolder, saveArtifact, updateFolder, uploadFile, useArtifact, useArtifacts, useFolders, type Artifact, type ArtifactFolder, type ArtifactKind } from '@/lib/artifacts'
 
 export const Route = createFileRoute('/_app/artifacts')({
   component: ArtifactsPage,
@@ -31,27 +31,74 @@ const NEW_KINDS: { kind: ArtifactKind; label: string; icon: LucideIcon }[] = [
   { kind: 'file', label: 'File upload', icon: Paperclip },
 ]
 
+type Drag = { kind: 'artifact' | 'folder'; id: string } | null
+
 function ArtifactsPage() {
   const qc = useQueryClient()
   const { data: artifacts = [] } = useArtifacts()
+  const { data: folders = [] } = useFolders()
   const [activeId, setActiveId] = useState<string | null>(null)
   const [newOpen, setNewOpen] = useState(false)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [drag, setDrag] = useState<Drag>(null)
 
+  const byFolder = useMemo(() => {
+    const m = new Map<string | null, Artifact[]>()
+    for (const a of artifacts) {
+      const k = a.folderId ?? null
+      if (!m.has(k)) m.set(k, [])
+      m.get(k)!.push(a)
+    }
+    return m
+  }, [artifacts])
+  const foldersByParent = useMemo(() => {
+    const m = new Map<string | null, ArtifactFolder[]>()
+    for (const f of folders) {
+      const k = f.parentId ?? null
+      if (!m.has(k)) m.set(k, [])
+      m.get(k)!.push(f)
+    }
+    for (const list of m.values()) list.sort((a, b) => a.name.localeCompare(b.name))
+    return m
+  }, [folders])
+
+  const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ['artifacts'] }), qc.invalidateQueries({ queryKey: ['artifact-folders'] })])
   const create = async (kind: ArtifactKind) => {
     setNewOpen(false)
     const { artifact } = await createArtifact({ kind, title: 'Untitled' })
     await qc.invalidateQueries({ queryKey: ['artifacts'] })
     if (artifact) setActiveId(artifact.id)
   }
+  const newFolder = async () => {
+    const { folder } = await createFolder('New folder')
+    await qc.invalidateQueries({ queryKey: ['artifact-folders'] })
+    if (folder) setExpanded((s) => new Set(s).add(folder.id))
+  }
+  // Drop the dragged item into a folder (or root when folderId is null).
+  const drop = async (folderId: string | null) => {
+    if (!drag) return
+    if (drag.kind === 'artifact') await saveArtifact(drag.id, { folderId })
+    else await updateFolder(drag.id, { parentId: folderId })
+    setDrag(null)
+    await refresh()
+  }
+
+  const rootArtifacts = byFolder.get(null) ?? []
+  const rootFolders = foldersByParent.get(null) ?? []
 
   return (
     <div className="flex h-full min-h-0">
       <aside className="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar">
-        <div className="relative flex items-center justify-between border-b border-line-subtle p-3">
+        <div className="relative flex items-center justify-between gap-2 border-b border-line-subtle p-3">
           <span className="text-sm font-semibold text-fg">Artifacts</span>
-          <Button size="sm" onClick={() => setNewOpen((v) => !v)}>
-            <Plus size={13} className="mr-1" /> New
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" title="New folder" onClick={() => void newFolder()}>
+              <FolderPlus size={15} />
+            </Button>
+            <Button size="sm" onClick={() => setNewOpen((v) => !v)}>
+              <Plus size={13} className="mr-1" /> New
+            </Button>
+          </div>
           {newOpen && (
             <div className="absolute right-3 top-full z-30 mt-1 w-44 rounded-xl border border-line bg-card p-1 shadow-lg" onMouseLeave={() => setNewOpen(false)}>
               {NEW_KINDS.map(({ kind, label, icon: Icon }) => (
@@ -62,25 +109,36 @@ function ArtifactsPage() {
             </div>
           )}
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {artifacts.length === 0 ? (
+        <div
+          className="min-h-0 flex-1 overflow-y-auto p-2"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => { e.preventDefault(); void drop(null) }}
+        >
+          {folders.length === 0 && artifacts.length === 0 ? (
             <div className="px-2 py-6 text-center text-xs text-muted">No artifacts yet.</div>
           ) : (
-            artifacts.map((a) => {
-              const Icon = KIND_ICON[a.kind]
-              return (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => setActiveId(a.id)}
-                  className={cn('flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm', activeId === a.id ? 'bg-card text-fg' : 'text-muted hover:text-fg')}
-                >
-                  {a.icon ? <span className="text-[15px] leading-none">{a.icon}</span> : <Icon size={14} className="shrink-0" />}
-                  <span className="min-w-0 flex-1 truncate">{a.title}</span>
-                  <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted">{a.kind}</span>
-                </button>
-              )
-            })
+            <>
+              {rootFolders.map((f) => (
+                <FolderNode
+                  key={f.id}
+                  folder={f}
+                  depth={0}
+                  foldersByParent={foldersByParent}
+                  byFolder={byFolder}
+                  expanded={expanded}
+                  setExpanded={setExpanded}
+                  activeId={activeId}
+                  onSelect={setActiveId}
+                  drag={drag}
+                  setDrag={setDrag}
+                  onDrop={drop}
+                  onRefresh={refresh}
+                />
+              ))}
+              {rootArtifacts.map((a) => (
+                <ArtifactRow key={a.id} artifact={a} depth={0} activeId={activeId} onSelect={setActiveId} setDrag={setDrag} />
+              ))}
+            </>
           )}
         </div>
       </aside>
@@ -88,9 +146,107 @@ function ArtifactsPage() {
         {activeId ? (
           <ArtifactEditor key={activeId} id={activeId} onDeleted={() => setActiveId(null)} />
         ) : (
-          <EmptyState icon="◆" title="Artifacts" hint="Create an artifact, or pick one from the list." />
+          <EmptyState icon="◆" title="Artifacts" hint="Create an artifact or a folder. Drag artifacts into folders to organize." />
         )}
       </main>
+    </div>
+  )
+}
+
+function ArtifactRow({ artifact: a, depth, activeId, onSelect, setDrag }: { artifact: Artifact; depth: number; activeId: string | null; onSelect: (id: string) => void; setDrag: (d: Drag) => void }) {
+  const Icon = KIND_ICON[a.kind]
+  return (
+    <button
+      type="button"
+      draggable
+      onDragStart={(e) => { e.stopPropagation(); setDrag({ kind: 'artifact', id: a.id }) }}
+      onDragEnd={() => setDrag(null)}
+      onClick={() => onSelect(a.id)}
+      className={cn('flex w-full items-center gap-2 rounded-lg py-1.5 pr-2 text-left text-sm', activeId === a.id ? 'bg-card text-fg' : 'text-muted hover:text-fg')}
+      style={{ paddingLeft: depth * 14 + 8 }}
+    >
+      {a.icon ? <span className="text-[15px] leading-none">{a.icon}</span> : <Icon size={14} className="shrink-0" />}
+      <span className="min-w-0 flex-1 truncate">{a.title}</span>
+      <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted">{a.kind}</span>
+    </button>
+  )
+}
+
+function FolderNode({
+  folder, depth, foldersByParent, byFolder, expanded, setExpanded, activeId, onSelect, drag, setDrag, onDrop, onRefresh,
+}: {
+  folder: ArtifactFolder
+  depth: number
+  foldersByParent: Map<string | null, ArtifactFolder[]>
+  byFolder: Map<string | null, Artifact[]>
+  expanded: Set<string>
+  setExpanded: React.Dispatch<React.SetStateAction<Set<string>>>
+  activeId: string | null
+  onSelect: (id: string) => void
+  drag: Drag
+  setDrag: (d: Drag) => void
+  onDrop: (folderId: string | null) => void
+  onRefresh: () => Promise<unknown>
+}) {
+  const [over, setOver] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [name, setName] = useState(folder.name)
+  useEffect(() => setName(folder.name), [folder.name])
+  const isOpen = expanded.has(folder.id)
+  const childFolders = foldersByParent.get(folder.id) ?? []
+  const childArtifacts = byFolder.get(folder.id) ?? []
+  const toggle = () => setExpanded((s) => { const n = new Set(s); n.has(folder.id) ? n.delete(folder.id) : n.add(folder.id); return n })
+
+  return (
+    <div>
+      <div
+        draggable
+        onDragStart={(e) => { e.stopPropagation(); setDrag({ kind: 'folder', id: folder.id }) }}
+        onDragEnd={() => setDrag(null)}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (drag && !(drag.kind === 'folder' && drag.id === folder.id)) setOver(true) }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); onDrop(folder.id) }}
+        className={cn('group flex items-center gap-1 rounded-md py-1 pr-1 text-sm text-muted hover:text-fg', over && 'ring-1 ring-accent/60')}
+        style={{ paddingLeft: depth * 14 + 2 }}
+      >
+        <button type="button" onClick={toggle} className={cn('shrink-0 rounded p-0.5 hover:bg-card', childFolders.length + childArtifacts.length === 0 && 'invisible')}>
+          <ChevronRight size={12} className={cn('transition-transform', isOpen && 'rotate-90')} />
+        </button>
+        {renaming ? (
+          <Input
+            size="sm"
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={async () => { setRenaming(false); if (name.trim() && name !== folder.name) { await updateFolder(folder.id, { name: name.trim() }); await onRefresh() } }}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setName(folder.name); setRenaming(false) } }}
+            className="h-6 flex-1"
+          />
+        ) : (
+          <button type="button" onClick={toggle} onDoubleClick={() => setRenaming(true)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+            <span className="shrink-0">{folder.icon ?? <Folder size={13} />}</span>
+            <span className="truncate font-medium">{folder.name}</span>
+          </button>
+        )}
+        <button
+          type="button"
+          title="Delete folder"
+          onClick={async () => { if (confirm(`Delete folder "${folder.name}"? Its artifacts move to the top level.`)) { await deleteFolder(folder.id); await onRefresh() } }}
+          className="shrink-0 rounded p-0.5 opacity-0 hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
+        >
+          <X size={12} />
+        </button>
+      </div>
+      {isOpen && (
+        <div>
+          {childFolders.map((f) => (
+            <FolderNode key={f.id} folder={f} depth={depth + 1} foldersByParent={foldersByParent} byFolder={byFolder} expanded={expanded} setExpanded={setExpanded} activeId={activeId} onSelect={onSelect} drag={drag} setDrag={setDrag} onDrop={onDrop} onRefresh={onRefresh} />
+          ))}
+          {childArtifacts.map((a) => (
+            <ArtifactRow key={a.id} artifact={a} depth={depth + 1} activeId={activeId} onSelect={onSelect} setDrag={setDrag} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -14,6 +14,7 @@ const Patch = z.object({
   icon: z.string().max(16).nullish(),
   storageRef: z.string().uuid().nullish(),
   contentType: z.string().max(200).nullish(),
+  folderId: z.string().uuid().nullish(),
   visibility: z.enum(['private', 'org', 'public']).optional(),
   editPolicy: z.enum(['owner', 'org', 'restricted']).optional(),
   editors: z.array(Editor).max(200).optional(),

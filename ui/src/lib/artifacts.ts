@@ -16,11 +16,21 @@ export interface Artifact {
   publicSlug: string | null
   official: boolean
   kbDocId: string | null
+  folderId: string | null
   ownerUserId: string | null
   createdBy: string | null
   updatedBy: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface ArtifactFolder {
+  id: string
+  name: string
+  icon: string | null
+  parentId: string | null
+  createdBy: string | null
+  createdAt: string
 }
 
 export const useArtifacts = () =>
@@ -49,8 +59,27 @@ export const createArtifact = (input: { kind?: ArtifactKind; title?: string }) =
 
 export const saveArtifact = (
   id: string,
-  patch: Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'storageRef' | 'contentType' | 'visibility' | 'editPolicy' | 'official'>> & { editors?: KbEditor[] },
+  patch: Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'storageRef' | 'contentType' | 'folderId' | 'visibility' | 'editPolicy' | 'official'>> & { editors?: KbEditor[] },
 ) => fetch(`/api/artifacts/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+
+// ── Folders ──────────────────────────────────────────────────────────────────
+export const useFolders = () =>
+  useQuery({
+    queryKey: ['artifact-folders'],
+    queryFn: async (): Promise<ArtifactFolder[]> => {
+      const r = await fetch('/api/artifact-folders')
+      if (!r.ok) return []
+      return ((await r.json()) as { folders: ArtifactFolder[] }).folders
+    },
+  })
+
+export const createFolder = (name: string, parentId?: string | null) =>
+  fetch('/api/artifact-folders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, parentId }) }).then((r) => r.json())
+
+export const updateFolder = (id: string, patch: Partial<Pick<ArtifactFolder, 'name' | 'icon' | 'parentId'>>) =>
+  fetch(`/api/artifact-folders/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+
+export const deleteFolder = (id: string) => fetch(`/api/artifact-folders/${id}`, { method: 'DELETE' })
 
 /** Upload a file (reuses the shared uploads store) → returns its id + metadata. */
 export const uploadFile = async (file: File): Promise<{ id: string; filename: string; mime: string; size: number }> => {
