@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Plus, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
+import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { cn } from '@/lib/cn'
 import { HANDLE_RE, updateAssistant, type Assistant } from '@/lib/assistant'
 
@@ -179,21 +179,11 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
     },
   })
   const [open, setOpen] = useState<string | null>(null)
-  const [content, setContent] = useState('')
   const [newName, setNewName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const refresh = async () => qc.invalidateQueries({ queryKey: ['assistant-skills', assistant.slug] })
-
-  const openSkill = async (name: string) => {
-    setError(null)
-    const r = await fetch(`/api/skills/${assistant.slug}/${name}`, { credentials: 'same-origin' })
-    const j = (await r.json().catch(() => null)) as { content?: string; error?: string } | null
-    if (!r.ok || j?.content === undefined) return setError(j?.error ?? 'could not open the skill')
-    setOpen(name)
-    setContent(j.content)
-  }
 
   const save = async (name: string, body: string) => {
     setBusy(true)
@@ -213,47 +203,6 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
     }
   }
 
-  const remove = async (name: string) => {
-    if (!confirm(`Remove the "${name}" skill?`)) return
-    setBusy(true)
-    try {
-      await fetch(`/api/skills/${assistant.slug}/${name}`, { method: 'DELETE', credentials: 'same-origin' })
-      setOpen(null)
-      await refresh()
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  if (open !== null) {
-    return (
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <button type="button" className="text-xs text-muted hover:text-fg" onClick={() => setOpen(null)}>
-            ← Skills
-          </button>
-          <span className="text-sm font-medium text-fg">{open}</span>
-          <button
-            type="button"
-            title="Remove skill"
-            className="ml-auto text-muted hover:text-[color:var(--theme-danger)]"
-            onClick={() => void remove(open)}
-          >
-            <Trash2 size={15} />
-          </button>
-        </div>
-        <Textarea rows={12} value={content} onChange={(e) => setContent(e.target.value)} className="font-[var(--font-mono)] text-xs" />
-        <div className="flex items-center gap-3">
-          <Button size="sm" disabled={busy} onClick={() => void save(open, content)}>
-            {busy ? 'Saving…' : 'Save'}
-          </Button>
-          <span className="text-xs text-muted">Skills are live — no restart needed.</span>
-        </div>
-        {error && <p className="text-xs text-[color:var(--theme-danger)]">{error}</p>}
-      </div>
-    )
-  }
-
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted">
@@ -268,7 +217,7 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
             <li key={s.name}>
               <button
                 type="button"
-                onClick={() => void openSkill(s.name)}
+                onClick={() => setOpen(s.name)}
                 className="flex w-full items-baseline gap-2 px-3 py-2 text-left transition-colors hover:bg-card"
               >
                 <span className="text-sm text-fg">{s.name}</span>
@@ -291,8 +240,8 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
           disabled={busy || !/^[a-z0-9][a-z0-9._-]*$/.test(newName)}
           onClick={() =>
             void save(newName, SKILL_TEMPLATE(newName)).then(() => {
+              setOpen(newName)
               setNewName('')
-              void openSkill(newName)
             })
           }
         >
@@ -300,11 +249,77 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
         </Button>
       </div>
       {error && <p className="text-xs text-[color:var(--theme-danger)]">{error}</p>}
+      {open !== null && <SkillEditor assistant={assistant} name={open} onClose={() => setOpen(null)} onChanged={() => void refresh()} />}
     </div>
   )
 }
 
+// The full workspace editor (history + diff + restore) for one owned skill.
+function SkillEditor({
+  assistant,
+  name,
+  onClose,
+  onChanged,
+}: {
+  assistant: Assistant
+  name: string
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const { data } = useQuery({
+    queryKey: ['assistant-skill', assistant.slug, name],
+    queryFn: async (): Promise<{ content: string }> => {
+      const r = await fetch(`/api/skills/${assistant.slug}/${name}`, { credentials: 'same-origin' })
+      return ((await r.json().catch(() => null)) as { content: string } | null) ?? { content: '' }
+    },
+  })
+
+  const save = async (md: string) => {
+    setBusy(true)
+    try {
+      await fetch(`/api/skills/${assistant.slug}/${name}`, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: md }),
+      })
+      onChanged()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async () => {
+    if (!confirm(`Remove the "${name}" skill?`)) return
+    await fetch(`/api/skills/${assistant.slug}/${name}`, { method: 'DELETE', credentials: 'same-origin' })
+    onChanged()
+    onClose()
+  }
+
+  if (data === undefined) return null
+  return (
+    <InternalEditorModal
+      open
+      onClose={onClose}
+      title={`${name} · SKILL.md`}
+      subtitle="A playbook your assistant follows — edits are live on its next run."
+      value={data.content}
+      editable
+      saving={busy}
+      onSave={save}
+      history={{ kind: 'skill', owner: assistant.slug, name }}
+      footerExtra={
+        <Button variant="ghost" size="sm" onClick={() => void remove()}>
+          <Trash2 size={14} className="mr-1.5" /> Delete skill
+        </Button>
+      }
+    />
+  )
+}
+
 function MemoryTab({ assistant }: { assistant: Assistant }) {
+  const qc = useQueryClient()
   const { data, isLoading } = useQuery({
     queryKey: ['assistant-memory', assistant.id],
     queryFn: async (): Promise<{ content: string; error?: string }> => {
@@ -312,28 +327,19 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
       return ((await r.json().catch(() => null)) as { content: string; error?: string } | null) ?? { content: '', error: 'could not load memory' }
     },
   })
-  const [content, setContent] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
-  useEffect(() => {
-    if (data && content === null && data.error === undefined) setContent(data.content)
-  }, [data, content])
-
-  const save = async () => {
-    if (content === null) return
+  const save = async (md: string) => {
     setBusy(true)
-    setMsg(null)
     try {
-      const r = await fetch(`/api/memory/${assistant.id}`, {
+      await fetch(`/api/memory/${assistant.id}`, {
         method: 'PUT',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content: md }),
       })
-      const j = (await r.json().catch(() => ({}))) as { error?: string }
-      if (!r.ok || j.error) setMsg({ ok: false, text: j.error ?? 'could not save' })
-      else setMsg({ ok: true, text: 'Saved.' })
+      await qc.invalidateQueries({ queryKey: ['assistant-memory', assistant.id] })
     } finally {
       setBusy(false)
     }
@@ -347,19 +353,31 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
     <div className="space-y-3">
       <p className="text-xs text-muted">
         What it remembers about you and your work — it updates this itself as you go, and you can edit or prune it any
-        time.
+        time. Every save is snapshotted, so nothing is ever lost.
       </p>
-      <Textarea rows={12} value={content ?? ''} onChange={(e) => setContent(e.target.value)} className="font-[var(--font-mono)] text-xs" />
-      <div className="flex items-center gap-3">
-        <Button size="sm" disabled={busy || content === null} onClick={() => void save()}>
-          {busy ? 'Saving…' : 'Save'}
-        </Button>
-        {msg && (
-          <span className={cn('text-xs', msg.ok ? 'text-[color:var(--theme-success)]' : 'text-[color:var(--theme-danger)]')}>
-            {msg.text}
-          </span>
-        )}
-      </div>
+      {data?.content ? (
+        <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line-subtle p-3 font-[var(--font-mono)] text-xs text-muted">
+          {data.content}
+        </pre>
+      ) : (
+        <EmptyState icon="◌" title="Nothing remembered yet" hint="It writes things down as you work together." />
+      )}
+      <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+        Open editor
+      </Button>
+      {editing && (
+        <InternalEditorModal
+          open
+          onClose={() => setEditing(false)}
+          title={`${assistant.displayName} · Memory`}
+          subtitle="Your assistant maintains this itself; your edits are snapshotted and revertible."
+          value={data?.content ?? ''}
+          editable
+          saving={busy}
+          onSave={save}
+          history={{ kind: 'memory', id: assistant.id }}
+        />
+      )}
     </div>
   )
 }
