@@ -47,6 +47,15 @@ function PublicArtifactPage() {
       </h1>
       {state.a.kind === 'doc' ? (
         <Markdown className="tiptap">{state.a.body}</Markdown>
+      ) : state.a.kind === 'file' ? (
+        <a
+          href={`/api/artifacts/public/${slug}/download`}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-lg border border-line-subtle px-4 py-2 text-sm text-fg hover:border-[var(--theme-accent-border)]"
+        >
+          ⬇ Download {state.a.title}
+        </a>
       ) : (
         <p className="text-sm text-muted">This artifact type isn’t viewable here yet.</p>
       )}
