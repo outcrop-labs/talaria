@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Avatar } from '@/components/ui/avatar'
-import { Button } from '@/components/ui/button'
+import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { useSession } from '@/lib/session'
@@ -76,6 +76,7 @@ function SettingsPage() {
       </section>
 
       <AssistantSection />
+      <IntegrationsSection />
       <ApiKeysSection />
     </div>
   )
@@ -116,6 +117,96 @@ function PreferredModelPicker() {
         {saved && <span className="ml-2 text-[color:var(--theme-success)]">Saved</span>}
       </p>
     </div>
+  )
+}
+
+interface GoogleStatus {
+  available: boolean
+  connected: boolean
+  email: string | null
+  scope: string[]
+  connectedAt: string | null
+}
+
+// Connected accounts. Per-user OAuth: connecting grants Talaria (and the agents
+// working for you) offline access to build Google Docs/Sheets in YOUR Drive.
+function IntegrationsSection() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['integration-google'],
+    queryFn: async (): Promise<GoogleStatus> => {
+      const r = await fetch('/api/integrations/google')
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+  })
+  // Surface the callback outcome (?google=connected|denied|…) once, then clean the URL.
+  const [flash, setFlash] = useState<string | null>(null)
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search).get('google')
+    if (!p) return
+    setFlash(p)
+    window.history.replaceState({}, '', window.location.pathname)
+    if (p === 'connected') void qc.invalidateQueries({ queryKey: ['integration-google'] })
+    const t = setTimeout(() => setFlash(null), 4000)
+    return () => clearTimeout(t)
+  }, [qc])
+
+  const disconnect = async () => {
+    if (!confirm('Disconnect Google? Agents and exports lose access to your Drive.')) return
+    await fetch('/api/integrations/google', { method: 'DELETE' })
+    await qc.invalidateQueries({ queryKey: ['integration-google'] })
+  }
+
+  const flashText: Record<string, string> = {
+    connected: 'Google account connected.',
+    denied: 'Connection cancelled.',
+    bad_state: 'Connection expired — please try again.',
+    exchange_failed: 'Google rejected the connection — please try again.',
+    disabled: 'Google integration is not configured.',
+  }
+
+  return (
+    <section className="mercury-panel mt-6 rounded-2xl p-6">
+      <div className="mb-2 text-sm font-semibold text-fg">Connected accounts</div>
+      <p className="mb-4 text-xs text-muted">
+        Connect Google to export docs and sheets into your Drive — and let the agents working for you build Google
+        Docs on your behalf.
+      </p>
+
+      {data && !data.available ? (
+        <div className="text-xs text-muted">Google integration isn’t configured on this server yet.</div>
+      ) : (
+        <div className="flex items-center gap-3 rounded-xl border border-line-subtle p-4">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line-subtle text-lg">
+            🗂️
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-fg">Google Drive & Docs</div>
+            <div className="truncate text-xs text-muted">
+              {data?.connected
+                ? `Connected${data.email ? ` as ${data.email}` : ''}${data.connectedAt ? ` · ${relativeTime(data.connectedAt)}` : ''}`
+                : 'Not connected'}
+            </div>
+          </div>
+          {data?.connected ? (
+            <Button variant="ghost" size="sm" onClick={() => void disconnect()}>
+              Disconnect
+            </Button>
+          ) : (
+            <a href="/api/integrations/google/connect" className={buttonClasses({ size: 'sm' })}>
+              Connect
+            </a>
+          )}
+        </div>
+      )}
+
+      {flash && (
+        <div className="mt-3 text-xs" style={{ color: flash === 'connected' ? 'var(--theme-success)' : 'var(--theme-danger)' }}>
+          {flashText[flash] ?? flash}
+        </div>
+      )}
+    </section>
   )
 }
 

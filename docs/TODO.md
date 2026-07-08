@@ -16,8 +16,14 @@ engineering-facing tracker.
   - ⏳ **File kind + uploads** — store binaries (reuse the uploads infra), host
     + download; the `storage_ref` column is ready.
   - ⏳ **Sheet kind** — a tabular/grid editor.
-  - ⏳ **Cloud-storage connectors** — S3 / Google Drive behind the `storage_ref`
-    abstraction (touches the secure key-name model).
+  - ✅ **Sheet kind** — editable grid, CSV/markdown round-trip, public view.
+  - ✅ **Google Workspace export** — per-user OAuth (offline) → push a
+    doc/sheet/file into the owner's Drive as a native Google Doc/Sheet. See
+    `docs/GOOGLE-WORKSPACE.md`. Agents export via `export_to_google_doc` acting
+    as the artifact's human owner (identity proxy, #42).
+  - ✅ **Drive import** — browse/search Drive → import as artifact (Docs→
+    markdown, Sheets→grid, native→PDF file, else→file). `drive.readonly` scope.
+  - ⏳ **Cloud-storage connectors** — S3 behind the `storage_ref` abstraction.
   - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
 
 ## High-value, ready to pick up
@@ -33,8 +39,10 @@ engineering-facing tracker.
   comments already done). A Retrieval admin view exists.
 
 ## Later
-- **Talaria identity proxy (#42)** — per-user MCP identity (Google Workspace), so
-  agents act *as* the user against connected tools.
+- **Talaria identity proxy (#42)** — *first slice shipped:* per-user Google
+  connection; agents export artifacts into the owner's Drive as that user. Next:
+  extend the same per-user connection to more Google surfaces (Calendar, Gmail)
+  and other connected tools.
 - **Inference: full-stack monitoring + container controls (#48)** — live inference
   dashboard, restart/reboot containers, warm-up state.
 - **WYSIWYG everywhere + modal editors (#46)** — finish converting remaining

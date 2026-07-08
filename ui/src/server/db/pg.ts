@@ -580,6 +580,24 @@ const MIGRATIONS: string[] = [
   // Preferred model for AI drafting (copilot) — a gateway model id, e.g.
   // "pl-main" or "anthropic/claude-sonnet-5". Null = the server default.
   `alter table users add column if not exists preferred_model text`,
+
+  // Per-user Google (Workspace) connection for Drive/Docs. Tokens are stored
+  // ENCRYPTED (see server/secretbox.ts) — refresh_token is a live credential, not
+  // an env-var name. One row per user; connecting again replaces it.
+  `create table if not exists google_connections (
+     user_id uuid primary key references users(id) on delete cascade,
+     google_sub text not null,
+     email text,
+     scope text not null default '',
+     refresh_token_enc text,
+     access_token_enc text,
+     access_expires_at timestamptz,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // Where an artifact has been mirrored into the owner's Google Drive.
+  `alter table artifacts add column if not exists google_file_id text`,
+  `alter table artifacts add column if not exists google_file_url text`,
 ]
 
 function ensureMigrated(): Promise<void> {
