@@ -217,6 +217,7 @@ interface OrgGoogle {
   connected: boolean
   email: string | null
   connectedAt: string | null
+  targets: { driveFolderId: string | null; calendarId: string | null; sendAs: string | null }
 }
 
 // The shared org Google account general fleet agents act as for Drive/Docs.
@@ -282,11 +283,61 @@ function OrgGooglePanel() {
           )}
         </div>
       )}
+      {data?.connected && <OrgGoogleTargets targets={data.targets} />}
       {flash && (
         <div className="mt-3 text-xs" style={{ color: flash === 'connected' ? 'var(--theme-success)' : 'var(--theme-danger)' }}>
           {msg[flash] ?? flash}
         </div>
       )}
     </Panel>
+  )
+}
+
+// Where the org account's agents build: a Shared Drive so files are team-owned,
+// a specific calendar, and an optional send-as alias for outgoing mail.
+function OrgGoogleTargets({ targets }: { targets: OrgGoogle['targets'] }) {
+  const qc = useQueryClient()
+  const [drive, setDrive] = useState(targets.driveFolderId ?? '')
+  const [cal, setCal] = useState(targets.calendarId ?? '')
+  const [sendAs, setSendAs] = useState(targets.sendAs ?? '')
+  const [saved, setSaved] = useState(false)
+  const dirty = drive !== (targets.driveFolderId ?? '') || cal !== (targets.calendarId ?? '') || sendAs !== (targets.sendAs ?? '')
+
+  const save = async () => {
+    const r = await fetch('/api/integrations/google/org', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ driveFolderId: drive, calendarId: cal, sendAs }),
+    })
+    if (r.ok) {
+      await qc.invalidateQueries({ queryKey: ['org-google'] })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1500)
+    }
+  }
+
+  return (
+    <div className="mt-4 space-y-3 rounded-xl border border-line-subtle p-4">
+      <div className="text-xs font-medium text-fg">Where agents build</div>
+      <div>
+        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Shared Drive / folder ID</label>
+        <Input size="sm" value={drive} onChange={(e) => setDrive(e.target.value)} placeholder="0Ae1a…  (Shared Drive or folder ID)" />
+        <div className="mt-1 text-[11px] text-muted">Files agents create land here (team-owned). Blank = the account’s My Drive. The org account must be a member of the Shared Drive.</div>
+      </div>
+      <div>
+        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Calendar ID</label>
+        <Input size="sm" value={cal} onChange={(e) => setCal(e.target.value)} placeholder="team@group.calendar.google.com" />
+        <div className="mt-1 text-[11px] text-muted">Org events land here. Blank = the account’s primary calendar.</div>
+      </div>
+      <div>
+        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Send mail as</label>
+        <Input size="sm" value={sendAs} onChange={(e) => setSendAs(e.target.value)} placeholder="support@yourdomain.com" />
+        <div className="mt-1 text-[11px] text-muted">A verified send-as alias on the org account for outgoing mail. Blank = the account’s own address.</div>
+      </div>
+      <div className="flex items-center gap-3">
+        <Button size="sm" onClick={() => void save()} disabled={!dirty}>Save</Button>
+        {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
+      </div>
+    </div>
   )
 }

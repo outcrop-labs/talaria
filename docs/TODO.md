@@ -39,6 +39,9 @@ engineering-facing tracker.
   - ✅ **Personal-assistant isolation** — a personal assistant is usable ONLY by
     its owner (chat, listing, channels), so another user can't drive it to read
     the owner's account/context.
+  - ✅ **Org build targets** — admin-configurable per org connection: Shared Drive
+    (team-owned agent files), calendar ID, and send-as alias for org mail.
+    Multi-account / delegation = future setup path.
   - ⏳ **Cloud-storage connectors** — S3 behind the `storage_ref` abstraction.
   - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
 

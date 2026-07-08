@@ -9,7 +9,7 @@ import { db } from '../db/pg'
 import { createEventWithToken, type CreateEventInput } from './calendar'
 import { getAccessToken } from './connections'
 import { sendMessageWithToken, type SendInput } from './gmail'
-import { getOrgAccessToken } from './org-connection'
+import { getOrgAccessToken, getOrgTargets } from './org-connection'
 
 export type PendingKind = 'gmail_send' | 'calendar_create'
 
@@ -88,10 +88,13 @@ export async function decideAction(
     return { status: 'not_connected', message: action.isOrg ? 'Reconnect the org Google account to run this.' : 'Reconnect Google to run this action.' }
   }
 
+  // Org actions land on the configured shared targets (calendar / send-as alias).
+  const targets = action.isOrg ? await getOrgTargets() : null
+
   try {
     let result: unknown
-    if (action.kind === 'gmail_send') result = await sendMessageWithToken(token, action.payload as SendInput)
-    else if (action.kind === 'calendar_create') result = await createEventWithToken(token, action.payload as CreateEventInput)
+    if (action.kind === 'gmail_send') result = await sendMessageWithToken(token, action.payload as SendInput, targets?.sendAs)
+    else if (action.kind === 'calendar_create') result = await createEventWithToken(token, action.payload as CreateEventInput, targets?.calendarId)
     else throw new Error(`unknown action kind: ${action.kind}`)
 
     await sql`

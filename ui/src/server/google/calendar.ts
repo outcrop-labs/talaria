@@ -3,7 +3,8 @@
 
 import { getAccessToken } from './connections'
 
-const CAL_BASE = 'https://www.googleapis.com/calendar/v3/calendars/primary/events'
+const eventsUrl = (calendarId = 'primary') =>
+  `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId || 'primary')}/events`
 
 async function requireToken(userId: string, nowMs: number): Promise<string> {
   const token = await getAccessToken(userId, nowMs)
@@ -55,14 +56,14 @@ export async function listUpcomingEvents(userId: string, nowMs: number, maxResul
 }
 
 /** Upcoming events using an already-resolved token (per-user or org). */
-export async function listUpcomingEventsWithToken(token: string, nowMs: number, maxResults = 10): Promise<CalendarEvent[]> {
+export async function listUpcomingEventsWithToken(token: string, nowMs: number, maxResults = 10, calendarId?: string | null): Promise<CalendarEvent[]> {
   const params = new URLSearchParams({
     timeMin: new Date(nowMs).toISOString(),
     maxResults: String(Math.min(Math.max(maxResults, 1), 50)),
     singleEvents: 'true',
     orderBy: 'startTime',
   })
-  const res = await fetch(`${CAL_BASE}?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } })
+  const res = await fetch(`${eventsUrl(calendarId ?? undefined)}?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } })
   if (!res.ok) throw new Error(`calendar list failed: ${res.status} ${await res.text()}`)
   const data = (await res.json()) as { items?: Parameters<typeof normalize>[0][] }
   return (data.items ?? []).map(normalize)
@@ -85,7 +86,7 @@ export async function createEvent(userId: string, nowMs: number, input: CreateEv
 }
 
 /** Create an event using an already-resolved token (per-user or org). */
-export async function createEventWithToken(token: string, input: CreateEventInput): Promise<CalendarEvent> {
+export async function createEventWithToken(token: string, input: CreateEventInput, calendarId?: string | null): Promise<CalendarEvent> {
   const timeField = input.allDay ? 'date' : 'dateTime'
   const body = {
     summary: input.summary,
@@ -95,7 +96,7 @@ export async function createEventWithToken(token: string, input: CreateEventInpu
     end: { [timeField]: input.end },
     attendees: input.attendees?.map((email) => ({ email })),
   }
-  const res = await fetch(`${CAL_BASE}?sendUpdates=all`, {
+  const res = await fetch(`${eventsUrl(calendarId ?? undefined)}?sendUpdates=all`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

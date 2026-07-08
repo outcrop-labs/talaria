@@ -7,6 +7,7 @@ import { canRead, listEditors } from '@/server/kb-perms'
 import { isConnected } from '@/server/google/connections'
 import { exportArtifactToDrive, exportArtifactWithToken } from '@/server/google/drive'
 import { resolveAgentGoogle } from '@/server/google/agent-google'
+import { getOrgTargets } from '@/server/google/org-connection'
 
 // POST /api/artifacts/$id/export/google — mirror an artifact into Google Drive.
 //
@@ -35,7 +36,9 @@ export const Route = createFileRoute('/api/artifacts/$id/export/google')({
             if (!google) {
               return json({ error: 'not_connected', message: 'No Google account is connected for this agent (its owner, or the org account).' }, { status: 409 })
             }
-            file = await exportArtifactWithToken(google.token, artifact)
+            // Org files go to the configured Shared Drive/folder (team-owned).
+            const folderId = google.principal === 'org' ? (await getOrgTargets()).driveFolderId : null
+            file = await exportArtifactWithToken(google.token, artifact, { folderId })
           } else {
             const user = await getSessionUser(request)
             if (!user) return json({ error: 'unauthorized' }, { status: 401 })
