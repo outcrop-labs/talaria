@@ -65,6 +65,18 @@ export async function setUserName(userId: string, name: string): Promise<void> {
   await sql`update users set name = ${name} where id = ${userId}`
 }
 
+/** Preferred gateway model for AI drafting (copilot); null = server default. */
+export async function getPreferredModel(userId: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`select preferred_model as m from users where id = ${userId}`) as unknown as Array<{ m: string | null }>
+  return rows[0]?.m ?? null
+}
+
+export async function setPreferredModel(userId: string, model: string | null): Promise<void> {
+  const sql = await db()
+  await sql`update users set preferred_model = ${model} where id = ${userId}`
+}
+
 /** Everyone who has signed in — for people pickers (share, invite, channels). */
 export async function listUsers(): Promise<Array<{ id: string; email: string | null; name: string | null }>> {
   const sql = await db()

@@ -142,6 +142,7 @@ function MemoryEditor({ agentId, label, isAdmin }: { agentId: string; label: str
           saving={busy}
           onSave={save}
           history={{ kind: 'memory', id: agentId }}
+          copilot={{ kind: 'memory', context: `The memory of the "${label}" agent.` }}
         />
       )}
     </Panel>

@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { CalendarClock, Loader2, Pause, Play, Trash2, Zap } from 'lucide-react'
+import { CalendarClock, Loader2, Pause, Play, Sparkles, Trash2, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { relativeTime } from '@/lib/fleet'
+import { parseCronDraft, streamCopilot } from '@/lib/copilot'
 import { cn } from '@/lib/cn'
 
 // Native Hermes crons — the jobs live and fire inside each agent's own
@@ -129,10 +130,48 @@ export function CronForm({
   const [name, setName] = useState('')
   const [schedule, setSchedule] = useState('')
   const [prompt, setPrompt] = useState('')
+  const [draftAsk, setDraftAsk] = useState('')
+  const [drafting, setDrafting] = useState(false)
+  const [draftErr, setDraftErr] = useState<string | null>(null)
   const ok = name.trim() && schedule.trim() && prompt.trim()
+
+  // Natural language → {name, schedule, prompt} via the drafting copilot.
+  const draft = async () => {
+    const ask = draftAsk.trim()
+    if (!ask) return
+    setDrafting(true)
+    setDraftErr(null)
+    try {
+      const full = await streamCopilot({ kind: 'cron', instruction: ask }, () => {})
+      const j = parseCronDraft(full)
+      if (!j) return setDraftErr('could not turn that into a job — try rephrasing')
+      setName(j.name)
+      setSchedule(j.schedule)
+      setPrompt(j.prompt)
+      setDraftAsk('')
+    } catch (e) {
+      setDraftErr((e as Error).message)
+    } finally {
+      setDrafting(false)
+    }
+  }
 
   return (
     <div className="space-y-3 rounded-xl border border-line-subtle p-3">
+      <div className="flex items-center gap-2">
+        <Sparkles size={14} className="shrink-0 text-accent" />
+        <Input
+          size="sm"
+          value={draftAsk}
+          onChange={(e) => setDraftAsk(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && !drafting && void draft()}
+          placeholder="Describe it — e.g. “every weekday morning, summarize my inbox into a brief”"
+        />
+        <Button size="sm" variant="outline" className="shrink-0" onClick={() => void draft()} disabled={drafting || !draftAsk.trim()}>
+          {drafting ? 'Drafting…' : 'Draft'}
+        </Button>
+      </div>
+      {draftErr && <p className="text-xs text-[color:var(--theme-danger)]">{draftErr}</p>}
       <div className="flex items-center gap-2">
         <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder="job name (e.g. weekly-recap)" maxLength={80} />
         <Input size="sm" value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="0 9 * * 1-5 · every 2h" maxLength={120} />

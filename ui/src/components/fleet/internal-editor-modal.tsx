@@ -1,10 +1,12 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { History, RotateCcw, X } from 'lucide-react'
+import { Check, History, RotateCcw, Sparkles, Square, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { relativeTime } from '@/lib/fleet'
+import { streamCopilot, type CopilotKind } from '@/lib/copilot'
 import { cn } from '@/lib/cn'
 
 interface Revision {
@@ -125,6 +127,7 @@ export function InternalEditorModal({
   history,
   footerExtra,
   mode = 'rich',
+  copilot,
 }: {
   open: boolean
   onClose: () => void
@@ -141,6 +144,9 @@ export function InternalEditorModal({
   /** 'rich' (default) renders WYSIWYG markdown; 'plain' a mono text surface —
    *  for structured text like config YAML where prose rendering would lie. */
   mode?: 'rich' | 'plain'
+  /** Enable AI drafting for this document: prompt → streamed proposal →
+   *  review diff → accept, iterating with the conversation retained. */
+  copilot?: { kind: CopilotKind; context?: string }
 }) {
   const ref = useRef<RichEditorHandle>(null)
   const [dirty, setDirty] = useState(false)
@@ -148,6 +154,60 @@ export function InternalEditorModal({
   const [current, setCurrent] = useState(value)
   const [showHistory, setShowHistory] = useState(true)
   const [diffing, setDiffing] = useState<{ rev: Revision; content: string; diff: DiffLine[] | null } | null>(null)
+
+  // ── Copilot: prompt → streamed proposal → review/accept, iteratively ───────
+  const [copilotOpen, setCopilotOpen] = useState(false)
+  const [instruction, setInstruction] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [proposal, setProposal] = useState<string | null>(null)
+  const [proposalDiff, setProposalDiff] = useState<DiffLine[] | null | 'text'>('text')
+  const [chat, setChat] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+  const [copilotError, setCopilotError] = useState<string | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const streamRef = useRef<HTMLPreElement | null>(null)
+
+  useEffect(() => {
+    if (generating && streamRef.current) streamRef.current.scrollTop = streamRef.current.scrollHeight
+  }, [proposal, generating])
+  useEffect(() => () => abortRef.current?.abort(), [])
+
+  const editorText = () => ref.current?.getMarkdown() ?? current
+
+  const generate = async () => {
+    const instr = instruction.trim()
+    if (!instr || !copilot) return
+    setGenerating(true)
+    setCopilotError(null)
+    setDiffing(null)
+    setProposal('')
+    setProposalDiff('text')
+    const ac = new AbortController()
+    abortRef.current = ac
+    try {
+      const full = await streamCopilot(
+        { kind: copilot.kind, context: copilot.context, current: editorText(), instruction: instr, chat },
+        (piece) => setProposal((p) => (p ?? '') + piece),
+        ac.signal,
+      )
+      setChat((c) => [...c.slice(-10), { role: 'user', content: instr }, { role: 'assistant', content: full }])
+      setInstruction('')
+    } catch (e) {
+      if (!ac.signal.aborted) {
+        setCopilotError((e as Error).message)
+        setProposal(null)
+      }
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const acceptProposal = () => {
+    if (proposal === null) return
+    setCurrent(proposal)
+    setSeed((s) => s + 1)
+    setDirty(true)
+    setProposal(null)
+  }
 
   const { data: revisions = [], refetch } = useQuery({
     queryKey: ['history', history],
@@ -207,7 +267,52 @@ export function InternalEditorModal({
         {subtitle && <p className="text-xs text-muted">{subtitle}</p>}
         <div className="flex min-h-0 flex-1 gap-3">
           <div className="flex min-w-0 flex-1 flex-col">
-            {diffing ? (
+            {proposal !== null ? (
+              <>
+                <div className="mb-2 flex items-center gap-2 text-xs text-muted">
+                  <Sparkles size={13} className="shrink-0 text-accent" />
+                  {generating ? (
+                    <>
+                      <span>Drafting…</span>
+                      <Button variant="ghost" size="sm" className="ml-auto shrink-0" onClick={() => abortRef.current?.abort()}>
+                        <Square size={12} fill="currentColor" /> Stop
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <span>Proposal — review, then accept or refine below.</span>
+                      <Button size="sm" className="ml-auto shrink-0" onClick={acceptProposal}>
+                        <Check size={13} /> Accept
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0"
+                        onClick={() => setProposalDiff((d) => (d === 'text' ? diffLines(editorText(), proposal) : 'text'))}
+                      >
+                        {proposalDiff === 'text' ? 'View changes' : 'View text'}
+                      </Button>
+                      <Button variant="ghost" size="sm" className="shrink-0" onClick={() => setProposal(null)}>
+                        <X size={13} /> Discard
+                      </Button>
+                    </>
+                  )}
+                </div>
+                <div className="min-h-0 flex-1">
+                  {proposalDiff === 'text' || generating ? (
+                    <pre
+                      ref={streamRef}
+                      className="h-full overflow-y-auto whitespace-pre-wrap rounded-xl border border-[var(--theme-accent-border,var(--theme-accent))] p-3 font-[var(--font-mono)] text-xs leading-5 text-fg"
+                    >
+                      {proposal}
+                      {generating && <span className="animate-pulse text-accent">▍</span>}
+                    </pre>
+                  ) : (
+                    <DiffView diff={proposalDiff} fallback={proposal} />
+                  )}
+                </div>
+              </>
+            ) : diffing ? (
               <>
                 <div className="mb-2 flex items-center gap-2 text-xs text-muted">
                   <span>
@@ -307,7 +412,38 @@ export function InternalEditorModal({
             </div>
           )}
         </div>
+        {copilotOpen && copilot && editable && (
+          <div className="flex items-center gap-2">
+            <Sparkles size={14} className="shrink-0 text-accent" />
+            <Input
+              size="sm"
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !generating && void generate()}
+              placeholder={
+                proposal !== null
+                  ? 'Refine the proposal — e.g. “shorter, and add a step for weekends”'
+                  : 'Describe what you want — it drafts from the current version'
+              }
+              autoFocus
+            />
+            <Button size="sm" className="shrink-0" onClick={() => void generate()} disabled={generating || !instruction.trim()}>
+              {generating ? 'Drafting…' : proposal !== null ? 'Refine' : 'Draft'}
+            </Button>
+          </div>
+        )}
+        {copilotError && <p className="text-xs text-[color:var(--theme-danger)]">{copilotError}</p>}
         <div className="flex items-center gap-2 border-t border-line-subtle pt-3">
+          {copilot && editable && (
+            <Button
+              variant={copilotOpen ? 'outline' : 'ghost'}
+              size="sm"
+              onClick={() => setCopilotOpen((v) => !v)}
+              title="Draft with AI — uses your preferred model (Settings)"
+            >
+              <Sparkles size={14} className="mr-1.5" /> Copilot
+            </Button>
+          )}
           {history && (
             <Button variant="ghost" size="sm" onClick={() => setShowHistory((v) => !v)}>
               <History size={14} className="mr-1.5" /> {showHistory ? 'Hide history' : 'History'}

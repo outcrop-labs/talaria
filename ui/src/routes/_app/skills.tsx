@@ -232,6 +232,7 @@ function SkillEditor({ owner, name, isAdmin, onClose }: { owner: string; name: s
       saving={busy}
       onSave={save}
       history={{ kind: 'skill', owner, name }}
+      copilot={{ kind: 'skill', context: owner === 'shared' ? 'A skill shared by every agent in the fleet.' : `A skill for the "${owner}" agent.` }}
       footerExtra={isAdmin ? <Button variant="ghost" size="sm" onClick={() => void remove()}>Delete skill</Button> : undefined}
     />
   )
