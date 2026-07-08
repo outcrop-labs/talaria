@@ -153,9 +153,10 @@ export async function completeViaGateway(
     }).catch(() => {})
   }
   const text = j.choices?.[0]?.message?.content ?? ''
-  // Confab guard (structural, no extra model call). Observe mode → caveat is ''.
-  const { caveat } = await guardCompletion({ answer: text, messages, caller: opts.caller, model, endpoint: route.endpoint.name }).catch(() => ({ caveat: '' }))
-  return { text: text + caveat }
+  // Confab guard (structural, no extra model call) — fire-and-forget so it can
+  // never block or break a completion. Records findings out-of-band (observe).
+  void guardCompletion({ answer: text, messages, caller: opts.caller, model, endpoint: route.endpoint.name }).catch(() => {})
+  return { text }
 }
 
 /** Ledger row for a gateway call — attribution is direct (we KNOW the

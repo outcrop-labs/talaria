@@ -7,6 +7,7 @@
 // it. (An enforcing revision-loop mode is planned; advisory ships first.)
 
 import { completeViaGateway } from './llm-gateway'
+import { guardText, recordFindings } from './guardrails'
 import { getSetting, setSetting } from './audit'
 import { db } from './db/pg'
 import { publishBoard } from './realtime'
@@ -109,11 +110,21 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
     const { run, model, mode } = await shouldJudge(task.boardId)
     if (!run) return null
 
+    // Layered tiering: a cheap structural pre-pass (gate-safe guard rules, e.g.
+    // secret-leak) over the reported outcome, fed to the judge as evidence.
+    const preFindings = await guardText(`${task.outcome ?? ''}\n${task.resolution ?? ''}`).catch(() => [])
+    const preNote = preFindings.length
+      ? `\n\nAUTOMATED PRE-CHECKS FLAGGED (weigh these):\n${preFindings.map((f) => `- ${f.check.replace(/_/g, ' ')}: ${f.message}`).join('\n')}`
+      : ''
+    if (preFindings.length) {
+      await recordFindings(preFindings, { caller: `ticket:${taskId}`, model: model ?? 'pl-main', endpoint: null, mode: 'observe' }).catch(() => {})
+    }
+
     const { text } = await completeViaGateway(
       model ?? 'pl-main',
       [
         { role: 'system', content: SYSTEM },
-        { role: 'user', content: buildPrompt(task) },
+        { role: 'user', content: buildPrompt(task) + preNote },
       ],
       { temperature: 0, caller: `judge${model ? `:${model}` : ''}` },
     )

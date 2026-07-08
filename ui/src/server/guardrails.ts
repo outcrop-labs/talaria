@@ -203,6 +203,9 @@ export interface Rule {
   label: string
   severity: Severity
   defaultOn: boolean
+  /** Safe to run on plain text with no tool record (e.g. a ticket outcome at the
+   *  judge gate). Rules that need the turn's tool record leave this false. */
+  gateSafe?: boolean
   /** Returns a hit (message + snippet + confidence 0..1) or null. Pure. */
   run(ctx: GuardContext): { message: string; snippet: string; confidence: number } | null
 }
@@ -251,6 +254,7 @@ export const RULES: Rule[] = [
     label: 'Secret leak (credential in output)',
     severity: 'high',
     defaultOn: true,
+    gateSafe: true,
     run: (ctx) => {
       const hit = detectSecret(ctx.answer)
       return hit ? { message: `Output appears to contain a live credential (${hit.label}).`, snippet: hit.snippet, confidence: 0.95 } : null
@@ -269,6 +273,25 @@ export function runGuardrails(ctx: GuardContext, config: GuardConfig): Finding[]
   const out: Finding[] = []
   for (const rule of RULES) {
     if (!ruleEnabled(config, rule)) continue
+    const hit = rule.run(ctx)
+    if (hit && hit.confidence >= config.minConfidence) {
+      out.push({ check: rule.id, severity: rule.severity, confidence: hit.confidence, message: hit.message, snippet: hit.snippet })
+    }
+  }
+  return out
+}
+
+/** Layered tiering: run the gate-safe rules (no tool record needed) over plain
+ *  text — e.g. a ticket's reported outcome at the judge gate, so a cheap
+ *  structural signal feeds the expensive judge. Returns [] when the guard is off. */
+export async function guardText(text: string): Promise<Finding[]> {
+  if (!text.trim()) return []
+  const config = await getGuardConfig()
+  if (config.mode === 'off') return []
+  const ctx: GuardContext = { answer: text, toolRecord: { backingTools: [], resultsText: '', anyError: false, overflowed: false }, userMessage: '', policedHosts: config.policedHosts }
+  const out: Finding[] = []
+  for (const rule of RULES) {
+    if (!rule.gateSafe || !ruleEnabled(config, rule)) continue
     const hit = rule.run(ctx)
     if (hit && hit.confidence >= config.minConfidence) {
       out.push({ check: rule.id, severity: rule.severity, confidence: hit.confidence, message: hit.message, snippet: hit.snippet })
