@@ -123,6 +123,8 @@ import { Route as ApiKbSpacesIdDocsRouteImport } from './routes/api/kb.spaces.$i
 import { Route as ApiKbPublicSpaceSlugRouteImport } from './routes/api/kb.public.space.$slug'
 import { Route as ApiKbDocsIdMoveRouteImport } from './routes/api/kb.docs.$id.move'
 import { Route as ApiKbDocsIdBacklinksRouteImport } from './routes/api/kb.docs.$id.backlinks'
+import { Route as ApiIntegrationsGoogleDriveImportRouteImport } from './routes/api/integrations/google.drive.import'
+import { Route as ApiIntegrationsGoogleDriveFilesRouteImport } from './routes/api/integrations/google.drive.files'
 import { Route as ApiFleetEndpointsIdAvailableRouteImport } from './routes/api/fleet.endpoints.$id.available'
 import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.defs.$id.versions'
 import { Route as ApiFleetDefsIdMcpRouteImport } from './routes/api/fleet.defs.$id.mcp'
@@ -704,6 +706,18 @@ const ApiKbDocsIdBacklinksRoute = ApiKbDocsIdBacklinksRouteImport.update({
   path: '/backlinks',
   getParentRoute: () => ApiKbDocsIdRoute,
 } as any)
+const ApiIntegrationsGoogleDriveImportRoute =
+  ApiIntegrationsGoogleDriveImportRouteImport.update({
+    id: '/drive/import',
+    path: '/drive/import',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
+const ApiIntegrationsGoogleDriveFilesRoute =
+  ApiIntegrationsGoogleDriveFilesRouteImport.update({
+    id: '/drive/files',
+    path: '/drive/files',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
 const ApiFleetEndpointsIdAvailableRoute =
   ApiFleetEndpointsIdAvailableRouteImport.update({
     id: '/available',
@@ -871,6 +885,8 @@ export interface FileRoutesByFullPath {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
+  '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -995,6 +1011,8 @@ export interface FileRoutesByTo {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
+  '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1121,6 +1139,8 @@ export interface FileRoutesById {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
+  '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1247,6 +1267,8 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/integrations/google/drive/files'
+    | '/api/integrations/google/drive/import'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -1371,6 +1393,8 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/integrations/google/drive/files'
+    | '/api/integrations/google/drive/import'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -1496,6 +1520,8 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/integrations/google/drive/files'
+    | '/api/integrations/google/drive/import'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -2354,6 +2380,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKbDocsIdBacklinksRouteImport
       parentRoute: typeof ApiKbDocsIdRoute
     }
+    '/api/integrations/google/drive/import': {
+      id: '/api/integrations/google/drive/import'
+      path: '/drive/import'
+      fullPath: '/api/integrations/google/drive/import'
+      preLoaderRoute: typeof ApiIntegrationsGoogleDriveImportRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
+    '/api/integrations/google/drive/files': {
+      id: '/api/integrations/google/drive/files'
+      path: '/drive/files'
+      fullPath: '/api/integrations/google/drive/files'
+      preLoaderRoute: typeof ApiIntegrationsGoogleDriveFilesRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
     '/api/fleet/endpoints/$id/available': {
       id: '/api/fleet/endpoints/$id/available'
       path: '/available'
@@ -2785,11 +2825,15 @@ const ApiAuthGoogleRouteWithChildren = ApiAuthGoogleRoute._addFileChildren(
 interface ApiIntegrationsGoogleRouteChildren {
   ApiIntegrationsGoogleCallbackRoute: typeof ApiIntegrationsGoogleCallbackRoute
   ApiIntegrationsGoogleConnectRoute: typeof ApiIntegrationsGoogleConnectRoute
+  ApiIntegrationsGoogleDriveFilesRoute: typeof ApiIntegrationsGoogleDriveFilesRoute
+  ApiIntegrationsGoogleDriveImportRoute: typeof ApiIntegrationsGoogleDriveImportRoute
 }
 
 const ApiIntegrationsGoogleRouteChildren: ApiIntegrationsGoogleRouteChildren = {
   ApiIntegrationsGoogleCallbackRoute: ApiIntegrationsGoogleCallbackRoute,
   ApiIntegrationsGoogleConnectRoute: ApiIntegrationsGoogleConnectRoute,
+  ApiIntegrationsGoogleDriveFilesRoute: ApiIntegrationsGoogleDriveFilesRoute,
+  ApiIntegrationsGoogleDriveImportRoute: ApiIntegrationsGoogleDriveImportRoute,
 }
 
 const ApiIntegrationsGoogleRouteWithChildren =

@@ -21,8 +21,8 @@ engineering-facing tracker.
     doc/sheet/file into the owner's Drive as a native Google Doc/Sheet. See
     `docs/GOOGLE-WORKSPACE.md`. Agents export via `export_to_google_doc` acting
     as the artifact's human owner (identity proxy, #42).
-  - ⏳ **Drive import** — browse/pick a Drive file → pull in as an artifact
-    (Docs→markdown, Sheets→grid, other→file). Needs a broader read scope.
+  - ✅ **Drive import** — browse/search Drive → import as artifact (Docs→
+    markdown, Sheets→grid, native→PDF file, else→file). `drive.readonly` scope.
   - ⏳ **Cloud-storage connectors** — S3 behind the `storage_ref` abstraction.
   - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
 

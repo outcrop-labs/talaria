@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, X, Upload, ExternalLink, type LucideIcon } from 'lucide-react'
+import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, X, Upload, ExternalLink, DownloadCloud, Search, type LucideIcon } from 'lucide-react'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -39,6 +39,7 @@ function ArtifactsPage() {
   const { data: folders = [] } = useFolders()
   const [activeId, setActiveId] = useState<string | null>(null)
   const [newOpen, setNewOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [drag, setDrag] = useState<Drag>(null)
 
@@ -92,6 +93,9 @@ function ArtifactsPage() {
         <div className="relative flex items-center justify-between gap-2 border-b border-line-subtle p-3">
           <span className="text-sm font-semibold text-fg">Artifacts</span>
           <div className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" title="Import from Google Drive" onClick={() => setImportOpen(true)}>
+              <DownloadCloud size={15} />
+            </Button>
             <Button variant="ghost" size="sm" title="New folder" onClick={() => void newFolder()}>
               <FolderPlus size={15} />
             </Button>
@@ -149,6 +153,133 @@ function ArtifactsPage() {
           <EmptyState icon="◆" title="Artifacts" hint="Create an artifact or a folder. Drag artifacts into folders to organize." />
         )}
       </main>
+      {importOpen && (
+        <DriveImportModal
+          onClose={() => setImportOpen(false)}
+          onImported={async (artifactId) => {
+            setImportOpen(false)
+            await qc.invalidateQueries({ queryKey: ['artifacts'] })
+            setActiveId(artifactId)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+interface DriveEntry {
+  id: string
+  name: string
+  mimeType: string
+  modifiedTime: string | null
+  iconLink: string | null
+  sizeBytes: number | null
+}
+
+// Browse the connected user's Google Drive and pull a file in as an artifact.
+function DriveImportModal({ onClose, onImported }: { onClose: () => void; onImported: (artifactId: string) => void }) {
+  const [q, setQ] = useState('')
+  const [files, setFiles] = useState<DriveEntry[] | null>(null)
+  const [state, setState] = useState<'loading' | 'ready' | 'not_connected' | 'reconnect' | 'error'>('loading')
+  const [importing, setImporting] = useState<string | null>(null)
+
+  const load = async (query: string) => {
+    setState('loading')
+    const r = await fetch(`/api/integrations/google/drive/files?q=${encodeURIComponent(query)}`).catch(() => null)
+    if (!r) return setState('error')
+    if (r.ok) {
+      setFiles(((await r.json()) as { files: DriveEntry[] }).files)
+      return setState('ready')
+    }
+    const j = (await r.json().catch(() => null)) as { error?: string } | null
+    if (j?.error === 'not_connected') return setState('not_connected')
+    if (j?.error === 'reconnect_needed') return setState('reconnect')
+    setState('error')
+  }
+  // Debounced search.
+  useEffect(() => {
+    const t = setTimeout(() => void load(q), q ? 300 : 0)
+    return () => clearTimeout(t)
+  }, [q])
+
+  const doImport = async (fileId: string) => {
+    setImporting(fileId)
+    try {
+      const r = await fetch('/api/integrations/google/drive/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fileId }),
+      })
+      const j = (await r.json().catch(() => null)) as { artifact?: { id: string }; message?: string } | null
+      if (r.ok && j?.artifact?.id) onImported(j.artifact.id)
+      else alert(j?.message ?? 'Import failed.')
+    } finally {
+      setImporting(null)
+    }
+  }
+
+  const driveKind = (mime: string) =>
+    mime === 'application/vnd.google-apps.document' ? '📄 Doc'
+    : mime === 'application/vnd.google-apps.spreadsheet' ? '📊 Sheet'
+    : mime === 'application/vnd.google-apps.presentation' ? '📽 Slides'
+    : mime.startsWith('image/') ? '🖼 Image'
+    : '📎 File'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 pt-[10vh]" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-2xl border border-line bg-card shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2 border-b border-line-subtle px-4 py-3">
+          <DownloadCloud size={16} className="text-muted" />
+          <span className="text-sm font-semibold text-fg">Import from Google Drive</span>
+          <button type="button" onClick={onClose} className="ml-auto rounded p-1 text-muted hover:text-fg"><X size={15} /></button>
+        </div>
+
+        {(state === 'not_connected' || state === 'reconnect') ? (
+          <div className="p-8 text-center">
+            <div className="mb-3 text-sm text-muted">
+              {state === 'reconnect'
+                ? 'Reconnect Google to grant Drive read access.'
+                : 'Connect a Google account to browse your Drive.'}
+            </div>
+            <a href="/api/integrations/google/connect" className={buttonClasses({ size: 'sm' })}>
+              {state === 'reconnect' ? 'Reconnect Google' : 'Connect Google'}
+            </a>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center gap-2 border-b border-line-subtle px-4 py-2">
+              <Search size={14} className="text-muted" />
+              <input
+                autoFocus
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search your Drive…"
+                className="w-full bg-transparent text-sm text-fg outline-none placeholder:text-muted"
+              />
+            </div>
+            <div className="max-h-[50vh] min-h-[12rem] overflow-y-auto p-2">
+              {state === 'loading' && <div className="p-6 text-center text-xs text-muted">Loading…</div>}
+              {state === 'error' && <div className="p-6 text-center text-xs text-[color:var(--theme-danger)]">Couldn’t reach Google Drive.</div>}
+              {state === 'ready' && files && files.length === 0 && <div className="p-6 text-center text-xs text-muted">No files found.</div>}
+              {state === 'ready' && files?.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  disabled={!!importing}
+                  onClick={() => void doImport(f.id)}
+                  className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-sidebar disabled:opacity-50"
+                >
+                  <span className="w-14 shrink-0 text-[11px] text-muted">{driveKind(f.mimeType)}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm text-fg">{f.name}</span>
+                  <span className="shrink-0 text-[11px] text-muted">
+                    {importing === f.id ? 'Importing…' : f.modifiedTime ? relativeTime(f.modifiedTime) : ''}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }

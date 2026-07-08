@@ -16,6 +16,13 @@ uses a shared service account for this.
   - `sheet` → native **Google Sheet** (CSV converted by Drive)
   - `file` → uploaded to Drive unconverted (original type preserved)
   - The resulting Drive link is stored on the artifact ("Open in Google Drive").
+- **Import a Drive file → artifact** from the Artifacts sidebar (**Import from
+  Google Drive**): search your Drive, pick a file:
+  - Google **Doc** → `doc` artifact (exported as markdown)
+  - Google **Sheet** → `sheet` artifact (exported as CSV → grid)
+  - Other native types (Slides, …) → `file` artifact (exported as PDF)
+  - Regular files → `file` artifact (downloaded, ≤25 MB)
+  - The source Drive link is remembered on the artifact.
 - **Agents** export via the `export_to_google_doc` MCP tool. An agent has no
   Google account, so it exports into the artifact **owner's** Drive — the human
   it works for must be connected. (Identity proxy, #42.)
@@ -27,8 +34,10 @@ uses a shared service account for this.
   store — unlike API keys, where we persist only the env-var *name*.
 - Access tokens are cached (also encrypted) and refreshed transparently; an
   `invalid_grant` clears the connection so the UI prompts a reconnect.
-- Scope is least-privilege: **`drive.file`** — access only to files the app
-  itself creates, not the user's whole Drive.
+- Scopes: **`drive.file`** (create/manage only files the app makes — export) +
+  **`drive.readonly`** (browse + read for import). Users who connected before
+  import shipped must **reconnect** to grant `drive.readonly`; the import picker
+  detects the missing scope and prompts a reconnect.
 - Disconnect best-effort **revokes** the token at Google, then forgets it.
 
 ## Operator setup
