@@ -4,6 +4,7 @@ import { authenticateKey } from '@/server/llm-keys'
 import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '@/server/llm-gateway'
 import { estimateTokens } from '@/server/usage'
 import { guardCompletion } from '@/server/guardrails'
+import { getSetting } from '@/server/audit'
 
 // OpenAI-compatible chat completions over the org's model stack. Streaming and
 // non-streaming both pass through; every call is metered into the ledger with
@@ -31,6 +32,12 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
         }
 
         const caller = `api:${id.keyName}`
+        // Keys whose LLM usage is metered DOWNSTREAM (e.g. the fleet key — agents
+        // route their tool loop through here, but their chat/channel/ticket usage
+        // is already metered by those flows). Skip gateway metering to avoid a
+        // double-count; the guard still runs.
+        const unmetered = await getSetting<string[]>('gateway_unmetered_keys', ['fleet-gateway'])
+        const skipMeter = unmetered.includes(id.keyName)
         const promptChars = (body.messages as Array<{ content?: unknown }>).reduce(
           (n, m) => n + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length),
           0,
@@ -39,8 +46,9 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
         const res = await fetchUpstream(upstream).catch((e: Error) => e)
         if (res instanceof Error) return json({ error: { message: `upstream unreachable: ${res.message}` } }, { status: 502 })
 
-        const ledger = (usage: { prompt_tokens?: number; completion_tokens?: number } | null, contentChars: number) =>
-          recordGatewayUsage({
+        const ledger = (usage: { prompt_tokens?: number; completion_tokens?: number } | null, contentChars: number) => {
+          if (skipMeter) return
+          return recordGatewayUsage({
             caller,
             endpoint: route.endpoint,
             upstreamModel: route.upstreamModel,
@@ -48,6 +56,7 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
             completionTokens: usage?.completion_tokens ?? estimateTokens(contentChars),
             estimated: !usage,
           }).catch(() => {})
+        }
 
         // ── Non-streaming: read, meter, relay ─────────────────────────────────
         if (!upstream.body.stream) {
