@@ -636,6 +636,13 @@ const MIGRATIONS: string[] = [
   // Google account) have no owner — an admin approves them instead.
   `alter table google_pending_actions add column if not exists is_org boolean not null default false`,
   `create index if not exists google_pending_org_idx on google_pending_actions(is_org, status)`,
+
+  // Where the org account's agents build. drive_folder_id → a Shared Drive (or
+  // folder) so org files are team-owned; calendar_id → the calendar org events
+  // land on (default 'primary'); send_as → a verified send-as alias for org mail.
+  `alter table google_org_connection add column if not exists drive_folder_id text`,
+  `alter table google_org_connection add column if not exists calendar_id text`,
+  `alter table google_org_connection add column if not exists send_as text`,
 ]
 
 function ensureMigrated(): Promise<void> {

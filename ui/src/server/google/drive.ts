@@ -7,8 +7,9 @@ import { getUpload, saveUpload } from '../uploads'
 import type { Artifact, ArtifactKind } from '../artifacts'
 import { getAccessToken } from './connections'
 
+// supportsAllDrives lets us create into a Shared Drive (team-owned files).
 const UPLOAD_ENDPOINT =
-  'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink,name,mimeType'
+  'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,webViewLink,name,mimeType'
 const FILES_ENDPOINT = 'https://www.googleapis.com/drive/v3/files'
 
 const GOOGLE_DOC = 'application/vnd.google-apps.document'
@@ -87,8 +88,9 @@ export async function exportArtifactToDrive(userId: string, artifact: Artifact, 
   return exportArtifactWithToken(await requireToken(userId, nowMs), artifact)
 }
 
-/** Export an artifact using an already-resolved access token (per-user or org). */
-export async function exportArtifactWithToken(token: string, artifact: Artifact): Promise<DriveFile> {
+/** Export an artifact using an already-resolved access token (per-user or org).
+ *  `folderId` (a Shared Drive or folder) makes the file team-owned there. */
+export async function exportArtifactWithToken(token: string, artifact: Artifact, opts: { folderId?: string | null } = {}): Promise<DriveFile> {
   const mapped = await mediaFor(artifact)
   if (!mapped) {
     const err = new Error('not_exportable')
@@ -96,7 +98,8 @@ export async function exportArtifactWithToken(token: string, artifact: Artifact)
     throw err
   }
 
-  const metadata = { name: artifact.title || 'Untitled', mimeType: mapped.targetMime }
+  const metadata: { name: string; mimeType: string; parents?: string[] } = { name: artifact.title || 'Untitled', mimeType: mapped.targetMime }
+  if (opts.folderId) metadata.parents = [opts.folderId]
   const { body, boundary } = buildMultipart(metadata, mapped.media)
 
   const res = await fetch(UPLOAD_ENDPOINT, {

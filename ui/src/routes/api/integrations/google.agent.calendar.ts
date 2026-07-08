@@ -5,6 +5,7 @@ import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { listUpcomingEventsWithToken } from '@/server/google/calendar'
 import { resolveAgentGoogle, resolveAgentPrincipal } from '@/server/google/agent-google'
 import { queueAction } from '@/server/google/pending-actions'
+import { getOrgTargets } from '@/server/google/org-connection'
 import { googleFail } from '@/server/google/errors'
 
 const Draft = z.object({
@@ -30,8 +31,9 @@ export const Route = createFileRoute('/api/integrations/google/agent/calendar')(
         if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
         const google = await resolveAgentGoogle(name, Date.now())
         if (!google) return json({ error: 'not_connected', message: 'No Google account is connected for this agent (its owner, or the org account).' }, { status: 409 })
+        const calendarId = google.principal === 'org' ? (await getOrgTargets()).calendarId : null
         try {
-          return json({ events: await listUpcomingEventsWithToken(google.token, Date.now()) })
+          return json({ events: await listUpcomingEventsWithToken(google.token, Date.now(), 10, calendarId) })
         } catch (err) {
           return googleFail(err as Error, 'Calendar')
         }

@@ -12,6 +12,19 @@ land in the user's own Drive, governed by Google's own sharing.
   account** an admin connects under **Admin → Organization Google account**. So
   the whole swarm has one company workspace to build in.
 
+**Org build targets** (Admin → Organization Google account, once connected):
+- **Shared Drive / folder ID** — agent-created files land here so they're
+  **team-owned** (survive if the bot account is deleted). Blank → the account's
+  My Drive. *The org account must be a member of that Shared Drive.*
+- **Calendar ID** — org events land on this calendar (blank → `primary`).
+- **Send mail as** — a *verified send-as alias* on the org account for outgoing
+  mail (blank → the account's own address). This is where the "one account +
+  aliases" pattern pays off.
+
+Reading a *different* mailbox than the connected account's own inbox needs
+domain-wide delegation (a service account) — not built; that's the future
+multi-account setup path.
+
 ## What ships today
 
 - **Connect / disconnect** a Google account from **Settings → Connected

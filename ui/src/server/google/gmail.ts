@@ -94,9 +94,11 @@ export async function sendMessage(userId: string, nowMs: number, input: SendInpu
   return sendMessageWithToken(await requireToken(userId, nowMs), input)
 }
 
-/** Send using an already-resolved token (per-user or org). */
-export async function sendMessageWithToken(token: string, input: SendInput): Promise<{ id: string; threadId: string }> {
+/** Send using an already-resolved token (per-user or org). `from` sets a verified
+ *  send-as alias on the account; omit to send from the account's own address. */
+export async function sendMessageWithToken(token: string, input: SendInput, from?: string | null): Promise<{ id: string; threadId: string }> {
   const headers = [`To: ${input.to}`]
+  if (from) headers.push(`From: ${from}`)
   if (input.cc) headers.push(`Cc: ${input.cc}`)
   if (input.bcc) headers.push(`Bcc: ${input.bcc}`)
   headers.push(

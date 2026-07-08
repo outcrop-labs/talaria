@@ -16,19 +16,63 @@ interface OrgRow {
   refresh_token_enc: string | null
   access_token_enc: string | null
   access_expires_at: string | null
+  drive_folder_id: string | null
+  calendar_id: string | null
+  send_as: string | null
   created_at: string
 }
 
-export async function getOrgConnectionStatus(): Promise<GoogleConnectionStatus> {
+/** Where the org account's agents build. Empty strings normalize to null. */
+export interface OrgTargets {
+  /** Shared Drive or folder id for agent file creation (null → My Drive). */
+  driveFolderId: string | null
+  /** Calendar id for org events (null → 'primary'). */
+  calendarId: string | null
+  /** Verified send-as address for org mail (null → the account's own address). */
+  sendAs: string | null
+}
+
+export async function getOrgConnectionStatus(): Promise<GoogleConnectionStatus & { targets: OrgTargets }> {
   const sql = await db()
   const [row] = await sql<OrgRow[]>`select * from google_org_connection where id = 1`
-  if (!row || !row.refresh_token_enc) return { connected: false, email: null, scope: [], connectedAt: null }
+  const targets = {
+    driveFolderId: row?.drive_folder_id ?? null,
+    calendarId: row?.calendar_id ?? null,
+    sendAs: row?.send_as ?? null,
+  }
+  if (!row || !row.refresh_token_enc) return { connected: false, email: null, scope: [], connectedAt: null, targets }
   return {
     connected: true,
     email: row.email,
     scope: row.scope ? row.scope.split(' ').filter(Boolean) : [],
     connectedAt: row.created_at,
+    targets,
   }
+}
+
+/** The org build targets alone (for execution paths). Null when not connected. */
+export async function getOrgTargets(): Promise<OrgTargets> {
+  const sql = await db()
+  const [row] = await sql<OrgRow[]>`select drive_folder_id, calendar_id, send_as from google_org_connection where id = 1`
+  return {
+    driveFolderId: row?.drive_folder_id ?? null,
+    calendarId: row?.calendar_id ?? null,
+    sendAs: row?.send_as ?? null,
+  }
+}
+
+/** Update the org build targets (admin). Empty/blank values clear to null. */
+export async function setOrgTargets(t: Partial<OrgTargets>): Promise<void> {
+  const sql = await db()
+  const norm = (v: string | null | undefined) => (v && v.trim() ? v.trim() : null)
+  await sql`
+    update google_org_connection set
+      drive_folder_id = ${norm(t.driveFolderId)},
+      calendar_id = ${norm(t.calendarId)},
+      send_as = ${norm(t.sendAs)},
+      updated_at = now()
+    where id = 1
+  `
 }
 
 export async function isOrgConnected(): Promise<boolean> {
