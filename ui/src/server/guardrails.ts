@@ -206,6 +206,10 @@ export interface Rule {
   /** Safe to run on plain text with no tool record (e.g. a ticket outcome at the
    *  judge gate). Rules that need the turn's tool record leave this false. */
   gateSafe?: boolean
+  /** What the rule needs beyond the answer + which-tools-ran. A path that can't
+   *  supply it (e.g. chat sees tool NAMES but not results/errors) skips the rule
+   *  rather than false-positive. */
+  needs?: Array<'results' | 'errorInfo'>
   /** Returns a hit (message + snippet + confidence 0..1) or null. Pure. */
   run(ctx: GuardContext): { message: string; snippet: string; confidence: number } | null
 }
@@ -229,6 +233,7 @@ export const RULES: Rule[] = [
     label: 'Ungrounded reference (invented link/id)',
     severity: 'medium',
     defaultOn: true,
+    needs: ['results'],
     run: (ctx) => {
       const tr = ctx.toolRecord
       if (tr.backingTools.length === 0 || tr.overflowed) return null
@@ -243,6 +248,7 @@ export const RULES: Rule[] = [
     label: 'Fabricated outage (claims failure, nothing errored)',
     severity: 'high',
     defaultOn: true,
+    needs: ['errorInfo'],
     run: (ctx) => {
       if (ctx.toolRecord.anyError) return null
       const s = claimsInfraFailure(ctx.answer)
@@ -267,12 +273,23 @@ const ruleEnabled = (config: GuardConfig, rule: Rule) => config.checks[rule.id] 
 /** Metadata for the admin UI (which rules exist, defaults). */
 export const guardRuleMeta = () => RULES.map((r) => ({ id: r.id, label: r.label, severity: r.severity, defaultOn: r.defaultOn }))
 
-/** Run the enabled rules, keep findings at/above the confidence threshold. Pure. */
-export function runGuardrails(ctx: GuardContext, config: GuardConfig): Finding[] {
+/** What the caller can supply about the turn's tools. A path with the full
+ *  message history has both; the chat stream has tool NAMES only (neither). */
+export interface Available {
+  results: boolean
+  errorInfo: boolean
+}
+const FULL: Available = { results: true, errorInfo: true }
+
+/** Run the enabled, APPLICABLE rules, keep findings at/above the threshold. Pure.
+ *  A rule whose `needs` can't be supplied on this path is skipped (no false
+ *  positive) rather than run on missing data. */
+export function runGuardrails(ctx: GuardContext, config: GuardConfig, available: Available = FULL): Finding[] {
   if (!ctx.answer) return []
   const out: Finding[] = []
   for (const rule of RULES) {
     if (!ruleEnabled(config, rule)) continue
+    if (rule.needs?.some((n) => !available[n])) continue
     const hit = rule.run(ctx)
     if (hit && hit.confidence >= config.minConfidence) {
       out.push({ check: rule.id, severity: rule.severity, confidence: hit.confidence, message: hit.message, snippet: hit.snippet })
@@ -376,4 +393,31 @@ export async function guardCompletion(input: {
   await recordFindings(findings, { caller: input.caller, model: input.model, endpoint: input.endpoint, mode: config.mode }).catch(() => {})
   const caveat = config.mode === 'annotate' || config.mode === 'strict' ? caveatFor(findings) : ''
   return { findings, caveat, mode: config.mode }
+}
+
+/** Guard a CHAT/channel reply. The agent's tool loop runs inside the fleet, so
+ *  the stream gives us tool NAMES (did a tool run?) but not results or error
+ *  detail — so only zero-tool-claim and secret-leak apply here (ungrounded_ref /
+ *  fabricated_outage are skipped, not guessed). Fire-and-forget; records
+ *  findings out-of-band. Returns the annotate caveat (or '') for callers that
+ *  can append it. */
+export async function guardChatReply(input: {
+  answer: string
+  toolNames: string[]
+  userMessage: string
+  caller: string
+  model: string
+}): Promise<{ findings: Finding[]; caveat: string }> {
+  const config = await getGuardConfig()
+  if (config.mode === 'off' || !input.answer) return { findings: [], caveat: '' }
+  const backingTools = input.toolNames.filter((n) => n && !NONBACKING.has(n))
+  const toolRecord: ToolRecord = { backingTools, resultsText: '', anyError: false, overflowed: true }
+  const findings = runGuardrails(
+    { answer: input.answer, toolRecord, userMessage: input.userMessage, policedHosts: config.policedHosts },
+    config,
+    { results: false, errorInfo: false },
+  )
+  await recordFindings(findings, { caller: input.caller, model: input.model, endpoint: 'fleet', mode: config.mode }).catch(() => {})
+  const caveat = config.mode === 'annotate' || config.mode === 'strict' ? caveatFor(findings) : ''
+  return { findings, caveat }
 }

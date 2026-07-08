@@ -5,6 +5,7 @@
 // it type in real time. Runs detached from the sender's request.
 import { describeAgent, proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
+import { guardChatReply } from './guardrails'
 import { notifyMentions } from './mentions'
 import { estimateTokens, recordUsage } from './usage'
 import { routedModelFor } from './fleet-agents'
@@ -106,6 +107,7 @@ async function streamReply(
     return
   }
   let content = ''
+  const toolNames: string[] = []
   let usage: { promptTokens: number; completionTokens: number } | null = null
   let lastFlush = 0
   const ledger = () => {
@@ -125,6 +127,7 @@ async function streamReply(
     for await (const ev of parseAgentStream(upstream.body)) {
       if (ev.type === 'content') content += ev.text
       else if (ev.type === 'usage') usage = ev
+      else if (ev.type === 'tool') toolNames.push(ev.name)
       const now = Date.now()
       if (now - lastFlush > 400) {
         lastFlush = now
@@ -133,6 +136,9 @@ async function streamReply(
     }
     await updateChannelMessage(channelId, messageId, content, 'complete')
     ledger()
+    if (content) {
+      void guardChatReply({ answer: content, toolNames, userMessage: '', caller: `channel:${model}`, model }).catch(() => {})
+    }
   } catch {
     await updateChannelMessage(channelId, messageId, content, 'error')
     ledger()

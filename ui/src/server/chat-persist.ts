@@ -6,6 +6,7 @@
 import { parseAgentStream, mergeTool, type ToolCall } from '@/lib/sse-parse'
 import { touchConversation, updateAssistant } from './conversations'
 import { estimateTokens, recordUsage } from './usage'
+import { guardChatReply } from './guardrails'
 
 export async function persistAssistantStream(
   stream: ReadableStream<Uint8Array>,
@@ -51,6 +52,17 @@ export async function persistAssistantStream(
     await flush('complete')
     await touchConversation(conversationId)
     ledger()
+    // Confab guard on the final reply (structural; fire-and-forget). The fleet
+    // stream gives tool names, so zero-tool-claim + secret-leak apply here.
+    if (usageMeta && content) {
+      void guardChatReply({
+        answer: content,
+        toolNames: tools.map((t) => t.name),
+        userMessage: '',
+        caller: `chat:${usageMeta.agentModel}`,
+        model: usageMeta.agentModel,
+      }).catch(() => {})
+    }
   } catch {
     await flush('error').catch(() => {})
     ledger()
