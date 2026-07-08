@@ -11,6 +11,7 @@
 import { db } from './db/pg'
 import { listEndpoints, type LlmEndpoint } from './agent-defs'
 import { DEFAULT_KEY_ENV, NATIVE_BASE, resolveKey } from './provider-catalog'
+import { guardCompletion } from './guardrails'
 
 export interface GatewayModel {
   id: string
@@ -151,7 +152,10 @@ export async function completeViaGateway(
       estimated: false,
     }).catch(() => {})
   }
-  return { text: j.choices?.[0]?.message?.content ?? '' }
+  const text = j.choices?.[0]?.message?.content ?? ''
+  // Confab guard (structural, no extra model call). Observe mode → caveat is ''.
+  const { caveat } = await guardCompletion({ answer: text, messages, caller: opts.caller, model, endpoint: route.endpoint.name }).catch(() => ({ caveat: '' }))
+  return { text: text + caveat }
 }
 
 /** Ledger row for a gateway call — attribution is direct (we KNOW the

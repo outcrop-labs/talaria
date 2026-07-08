@@ -76,6 +76,8 @@ function AdminPage() {
 
         <JudgePanel />
 
+        <GuardrailsPanel />
+
         <OrgGooglePanel />
 
         <RetrievalPanel />
@@ -264,6 +266,90 @@ function JudgePanel() {
         {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
       </div>
       <p className="mt-3 text-[11px] text-muted">Per-board override lives on each board (advisory / off); default follows this toggle.</p>
+    </Panel>
+  )
+}
+
+interface GuardData {
+  config: { mode: string; checks: Record<string, boolean>; policedHosts: string[] }
+  stats: { total: number; byCheck: Record<string, number> }
+  findings: Array<{ id: string; caller: string; model: string; check: string; severity: string; message: string; snippet: string; createdAt: string }>
+}
+
+// Confab guardrail — a structural check on model output at the gateway. Observe
+// mode records findings out-of-band; annotate/strict act on them.
+function GuardrailsPanel() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['guardrails'],
+    queryFn: async (): Promise<GuardData> => {
+      const r = await fetch('/api/admin/guardrails')
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+    refetchInterval: 30_000,
+  })
+  const cfg = data?.config
+  const save = async (patch: Partial<GuardData['config']>) => {
+    if (!cfg) return
+    const body = { ...cfg, ...patch }
+    await fetch('/api/admin/guardrails', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    await qc.invalidateQueries({ queryKey: ['guardrails'] })
+  }
+  const CHECKS: Array<{ key: string; label: string }> = [
+    { key: 'zero_tool_claim', label: 'Zero-tool claim (claims done, no tool ran)' },
+    { key: 'ungrounded_ref', label: 'Ungrounded reference (invented link/id)' },
+    { key: 'fabricated_outage', label: 'Fabricated outage (claims failure, nothing errored)' },
+  ]
+
+  return (
+    <Panel>
+      <div className="mb-2 text-sm font-semibold text-fg">Confab guard</div>
+      <p className="mb-4 text-xs text-muted">
+        A cheap structural check on every model’s output at the gateway — catches claims of work no tool did, invented
+        links/ids, and fabricated outages. No extra model call, no added context. <strong>Observe</strong> just records;
+        <strong> annotate</strong> appends a caveat; <strong>strict</strong> can hold/regenerate.
+      </p>
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] uppercase tracking-wide text-muted">Mode</span>
+          <Select size="sm" value={cfg?.mode ?? 'observe'} onChange={(e) => void save({ mode: e.target.value })} className="w-40">
+            <option value="off">Off</option>
+            <option value="observe">Observe</option>
+            <option value="annotate">Annotate</option>
+            <option value="strict">Strict</option>
+          </Select>
+        </div>
+        <div className="text-xs text-muted">{data?.stats.total ?? 0} findings recorded</div>
+      </div>
+      <div className="mt-3 space-y-1.5">
+        {CHECKS.map((c) => (
+          <label key={c.key} className="flex items-center gap-2 text-sm text-fg">
+            <input
+              type="checkbox"
+              checked={cfg?.checks[c.key] ?? true}
+              disabled={cfg?.mode === 'off'}
+              onChange={(e) => cfg && void save({ checks: { ...cfg.checks, [c.key]: e.target.checked } })}
+            />
+            {c.label}
+            {data?.stats.byCheck[c.key] ? <span className="text-[11px] text-muted">· {data.stats.byCheck[c.key]}</span> : null}
+          </label>
+        ))}
+      </div>
+      {data?.findings && data.findings.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Recent findings</div>
+          <div className="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-lg border border-line-subtle">
+            {data.findings.slice(0, 20).map((f) => (
+              <div key={f.id} className="flex items-start gap-2 px-2 py-1.5 text-xs">
+                <span className="shrink-0 rounded px-1 text-[10px] uppercase" style={{ color: f.severity === 'high' ? 'var(--theme-danger)' : 'var(--theme-warning)' }}>{f.check.replace(/_/g, ' ')}</span>
+                <span className="min-w-0 flex-1 truncate text-muted" title={f.snippet}>{f.snippet || f.message}</span>
+                <span className="shrink-0 text-[10px] text-muted">{f.model}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </Panel>
   )
 }

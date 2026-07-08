@@ -17,9 +17,17 @@ engineering-facing tracker.
     judge comment ("revision N/3"), bounded to 3 cycles then escalates (stays in
     quality_review for a human). pass/escalate always go to the human. Board
     settings → QA judge selector. Verified live.
+  - ✅ **Confab guard (Talaria-native, #80)** — the Hermes confab-guard plugin,
+    reborn as a configurable **gateway guardrail** (drop-in across model classes).
+    3 structural checks (zero-tool claim / ungrounded ref / fabricated outage),
+    tool record derived from the request messages (no trace export needed), modes
+    off/observe(default)/annotate/strict, findings recorded out-of-band (zero
+    added model tokens). Admin → Confab guard. Verified live (all 3 checks fired).
+  - ⏳ **Confab guard follow-ups** — streaming-annotate on the public route;
+    confidence scoring; layered structural→judge tiering; pluggable checks
+    (PII/secret-leak); feedback-into-agent-memory.
   - ⏳ **Hermes self-review** (#78) — enable subagent-driven-development /
-    requesting-code-review skills fleet-wide as the agent's first line; scope the
-    confab-guard tool-trace export into Talaria.
+    requesting-code-review skills fleet-wide as the agent's first line.
 - **Artifact system (#54)** — *active.* Versioned work products with built-in
   hosting, viewing, and sharing.
   - ✅ Foundation: `artifacts` table, doc kind, sharing (reuses KB visibility +
