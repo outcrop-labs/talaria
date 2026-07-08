@@ -89,6 +89,9 @@ interface Chassis {
   volumes?: Record<string, unknown>
   /** Secret definitions the extras may reference. */
   secrets?: Record<string, unknown>
+  /** External docker network the fleet joins (fresh installs use their own;
+   *  this machine's legacy default is ai_default). */
+  network?: { name: string }
 }
 
 export interface RenderResult {
@@ -212,7 +215,7 @@ export async function renderFleet(): Promise<RenderResult> {
     services,
     volumes,
     ...(Object.keys(secrets).length ? { secrets } : {}),
-    networks: { fleet: { external: true, name: `${LEGACY_DOCKER_PROJECT}_default` } },
+    networks: { fleet: { external: true, name: chassis.network?.name ?? `${LEGACY_DOCKER_PROJECT}_default` } },
   }
   const composePath = join(FLEET_DIR(), 'docker-compose.yml')
   await mkdir(FLEET_DIR(), { recursive: true })

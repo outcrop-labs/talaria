@@ -1,0 +1,38 @@
+# Talaria dev infrastructure — Postgres + Redis, nothing else. The app itself
+# runs on the host (`scripts/dev.sh` → vite on :5273); agents render into
+# fleet/ and run under the separate `talaria-fleet` compose project.
+name: talaria-dev
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ${TALARIA_PG_CONTAINER:-talaria-postgres-dev}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: talaria
+      POSTGRES_PASSWORD: talaria
+      POSTGRES_DB: talaria
+    ports:
+      - '${TALARIA_PG_PORT:-5544}:5432'
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U talaria -d talaria']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    container_name: ${TALARIA_REDIS_CONTAINER:-talaria-redis-dev}
+    restart: unless-stopped
+    ports:
+      - '${TALARIA_REDIS_PORT:-6399}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  pg-data:
+  redis-data:
