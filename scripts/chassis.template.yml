@@ -1,0 +1,31 @@
+# The fleet chassis — every agent renders from this one service block.
+# Talaria stamps per-agent identity (key, model name, config/SOUL/skills
+# mounts, state volume) at render time; put only SHARED anatomy here.
+#
+# Fill fleet/.env with the referenced variables (LLM_BASE_URL etc.) before
+# starting agents. HERMES_IMAGE overrides the agent image.
+service:
+  image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+  command: gateway run
+  restart: unless-stopped
+  healthcheck:
+    test: ['CMD-SHELL', 'curl -sf http://localhost:8642/health || exit 1']
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 60s
+  environment:
+    # The LLM the agents call by default (an OpenAI-compatible endpoint).
+    LLM_BASE_URL: ${LLM_BASE_URL:-}
+    LLM_API_KEY: ${LLM_API_KEY:-}
+    LLM_MODEL: ${LLM_MODEL:-}
+    API_SERVER_ENABLED: 'true'
+    API_SERVER_HOST: 0.0.0.0
+    HERMES_ACCEPT_HOOKS: '1'
+    HERMES_SKIP_CONFIG_MIGRATION: '1'
+    TALARIA_HEARTBEAT_SECONDS: ${TALARIA_HEARTBEAT_SECONDS:-0}
+  volumes: []
+
+# Fresh installs get their own fleet network (created by scripts/setup.sh).
+network:
+  name: talaria-fleet

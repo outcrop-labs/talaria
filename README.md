@@ -163,17 +163,24 @@ The workspace, the fleet harness, and the money view are shipped and running:
 
 ## Run it
 
-The app:
+First time on a machine — one script sets up everything from blank (generates
+secrets and an admin login, writes `ui/.env` + the fleet config plane, creates
+the docker network, pulls infra images, installs deps):
 
 ```bash
-cd ui
-cp .env.example .env       # set AUTH_SECRET, turn on a provider, point at Postgres/Redis
-npm install
-npm run dev                # http://localhost:5273
+./scripts/setup.sh         # prints your generated admin credentials
+./scripts/dev.sh           # postgres + redis + the app → http://localhost:5273
 ```
 
-Dev state runs in containers (`talaria-postgres-dev` on :5544, `talaria-redis-dev` on :6399). The default
-self-host admin is **`jon@packledger.co` / `talaria-dev`**. More detail and a couple of gotchas in
+Sign in with the credentials `setup.sh` printed, add an LLM endpoint on
+`/models`, then design your first agent on `/agents` (Muse drafts the whole
+thing from a description). Both scripts are idempotent; `dev.sh` waits for
+Postgres before booting the app (avoids the cached-migration-failure gotcha).
+Dev state runs in containers (`talaria-postgres-dev` on :5544,
+`talaria-redis-dev` on :6399 — override with `TALARIA_PG_PORT` /
+`TALARIA_REDIS_PORT`). Agents run under the separate `talaria-fleet` compose
+project, rendered into the gitignored `fleet/` dir from one Talaria-owned
+chassis (`fleet/chassis.yml`; agent image via `HERMES_IMAGE`). More detail in
 [`ui/README.md`](./ui/README.md) and [`HANDOFF.md`](./HANDOFF.md).
 
 The fleet engine:
