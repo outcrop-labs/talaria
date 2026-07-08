@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setOfficial } from '@/server/kb'
-import { canEditAgent, canEditHuman, canRead, isOwner, setEditors } from '@/server/kb-perms'
+import { canEditAgent, canEditHuman, canRead, canReadAgent, isOwner, setEditors } from '@/server/kb-perms'
 import { logAudit } from '@/server/audit'
 
 const Editor = z.object({ principalType: z.enum(['user', 'agent']), principalId: z.string().min(1).max(200), role: z.enum(['viewer', 'editor']).default('viewer') })
@@ -29,9 +29,15 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
       GET: async ({ request, params }) => {
         const doc = await getDoc(params.id)
         if (!doc) return json({ error: 'not found' }, { status: 404 })
+        const { perms, grants } = await effectiveDocPerms(doc)
+        // Agents (over MCP) read by effective audience: org/public, or a grant.
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          if (!name || !canReadAgent(perms, name, grants)) return json({ error: 'forbidden' }, { status: 403 })
+          return json({ doc: { ...doc, visibility: perms.visibility, editPolicy: perms.editPolicy }, editors: grants })
+        }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const { perms, grants } = await effectiveDocPerms(doc)
         if (!canRead(perms, user.id, user.email ?? user.name, grants)) return json({ error: 'forbidden' }, { status: 403 })
         // Surface the effective visibility/policy so the UI shows what actually applies.
         return json({ doc: { ...doc, visibility: perms.visibility, editPolicy: perms.editPolicy }, editors: grants })

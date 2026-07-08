@@ -234,6 +234,50 @@ server.registerTool(
   async ({ documentId }) => ok(await api('POST', `/api/artifacts/${encodeURIComponent(documentId)}/export/google`)),
 )
 
+// ── Knowledgebase (browse + read + edit granted docs) ──────────────────────
+// search_knowledge finds things across everything; these let you navigate the
+// curated KB directly and edit docs you've been granted Editor on.
+server.registerTool(
+  'list_kb_spaces',
+  {
+    description: 'List knowledgebase spaces (folders) you can access — org/public ones plus any shared with you. Use to find where a doc lives.',
+    inputSchema: {},
+  },
+  async () => ok(await api('GET', '/api/kb/spaces')),
+)
+
+server.registerTool(
+  'list_kb_docs',
+  {
+    description: "List the docs in a knowledgebase space (id + title + tree position). Get the spaceId from list_kb_spaces.",
+    inputSchema: { spaceId: z.string().describe('Space id (from list_kb_spaces)') },
+  },
+  async ({ spaceId }) => ok(await api('GET', `/api/kb/spaces/${encodeURIComponent(spaceId)}/docs`)),
+)
+
+server.registerTool(
+  'read_kb_doc',
+  {
+    description: "Read a knowledgebase doc in full — its markdown body + metadata. Use search_knowledge or list_kb_docs to find the id.",
+    inputSchema: { docId: z.string().describe('KB doc id') },
+  },
+  async ({ docId }) => ok(await api('GET', `/api/kb/docs/${encodeURIComponent(docId)}`)),
+)
+
+server.registerTool(
+  'edit_kb_doc',
+  {
+    description:
+      "Edit a knowledgebase doc you've been granted Editor access to: replace its title and/or markdown body. Each save is versioned. You can't change sharing or officialize — a human owns that.",
+    inputSchema: {
+      docId: z.string().describe('KB doc id'),
+      title: z.string().max(200).optional(),
+      markdown: z.string().max(500_000).optional().describe('New full markdown body'),
+    },
+  },
+  async ({ docId, title, markdown }) => ok(await api('PUT', `/api/kb/docs/${encodeURIComponent(docId)}`, { title, body: markdown })),
+)
+
 // ── Calendar & Gmail (acts as your owner, or the shared org account) ────────
 // Reads are immediate; anything outbound is DRAFTED and waits for a human to
 // approve in Talaria before it sends. A personal assistant acts as its owner

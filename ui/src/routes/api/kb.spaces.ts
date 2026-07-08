@@ -2,8 +2,9 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { createSpace, listSpaces } from '@/server/kb'
-import { canRead, grantedItemIds } from '@/server/kb-perms'
+import { canRead, canReadAgent, grantedItemIds, grantedItemIdsForAgent } from '@/server/kb-perms'
 
 const Body = z.object({ name: z.string().min(1).max(80), description: z.string().max(400).optional(), icon: z.string().max(8).optional() })
 
@@ -12,6 +13,14 @@ export const Route = createFileRoute('/api/kb/spaces')({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        // Agents (over MCP) see org/public spaces + ones granted to them.
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+          const granted = await grantedItemIdsForAgent('space', name)
+          const spaces = (await listSpaces()).filter((s) => granted.has(s.id) || canReadAgent(s, name))
+          return json({ spaces })
+        }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         // Hide folders the caller can't read, but keep ones shared with them.
