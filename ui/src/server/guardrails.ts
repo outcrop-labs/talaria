@@ -15,25 +15,23 @@ import { getSetting, setSetting } from './audit'
 import { db } from './db/pg'
 
 export type GuardMode = 'off' | 'observe' | 'annotate' | 'strict'
-export type GuardCheck = 'zero_tool_claim' | 'ungrounded_ref' | 'fabricated_outage'
 
 export interface GuardConfig {
   mode: GuardMode
-  checks: Record<GuardCheck, boolean>
+  /** Per-rule on/off (keyed by rule id). Missing key ⇒ the rule's default. */
+  checks: Record<string, boolean>
+  /** Findings below this confidence [0..1] are dropped. */
+  minConfidence: number
   /** Hosts whose links get grounding-checked (org-internal tools). UUIDs are
    *  always checked. Empty ⇒ only UUIDs are policed. */
   policedHosts: string[]
 }
 
-const DEFAULT_CONFIG: GuardConfig = {
-  mode: 'observe',
-  checks: { zero_tool_claim: true, ungrounded_ref: true, fabricated_outage: true },
-  policedHosts: [],
-}
+const DEFAULT_CONFIG: GuardConfig = { mode: 'observe', checks: {}, minConfidence: 0.5, policedHosts: [] }
 
 export const getGuardConfig = async (): Promise<GuardConfig> => {
   const c = await getSetting<Partial<GuardConfig>>('guardrails_config', DEFAULT_CONFIG)
-  return { ...DEFAULT_CONFIG, ...c, checks: { ...DEFAULT_CONFIG.checks, ...c.checks } }
+  return { ...DEFAULT_CONFIG, ...c, checks: { ...c.checks } }
 }
 export const setGuardConfig = (c: GuardConfig) => setSetting('guardrails_config', c)
 
@@ -161,11 +159,34 @@ function ungroundedRefs(text: string, haystack: string, policedHosts: string[]):
   return extractRefs(text, policedHosts).filter((r) => !hay.includes(r))
 }
 
-// ── Run ──────────────────────────────────────────────────────────────────────
+// ── Secret leak ──────────────────────────────────────────────────────────────
+// High-value security check: an agent should never emit a live credential.
+const SECRET_PATTERNS: Array<{ label: string; re: RegExp }> = [
+  { label: 'OpenAI key', re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/ },
+  { label: 'Anthropic key', re: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/ },
+  { label: 'AWS access key', re: /\bAKIA[0-9A-Z]{16}\b/ },
+  { label: 'Google API key', re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+  { label: 'Slack token', re: /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/ },
+  { label: 'GitHub token', re: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/ },
+  { label: 'Talaria gateway key', re: /\btlk_[a-f0-9]{40,}\b/ },
+  { label: 'Private key block', re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
+]
+function detectSecret(text: string): { label: string; snippet: string } | null {
+  for (const { label, re } of SECRET_PATTERNS) {
+    const m = re.exec(text)
+    if (m) return { label, snippet: `${label}: ${m[0].slice(0, 8)}…` }
+  }
+  return null
+}
+
+// ── Rule registry ────────────────────────────────────────────────────────────
+
+export type Severity = 'low' | 'medium' | 'high'
 
 export interface Finding {
-  check: GuardCheck
-  severity: 'low' | 'medium' | 'high'
+  check: string
+  severity: Severity
+  confidence: number
   message: string
   snippet: string
 }
@@ -174,31 +195,84 @@ export interface GuardContext {
   answer: string
   toolRecord: ToolRecord
   userMessage: string
+  policedHosts: string[]
 }
 
-/** Run the enabled checks. Pure — returns findings, mutates nothing. */
+export interface Rule {
+  id: string
+  label: string
+  severity: Severity
+  defaultOn: boolean
+  /** Returns a hit (message + snippet + confidence 0..1) or null. Pure. */
+  run(ctx: GuardContext): { message: string; snippet: string; confidence: number } | null
+}
+
+// The registry. Add a rule here → it's configurable + runs everywhere, no other
+// wiring. (Extensible: PII, unsafe-action, etc. slot in the same way.)
+export const RULES: Rule[] = [
+  {
+    id: 'zero_tool_claim',
+    label: 'Zero-tool claim (claims done, no tool ran)',
+    severity: 'high',
+    defaultOn: true,
+    run: (ctx) => {
+      if (ctx.toolRecord.backingTools.length > 0) return null
+      const s = claimsCompletedAction(ctx.answer)
+      return s ? { message: 'Claims a completed action, but no external tool ran this turn.', snippet: s.slice(0, 240), confidence: 0.8 } : null
+    },
+  },
+  {
+    id: 'ungrounded_ref',
+    label: 'Ungrounded reference (invented link/id)',
+    severity: 'medium',
+    defaultOn: true,
+    run: (ctx) => {
+      const tr = ctx.toolRecord
+      if (tr.backingTools.length === 0 || tr.overflowed) return null
+      const ungrounded = ungroundedRefs(ctx.answer, `${tr.resultsText}\n${ctx.userMessage}`, ctx.policedHosts)
+      return ungrounded.length
+        ? { message: 'Cites link(s)/id(s) that did not appear in any tool result this turn — may be fabricated.', snippet: ungrounded.slice(0, 8).join(', '), confidence: 0.7 }
+        : null
+    },
+  },
+  {
+    id: 'fabricated_outage',
+    label: 'Fabricated outage (claims failure, nothing errored)',
+    severity: 'high',
+    defaultOn: true,
+    run: (ctx) => {
+      if (ctx.toolRecord.anyError) return null
+      const s = claimsInfraFailure(ctx.answer)
+      return s ? { message: 'Claims an outage/failure, but no tool returned an error this turn.', snippet: s.slice(0, 240), confidence: 0.85 } : null
+    },
+  },
+  {
+    id: 'secret_leak',
+    label: 'Secret leak (credential in output)',
+    severity: 'high',
+    defaultOn: true,
+    run: (ctx) => {
+      const hit = detectSecret(ctx.answer)
+      return hit ? { message: `Output appears to contain a live credential (${hit.label}).`, snippet: hit.snippet, confidence: 0.95 } : null
+    },
+  },
+]
+
+const ruleEnabled = (config: GuardConfig, rule: Rule) => config.checks[rule.id] ?? rule.defaultOn
+
+/** Metadata for the admin UI (which rules exist, defaults). */
+export const guardRuleMeta = () => RULES.map((r) => ({ id: r.id, label: r.label, severity: r.severity, defaultOn: r.defaultOn }))
+
+/** Run the enabled rules, keep findings at/above the confidence threshold. Pure. */
 export function runGuardrails(ctx: GuardContext, config: GuardConfig): Finding[] {
+  if (!ctx.answer) return []
   const out: Finding[] = []
-  const { answer, toolRecord: tr } = ctx
-  if (!answer) return out
-
-  // Fabricated outage is orthogonal — check it whenever no real error occurred.
-  if (config.checks.fabricated_outage && !tr.anyError) {
-    const outage = claimsInfraFailure(answer)
-    if (outage) out.push({ check: 'fabricated_outage', severity: 'high', message: 'Claims an outage/failure, but no tool returned an error this turn.', snippet: outage.slice(0, 240) })
-  }
-
-  if (tr.backingTools.length === 0) {
-    // No external tool ran → a completion claim can't be backed.
-    if (config.checks.zero_tool_claim) {
-      const sentence = claimsCompletedAction(answer)
-      if (sentence) out.push({ check: 'zero_tool_claim', severity: 'high', message: 'Claims a completed action, but no external tool ran this turn.', snippet: sentence.slice(0, 240) })
+  for (const rule of RULES) {
+    if (!ruleEnabled(config, rule)) continue
+    const hit = rule.run(ctx)
+    if (hit && hit.confidence >= config.minConfidence) {
+      out.push({ check: rule.id, severity: rule.severity, confidence: hit.confidence, message: hit.message, snippet: hit.snippet })
     }
-  } else if (config.checks.ungrounded_ref && !tr.overflowed) {
-    // Tools ran → links/ids in the answer should be grounded in their results.
-    const haystack = `${tr.resultsText}\n${ctx.userMessage}`
-    const ungrounded = ungroundedRefs(answer, haystack, config.policedHosts)
-    if (ungrounded.length) out.push({ check: 'ungrounded_ref', severity: 'medium', message: 'Cites link(s)/id(s) that did not appear in any tool result this turn — may be fabricated.', snippet: ungrounded.slice(0, 8).join(', ') })
   }
   return out
 }
@@ -221,8 +295,8 @@ export async function recordFindings(
   const sql = await db()
   for (const f of findings) {
     await sql`
-      insert into guard_findings (caller, model, endpoint, mode, check_type, severity, message, snippet)
-      values (${meta.caller}, ${meta.model}, ${meta.endpoint}, ${meta.mode}, ${f.check}, ${f.severity}, ${f.message}, ${f.snippet})
+      insert into guard_findings (caller, model, endpoint, mode, check_type, severity, confidence, message, snippet)
+      values (${meta.caller}, ${meta.model}, ${meta.endpoint}, ${meta.mode}, ${f.check}, ${f.severity}, ${f.confidence}, ${f.message}, ${f.snippet})
     `
   }
 }
@@ -235,6 +309,7 @@ export interface GuardFindingRow {
   mode: string
   check: string
   severity: string
+  confidence: number
   message: string
   snippet: string
   createdAt: string
@@ -243,7 +318,7 @@ export interface GuardFindingRow {
 export async function listFindings(limit = 100): Promise<GuardFindingRow[]> {
   const sql = await db()
   return (await sql`
-    select id, caller, model, endpoint, mode, check_type as "check", severity, message, snippet, created_at as "createdAt"
+    select id, caller, model, endpoint, mode, check_type as "check", severity, confidence, message, snippet, created_at as "createdAt"
     from guard_findings order by created_at desc limit ${Math.min(Math.max(limit, 1), 500)}
   `) as unknown as GuardFindingRow[]
 }
@@ -274,7 +349,7 @@ export async function guardCompletion(input: {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]?.role === 'user') { userMessage = asText(messages[i]!.content); break }
   }
-  const findings = runGuardrails({ answer: input.answer, toolRecord, userMessage }, config)
+  const findings = runGuardrails({ answer: input.answer, toolRecord, userMessage, policedHosts: config.policedHosts }, config)
   await recordFindings(findings, { caller: input.caller, model: input.model, endpoint: input.endpoint, mode: config.mode }).catch(() => {})
   const caveat = config.mode === 'annotate' || config.mode === 'strict' ? caveatFor(findings) : ''
   return { findings, caveat, mode: config.mode }
