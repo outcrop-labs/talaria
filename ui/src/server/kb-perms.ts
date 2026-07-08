@@ -45,6 +45,16 @@ export async function grantedItemIds(itemType: 'doc' | 'space' | 'artifact', use
   return new Set(rows.map((r) => r.itemId))
 }
 
+/** Same, for an agent (by model) — used when an agent lists items over MCP. */
+export async function grantedItemIdsForAgent(itemType: 'doc' | 'space' | 'artifact', agentModel: string): Promise<Set<string>> {
+  const sql = await db()
+  const rows = (await sql`
+    select item_id as "itemId" from kb_editors
+    where item_type = ${itemType} and principal_type = 'agent' and principal_id = ${agentModel}
+  `) as unknown as Array<{ itemId: string }>
+  return new Set(rows.map((r) => r.itemId))
+}
+
 export async function setEditors(itemType: 'doc' | 'space' | 'artifact', itemId: string, grants: EditorGrant[]): Promise<void> {
   const sql = await db()
   await sql.begin(async (tx) => {
