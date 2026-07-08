@@ -5,12 +5,20 @@ Status as of 2026-07-07. Newest product direction lives in the app; this is the
 engineering-facing tracker.
 
 ## In progress
-- **Artifact system (#54)** — *active.* Versioned work products (doc / sheet /
-  microsite / file) with built-in hosting, viewing, and sharing; cloud-storage
-  connectors (S3 / Drive); attach an artifact to anything; "make official" →
-  translate to markdown → store in the knowledgebase → org brain. Reuses the KB
-  sharing model (visibility + viewer/editor grants + folder-style inheritance),
-  the `PermissionsModal`, and the public-viewer pattern.
+- **Artifact system (#54)** — *active.* Versioned work products with built-in
+  hosting, viewing, and sharing.
+  - ✅ Foundation: `artifacts` table, doc kind, sharing (reuses KB visibility +
+    viewer/editor grants + `PermissionsModal`), versioning, public viewer.
+  - ✅ Make official → markdown → knowledgebase → org brain pipeline.
+  - ✅ Microsite kind — HTML editing + sandboxed live preview + public hosting.
+  - ✅ Attach an artifact to anything (`artifact_links`; KB docs are the first
+    consumer with an Attachments section).
+  - ⏳ **File kind + uploads** — store binaries (reuse the uploads infra), host
+    + download; the `storage_ref` column is ready.
+  - ⏳ **Sheet kind** — a tabular/grid editor.
+  - ⏳ **Cloud-storage connectors** — S3 / Google Drive behind the `storage_ref`
+    abstraction (touches the secure key-name model).
+  - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
 
 ## High-value, ready to pick up
 - **Per-agent Talaria toolkit (#58)** — give each agent MCP tools + skills to
