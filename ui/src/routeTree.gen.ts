@@ -65,6 +65,7 @@ import { Route as ApiMcpTestRouteImport } from './routes/api/mcp.test'
 import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
 import { Route as ApiKbSpacesRouteImport } from './routes/api/kb.spaces'
 import { Route as ApiKbSearchRouteImport } from './routes/api/kb.search'
+import { Route as ApiIntegrationsGoogleRouteImport } from './routes/api/integrations/google'
 import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
 import { Route as ApiFleetReconcileRouteImport } from './routes/api/fleet.reconcile'
 import { Route as ApiFleetEndpointsRouteImport } from './routes/api/fleet.endpoints'
@@ -99,6 +100,8 @@ import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
 import { Route as ApiKbPublicSlugRouteImport } from './routes/api/kb.public.$slug'
 import { Route as ApiKbDocsIdRouteImport } from './routes/api/kb.docs.$id'
+import { Route as ApiIntegrationsGoogleConnectRouteImport } from './routes/api/integrations/google.connect'
+import { Route as ApiIntegrationsGoogleCallbackRouteImport } from './routes/api/integrations/google.callback'
 import { Route as ApiFleetEndpointsIdRouteImport } from './routes/api/fleet.endpoints.$id'
 import { Route as ApiFleetDefsIdRouteImport } from './routes/api/fleet.defs.$id'
 import { Route as ApiChannelsIdPlanRouteImport } from './routes/api/channels.$id.plan'
@@ -127,6 +130,7 @@ import { Route as ApiFleetDefsIdEditRouteImport } from './routes/api/fleet.defs.
 import { Route as ApiFleetAgentsIdCronsRouteImport } from './routes/api/fleet.agents.$id.crons'
 import { Route as ApiFleetAgentsIdControlRouteImport } from './routes/api/fleet.agents.$id.control'
 import { Route as ApiArtifactsPublicSlugDownloadRouteImport } from './routes/api/artifacts.public.$slug.download'
+import { Route as ApiArtifactsIdExportGoogleRouteImport } from './routes/api/artifacts.$id.export.google'
 import { Route as ApiFleetAgentsIdCronsJobIdRouteImport } from './routes/api/fleet.agents.$id.crons.$jobId'
 
 const LoginRoute = LoginRouteImport.update({
@@ -408,6 +412,11 @@ const ApiKbSearchRoute = ApiKbSearchRouteImport.update({
   path: '/api/kb/search',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiIntegrationsGoogleRoute = ApiIntegrationsGoogleRouteImport.update({
+  id: '/api/integrations/google',
+  path: '/api/integrations/google',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiFleetRenderRoute = ApiFleetRenderRouteImport.update({
   id: '/render',
   path: '/render',
@@ -578,6 +587,18 @@ const ApiKbDocsIdRoute = ApiKbDocsIdRouteImport.update({
   path: '/api/kb/docs/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiIntegrationsGoogleConnectRoute =
+  ApiIntegrationsGoogleConnectRouteImport.update({
+    id: '/connect',
+    path: '/connect',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
+const ApiIntegrationsGoogleCallbackRoute =
+  ApiIntegrationsGoogleCallbackRouteImport.update({
+    id: '/callback',
+    path: '/callback',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
 const ApiFleetEndpointsIdRoute = ApiFleetEndpointsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -720,6 +741,12 @@ const ApiArtifactsPublicSlugDownloadRoute =
     path: '/download',
     getParentRoute: () => ApiArtifactsPublicSlugRoute,
   } as any)
+const ApiArtifactsIdExportGoogleRoute =
+  ApiArtifactsIdExportGoogleRouteImport.update({
+    id: '/export/google',
+    path: '/export/google',
+    getParentRoute: () => ApiArtifactsIdRoute,
+  } as any)
 const ApiFleetAgentsIdCronsJobIdRoute =
   ApiFleetAgentsIdCronsJobIdRouteImport.update({
     id: '/$jobId',
@@ -793,6 +820,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/integrations/google': typeof ApiIntegrationsGoogleRouteWithChildren
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
@@ -821,6 +849,8 @@ export interface FileRoutesByFullPath {
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
+  '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -833,6 +863,7 @@ export interface FileRoutesByFullPath {
   '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/artifacts/$id/export/google': typeof ApiArtifactsIdExportGoogleRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/agents/$id/crons': typeof ApiFleetAgentsIdCronsRouteWithChildren
@@ -913,6 +944,7 @@ export interface FileRoutesByTo {
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/integrations/google': typeof ApiIntegrationsGoogleRouteWithChildren
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
@@ -941,6 +973,8 @@ export interface FileRoutesByTo {
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
+  '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -953,6 +987,7 @@ export interface FileRoutesByTo {
   '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/artifacts/$id/export/google': typeof ApiArtifactsIdExportGoogleRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/agents/$id/crons': typeof ApiFleetAgentsIdCronsRouteWithChildren
@@ -1035,6 +1070,7 @@ export interface FileRoutesById {
   '/api/fleet/endpoints': typeof ApiFleetEndpointsRouteWithChildren
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/integrations/google': typeof ApiIntegrationsGoogleRouteWithChildren
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
@@ -1063,6 +1099,8 @@ export interface FileRoutesById {
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
+  '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -1075,6 +1113,7 @@ export interface FileRoutesById {
   '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/artifacts/$id/export/google': typeof ApiArtifactsIdExportGoogleRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/agents/$id/crons': typeof ApiFleetAgentsIdCronsRouteWithChildren
@@ -1157,6 +1196,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints'
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
+    | '/api/integrations/google'
     | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
@@ -1185,6 +1225,8 @@ export interface FileRouteTypes {
     | '/api/channels/$id/plan'
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
+    | '/api/integrations/google/callback'
+    | '/api/integrations/google/connect'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1197,6 +1239,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/artifacts/$id/export/google'
     | '/api/artifacts/public/$slug/download'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/agents/$id/crons'
@@ -1277,6 +1320,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints'
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
+    | '/api/integrations/google'
     | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
@@ -1305,6 +1349,8 @@ export interface FileRouteTypes {
     | '/api/channels/$id/plan'
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
+    | '/api/integrations/google/callback'
+    | '/api/integrations/google/connect'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1317,6 +1363,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/artifacts/$id/export/google'
     | '/api/artifacts/public/$slug/download'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/agents/$id/crons'
@@ -1398,6 +1445,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints'
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
+    | '/api/integrations/google'
     | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
@@ -1426,6 +1474,8 @@ export interface FileRouteTypes {
     | '/api/channels/$id/plan'
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
+    | '/api/integrations/google/callback'
+    | '/api/integrations/google/connect'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1438,6 +1488,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/artifacts/$id/export/google'
     | '/api/artifacts/public/$slug/download'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/agents/$id/crons'
@@ -1487,6 +1538,7 @@ export interface RootRouteChildren {
   ApiAuthPasswordRoute: typeof ApiAuthPasswordRoute
   ApiAuthProvidersRoute: typeof ApiAuthProvidersRoute
   ApiAuthSessionRoute: typeof ApiAuthSessionRoute
+  ApiIntegrationsGoogleRoute: typeof ApiIntegrationsGoogleRouteWithChildren
   ApiKbSearchRoute: typeof ApiKbSearchRoute
   ApiKbSpacesRoute: typeof ApiKbSpacesRouteWithChildren
   ApiMeAssistantRoute: typeof ApiMeAssistantRoute
@@ -1896,6 +1948,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKbSearchRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/integrations/google': {
+      id: '/api/integrations/google'
+      path: '/api/integrations/google'
+      fullPath: '/api/integrations/google'
+      preLoaderRoute: typeof ApiIntegrationsGoogleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/fleet/render': {
       id: '/api/fleet/render'
       path: '/render'
@@ -2134,6 +2193,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKbDocsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/integrations/google/connect': {
+      id: '/api/integrations/google/connect'
+      path: '/connect'
+      fullPath: '/api/integrations/google/connect'
+      preLoaderRoute: typeof ApiIntegrationsGoogleConnectRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
+    '/api/integrations/google/callback': {
+      id: '/api/integrations/google/callback'
+      path: '/callback'
+      fullPath: '/api/integrations/google/callback'
+      preLoaderRoute: typeof ApiIntegrationsGoogleCallbackRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
     '/api/fleet/endpoints/$id': {
       id: '/api/fleet/endpoints/$id'
       path: '/$id'
@@ -2330,6 +2403,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiArtifactsPublicSlugDownloadRouteImport
       parentRoute: typeof ApiArtifactsPublicSlugRoute
     }
+    '/api/artifacts/$id/export/google': {
+      id: '/api/artifacts/$id/export/google'
+      path: '/export/google'
+      fullPath: '/api/artifacts/$id/export/google'
+      preLoaderRoute: typeof ApiArtifactsIdExportGoogleRouteImport
+      parentRoute: typeof ApiArtifactsIdRoute
+    }
     '/api/fleet/agents/$id/crons/$jobId': {
       id: '/api/fleet/agents/$id/crons/$jobId'
       path: '/$jobId'
@@ -2426,10 +2506,12 @@ const ApiArtifactFoldersRouteWithChildren =
 
 interface ApiArtifactsIdRouteChildren {
   ApiArtifactsIdLinksRoute: typeof ApiArtifactsIdLinksRoute
+  ApiArtifactsIdExportGoogleRoute: typeof ApiArtifactsIdExportGoogleRoute
 }
 
 const ApiArtifactsIdRouteChildren: ApiArtifactsIdRouteChildren = {
   ApiArtifactsIdLinksRoute: ApiArtifactsIdLinksRoute,
+  ApiArtifactsIdExportGoogleRoute: ApiArtifactsIdExportGoogleRoute,
 }
 
 const ApiArtifactsIdRouteWithChildren = ApiArtifactsIdRoute._addFileChildren(
@@ -2700,6 +2782,21 @@ const ApiAuthGoogleRouteWithChildren = ApiAuthGoogleRoute._addFileChildren(
   ApiAuthGoogleRouteChildren,
 )
 
+interface ApiIntegrationsGoogleRouteChildren {
+  ApiIntegrationsGoogleCallbackRoute: typeof ApiIntegrationsGoogleCallbackRoute
+  ApiIntegrationsGoogleConnectRoute: typeof ApiIntegrationsGoogleConnectRoute
+}
+
+const ApiIntegrationsGoogleRouteChildren: ApiIntegrationsGoogleRouteChildren = {
+  ApiIntegrationsGoogleCallbackRoute: ApiIntegrationsGoogleCallbackRoute,
+  ApiIntegrationsGoogleConnectRoute: ApiIntegrationsGoogleConnectRoute,
+}
+
+const ApiIntegrationsGoogleRouteWithChildren =
+  ApiIntegrationsGoogleRoute._addFileChildren(
+    ApiIntegrationsGoogleRouteChildren,
+  )
+
 interface ApiKbSpacesIdRouteChildren {
   ApiKbSpacesIdDocsRoute: typeof ApiKbSpacesIdDocsRoute
 }
@@ -2803,6 +2900,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthPasswordRoute: ApiAuthPasswordRoute,
   ApiAuthProvidersRoute: ApiAuthProvidersRoute,
   ApiAuthSessionRoute: ApiAuthSessionRoute,
+  ApiIntegrationsGoogleRoute: ApiIntegrationsGoogleRouteWithChildren,
   ApiKbSearchRoute: ApiKbSearchRoute,
   ApiKbSpacesRoute: ApiKbSpacesRouteWithChildren,
   ApiMeAssistantRoute: ApiMeAssistantRoute,
