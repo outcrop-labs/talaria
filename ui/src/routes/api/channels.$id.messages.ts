@@ -2,7 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { channelRole, insertChannelMessage, listChannelMessages } from '@/server/channels'
+import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { channelRole, insertChannelMessage, listChannelAgents, listChannelMessages } from '@/server/channels'
 import { notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
 import { resolveAttachments } from '@/server/uploads'
 import { indexActivity } from '@/server/retrieval/sources'
@@ -14,22 +15,42 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
+        const since = Number(new URL(request.url).searchParams.get('since') ?? -1)
+        // Agents in the channel can read it.
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          if (!name || !(await listChannelAgents(params.id)).includes(name)) return json({ error: 'forbidden' }, { status: 403 })
+          return json({ messages: await listChannelMessages(params.id, Number.isFinite(since) ? since : -1) })
+        }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        const since = Number(new URL(request.url).searchParams.get('since') ?? -1)
         return json({ messages: await listChannelMessages(params.id, Number.isFinite(since) ? since : -1) })
       },
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
         const parsed = z
           .object({ content: z.string().max(20_000).default(''), attachmentIds: z.array(z.string().uuid()).max(10).optional() })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success || (!parsed.data.content && !parsed.data.attachmentIds?.length)) {
           return json({ error: 'bad request' }, { status: 400 })
         }
+
+        // An agent in the channel can post. It doesn't trigger other agents (no
+        // reply storms) and can't attach uploads.
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          if (!name || !(await listChannelAgents(params.id)).includes(name)) return json({ error: 'forbidden' }, { status: 403 })
+          if (!parsed.data.content.trim()) return json({ error: 'bad request' }, { status: 400 })
+          const msg = await insertChannelMessage(params.id, 'agent', name, parsed.data.content, 'complete')
+          const sql0 = await db()
+          const nm = ((await sql0`select name from channels where id = ${params.id}`)[0] as { name: string } | undefined)?.name ?? 'channel'
+          void indexActivity({ sourceType: 'channel', sourceId: msg.id, title: `#${nm} · ${name}`, text: parsed.data.content, payload: { channelId: params.id }, href: '/channels' }).catch(() => {})
+          return json({ message: msg })
+        }
+
+        const user = await getSessionUser(request)
+        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
         const author = user.email ?? user.name ?? 'user'
         const attachments = await resolveAttachments(parsed.data.attachmentIds ?? [])
         const message = await insertChannelMessage(params.id, 'user', author, parsed.data.content, 'complete', attachments)
