@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Play, Square, SlidersHorizontal, Archive, ArrowRightLeft, LayoutGrid, List, Loader2, Copy, UserPlus, Plus, Import } from 'lucide-react'
+import { Play, Square, SlidersHorizontal, Archive, ArrowRightLeft, CalendarClock, LayoutGrid, List, Loader2, Copy, UserPlus, Plus, Import } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import { cn } from '@/lib/cn'
 import { AgentManageModal } from '@/components/fleet/agent-manage-modal'
 import { CreateAgentModal } from '@/components/fleet/create-agent-modal'
 import { ImportWizard } from '@/components/fleet/import-wizard'
+import { FleetCronsModal } from '@/components/fleet/agent-crons'
 import {
   controlAgent,
   useFleetContainers,
@@ -61,6 +62,7 @@ function AgentsPage() {
   const [creating, setCreating] = useState(false)
   const [duplicateFrom, setDuplicateFrom] = useState<AgentDef | null>(null)
   const [importOpen, setImportOpen] = useState(false)
+  const [schedulesOpen, setSchedulesOpen] = useState(false)
 
   return (
     <div className="h-full overflow-y-auto p-8">
@@ -89,6 +91,16 @@ function AgentsPage() {
                   aria-label="New agent"
                 >
                   <Plus size={16} />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-9 px-0"
+                  onClick={() => setSchedulesOpen(true)}
+                  title="Schedules — crons across the fleet"
+                  aria-label="Schedules"
+                >
+                  <CalendarClock size={15} />
                 </Button>
                 <Button
                   variant="outline"
@@ -136,6 +148,7 @@ function AgentsPage() {
         )}
 
         {importOpen && <ImportWizard onClose={() => setImportOpen(false)} />}
+        {schedulesOpen && <FleetCronsModal onClose={() => setSchedulesOpen(false)} />}
         {creating && <CreateAgentModal open={creating} onClose={() => setCreating(false)} templates={defs.filter((d) => d.enabled)} />}
         {duplicateFrom && (
           <CreateAgentModal open onClose={() => setDuplicateFrom(null)} templates={defs} templateId={duplicateFrom.id} />
