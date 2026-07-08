@@ -74,6 +74,8 @@ function AdminPage() {
 
         <SettingsPanel />
 
+        <JudgePanel />
+
         <OrgGooglePanel />
 
         <RetrievalPanel />
@@ -208,6 +210,60 @@ function SettingsPanel() {
           Save
         </Button>
       </div>
+    </Panel>
+  )
+}
+
+// The automated QA judge — an advisory reliability gate. When a ticket hits
+// quality_review, a judge model reviews the agent's work and posts a verdict.
+function JudgePanel() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['judge-config'],
+    queryFn: async (): Promise<{ config: { enabled: boolean; model: string | null }; models: string[] }> => {
+      const r = await fetch('/api/admin/judge')
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+  })
+  const [saved, setSaved] = useState(false)
+  const enabled = data?.config.enabled ?? false
+  const model = data?.config.model ?? ''
+
+  const save = async (patch: { enabled?: boolean; model?: string | null }) => {
+    const body = { enabled: patch.enabled ?? enabled, model: patch.model !== undefined ? patch.model : model }
+    const r = await fetch('/api/admin/judge', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    if (r.ok) {
+      await qc.invalidateQueries({ queryKey: ['judge-config'] })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1500)
+    }
+  }
+
+  return (
+    <Panel>
+      <div className="mb-2 text-sm font-semibold text-fg">QA judge</div>
+      <p className="mb-4 text-xs text-muted">
+        A reliability gate: when an agent hands a ticket to <strong>quality review</strong>, a judge model reviews the
+        reported work and posts a verdict (pass / revise / escalate) with specific issues. <strong>Advisory</strong> —
+        the human reviewer still decides. Pick a strong model for the sharpest review.
+      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-sm text-fg">
+          <input type="checkbox" checked={enabled} onChange={(e) => void save({ enabled: e.target.checked })} />
+          Run the judge on quality review
+        </label>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] uppercase tracking-wide text-muted">Model</span>
+          <Select size="sm" value={model} onChange={(e) => void save({ model: e.target.value || null })} className="w-64" disabled={!enabled}>
+            <option value="">Default (self-hosted)</option>
+            {(data?.models ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
+            {model && !(data?.models ?? []).includes(model) && <option value={model}>{model}</option>}
+          </Select>
+        </div>
+        {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
+      </div>
+      <p className="mt-3 text-[11px] text-muted">Per-board override lives on each board (advisory / off); default follows this toggle.</p>
     </Panel>
   )
 }

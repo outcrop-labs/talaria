@@ -5,6 +5,18 @@ Status as of 2026-07-07. Newest product direction lives in the app; this is the
 engineering-facing tracker.
 
 ## In progress
+- **Agent reliability (#76)** — *active.* Robustness/QA layer for agent work.
+  - ✅ **Talaria QA judge** — advisory LLM-as-judge at the ticket quality gate.
+    On ticket→quality_review, a configurable model (org LLM gateway, metered)
+    reviews the agent's reported outcome vs. requirements → verdict (pass /
+    revise / escalate) + specific issues, surfaced above the human approve gate.
+    Admin: enable + model. Per-board `judge_mode` (advisory/off) column + logic
+    (board-settings toggle UI = quick follow-up). Verified live end-to-end.
+  - ⏳ **Enforcing revision loop** (opt-in per board) — judge auto-rejects back to
+    the agent with issues, bounded cycles then escalate (gates taxonomy).
+  - ⏳ **Hermes self-review** (#78) — enable subagent-driven-development /
+    requesting-code-review skills fleet-wide as the agent's first line; scope the
+    confab-guard tool-trace export into Talaria.
 - **Artifact system (#54)** — *active.* Versioned work products with built-in
   hosting, viewing, and sharing.
   - ✅ Foundation: `artifacts` table, doc kind, sharing (reuses KB visibility +

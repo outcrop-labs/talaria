@@ -122,6 +122,38 @@ export async function fetchUpstream(call: UpstreamCall): Promise<Response> {
   }
 }
 
+/** Server-side non-streaming completion through the org gateway (routing +
+ *  provider keys + metering). For internal callers like the QA judge — no tlk_
+ *  key needed. Throws on an unknown model or an upstream error. */
+export async function completeViaGateway(
+  model: string,
+  messages: Array<{ role: string; content: string }>,
+  opts: { temperature?: number; caller: string },
+): Promise<{ text: string }> {
+  const route = await resolveRoute(model)
+  if (!route) throw new Error(`model "${model}" is not on the gateway`)
+  const clientBody: Record<string, unknown> = { model, messages, stream: false }
+  if (opts.temperature !== undefined) clientBody.temperature = opts.temperature
+  const call = await buildUpstream(route, clientBody)
+  const res = await fetchUpstream(call)
+  if (!res.ok) throw new Error(`gateway completion ${res.status}: ${await res.text()}`)
+  const j = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>
+    usage?: { prompt_tokens?: number; completion_tokens?: number }
+  }
+  if (j.usage) {
+    await recordGatewayUsage({
+      caller: opts.caller,
+      endpoint: route.endpoint,
+      upstreamModel: route.upstreamModel,
+      promptTokens: j.usage.prompt_tokens ?? 0,
+      completionTokens: j.usage.completion_tokens ?? 0,
+      estimated: false,
+    }).catch(() => {})
+  }
+  return { text: j.choices?.[0]?.message?.content ?? '' }
+}
+
 /** Ledger row for a gateway call — attribution is direct (we KNOW the
  *  endpoint), no agent-def classification involved. */
 export async function recordGatewayUsage(u: {
