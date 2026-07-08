@@ -18,6 +18,8 @@ const Patch = z.object({
    *  client body — e.g. OpenRouter provider allowlists). Admin-only, so a
    *  permissive record is acceptable here. */
   requestDefaults: z.record(z.string().max(120), z.unknown()).optional(),
+  /** Raw provider API key — sealed server-side. '' clears it; omitted leaves it. */
+  apiKey: z.string().max(400).nullish(),
   /** Second step of the double opt-in: cascade the removal into agent configs. */
   force: z.boolean().optional(),
 })
@@ -68,6 +70,7 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
           models: parsed.data.models,
           modelPrices: parsed.data.modelPrices,
           requestDefaults: parsed.data.requestDefaults,
+          apiKey: parsed.data.apiKey,
         })
         // New catalog models get auto-priced in the background (never block an
         // interactive save on the external catalog fetch).

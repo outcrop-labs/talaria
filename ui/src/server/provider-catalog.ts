@@ -4,6 +4,8 @@
 // never leave the server.
 import { readFile } from 'node:fs/promises'
 import type { LlmEndpoint } from './agent-defs'
+import { db } from './db/pg'
+import { open, seal } from './secretbox'
 import { FLEET_ENV } from './fleet-render'
 
 /** Env names the catalog fetch may read. Only provider-key-shaped vars — an
@@ -21,6 +23,44 @@ export async function resolveKey(envVar: string | null | undefined): Promise<str
   const env = await readFile(FLEET_ENV(), 'utf8').catch(() => '')
   const m = new RegExp(`^${envVar}=(.*)$`, 'm').exec(env)
   return m ? m[1]!.trim() : null
+}
+
+/** The provider's API key: the sealed key stored in the DB is the source of
+ *  truth (encrypted at rest, entered via /models — never in a config file). An
+ *  env var / fleet .env of the endpoint's api_key_env is a fallback for ops
+ *  overrides and pre-migration deployments. */
+export async function resolveEndpointKey(ep: Pick<LlmEndpoint, 'id' | 'apiKeyEnv' | 'provider'>): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`select api_key_cipher from llm_endpoints where id = ${ep.id}`) as unknown as Array<{
+    api_key_cipher: string | null
+  }>
+  const cipher = rows[0]?.api_key_cipher
+  if (cipher) {
+    try {
+      return open(cipher)
+    } catch {
+      /* tampered/old key material — fall back to env */
+    }
+  }
+  return resolveKey(ep.apiKeyEnv ?? DEFAULT_KEY_ENV[ep.provider] ?? null)
+}
+
+/** One-time migration: seal any provider key that still lives only in the env /
+ *  fleet .env into the DB, so keys stop depending on config files. Idempotent —
+ *  only touches endpoints with no sealed key yet. Safe to call on every boot. */
+export async function migrateEnvKeysToCipher(): Promise<number> {
+  const sql = await db()
+  const eps = (await sql`
+    select id, provider, api_key_env as "apiKeyEnv" from llm_endpoints where api_key_cipher is null
+  `) as unknown as Array<{ id: string; provider: string; apiKeyEnv: string | null }>
+  let sealed = 0
+  for (const ep of eps) {
+    const key = await resolveKey(ep.apiKeyEnv ?? DEFAULT_KEY_ENV[ep.provider] ?? null)
+    if (!key) continue
+    await sql`update llm_endpoints set api_key_cipher = ${seal(key)}, updated_at = now() where id = ${ep.id}`
+    sealed++
+  }
+  return sealed
 }
 
 export const NATIVE_BASE: Record<string, string> = {
@@ -63,11 +103,11 @@ export async function availableModels(ep: LlmEndpoint): Promise<string[]> {
   const base = (ep.baseUrl ?? NATIVE_BASE[ep.provider])?.replace(/\/$/, '')
   if (!base) throw new Error('no API base known for this provider')
   const keyEnv = ep.apiKeyEnv ?? DEFAULT_KEY_ENV[ep.provider] ?? null
-  const key = await resolveKey(keyEnv)
+  const key = await resolveEndpointKey(ep)
 
   const headers: Record<string, string> = {}
   if (ep.provider === 'anthropic') {
-    if (!key) throw new Error(`set ${keyEnv ?? 'ANTHROPIC_API_KEY'} to browse the catalog`)
+    if (!key) throw new Error(`add the API key for this provider (or set ${keyEnv ?? 'ANTHROPIC_API_KEY'})`)
     headers['x-api-key'] = key
     headers['anthropic-version'] = '2023-06-01'
   } else if (key) {

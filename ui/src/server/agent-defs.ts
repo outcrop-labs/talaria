@@ -3,6 +3,7 @@
 // configurable surface (soul, models/aliases, fallbacks, tools) as an immutable
 // payload. Rendering + orchestration (Phase B) consume the current version.
 import { db } from './db/pg'
+import { seal } from './secretbox'
 
 export interface LlmEndpoint {
   id: string
@@ -11,6 +12,9 @@ export interface LlmEndpoint {
   baseUrl: string | null
   class: 'local' | 'cloud'
   apiKeyEnv: string | null
+  /** Whether an encrypted API key is stored for this provider (the plaintext is
+   *  never sent to the client). */
+  hasKey: boolean
   contextLength: number | null
   priceInPerMtok: number | null
   priceOutPerMtok: number | null
@@ -80,7 +84,8 @@ export async function listEndpoints(): Promise<LlmEndpoint[]> {
     select id, name, provider, base_url as "baseUrl", class, api_key_env as "apiKeyEnv",
            context_length as "contextLength", price_in_per_mtok as "priceInPerMtok",
            price_out_per_mtok as "priceOutPerMtok", models, model_prices as "modelPrices",
-           auto_prices as "autoPrices", request_defaults as "requestDefaults"
+           auto_prices as "autoPrices", request_defaults as "requestDefaults",
+           (api_key_cipher is not null) as "hasKey"
     from llm_endpoints order by (class = 'local') desc, name asc
   `) as unknown as LlmEndpoint[]
 }
@@ -114,9 +119,16 @@ export async function updateEndpoint(
     models?: string[]
     modelPrices?: Record<string, { in?: number; out?: number }>
     requestDefaults?: Record<string, unknown>
+    /** Raw provider API key: a non-empty string seals + stores it; '' clears it;
+     *  undefined leaves the stored key untouched. Never round-tripped to clients. */
+    apiKey?: string | null
   },
 ): Promise<void> {
   const sql = await db()
+  if (patch.apiKey !== undefined) {
+    const cipher = patch.apiKey ? seal(patch.apiKey.trim()) : null
+    await sql`update llm_endpoints set api_key_cipher = ${cipher}, updated_at = now() where id = ${id}`
+  }
   if (patch.class) await sql`update llm_endpoints set class = ${patch.class}, updated_at = now() where id = ${id}`
   if (patch.requestDefaults)
     await sql`update llm_endpoints set request_defaults = ${sql.json(patch.requestDefaults as never)}, updated_at = now() where id = ${id}`
@@ -137,13 +149,16 @@ export async function createEndpoint(e: {
   baseUrl?: string | null
   class: 'local' | 'cloud'
   apiKeyEnv?: string | null
+  /** Raw provider API key — sealed (secretbox) before it's stored. */
+  apiKey?: string | null
   models?: string[]
   modelPrices?: Record<string, { in?: number; out?: number }>
 }): Promise<void> {
   const sql = await db()
+  const cipher = e.apiKey ? seal(e.apiKey.trim()) : null
   await sql`
-    insert into llm_endpoints (name, provider, base_url, class, api_key_env, models, model_prices)
-    values (${e.name}, ${e.provider}, ${e.baseUrl ?? null}, ${e.class}, ${e.apiKeyEnv ?? null},
+    insert into llm_endpoints (name, provider, base_url, class, api_key_env, api_key_cipher, models, model_prices)
+    values (${e.name}, ${e.provider}, ${e.baseUrl ?? null}, ${e.class}, ${e.apiKeyEnv ?? null}, ${cipher},
             ${sql.json(e.models ?? [])}, ${sql.json(e.modelPrices ?? {})})
   `
 }

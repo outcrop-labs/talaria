@@ -689,6 +689,9 @@ const MIGRATIONS: string[] = [
    )`,
   `create index if not exists guard_findings_recent_idx on guard_findings(created_at desc)`,
   `alter table guard_findings add column if not exists confidence real not null default 0.5`,
+  // Provider API keys, encrypted at rest (secretbox) — the durable, secure store.
+  // api_key_env stays as an optional ops override; keys no longer live in configs.
+  `alter table llm_endpoints add column if not exists api_key_cipher text`,
 ]
 
 function ensureMigrated(): Promise<void> {

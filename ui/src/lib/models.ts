@@ -217,6 +217,8 @@ export const addEndpoint = (e: {
   baseUrl?: string | null
   class: 'local' | 'cloud'
   apiKeyEnv?: string | null
+  /** Raw provider key — sealed (encrypted) server-side. */
+  apiKey?: string | null
   models?: string[]
   modelPrices?: Record<string, { in: number; out: number }>
 }) =>
@@ -238,6 +240,8 @@ export const patchEndpoint = (
     models?: string[]
     modelPrices?: Record<string, { in?: number; out?: number }>
     requestDefaults?: Record<string, unknown>
+    /** Raw provider key — sealed server-side. '' clears it; omitted leaves it. */
+    apiKey?: string | null
     force?: boolean
   },
 ) =>
