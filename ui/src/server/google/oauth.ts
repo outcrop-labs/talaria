@@ -24,6 +24,9 @@ export const WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/drive.readonly',
   // View + edit calendar events (agenda + create).
   'https://www.googleapis.com/auth/calendar.events',
+  // Read recent mail (metadata + snippets) and send on the user's behalf.
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.send',
 ]
 
 /** Whether the Google integration can run at all (same client as login). */

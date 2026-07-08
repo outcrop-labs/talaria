@@ -1,12 +1,13 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles, CalendarDays, Plus, ExternalLink } from 'lucide-react'
+import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles, CalendarDays, Plus, ExternalLink, Mail, Send, X } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from '@/components/assistant/assistant-wizard'
 import { relativeTime } from '@/lib/fleet'
+import { cn } from '@/lib/cn'
 import { useAssistant } from '@/lib/assistant'
 import { useSession } from '@/lib/session'
 
@@ -69,6 +70,8 @@ function HomePage() {
         <AssistantCard />
 
         <AgendaPanel />
+
+        <MailPanel />
 
         {/* Quick entries into the work surfaces */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -359,6 +362,125 @@ function QuickEvent({ onDone }: { onDone: () => void }) {
         Add
       </Button>
       {err && <span className="w-full text-[11px]" style={{ color: 'var(--theme-danger)' }}>{err}</span>}
+    </div>
+  )
+}
+
+interface Mail {
+  id: string
+  threadId: string
+  from: string
+  subject: string
+  snippet: string
+  date: string | null
+  unread: boolean
+}
+
+// Recent Gmail, shown only when the user has connected Google. Compose sends as
+// the user via Gmail.
+function MailPanel() {
+  const { data, isError } = useQuery({
+    queryKey: ['gmail'],
+    queryFn: async (): Promise<{ messages?: Mail[]; error?: string }> => {
+      const r = await fetch('/api/integrations/google/gmail/messages')
+      if (r.status === 409 || r.status === 502) return { error: 'unavailable' }
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+    retry: false,
+    refetchInterval: 5 * 60_000,
+  })
+  const [composing, setComposing] = useState(false)
+
+  if (isError || data?.error || !data) return null
+  const messages = data.messages ?? []
+
+  const fromName = (from: string) => from.replace(/<[^>]*>/, '').replace(/"/g, '').trim() || from
+
+  return (
+    <Panel>
+      <div className="mb-3 flex items-center gap-2">
+        <Mail size={16} className="text-muted" />
+        <span className="text-sm font-semibold text-fg">Mail</span>
+        <span className="text-xs text-muted">Gmail</span>
+        <button type="button" onClick={() => setComposing(true)} className="ml-auto flex items-center gap-1 text-xs text-accent hover:underline">
+          <Send size={12} /> Compose
+        </button>
+      </div>
+
+      {messages.length === 0 ? (
+        <div className="py-3 text-sm text-muted">No recent mail.</div>
+      ) : (
+        <div className="divide-y divide-line-subtle">
+          {messages.map((m) => (
+            <a
+              key={m.id}
+              href={`https://mail.google.com/mail/u/0/#all/${m.threadId}`}
+              target="_blank"
+              rel="noreferrer"
+              className="group flex items-center gap-3 py-2"
+            >
+              <span className={cn('w-32 shrink-0 truncate text-[12px]', m.unread ? 'font-semibold text-fg' : 'text-muted')}>{fromName(m.from)}</span>
+              <span className="min-w-0 flex-1 truncate text-sm">
+                <span className={m.unread ? 'font-medium text-fg' : 'text-fg'}>{m.subject}</span>
+                <span className="text-muted"> — {m.snippet}</span>
+              </span>
+              <span className="shrink-0 text-[11px] text-muted">{m.date ? relativeTime(m.date) : ''}</span>
+            </a>
+          ))}
+        </div>
+      )}
+
+      {composing && <ComposeModal onClose={() => setComposing(false)} />}
+    </Panel>
+  )
+}
+
+function ComposeModal({ onClose }: { onClose: () => void }) {
+  const [to, setTo] = useState('')
+  const [subject, setSubject] = useState('')
+  const [body, setBody] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState<string | null>(null)
+
+  const send = async () => {
+    if (!to.trim()) return
+    setBusy(true)
+    setStatus(null)
+    try {
+      const r = await fetch('/api/integrations/google/gmail/send', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ to: to.trim(), subject, body }),
+      })
+      const j = (await r.json().catch(() => null)) as { sent?: unknown; message?: string } | null
+      if (r.ok && j?.sent) onClose()
+      else setStatus(j?.message ?? 'Could not send the email.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 pt-[8vh]" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-2xl border border-line bg-card shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2 border-b border-line-subtle px-4 py-3">
+          <Send size={15} className="text-muted" />
+          <span className="text-sm font-semibold text-fg">New message</span>
+          <button type="button" onClick={onClose} className="ml-auto rounded p-1 text-muted hover:text-fg"><X size={15} /></button>
+        </div>
+        <div className="space-y-2 p-4">
+          <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="To" className="w-full rounded-lg border border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted" />
+          <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" className="w-full rounded-lg border border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted" />
+          <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your message…" rows={8} className="w-full resize-y rounded-lg border border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted" />
+          <div className="flex items-center gap-3">
+            <Button size="sm" onClick={() => void send()} disabled={busy || !to.trim()}>
+              <Send size={13} className="mr-1" /> {busy ? 'Sending…' : 'Send'}
+            </Button>
+            {status && <span className="text-xs" style={{ color: 'var(--theme-danger)' }}>{status}</span>}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
