@@ -12,6 +12,9 @@ interface Revision {
   createdBy: string | null
   createdAt: string
   size: number
+  /** Set for agent-version-backed kinds (soul/config/personality). */
+  note?: string | null
+  version?: number
 }
 
 // ── Line diff (LCS) — small, dependency-free, capped for huge documents ──────
@@ -121,6 +124,7 @@ export function InternalEditorModal({
   onSave,
   history,
   footerExtra,
+  mode = 'rich',
 }: {
   open: boolean
   onClose: () => void
@@ -134,6 +138,9 @@ export function InternalEditorModal({
   history?: Record<string, string>
   /** Extra control on the left of the footer (e.g. a delete button). */
   footerExtra?: React.ReactNode
+  /** 'rich' (default) renders WYSIWYG markdown; 'plain' a mono text surface —
+   *  for structured text like config YAML where prose rendering would lie. */
+  mode?: 'rich' | 'plain'
 }) {
   const ref = useRef<RichEditorHandle>(null)
   const [dirty, setDirty] = useState(false)
@@ -204,7 +211,8 @@ export function InternalEditorModal({
               <>
                 <div className="mb-2 flex items-center gap-2 text-xs text-muted">
                   <span>
-                    Changes since {relativeTime(diffing.rev.createdAt)}
+                    Changes since {diffing.rev.version !== undefined ? `v${diffing.rev.version} · ` : ''}
+                    {relativeTime(diffing.rev.createdAt)}
                     {diffing.rev.createdBy ? ` · ${diffing.rev.createdBy}` : ''} — additions are what the current text
                     gained, removals what it lost.
                   </span>
@@ -221,6 +229,23 @@ export function InternalEditorModal({
                   <DiffView diff={diffing.diff} fallback={diffing.content} />
                 </div>
               </>
+            ) : mode === 'plain' ? (
+              editable ? (
+                <textarea
+                  key={seed}
+                  value={current}
+                  onChange={(e) => {
+                    setCurrent(e.target.value)
+                    setDirty(true)
+                  }}
+                  spellCheck={false}
+                  className="min-h-0 w-full flex-1 resize-none rounded-xl border border-line bg-[var(--theme-input)] p-3 font-[var(--font-mono)] text-xs leading-5 text-fg outline-none focus:border-accent"
+                />
+              ) : (
+                <pre className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded-xl border border-line-subtle p-3 font-[var(--font-mono)] text-xs leading-5 text-fg">
+                  {current}
+                </pre>
+              )
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <RichEditor
@@ -254,10 +279,14 @@ export function InternalEditorModal({
                     title={i === 0 ? undefined : 'Show changes since this revision'}
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-fg">{i === 0 ? 'Current' : relativeTime(rev.createdAt)}</div>
+                      <div className="truncate text-fg">
+                        {rev.version !== undefined && <span className="mr-1.5 font-[var(--font-mono)] text-accent">v{rev.version}</span>}
+                        {i === 0 ? 'Current' : relativeTime(rev.createdAt)}
+                      </div>
                       <div className="truncate text-[11px] text-muted">
                         {rev.createdBy ?? 'unknown'} · {rev.size.toLocaleString()} chars
                       </div>
+                      {rev.note && <div className="truncate text-[11px] italic text-muted">{rev.note}</div>}
                     </div>
                     {editable && i !== 0 && (
                       <button
