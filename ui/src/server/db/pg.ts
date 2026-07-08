@@ -554,6 +554,17 @@ const MIGRATIONS: string[] = [
      updated_at timestamptz not null default now()
    )`,
   `create index if not exists artifacts_owner_idx on artifacts(owner_user_id)`,
+  // An artifact can be attached to anything (a KB doc/folder, a ticket, a
+  // channel, …). target_type namespaces the id.
+  `create table if not exists artifact_links (
+     artifact_id uuid not null references artifacts(id) on delete cascade,
+     target_type text not null,
+     target_id text not null,
+     created_by text,
+     created_at timestamptz not null default now(),
+     primary key (artifact_id, target_type, target_id)
+   )`,
+  `create index if not exists artifact_links_target_idx on artifact_links(target_type, target_id)`,
 ]
 
 function ensureMigrated(): Promise<void> {

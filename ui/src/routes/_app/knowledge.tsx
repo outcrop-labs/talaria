@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Plus, FileText, Bot, Globe, Lock, Users, Star, Trash2, History,
-  ChevronRight, Search, Link2, ListTree, X, Maximize2, Minimize2, MoreHorizontal,
+  ChevronRight, Search, Link2, ListTree, X, Maximize2, Minimize2, MoreHorizontal, Paperclip,
   type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,8 @@ import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { RichEditor, type RichEditorHandle, type DocSearchFn } from '@/components/ui/rich-editor'
 import { InlineCreate } from '@/components/ui/inline-create'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
+import { Combobox } from '@/components/ui/combobox'
+import { useArtifacts, useTargetArtifacts, attachArtifact, detachArtifact } from '@/lib/artifacts'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
@@ -960,6 +962,8 @@ function DocEditor({
                 </div>
               </div>
             )}
+
+            <ArtifactAttachments docId={docId} />
           </div>
         )}
 
@@ -1036,6 +1040,47 @@ function DocEditor({
 
 const VisibilityIcon = ({ v }: { v: 'private' | 'org' | 'public' }) =>
   v === 'public' ? <Globe size={12} /> : v === 'private' ? <Lock size={12} /> : <Users size={12} />
+
+// Attach any artifact to a KB doc (the "attach an artifact to anything" spec).
+function ArtifactAttachments({ docId }: { docId: string }) {
+  const qc = useQueryClient()
+  const { data: attached = [] } = useTargetArtifacts('kb-doc', docId)
+  const { data: all = [] } = useArtifacts()
+  const attachedIds = new Set(attached.map((a) => a.id))
+  const options = all.filter((a) => !attachedIds.has(a.id)).map((a) => ({ value: a.id, label: a.title, sub: a.kind }))
+  const refresh = () => qc.invalidateQueries({ queryKey: ['artifacts-for', 'kb-doc', docId] })
+  return (
+    <div className="mx-auto max-w-[46rem] px-6 pb-10">
+      <div className="border-t border-line-subtle pt-4">
+        <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+          <Paperclip size={12} /> Attachments
+        </div>
+        {attached.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {attached.map((a) => (
+              <span key={a.id} className="flex items-center gap-1.5 rounded-lg border border-line-subtle px-2 py-1 text-xs text-muted">
+                <span>{a.icon ?? '◆'}</span>
+                <span className="max-w-[14rem] truncate text-fg">{a.title}</span>
+                <span className="text-[9px] uppercase tracking-wide">{a.kind}</span>
+                <button type="button" onClick={async () => { await detachArtifact(a.id, 'kb-doc', docId); await refresh() }} className="hover:text-[color:var(--theme-danger)]">
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <Combobox
+          options={options}
+          selected={[]}
+          onChange={async (v) => { if (v[0]) { await attachArtifact(v[0], 'kb-doc', docId); await refresh() } }}
+          placeholder="Attach an artifact…"
+          size="sm"
+          className="max-w-xs"
+        />
+      </div>
+    </div>
+  )
+}
 
 interface Rev {
   id: string
