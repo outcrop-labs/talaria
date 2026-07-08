@@ -31,6 +31,7 @@ import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiChannelsRouteImport } from './routes/api/channels'
 import { Route as ApiBoardsRouteImport } from './routes/api/boards'
 import { Route as ApiArtifactsRouteImport } from './routes/api/artifacts'
+import { Route as ApiArtifactFoldersRouteImport } from './routes/api/artifact-folders'
 import { Route as ApiAlertsRouteImport } from './routes/api/alerts'
 import { Route as ApiAgentsRouteImport } from './routes/api/agents'
 import { Route as ApiActivityRouteImport } from './routes/api/activity'
@@ -80,6 +81,7 @@ import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
 import { Route as ApiAuthGoogleRouteImport } from './routes/api/auth/google'
 import { Route as ApiArtifactsForRouteImport } from './routes/api/artifacts.for'
 import { Route as ApiArtifactsIdRouteImport } from './routes/api/artifacts.$id'
+import { Route as ApiArtifactFoldersIdRouteImport } from './routes/api/artifact-folders.$id'
 import { Route as ApiAgentsRegisterRouteImport } from './routes/api/agents.register'
 import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminSettingsRouteImport } from './routes/api/admin.settings'
@@ -231,6 +233,11 @@ const ApiBoardsRoute = ApiBoardsRouteImport.update({
 const ApiArtifactsRoute = ApiArtifactsRouteImport.update({
   id: '/api/artifacts',
   path: '/api/artifacts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiArtifactFoldersRoute = ApiArtifactFoldersRouteImport.update({
+  id: '/api/artifact-folders',
+  path: '/api/artifact-folders',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAlertsRoute = ApiAlertsRouteImport.update({
@@ -478,6 +485,11 @@ const ApiArtifactsIdRoute = ApiArtifactsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ApiArtifactsRoute,
 } as any)
+const ApiArtifactFoldersIdRoute = ApiArtifactFoldersIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiArtifactFoldersRoute,
+} as any)
 const ApiAgentsRegisterRoute = ApiAgentsRegisterRouteImport.update({
   id: '/register',
   path: '/register',
@@ -720,6 +732,7 @@ export interface FileRoutesByFullPath {
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
   '/api/alerts': typeof ApiAlertsRoute
+  '/api/artifact-folders': typeof ApiArtifactFoldersRouteWithChildren
   '/api/artifacts': typeof ApiArtifactsRouteWithChildren
   '/api/boards': typeof ApiBoardsRouteWithChildren
   '/api/channels': typeof ApiChannelsRouteWithChildren
@@ -743,6 +756,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
+  '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
   '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
   '/api/artifacts/for': typeof ApiArtifactsForRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
@@ -834,6 +848,7 @@ export interface FileRoutesByTo {
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
   '/api/alerts': typeof ApiAlertsRoute
+  '/api/artifact-folders': typeof ApiArtifactFoldersRouteWithChildren
   '/api/artifacts': typeof ApiArtifactsRouteWithChildren
   '/api/boards': typeof ApiBoardsRouteWithChildren
   '/api/channels': typeof ApiChannelsRouteWithChildren
@@ -858,6 +873,7 @@ export interface FileRoutesByTo {
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
+  '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
   '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
   '/api/artifacts/for': typeof ApiArtifactsForRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
@@ -951,6 +967,7 @@ export interface FileRoutesById {
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
   '/api/alerts': typeof ApiAlertsRoute
+  '/api/artifact-folders': typeof ApiArtifactFoldersRouteWithChildren
   '/api/artifacts': typeof ApiArtifactsRouteWithChildren
   '/api/boards': typeof ApiBoardsRouteWithChildren
   '/api/channels': typeof ApiChannelsRouteWithChildren
@@ -975,6 +992,7 @@ export interface FileRoutesById {
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
+  '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
   '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
   '/api/artifacts/for': typeof ApiArtifactsForRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
@@ -1069,6 +1087,7 @@ export interface FileRouteTypes {
     | '/api/activity'
     | '/api/agents'
     | '/api/alerts'
+    | '/api/artifact-folders'
     | '/api/artifacts'
     | '/api/boards'
     | '/api/channels'
@@ -1092,6 +1111,7 @@ export interface FileRouteTypes {
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agents/register'
+    | '/api/artifact-folders/$id'
     | '/api/artifacts/$id'
     | '/api/artifacts/for'
     | '/api/auth/google'
@@ -1183,6 +1203,7 @@ export interface FileRouteTypes {
     | '/api/activity'
     | '/api/agents'
     | '/api/alerts'
+    | '/api/artifact-folders'
     | '/api/artifacts'
     | '/api/boards'
     | '/api/channels'
@@ -1207,6 +1228,7 @@ export interface FileRouteTypes {
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agents/register'
+    | '/api/artifact-folders/$id'
     | '/api/artifacts/$id'
     | '/api/artifacts/for'
     | '/api/auth/google'
@@ -1299,6 +1321,7 @@ export interface FileRouteTypes {
     | '/api/activity'
     | '/api/agents'
     | '/api/alerts'
+    | '/api/artifact-folders'
     | '/api/artifacts'
     | '/api/boards'
     | '/api/channels'
@@ -1323,6 +1346,7 @@ export interface FileRouteTypes {
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agents/register'
+    | '/api/artifact-folders/$id'
     | '/api/artifacts/$id'
     | '/api/artifacts/for'
     | '/api/auth/google'
@@ -1399,6 +1423,7 @@ export interface RootRouteChildren {
   ApiActivityRoute: typeof ApiActivityRoute
   ApiAgentsRoute: typeof ApiAgentsRouteWithChildren
   ApiAlertsRoute: typeof ApiAlertsRoute
+  ApiArtifactFoldersRoute: typeof ApiArtifactFoldersRouteWithChildren
   ApiArtifactsRoute: typeof ApiArtifactsRouteWithChildren
   ApiBoardsRoute: typeof ApiBoardsRouteWithChildren
   ApiChannelsRoute: typeof ApiChannelsRouteWithChildren
@@ -1594,6 +1619,13 @@ declare module '@tanstack/react-router' {
       path: '/api/artifacts'
       fullPath: '/api/artifacts'
       preLoaderRoute: typeof ApiArtifactsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/artifact-folders': {
+      id: '/api/artifact-folders'
+      path: '/api/artifact-folders'
+      fullPath: '/api/artifact-folders'
+      preLoaderRoute: typeof ApiArtifactFoldersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/alerts': {
@@ -1938,6 +1970,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/artifacts/$id'
       preLoaderRoute: typeof ApiArtifactsIdRouteImport
       parentRoute: typeof ApiArtifactsRoute
+    }
+    '/api/artifact-folders/$id': {
+      id: '/api/artifact-folders/$id'
+      path: '/$id'
+      fullPath: '/api/artifact-folders/$id'
+      preLoaderRoute: typeof ApiArtifactFoldersIdRouteImport
+      parentRoute: typeof ApiArtifactFoldersRoute
     }
     '/api/agents/register': {
       id: '/api/agents/register'
@@ -2316,6 +2355,17 @@ const ApiAgentsRouteWithChildren = ApiAgentsRoute._addFileChildren(
   ApiAgentsRouteChildren,
 )
 
+interface ApiArtifactFoldersRouteChildren {
+  ApiArtifactFoldersIdRoute: typeof ApiArtifactFoldersIdRoute
+}
+
+const ApiArtifactFoldersRouteChildren: ApiArtifactFoldersRouteChildren = {
+  ApiArtifactFoldersIdRoute: ApiArtifactFoldersIdRoute,
+}
+
+const ApiArtifactFoldersRouteWithChildren =
+  ApiArtifactFoldersRoute._addFileChildren(ApiArtifactFoldersRouteChildren)
+
 interface ApiArtifactsIdRouteChildren {
   ApiArtifactsIdLinksRoute: typeof ApiArtifactsIdLinksRoute
 }
@@ -2651,6 +2701,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiActivityRoute: ApiActivityRoute,
   ApiAgentsRoute: ApiAgentsRouteWithChildren,
   ApiAlertsRoute: ApiAlertsRoute,
+  ApiArtifactFoldersRoute: ApiArtifactFoldersRouteWithChildren,
   ApiArtifactsRoute: ApiArtifactsRouteWithChildren,
   ApiBoardsRoute: ApiBoardsRouteWithChildren,
   ApiChannelsRoute: ApiChannelsRouteWithChildren,

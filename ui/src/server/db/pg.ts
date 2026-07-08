@@ -565,6 +565,18 @@ const MIGRATIONS: string[] = [
      primary key (artifact_id, target_type, target_id)
    )`,
   `create index if not exists artifact_links_target_idx on artifact_links(target_type, target_id)`,
+  // Organize artifacts into a nestable folder tree (org-wide organizational
+  // containers; artifacts inside stay gated by their own sharing).
+  `create table if not exists artifact_folders (
+     id uuid primary key default gen_random_uuid(),
+     name text not null default 'Untitled',
+     icon text,
+     parent_id uuid references artifact_folders(id) on delete set null,
+     created_by text,
+     created_at timestamptz not null default now()
+   )`,
+  `alter table artifacts add column if not exists folder_id uuid references artifact_folders(id) on delete set null`,
+  `create index if not exists artifacts_folder_idx on artifacts(folder_id)`,
 ]
 
 function ensureMigrated(): Promise<void> {
