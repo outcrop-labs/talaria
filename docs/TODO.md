@@ -12,8 +12,11 @@ engineering-facing tracker.
     revise / escalate) + specific issues, surfaced above the human approve gate.
     Admin: enable + model. Per-board `judge_mode` (advisory/off) column + logic
     (board-settings toggle UI = quick follow-up). Verified live end-to-end.
-  - ⏳ **Enforcing revision loop** (opt-in per board) — judge auto-rejects back to
-    the agent with issues, bounded cycles then escalate (gates taxonomy).
+  - ✅ **Enforcing revision loop** (opt-in per board, `judge_mode='enforcing'`) —
+    a "revise" verdict auto-bounces the ticket to in_progress with the issues as a
+    judge comment ("revision N/3"), bounded to 3 cycles then escalates (stays in
+    quality_review for a human). pass/escalate always go to the human. Board
+    settings → QA judge selector. Verified live.
   - ⏳ **Hermes self-review** (#78) — enable subagent-driven-development /
     requesting-code-review skills fleet-wide as the agent's first line; scope the
     confab-guard tool-trace export into Talaria.

@@ -32,6 +32,7 @@ export async function listBoards(userId: string, archived = false): Promise<Boar
   const rows = await sql`
     select b.id, b.name, b.owner_id as "ownerId", b.team_id as "teamId", t.name as "teamName",
            coalesce(m.role, case when tm.role = 'owner' then 'owner' when tm.role is not null then 'editor' end) as role,
+           b.judge_mode as "judgeMode",
            b.created_at as "createdAt", b.updated_at as "updatedAt", b.archived_at as "archivedAt"
     from boards b
     left join board_members m on m.board_id = b.id and m.user_id = ${userId}
@@ -87,6 +88,11 @@ export async function createBoard(userId: string, name: string, teamId?: string 
     return b
   })
   return { ...board, teamName: null, role: 'owner', archivedAt: null }
+}
+
+export async function setBoardJudgeMode(boardId: string, mode: 'inherit' | 'off' | 'advisory' | 'enforcing'): Promise<void> {
+  const sql = await db()
+  await sql`update boards set judge_mode = ${mode}, updated_at = now() where id = ${boardId}`
 }
 
 export async function renameBoard(boardId: string, name: string): Promise<void> {

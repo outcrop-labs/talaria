@@ -41,16 +41,18 @@ export async function listJudgeReviews(taskId: string): Promise<JudgeReview[]> {
   `) as unknown as JudgeReview[]
 }
 
-/** Whether the judge should run for a task, honoring the board's judge_mode
- *  (inherit → global config; off → never; advisory → always when connected). */
-async function shouldJudge(boardId: string): Promise<{ run: boolean; model: string | null }> {
+export type JudgeMode = 'off' | 'advisory' | 'enforcing'
+/** Max times the enforcing loop bounces a ticket back before escalating. */
+const MAX_REVISIONS = 3
+
+/** Resolve the EFFECTIVE judge mode for a board (inherit → global config). */
+async function shouldJudge(boardId: string): Promise<{ run: boolean; model: string | null; mode: JudgeMode }> {
   const cfg = await getJudgeConfig()
   const sql = await db()
   const [row] = (await sql`select judge_mode as "mode" from boards where id = ${boardId}`) as unknown as Array<{ mode: string }>
-  const mode = row?.mode ?? 'inherit'
-  if (mode === 'off') return { run: false, model: cfg.model }
-  if (mode === 'advisory') return { run: true, model: cfg.model }
-  return { run: cfg.enabled, model: cfg.model } // inherit
+  const raw = row?.mode ?? 'inherit'
+  const mode: JudgeMode = raw === 'off' ? 'off' : raw === 'advisory' ? 'advisory' : raw === 'enforcing' ? 'enforcing' : cfg.enabled ? 'advisory' : 'off'
+  return { run: mode !== 'off', model: cfg.model, mode }
 }
 
 const SYSTEM = `You are a meticulous, skeptical QA reviewer for a task tracker. An agent has completed a ticket and reported its outcome. Judge whether the work credibly satisfies the ticket.
@@ -104,7 +106,7 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
       from tasks where id = ${taskId}
     `) as unknown as Array<{ boardId: string; title: string; description: string | null; outcome: string | null; resolution: string | null; errorMessage: string | null }>
     if (!task) return null
-    const { run, model } = await shouldJudge(task.boardId)
+    const { run, model, mode } = await shouldJudge(task.boardId)
     if (!run) return null
 
     const { text } = await completeViaGateway(
@@ -122,8 +124,30 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
       values (${taskId}, ${model}, ${verdict}, ${summary}, ${sql.json(issues)})
       returning id, model, verdict, summary, issues, created_at as "createdAt"
     `) as unknown as JudgeReview[]
+    const actor = `judge${model ? `:${model}` : ''}`
     const label = `QA judge: ${verdict}${issues.length ? ` (${issues.length} issue${issues.length > 1 ? 's' : ''})` : ''}`
-    await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${`judge${model ? `:${model}` : ''}`}, 'judge', ${label})`
+    await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'judge', ${label})`
+
+    // Enforcing mode: bounce a "revise" back to the agent with the issues, bounded
+    // by MAX_REVISIONS, then stop looping and escalate to a human. "pass" and
+    // "escalate" always go to the human (never auto-approve).
+    if (mode === 'enforcing' && verdict === 'revise') {
+      const revRows = (await sql`
+        select count(*)::int as n from judge_reviews where task_id = ${taskId} and verdict = 'revise'
+      `) as unknown as Array<{ n: number }>
+      const reviseCount = revRows[0]?.n ?? 0
+      if (reviseCount <= MAX_REVISIONS) {
+        const feedback =
+          `**QA judge requested changes** (revision ${reviseCount}/${MAX_REVISIONS})\n\n${summary}` +
+          (issues.length ? `\n\n${issues.map((i) => `- ${i}`).join('\n')}` : '')
+        await sql`insert into task_comments (task_id, author, content) values (${taskId}, ${actor}, ${feedback})`
+        await sql`update tasks set status = 'in_progress', updated_at = now() where id = ${taskId}`
+        await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'status', ${`sent back for revision (${reviseCount}/${MAX_REVISIONS})`})`
+      } else {
+        await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'judge', ${`revision limit reached (${MAX_REVISIONS}) — needs a human`})`
+      }
+    }
+
     publishBoard(task.boardId, { type: 'task', taskId })
     return row ?? null
   } catch (err) {

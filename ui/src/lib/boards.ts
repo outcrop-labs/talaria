@@ -27,6 +27,7 @@ export interface Board {
   teamId: string | null
   teamName: string | null
   role: BoardRole
+  judgeMode?: 'inherit' | 'off' | 'advisory' | 'enforcing'
   createdAt: string
   updatedAt: string
   archivedAt: string | null
@@ -230,6 +231,13 @@ export const renameBoard = (boardId: string, name: string) =>
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
     body: JSON.stringify({ name }),
+  })
+export const setBoardJudgeMode = (boardId: string, judgeMode: 'inherit' | 'off' | 'advisory' | 'enforcing') =>
+  fetch(`/api/boards/${boardId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ judgeMode }),
   })
 export const archiveBoard = (boardId: string, archived: boolean) =>
   fetch(`/api/boards/${boardId}`, {
