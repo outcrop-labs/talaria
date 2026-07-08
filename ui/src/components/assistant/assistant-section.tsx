@@ -108,10 +108,12 @@ export function AssistantSection() {
         </button>
       </div>
       <Textarea
-        rows={4}
+        autoGrow
+        rows={3}
         value={personality}
         onChange={(e) => setPersonality(e.target.value)}
         placeholder="How it should come across — tone, priorities, pet peeves."
+        className="max-h-64"
         maxLength={4000}
       />
       {personaEditor && (

@@ -190,6 +190,7 @@ export function ChatView({
           <div className="flex items-end gap-2">
             <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} disabled={streaming} />
             <Textarea
+              autoGrow
               rows={1}
               value={input}
               onChange={(e) => setInput(e.target.value)}

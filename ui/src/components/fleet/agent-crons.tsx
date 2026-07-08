@@ -64,7 +64,7 @@ export function CronRow({
   const [expanded, setExpanded] = useState(false)
   const paused = !job.enabled || job.state === 'paused'
   return (
-    <li className="px-3 py-2.5">
+    <li className="px-3.5 py-3">
       <div className="flex items-center gap-2.5">
         <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: jobDot(job) }} title={paused ? 'paused' : job.state} />
         <button type="button" onClick={() => setExpanded((v) => !v)} className="min-w-0 flex-1 text-left">
@@ -105,8 +105,8 @@ export function CronRow({
         )}
       </div>
       {expanded && (
-        <div className="mt-2 space-y-1 pl-4">
-          <pre className="whitespace-pre-wrap rounded-lg border border-line-subtle p-2.5 font-[var(--font-mono)] text-xs text-muted">{job.prompt}</pre>
+        <div className="mt-2.5 space-y-1.5 pl-4">
+          <pre className="whitespace-pre-wrap rounded-lg border border-line-subtle p-3 font-[var(--font-mono)] text-xs leading-5 text-muted">{job.prompt}</pre>
           <div className="text-[11px] text-muted">
             {job.lastRunAt ? `last ran ${relativeTime(job.lastRunAt)}${job.lastStatus ? ` · ${job.lastStatus}` : ''}` : 'never ran'}
             {job.lastError && <span className="text-[color:var(--theme-danger)]"> · {job.lastError}</span>}
@@ -157,33 +157,47 @@ export function CronForm({
   }
 
   return (
-    <div className="space-y-3 rounded-xl border border-line-subtle p-3">
-      <div className="flex items-center gap-2">
-        <Sparkles size={14} className="shrink-0 text-accent" />
-        <Input
-          size="sm"
+    <div className="space-y-5 rounded-xl border border-line-subtle p-5">
+      <div className="flex items-end gap-2.5">
+        <Sparkles size={14} className="mb-3 shrink-0 text-accent" />
+        <Textarea
+          autoGrow
+          rows={1}
           value={draftAsk}
           onChange={(e) => setDraftAsk(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && !drafting && void draft()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              if (!drafting && draftAsk.trim()) void draft()
+            }
+          }}
           placeholder="Describe it — e.g. “every weekday morning, summarize my inbox into a brief”"
+          className="max-h-32 text-sm"
         />
-        <Button size="sm" variant="outline" className="shrink-0" onClick={() => void draft()} disabled={drafting || !draftAsk.trim()}>
+        <Button variant="outline" className="shrink-0 whitespace-nowrap" onClick={() => void draft()} disabled={drafting || !draftAsk.trim()}>
           {drafting ? 'Drafting…' : 'Draft'}
         </Button>
       </div>
       {draftErr && <p className="text-xs text-[color:var(--theme-danger)]">{draftErr}</p>}
-      <div className="flex items-center gap-2">
-        <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder="job name (e.g. weekly-recap)" maxLength={80} />
-        <Input size="sm" value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="0 9 * * 1-5 · every 2h" maxLength={120} />
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div>
+          <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Name</label>
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="weekly-recap" maxLength={80} />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Schedule</label>
+          <Input value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="0 9 * * 1-5 · every 2h" maxLength={120} />
+        </div>
       </div>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-2">
         {PRESETS.map((p) => (
           <button
             key={p.value}
             type="button"
             onClick={() => setSchedule(p.value)}
             className={cn(
-              'rounded-full border px-2.5 py-0.5 text-[11px] transition-colors',
+              'rounded-full border px-3 py-1 text-xs transition-colors',
               schedule === p.value ? 'border-[var(--theme-accent)] text-accent' : 'border-line-subtle text-muted hover:border-line hover:text-fg',
             )}
           >
@@ -191,17 +205,22 @@ export function CronForm({
           </button>
         ))}
       </div>
-      <Textarea
-        rows={3}
-        value={prompt}
-        onChange={(e) => setPrompt(e.target.value)}
-        placeholder="What should it do each time? Written as a self-contained instruction."
-        maxLength={20_000}
-      />
+      <div>
+        <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">What it does</label>
+        <Textarea
+          autoGrow
+          rows={3}
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="What should it do each time? Written as a self-contained instruction."
+          className="max-h-64"
+          maxLength={20_000}
+        />
+      </div>
       {children}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         <Button
-          size="sm"
+          className="shrink-0 whitespace-nowrap"
           disabled={!ok || busy}
           onClick={() =>
             void onCreate({ name: name.trim(), schedule: schedule.trim(), prompt: prompt.trim() }).then((created) => {
@@ -216,7 +235,7 @@ export function CronForm({
           {busy && <Loader2 size={13} className="animate-spin" />}
           {busy ? 'Creating…' : 'Create job'}
         </Button>
-        <span className="text-[11px] text-muted">{scheduleHint()}</span>
+        <span className="text-[11px] leading-snug text-muted">{scheduleHint()}</span>
       </div>
     </div>
   )
@@ -284,8 +303,8 @@ export function CronsPanel({ agentId, intro }: { agentId: string; intro?: string
   }
 
   return (
-    <div className="space-y-3">
-      {intro && <p className="text-xs text-muted">{intro}</p>}
+    <div className="space-y-4">
+      {intro && <p className="text-xs leading-relaxed text-muted">{intro}</p>}
       {isLoading ? null : error ? (
         <EmptyState icon="◌" title="Schedules unavailable" hint={(error as Error).message} />
       ) : (data ?? []).length === 0 ? (
@@ -376,7 +395,7 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
 
   return (
     <Modal open onClose={onClose} title="Schedules · native Hermes crons" width="max-w-3xl">
-      <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
+      <div className="max-h-[70vh] space-y-5 overflow-y-auto pr-1">
         <p className="text-xs text-muted">
           Jobs run inside each agent's own scheduler — they keep firing even if Talaria is down. Fixed-time jobs
           created here are staggered 2&nbsp;minutes per agent so the fleet doesn't hit the models at once.
