@@ -19,6 +19,7 @@ import { Route as ApiTeamsRouteImport } from './routes/api/teams'
 import { Route as ApiSkillsRouteImport } from './routes/api/skills'
 import { Route as ApiProfileRouteImport } from './routes/api/profile'
 import { Route as ApiNotificationsRouteImport } from './routes/api/notifications'
+import { Route as ApiMuseRouteImport } from './routes/api/muse'
 import { Route as ApiModelsRouteImport } from './routes/api/models'
 import { Route as ApiMcpRouteImport } from './routes/api/mcp'
 import { Route as ApiKeysRouteImport } from './routes/api/keys'
@@ -27,7 +28,6 @@ import { Route as ApiHomeRouteImport } from './routes/api/home'
 import { Route as ApiHistoryRouteImport } from './routes/api/history'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
 import { Route as ApiCostRouteImport } from './routes/api/cost'
-import { Route as ApiCopilotRouteImport } from './routes/api/copilot'
 import { Route as ApiConversationsRouteImport } from './routes/api/conversations'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiChannelsRouteImport } from './routes/api/channels'
@@ -189,6 +189,11 @@ const ApiNotificationsRoute = ApiNotificationsRouteImport.update({
   path: '/api/notifications',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiMuseRoute = ApiMuseRouteImport.update({
+  id: '/api/muse',
+  path: '/api/muse',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiModelsRoute = ApiModelsRouteImport.update({
   id: '/api/models',
   path: '/api/models',
@@ -227,11 +232,6 @@ const ApiFleetRoute = ApiFleetRouteImport.update({
 const ApiCostRoute = ApiCostRouteImport.update({
   id: '/api/cost',
   path: '/api/cost',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiCopilotRoute = ApiCopilotRouteImport.update({
-  id: '/api/copilot',
-  path: '/api/copilot',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiConversationsRoute = ApiConversationsRouteImport.update({
@@ -831,7 +831,6 @@ export interface FileRoutesByFullPath {
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
-  '/api/copilot': typeof ApiCopilotRoute
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/history': typeof ApiHistoryRoute
@@ -840,6 +839,7 @@ export interface FileRoutesByFullPath {
   '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRouteWithChildren
   '/api/models': typeof ApiModelsRoute
+  '/api/muse': typeof ApiMuseRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
@@ -961,7 +961,6 @@ export interface FileRoutesByTo {
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
-  '/api/copilot': typeof ApiCopilotRoute
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/history': typeof ApiHistoryRoute
@@ -970,6 +969,7 @@ export interface FileRoutesByTo {
   '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRouteWithChildren
   '/api/models': typeof ApiModelsRoute
+  '/api/muse': typeof ApiMuseRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
@@ -1094,7 +1094,6 @@ export interface FileRoutesById {
   '/api/channels': typeof ApiChannelsRouteWithChildren
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
-  '/api/copilot': typeof ApiCopilotRoute
   '/api/cost': typeof ApiCostRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/history': typeof ApiHistoryRoute
@@ -1103,6 +1102,7 @@ export interface FileRoutesById {
   '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRouteWithChildren
   '/api/models': typeof ApiModelsRoute
+  '/api/muse': typeof ApiMuseRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
@@ -1228,7 +1228,6 @@ export interface FileRouteTypes {
     | '/api/channels'
     | '/api/chat'
     | '/api/conversations'
-    | '/api/copilot'
     | '/api/cost'
     | '/api/fleet'
     | '/api/history'
@@ -1237,6 +1236,7 @@ export interface FileRouteTypes {
     | '/api/keys'
     | '/api/mcp'
     | '/api/models'
+    | '/api/muse'
     | '/api/notifications'
     | '/api/profile'
     | '/api/skills'
@@ -1358,7 +1358,6 @@ export interface FileRouteTypes {
     | '/api/channels'
     | '/api/chat'
     | '/api/conversations'
-    | '/api/copilot'
     | '/api/cost'
     | '/api/fleet'
     | '/api/history'
@@ -1367,6 +1366,7 @@ export interface FileRouteTypes {
     | '/api/keys'
     | '/api/mcp'
     | '/api/models'
+    | '/api/muse'
     | '/api/notifications'
     | '/api/profile'
     | '/api/skills'
@@ -1490,7 +1490,6 @@ export interface FileRouteTypes {
     | '/api/channels'
     | '/api/chat'
     | '/api/conversations'
-    | '/api/copilot'
     | '/api/cost'
     | '/api/fleet'
     | '/api/history'
@@ -1499,6 +1498,7 @@ export interface FileRouteTypes {
     | '/api/keys'
     | '/api/mcp'
     | '/api/models'
+    | '/api/muse'
     | '/api/notifications'
     | '/api/profile'
     | '/api/skills'
@@ -1606,7 +1606,6 @@ export interface RootRouteChildren {
   ApiChannelsRoute: typeof ApiChannelsRouteWithChildren
   ApiChatRoute: typeof ApiChatRoute
   ApiConversationsRoute: typeof ApiConversationsRouteWithChildren
-  ApiCopilotRoute: typeof ApiCopilotRoute
   ApiCostRoute: typeof ApiCostRoute
   ApiFleetRoute: typeof ApiFleetRouteWithChildren
   ApiHistoryRoute: typeof ApiHistoryRoute
@@ -1615,6 +1614,7 @@ export interface RootRouteChildren {
   ApiKeysRoute: typeof ApiKeysRouteWithChildren
   ApiMcpRoute: typeof ApiMcpRouteWithChildren
   ApiModelsRoute: typeof ApiModelsRoute
+  ApiMuseRoute: typeof ApiMuseRoute
   ApiNotificationsRoute: typeof ApiNotificationsRoute
   ApiProfileRoute: typeof ApiProfileRoute
   ApiSkillsRoute: typeof ApiSkillsRouteWithChildren
@@ -1717,6 +1717,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiNotificationsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/muse': {
+      id: '/api/muse'
+      path: '/api/muse'
+      fullPath: '/api/muse'
+      preLoaderRoute: typeof ApiMuseRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/models': {
       id: '/api/models'
       path: '/api/models'
@@ -1771,13 +1778,6 @@ declare module '@tanstack/react-router' {
       path: '/api/cost'
       fullPath: '/api/cost'
       preLoaderRoute: typeof ApiCostRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/copilot': {
-      id: '/api/copilot'
-      path: '/api/copilot'
-      fullPath: '/api/copilot'
-      preLoaderRoute: typeof ApiCopilotRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/conversations': {
@@ -3031,7 +3031,6 @@ const rootRouteChildren: RootRouteChildren = {
   ApiChannelsRoute: ApiChannelsRouteWithChildren,
   ApiChatRoute: ApiChatRoute,
   ApiConversationsRoute: ApiConversationsRouteWithChildren,
-  ApiCopilotRoute: ApiCopilotRoute,
   ApiCostRoute: ApiCostRoute,
   ApiFleetRoute: ApiFleetRouteWithChildren,
   ApiHistoryRoute: ApiHistoryRoute,
@@ -3040,6 +3039,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKeysRoute: ApiKeysRouteWithChildren,
   ApiMcpRoute: ApiMcpRouteWithChildren,
   ApiModelsRoute: ApiModelsRoute,
+  ApiMuseRoute: ApiMuseRoute,
   ApiNotificationsRoute: ApiNotificationsRoute,
   ApiProfileRoute: ApiProfileRoute,
   ApiSkillsRoute: ApiSkillsRouteWithChildren,

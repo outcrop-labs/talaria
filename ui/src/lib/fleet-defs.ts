@@ -149,6 +149,8 @@ export async function createFleetAgent(input: {
   displayName: string
   role?: string | null
   templateId: string
+  soul?: string
+  skills?: Array<{ name: string; content: string }>
   start?: boolean
 }): Promise<{ ok?: boolean; healthy?: boolean; error?: string }> {
   const r = await fetch('/api/fleet/create', {

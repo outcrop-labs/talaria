@@ -276,7 +276,7 @@ function SkillEditorModal({ slug, name, isAdmin, onClose }: { slug: string; name
       saving={busy}
       onSave={save}
       history={{ kind: 'skill', owner: slug, name }}
-      copilot={{ kind: 'skill', context: `A skill for the "${slug}" agent.` }}
+      muse={{ kind: 'skill', context: `A skill for the "${slug}" agent.` }}
       footerExtra={isAdmin ? <Button variant="ghost" size="sm" onClick={() => void remove()}>Delete skill</Button> : undefined}
     />
   )
@@ -338,7 +338,7 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
           saving={busy}
           onSave={save}
           history={{ kind: 'memory', id: def.id }}
-          copilot={{ kind: 'memory', context: `The memory of the "${def.slug}" agent (${def.role ?? def.department}).` }}
+          muse={{ kind: 'memory', context: `The memory of the "${def.slug}" agent (${def.role ?? def.department}).` }}
         />
       )}
     </div>

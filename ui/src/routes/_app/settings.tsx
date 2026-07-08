@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
-import { savePreferredModel, useModels, usePreferredModel } from '@/lib/copilot'
+import { savePreferredModel, useModels, usePreferredModel } from '@/lib/muse'
 import { AssistantSection } from '@/components/assistant/assistant-section'
 
 export const Route = createFileRoute('/_app/settings')({

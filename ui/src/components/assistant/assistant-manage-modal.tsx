@@ -316,7 +316,7 @@ function SkillEditor({
       saving={busy}
       onSave={save}
       history={{ kind: 'skill', owner: assistant.slug, name }}
-      copilot={{ kind: 'skill', context: `A skill for ${assistant.displayName}, a personal AI assistant.` }}
+      muse={{ kind: 'skill', context: `A skill for ${assistant.displayName}, a personal AI assistant.` }}
       footerExtra={
         <Button variant="ghost" size="sm" onClick={() => void remove()}>
           <Trash2 size={14} className="mr-1.5" /> Delete skill
@@ -384,7 +384,7 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
           saving={busy}
           onSave={save}
           history={{ kind: 'memory', id: assistant.id }}
-          copilot={{ kind: 'memory', context: `The memory of ${assistant.displayName}, a personal AI assistant.` }}
+          muse={{ kind: 'memory', context: `The memory of ${assistant.displayName}, a personal AI assistant.` }}
         />
       )}
     </div>

@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { relativeTime } from '@/lib/fleet'
-import { parseCronDraft, streamCopilot } from '@/lib/copilot'
+import { parseCronDraft, streamMuse } from '@/lib/muse'
 import { cn } from '@/lib/cn'
 
 // Native Hermes crons — the jobs live and fire inside each agent's own
@@ -135,14 +135,14 @@ export function CronForm({
   const [draftErr, setDraftErr] = useState<string | null>(null)
   const ok = name.trim() && schedule.trim() && prompt.trim()
 
-  // Natural language → {name, schedule, prompt} via the drafting copilot.
+  // Natural language → {name, schedule, prompt} via the drafting muse.
   const draft = async () => {
     const ask = draftAsk.trim()
     if (!ask) return
     setDrafting(true)
     setDraftErr(null)
     try {
-      const full = await streamCopilot({ kind: 'cron', instruction: ask }, () => {})
+      const full = await streamMuse({ kind: 'cron', instruction: ask }, () => {})
       const j = parseCronDraft(full)
       if (!j) return setDraftErr('could not turn that into a job — try rephrasing')
       setName(j.name)
