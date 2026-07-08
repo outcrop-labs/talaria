@@ -11,16 +11,18 @@ import { cn } from '@/lib/cn'
 import { relativeTime, useFleet } from '@/lib/fleet'
 import { AgentConfigForm } from '@/components/fleet/agent-editor'
 import { CronsPanel } from '@/components/fleet/agent-crons'
+import { SecretsTab } from '@/components/fleet/agent-secrets-tab'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { patchAgentMeta, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
 
-type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'mcp' | 'versions'
+type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'secrets' | 'mcp' | 'versions'
 const TABS: { id: Tab; label: string }[] = [
   { id: 'summary', label: 'Summary' },
   { id: 'config', label: 'Config' },
   { id: 'skills', label: 'Skills' },
   { id: 'memory', label: 'Memory' },
   { id: 'crons', label: 'Crons' },
+  { id: 'secrets', label: 'Secrets' },
   { id: 'mcp', label: 'MCP' },
   { id: 'versions', label: 'Versions' },
 ]
@@ -78,6 +80,7 @@ export function AgentManageModal({
             intro="Recurring jobs the agent runs on its own native scheduler — they keep firing even when Talaria is down."
           />
         )}
+        {tab === 'secrets' && (isAdmin ? <SecretsTab agentId={def.id} /> : <div className="text-sm text-muted">Admins only.</div>)}
         {tab === 'mcp' && <McpTab def={def} isAdmin={isAdmin} />}
         {tab === 'versions' && <VersionsTab def={def} isAdmin={isAdmin} />}
       </div>

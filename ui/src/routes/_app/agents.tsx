@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Play, Square, SlidersHorizontal, Archive, CalendarClock, LayoutGrid, List, Loader2, Copy, UserPlus, Plus } from 'lucide-react'
+import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Loader2, Copy, UserPlus, Plus } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import { cn } from '@/lib/cn'
 import { AgentManageModal } from '@/components/fleet/agent-manage-modal'
 import { CreateAgentModal } from '@/components/fleet/create-agent-modal'
 import { FleetCronsModal } from '@/components/fleet/agent-crons'
+import { FederateModal } from '@/components/fleet/federate-modal'
 import {
   controlAgent,
   useFleetContainers,
@@ -59,6 +60,7 @@ function AgentsPage() {
   const [creating, setCreating] = useState(false)
   const [duplicateFrom, setDuplicateFrom] = useState<AgentDef | null>(null)
   const [schedulesOpen, setSchedulesOpen] = useState(false)
+  const [federateOpen, setFederateOpen] = useState(false)
 
   return (
     <div className="h-full overflow-y-auto p-8">
@@ -90,6 +92,16 @@ function AgentsPage() {
                   aria-label="Schedules"
                 >
                   <CalendarClock size={15} />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-9 px-0"
+                  onClick={() => setFederateOpen(true)}
+                  title="Federate outside agents into Talaria"
+                  aria-label="Federate agents"
+                >
+                  <Import size={15} />
                 </Button>
               </>
             )}
@@ -127,6 +139,7 @@ function AgentsPage() {
         )}
 
         {schedulesOpen && <FleetCronsModal onClose={() => setSchedulesOpen(false)} />}
+        {federateOpen && <FederateModal onClose={() => setFederateOpen(false)} />}
         {creating && <CreateAgentModal open={creating} onClose={() => setCreating(false)} templates={defs.filter((d) => d.enabled)} />}
         {duplicateFrom && (
           <CreateAgentModal open onClose={() => setDuplicateFrom(null)} templates={defs} templateId={duplicateFrom.id} />

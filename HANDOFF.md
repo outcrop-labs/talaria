@@ -97,10 +97,10 @@ Full project-management suite, all live in `ui/`:
 - **Agent harness (phase A)** - Talaria as the fleet's source of truth. Tables
   `llm_endpoints` (class local|cloud, feeds the cost split), `agent_defs`,
   `agent_versions` (immutable payloads: soul + config jsonb incl. `raw` full
-  config.yaml). Importer `server/fleet-import.ts` ingests `TALARIA_STACK_DIR`
-  (default `~/packledger-services/ai/orchestration`): `agents.yaml` roster +
-  per-department `config.yaml`/`SOUL.md`; idempotent (canonical-JSON compare —
-  jsonb reorders keys). Admin API `GET/POST /api/fleet/defs`,
+  config.yaml). Federation `server/fleet-federate.ts` (2026-07-08; replaced
+  the old importer) ingests a Hermes-format dir on demand and creates each
+  agent NATIVELY: Talaria chassis, fresh key + state volume, skills copied
+  into the fleet dir. Admin API `GET /api/fleet/defs`, `POST /api/fleet/federate`,
   `GET /api/fleet/defs/:id/versions`; Definitions panel on `/agents`.
   Key context: Hermes `model_aliases` = one container serving all model tiers
   (that + `fallback_providers` replace per-tier scaffolding); the external
