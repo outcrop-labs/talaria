@@ -71,15 +71,6 @@ export function useFleetDefs(enabled: boolean) {
   })
 }
 
-export async function importFleet(): Promise<{
-  agents: Array<{ slug: string; model: string; version: number; created: boolean }>
-  errors: string[]
-} | null> {
-  const r = await fetch('/api/fleet/defs', { method: 'POST', credentials: 'same-origin' })
-  if (!r.ok) return null
-  return ((await r.json()) as { result: { agents: []; errors: [] } }).result
-}
-
 export interface ReconcileResult {
   rendered?: number
   started?: string[]
@@ -103,7 +94,6 @@ export interface ContainerState {
 export interface AgentContainers {
   department: string
   managed: ContainerState | null
-  legacy: ContainerState | null
 }
 
 export function useFleetContainers(enabled: boolean) {
@@ -141,14 +131,15 @@ export async function saveAgentEdit(
   return (await r.json().catch(() => ({ error: `save failed (${r.status})` }))) as { error?: string }
 }
 
-export type FleetAction = 'migrate' | 'up' | 'stop' | 'legacy-start' | 'legacy-stop' | 'retire' | 'unretire'
+export type FleetAction = 'up' | 'stop' | 'retire' | 'unretire'
 
 export async function createFleetAgent(input: {
   slug: string
   department: string
   displayName: string
   role?: string | null
-  templateId: string
+  /** Clone this agent's config; omit for the platform defaults. */
+  templateId?: string
   soul?: string
   skills?: Array<{ name: string; content: string }>
   start?: boolean

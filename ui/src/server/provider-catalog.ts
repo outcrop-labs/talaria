@@ -1,11 +1,10 @@
 // Live provider catalogs: ask each backend what models it actually offers
 // (GET /models on OpenAI-compatible APIs; provider-specific hosts for the
-// native ones). Keys resolve from the server env or the stack .env — values
+// native ones). Keys resolve from the server env or the fleet .env — values
 // never leave the server.
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import type { LlmEndpoint } from './agent-defs'
-import { STACK_DIR } from './fleet-render'
+import { FLEET_ENV } from './fleet-render'
 
 /** Env names the catalog fetch may read. Only provider-key-shaped vars — an
  *  endpoint pairs an admin-chosen env name with an admin-chosen base URL, so
@@ -19,7 +18,7 @@ export const KEY_ENV_RE = /^(LLM_API_KEY|[A-Z][A-Z0-9_]*_API_KEY)$/
 export async function resolveKey(envVar: string | null | undefined): Promise<string | null> {
   if (!envVar || !KEY_ENV_RE.test(envVar)) return null
   if (process.env[envVar]) return process.env[envVar]!.trim()
-  const env = await readFile(join(STACK_DIR(), '.env'), 'utf8').catch(() => '')
+  const env = await readFile(FLEET_ENV(), 'utf8').catch(() => '')
   const m = new RegExp(`^${envVar}=(.*)$`, 'm').exec(env)
   return m ? m[1]!.trim() : null
 }

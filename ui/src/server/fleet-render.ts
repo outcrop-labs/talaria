@@ -20,11 +20,18 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
-export const STACK_DIR = () => process.env.TALARIA_STACK_DIR ?? '/home/jon/packledger-services/ai/orchestration'
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
+/** The fleet's env file (agent keys + compose interpolation) — Talaria-owned. */
+export const FLEET_ENV = () => join(FLEET_DIR(), '.env')
+/** The chassis every agent renders from: one service block + per-slug extras.
+ *  Talaria-owned (extracted once at cutover from the legacy stack). */
+const CHASSIS_FILE = () => process.env.TALARIA_CHASSIS_FILE ?? join(FLEET_DIR(), 'chassis.yml')
 const BRIDGE_MANIFEST = () =>
   process.env.TALARIA_BRIDGE_MANIFEST ?? resolve(process.cwd(), '../stack/fleet.json')
-const SOURCE_COMPOSE_PROJECT = 'ai' // volume/network prefix of the legacy stack
+// Docker-level names inherited from the pre-Talaria stack: imported agents'
+// state volumes (ai_hermes-<dept>) and the shared infra network (ai_default).
+// These are volume/network NAMES, not a code dependency on that repo.
+const LEGACY_DOCKER_PROJECT = 'ai'
 
 type ComposeService = Record<string, unknown> & {
   build?: unknown
@@ -66,20 +73,20 @@ async function managedAgents(): Promise<RenderTarget[]> {
   }))
 }
 
-/** Rewrite one bind/volume entry for the generated compose. Returns the entry
- *  plus the named volume it references (if any) for the external volumes map. */
-function rewriteMount(entry: string, agentDir: string): { entry: string; namedVolume?: string } {
-  const [src, dest, mode] = entry.split(':')
-  if (!src || !dest) return { entry }
-  const suffix = mode ? `:${mode}` : ''
-  if (dest === '/opt/data/config.yaml') return { entry: `${join(agentDir, 'config.yaml')}:${dest}:ro` }
-  if (dest === '/opt/data/SOUL.md') return { entry: `${join(agentDir, 'SOUL.md')}:${dest}:ro` }
-  if (src.startsWith('./') || src.startsWith('../')) {
-    return { entry: `${resolve(STACK_DIR(), src)}:${dest}${suffix}` }
-  }
-  if (src.startsWith('/')) return { entry }
-  // Named volume — reference the legacy project's volume so state survives.
-  return { entry: `${src}:${dest}${suffix}`, namedVolume: src }
+interface ChassisExtras {
+  environment?: Record<string, unknown>
+  volumes?: string[]
+  secrets?: unknown[]
+}
+
+interface Chassis {
+  service: ComposeService
+  /** Per-agent additions beyond the uniform chassis, keyed by slug. */
+  extras?: Record<string, ChassisExtras>
+  /** Shared named-volume definitions (workspaces, repos, kanban…). */
+  volumes?: Record<string, unknown>
+  /** Secret definitions the extras may reference. */
+  secrets?: Record<string, unknown>
 }
 
 export interface RenderResult {
@@ -95,22 +102,18 @@ export async function renderFleet(): Promise<RenderResult> {
   // Parse in YAML 1.1 — docker compose's own dialect (go-yaml). This matters:
   // `mode: 0400` is OCTAL in 1.1 (256) but decimal 400 in 1.2, which would
   // silently turn a root-only secret into a group-writable one.
-  const sourceCompose = parseYaml(await readFile(join(STACK_DIR(), 'docker-compose.yml'), 'utf8'), {
-    merge: true,
-    version: '1.1',
-  }) as { services?: Record<string, ComposeService>; secrets?: Record<string, unknown> }
+  const chassisText = await readFile(CHASSIS_FILE(), 'utf8').catch(() => null)
+  if (!chassisText) {
+    throw new Error(`fleet chassis missing at ${CHASSIS_FILE()} — the harness cannot render agents without it`)
+  }
+  const chassis = parseYaml(chassisText, { merge: true, version: '1.1' }) as Chassis
+  if (!chassis?.service) throw new Error(`fleet chassis at ${CHASSIS_FILE()} has no "service" block`)
 
   const services: Record<string, ComposeService> = {}
-  // Secrets referenced by agent services (dex/dewey/dot: litellm_key, gh_token,
-  // anthropic_key) — pass their env-sourced definitions through verbatim.
   const secrets: Record<string, unknown> = {}
-  const volumes: Record<string, { external: true; name: string } | Record<string, never>> = {}
-
-  // Chassis for created agents: any standard agent service block from the
-  // source stack (env/anatomy shared via its anchor), re-stamped per agent.
-  const chassisName =
-    process.env.TALARIA_CHASSIS_SERVICE ??
-    (sourceCompose.services?.['agent-support'] ? 'agent-support' : Object.keys(sourceCompose.services ?? {}).find((s) => s.startsWith('agent-')))
+  const volumes: Record<string, { external: true; name: string } | Record<string, never> | unknown> = {
+    ...(chassis.volumes ?? {}),
+  }
 
   for (const { def, version } of targets) {
     const agentDir = join(FLEET_DIR(), 'agents', def.slug)
@@ -139,57 +142,54 @@ export async function renderFleet(): Promise<RenderResult> {
     result.files.push(join(agentDir, 'config.yaml'), join(agentDir, 'SOUL.md'))
 
     const serviceName = `agent-${def.department}`
-    const created = (def as AgentDef & { source?: string }).source === 'created'
-    const source = sourceCompose.services?.[created ? (chassisName ?? '') : serviceName]
-    if (!source) {
-      result.warnings.push(`${def.slug}: no ${created ? 'chassis' : `source service ${serviceName}`} in the stack compose — skipped`)
-      continue
-    }
-    const svc: ComposeService = JSON.parse(JSON.stringify(source)) as ComposeService
-    delete svc.build // images are prebuilt; Talaria doesn't rebuild
-    delete svc.depends_on // deps (redis, mcp servers) run in the legacy project
-    delete svc.ports // the bridge reaches agents over the network; host ports retire
+    const imported = (def as AgentDef & { source?: string }).source === 'imported'
+    const extras = chassis.extras?.[def.slug]
 
-    if (created) {
-      // Re-stamp the chassis identity for a brand-new agent.
-      const env = (svc.environment ?? {}) as Record<string, unknown>
-      env.API_SERVER_KEY = `\${HERMES_KEY_${def.slug.toUpperCase()}}`
-      env.API_SERVER_MODEL_NAME = def.model
-      svc.environment = env
-    }
+    // Every agent is the SAME chassis — dumb agents, harness-owned settings.
+    const svc: ComposeService = JSON.parse(JSON.stringify(chassis.service)) as ComposeService
+    delete svc.build
+    delete svc.depends_on
+    delete svc.ports
+    delete svc.profiles
 
-    if (Array.isArray(svc.volumes)) {
-      svc.volumes = svc.volumes.map((v) => {
-        const [, dest] = String(v).split(':')
-        if (created && dest === '/opt/data') {
-          // Fresh state volume in the talaria-fleet project (compose creates it).
-          volumes[`hermes-${def.department}`] = {}
-          return `hermes-${def.department}:/opt/data`
-        }
-        if (created && dest === '/opt/dept-skills') {
-          return `${join(agentDir, 'skills')}:/opt/dept-skills:ro`
-        }
-        const { entry, namedVolume } = rewriteMount(String(v), agentDir)
-        if (namedVolume) volumes[namedVolume] = { external: true, name: `${SOURCE_COMPOSE_PROJECT}_${namedVolume}` }
-        return entry
-      })
-    }
+    const env = { ...((svc.environment ?? {}) as Record<string, unknown>), ...(extras?.environment ?? {}) }
+    env.API_SERVER_KEY = `\${HERMES_KEY_${def.slug.toUpperCase()}}`
+    env.API_SERVER_MODEL_NAME = def.model
+    svc.environment = env
+
+    // Per-agent state volume: imported agents keep their pre-Talaria volume
+    // (external, legacy-named) so their memory survives; created agents get a
+    // project-local one that compose creates on first up.
+    const stateVolume = `hermes-${def.department}`
+    volumes[stateVolume] = imported ? { external: true, name: `${LEGACY_DOCKER_PROJECT}_${stateVolume}` } : {}
+
+    svc.volumes = [
+      `${stateVolume}:/opt/data`,
+      `${join(agentDir, 'config.yaml')}:/opt/data/config.yaml:ro`,
+      `${join(agentDir, 'SOUL.md')}:/opt/data/SOUL.md:ro`,
+      `${join(agentDir, 'skills')}:/opt/dept-skills:ro`,
+      // Chassis + extras mounts pass through: shared skill/hook/plugin roots
+      // (absolute, fleet-owned) and named volumes (defined in chassis.volumes).
+      ...((svc.volumes ?? []) as string[]).filter((v) => {
+        const dest = String(v).split(':')[1]
+        return !['/opt/data', '/opt/data/config.yaml', '/opt/data/SOUL.md', '/opt/dept-skills'].includes(dest ?? '')
+      }),
+      ...(extras?.volumes ?? []),
+    ]
+
     svc.networks = ['fleet']
-    if (Array.isArray(svc.secrets)) {
-      // Entries are either "name" or long-form { source, target, mode, … }.
-      // A reference without a resolvable definition is DROPPED (with a warning)
-      // — keeping it would make compose reject the whole file and brick every
-      // fleet operation, not just this agent.
-      svc.secrets = (svc.secrets as Array<string | { source?: string }>).filter((s) => {
+    if (extras?.secrets) {
+      // Entries are either "name" or long-form { source, … }. A reference
+      // without a definition in chassis.secrets is DROPPED (with a warning) —
+      // keeping it would make compose reject the whole file.
+      svc.secrets = (extras.secrets as Array<string | { source?: string }>).filter((s) => {
         const name = typeof s === 'string' ? s : s.source
-        const secretDef = name ? sourceCompose.secrets?.[name] : undefined
+        const secretDef = name ? chassis.secrets?.[name] : undefined
         if (name && secretDef) {
           secrets[name] = secretDef
           return true
         }
-        result.warnings.push(
-          `${serviceName}: secret ${name ?? JSON.stringify(s)} not defined in the source compose — dropped from the rendered service`,
-        )
+        result.warnings.push(`${serviceName}: secret ${name ?? JSON.stringify(s)} not defined in chassis.yml — dropped`)
         return false
       })
     }
@@ -202,7 +202,7 @@ export async function renderFleet(): Promise<RenderResult> {
     services,
     volumes,
     ...(Object.keys(secrets).length ? { secrets } : {}),
-    networks: { fleet: { external: true, name: `${SOURCE_COMPOSE_PROJECT}_default` } },
+    networks: { fleet: { external: true, name: `${LEGACY_DOCKER_PROJECT}_default` } },
   }
   const composePath = join(FLEET_DIR(), 'docker-compose.yml')
   await mkdir(FLEET_DIR(), { recursive: true })
@@ -230,7 +230,7 @@ async function writeFleetManifest(result: RenderResult): Promise<void> {
     where d.enabled order by d.slug
   `) as unknown as Array<{ slug: string; department: string; model: string; config: AgentConfig | null }>
 
-  const env = await readFile(join(STACK_DIR(), '.env'), 'utf8').catch(() => '')
+  const env = await readFile(FLEET_ENV(), 'utf8').catch(() => '')
   const keys = new Map<string, string>()
   for (const line of env.split('\n')) {
     const m = /^HERMES_KEY_([A-Z0-9_]+)=(.*)$/.exec(line.trim())
@@ -239,7 +239,7 @@ async function writeFleetManifest(result: RenderResult): Promise<void> {
 
   const manifest = defs.flatMap((d) => {
     const key = keys.get(d.slug) ?? ''
-    if (!key) result.warnings.push(`${d.slug}: no HERMES_KEY_${d.slug.toUpperCase()} in stack .env`)
+    if (!key) result.warnings.push(`${d.slug}: no HERMES_KEY_${d.slug.toUpperCase()} in the fleet .env`)
     const url = `http://agent-${d.department}:8642`
     return [
       { model: d.model, url, key },

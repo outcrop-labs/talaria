@@ -1,14 +1,13 @@
-// Create a brand-new agent from a template (an existing agent's definition).
-// The clone carries the template's model tiers/tools with every identity
-// reference re-stamped to the new slug; the soul is a role-scaffold the user
-// edits in Talaria. A fresh gateway key is allocated into the stack's .env
-// (which the renderer + manifest already read).
+// Create a brand-new agent — from a template (an existing agent's definition,
+// model tiers/tools cloned with identity re-stamped) or, with no template, from
+// the platform defaults (first local endpoint's model). The soul is a scaffold
+// (or supplied, e.g. Muse-designed). A fresh gateway key is allocated into the
+// fleet .env (which the renderer + manifest read).
 import { randomBytes } from 'node:crypto'
 import { appendFile, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import { db } from './db/pg'
-import { addVersionIfChanged, listVersions, upsertAgentDef, type AgentConfig, type AgentDef } from './agent-defs'
-import { STACK_DIR } from './fleet-render'
+import { addVersionIfChanged, applyConfigEdits, listEndpoints, listVersions, upsertAgentDef, type AgentConfig, type AgentDef } from './agent-defs'
+import { FLEET_ENV } from './fleet-render'
 
 const SLUG_RE = /^[a-z][a-z0-9]{1,30}$/
 const DEPT_RE = /^[a-z][a-z0-9-]{1,40}$/
@@ -40,9 +39,9 @@ replace this section with a real personality and operating principles.)
 `
 }
 
-/** Ensure a HERMES_KEY_<SLUG> exists in the stack .env; returns whether created. */
+/** Ensure a HERMES_KEY_<SLUG> exists in the fleet .env; returns whether created. */
 export async function ensureAgentKey(slug: string): Promise<boolean> {
-  const envPath = join(STACK_DIR(), '.env')
+  const envPath = FLEET_ENV()
   const name = `HERMES_KEY_${slug.toUpperCase()}`
   const content = await readFile(envPath, 'utf8')
   if (new RegExp(`^${name}=`, 'm').test(content)) return false
@@ -56,7 +55,8 @@ export async function createAgent(input: {
   department: string
   displayName: string
   role?: string | null
-  templateId: string
+  /** Clone this agent's config; omit to start from the platform defaults. */
+  templateId?: string
   createdBy: string
   /** Override the starter-soul scaffold (e.g. a personalized assistant soul). */
   soul?: string
@@ -68,24 +68,41 @@ export async function createAgent(input: {
   const exists = await sql`select 1 from agent_defs where slug = ${input.slug}`
   if (exists.length) throw new Error(`agent "${input.slug}" already exists`)
 
-  const templateVersion = (await listVersions(input.templateId))[0]
-  if (!templateVersion) throw new Error('template agent has no versions')
-  const tmplDef = (await sql`select slug from agent_defs where id = ${input.templateId}`) as unknown as Array<{
-    slug: string
-  }>
-  const fromSlug = tmplDef[0]?.slug
-  if (!fromSlug) throw new Error('template agent not found')
+  let config: AgentConfig
+  let note: string
+  if (input.templateId) {
+    const templateVersion = (await listVersions(input.templateId))[0]
+    if (!templateVersion) throw new Error('template agent has no versions')
+    const tmplDef = (await sql`select slug from agent_defs where id = ${input.templateId}`) as unknown as Array<{
+      slug: string
+    }>
+    const fromSlug = tmplDef[0]?.slug
+    if (!fromSlug) throw new Error('template agent not found')
+    config = restampSlug(templateVersion.config, fromSlug, input.slug) as AgentConfig
+    note = `created from template ${fromSlug}`
+  } else {
+    // Platform defaults: main model from the first local endpoint (else any).
+    const eps = await listEndpoints()
+    const ep = eps.find((e) => e.class === 'local' && e.models.length > 0) ?? eps.find((e) => e.models.length > 0)
+    if (!ep) throw new Error('no models configured — add an LLM endpoint first')
+    const main = {
+      endpoint: ep.name,
+      model: ep.models[0]!,
+      ...(ep.contextLength ? { contextLength: ep.contextLength } : {}),
+    }
+    config = await applyConfigEdits({ main, aliases: [], fallbacks: [] }, { main, aliases: [], fallbacks: [] })
+    note = 'created from platform defaults'
+  }
 
   const keyCreated = await ensureAgentKey(input.slug)
 
   const def = await upsertAgentDef({ slug: input.slug, department: input.department, displayName: input.displayName, role: input.role, source: 'created' })
   await sql`update agent_defs set managed = true, updated_at = now() where id = ${def.id}`
 
-  const config = restampSlug(templateVersion.config, fromSlug, input.slug) as AgentConfig
   await addVersionIfChanged(def.id, {
     soul: input.soul ?? starterSoul(input.displayName, input.department),
     config,
-    note: `created from template ${fromSlug}`,
+    note,
     createdBy: input.createdBy,
   })
   return { def: { ...def, managed: true }, keyCreated }

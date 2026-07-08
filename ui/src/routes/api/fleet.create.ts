@@ -13,7 +13,8 @@ const Body = z.object({
   department: z.string().min(2).max(40),
   displayName: z.string().min(1).max(60),
   role: z.string().max(80).nullish(),
-  templateId: z.string().uuid(),
+  /** Clone this agent's config; omit for the platform defaults. */
+  templateId: z.string().uuid().optional(),
   /** Override the starter-soul scaffold (e.g. an AI-designed soul). */
   soul: z.string().max(200_000).optional(),
   /** Starter skills written after creation (e.g. AI-designed playbooks). */

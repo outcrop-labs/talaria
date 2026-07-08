@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Play, Square, SlidersHorizontal, Archive, ArrowRightLeft, CalendarClock, LayoutGrid, List, Loader2, Copy, UserPlus, Plus, Import } from 'lucide-react'
+import { Play, Square, SlidersHorizontal, Archive, CalendarClock, LayoutGrid, List, Loader2, Copy, UserPlus, Plus } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -13,7 +13,6 @@ import { useSession } from '@/lib/session'
 import { cn } from '@/lib/cn'
 import { AgentManageModal } from '@/components/fleet/agent-manage-modal'
 import { CreateAgentModal } from '@/components/fleet/create-agent-modal'
-import { ImportWizard } from '@/components/fleet/import-wizard'
 import { FleetCronsModal } from '@/components/fleet/agent-crons'
 import {
   controlAgent,
@@ -30,19 +29,17 @@ export const Route = createFileRoute('/_app/agents')({
 })
 
 // ── Health: one word (up / degraded / down / retired) from container reality ──
-type Health = 'up' | 'degraded' | 'down' | 'retired' | 'legacy'
+type Health = 'up' | 'degraded' | 'down' | 'retired'
 const HEALTH_COLOR: Record<Health, string> = {
   up: 'var(--theme-success)',
   degraded: 'var(--theme-warning)',
   down: 'var(--theme-danger)',
   retired: 'var(--theme-line)',
-  legacy: 'var(--theme-accent)',
 }
 function healthOf(d: AgentDef, c: AgentContainers | null): { health: Health; running: boolean } {
   if (!d.enabled) return { health: 'retired', running: false }
-  const state = d.managed ? c?.managed ?? null : c?.legacy ?? null
+  const state = c?.managed ?? null
   const running = state?.state === 'running'
-  if (!d.managed) return { health: 'legacy', running }
   if (!running) return { health: 'down', running: false }
   return { health: /unhealthy/i.test(state?.status ?? '') ? 'degraded' : 'up', running: true }
 }
@@ -61,7 +58,6 @@ function AgentsPage() {
   const [view, setView] = useState<'grid' | 'list'>('grid')
   const [creating, setCreating] = useState(false)
   const [duplicateFrom, setDuplicateFrom] = useState<AgentDef | null>(null)
-  const [importOpen, setImportOpen] = useState(false)
   const [schedulesOpen, setSchedulesOpen] = useState(false)
 
   return (
@@ -82,14 +78,7 @@ function AgentsPage() {
             </div>
             {isAdmin && (
               <>
-                <Button
-                  size="sm"
-                  className="w-9 px-0"
-                  onClick={() => setCreating(true)}
-                  disabled={defs.length === 0}
-                  title={defs.length === 0 ? 'Import agents first to seed a template' : 'New agent'}
-                  aria-label="New agent"
-                >
+                <Button size="sm" className="w-9 px-0" onClick={() => setCreating(true)} title="New agent" aria-label="New agent">
                   <Plus size={16} />
                 </Button>
                 <Button
@@ -102,16 +91,6 @@ function AgentsPage() {
                 >
                   <CalendarClock size={15} />
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-9 px-0"
-                  onClick={() => setImportOpen(true)}
-                  title="Import agents"
-                  aria-label="Import agents"
-                >
-                  <Import size={15} />
-                </Button>
               </>
             )}
           </div>
@@ -123,10 +102,10 @@ function AgentsPage() {
           <Panel>
             <EmptyState
               title="No agents yet"
-              hint="Import your existing agents to bring the fleet in."
+              hint="Describe the first one and Muse designs it — identity, soul, and starter skills."
               action={
-                <Button size="sm" onClick={() => setImportOpen(true)}>
-                  Import agents
+                <Button size="sm" onClick={() => setCreating(true)}>
+                  Design your first agent
                 </Button>
               }
             />
@@ -147,7 +126,6 @@ function AgentsPage() {
           </Panel>
         )}
 
-        {importOpen && <ImportWizard onClose={() => setImportOpen(false)} />}
         {schedulesOpen && <FleetCronsModal onClose={() => setSchedulesOpen(false)} />}
         {creating && <CreateAgentModal open={creating} onClose={() => setCreating(false)} templates={defs.filter((d) => d.enabled)} />}
         {duplicateFrom && (
@@ -211,7 +189,7 @@ function IconBtn({ icon, title, onClick, danger, disabled }: { icon: React.React
   )
 }
 
-// Shared control logic for a managed/legacy agent def.
+// Shared control logic for one agent def.
 function useAgentControls(d: AgentDef) {
   const qc = useQueryClient()
   const [pending, setPending] = useState<string | null>(null)
@@ -229,7 +207,7 @@ function useAgentControls(d: AgentDef) {
   return { pending, act }
 }
 
-/** The control-icon cluster (start/stop · manage · retire/migrate · re-hire). */
+/** The control-icon cluster (start/stop · manage · retire · re-hire). */
 function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; running: boolean; onManage: () => void; onDuplicate: () => void }) {
   const { pending, act } = useAgentControls(d)
   const [retiring, setRetiring] = useState(false)
@@ -246,25 +224,15 @@ function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; r
     <div className="flex items-center">
       <IconBtn icon={<Copy size={15} />} title="Duplicate to a new agent" onClick={onDuplicate} />
       <IconBtn icon={<SlidersHorizontal size={15} />} title="Manage" onClick={onManage} />
-      {d.managed ? (
-        <>
-          <IconBtn icon={<Archive size={15} />} title="Retire" danger onClick={() => setRetiring(true)} />
-          {retiring && <RetireModal def={d} onClose={() => setRetiring(false)} onConfirm={() => void act('retire', 'retiring')} />}
-          {/* Start/stop stands apart from the rest — it's the lifecycle switch,
-              not another management action. Filled glyphs so they read at 14px. */}
-          <span aria-hidden className="mx-1.5 h-4 w-px bg-line-subtle" />
-          {running ? (
-            <IconBtn icon={<Square size={14} fill="currentColor" />} title="Stop" onClick={() => void act('stop', 'stopping')} />
-          ) : (
-            <IconBtn icon={<Play size={14} fill="currentColor" />} title="Start" onClick={() => void act('up', 'starting')} />
-          )}
-        </>
+      <IconBtn icon={<Archive size={15} />} title="Retire" danger onClick={() => setRetiring(true)} />
+      {retiring && <RetireModal def={d} onClose={() => setRetiring(false)} onConfirm={() => void act('retire', 'retiring')} />}
+      {/* Start/stop stands apart from the rest — it's the lifecycle switch,
+          not another management action. Filled glyphs so they read at 14px. */}
+      <span aria-hidden className="mx-1.5 h-4 w-px bg-line-subtle" />
+      {running ? (
+        <IconBtn icon={<Square size={14} fill="currentColor" />} title="Stop" onClick={() => void act('stop', 'stopping')} />
       ) : (
-        <IconBtn
-          icon={<ArrowRightLeft size={15} />}
-          title="Migrate to Talaria"
-          onClick={() => void act('migrate', 'migrating', `Migrate ${d.displayName} to Talaria management? The legacy container stops; state carries over.`)}
-        />
+        <IconBtn icon={<Play size={14} fill="currentColor" />} title="Start" onClick={() => void act('up', 'starting')} />
       )}
     </div>
   )

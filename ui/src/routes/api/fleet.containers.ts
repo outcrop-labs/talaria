@@ -4,7 +4,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { containerStatus } from '@/server/fleet-docker'
 import { db } from '@/server/db/pg'
 
-// GET → container reality per agent (managed + legacy), admin.
+// GET → container reality per agent (the managed service), admin.
 export const Route = createFileRoute('/api/fleet/containers')({
   server: {
     handlers: {

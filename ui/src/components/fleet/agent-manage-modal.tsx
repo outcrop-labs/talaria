@@ -122,7 +122,7 @@ function SummaryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       <div className="grid grid-cols-2 gap-3">
         <Stat label="Model id" value={def.model} />
         <Stat label="Department" value={def.department} />
-        <Stat label="Management" value={def.managed ? 'Talaria-managed' : 'legacy stack'} />
+        <Stat label="Management" value="Talaria-managed" />
         <Stat label="Version" value={`v${def.currentVersion}`} />
         {stat && <Stat label="Conversations" value={String(stat.conversations)} />}
         {stat && <Stat label="Messages" value={String(stat.messages)} />}

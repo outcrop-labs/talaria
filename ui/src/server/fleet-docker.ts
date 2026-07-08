@@ -1,16 +1,13 @@
 // Docker control for the managed fleet. Talaria drives `docker compose` on the
-// rendered fleet/docker-compose.yml (interpolation env = the stack's .env, so
-// per-agent keys/secrets stay in one gitignored place). Legacy containers (the
-// old ai-* project) are start/stop-able too, which is how migration hands over.
+// rendered fleet/docker-compose.yml (interpolation env = the fleet's own .env,
+// so per-agent keys/secrets stay in one Talaria-owned, gitignored place).
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
-import { FLEET_DIR, STACK_DIR } from './fleet-render'
+import { FLEET_DIR, FLEET_ENV } from './fleet-render'
 
 const run = promisify(execFile)
 
-// -p is mandatory: the stack's .env sets COMPOSE_PROJECT_NAME=ai, which would
-// otherwise hijack the project and treat the ENTIRE legacy stack as orphans.
 const composeArgs = (args: string[]) => [
   'compose',
   '-p',
@@ -18,7 +15,7 @@ const composeArgs = (args: string[]) => [
   '-f',
   join(FLEET_DIR(), 'docker-compose.yml'),
   '--env-file',
-  join(STACK_DIR(), '.env'),
+  FLEET_ENV(),
   ...args,
 ]
 
@@ -43,10 +40,6 @@ export async function fleetRemove(department: string): Promise<string> {
   return stderr.trim()
 }
 
-export async function legacyControl(department: string, action: 'start' | 'stop'): Promise<void> {
-  await run('docker', [action, `ai-agent-${department}-1`], { timeout: 60_000 })
-}
-
 export interface ContainerState {
   name: string
   state: string // running | exited | …
@@ -56,11 +49,9 @@ export interface ContainerState {
 export interface AgentContainers {
   department: string
   managed: ContainerState | null
-  legacy: ContainerState | null
 }
 
-/** Container reality per department: the talaria-managed service and the legacy
- *  ai-project container, matched by name. */
+/** Container reality per department: the talaria-managed service, by name. */
 export async function containerStatus(departments: string[]): Promise<AgentContainers[]> {
   const { stdout } = await run('docker', ['ps', '-a', '--format', '{{json .}}'], { timeout: 20_000 })
   const all = stdout
@@ -71,7 +62,6 @@ export async function containerStatus(departments: string[]): Promise<AgentConta
   return departments.map((department) => ({
     department,
     managed: byName.get(`talaria-fleet-agent-${department}-1`) ?? null,
-    legacy: byName.get(`ai-agent-${department}-1`) ?? null,
   }))
 }
 
