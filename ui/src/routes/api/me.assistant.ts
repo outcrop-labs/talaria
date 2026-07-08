@@ -19,9 +19,12 @@ const CreateBody = z.object({
 const PatchBody = z
   .object({
     name: Name.optional(),
+    handle: Handle.optional(),
     personality: z.string().max(4000).optional(),
+    /** A tier name from the assistant's `tiers` — becomes the default model. */
+    model: z.string().trim().min(1).max(60).optional(),
   })
-  .refine((b) => b.name !== undefined || b.personality !== undefined, { message: 'nothing to update' })
+  .refine((b) => Object.values(b).some((v) => v !== undefined), { message: 'nothing to update' })
 
 /** "agent \"x\" already exists" (slug collision) → something a person can act on. */
 const friendly = (msg: string) => (/already exists/.test(msg) ? 'that handle is taken — pick another' : msg)
@@ -61,7 +64,7 @@ export const Route = createFileRoute('/api/me/assistant')({
           const assistant = await updatePersonalAgent({ id: user.id, email: user.email, name: user.name }, parsed.data)
           return json({ assistant })
         } catch (e) {
-          return json({ error: (e as Error).message }, { status: 400 })
+          return json({ error: friendly((e as Error).message) }, { status: 400 })
         }
       },
     },

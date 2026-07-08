@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from './assistant-wizard'
+import { AssistantManageModal } from './assistant-manage-modal'
 import { updateAssistant, useAssistant } from '@/lib/assistant'
 
 // Settings › Your assistant — the member-facing controls for their personal
@@ -18,6 +19,7 @@ export function AssistantSection() {
   const qc = useQueryClient()
   const { data: assistant, isLoading } = useAssistant()
   const [wizard, setWizard] = useState(false)
+  const [manage, setManage] = useState(false)
   const [name, setName] = useState('')
   const [personality, setPersonality] = useState('')
   const [busy, setBusy] = useState(false)
@@ -83,8 +85,12 @@ export function AssistantSection() {
               style={{ background: assistant.running ? 'var(--theme-success)' : 'var(--theme-line)' }}
             />
             @{assistant.slug} · {assistant.running ? 'online' : 'offline'}
+            {assistant.currentModel && <span className="truncate"> · {assistant.currentModel}</span>}
           </div>
         </div>
+        <Button variant="outline" size="sm" onClick={() => setManage(true)}>
+          Manage
+        </Button>
         <Link to="/chat" className="text-xs text-accent hover:underline">
           Open chat →
         </Link>
@@ -109,6 +115,7 @@ export function AssistantSection() {
       </div>
       {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
       {error && <div className="mt-2 text-xs text-[color:var(--theme-danger)]">{error}</div>}
+      {manage && <AssistantManageModal assistant={assistant} onClose={() => setManage(false)} />}
     </section>
   )
 }

@@ -1,6 +1,12 @@
 // Client for the signed-in user's personal assistant (/api/me/assistant).
 import { useQuery } from '@tanstack/react-query'
 
+export interface AssistantTier {
+  name: string
+  model: string
+  active: boolean
+}
+
 export interface Assistant {
   id: string
   slug: string
@@ -10,6 +16,10 @@ export interface Assistant {
   enabled: boolean
   personality: string | null
   running: boolean
+  /** What powers it right now (the main target's model). */
+  currentModel: string | null
+  /** Named tiers the owner can switch between. */
+  tiers: AssistantTier[]
 }
 
 export function useAssistant() {
@@ -38,7 +48,13 @@ export async function createAssistant(input: { name?: string; handle?: string; p
   return ((await r?.json().catch(() => null)) as AssistantResult | null) ?? { error: 'could not create your assistant' }
 }
 
-export async function updateAssistant(patch: { name?: string; personality?: string }): Promise<AssistantResult> {
+export async function updateAssistant(patch: {
+  name?: string
+  handle?: string
+  personality?: string
+  /** A tier name from `tiers` — becomes the default model. */
+  model?: string
+}): Promise<AssistantResult> {
   const r = await fetch('/api/me/assistant', {
     method: 'PATCH',
     credentials: 'same-origin',

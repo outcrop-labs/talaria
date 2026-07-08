@@ -3,13 +3,22 @@
 // created from a base template and auto-allowed for its owner. The owner names
 // it, picks its handle, and writes its personality — no admin role needed; every
 // mutation here is scoped to `agent_defs.owner_user_id = user.id`.
+import { rename as fsRename } from 'node:fs/promises'
+import { join } from 'node:path'
 import { db } from './db/pg'
-import { createAgent } from './fleet-create'
-import { addVersionIfChanged, listVersions, setAgentEnabled, updateAgentMeta } from './agent-defs'
+import { createAgent, ensureAgentKey, restampSlug } from './fleet-create'
+import { addVersionIfChanged, applyConfigEdits, listVersions, setAgentEnabled, updateAgentMeta, type AgentConfig } from './agent-defs'
 import { containerStatus, fleetRestart, fleetUp, waitHealthy } from './fleet-docker'
-import { renderFleet } from './fleet-render'
+import { FLEET_DIR, renderFleet } from './fleet-render'
 import { ensurePersonalCollection } from './retrieval/collections'
 import { syncUserPrivateDocs } from './kb'
+
+export interface AssistantTier {
+  name: string
+  model: string
+  /** This tier is the current default (main) target. */
+  active: boolean
+}
 
 export interface PersonalAgent {
   id: string
@@ -22,6 +31,10 @@ export interface PersonalAgent {
   personality: string | null
   /** Container reality — matches the agents-roster dots. */
   running: boolean
+  /** The main target's model, e.g. "qwen3-a3b" — what powers it right now. */
+  currentModel: string | null
+  /** Named model tiers the owner can switch between (the config aliases). */
+  tiers: AssistantTier[]
 }
 
 /** The handle (slug) a user may pick — same alphabet as SLUG_RE in fleet-create. */
@@ -77,17 +90,40 @@ export async function personalAgentFor(userId: string): Promise<PersonalAgent | 
   const rows = (await sql`
     select id, slug, model, department, display_name as "displayName", enabled
     from agent_defs where owner_user_id = ${userId} limit 1
-  `) as unknown as Array<Omit<PersonalAgent, 'personality' | 'running'>>
+  `) as unknown as Array<Omit<PersonalAgent, 'personality' | 'running' | 'currentModel' | 'tiers'>>
   const def = rows[0]
   if (!def) return null
   const [latest, containers] = await Promise.all([
     listVersions(def.id).then((v) => v[0] ?? null),
     containerStatus([def.department]).catch(() => []),
   ])
+  const main = latest?.config.main
   return {
     ...def,
     personality: latest ? personalityOf(latest.soul) : null,
     running: containers[0]?.managed?.state === 'running',
+    currentModel: main?.model ?? null,
+    tiers: (latest?.config.aliases ?? []).map((a) => ({
+      name: a.name,
+      model: a.model,
+      active: !!main && a.endpoint === main.endpoint && a.model === main.model,
+    })),
+  }
+}
+
+/** Does this user own the agent (by slug or def id)? Used to open selected
+ *  admin surfaces (skills, memory, start/stop) to an assistant's owner. */
+export async function ownsAgent(userId: string, ref: { slug?: string; defId?: string }): Promise<boolean> {
+  const sql = await db()
+  try {
+    const rows = ref.slug
+      ? await sql`select 1 from agent_defs where owner_user_id = ${userId} and slug = ${ref.slug}`
+      : ref.defId
+        ? await sql`select 1 from agent_defs where owner_user_id = ${userId} and id = ${ref.defId}`
+        : []
+    return rows.length > 0
+  } catch {
+    return false // e.g. a non-uuid defId
   }
 }
 
@@ -161,54 +197,106 @@ export async function createPersonalAgent(
   await fleetUp(def.department).catch(() => {})
   void waitHealthy(def.department).catch(() => {})
 
-  return {
-    id: def.id,
-    slug: def.slug,
-    model: def.model,
-    department: def.department,
-    displayName,
-    enabled: true,
-    personality,
-    running: true,
-  }
+  const created = await personalAgentFor(user.id)
+  if (!created) throw new Error('assistant vanished during creation')
+  return created
 }
 
-/** Owner-scoped edits: rename and/or rewrite the personality. A personality (or
- *  name-in-soul) change lands as a new immutable version and is applied to the
- *  running container right away — same pipeline as the admin editor. */
+/** Rename the slug (@handle). The department — container name + state volume —
+ *  stays put, so the agent keeps its memory and workspace. Everything keyed by
+ *  the model string follows: access grants, chat history, board/channel
+ *  membership, usage attribution, the heartbeat registry. The old
+ *  HERMES_KEY_<SLUG> line is left in the stack .env (harmless orphan). */
+async function renameAgentSlug(
+  def: { id: string; slug: string; model: string; department: string },
+  newSlug: string,
+): Promise<string> {
+  const sql = await db()
+  const exists = await sql`select 1 from agent_defs where slug = ${newSlug}`
+  if (exists.length) throw new Error(`agent "${newSlug}" already exists`)
+  const newModel = `${newSlug}-${def.department}`
+  await ensureAgentKey(newSlug)
+  // Created agents keep their skills under fleet/agents/<slug>/ — carry them.
+  await fsRename(join(FLEET_DIR(), 'agents', def.slug), join(FLEET_DIR(), 'agents', newSlug)).catch(() => {})
+  await sql`update agent_defs set slug = ${newSlug}, model = ${newModel}, updated_at = now() where id = ${def.id}`
+  await sql`update user_agent_access set agent_model = ${newModel} where agent_model = ${def.model}`
+  await sql`update conversations set agent_model = ${newModel} where agent_model = ${def.model}`
+  await sql`update board_agents set agent_model = ${newModel} where agent_model = ${def.model}`
+  await sql`update channel_agents set agent_model = ${newModel} where agent_model = ${def.model}`
+  await sql`update usage_events set agent_model = ${newModel} where agent_model = ${def.model}`
+  await sql`update rag_collection_access set principal_id = ${newModel} where principal_type = 'agent' and principal_id = ${def.model}`
+  await sql`delete from fleet_agents where name = ${newModel}`
+  await sql`update fleet_agents set name = ${newModel} where name = ${def.model}`
+  return newModel
+}
+
+/** Owner-scoped edits: rename, change the @handle, rewrite the personality, or
+ *  switch the default model tier. Config/soul changes land as one new immutable
+ *  version and are applied to the running container right away — same pipeline
+ *  as the admin editor. */
 export async function updatePersonalAgent(
   user: { id: string; email: string | null; name: string | null },
-  patch: { name?: string; personality?: string },
+  patch: { name?: string; handle?: string; personality?: string; model?: string },
 ): Promise<PersonalAgent> {
   const sql = await db()
   const rows = (await sql`
-    select id, slug, department, display_name as "displayName", managed, enabled
+    select id, slug, model, department, display_name as "displayName", managed, enabled
     from agent_defs where owner_user_id = ${user.id} limit 1
-  `) as unknown as Array<{ id: string; slug: string; department: string; displayName: string; managed: boolean; enabled: boolean }>
+  `) as unknown as Array<{
+    id: string
+    slug: string
+    model: string
+    department: string
+    displayName: string
+    managed: boolean
+    enabled: boolean
+  }>
   const def = rows[0]
   if (!def) throw new Error('no assistant yet — create one first')
 
   const newName = patch.name?.trim()
-  if (newName && newName !== def.displayName) await updateAgentMeta(def.id, { displayName: newName })
+  const renamed = !!newName && newName !== def.displayName
+  if (renamed) await updateAgentMeta(def.id, { displayName: newName })
+
+  const newHandle = patch.handle?.trim()
+  const rehandled = !!newHandle && newHandle !== def.slug
+  if (rehandled) {
+    if (!HANDLE_RE.test(newHandle)) throw new Error('handles are 2–30 lowercase letters/numbers, starting with a letter')
+    await renameAgentSlug(def, newHandle)
+  }
 
   const latest = (await listVersions(def.id))[0]
   if (latest) {
     let soul = latest.soul
+    let config = latest.config
+    if (rehandled) config = restampSlug(config, def.slug, newHandle) as AgentConfig
+    if (patch.model) {
+      const aliases = config.aliases ?? []
+      const target = aliases.find((a) => a.name === patch.model)
+      if (!target) throw new Error(`unknown model tier "${patch.model}"`)
+      config = await applyConfigEdits(config, {
+        main: { endpoint: target.endpoint, model: target.model, ...(target.contextLength ? { contextLength: target.contextLength } : {}) },
+        aliases,
+        fallbacks: config.fallbacks ?? [],
+      })
+    }
     // Renames carry into the soul so the agent knows its own name; exact-match
     // replace is safe because display names are distinctive multi-char strings.
-    if (newName && newName !== def.displayName && def.displayName.length >= 3) {
-      soul = soul.split(def.displayName).join(newName)
-    }
+    if (renamed && def.displayName.length >= 3) soul = soul.split(def.displayName).join(newName)
     if (patch.personality !== undefined) soul = withPersonality(soul, patch.personality)
     const { created } = await addVersionIfChanged(def.id, {
       soul,
-      config: latest.config,
+      config,
       note: 'personalized by owner',
       createdBy: user.email ?? user.name ?? 'owner',
     })
-    if (created && def.managed && def.enabled) {
+    if ((created || rehandled) && def.managed && def.enabled) {
       await renderFleet()
-      await fleetRestart(def.department).catch(() => {})
+      // A handle rename changes the service definition (key env, model name,
+      // config-mount path), so the container must be RECREATED (up -d), not
+      // restarted — restart keeps the old mounts and crashes on the moved dir.
+      if (rehandled) await fleetUp(def.department).catch(() => {})
+      else await fleetRestart(def.department).catch(() => {})
     }
   }
 

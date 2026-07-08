@@ -13,9 +13,10 @@ import { STACK_DIR } from './fleet-render'
 const SLUG_RE = /^[a-z][a-z0-9]{1,30}$/
 const DEPT_RE = /^[a-z][a-z0-9-]{1,40}$/
 
-/** Re-stamp identity: replace the template's slug in every string value of the
- *  raw config (X-Agent-Name headers, hook args like "outline_org_gate.py sam"). */
-function restampSlug(value: unknown, from: string, to: string): unknown {
+/** Re-stamp identity: replace a slug in every string value of the raw config
+ *  (X-Agent-Name headers, hook args like "outline_org_gate.py sam"). Used for
+ *  template cloning and for handle renames. */
+export function restampSlug(value: unknown, from: string, to: string): unknown {
   if (typeof value === 'string') return value.replace(new RegExp(`\\b${from}\\b`, 'g'), to)
   if (Array.isArray(value)) return value.map((v) => restampSlug(v, from, to))
   if (value && typeof value === 'object') {
@@ -40,7 +41,7 @@ replace this section with a real personality and operating principles.)
 }
 
 /** Ensure a HERMES_KEY_<SLUG> exists in the stack .env; returns whether created. */
-async function ensureAgentKey(slug: string): Promise<boolean> {
+export async function ensureAgentKey(slug: string): Promise<boolean> {
   const envPath = join(STACK_DIR(), '.env')
   const name = `HERMES_KEY_${slug.toUpperCase()}`
   const content = await readFile(envPath, 'utf8')
