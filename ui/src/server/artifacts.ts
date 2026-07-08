@@ -35,6 +35,11 @@ const COLS = `id, kind, title, icon, body, content_type as "contentType", storag
   visibility, edit_policy as "editPolicy", public_slug as "publicSlug", official, kb_doc_id as "kbDocId",
   owner_user_id as "ownerUserId", created_by as "createdBy", updated_by as "updatedBy",
   created_at as "createdAt", updated_at as "updatedAt"`
+// Table-qualified for joins (artifact_links also has created_by / created_at).
+const COLS_A = `a.id, a.kind, a.title, a.icon, a.body, a.content_type as "contentType", a.storage_ref as "storageRef",
+  a.visibility, a.edit_policy as "editPolicy", a.public_slug as "publicSlug", a.official, a.kb_doc_id as "kbDocId",
+  a.owner_user_id as "ownerUserId", a.created_by as "createdBy", a.updated_by as "updatedBy",
+  a.created_at as "createdAt", a.updated_at as "updatedAt"`
 
 /** The Guarded view a permission check needs. */
 export function guarded(a: Artifact): Guarded {
@@ -99,6 +104,45 @@ export async function deleteArtifact(id: string): Promise<void> {
   if (a?.kbDocId) await deleteDoc(a.kbDocId).catch(() => {})
   const sql = await db()
   await sql`delete from artifacts where id = ${id}`
+}
+
+// ── Attachments (attach an artifact to anything) ────────────────────────────
+export interface ArtifactTarget {
+  targetType: string
+  targetId: string
+}
+
+export async function attachArtifact(artifactId: string, target: ArtifactTarget, actor: string): Promise<void> {
+  const sql = await db()
+  await sql`
+    insert into artifact_links (artifact_id, target_type, target_id, created_by)
+    values (${artifactId}, ${target.targetType}, ${target.targetId}, ${actor})
+    on conflict do nothing
+  `
+}
+
+export async function detachArtifact(artifactId: string, target: ArtifactTarget): Promise<void> {
+  const sql = await db()
+  await sql`delete from artifact_links where artifact_id = ${artifactId} and target_type = ${target.targetType} and target_id = ${target.targetId}`
+}
+
+/** Artifacts attached to a given target (e.g. a KB doc). */
+export async function artifactsForTarget(targetType: string, targetId: string): Promise<Artifact[]> {
+  const sql = await db()
+  return (await sql.unsafe(
+    `select ${COLS_A} from artifacts a
+     join artifact_links l on l.artifact_id = a.id
+     where l.target_type = $1 and l.target_id = $2 order by l.created_at desc`,
+    [targetType, targetId],
+  )) as unknown as Artifact[]
+}
+
+/** The things an artifact is attached to (for its "Attached to" list). */
+export async function targetsForArtifact(artifactId: string): Promise<ArtifactTarget[]> {
+  const sql = await db()
+  return (await sql`
+    select target_type as "targetType", target_id as "targetId" from artifact_links where artifact_id = ${artifactId}
+  `) as unknown as ArtifactTarget[]
 }
 
 // ── Promotion to the knowledgebase ──────────────────────────────────────────

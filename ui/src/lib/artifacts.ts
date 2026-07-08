@@ -53,3 +53,21 @@ export const saveArtifact = (
 ) => fetch(`/api/artifacts/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
 export const deleteArtifact = (id: string) => fetch(`/api/artifacts/${id}`, { method: 'DELETE' })
+
+// ── Attachments ──────────────────────────────────────────────────────────────
+export const useTargetArtifacts = (targetType: string, targetId: string | null) =>
+  useQuery({
+    queryKey: ['artifacts-for', targetType, targetId],
+    enabled: !!targetId,
+    queryFn: async (): Promise<Artifact[]> => {
+      const r = await fetch(`/api/artifacts/for?targetType=${targetType}&targetId=${targetId}`)
+      if (!r.ok) return []
+      return ((await r.json()) as { artifacts: Artifact[] }).artifacts
+    },
+  })
+
+export const attachArtifact = (id: string, targetType: string, targetId: string) =>
+  fetch(`/api/artifacts/${id}/links`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetType, targetId }) })
+
+export const detachArtifact = (id: string, targetType: string, targetId: string) =>
+  fetch(`/api/artifacts/${id}/links`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetType, targetId }) })

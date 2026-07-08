@@ -78,6 +78,7 @@ import { Route as ApiAuthProvidersRouteImport } from './routes/api/auth/provider
 import { Route as ApiAuthPasswordRouteImport } from './routes/api/auth/password'
 import { Route as ApiAuthLogoutRouteImport } from './routes/api/auth/logout'
 import { Route as ApiAuthGoogleRouteImport } from './routes/api/auth/google'
+import { Route as ApiArtifactsForRouteImport } from './routes/api/artifacts.for'
 import { Route as ApiArtifactsIdRouteImport } from './routes/api/artifacts.$id'
 import { Route as ApiAgentsRegisterRouteImport } from './routes/api/agents.register'
 import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
@@ -108,6 +109,7 @@ import { Route as ApiBoardsIdEventsRouteImport } from './routes/api/boards.$id.e
 import { Route as ApiBoardsIdAgentsRouteImport } from './routes/api/boards.$id.agents'
 import { Route as ApiAuthGoogleCallbackRouteImport } from './routes/api/auth/google.callback'
 import { Route as ApiArtifactsPublicSlugRouteImport } from './routes/api/artifacts.public.$slug'
+import { Route as ApiArtifactsIdLinksRouteImport } from './routes/api/artifacts.$id.links'
 import { Route as ApiAgentsIdHeartbeatRouteImport } from './routes/api/agents.$id.heartbeat'
 import { Route as AppBoardsBoardIdTaskIdRouteImport } from './routes/_app/boards/$boardId.$taskId'
 import { Route as ApiLlmV1ChatCompletionsRouteImport } from './routes/api/llm.v1.chat.completions'
@@ -465,6 +467,11 @@ const ApiAuthGoogleRoute = ApiAuthGoogleRouteImport.update({
   path: '/api/auth/google',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiArtifactsForRoute = ApiArtifactsForRouteImport.update({
+  id: '/for',
+  path: '/for',
+  getParentRoute: () => ApiArtifactsRoute,
+} as any)
 const ApiArtifactsIdRoute = ApiArtifactsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -615,6 +622,11 @@ const ApiArtifactsPublicSlugRoute = ApiArtifactsPublicSlugRouteImport.update({
   path: '/public/$slug',
   getParentRoute: () => ApiArtifactsRoute,
 } as any)
+const ApiArtifactsIdLinksRoute = ApiArtifactsIdLinksRouteImport.update({
+  id: '/links',
+  path: '/links',
+  getParentRoute: () => ApiArtifactsIdRoute,
+} as any)
 const ApiAgentsIdHeartbeatRoute = ApiAgentsIdHeartbeatRouteImport.update({
   id: '/$id/heartbeat',
   path: '/$id/heartbeat',
@@ -724,7 +736,8 @@ export interface FileRoutesByFullPath {
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
-  '/api/artifacts/$id': typeof ApiArtifactsIdRoute
+  '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
+  '/api/artifacts/for': typeof ApiArtifactsForRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/api/auth/password': typeof ApiAuthPasswordRoute
@@ -753,6 +766,7 @@ export interface FileRoutesByFullPath {
   '/boards/': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
+  '/api/artifacts/$id/links': typeof ApiArtifactsIdLinksRoute
   '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRoute
   '/api/auth/google/callback': typeof ApiAuthGoogleCallbackRoute
   '/api/boards/$id/agents': typeof ApiBoardsIdAgentsRoute
@@ -836,7 +850,8 @@ export interface FileRoutesByTo {
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
-  '/api/artifacts/$id': typeof ApiArtifactsIdRoute
+  '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
+  '/api/artifacts/for': typeof ApiArtifactsForRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/api/auth/password': typeof ApiAuthPasswordRoute
@@ -865,6 +880,7 @@ export interface FileRoutesByTo {
   '/boards': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
+  '/api/artifacts/$id/links': typeof ApiArtifactsIdLinksRoute
   '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRoute
   '/api/auth/google/callback': typeof ApiAuthGoogleCallbackRoute
   '/api/boards/$id/agents': typeof ApiBoardsIdAgentsRoute
@@ -950,7 +966,8 @@ export interface FileRoutesById {
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
-  '/api/artifacts/$id': typeof ApiArtifactsIdRoute
+  '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
+  '/api/artifacts/for': typeof ApiArtifactsForRoute
   '/api/auth/google': typeof ApiAuthGoogleRouteWithChildren
   '/api/auth/logout': typeof ApiAuthLogoutRoute
   '/api/auth/password': typeof ApiAuthPasswordRoute
@@ -979,6 +996,7 @@ export interface FileRoutesById {
   '/_app/boards/': typeof AppBoardsIndexRoute
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
+  '/api/artifacts/$id/links': typeof ApiArtifactsIdLinksRoute
   '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRoute
   '/api/auth/google/callback': typeof ApiAuthGoogleCallbackRoute
   '/api/boards/$id/agents': typeof ApiBoardsIdAgentsRoute
@@ -1065,6 +1083,7 @@ export interface FileRouteTypes {
     | '/api/admin/users'
     | '/api/agents/register'
     | '/api/artifacts/$id'
+    | '/api/artifacts/for'
     | '/api/auth/google'
     | '/api/auth/logout'
     | '/api/auth/password'
@@ -1093,6 +1112,7 @@ export interface FileRouteTypes {
     | '/boards/'
     | '/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
+    | '/api/artifacts/$id/links'
     | '/api/artifacts/public/$slug'
     | '/api/auth/google/callback'
     | '/api/boards/$id/agents'
@@ -1177,6 +1197,7 @@ export interface FileRouteTypes {
     | '/api/admin/users'
     | '/api/agents/register'
     | '/api/artifacts/$id'
+    | '/api/artifacts/for'
     | '/api/auth/google'
     | '/api/auth/logout'
     | '/api/auth/password'
@@ -1205,6 +1226,7 @@ export interface FileRouteTypes {
     | '/boards'
     | '/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
+    | '/api/artifacts/$id/links'
     | '/api/artifacts/public/$slug'
     | '/api/auth/google/callback'
     | '/api/boards/$id/agents'
@@ -1290,6 +1312,7 @@ export interface FileRouteTypes {
     | '/api/admin/users'
     | '/api/agents/register'
     | '/api/artifacts/$id'
+    | '/api/artifacts/for'
     | '/api/auth/google'
     | '/api/auth/logout'
     | '/api/auth/password'
@@ -1318,6 +1341,7 @@ export interface FileRouteTypes {
     | '/_app/boards/'
     | '/_app/boards/$boardId/$taskId'
     | '/api/agents/$id/heartbeat'
+    | '/api/artifacts/$id/links'
     | '/api/artifacts/public/$slug'
     | '/api/auth/google/callback'
     | '/api/boards/$id/agents'
@@ -1888,6 +1912,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthGoogleRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/artifacts/for': {
+      id: '/api/artifacts/for'
+      path: '/for'
+      fullPath: '/api/artifacts/for'
+      preLoaderRoute: typeof ApiArtifactsForRouteImport
+      parentRoute: typeof ApiArtifactsRoute
+    }
     '/api/artifacts/$id': {
       id: '/api/artifacts/$id'
       path: '/$id'
@@ -2098,6 +2129,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiArtifactsPublicSlugRouteImport
       parentRoute: typeof ApiArtifactsRoute
     }
+    '/api/artifacts/$id/links': {
+      id: '/api/artifacts/$id/links'
+      path: '/links'
+      fullPath: '/api/artifacts/$id/links'
+      preLoaderRoute: typeof ApiArtifactsIdLinksRouteImport
+      parentRoute: typeof ApiArtifactsIdRoute
+    }
     '/api/agents/$id/heartbeat': {
       id: '/api/agents/$id/heartbeat'
       path: '/$id/heartbeat'
@@ -2258,13 +2296,27 @@ const ApiAgentsRouteWithChildren = ApiAgentsRoute._addFileChildren(
   ApiAgentsRouteChildren,
 )
 
+interface ApiArtifactsIdRouteChildren {
+  ApiArtifactsIdLinksRoute: typeof ApiArtifactsIdLinksRoute
+}
+
+const ApiArtifactsIdRouteChildren: ApiArtifactsIdRouteChildren = {
+  ApiArtifactsIdLinksRoute: ApiArtifactsIdLinksRoute,
+}
+
+const ApiArtifactsIdRouteWithChildren = ApiArtifactsIdRoute._addFileChildren(
+  ApiArtifactsIdRouteChildren,
+)
+
 interface ApiArtifactsRouteChildren {
-  ApiArtifactsIdRoute: typeof ApiArtifactsIdRoute
+  ApiArtifactsIdRoute: typeof ApiArtifactsIdRouteWithChildren
+  ApiArtifactsForRoute: typeof ApiArtifactsForRoute
   ApiArtifactsPublicSlugRoute: typeof ApiArtifactsPublicSlugRoute
 }
 
 const ApiArtifactsRouteChildren: ApiArtifactsRouteChildren = {
-  ApiArtifactsIdRoute: ApiArtifactsIdRoute,
+  ApiArtifactsIdRoute: ApiArtifactsIdRouteWithChildren,
+  ApiArtifactsForRoute: ApiArtifactsForRoute,
   ApiArtifactsPublicSlugRoute: ApiArtifactsPublicSlugRoute,
 }
 
