@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, type LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { Markdown } from '@/components/ui/markdown'
@@ -24,13 +25,20 @@ const KIND_ICON: Record<ArtifactKind, LucideIcon> = { doc: FileText, sheet: Tabl
 // foundation covers the doc kind (markdown); sheets, microsites, and files, plus
 // cloud-storage connectors and the "make official → knowledgebase" pipeline, are
 // tracked follow-ups.
+const NEW_KINDS: { kind: ArtifactKind; label: string; icon: LucideIcon }[] = [
+  { kind: 'doc', label: 'Document', icon: FileText },
+  { kind: 'microsite', label: 'Microsite', icon: Globe2 },
+]
+
 function ArtifactsPage() {
   const qc = useQueryClient()
   const { data: artifacts = [] } = useArtifacts()
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [newOpen, setNewOpen] = useState(false)
 
-  const create = async () => {
-    const { artifact } = await createArtifact({ kind: 'doc', title: 'Untitled' })
+  const create = async (kind: ArtifactKind) => {
+    setNewOpen(false)
+    const { artifact } = await createArtifact({ kind, title: 'Untitled' })
     await qc.invalidateQueries({ queryKey: ['artifacts'] })
     if (artifact) setActiveId(artifact.id)
   }
@@ -38,11 +46,20 @@ function ArtifactsPage() {
   return (
     <div className="flex h-full min-h-0">
       <aside className="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar">
-        <div className="flex items-center justify-between border-b border-line-subtle p-3">
+        <div className="relative flex items-center justify-between border-b border-line-subtle p-3">
           <span className="text-sm font-semibold text-fg">Artifacts</span>
-          <Button size="sm" onClick={() => void create()}>
+          <Button size="sm" onClick={() => setNewOpen((v) => !v)}>
             <Plus size={13} className="mr-1" /> New
           </Button>
+          {newOpen && (
+            <div className="absolute right-3 top-full z-30 mt-1 w-44 rounded-xl border border-line bg-card p-1 shadow-lg" onMouseLeave={() => setNewOpen(false)}>
+              {NEW_KINDS.map(({ kind, label, icon: Icon }) => (
+                <button key={kind} type="button" onClick={() => void create(kind)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar">
+                  <Icon size={13} /> {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {artifacts.length === 0 ? (
@@ -92,14 +109,18 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
   const [showHistory, setShowHistory] = useState(false)
   const [seed, setSeed] = useState(0)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [html, setHtml] = useState('') // microsite source
+  const htmlTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const initMode = useRef(false)
   useEffect(() => {
     if (artifact) setTitle(artifact.title)
     if (artifact && !initMode.current) {
       initMode.current = true
       setMode(artifact.body.trim() ? 'read' : 'edit')
+      if (artifact.kind === 'microsite') setHtml(artifact.body)
     }
   }, [artifact])
+  useEffect(() => () => { if (htmlTimer.current) clearTimeout(htmlTimer.current) }, [])
   useEffect(() => {
     if (!fullscreen) return
     const h = (e: KeyboardEvent) => e.key === 'Escape' && setFullscreen(false)
@@ -121,6 +142,12 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
     }
   }
   const saveBody = () => save({ title, body: editorRef.current?.getMarkdown() ?? artifact?.body ?? '' })
+  const editHtml = (v: string) => {
+    setHtml(v)
+    setDirty(true)
+    if (htmlTimer.current) clearTimeout(htmlTimer.current)
+    htmlTimer.current = setTimeout(() => void save({ body: v }), 700)
+  }
 
   if (!artifact) return <div className="p-8 text-sm text-muted">Loading…</div>
 
@@ -215,6 +242,24 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
               )}
             </div>
           )
+        ) : artifact.kind === 'microsite' ? (
+          mode === 'edit' ? (
+            <Textarea
+              value={html}
+              onChange={(e) => editHtml(e.target.value)}
+              onBlur={() => dirty && void save({ body: html })}
+              spellCheck={false}
+              placeholder={'<!doctype html>\n<html>…'}
+              className="min-w-0 flex-1 rounded-none border-0 font-mono text-xs leading-relaxed"
+            />
+          ) : artifact.body.trim() ? (
+            // Sandboxed: scripts run, but no same-origin — can't touch the app.
+            <iframe title={artifact.title} srcDoc={artifact.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" className="min-w-0 flex-1 border-0 bg-white" />
+          ) : (
+            <div className="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
+              <button type="button" onClick={() => setMode('edit')} className="hover:text-fg">Empty microsite — switch to Edit to write HTML.</button>
+            </div>
+          )
         ) : (
           <div className="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
             {artifact.kind} artifacts are coming soon.
@@ -240,7 +285,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
       <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
         <span>edited {relativeTime(artifact.updatedAt)}{artifact.updatedBy ? ` by ${artifact.updatedBy}` : ''}</span>
         <span className="ml-auto" />
-        {mode === 'edit' && artifact.kind === 'doc' && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
+        {mode === 'edit' && (artifact.kind === 'doc' || artifact.kind === 'microsite') && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
       </div>
 
       <PermissionsModal

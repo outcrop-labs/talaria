@@ -30,6 +30,15 @@ function PublicArtifactPage() {
   if (state.error) return <PublicNotFound />
   if (!state.a) return <PublicShell>{null}</PublicShell>
 
+  // A public microsite is hosted full-bleed in a sandboxed iframe (no app chrome).
+  if (state.a.kind === 'microsite') {
+    return (
+      <div className="min-h-screen bg-white">
+        <iframe title={state.a.title} srcDoc={state.a.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" className="h-screen w-full border-0" />
+      </div>
+    )
+  }
+
   return (
     <PublicShell meta={`Updated ${relativeTime(state.a.updatedAt)}`}>
       <h1 className="mb-5 flex items-center gap-2 text-3xl font-semibold text-fg">
