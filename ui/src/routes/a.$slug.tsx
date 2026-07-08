@@ -47,6 +47,8 @@ function PublicArtifactPage() {
       </h1>
       {state.a.kind === 'doc' ? (
         <Markdown className="tiptap">{state.a.body}</Markdown>
+      ) : state.a.kind === 'sheet' ? (
+        <PublicSheet body={state.a.body} />
       ) : state.a.kind === 'file' ? (
         <a
           href={`/api/artifacts/public/${slug}/download`}
@@ -60,5 +62,30 @@ function PublicArtifactPage() {
         <p className="text-sm text-muted">This artifact type isn’t viewable here yet.</p>
       )}
     </PublicShell>
+  )
+}
+
+function PublicSheet({ body }: { body: string }) {
+  let grid: string[][] = []
+  try {
+    const g = JSON.parse(body)
+    if (Array.isArray(g)) grid = g.map((r: unknown[]) => (Array.isArray(r) ? r.map((c) => String(c ?? '')) : []))
+  } catch {
+    /* empty */
+  }
+  const [head = [], ...rows] = grid
+  return (
+    <div className="overflow-x-auto">
+      <table className="border-collapse text-sm">
+        <thead>
+          <tr>{head.map((h, i) => <th key={i} className="border border-line-subtle bg-card px-3 py-1.5 text-left font-semibold text-fg">{h}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, ri) => (
+            <tr key={ri}>{row.map((cell, ci) => <td key={ci} className="border border-line-subtle px-3 py-1.5 text-fg">{cell}</td>)}</tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }

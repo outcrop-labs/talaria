@@ -430,6 +430,8 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
               <button type="button" onClick={() => setMode('edit')} className="hover:text-fg">Empty microsite — switch to Edit to write HTML.</button>
             </div>
           )
+        ) : artifact.kind === 'sheet' ? (
+          <SheetView key={`${id}-${seed}`} value={artifact.body} editable={mode === 'edit'} onSave={(body) => void save({ body })} />
         ) : artifact.kind === 'file' ? (
           <div className="min-w-0 flex-1 overflow-y-auto p-8">
             {artifact.storageRef ? (
@@ -491,7 +493,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
       <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
         <span>edited {relativeTime(artifact.updatedAt)}{artifact.updatedBy ? ` by ${artifact.updatedBy}` : ''}</span>
         <span className="ml-auto" />
-        {mode === 'edit' && (artifact.kind === 'doc' || artifact.kind === 'microsite') && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
+        {mode === 'edit' && artifact.kind !== 'file' && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
       </div>
 
       <PermissionsModal
@@ -538,6 +540,96 @@ function ArtifactHistory({ id, onRestore }: { id: string; onRestore: (content: s
           </button>
         ))
       )}
+    </div>
+  )
+}
+
+// A spreadsheet-style grid. The sheet body is JSON `string[][]` — row 0 is the
+// header row. Edit mode is an editable grid with add/delete row+column; read
+// mode renders a table. Autosaves (debounced).
+function parseGrid(body: string): string[][] {
+  try {
+    const g = JSON.parse(body)
+    if (Array.isArray(g) && g.length && g.every((r) => Array.isArray(r))) return g.map((r: unknown[]) => r.map((c) => String(c ?? '')))
+  } catch {
+    /* fall through to a starter grid */
+  }
+  return [['Column A', 'Column B', 'Column C'], ['', '', ''], ['', '', '']]
+}
+
+function SheetView({ value, editable, onSave }: { value: string; editable: boolean; onSave: (body: string) => void }) {
+  const [grid, setGrid] = useState<string[][]>(() => parseGrid(value))
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
+  const commit = (g: string[][]) => {
+    setGrid(g)
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => onSave(JSON.stringify(g)), 600)
+  }
+  const setCell = (r: number, c: number, v: string) => commit(grid.map((row, ri) => (ri === r ? row.map((cell, ci) => (ci === c ? v : cell)) : row)))
+  const addRow = () => commit([...grid, grid[0]!.map(() => '')])
+  const addCol = () => commit(grid.map((row, i) => [...row, i === 0 ? `Column ${String.fromCharCode(65 + row.length)}` : '']))
+  const delRow = (r: number) => grid.length > 1 && commit(grid.filter((_, i) => i !== r))
+  const delCol = (c: number) => grid[0]!.length > 1 && commit(grid.map((row) => row.filter((_, i) => i !== c)))
+
+  const cols = grid[0]?.length ?? 0
+
+  if (!editable) {
+    const [head = [], ...rows] = grid
+    return (
+      <div className="min-w-0 flex-1 overflow-auto p-6">
+        <table className="border-collapse text-sm">
+          <thead>
+            <tr>{head.map((h, i) => <th key={i} className="border border-line-subtle bg-card px-3 py-1.5 text-left font-semibold text-fg">{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={ri}>{row.map((cell, ci) => <td key={ci} className="border border-line-subtle px-3 py-1.5 text-fg">{cell}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-w-0 flex-1 overflow-auto p-6">
+      <table className="border-collapse text-sm">
+        <thead>
+          <tr>
+            {grid[0]!.map((_, c) => (
+              <th key={c} className="p-0.5">
+                <button type="button" onClick={() => delCol(c)} title="Delete column" className="w-full rounded text-[10px] text-muted hover:text-[color:var(--theme-danger)]">✕</button>
+              </th>
+            ))}
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {grid.map((row, r) => (
+            <tr key={r}>
+              {row.map((cell, c) => (
+                <td key={c} className="border border-line-subtle p-0">
+                  <input
+                    value={cell}
+                    onChange={(e) => setCell(r, c, e.target.value)}
+                    className={cn('w-40 bg-transparent px-2 py-1.5 text-sm text-fg outline-none focus:bg-card', r === 0 && 'font-semibold')}
+                    placeholder={r === 0 ? 'Header' : ''}
+                  />
+                </td>
+              ))}
+              <td className="pl-1">
+                {r > 0 && <button type="button" onClick={() => delRow(r)} title="Delete row" className="text-[10px] text-muted hover:text-[color:var(--theme-danger)]">✕</button>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="mt-3 flex gap-2">
+        <Button variant="outline" size="sm" onClick={addRow}><Plus size={12} className="mr-1" /> Row</Button>
+        <Button variant="outline" size="sm" onClick={addCol}><Plus size={12} className="mr-1" /> Column</Button>
+        <span className="self-center text-[11px] text-muted">{grid.length - 1} rows · {cols} columns</span>
+      </div>
     </div>
   )
 }
