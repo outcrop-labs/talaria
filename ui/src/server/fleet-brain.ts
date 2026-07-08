@@ -77,6 +77,72 @@ async function defaultGatewayModel(): Promise<string | null> {
   return ep?.models[0] ?? null
 }
 
+export interface GatewayModels {
+  /** Every model name Talaria's gateway can resolve (across all endpoints). */
+  served: Set<string>
+  /** Default model to fall back to for names the gateway doesn't serve yet. */
+  fallback: string | null
+}
+
+/** The set of models Talaria's gateway serves, for the config transform below. */
+export async function gatewayModelSet(): Promise<GatewayModels> {
+  const eps = await listEndpoints().catch(() => [])
+  const served = new Set<string>()
+  for (const e of eps) for (const m of e.models) served.add(m)
+  const local = eps.find((e) => e.class === 'local' && e.models.length > 0) ?? eps.find((e) => e.models.length > 0)
+  return { served, fallback: local?.models[0] ?? null }
+}
+
+const GATEWAY_BASE_URL = '${LLM_BASE_URL}'
+const GATEWAY_API_KEY = '${LLM_API_KEY}'
+
+// Imported agents carry legacy litellm-router model names. Map them to the real
+// provider model ids Talaria's gateway serves. As agents are redesigned they use
+// real ids directly and this bridge shrinks to nothing.
+const LEGACY_MODEL_MAP: Record<string, string> = {
+  glm: 'z-ai/glm-5.2', // legacy litellm "glm" → OpenRouter's Z.AI GLM
+}
+
+/** An LLM model spec inside an agent config: has a model name and some endpoint
+ *  marker (base_url / provider / key_env / api_key). MCP servers (url + headers,
+ *  no `model`) and other blocks are left untouched. */
+function isModelSpec(o: unknown): o is Record<string, unknown> {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return false
+  const r = o as Record<string, unknown>
+  return typeof r.model === 'string' && ('base_url' in r || 'provider' in r || 'key_env' in r || 'api_key' in r)
+}
+
+/** Route every LLM model spec in a raw agent config through Talaria's gateway:
+ *  base_url/api_key point at the gateway, provider becomes openai-compatible, and
+ *  the model name is kept (or falls back to the default if the gateway doesn't
+ *  serve it yet). Un-interweaves agents from litellm/inference-router/anthropic —
+ *  they have exactly one upstream, and Talaria routes to the real providers. */
+export function routeConfigThroughGateway(
+  raw: unknown,
+  models: GatewayModels,
+  warn: (m: string) => void,
+): unknown {
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(walk)
+    if (v && typeof v === 'object') {
+      if (isModelSpec(v)) {
+        const spec = v as Record<string, unknown>
+        const name = spec.model as string
+        const canonical = LEGACY_MODEL_MAP[name] ?? name
+        const model = models.served.has(canonical) ? canonical : (models.fallback ?? canonical)
+        // Warn only when we couldn't route to the intended model (unserved →
+        // fallback); a known legacy remap (glm → z-ai/glm-5.2) is intentional.
+        if (!models.served.has(canonical)) warn(`model "${name}" not served by the gateway — routing to "${model}"`)
+        const { key_env: _drop, ...rest } = spec
+        return { ...rest, model, base_url: GATEWAY_BASE_URL, api_key: GATEWAY_API_KEY, provider: 'custom' }
+      }
+      return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, val]) => [k, walk(val)]))
+    }
+    return v
+  }
+  return walk(raw)
+}
+
 export interface GatewayBrain {
   url: string | null
   model: string | null

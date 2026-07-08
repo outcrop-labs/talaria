@@ -19,7 +19,7 @@ import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
 import { materializeAgentSecrets } from './agent-secrets'
-import { ensureGatewayBrain } from './fleet-brain'
+import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
@@ -126,6 +126,11 @@ export async function renderFleet(): Promise<RenderResult> {
   const chassis = parseYaml(chassisText, { merge: true, version: '1.1' }) as Chassis
   if (!chassis?.service) throw new Error(`fleet chassis at ${CHASSIS_FILE()} has no "service" block`)
 
+  // Every agent's LLM specs are rewritten to route through Talaria's gateway —
+  // model names the gateway doesn't serve fall back to the default (warned once).
+  const gwModels = await gatewayModelSet()
+  const remapped = new Set<string>()
+
   const services: Record<string, ComposeService> = {}
   const secrets: Record<string, unknown> = {}
   const volumes: Record<string, { external: true; name: string } | Record<string, never> | unknown> = {
@@ -148,12 +153,15 @@ export async function renderFleet(): Promise<RenderResult> {
     }
 
     const raw = (version.config as { raw?: unknown }).raw
+    // Un-interweave: all model tiers point at Talaria's gateway, never at
+    // litellm/inference-router/anthropic directly.
+    const routed = routeConfigThroughGateway(raw ?? {}, gwModels, (m) => remapped.add(m))
     await writeFile(
       join(agentDir, 'config.yaml'),
       `# Rendered by Talaria — ${def.model} v${version.version}. Do not hand-edit; edit in Talaria.\n` +
         // Hermes reads this with PyYAML (YAML 1.1): emit 1.1 so strings like
         // "on"/"off" stay quoted instead of turning into booleans.
-        stringifyYaml(raw ?? {}, { version: '1.1' }),
+        stringifyYaml(routed, { version: '1.1' }),
     )
     await writeFile(join(agentDir, 'SOUL.md'), version.soul)
     result.files.push(join(agentDir, 'config.yaml'), join(agentDir, 'SOUL.md'))
@@ -222,12 +230,15 @@ export async function renderFleet(): Promise<RenderResult> {
     result.agents.push(def.model)
   }
 
+  for (const m of remapped) result.warnings.push(`gateway: ${m} (register the provider on /models to restore this tier)`)
+
   const compose = {
     name: 'talaria-fleet',
     services,
     volumes,
     ...(Object.keys(secrets).length ? { secrets } : {}),
-    networks: { fleet: { external: true, name: chassis.network?.name ?? 'talaria-fleet' } },
+    // One unified Talaria network for every Talaria container.
+    networks: { fleet: { external: true, name: chassis.network?.name ?? 'talaria' } },
   }
   const composePath = join(FLEET_DIR(), 'docker-compose.yml')
   await mkdir(FLEET_DIR(), { recursive: true })

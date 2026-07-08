@@ -37,4 +37,4 @@ service:
 
 # Fresh installs get their own fleet network (created by scripts/setup.sh).
 network:
-  name: talaria-fleet
+  name: talaria
