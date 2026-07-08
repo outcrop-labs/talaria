@@ -27,6 +27,10 @@ uses a shared service account for this.
   user's upcoming Google Calendar events with a quick **New event** create
   (title + start; defaults to a 1-hour event). Hidden entirely when not
   connected, so Home stays clean.
+- **Mail** on Home — when connected, a **Mail** panel shows recent Gmail
+  (sender / subject / snippet, unread bolded, link out to Gmail) with a
+  **Compose** modal that sends plain-text email as the user. Also hidden until
+  connected.
 - **Agents** export via the `export_to_google_doc` MCP tool. An agent has no
   Google account, so it exports into the artifact **owner's** Drive — the human
   it works for must be connected. (Identity proxy, #42.)
@@ -40,9 +44,11 @@ uses a shared service account for this.
   `invalid_grant` clears the connection so the UI prompts a reconnect.
 - Scopes: **`drive.file`** (create/manage only files the app makes — export),
   **`drive.readonly`** (browse + read for import), **`calendar.events`** (agenda
-  + create). Adding scopes over time means existing users must **reconnect** to
-  grant the new ones; each surface detects a missing scope and prompts a
-  reconnect.
+  + create), **`gmail.readonly`** (recent mail) + **`gmail.send`** (send).
+  Adding scopes over time means existing users must **reconnect** to grant the
+  new ones; each surface detects a missing scope and prompts a reconnect.
+  `gmail.*` are **restricted** scopes — fine for an internal/Workspace-only app,
+  but public/external distribution would need Google's security assessment.
 - Disconnect best-effort **revokes** the token at Google, then forgets it.
 
 ## Operator setup
@@ -66,10 +72,12 @@ URIs (login + connect):
 <public-url>/api/integrations/google/callback
 ```
 
-and enable the **Google Drive API** and **Google Calendar API**. Add the
-`drive.file`, `drive.readonly`, and `calendar.events` scopes to the consent
-screen. `drive.file` is not restricted; `drive.readonly` and `calendar.events`
-are sensitive but need no verification review for internal/Workspace apps.
+and enable the **Google Drive API**, **Google Calendar API**, and **Gmail API**.
+Add the `drive.file`, `drive.readonly`, `calendar.events`, `gmail.readonly`, and
+`gmail.send` scopes to the consent screen. `drive.file` is not restricted;
+`drive.readonly` / `calendar.events` are sensitive; `gmail.*` are restricted.
+For an **Internal** (Workspace-only) OAuth app none of these need a verification
+review; a public/External app would (especially the Gmail scopes).
 
 ## Verified vs. trusted
 

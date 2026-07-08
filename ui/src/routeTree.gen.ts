@@ -125,6 +125,8 @@ import { Route as ApiKbSpacesIdDocsRouteImport } from './routes/api/kb.spaces.$i
 import { Route as ApiKbPublicSpaceSlugRouteImport } from './routes/api/kb.public.space.$slug'
 import { Route as ApiKbDocsIdMoveRouteImport } from './routes/api/kb.docs.$id.move'
 import { Route as ApiKbDocsIdBacklinksRouteImport } from './routes/api/kb.docs.$id.backlinks'
+import { Route as ApiIntegrationsGoogleGmailSendRouteImport } from './routes/api/integrations/google.gmail.send'
+import { Route as ApiIntegrationsGoogleGmailMessagesRouteImport } from './routes/api/integrations/google.gmail.messages'
 import { Route as ApiIntegrationsGoogleDriveImportRouteImport } from './routes/api/integrations/google.drive.import'
 import { Route as ApiIntegrationsGoogleDriveFilesRouteImport } from './routes/api/integrations/google.drive.files'
 import { Route as ApiIntegrationsGoogleCalendarEventsRouteImport } from './routes/api/integrations/google.calendar.events'
@@ -719,6 +721,18 @@ const ApiKbDocsIdBacklinksRoute = ApiKbDocsIdBacklinksRouteImport.update({
   path: '/backlinks',
   getParentRoute: () => ApiKbDocsIdRoute,
 } as any)
+const ApiIntegrationsGoogleGmailSendRoute =
+  ApiIntegrationsGoogleGmailSendRouteImport.update({
+    id: '/gmail/send',
+    path: '/gmail/send',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
+const ApiIntegrationsGoogleGmailMessagesRoute =
+  ApiIntegrationsGoogleGmailMessagesRouteImport.update({
+    id: '/gmail/messages',
+    path: '/gmail/messages',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
 const ApiIntegrationsGoogleDriveImportRoute =
   ApiIntegrationsGoogleDriveImportRouteImport.update({
     id: '/drive/import',
@@ -909,6 +923,8 @@ export interface FileRoutesByFullPath {
   '/api/integrations/google/calendar/events': typeof ApiIntegrationsGoogleCalendarEventsRoute
   '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
+  '/api/integrations/google/gmail/messages': typeof ApiIntegrationsGoogleGmailMessagesRoute
+  '/api/integrations/google/gmail/send': typeof ApiIntegrationsGoogleGmailSendRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1038,6 +1054,8 @@ export interface FileRoutesByTo {
   '/api/integrations/google/calendar/events': typeof ApiIntegrationsGoogleCalendarEventsRoute
   '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
+  '/api/integrations/google/gmail/messages': typeof ApiIntegrationsGoogleGmailMessagesRoute
+  '/api/integrations/google/gmail/send': typeof ApiIntegrationsGoogleGmailSendRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1169,6 +1187,8 @@ export interface FileRoutesById {
   '/api/integrations/google/calendar/events': typeof ApiIntegrationsGoogleCalendarEventsRoute
   '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
+  '/api/integrations/google/gmail/messages': typeof ApiIntegrationsGoogleGmailMessagesRoute
+  '/api/integrations/google/gmail/send': typeof ApiIntegrationsGoogleGmailSendRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1300,6 +1320,8 @@ export interface FileRouteTypes {
     | '/api/integrations/google/calendar/events'
     | '/api/integrations/google/drive/files'
     | '/api/integrations/google/drive/import'
+    | '/api/integrations/google/gmail/messages'
+    | '/api/integrations/google/gmail/send'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -1429,6 +1451,8 @@ export interface FileRouteTypes {
     | '/api/integrations/google/calendar/events'
     | '/api/integrations/google/drive/files'
     | '/api/integrations/google/drive/import'
+    | '/api/integrations/google/gmail/messages'
+    | '/api/integrations/google/gmail/send'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -1559,6 +1583,8 @@ export interface FileRouteTypes {
     | '/api/integrations/google/calendar/events'
     | '/api/integrations/google/drive/files'
     | '/api/integrations/google/drive/import'
+    | '/api/integrations/google/gmail/messages'
+    | '/api/integrations/google/gmail/send'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -2433,6 +2459,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKbDocsIdBacklinksRouteImport
       parentRoute: typeof ApiKbDocsIdRoute
     }
+    '/api/integrations/google/gmail/send': {
+      id: '/api/integrations/google/gmail/send'
+      path: '/gmail/send'
+      fullPath: '/api/integrations/google/gmail/send'
+      preLoaderRoute: typeof ApiIntegrationsGoogleGmailSendRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
+    '/api/integrations/google/gmail/messages': {
+      id: '/api/integrations/google/gmail/messages'
+      path: '/gmail/messages'
+      fullPath: '/api/integrations/google/gmail/messages'
+      preLoaderRoute: typeof ApiIntegrationsGoogleGmailMessagesRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
     '/api/integrations/google/drive/import': {
       id: '/api/integrations/google/drive/import'
       path: '/drive/import'
@@ -2888,6 +2928,8 @@ interface ApiIntegrationsGoogleRouteChildren {
   ApiIntegrationsGoogleCalendarEventsRoute: typeof ApiIntegrationsGoogleCalendarEventsRoute
   ApiIntegrationsGoogleDriveFilesRoute: typeof ApiIntegrationsGoogleDriveFilesRoute
   ApiIntegrationsGoogleDriveImportRoute: typeof ApiIntegrationsGoogleDriveImportRoute
+  ApiIntegrationsGoogleGmailMessagesRoute: typeof ApiIntegrationsGoogleGmailMessagesRoute
+  ApiIntegrationsGoogleGmailSendRoute: typeof ApiIntegrationsGoogleGmailSendRoute
 }
 
 const ApiIntegrationsGoogleRouteChildren: ApiIntegrationsGoogleRouteChildren = {
@@ -2897,6 +2939,9 @@ const ApiIntegrationsGoogleRouteChildren: ApiIntegrationsGoogleRouteChildren = {
     ApiIntegrationsGoogleCalendarEventsRoute,
   ApiIntegrationsGoogleDriveFilesRoute: ApiIntegrationsGoogleDriveFilesRoute,
   ApiIntegrationsGoogleDriveImportRoute: ApiIntegrationsGoogleDriveImportRoute,
+  ApiIntegrationsGoogleGmailMessagesRoute:
+    ApiIntegrationsGoogleGmailMessagesRoute,
+  ApiIntegrationsGoogleGmailSendRoute: ApiIntegrationsGoogleGmailSendRoute,
 }
 
 const ApiIntegrationsGoogleRouteWithChildren =

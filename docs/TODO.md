@@ -24,7 +24,8 @@ engineering-facing tracker.
     markdown, Sheets→grid, native→PDF file, else→file). `drive.readonly` scope.
   - ✅ **Calendar agenda** — Home agenda panel (upcoming events + quick create),
     `calendar.events` scope; hidden until Google is connected.
-  - ⏳ **Gmail** — compose/send + recent threads from Talaria (restricted scope).
+  - ✅ **Gmail** — Home Mail panel (recent mail + link out) + Compose/send as the
+    user. `gmail.readonly` + `gmail.send` (restricted scopes).
   - ⏳ **Agent Workspace tools** — needs a per-agent→user identity binding so an
     agent can act on its owner's Calendar/Gmail (deeper #42). Export already works
     (artifacts carry an owner); Calendar/Gmail don't, so they're human-first now.
