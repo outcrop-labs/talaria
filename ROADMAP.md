@@ -41,13 +41,15 @@ The project management suite, the fleet engine, and auth are live and running:
   over SSE. Composer autocompletes mentions; channel settings manage people and agents.
 - **Plan chat** ✅. Hit **Plan** in a channel: an agent drafts tickets from the conversation, you review,
   edit, and create the keepers onto any board — into inbox, never assigned.
-- **Agent harness** ✅. Talaria is the fleet's source of truth: import an existing Hermes stack, render and
-  orchestrate every agent (`docker compose` project owned by Talaria), edit souls/models/tiers/fallbacks
-  and MCP servers in-app as immutable, revertible config versions, create new agents from templates, and
-  retire them — all from `/agents`, `/models`, and `/mcp`.
-- **Versioned agent internals** ✅. Soul, model config, and MCP servers are version-controlled in-app
-  (diffable history, reverts); skills and memory are managed live on the real mounts (`/skills`,
-  `/memory`). Nothing shifts silently.
+- **Agent harness** ✅. Talaria is the fleet's source of truth: design new agents from a plain-language
+  description (Muse drafts identity, soul, and starter skills for review), federate outside Hermes agents
+  in as natives, render and orchestrate everything from one Talaria-owned chassis (`fleet/chassis.yml`,
+  `docker compose` project owned by Talaria), edit souls/models/tiers/fallbacks and MCP servers in-app as
+  immutable, revertible config versions, manage per-agent encrypted secrets and native Hermes cron
+  schedules, and retire agents — all from `/agents` and `/models`.
+- **Versioned agent internals** ✅. Soul, personality, model config, skills, and memory are all
+  version-controlled in-app with full diff-and-restore workspaces — and Muse (the drafting AI, on each
+  user's preferred model) iteratively writes or refines any of them. Nothing shifts silently.
 - **Token ledger + auto-priced costs** ✅. Every generation lands in the ledger, classified local vs cloud
   and attributed to the serving model/endpoint (tier-aware). Prices auto-fetch from a public catalog —
   zero config — with manual overrides; `/cost` shows spend, the local/cloud mixture, and per-agent $;
@@ -58,23 +60,24 @@ The project management suite, the fleet engine, and auth are live and running:
 ## Next / planned
 
 Roughly in the order we're chasing it. Full detail in
-[`docs/PHASE2-UI-PLAN.md`](./docs/PHASE2-UI-PLAN.md).
+[`docs/TODO.md`](./docs/TODO.md).
 
 - **Design and creative** 🔭. Agents and humans making creative work side by side.
 - **Finance** 🔭. Agent and human finance that plugs into the big accounting and HR platforms.
 - **Agentic coding** 🔭. Agent-driven coding right in the app (probably
   [opencode](https://github.com/sst/opencode) wired into the UI).
-- **Personal + base agents** 🔭. Role-ready base agents pre-configured for common business roles (support,
-  sales, finance, dev, ops), plus per-person Docker-based Hermes personal assistants with their own
-  skills, tools, and memories.
+- **Personal assistants** ✅ / **base agents** 🔭. Per-person Hermes assistants shipped: a guided
+  onboarding wizard, owner-scoped controls (handle, model tier, personality, skills, memory, schedules),
+  private knowledge, own container + key. Role-ready base agents for common business roles remain planned
+  (Muse-designed agents cover much of the gap today).
 - **Marketplace** 🔭. A per-agent marketplace for MCP servers, skills, and tools.
 - **Connectors** 🔭. Chat connectors (Slack, Mattermost, Matrix) for outbound notifications and autonomous
   outreach, an MCP connector to pull Talaria's agents into desktop/terminal apps, and accounting/HR/ops
   connectors.
 - **Business multitenancy** 🔭. Spin Talaria up for several companies and swap between them in a click.
   Run them all on one server, or connect out to other hosted Talaria instances.
-- **Artifacts linked to tickets** 🔭. Spin up artifacts on the fly and pin them to the tickets they belong
-  to, right from chats, plans, and work sessions.
+- **Artifacts linked to tickets** ✅. Artifacts attach to tickets, chats, and channels; agents create and
+  update them through the toolkit, with Google Drive export.
 - **Run your own LLMs** 🚧. Local backends already register alongside hosted providers (auto-classed by
   URL), get probed live on `/inference`, and split the cost view. Next: managing the inference containers
   themselves (Ollama, vLLM, llama.cpp) from Talaria.
@@ -84,10 +87,12 @@ Roughly in the order we're chasing it. Full detail in
   today; full analytics across work, chats, and projects (board rollups, trends, ROI) is next.
 - **Permissions** 🚧. Real, fine-grained access control for agents and people, growing from the guardrails
   we already ship.
-- **Output guardrails** 🔭. Platform-level confabulation/safety checks on agent output (today the
-  structural confab-guard lives as a per-agent Hermes plugin, annotate-only). Needs the agents to export
-  tool-call traces to Talaria; then a server-side claims-vs-actions annotator on replies and ticket
-  outcomes, with library-backed semantic rails (NeMo Guardrails / Guardrails AI class) as a later layer.
+- **Output guardrails** ✅ (first layer). The confab guard is Talaria-native at the LLM gateway: a
+  pluggable rule registry (zero-tool claims, ungrounded refs, fabricated outages, secret leaks) with
+  confidence scoring and off/observe/annotate/strict modes, deriving the turn's tool record from the
+  request itself — no trace export needed. A QA judge (advisory or enforcing per board) reviews ticket
+  outcomes with a bounded revision loop. Later: guard coverage on the direct chat path, and
+  library-backed semantic rails (NeMo Guardrails / Guardrails AI class).
 - **Open source, free forever + managed cloud** 🔭. The whole thing is OSS and self-hostable (MIT); a
   managed cloud for busier companies comes later.
 - **Other agent runtimes** 🔭. Every agent is a full Hermes agent today; other runtimes are planned.
@@ -107,5 +112,5 @@ Talaria started life as a bridge in front of external tools, with milestones M0-
   runs hermes-workspace or proxies a live mission-control (we lifted those capabilities into our own
   Postgres/Redis), so this bridge is kept for reference but is not Talaria's architecture or identity.
 
-The M0-M5 detail and the two-plane bridge design live on in [`docs/PHASE2-UI-PLAN.md`](./docs/PHASE2-UI-PLAN.md)
+The M0-M5 detail and the two-plane bridge design live on in [`docs/m0-contract.md`](./docs/m0-contract.md)
 and the surrounding [`docs/`](./docs). For where the product is headed, see [`README.md`](./README.md).

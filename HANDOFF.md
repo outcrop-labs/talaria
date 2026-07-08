@@ -1,7 +1,7 @@
 # Talaria - handoff for the next agent
 
-_Last updated: 2026-07-02. Scope: Phase 2 (Talaria's own UI). This file is a fast
-on-ramp; the authoritative docs are [`docs/PHASE2-UI-PLAN.md`](./docs/PHASE2-UI-PLAN.md),
+_Last updated: 2026-07-08. Scope: Talaria as the fleet's harness + product UI. This file is a fast
+on-ramp; the authoritative docs are [`docs/TODO.md`](./docs/TODO.md),
 [`ROADMAP.md`](./ROADMAP.md), [`CHANGELOG.md`](./CHANGELOG.md), and [`ui/README.md`](./ui/README.md)._
 
 ## What Talaria is
@@ -25,7 +25,7 @@ around but not part of Talaria's current identity or architecture.
 
 Heads up: Talaria is a work in progress, not production ready. Shipping today: the PM
 suite, chat + channels (with plan chat), the fleet engine and full agent harness
-(import/render/orchestrate/create/retire, versioned config + MCP edits, skills/memory
+(federate/design/render/orchestrate/create/retire, versioned config + MCP edits, skills/memory
 management), the token ledger with auto-fetched pricing, activity/alerts, and auth.
 
 ## Current state (what's built in Phase 2)
@@ -109,18 +109,20 @@ Full project-management suite, all live in `ui/`:
 
 - **Agent harness (phase B)** - the renderer + orchestrator. `server/fleet-render.ts`
   materializes managed versions into gitignored `fleet/` (config.yaml as **YAML
-  1.1** — PyYAML semantics; generated compose derived from the source stack's
-  resolved service block: external volumes `ai_hermes-<dept>`, external network
-  `ai_default`, no build/depends_on/host-ports) and writes the gateway manifest
-  to `stack/fleet.json`, which the bridge **hot-reloads** (watchFleet, 2s poll).
-  `server/fleet-docker.ts` drives `docker compose -p talaria-fleet` (⚠️ `-p` is
-  mandatory — the stack .env sets `COMPOSE_PROJECT_NAME=ai` and would hijack the
-  project, orphaning the whole legacy stack). Lifecycle API
-  `POST /api/fleet/agents/:id/control` (migrate/up/stop/legacy-*), containers
-  API, and live status + buttons on `/agents`. **Pilot done: sam-support is
-  Talaria-managed** (`talaria-fleet-agent-support-1`), memories intact; the
-  legacy compose has `agent-support` behind a `retired-migrated-to-talaria`
-  profile + its depends_on entries commented (prewarm, openwebui).
+  1.1** — PyYAML semantics). Every agent renders from ONE Talaria-owned chassis
+  (`fleet/chassis.yml`: service block + per-slug extras + a `network:` name;
+  fresh installs get `talaria-fleet`, this machine keeps the historical
+  `ai_default`). Per-agent secrets (`agent_secrets`, secretbox-encrypted, Secrets
+  tab) materialize into `fleet/agents/<slug>/secrets.env` (0600) wired via
+  env_file. The renderer writes the gateway manifest to `stack/fleet.json`, which
+  the bridge **hot-reloads** (watchFleet, 2s poll); manifest keys come from the
+  Talaria-owned `fleet/.env`. `server/fleet-docker.ts` drives
+  `docker compose -p talaria-fleet` with `--env-file fleet/.env`. Lifecycle API
+  `POST /api/fleet/agents/:id/control` (up/stop/retire/unretire; owners of a
+  personal assistant may up/stop their own), containers API, and live status +
+  buttons on `/agents`. Imported agents keep their pre-Talaria state VOLUME
+  NAMES (`ai_hermes-<dept>`, external) so no memory was lost in the migration —
+  the one deliberate docker-level remnant.
 
 - **Agent harness (phase C1)** - in-app config control + the cost split.
   `POST /api/fleet/defs/:id/edit` saves soul/main/aliases/fallbacks as a new
@@ -135,10 +137,11 @@ Full project-management suite, all live in `ui/`:
 - **Agent harness (phase C2)** - create/retire from the UI. `fleet-create.ts`:
   template = any existing agent's latest version; `restampSlug` rewrites every
   identity string (X-Agent-Name headers, hook args) to the new slug; fresh
-  `HERMES_KEY_<SLUG>` appended to the stack `.env`; starter soul. Renderer
-  handles `source='created'` defs via a chassis (default `agent-support`
-  service block, env `TALARIA_CHASSIS_SERVICE`) with fresh non-external state
-  volume + fleet-local dept-skills dir. `retire` action: disable + remove
+  `HERMES_KEY_<SLUG>` appended to the fleet `.env`; starter soul (or a
+  Muse-designed one — the create flow drafts a whole agent from a description).
+  Templates are optional: platform defaults build the config from the first
+  local endpoint. All agents render from the chassis with a fresh state volume
+  + fleet-local skills dir. `retire` action: disable + remove
   container + re-render (bridge drops it live). Verified full loop with a test
   agent (created "remy", answered via gateway, retired; def row remains as
   `retired` with history — re-enable is SQL-only for now).
@@ -153,13 +156,14 @@ Full project-management suite, all live in `ui/`:
   refuses. Agent editor uses `ModelPicker` (one combobox over all catalogs,
   `␟` separator).
 
-- **Full fleet migrated (2026-07-02)** - all 8 agents run Talaria-managed
-  (`talaria-fleet` project); every legacy `ai-agent-*` container is stopped and
-  retired behind the `retired-migrated-to-talaria` profile in the legacy
-  compose (depends_on refs commented; mattermost-bridge's agent-only
-  depends_on dropped). Renderer passes compose `secrets:` through, including
-  long-form `{source, mode}` entries (dex/dewey `gh_token` — caught live as a
-  bogus /run/secrets directory, fixed by re-render + force-recreate).
+- **Full fleet on Talaria (migrated 2026-07-02, cord cut 2026-07-08)** - the
+  whole fleet runs Talaria-managed (`talaria-fleet` project). The old
+  `ai/orchestration` agent stack is fully removed as a code dependency AND from
+  its own repo (retired services, agents/, crons/, hooks, skills, bridges all
+  deleted); agents' Plane/Outline/Mattermost/gmail-drive MCP connections are
+  gone — agent work and chat centralize in Talaria (boards/KB/channels), with
+  souls/skills/memories retargeted to match. Chassis extras carry dex/dewey/dot
+  workspaces and secrets, including long-form `{source, mode}` entries.
 
 - **Tier routing** - the manifest lists `<base>-<alias>` entries (Hermes
   `api_server` resolves them); `server/fleet-agents.ts` filters gateway models
@@ -189,9 +193,10 @@ Full project-management suite, all live in `ui/`:
   managed container down/unhealthy, gateway unreachable, unpriced cloud tokens,
   estimate-heavy ledger, failed/stale-blocked tickets on the user's boards.
 
-- **Agent internals pages** - `/skills`: `server/agent-skills.ts` lists/edits
-  skills on the REAL mounts (shared `<stack>/skills`, imported
-  `<stack>/agents/<dept>/skills`, created `fleet/agents/<slug>/skills`);
+- **Agent internals** - `server/agent-skills.ts` lists/edits skills on the REAL
+  mounts, all Talaria-owned (shared `fleet/skills`, per-agent
+  `fleet/agents/<slug>/skills`); surfaced as tabs in the agent manage modal
+  (the standalone /skills and /memory pages were removed as redundant);
   slug-regex + resolved-prefix traversal guard; edits are live (Hermes reads
   per invocation). `/memory`: `server/agent-memory.ts` reads/writes
   `/opt/data/memories/MEMORY.md` through the running container (docker exec;
@@ -251,14 +256,16 @@ Full project-management suite, all live in `ui/`:
   double-counted (chat row + gateway row). identity-proxy (Open WebUI
   binding) is stopped — dead path since Open WebUI retired.
 
-- **Guardrails direction (decided 2026-07-02)** - Hermes' `confab-guard`
-  plugin (a `transform_llm_output` hook flagging claimed-but-not-performed
-  external actions; annotate-only) stays IN the agent runtime for now — its
-  check needs the turn's tool-call trace, which the gateway stream doesn't
-  carry, so Talaria can't replicate it server-side without a trace export.
-  Platform-level guards in Talaria are roadmapped (see ROADMAP); libraries
-  surveyed: NeMo Guardrails / Guardrails AI (semantic rails), DeepEval/Phoenix
-  (offline evals) — none covers the structural confab check.
+- **Guardrails (shipped 2026-07-08, superseding the 2026-07-02 direction)** -
+  the confab guard is now **Talaria-native at the LLM gateway** (`server/guardrails.ts`):
+  a pluggable rule registry (zero-tool claims, ungrounded refs, fabricated outages,
+  secret leaks) with confidence scoring and off/**observe**/annotate/strict modes.
+  The turn's tool record is derived from the request messages, so no agent-side
+  trace export is needed; findings land in `guard_findings` (Admin → Confab guard)
+  and `guardText()` feeds secret-leak hits into the QA judge on ticket outcomes.
+  INVARIANT: the guard is fire-and-forget — never awaited on a completion path.
+  Not yet covered: `/api/chat` + channel replies (they use the fleet gateway
+  directly); the agent-side plugin remains only for that path.
 
 - **Product IA + elegance pass (Phase 5, 2026-07-06)** - nav regrouped into
   **Work** (Home · Chat · Channels · Boards · Inbox) and **Manage** (Agents ·
@@ -294,27 +301,29 @@ Full project-management suite, all live in `ui/`:
   `until curl .../api/auth/providers; do sleep 4; done` — nohup from the wrong
   cwd silently no-ops.
 
-## Next up (in order)
+## Next up
 
-1. **Universal @mentions (#60)** — one mention primitive (users + agents) across
-   chat, channels, ticket comments, plans, research; permission-scoped. (Channels
-   already mention agents + users; extract + extend.)
-2. **Artifact system (#54)** — generate/store docx/xlsx + microsites, attach to
-   tickets, hosted locally.
-3. **Plan view (#55)** + **Research view (#56)** — promote plan-chat to a primary
-   surface; a research surface feeding chat/plan/board.
-4. **Per-agent Talaria toolkit (#58)** + **proactive agent outreach (#59)** —
-   agents that know how to work Talaria and can start conversations.
-5. **Input sweep (#49)** + remaining WYSIWYG (#46).
-6. **Product-ization**: generalize Hermes import to any instance / from-scratch
-   config (rest of #44); Talaria-native identity proxy for per-user MCP identity
-   (#42); inference full-stack monitoring (#48).
+The living backlog is [`docs/TODO.md`](./docs/TODO.md) — much of the old list here
+shipped (artifacts, @mentions in channels, the per-agent Talaria toolkit, QA
+judge, Talaria-native confab guard, Google Workspace, personal assistants,
+Muse, native crons, federation, per-agent secrets, blank-machine setup).
+Highest-leverage remaining threads:
 
-_(Full backlog: tasks #41–#60. See memory `talaria-product-vision`.)_
+1. **Wire the Talaria toolkit MCP into agent configs** — the toolkit is built
+   (`mcp/`, stdio); agents currently have no channel/ticket tools until it's
+   attached (an HTTP transport for containerized agents is the open design bit).
+2. **Guard coverage for the direct chat path** (`/api/chat` + channel replies
+   via the fleet gateway), then retire the agent-side confab-guard plugin —
+   the last old-stack mount.
+3. **Muse editorial follow-through** — souls/skills reference the new Talaria
+   tools generically; tighten once the toolkit tool names are final.
+4. **Plan view (#55)** + **Research view (#56)**; **input sweep (#49)**.
 
 ## Dev environment
 
-- **App:** `cd ui && npm run dev` → http://localhost:5273 (port 5273).
+- **First time:** `./scripts/setup.sh` (generates secrets + admin login + fleet
+  config plane), then `./scripts/dev.sh` (infra + app). Day to day: `./scripts/dev.sh`
+  → http://localhost:5273.
 - **Postgres** (durable): container `talaria-postgres-dev` on `:5544`
   (`DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5544/talaria`).
 - **Redis** (sessions + realtime): container `talaria-redis-dev` on `:6399`.
@@ -330,8 +339,9 @@ _(Full backlog: tasks #41–#60. See memory `talaria-product-vision`.)_
 
 - Redis-backed sessions (opaque sid cookie → `sess:<sid>`).
 - Providers env-gated in `ui/.env`: Google OAuth + username/password.
-- **Default admin login:** `jon@packledger.co` / `talaria-dev`
-  (`AUTH_USERS` entry whose email is in `AUTH_ADMIN_EMAILS=jon@packledger.co` → admin).
+- **Default admin login:** generated by `scripts/setup.sh` (`admin@talaria.local` +
+  a random password, printed once at setup). The `AUTH_USERS` entry whose email is in
+  `AUTH_ADMIN_EMAILS` becomes admin.
 - Agent auth: `TALARIA_AGENT_KEY` (x-api-key / Bearer) for register/heartbeat/report.
 
 ## Networking

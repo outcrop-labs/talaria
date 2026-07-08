@@ -108,9 +108,7 @@ function AgentsPage() {
           </div>
         </div>
 
-        {!isAdmin ? (
-          <ReadOnlyRoster fleet={fleet?.agents ?? []} view={view} />
-        ) : defs.length === 0 ? (
+        {defs.length === 0 ? (
           <Panel>
             <EmptyState
               title="No agents yet"
@@ -149,40 +147,6 @@ function AgentsPage() {
   )
 }
 
-// Non-admins get a read-only glance (name + status) — no controls, no internals.
-function ReadOnlyRoster({ fleet, view }: { fleet: Array<{ id: string; label: string; role: string; status: string }>; view: 'grid' | 'list' }) {
-  const dot = (status: string) => (status === 'offline' ? 'var(--theme-line)' : status === 'error' ? 'var(--theme-danger)' : 'var(--theme-success)')
-  if (view === 'list') {
-    return (
-      <Panel className="p-0">
-        <ul className="divide-y divide-line-subtle">
-          {fleet.map((a) => (
-            <li key={a.id} className="flex items-center gap-3 px-4 py-3">
-              <Avatar name={a.label} className="h-7 w-7" />
-              <span className="text-sm text-fg">{a.label}</span>
-              <span className="text-xs text-muted">{a.role}</span>
-              <span className="ml-auto h-2 w-2 rounded-full" style={{ background: dot(a.status) }} title={a.status} />
-            </li>
-          ))}
-        </ul>
-      </Panel>
-    )
-  }
-  return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-      {fleet.map((a) => (
-        <Panel key={a.id} className="flex items-center gap-3">
-          <Avatar name={a.label} className="h-9 w-9" />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium text-fg">{a.label}</div>
-            <div className="truncate text-xs text-muted">{a.role}</div>
-          </div>
-          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: dot(a.status) }} title={a.status} />
-        </Panel>
-      ))}
-    </div>
-  )
-}
 
 // A tiny icon button used for the row/tile controls.
 function IconBtn({ icon, title, onClick, danger, disabled }: { icon: React.ReactNode; title: string; onClick: () => void; danger?: boolean; disabled?: boolean }) {

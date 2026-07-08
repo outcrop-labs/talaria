@@ -20,13 +20,6 @@ export interface FleetOverview {
   totals: { agents: number; online: number; conversations: number; messages: number; activeToday: number }
 }
 
-export const STATUS_COLOR: Record<AgentStatus, string> = {
-  idle: 'var(--theme-success)',
-  busy: 'var(--theme-warning)',
-  error: 'var(--theme-danger)',
-  offline: 'var(--theme-border)',
-}
-
 export function useFleet() {
   return useQuery({
     queryKey: ['fleet'],

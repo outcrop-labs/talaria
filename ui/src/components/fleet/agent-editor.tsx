@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Modal } from '@/components/ui/modal'
 import { ModelPicker } from '@/components/fleet/model-picker'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
@@ -50,8 +49,7 @@ function TargetRow({
 
 // The agent config surface — soul, main model, alias tiers, fallback chain —
 // as an embeddable form. Saving creates a NEW version; "apply" re-renders and
-// restarts the managed container. Used standalone (AgentEditorModal) and as the
-// Config tab of the unified manage modal.
+// restarts the managed container. The Config tab of the unified manage modal.
 export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; endpoints: LlmEndpoint[]; onSaved?: () => void }) {
   const qc = useQueryClient()
   const cfg = def.latest?.config
@@ -185,21 +183,3 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
   )
 }
 
-// Standalone config editor (kept for direct use / back-compat).
-export function AgentEditorModal({
-  open,
-  onClose,
-  def,
-  endpoints,
-}: {
-  open: boolean
-  onClose: () => void
-  def: AgentDef
-  endpoints: LlmEndpoint[]
-}) {
-  return (
-    <Modal open={open} onClose={onClose} title={`Edit ${def.displayName} (v${def.currentVersion} → v${def.currentVersion + 1})`} width="max-w-2xl">
-      <AgentConfigForm def={def} endpoints={endpoints} onSaved={onClose} />
-    </Modal>
-  )
-}

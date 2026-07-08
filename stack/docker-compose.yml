@@ -1,17 +1,16 @@
-# Talaria docker stack — hermes-workspace (UI) + mission-control (brain) + talaria-bridge (seam).
+# Talaria docker stack — the bridge (gateway plane) + optional containerized app.
 #
 # Standalone compose (like ai/orchestration, ai/inference). It joins the shared
 # external `edge` network created by the root packledger-services compose, so:
-#   • cloudflared can serve the workspace at workspace.packledger.co, and
-#   • the bridge/workspace can reach the LIVE fleet by service name
-#     (kanban-dashboard:9119, agent-developer:8642) — those services attach edge too.
+#   • the bridge can reach the LIVE fleet by service name
+#     (agent gateways on :8642) — those services attach edge too.
 #
 # Bring up:  docker compose -f talaria/stack/docker-compose.yml --env-file talaria/stack/.env up -d
 # Validate:  docker compose -f talaria/stack/docker-compose.yml config
 name: talaria
 
 services:
-  # ── The seam: transparent proxy of the Hermes dashboard, mission interceptor ──
+  # ── The gateway plane: one endpoint multiplexing every agent's gateway ──
   talaria-bridge:
     build:
       context: ../bridge
@@ -19,18 +18,11 @@ services:
     restart: unless-stopped
     environment:
       TALARIA_PORT: "9119"
-      # The REAL Hermes dashboard on the live fleet (ai/orchestration kanban-dashboard).
-      TALARIA_DASHBOARD_UPSTREAM: ${TALARIA_DASHBOARD_UPSTREAM:-http://kanban-dashboard:9119}
-      MISSION_CONTROL_URL: ${MISSION_CONTROL_URL:-http://mission-control:3000}
-      MISSION_CONTROL_API_KEY_FILE: /run/secrets/talaria_mc_key
       # M1: log conductor probe/dispatch requests (set 1 to capture the capability probe).
       TALARIA_LOG_REQUESTS: ${TALARIA_LOG_REQUESTS:-0}
-      # ── Gateway plane (fleet multiplexer): workspace HERMES_API_URL → :8642 here ──
       TALARIA_GATEWAY_PORT: "8642"
       TALARIA_FLEET_FILE: /run/talaria/fleet.json # the fleet manifest (agent → gateway + key)
       TALARIA_DEFAULT_MODEL: ${TALARIA_DEFAULT_MODEL:-dex-developer}
-    secrets:
-      - talaria_mc_key
     volumes:
       - ./fleet.json:/run/talaria/fleet.json:ro # gitignored; agents + per-agent keys
     healthcheck:
@@ -45,57 +37,6 @@ services:
       - "127.0.0.1:9119:9119" # dashboard plane (local debug)
       - "127.0.0.1:8642:8642" # gateway plane / fleet multiplexer (local debug)
 
-  # ── The brain: agent-agnostic fleet manager (task queue + cost ledger owner) ──
-  mission-control:
-    # M0 finding: NO published image exists — mission-control builds locally. Vendor
-    # + build it once (verified pin = commit d09e608):
-    #   git clone https://github.com/builderz-labs/mission-control talaria/vendor/mission-control
-    #   git -C talaria/vendor/mission-control checkout d09e608
-    #   docker build -t mission-control:latest talaria/vendor/mission-control
-    # TODO(M5): fold in upstream docker-compose.hardened.yml (read_only rootfs, cap_drop) for prod.
-    image: ${MISSION_CONTROL_IMAGE:-mission-control:latest}
-    restart: unless-stopped
-    environment:
-      PORT: "3000"
-      # Shared API key the bridge + agents' Talaria plugin present as `x-api-key`.
-      # mission-control reads the global key from env API_KEY; AUTH_SECRET auto-generates
-      # into /app/.data on first boot. (M0: src/lib/auth.ts, docker-entrypoint.sh)
-      API_KEY: ${MISSION_CONTROL_API_KEY:?set MISSION_CONTROL_API_KEY — see stack/.env.example}
-      # OpenClaw backend gateway — optional for the REST board; wire in M5.
-      # OPENCLAW_GATEWAY_HOST: openclaw-gateway
-      # OPENCLAW_GATEWAY_PORT: "18789"
-    volumes:
-      - mission-control-data:/app/.data # SQLite mission-control.db + generated secrets
-    # ai_default → the live fleet agents can register/heartbeat/report to the brain.
-    networks: [default, edge, ai_default]
-    ports:
-      - "127.0.0.1:8700:3000" # internal listen port is 3000 (M0-confirmed)
-
-  # ── The UI: Hermes-native workspace. Config-only integration (one env var). ──
-  hermes-workspace:
-    # M0-confirmed: published image, internal port 3000.
-    image: ${HERMES_WORKSPACE_IMAGE:-ghcr.io/outsourc-e/hermes-workspace:latest}
-    restart: unless-stopped
-    depends_on:
-      - talaria-bridge
-    environment:
-      # Both planes point at Talaria. Dashboard plane: Talaria serves /api/conductor/*
-      # (which the real dashboard 404s) + the kanban board from mission-control, and
-      # proxies the rest. Gateway plane: Talaria multiplexes the whole fleet, so the
-      # workspace's model switcher lists every agent and chat/sessions route per-agent.
-      HERMES_DASHBOARD_URL: ${HERMES_DASHBOARD_URL:-http://talaria-bridge:9119}
-      HERMES_API_URL: ${HERMES_API_URL:-http://talaria-bridge:8642}
-      HERMES_API_TOKEN: ${HERMES_API_TOKEN:-} # ignored by the gateway plane; per-agent keys live in the fleet manifest
-      HERMES_PASSWORD: ${HERMES_PASSWORD:-} # REQUIRED by the workspace for non-loopback binds
-      HERMES_HOME: /home/workspace/.hermes
-      HERMES_WORKSPACE_DIR: /workspace
-      COOKIE_SECURE: ${COOKIE_SECURE:-true} # behind the CF/HTTPS tunnel
-      TRUST_PROXY: ${TRUST_PROXY:-true}
-    networks: [default, edge]
-    ports:
-      - "127.0.0.1:8711:3000" # internal listen port is 3000 (M0-confirmed)
-
-  # ── Talaria's own UI (Phase 2): durable per-user chat over the fleet ──────────
   talaria-postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -144,7 +85,6 @@ services:
       # State
       DATABASE_URL: postgres://talaria:${TALARIA_DB_PASSWORD}@talaria-postgres:5432/talaria
       REDIS_URL: redis://talaria-redis:6379
-      # The fleet multiplexer (gateway plane) — same host the workspace uses.
       TALARIA_GATEWAY_URL: ${TALARIA_GATEWAY_URL:-http://talaria-bridge:8642}
       # Agents present this to register/heartbeat to Talaria's own brain.
       TALARIA_AGENT_KEY: ${TALARIA_AGENT_KEY:-}
@@ -170,12 +110,6 @@ services:
       retries: 5
       start_period: 20s
 
-secrets:
-  # Shared mission-control API key. Sourced from the MISSION_CONTROL_API_KEY env
-  # (mirrors ai/orchestration's secrets convention); delivered as a file, not env.
-  talaria_mc_key:
-    environment: MISSION_CONTROL_API_KEY
-
 networks:
   default:
   # Created by the root packledger-services compose; the tunnel + live fleet live here.
@@ -188,6 +122,5 @@ networks:
     name: ai_default
 
 volumes:
-  mission-control-data:
   talaria-postgres-data:
   talaria-redis-data:

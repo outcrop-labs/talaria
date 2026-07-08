@@ -57,7 +57,7 @@ export function NavRail({ user }: { user: SessionUser }) {
 
       <div className="mt-auto flex items-center gap-2 px-2 pt-2 text-[10px] text-muted">
         <WingMark className="h-4 w-4" />
-        <span>Talaria · Phase 2</span>
+        <span>Talaria</span>
       </div>
 
       <CreateBoardModal open={creating} onClose={() => setCreating(false)} />
