@@ -5,6 +5,7 @@
 import { db } from './db/pg'
 import { publishBoard } from './realtime'
 import { taskUsage, type TaskUsage } from './usage'
+import { listJudgeReviews, type JudgeReview } from './judge'
 import type { Effort, Priority, QualityReview, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
 
 async function taskBoardId(id: string): Promise<string | null> {
@@ -49,21 +50,23 @@ export async function getTaskFull(id: string): Promise<{
   activity: TaskActivity[]
   watchers: string[]
   reviews: QualityReview[]
+  judgeReviews: JudgeReview[]
   blockedBy: TaskLink[]
   blocks: TaskLink[]
   usage: TaskUsage
 } | null> {
   const task = await getTask(id)
   if (!task) return null
-  const [[blockedBy, blocks], comments, activity, watchers, reviews, usage] = await Promise.all([
+  const [[blockedBy, blocks], comments, activity, watchers, reviews, judgeReviews, usage] = await Promise.all([
     listDependencies(id),
     listComments(id),
     listActivity(id),
     listWatchers(id),
     listReviews(id),
+    listJudgeReviews(id),
     taskUsage(id),
   ])
-  return { task, comments, activity, watchers, reviews, blockedBy, blocks, usage }
+  return { task, comments, activity, watchers, reviews, judgeReviews, blockedBy, blocks, usage }
 }
 
 export async function createTask(input: {

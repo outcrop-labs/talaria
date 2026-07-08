@@ -643,6 +643,23 @@ const MIGRATIONS: string[] = [
   `alter table google_org_connection add column if not exists drive_folder_id text`,
   `alter table google_org_connection add column if not exists calendar_id text`,
   `alter table google_org_connection add column if not exists send_as text`,
+
+  // Automated QA judge verdicts on a ticket at the quality-review gate. Advisory:
+  // the judge reviews agent-reported work and posts a verdict + issues; the human
+  // still decides. verdict: pass | revise | escalate.
+  `create table if not exists judge_reviews (
+     id uuid primary key default gen_random_uuid(),
+     task_id uuid not null references tasks(id) on delete cascade,
+     model text,
+     verdict text not null,
+     summary text not null default '',
+     issues jsonb not null default '[]',
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists judge_reviews_task_idx on judge_reviews(task_id, created_at desc)`,
+  // Per-board judge mode: inherit (global default) | off | advisory. (Enforcing
+  // revision-loop is a planned mode; advisory ships first.)
+  `alter table boards add column if not exists judge_mode text not null default 'inherit'`,
 ]
 
 function ensureMigrated(): Promise<void> {

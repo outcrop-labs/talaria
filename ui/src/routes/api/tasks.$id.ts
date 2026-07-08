@@ -6,6 +6,7 @@ import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
 import { deleteTask, getTask, getTaskFull, listComments, EFFORTS, PRIORITIES, TASK_STATUSES, updateTask } from '@/server/tasks'
 import { indexTicket, unindexActivity } from '@/server/retrieval/sources'
+import { runJudgeForTask } from '@/server/judge'
 
 const AllStatuses = [...TASK_STATUSES, 'failed', 'cancelled'] as const
 const Patch = z.object({
@@ -82,6 +83,11 @@ export const Route = createFileRoute('/api/tasks/$id')({
         // Keep the activity brain fresh when the ticket's text changed.
         if (updated && (parsed.data.title !== undefined || parsed.data.description !== undefined)) {
           void indexTicket(updated).catch(() => {})
+        }
+        // Reliability gate: when work lands in quality_review, run the QA judge
+        // (advisory) in the background so the human reviewer gets a verdict.
+        if (updated && updated.status === 'quality_review' && task.status !== 'quality_review') {
+          void runJudgeForTask(params.id).catch(() => {})
         }
         return json({ task: updated })
       },

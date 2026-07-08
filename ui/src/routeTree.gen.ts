@@ -89,6 +89,7 @@ import { Route as ApiArtifactFoldersIdRouteImport } from './routes/api/artifact-
 import { Route as ApiAgentsRegisterRouteImport } from './routes/api/agents.register'
 import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminSettingsRouteImport } from './routes/api/admin.settings'
+import { Route as ApiAdminJudgeRouteImport } from './routes/api/admin.judge'
 import { Route as AppBoardsBoardIdRouteImport } from './routes/_app/boards/$boardId'
 import { Route as ApiTeamsIdMembersRouteImport } from './routes/api/teams.$id.members'
 import { Route as ApiTasksIdWatchersRouteImport } from './routes/api/tasks.$id.watchers'
@@ -546,6 +547,11 @@ const ApiAdminSettingsRoute = ApiAdminSettingsRouteImport.update({
   path: '/api/admin/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAdminJudgeRoute = ApiAdminJudgeRouteImport.update({
+  id: '/api/admin/judge',
+  path: '/api/admin/judge',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppBoardsBoardIdRoute = AppBoardsBoardIdRouteImport.update({
   id: '/boards/$boardId',
   path: '/boards/$boardId',
@@ -897,6 +903,7 @@ export interface FileRoutesByFullPath {
   '/api/users': typeof ApiUsersRoute
   '/kb/$slug': typeof KbSlugRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
@@ -1035,6 +1042,7 @@ export interface FileRoutesByTo {
   '/kb/$slug': typeof KbSlugRoute
   '/': typeof AppIndexRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
@@ -1175,6 +1183,7 @@ export interface FileRoutesById {
   '/kb/$slug': typeof KbSlugRoute
   '/_app/': typeof AppIndexRoute
   '/_app/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
@@ -1315,6 +1324,7 @@ export interface FileRouteTypes {
     | '/api/users'
     | '/kb/$slug'
     | '/boards/$boardId'
+    | '/api/admin/judge'
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agents/register'
@@ -1453,6 +1463,7 @@ export interface FileRouteTypes {
     | '/kb/$slug'
     | '/'
     | '/boards/$boardId'
+    | '/api/admin/judge'
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agents/register'
@@ -1592,6 +1603,7 @@ export interface FileRouteTypes {
     | '/kb/$slug'
     | '/_app/'
     | '/_app/boards/$boardId'
+    | '/api/admin/judge'
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agents/register'
@@ -1713,6 +1725,7 @@ export interface RootRouteChildren {
   ApiUploadsRoute: typeof ApiUploadsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
   KbSlugRoute: typeof KbSlugRoute
+  ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
   ApiAdminSettingsRoute: typeof ApiAdminSettingsRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
   ApiAuthGoogleRoute: typeof ApiAuthGoogleRouteWithChildren
@@ -2296,6 +2309,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/settings'
       fullPath: '/api/admin/settings'
       preLoaderRoute: typeof ApiAdminSettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin/judge': {
+      id: '/api/admin/judge'
+      path: '/api/admin/judge'
+      fullPath: '/api/admin/judge'
+      preLoaderRoute: typeof ApiAdminJudgeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/boards/$boardId': {
@@ -3228,6 +3248,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiUploadsRoute: ApiUploadsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
   KbSlugRoute: KbSlugRoute,
+  ApiAdminJudgeRoute: ApiAdminJudgeRoute,
   ApiAdminSettingsRoute: ApiAdminSettingsRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,
   ApiAuthGoogleRoute: ApiAuthGoogleRouteWithChildren,

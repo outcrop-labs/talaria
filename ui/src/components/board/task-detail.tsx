@@ -28,6 +28,7 @@ import {
   useTask,
   watchTask,
   type Board,
+  type JudgeReview,
 } from '@/lib/boards'
 import {
   EFFORTS,
@@ -134,6 +135,9 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     onBlur={() => title.trim() && title !== t.title && save({ title: title.trim() })}
                     className="border-0 bg-transparent px-0 text-lg font-semibold focus:border-0"
                   />
+
+                  {/* QA judge verdict (advisory) — most recent first */}
+                  {t.status === 'quality_review' && data?.judgeReviews?.[0] && <JudgeVerdict review={data.judgeReviews[0]} />}
 
                   {/* Approval gate */}
                   {t.status === 'quality_review' && canEdit && (
@@ -537,6 +541,32 @@ function ResultBlock({ title, danger, children }: { title: string; danger?: bool
     <div className="mb-2 rounded-lg border border-line-subtle bg-card p-2">
       <div className="mb-0.5 text-[11px] uppercase tracking-wide" style={danger ? { color: 'var(--theme-danger)' } : undefined}>{title}</div>
       <div className="whitespace-pre-wrap text-sm text-fg">{children}</div>
+    </div>
+  )
+}
+
+// The QA judge's advisory verdict, shown above the human approval gate.
+function JudgeVerdict({ review }: { review: JudgeReview }) {
+  const tone =
+    review.verdict === 'pass'
+      ? { color: 'var(--theme-success)', label: 'Pass' }
+      : review.verdict === 'revise'
+        ? { color: 'var(--theme-warning)', label: 'Revise' }
+        : { color: 'var(--theme-danger)', label: 'Escalate' }
+  return (
+    <div className="mb-2 rounded-lg border border-line-subtle bg-card p-2.5 text-sm">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-[11px] uppercase tracking-wide text-muted">QA judge</span>
+        <span className="rounded px-1.5 py-0.5 text-[11px] font-semibold" style={{ color: tone.color, border: `1px solid ${tone.color}` }}>{tone.label}</span>
+        {review.model && <span className="text-[11px] text-muted">{review.model}</span>}
+        <span className="ml-auto text-[11px] text-muted">advisory</span>
+      </div>
+      {review.summary && <div className="text-fg">{review.summary}</div>}
+      {review.issues.length > 0 && (
+        <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[13px] text-muted">
+          {review.issues.map((i, n) => <li key={n}>{i}</li>)}
+        </ul>
+      )}
     </div>
   )
 }

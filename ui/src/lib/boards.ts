@@ -133,9 +133,19 @@ export interface TaskFull {
   activity: TaskActivity[]
   watchers: string[]
   reviews: import('@/lib/task-const').QualityReview[]
+  judgeReviews: JudgeReview[]
   blockedBy: TaskLink[]
   blocks: TaskLink[]
   usage: TaskUsage
+}
+
+export interface JudgeReview {
+  id: string
+  model: string | null
+  verdict: 'pass' | 'revise' | 'escalate'
+  summary: string
+  issues: string[]
+  createdAt: string
 }
 
 export function useTask(taskId: string | null) {
