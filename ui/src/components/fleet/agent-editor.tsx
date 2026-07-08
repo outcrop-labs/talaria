@@ -159,6 +159,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
                 await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
               }}
               history={{ kind: 'soul', id: def.id }}
+              copilot={{ kind: 'soul', context: `${def.displayName} — ${def.role ?? def.department} agent (slug "${def.slug}").` }}
             />
           )}
         </section>

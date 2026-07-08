@@ -4,8 +4,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
+import { savePreferredModel, useModels, usePreferredModel } from '@/lib/copilot'
 import { AssistantSection } from '@/components/assistant/assistant-section'
 
 export const Route = createFileRoute('/_app/settings')({
@@ -70,10 +72,49 @@ function SettingsPage() {
           </Button>
         </div>
         {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
+        <PreferredModelPicker />
       </section>
 
       <AssistantSection />
       <ApiKeysSection />
+    </div>
+  )
+}
+
+// The model that powers AI drafting (souls, skills, memories, crons…) across
+// Talaria. Picks from the org's configured model registry; empty = default.
+function PreferredModelPicker() {
+  const qc = useQueryClient()
+  const { data: catalog } = useModels()
+  const { data: prefs } = usePreferredModel()
+  const [saved, setSaved] = useState(false)
+  // Bare model names only — endpoint-qualified ids stay available as raw ids
+  // for power users via the same list (they're in the catalog too).
+  const options = (catalog?.models ?? []).filter((m) => !m.id.includes('/'))
+
+  const save = async (model: string | null) => {
+    await savePreferredModel(model)
+    await qc.invalidateQueries({ queryKey: ['profile-prefs'] })
+    await qc.invalidateQueries({ queryKey: ['gateway-models'] })
+    setSaved(true)
+    setTimeout(() => setSaved(false), 1500)
+  }
+
+  return (
+    <div className="mt-5 border-t border-line-subtle pt-4">
+      <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Preferred model</label>
+      <Select value={prefs?.preferredModel ?? ''} onChange={(e) => void save(e.target.value || null)}>
+        <option value="">Default{catalog?.effective && !prefs?.preferredModel ? ` (${catalog.effective})` : ''}</option>
+        {options.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.id}
+          </option>
+        ))}
+      </Select>
+      <p className="mt-1 text-xs text-muted">
+        Powers AI drafting across Talaria — souls, skills, memories, schedules.
+        {saved && <span className="ml-2 text-[color:var(--theme-success)]">Saved</span>}
+      </p>
     </div>
   )
 }

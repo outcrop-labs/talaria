@@ -577,6 +577,9 @@ const MIGRATIONS: string[] = [
    )`,
   `alter table artifacts add column if not exists folder_id uuid references artifact_folders(id) on delete set null`,
   `create index if not exists artifacts_folder_idx on artifacts(folder_id)`,
+  // Preferred model for AI drafting (copilot) — a gateway model id, e.g.
+  // "pl-main" or "anthropic/claude-sonnet-5". Null = the server default.
+  `alter table users add column if not exists preferred_model text`,
 ]
 
 function ensureMigrated(): Promise<void> {

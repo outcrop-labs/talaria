@@ -123,6 +123,7 @@ export function AssistantSection() {
           value={assistant.personality ?? ''}
           editable
           saving={busy}
+          copilot={{ kind: 'personality', context: `${assistant.displayName}, the user's personal AI assistant.` }}
           onSave={async (md) => {
             setBusy(true)
             try {
