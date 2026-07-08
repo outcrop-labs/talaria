@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { proxyChat } from '@/server/gateway'
 import { routedModelFor } from '@/server/fleet-agents'
 import { getSessionUser } from '@/server/auth/session'
-import { allowedAgents, canUseAgent } from '@/server/users'
+import { canUseAgentModel } from '@/server/users'
 import {
   createConversation,
   insertStreamingAssistant,
@@ -53,8 +53,9 @@ export const Route = createFileRoute('/api/chat')({
           agentModel = owned
         }
 
-        const access = await allowedAgents(user.id, user.role)
-        if (!canUseAgent(access, agentModel)) {
+        // Owner-aware gate: blocks another user from driving someone's personal
+        // assistant (which would act as that owner — Google, memory, private soul).
+        if (!(await canUseAgentModel(user.id, user.role, agentModel))) {
           return json({ error: 'forbidden: no access to this agent' }, { status: 403 })
         }
 
