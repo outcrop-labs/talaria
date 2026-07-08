@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles } from 'lucide-react'
+import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles, CalendarDays, Plus, ExternalLink } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -67,6 +67,8 @@ function HomePage() {
         </div>
 
         <AssistantCard />
+
+        <AgendaPanel />
 
         {/* Quick entries into the work surfaces */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -234,5 +236,129 @@ function QueuePanel({
         </div>
       )}
     </Panel>
+  )
+}
+
+interface AgendaEvent {
+  id: string
+  summary: string
+  start: string | null
+  end: string | null
+  allDay: boolean
+  location: string | null
+  htmlLink: string | null
+}
+
+// The user's Google Calendar agenda, shown only when they've connected Google.
+// Stays invisible otherwise so Home isn't cluttered for the unconnected.
+function AgendaPanel() {
+  const qc = useQueryClient()
+  const { data, isError } = useQuery({
+    queryKey: ['agenda'],
+    queryFn: async (): Promise<{ events?: AgendaEvent[]; error?: string }> => {
+      const r = await fetch('/api/integrations/google/calendar/events')
+      if (r.status === 409 || r.status === 502) return { error: 'unavailable' } // not connected / transient
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+    retry: false,
+    refetchInterval: 5 * 60_000,
+  })
+  const [adding, setAdding] = useState(false)
+
+  // Not connected (or unreachable) → render nothing.
+  if (isError || data?.error || !data) return null
+  const events = data.events ?? []
+
+  return (
+    <Panel>
+      <div className="mb-3 flex items-center gap-2">
+        <CalendarDays size={16} className="text-muted" />
+        <span className="text-sm font-semibold text-fg">Agenda</span>
+        <span className="text-xs text-muted">Google Calendar</span>
+        <button type="button" onClick={() => setAdding((v) => !v)} className="ml-auto flex items-center gap-1 text-xs text-accent hover:underline">
+          <Plus size={13} /> New event
+        </button>
+      </div>
+
+      {adding && <QuickEvent onDone={async () => { setAdding(false); await qc.invalidateQueries({ queryKey: ['agenda'] }) }} />}
+
+      {events.length === 0 ? (
+        <div className="py-3 text-sm text-muted">Nothing on the calendar coming up.</div>
+      ) : (
+        <div className="divide-y divide-line-subtle">
+          {events.map((e) => (
+            <a
+              key={e.id}
+              href={e.htmlLink ?? '#'}
+              target="_blank"
+              rel="noreferrer"
+              className="group flex items-center gap-3 py-2"
+            >
+              <span className="w-32 shrink-0 text-[11px] text-muted">{formatWhen(e)}</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-fg">{e.summary}</span>
+              {e.location && <span className="hidden shrink-0 truncate text-[11px] text-muted sm:block sm:max-w-[8rem]">{e.location}</span>}
+              <ExternalLink size={12} className="shrink-0 text-muted opacity-0 group-hover:opacity-100" />
+            </a>
+          ))}
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+function formatWhen(e: AgendaEvent): string {
+  if (!e.start) return ''
+  const d = new Date(e.start)
+  if (e.allDay) return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) + ' · all day'
+  return d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+// Minimal create form: title + start; end defaults to +1h.
+function QuickEvent({ onDone }: { onDone: () => void }) {
+  const [summary, setSummary] = useState('')
+  const [start, setStart] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const submit = async () => {
+    if (!summary.trim() || !start) return
+    setBusy(true)
+    setErr(null)
+    try {
+      const startISO = new Date(start).toISOString()
+      const endISO = new Date(new Date(start).getTime() + 60 * 60_000).toISOString()
+      const r = await fetch('/api/integrations/google/calendar/events', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ summary: summary.trim(), start: startISO, end: endISO }),
+      })
+      const j = (await r.json().catch(() => null)) as { event?: unknown; message?: string } | null
+      if (r.ok && j?.event) onDone()
+      else setErr(j?.message ?? 'Could not create the event.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-line-subtle p-2">
+      <input
+        value={summary}
+        onChange={(e) => setSummary(e.target.value)}
+        placeholder="Event title"
+        className="min-w-0 flex-1 bg-transparent px-2 text-sm text-fg outline-none placeholder:text-muted"
+      />
+      <input
+        type="datetime-local"
+        value={start}
+        onChange={(e) => setStart(e.target.value)}
+        className="rounded-lg border border-line-subtle bg-transparent px-2 py-1 text-xs text-fg outline-none"
+      />
+      <Button size="sm" onClick={() => void submit()} disabled={busy || !summary.trim() || !start}>
+        Add
+      </Button>
+      {err && <span className="w-full text-[11px]" style={{ color: 'var(--theme-danger)' }}>{err}</span>}
+    </div>
   )
 }

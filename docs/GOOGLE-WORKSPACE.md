@@ -23,6 +23,10 @@ uses a shared service account for this.
   - Other native types (Slides, …) → `file` artifact (exported as PDF)
   - Regular files → `file` artifact (downloaded, ≤25 MB)
   - The source Drive link is remembered on the artifact.
+- **Calendar agenda** on Home — when connected, an **Agenda** panel lists the
+  user's upcoming Google Calendar events with a quick **New event** create
+  (title + start; defaults to a 1-hour event). Hidden entirely when not
+  connected, so Home stays clean.
 - **Agents** export via the `export_to_google_doc` MCP tool. An agent has no
   Google account, so it exports into the artifact **owner's** Drive — the human
   it works for must be connected. (Identity proxy, #42.)
@@ -34,10 +38,11 @@ uses a shared service account for this.
   store — unlike API keys, where we persist only the env-var *name*.
 - Access tokens are cached (also encrypted) and refreshed transparently; an
   `invalid_grant` clears the connection so the UI prompts a reconnect.
-- Scopes: **`drive.file`** (create/manage only files the app makes — export) +
-  **`drive.readonly`** (browse + read for import). Users who connected before
-  import shipped must **reconnect** to grant `drive.readonly`; the import picker
-  detects the missing scope and prompts a reconnect.
+- Scopes: **`drive.file`** (create/manage only files the app makes — export),
+  **`drive.readonly`** (browse + read for import), **`calendar.events`** (agenda
+  + create). Adding scopes over time means existing users must **reconnect** to
+  grant the new ones; each surface detects a missing scope and prompts a
+  reconnect.
 - Disconnect best-effort **revokes** the token at Google, then forgets it.
 
 ## Operator setup
@@ -61,9 +66,10 @@ URIs (login + connect):
 <public-url>/api/integrations/google/callback
 ```
 
-and enable the **Google Drive API**. Add the `.../auth/drive.file` scope to the
-consent screen. `drive.file` is not a restricted scope, so it needs no Google
-verification review for internal/Workspace apps.
+and enable the **Google Drive API** and **Google Calendar API**. Add the
+`drive.file`, `drive.readonly`, and `calendar.events` scopes to the consent
+screen. `drive.file` is not restricted; `drive.readonly` and `calendar.events`
+are sensitive but need no verification review for internal/Workspace apps.
 
 ## Verified vs. trusted
 
