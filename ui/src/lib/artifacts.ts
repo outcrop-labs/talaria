@@ -49,7 +49,7 @@ export const createArtifact = (input: { kind?: ArtifactKind; title?: string }) =
 
 export const saveArtifact = (
   id: string,
-  patch: Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy'>> & { editors?: KbEditor[] },
+  patch: Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy' | 'official'>> & { editors?: KbEditor[] },
 ) => fetch(`/api/artifacts/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
 export const deleteArtifact = (id: string) => fetch(`/api/artifacts/${id}`, { method: 'DELETE' })
