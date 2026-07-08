@@ -39,7 +39,11 @@ const header = (m: GmailMessage, name: string): string =>
 
 /** Recent messages (metadata only), newest first. `q` is Gmail search syntax. */
 export async function listRecentMessages(userId: string, nowMs: number, maxResults = 8, q = 'in:inbox'): Promise<MailSummary[]> {
-  const token = await requireToken(userId, nowMs)
+  return listRecentMessagesWithToken(await requireToken(userId, nowMs), maxResults, q)
+}
+
+/** Recent messages using an already-resolved token (per-user or org). */
+export async function listRecentMessagesWithToken(token: string, maxResults = 8, q = 'in:inbox'): Promise<MailSummary[]> {
   const auth = { Authorization: `Bearer ${token}` }
 
   const listParams = new URLSearchParams({ maxResults: String(Math.min(Math.max(maxResults, 1), 25)), q })
@@ -87,8 +91,11 @@ function encodeHeader(value: string): string {
 
 /** Send a plain-text email as the connected user. Returns the sent message id. */
 export async function sendMessage(userId: string, nowMs: number, input: SendInput): Promise<{ id: string; threadId: string }> {
-  const token = await requireToken(userId, nowMs)
+  return sendMessageWithToken(await requireToken(userId, nowMs), input)
+}
 
+/** Send using an already-resolved token (per-user or org). */
+export async function sendMessageWithToken(token: string, input: SendInput): Promise<{ id: string; threadId: string }> {
   const headers = [`To: ${input.to}`]
   if (input.cc) headers.push(`Cc: ${input.cc}`)
   if (input.bcc) headers.push(`Bcc: ${input.bcc}`)

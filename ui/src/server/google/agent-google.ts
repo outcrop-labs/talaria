@@ -48,3 +48,16 @@ export async function resolveAgentOwnerUser(agentModel: string): Promise<string 
   `
   return def?.ownerUserId ?? null
 }
+
+export interface AgentPrincipal {
+  /** true → the shared org account; false → the ownerUserId's account. */
+  isOrg: boolean
+  ownerUserId: string | null
+}
+
+/** Who an agent drafts/acts FOR — without needing a live token (used for queuing
+ *  a pending action). Personal assistant → its owner; general agent → the org. */
+export async function resolveAgentPrincipal(agentModel: string): Promise<AgentPrincipal> {
+  const owner = await resolveAgentOwnerUser(agentModel)
+  return owner ? { isOrg: false, ownerUserId: owner } : { isOrg: true, ownerUserId: null }
+}

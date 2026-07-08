@@ -51,7 +51,11 @@ function normalize(e: {
 
 /** Upcoming events (from now), soonest first. */
 export async function listUpcomingEvents(userId: string, nowMs: number, maxResults = 10): Promise<CalendarEvent[]> {
-  const token = await requireToken(userId, nowMs)
+  return listUpcomingEventsWithToken(await requireToken(userId, nowMs), nowMs, maxResults)
+}
+
+/** Upcoming events using an already-resolved token (per-user or org). */
+export async function listUpcomingEventsWithToken(token: string, nowMs: number, maxResults = 10): Promise<CalendarEvent[]> {
   const params = new URLSearchParams({
     timeMin: new Date(nowMs).toISOString(),
     maxResults: String(Math.min(Math.max(maxResults, 1), 50)),
@@ -77,7 +81,11 @@ export interface CreateEventInput {
 
 /** Create an event on the user's primary calendar. */
 export async function createEvent(userId: string, nowMs: number, input: CreateEventInput): Promise<CalendarEvent> {
-  const token = await requireToken(userId, nowMs)
+  return createEventWithToken(await requireToken(userId, nowMs), input)
+}
+
+/** Create an event using an already-resolved token (per-user or org). */
+export async function createEventWithToken(token: string, input: CreateEventInput): Promise<CalendarEvent> {
   const timeField = input.allDay ? 'date' : 'dateTime'
   const body = {
     summary: input.summary,

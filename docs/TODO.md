@@ -30,11 +30,15 @@ engineering-facing tracker.
     general agents share an admin-connected **org Google account** (Admin →
     Organization Google account). `resolveAgentGoogle()` binds an agent (by unique
     `model`) to a connection. Export routes to owner/org accordingly.
-  - ✅ **Agent Calendar/Gmail (confirm-sends)** — a personal assistant reads its
-    owner's calendar/mail and DRAFTS events/emails; drafts queue as pending
-    actions the owner approves on Home ("Needs your approval") → executes as the
-    owner. General agents can't touch a human's mail/calendar. MCP:
-    `read_calendar` / `draft_calendar_event` / `read_recent_email` / `draft_email`.
+  - ✅ **Agent Calendar/Gmail (confirm-sends)** — an agent reads calendar/mail and
+    DRAFTS events/emails; drafts queue as pending actions a human approves on Home
+    ("Needs your approval") → executes. Personal assistant → its **owner's**
+    Google (owner approves); general agent → the shared **org** Google (admin
+    approves). MCP: `read_calendar` / `draft_calendar_event` / `read_recent_email`
+    / `draft_email`.
+  - ✅ **Personal-assistant isolation** — a personal assistant is usable ONLY by
+    its owner (chat, listing, channels), so another user can't drive it to read
+    the owner's account/context.
   - ⏳ **Cloud-storage connectors** — S3 behind the `storage_ref` abstraction.
   - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
 

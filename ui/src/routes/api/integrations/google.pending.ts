@@ -11,7 +11,7 @@ export const Route = createFileRoute('/api/integrations/google/pending')({
       GET: async ({ request }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        return json({ pending: await listPending(user.id) })
+        return json({ pending: await listPending(user.id, user.role === 'admin') })
       },
     },
   },
