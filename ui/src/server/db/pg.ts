@@ -688,6 +688,7 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now()
    )`,
   `create index if not exists guard_findings_recent_idx on guard_findings(created_at desc)`,
+  `alter table guard_findings add column if not exists confidence real not null default 0.5`,
 ]
 
 function ensureMigrated(): Promise<void> {

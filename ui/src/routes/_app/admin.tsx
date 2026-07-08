@@ -271,9 +271,10 @@ function JudgePanel() {
 }
 
 interface GuardData {
-  config: { mode: string; checks: Record<string, boolean>; policedHosts: string[] }
+  config: { mode: string; checks: Record<string, boolean>; minConfidence: number; policedHosts: string[] }
   stats: { total: number; byCheck: Record<string, number> }
-  findings: Array<{ id: string; caller: string; model: string; check: string; severity: string; message: string; snippet: string; createdAt: string }>
+  findings: Array<{ id: string; caller: string; model: string; check: string; severity: string; confidence: number; message: string; snippet: string; createdAt: string }>
+  rules: Array<{ id: string; label: string; severity: string; defaultOn: boolean }>
 }
 
 // Confab guardrail — a structural check on model output at the gateway. Observe
@@ -296,18 +297,14 @@ function GuardrailsPanel() {
     await fetch('/api/admin/guardrails', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     await qc.invalidateQueries({ queryKey: ['guardrails'] })
   }
-  const CHECKS: Array<{ key: string; label: string }> = [
-    { key: 'zero_tool_claim', label: 'Zero-tool claim (claims done, no tool ran)' },
-    { key: 'ungrounded_ref', label: 'Ungrounded reference (invented link/id)' },
-    { key: 'fabricated_outage', label: 'Fabricated outage (claims failure, nothing errored)' },
-  ]
+  const rules = data?.rules ?? []
 
   return (
     <Panel>
       <div className="mb-2 text-sm font-semibold text-fg">Confab guard</div>
       <p className="mb-4 text-xs text-muted">
         A cheap structural check on every model’s output at the gateway — catches claims of work no tool did, invented
-        links/ids, and fabricated outages. No extra model call, no added context. <strong>Observe</strong> just records;
+        links/ids, fabricated outages, and leaked secrets. No extra model call, no added context. <strong>Observe</strong> records;
         <strong> annotate</strong> appends a caveat; <strong>strict</strong> can hold/regenerate.
       </p>
       <div className="flex flex-wrap items-center gap-4">
@@ -320,19 +317,30 @@ function GuardrailsPanel() {
             <option value="strict">Strict</option>
           </Select>
         </div>
-        <div className="text-xs text-muted">{data?.stats.total ?? 0} findings recorded</div>
+        <label className="flex items-center gap-2 text-xs text-muted" title="Findings below this confidence are dropped">
+          <span className="uppercase tracking-wide">Min confidence</span>
+          <input
+            type="range" min={0} max={1} step={0.05}
+            value={cfg?.minConfidence ?? 0.5}
+            disabled={cfg?.mode === 'off'}
+            onChange={(e) => void save({ minConfidence: Number(e.target.value) })}
+            className="w-28"
+          />
+          <span className="w-8 text-fg">{((cfg?.minConfidence ?? 0.5) * 100).toFixed(0)}%</span>
+        </label>
+        <div className="text-xs text-muted">{data?.stats.total ?? 0} findings</div>
       </div>
       <div className="mt-3 space-y-1.5">
-        {CHECKS.map((c) => (
-          <label key={c.key} className="flex items-center gap-2 text-sm text-fg">
+        {rules.map((c) => (
+          <label key={c.id} className="flex items-center gap-2 text-sm text-fg">
             <input
               type="checkbox"
-              checked={cfg?.checks[c.key] ?? true}
+              checked={cfg?.checks[c.id] ?? c.defaultOn}
               disabled={cfg?.mode === 'off'}
-              onChange={(e) => cfg && void save({ checks: { ...cfg.checks, [c.key]: e.target.checked } })}
+              onChange={(e) => cfg && void save({ checks: { ...cfg.checks, [c.id]: e.target.checked } })}
             />
             {c.label}
-            {data?.stats.byCheck[c.key] ? <span className="text-[11px] text-muted">· {data.stats.byCheck[c.key]}</span> : null}
+            {data?.stats.byCheck[c.id] ? <span className="text-[11px] text-muted">· {data.stats.byCheck[c.id]}</span> : null}
           </label>
         ))}
       </div>
