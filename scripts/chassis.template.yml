@@ -2,12 +2,20 @@
 # Talaria stamps per-agent identity (key, model name, config/SOUL/skills
 # mounts, state volume) at render time; put only SHARED anatomy here.
 #
-# Fill fleet/.env with the referenced variables (LLM_BASE_URL etc.) before
-# starting agents. HERMES_IMAGE overrides the agent image.
+# The fleet's brain is Talaria's own gateway: LLM_BASE_URL/API_KEY/MODEL are
+# provisioned into fleet/.env by Talaria (config plane is Talaria-owned), so
+# every agent call is guarded, metered, and observable. Configure the real
+# upstream model in-app on /models — no hand-editing here. HERMES_IMAGE
+# overrides the agent image.
 service:
   image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
   command: gateway run
   restart: unless-stopped
+  # The app runs on the host in dev; this lets agents reach Talaria's gateway at
+  # host.docker.internal on any docker network (subnet-independent). In a fully
+  # containerized stack, set TALARIA_GATEWAY_SELF_URL to the app's service DNS.
+  extra_hosts:
+    - 'host.docker.internal:host-gateway'
   healthcheck:
     test: ['CMD-SHELL', 'curl -sf http://localhost:8642/health || exit 1']
     interval: 15s
@@ -15,8 +23,9 @@ service:
     retries: 5
     start_period: 60s
   environment:
-    # The LLM the agents call by default (an OpenAI-compatible endpoint).
-    LLM_BASE_URL: ${LLM_BASE_URL:-}
+    # Talaria's org gateway (provisioned into fleet/.env). The default keeps the
+    # fleet pointed at the gateway even before the first render writes the .env.
+    LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:5273/api/llm/v1}
     LLM_API_KEY: ${LLM_API_KEY:-}
     LLM_MODEL: ${LLM_MODEL:-}
     API_SERVER_ENABLED: 'true'

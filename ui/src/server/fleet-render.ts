@@ -19,6 +19,7 @@ import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
 import { materializeAgentSecrets } from './agent-secrets'
+import { ensureGatewayBrain } from './fleet-brain'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
@@ -103,6 +104,17 @@ export interface RenderResult {
 export async function renderFleet(): Promise<RenderResult> {
   const targets = await managedAgents()
   const result: RenderResult = { agents: [], files: [], warnings: [] }
+
+  // The fleet's default brain is Talaria's own gateway: provision the gateway
+  // credential into the Talaria-owned .env so agents route through /api/llm/v1
+  // (guarded + metered + observable). Best-effort — never blocks a render.
+  const brain = await ensureGatewayBrain().catch((e: Error) => {
+    result.warnings.push(`gateway brain: ${e.message}`)
+    return null
+  })
+  if (brain?.managed && !brain.model) {
+    result.warnings.push('gateway brain: no model configured yet — add an LLM endpoint on /models to give agents a brain')
+  }
 
   // Parse in YAML 1.1 — docker compose's own dialect (go-yaml). This matters:
   // `mode: 0400` is OCTAL in 1.1 (256) but decimal 400 in 1.2, which would
@@ -215,7 +227,7 @@ export async function renderFleet(): Promise<RenderResult> {
     services,
     volumes,
     ...(Object.keys(secrets).length ? { secrets } : {}),
-    networks: { fleet: { external: true, name: chassis.network?.name ?? `${LEGACY_DOCKER_PROJECT}_default` } },
+    networks: { fleet: { external: true, name: chassis.network?.name ?? 'talaria-fleet' } },
   }
   const composePath = join(FLEET_DIR(), 'docker-compose.yml')
   await mkdir(FLEET_DIR(), { recursive: true })
