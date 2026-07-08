@@ -660,6 +660,23 @@ const MIGRATIONS: string[] = [
   // Per-board judge mode: inherit (global default) | off | advisory. (Enforcing
   // revision-loop is a planned mode; advisory ships first.)
   `alter table boards add column if not exists judge_mode text not null default 'inherit'`,
+
+  // Confab-guard findings — structural checks on model output at the gateway
+  // (see server/guardrails.ts). Observe-mode records here without touching the
+  // model's output or context.
+  `create table if not exists guard_findings (
+     id uuid primary key default gen_random_uuid(),
+     caller text,
+     model text,
+     endpoint text,
+     mode text not null default 'observe',
+     check_type text not null,
+     severity text not null default 'medium',
+     message text not null default '',
+     snippet text not null default '',
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists guard_findings_recent_idx on guard_findings(created_at desc)`,
 ]
 
 function ensureMigrated(): Promise<void> {

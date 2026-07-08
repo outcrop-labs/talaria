@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { authenticateKey } from '@/server/llm-keys'
 import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '@/server/llm-gateway'
 import { estimateTokens } from '@/server/usage'
+import { guardCompletion } from '@/server/guardrails'
 
 // OpenAI-compatible chat completions over the org's model stack. Streaming and
 // non-streaming both pass through; every call is metered into the ledger with
@@ -57,7 +58,9 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
                 usage?: { prompt_tokens?: number; completion_tokens?: number }
                 choices?: Array<{ message?: { content?: string } }>
               }
-              void ledger(j.usage ?? null, j.choices?.[0]?.message?.content?.length ?? 0)
+              const content = j.choices?.[0]?.message?.content ?? ''
+              void ledger(j.usage ?? null, content.length)
+              void guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => {})
             } catch {
               /* relay verbatim even if unparseable */
             }
@@ -78,7 +81,7 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
         }
 
         let lineBuf = ''
-        let contentChars = 0
+        let content = ''
         let usage: { prompt_tokens?: number; completion_tokens?: number } | null = null
         const decoder = new TextDecoder()
         const scan = (chunkText: string) => {
@@ -94,7 +97,7 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
                 choices?: Array<{ delta?: { content?: string } }>
               }
               if (j.usage) usage = j.usage
-              contentChars += j.choices?.[0]?.delta?.content?.length ?? 0
+              content += j.choices?.[0]?.delta?.content ?? ''
             } catch {
               /* partial or non-JSON line — ignore */
             }
@@ -107,7 +110,10 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
             scan(decoder.decode(chunk, { stream: true }))
           },
           flush() {
-            void ledger(usage, contentChars)
+            void ledger(usage, content.length)
+            // Confab guard runs on the assembled text after the stream — never
+            // delays streaming; observe mode records findings out-of-band.
+            void guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => {})
           },
         })
 
