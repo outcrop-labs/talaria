@@ -2,8 +2,15 @@
 
 Per-user OAuth: each person connects **their own** Google account, and Talaria —
 plus the agents working for them — acts *as that user* against Drive/Docs. Files
-land in the user's own Drive, governed by Google's own sharing. Talaria never
-uses a shared service account for this.
+land in the user's own Drive, governed by Google's own sharing.
+
+**Whose Google an agent uses** (the identity proxy):
+- A user's **personal assistant** acts as *its owner* — resolved from
+  `agent_defs.owner_user_id` (the agent's unique `model` is what it presents as
+  `x-agent-name` over MCP). It never falls back to the org account.
+- A **general fleet agent** (no owner) acts as a single **shared org Google
+  account** an admin connects under **Admin → Organization Google account**. So
+  the whole swarm has one company workspace to build in.
 
 ## What ships today
 
@@ -31,9 +38,9 @@ uses a shared service account for this.
   (sender / subject / snippet, unread bolded, link out to Gmail) with a
   **Compose** modal that sends plain-text email as the user. Also hidden until
   connected.
-- **Agents** export via the `export_to_google_doc` MCP tool. An agent has no
-  Google account, so it exports into the artifact **owner's** Drive — the human
-  it works for must be connected. (Identity proxy, #42.)
+- **Agents** export via the `export_to_google_doc` MCP tool — into their owner's
+  Drive (personal assistant) or the shared org Drive (general agent). See the
+  identity-proxy note above.
 
 ## Security
 

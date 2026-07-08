@@ -102,6 +102,7 @@ import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
 import { Route as ApiKbPublicSlugRouteImport } from './routes/api/kb.public.$slug'
 import { Route as ApiKbDocsIdRouteImport } from './routes/api/kb.docs.$id'
+import { Route as ApiIntegrationsGoogleOrgRouteImport } from './routes/api/integrations/google.org'
 import { Route as ApiIntegrationsGoogleConnectRouteImport } from './routes/api/integrations/google.connect'
 import { Route as ApiIntegrationsGoogleCallbackRouteImport } from './routes/api/integrations/google.callback'
 import { Route as ApiFleetEndpointsIdRouteImport } from './routes/api/fleet.endpoints.$id'
@@ -125,6 +126,8 @@ import { Route as ApiKbSpacesIdDocsRouteImport } from './routes/api/kb.spaces.$i
 import { Route as ApiKbPublicSpaceSlugRouteImport } from './routes/api/kb.public.space.$slug'
 import { Route as ApiKbDocsIdMoveRouteImport } from './routes/api/kb.docs.$id.move'
 import { Route as ApiKbDocsIdBacklinksRouteImport } from './routes/api/kb.docs.$id.backlinks'
+import { Route as ApiIntegrationsGoogleOrgConnectRouteImport } from './routes/api/integrations/google.org.connect'
+import { Route as ApiIntegrationsGoogleOrgCallbackRouteImport } from './routes/api/integrations/google.org.callback'
 import { Route as ApiIntegrationsGoogleGmailSendRouteImport } from './routes/api/integrations/google.gmail.send'
 import { Route as ApiIntegrationsGoogleGmailMessagesRouteImport } from './routes/api/integrations/google.gmail.messages'
 import { Route as ApiIntegrationsGoogleDriveImportRouteImport } from './routes/api/integrations/google.drive.import'
@@ -604,6 +607,12 @@ const ApiKbDocsIdRoute = ApiKbDocsIdRouteImport.update({
   path: '/api/kb/docs/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiIntegrationsGoogleOrgRoute =
+  ApiIntegrationsGoogleOrgRouteImport.update({
+    id: '/org',
+    path: '/org',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
 const ApiIntegrationsGoogleConnectRoute =
   ApiIntegrationsGoogleConnectRouteImport.update({
     id: '/connect',
@@ -721,6 +730,18 @@ const ApiKbDocsIdBacklinksRoute = ApiKbDocsIdBacklinksRouteImport.update({
   path: '/backlinks',
   getParentRoute: () => ApiKbDocsIdRoute,
 } as any)
+const ApiIntegrationsGoogleOrgConnectRoute =
+  ApiIntegrationsGoogleOrgConnectRouteImport.update({
+    id: '/connect',
+    path: '/connect',
+    getParentRoute: () => ApiIntegrationsGoogleOrgRoute,
+  } as any)
+const ApiIntegrationsGoogleOrgCallbackRoute =
+  ApiIntegrationsGoogleOrgCallbackRouteImport.update({
+    id: '/callback',
+    path: '/callback',
+    getParentRoute: () => ApiIntegrationsGoogleOrgRoute,
+  } as any)
 const ApiIntegrationsGoogleGmailSendRoute =
   ApiIntegrationsGoogleGmailSendRouteImport.update({
     id: '/gmail/send',
@@ -900,6 +921,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
+  '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -925,6 +947,8 @@ export interface FileRoutesByFullPath {
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
   '/api/integrations/google/gmail/messages': typeof ApiIntegrationsGoogleGmailMessagesRoute
   '/api/integrations/google/gmail/send': typeof ApiIntegrationsGoogleGmailSendRoute
+  '/api/integrations/google/org/callback': typeof ApiIntegrationsGoogleOrgCallbackRoute
+  '/api/integrations/google/org/connect': typeof ApiIntegrationsGoogleOrgConnectRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1031,6 +1055,7 @@ export interface FileRoutesByTo {
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
+  '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -1056,6 +1081,8 @@ export interface FileRoutesByTo {
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
   '/api/integrations/google/gmail/messages': typeof ApiIntegrationsGoogleGmailMessagesRoute
   '/api/integrations/google/gmail/send': typeof ApiIntegrationsGoogleGmailSendRoute
+  '/api/integrations/google/org/callback': typeof ApiIntegrationsGoogleOrgCallbackRoute
+  '/api/integrations/google/org/connect': typeof ApiIntegrationsGoogleOrgConnectRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1164,6 +1191,7 @@ export interface FileRoutesById {
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
+  '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -1189,6 +1217,8 @@ export interface FileRoutesById {
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
   '/api/integrations/google/gmail/messages': typeof ApiIntegrationsGoogleGmailMessagesRoute
   '/api/integrations/google/gmail/send': typeof ApiIntegrationsGoogleGmailSendRoute
+  '/api/integrations/google/org/callback': typeof ApiIntegrationsGoogleOrgCallbackRoute
+  '/api/integrations/google/org/connect': typeof ApiIntegrationsGoogleOrgConnectRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1297,6 +1327,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints/$id'
     | '/api/integrations/google/callback'
     | '/api/integrations/google/connect'
+    | '/api/integrations/google/org'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1322,6 +1353,8 @@ export interface FileRouteTypes {
     | '/api/integrations/google/drive/import'
     | '/api/integrations/google/gmail/messages'
     | '/api/integrations/google/gmail/send'
+    | '/api/integrations/google/org/callback'
+    | '/api/integrations/google/org/connect'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -1428,6 +1461,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints/$id'
     | '/api/integrations/google/callback'
     | '/api/integrations/google/connect'
+    | '/api/integrations/google/org'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1453,6 +1487,8 @@ export interface FileRouteTypes {
     | '/api/integrations/google/drive/import'
     | '/api/integrations/google/gmail/messages'
     | '/api/integrations/google/gmail/send'
+    | '/api/integrations/google/org/callback'
+    | '/api/integrations/google/org/connect'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -1560,6 +1596,7 @@ export interface FileRouteTypes {
     | '/api/fleet/endpoints/$id'
     | '/api/integrations/google/callback'
     | '/api/integrations/google/connect'
+    | '/api/integrations/google/org'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1585,6 +1622,8 @@ export interface FileRouteTypes {
     | '/api/integrations/google/drive/import'
     | '/api/integrations/google/gmail/messages'
     | '/api/integrations/google/gmail/send'
+    | '/api/integrations/google/org/callback'
+    | '/api/integrations/google/org/connect'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -2298,6 +2337,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKbDocsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/integrations/google/org': {
+      id: '/api/integrations/google/org'
+      path: '/org'
+      fullPath: '/api/integrations/google/org'
+      preLoaderRoute: typeof ApiIntegrationsGoogleOrgRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
     '/api/integrations/google/connect': {
       id: '/api/integrations/google/connect'
       path: '/connect'
@@ -2458,6 +2504,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/kb/docs/$id/backlinks'
       preLoaderRoute: typeof ApiKbDocsIdBacklinksRouteImport
       parentRoute: typeof ApiKbDocsIdRoute
+    }
+    '/api/integrations/google/org/connect': {
+      id: '/api/integrations/google/org/connect'
+      path: '/connect'
+      fullPath: '/api/integrations/google/org/connect'
+      preLoaderRoute: typeof ApiIntegrationsGoogleOrgConnectRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleOrgRoute
+    }
+    '/api/integrations/google/org/callback': {
+      id: '/api/integrations/google/org/callback'
+      path: '/callback'
+      fullPath: '/api/integrations/google/org/callback'
+      preLoaderRoute: typeof ApiIntegrationsGoogleOrgCallbackRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleOrgRoute
     }
     '/api/integrations/google/gmail/send': {
       id: '/api/integrations/google/gmail/send'
@@ -2922,9 +2982,27 @@ const ApiAuthGoogleRouteWithChildren = ApiAuthGoogleRoute._addFileChildren(
   ApiAuthGoogleRouteChildren,
 )
 
+interface ApiIntegrationsGoogleOrgRouteChildren {
+  ApiIntegrationsGoogleOrgCallbackRoute: typeof ApiIntegrationsGoogleOrgCallbackRoute
+  ApiIntegrationsGoogleOrgConnectRoute: typeof ApiIntegrationsGoogleOrgConnectRoute
+}
+
+const ApiIntegrationsGoogleOrgRouteChildren: ApiIntegrationsGoogleOrgRouteChildren =
+  {
+    ApiIntegrationsGoogleOrgCallbackRoute:
+      ApiIntegrationsGoogleOrgCallbackRoute,
+    ApiIntegrationsGoogleOrgConnectRoute: ApiIntegrationsGoogleOrgConnectRoute,
+  }
+
+const ApiIntegrationsGoogleOrgRouteWithChildren =
+  ApiIntegrationsGoogleOrgRoute._addFileChildren(
+    ApiIntegrationsGoogleOrgRouteChildren,
+  )
+
 interface ApiIntegrationsGoogleRouteChildren {
   ApiIntegrationsGoogleCallbackRoute: typeof ApiIntegrationsGoogleCallbackRoute
   ApiIntegrationsGoogleConnectRoute: typeof ApiIntegrationsGoogleConnectRoute
+  ApiIntegrationsGoogleOrgRoute: typeof ApiIntegrationsGoogleOrgRouteWithChildren
   ApiIntegrationsGoogleCalendarEventsRoute: typeof ApiIntegrationsGoogleCalendarEventsRoute
   ApiIntegrationsGoogleDriveFilesRoute: typeof ApiIntegrationsGoogleDriveFilesRoute
   ApiIntegrationsGoogleDriveImportRoute: typeof ApiIntegrationsGoogleDriveImportRoute
@@ -2935,6 +3013,7 @@ interface ApiIntegrationsGoogleRouteChildren {
 const ApiIntegrationsGoogleRouteChildren: ApiIntegrationsGoogleRouteChildren = {
   ApiIntegrationsGoogleCallbackRoute: ApiIntegrationsGoogleCallbackRoute,
   ApiIntegrationsGoogleConnectRoute: ApiIntegrationsGoogleConnectRoute,
+  ApiIntegrationsGoogleOrgRoute: ApiIntegrationsGoogleOrgRouteWithChildren,
   ApiIntegrationsGoogleCalendarEventsRoute:
     ApiIntegrationsGoogleCalendarEventsRoute,
   ApiIntegrationsGoogleDriveFilesRoute: ApiIntegrationsGoogleDriveFilesRoute,
