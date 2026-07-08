@@ -14,7 +14,7 @@
 //   • networks → the external ai_default so the bridge/peers resolve the same
 //     DNS name; depends_on/build/ports dropped (deps run in the old project,
 //     the bridge reaches agents over the network, host ports retire)
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
@@ -116,6 +116,16 @@ export async function renderFleet(): Promise<RenderResult> {
     const agentDir = join(FLEET_DIR(), 'agents', def.slug)
     await mkdir(agentDir, { recursive: true })
     await mkdir(join(agentDir, 'skills'), { recursive: true })
+
+    // Heal docker-made junk: when a container (re)starts while a file
+    // bind-mount source is missing (e.g. mid-rename crash), docker resurrects
+    // the source as a DIRECTORY — which would make the writes below EISDIR
+    // forever after. Clear any directory squatting on a rendered-file path.
+    for (const f of ['config.yaml', 'SOUL.md']) {
+      const p = join(agentDir, f)
+      // Best effort: docker-made junk is root-owned, which we may not be.
+      if ((await stat(p).catch(() => null))?.isDirectory()) await rm(p, { recursive: true, force: true }).catch(() => {})
+    }
 
     const raw = (version.config as { raw?: unknown }).raw
     await writeFile(

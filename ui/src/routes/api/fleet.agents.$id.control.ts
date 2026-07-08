@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { getAgentDef } from '@/server/agent-defs'
+import { ownsAgent } from '@/server/personal-agent'
 import { fleetRemove, fleetStop, fleetUp, legacyControl, waitHealthy } from '@/server/fleet-docker'
 import { renderFleet } from '@/server/fleet-render'
 import { logAudit } from '@/server/audit'
@@ -12,7 +13,8 @@ const Body = z.object({
   action: z.enum(['migrate', 'up', 'stop', 'legacy-start', 'legacy-stop', 'retire', 'unretire']),
 })
 
-// POST { action } → lifecycle control for one agent (admin).
+// POST { action } → lifecycle control for one agent (admin; owners of a
+// personal assistant may up/stop their own).
 //   migrate       flip to managed, render, stop the legacy container, start the
 //                 talaria-managed one, wait for health
 //   up | stop     the managed service (renders first on `up`)
@@ -23,9 +25,11 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
       POST: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const ownerAllowed =
+          ['up', 'stop'].includes(parsed.data.action) && (await ownsAgent(user.id, { defId: params.id }))
+        if (user.role !== 'admin' && !ownerAllowed) return json({ error: 'forbidden' }, { status: 403 })
         const def = await getAgentDef(params.id)
         if (!def) return json({ error: 'not found' }, { status: 404 })
 
