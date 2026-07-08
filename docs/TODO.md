@@ -63,7 +63,10 @@ engineering-facing tracker.
   RAG `search_knowledge`, and Google. ✅ **Knowledgebase tools** now added:
   `list_kb_spaces` / `list_kb_docs` / `read_kb_doc` / `edit_kb_doc` — browse + read
   by effective audience, edit only where granted Editor (sharing stays human-only).
-  ⏳ Remaining: a "Talaria toolkit" onboarding skill; channel post/read tools
+  ✅ **Channel tools** — `list_channels` / `read_channel` / `post_to_channel`;
+  an agent participates in channels a human has added it to (gated on channel-
+  agent membership; agent posts don't trigger other agents — no reply storms).
+  ⏳ Remaining: a "Talaria toolkit" onboarding skill (lands with #78, Hermes-side)
   (overlaps #59).
 - **Plan view (#55)** — a first-class planning surface that turns conversations
   into reviewed tickets and feeds boards/chat. Self-contained.

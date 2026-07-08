@@ -2,13 +2,20 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { createChannel, listChannels } from '@/server/channels'
+import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { createChannel, listChannels, listChannelsForAgent } from '@/server/channels'
 
 // GET /api/channels → the user's channels. POST { name, topic? } → create one.
 export const Route = createFileRoute('/api/channels')({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        // Agents see the channels they've been added to.
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+          return json({ channels: await listChannelsForAgent(name) })
+        }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         return json({ channels: await listChannels(user.id) })

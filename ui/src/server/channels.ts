@@ -131,6 +131,17 @@ export async function listChannelAgents(channelId: string): Promise<string[]> {
   return (rows as unknown as Array<{ agent_model: string }>).map((r) => r.agent_model)
 }
 
+/** Channels a given agent (by model) has been added to. */
+export async function listChannelsForAgent(model: string): Promise<Channel[]> {
+  const sql = await db()
+  const rows = await sql`
+    select c.id, c.name, c.topic, c.created_at as "createdAt", c.updated_at as "updatedAt"
+    from channels c join channel_agents a on a.channel_id = c.id and a.agent_model = ${model}
+    where c.archived_at is null order by c.updated_at desc
+  `
+  return rows as unknown as Channel[]
+}
+
 export async function addChannelAgent(channelId: string, model: string): Promise<void> {
   const sql = await db()
   await sql`insert into channel_agents (channel_id, agent_model) values (${channelId}, ${model}) on conflict do nothing`

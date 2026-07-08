@@ -234,6 +234,44 @@ server.registerTool(
   async ({ documentId }) => ok(await api('POST', `/api/artifacts/${encodeURIComponent(documentId)}/export/google`)),
 )
 
+// ── Channels (team chat you've been added to) ──────────────────────────────
+// You can read and post in channels a human has added you to. Use this to
+// collaborate with the team — answer questions, share progress, ask when blocked.
+server.registerTool(
+  'list_channels',
+  {
+    description: 'List the team channels you (this agent) have been added to. Returns id + name + topic.',
+    inputSchema: {},
+  },
+  async () => ok(await api('GET', '/api/channels')),
+)
+
+server.registerTool(
+  'read_channel',
+  {
+    description: 'Read recent messages in a channel you belong to. Pass sinceSeq to get only newer messages than a seq you already saw.',
+    inputSchema: {
+      channelId: z.string().describe('Channel id (from list_channels)'),
+      sinceSeq: z.number().int().optional().describe('Only messages with seq greater than this (default: all recent)'),
+    },
+  },
+  async ({ channelId, sinceSeq }) =>
+    ok(await api('GET', `/api/channels/${encodeURIComponent(channelId)}/messages${sinceSeq !== undefined ? `?since=${sinceSeq}` : ''}`)),
+)
+
+server.registerTool(
+  'post_to_channel',
+  {
+    description:
+      "Post a message to a channel you belong to. Use @name to mention teammates. Post when you have something useful — progress, an answer, a blocker, a question — not chatter.",
+    inputSchema: {
+      channelId: z.string().describe('Channel id (from list_channels)'),
+      content: z.string().min(1).max(20_000).describe('Markdown message'),
+    },
+  },
+  async ({ channelId, content }) => ok(await api('POST', `/api/channels/${encodeURIComponent(channelId)}/messages`, { content })),
+)
+
 // ── Knowledgebase (browse + read + edit granted docs) ──────────────────────
 // search_knowledge finds things across everything; these let you navigate the
 // curated KB directly and edit docs you've been granted Editor on.
