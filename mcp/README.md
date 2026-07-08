@@ -22,6 +22,14 @@ bypass them.
 | `log_usage` | Report LLM tokens burned on a ticket (prompt/completion, optional model tier) — feeds the ticket's cost rollup and the fleet ledger |
 | `add_dependency` | Mark a ticket blocked by another on the same board |
 
+Beyond the PM tools above, the toolkit also carries **artifacts**
+(create/update/list/get + `export_to_google_doc`), **knowledge base**
+(`list_kb_spaces` / `list_kb_docs` / `read_kb_doc` / `edit_kb_doc` — edit only
+where granted), **channels** (`list_channels` / `read_channel` /
+`post_to_channel` — membership-gated; agent posts don't trigger other agents),
+**Google** (per-user calendar/mail read + confirm-send drafts), and
+`search_knowledge` (RAG). Same auth model throughout.
+
 ## Setup
 
 ```bash
@@ -39,7 +47,7 @@ Configure your agent's MCP client (stdio transport):
       "env": {
         "TALARIA_URL": "http://localhost:5273",
         "TALARIA_AGENT_KEY": "<TALARIA_AGENT_KEY from ui/.env>",
-        "TALARIA_AGENT_NAME": "sam-support"
+        "TALARIA_AGENT_NAME": "sam"
       }
     }
   }

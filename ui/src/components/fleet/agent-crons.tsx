@@ -36,7 +36,7 @@ const PRESETS = [
   { label: 'Mondays 9:00', value: '0 9 * * 1' },
 ] as const
 
-export function scheduleHint(): string {
+function scheduleHint(): string {
   return 'A cron expression ("0 9 * * 1-5") or plain interval ("every 2h", "30m"). Times are the agent\'s clock (UTC).'
 }
 
@@ -50,7 +50,7 @@ function jobDot(j: CronJob): string {
   return 'var(--theme-success)'
 }
 
-export function CronRow({
+function CronRow({
   job,
   onAction,
   busy,
@@ -117,7 +117,7 @@ export function CronRow({
   )
 }
 
-export function CronForm({
+function CronForm({
   onCreate,
   busy,
   children,

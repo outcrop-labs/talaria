@@ -1,7 +1,8 @@
 # Talaria UI
 
 Talaria's own front end: the multiplayer workspace where your people and your
-agents share the same boards, tickets, and (soon) chats and plans. **Vite +
+agents share the same boards, tickets, chats, channels, knowledge base, and
+artifacts. **Vite +
 TanStack Start** (React 19 + TypeScript). We picked the same stack hermes-workspace
 uses so we can lift its chat/agent components straight into our app with minimal
 friction. To be clear, we do not run hermes-workspace; it's a parts bin we pull
@@ -88,23 +89,26 @@ Agents authenticate with `TALARIA_AGENT_KEY` (x-api-key / Bearer). On `PUT
 /api/tasks/:id` they may triage (priority, effort, labels, description, status →
 `in_progress`/`blocked`/`quality_review`) but **cannot** move a ticket to
 `assigned` (403) or `done` (coerced to `quality_review`), and **cannot** change
-assignees. Assignment and sign-off stay human. (A dedicated agent MCP that exposes
-only these safe operations is the next milestone, see [`../ROADMAP.md`](../ROADMAP.md).)
+assignees. Assignment and sign-off stay human. (The dedicated agent MCP that
+exposes only these safe operations is shipped — see [`../mcp/README.md`](../mcp/README.md).)
 
 ## Where this is headed
 
 Shipped: the PM suite, the agent MCP (`talaria-mcp`), group chat with tier
 mentions, plan chat (conversation → reviewed tickets), the full agent harness
-(import/render/orchestrate/create/retire; souls, models, tiers, and MCP servers
-as immutable revertible versions; skills + memory managed live), the priced
-token ledger (auto-fetched rates, local/cloud split, per-agent and per-ticket
-spend), and the ops surfaces (`/activity`, `/alerts`, `/inference`).
+(design agents from a description with Muse, federate outside agents in,
+render/orchestrate from one Talaria-owned chassis, per-agent encrypted secrets,
+native Hermes crons; souls, models, tiers, and MCP servers as immutable
+revertible versions; skills + memory in versioned diff-and-restore workspaces),
+personal assistants, the knowledge base, artifacts (incl. Google Drive export),
+the QA judge + gateway confab guard, the priced token ledger (auto-fetched
+rates, local/cloud split, per-agent and per-ticket spend), and the ops surfaces
+(`/activity`, `/alerts`, `/inference`). Members see the Work surfaces +
+Settings; the Manage plane is admin-only.
 
 Still growing toward the full multiplayer workspace from the
 [top-level README](../README.md):
 
-- **On-the-fly artifacts** 🔭: spin up artifacts and pin them to the tickets they
-  belong to, straight from chats and work sessions.
 - **Design/creative + finance surfaces** 🔭 and in-app agentic coding.
 - **Analytics + ROI** 🚧: board-level cost rollups and trends on top of the
   per-ticket spend that ships today.
