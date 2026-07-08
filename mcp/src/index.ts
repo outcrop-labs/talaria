@@ -234,6 +234,64 @@ server.registerTool(
   async ({ documentId }) => ok(await api('POST', `/api/artifacts/${encodeURIComponent(documentId)}/export/google`)),
 )
 
+// ── Calendar & Gmail (personal assistant, acting for its owner) ─────────────
+// Reads are immediate; anything outbound is DRAFTED and waits for the owner to
+// approve in Talaria before it actually sends. Only works when you're a person's
+// personal assistant (you act as them).
+server.registerTool(
+  'read_calendar',
+  {
+    description:
+      "Read your owner's upcoming Google Calendar events. Only works if you're a personal assistant acting for a specific person who has connected Google.",
+    inputSchema: {},
+  },
+  async () => ok(await api('GET', '/api/integrations/google/agent/calendar')),
+)
+
+server.registerTool(
+  'draft_calendar_event',
+  {
+    description:
+      "Draft a Google Calendar event for your owner. It is NOT created immediately — it's queued for your owner to approve in Talaria first (confirm-sends). Times are RFC3339 (e.g. 2026-07-08T15:00:00Z), or YYYY-MM-DD with allDay=true.",
+    inputSchema: {
+      summary: z.string().min(1).max(500).describe('Event title'),
+      start: z.string().describe('Start — RFC3339 dateTime or YYYY-MM-DD'),
+      end: z.string().describe('End — RFC3339 dateTime or YYYY-MM-DD'),
+      description: z.string().max(8000).optional(),
+      location: z.string().max(500).optional(),
+      allDay: z.boolean().optional(),
+      attendees: z.array(z.string()).max(50).optional().describe('Attendee emails'),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/calendar', args)),
+)
+
+server.registerTool(
+  'read_recent_email',
+  {
+    description:
+      "Read your owner's recent Gmail (metadata + snippets). Optional Gmail search `q` (e.g. 'from:boss', 'is:unread'). Only works if you're a personal assistant for a person who has connected Google.",
+    inputSchema: { q: z.string().optional().describe("Gmail search query (default 'in:inbox')") },
+  },
+  async ({ q }) => ok(await api('GET', `/api/integrations/google/agent/gmail${q ? `?q=${encodeURIComponent(q)}` : ''}`)),
+)
+
+server.registerTool(
+  'draft_email',
+  {
+    description:
+      "Draft an email to send AS your owner. It is NOT sent immediately — it's queued for your owner to approve in Talaria first (confirm-sends). Use this to prepare correspondence; your owner reviews and sends with one click.",
+    inputSchema: {
+      to: z.string().describe('Recipient email(s), comma-separated'),
+      subject: z.string().max(500).optional(),
+      body: z.string().max(50_000).optional().describe('Plain-text body'),
+      cc: z.string().optional(),
+      bcc: z.string().optional(),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/gmail', args)),
+)
+
 server.registerTool(
   'log_usage',
   {

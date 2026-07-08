@@ -614,6 +614,24 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now(),
      updated_at timestamptz not null default now()
    )`,
+
+  // Outbound Google actions an agent DRAFTED that need human sign-off before they
+  // go out (send email, create a calendar event). The owner approves; on approval
+  // it executes as the owner's Google. Reads + drafts are free; sends are gated.
+  `create table if not exists google_pending_actions (
+     id uuid primary key default gen_random_uuid(),
+     kind text not null,
+     payload jsonb not null,
+     summary text,
+     agent_model text,
+     owner_user_id uuid references users(id) on delete cascade,
+     status text not null default 'pending',
+     result jsonb,
+     created_at timestamptz not null default now(),
+     decided_at timestamptz,
+     decided_by uuid references users(id) on delete set null
+   )`,
+  `create index if not exists google_pending_owner_idx on google_pending_actions(owner_user_id, status)`,
 ]
 
 function ensureMigrated(): Promise<void> {

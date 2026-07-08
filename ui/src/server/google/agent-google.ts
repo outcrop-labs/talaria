@@ -37,3 +37,14 @@ export async function resolveAgentGoogle(agentModel: string, nowMs: number): Pro
   const token = await getOrgAccessToken(nowMs).catch(() => null)
   return token ? { token, principal: 'org', ownerUserId: null } : null
 }
+
+/** The Talaria user an agent is the personal assistant OF, or null for a general
+ *  fleet agent. Calendar/Gmail acting-as is owner-only — general agents don't get
+ *  to read/send a human's mail or calendar. */
+export async function resolveAgentOwnerUser(agentModel: string): Promise<string | null> {
+  const sql = await db()
+  const [def] = await sql<{ ownerUserId: string | null }[]>`
+    select owner_user_id as "ownerUserId" from agent_defs where model = ${agentModel} limit 1
+  `
+  return def?.ownerUserId ?? null
+}

@@ -102,6 +102,7 @@ import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
 import { Route as ApiKbPublicSlugRouteImport } from './routes/api/kb.public.$slug'
 import { Route as ApiKbDocsIdRouteImport } from './routes/api/kb.docs.$id'
+import { Route as ApiIntegrationsGooglePendingRouteImport } from './routes/api/integrations/google.pending'
 import { Route as ApiIntegrationsGoogleOrgRouteImport } from './routes/api/integrations/google.org'
 import { Route as ApiIntegrationsGoogleConnectRouteImport } from './routes/api/integrations/google.connect'
 import { Route as ApiIntegrationsGoogleCallbackRouteImport } from './routes/api/integrations/google.callback'
@@ -126,6 +127,7 @@ import { Route as ApiKbSpacesIdDocsRouteImport } from './routes/api/kb.spaces.$i
 import { Route as ApiKbPublicSpaceSlugRouteImport } from './routes/api/kb.public.space.$slug'
 import { Route as ApiKbDocsIdMoveRouteImport } from './routes/api/kb.docs.$id.move'
 import { Route as ApiKbDocsIdBacklinksRouteImport } from './routes/api/kb.docs.$id.backlinks'
+import { Route as ApiIntegrationsGooglePendingIdRouteImport } from './routes/api/integrations/google.pending.$id'
 import { Route as ApiIntegrationsGoogleOrgConnectRouteImport } from './routes/api/integrations/google.org.connect'
 import { Route as ApiIntegrationsGoogleOrgCallbackRouteImport } from './routes/api/integrations/google.org.callback'
 import { Route as ApiIntegrationsGoogleGmailSendRouteImport } from './routes/api/integrations/google.gmail.send'
@@ -133,6 +135,8 @@ import { Route as ApiIntegrationsGoogleGmailMessagesRouteImport } from './routes
 import { Route as ApiIntegrationsGoogleDriveImportRouteImport } from './routes/api/integrations/google.drive.import'
 import { Route as ApiIntegrationsGoogleDriveFilesRouteImport } from './routes/api/integrations/google.drive.files'
 import { Route as ApiIntegrationsGoogleCalendarEventsRouteImport } from './routes/api/integrations/google.calendar.events'
+import { Route as ApiIntegrationsGoogleAgentGmailRouteImport } from './routes/api/integrations/google.agent.gmail'
+import { Route as ApiIntegrationsGoogleAgentCalendarRouteImport } from './routes/api/integrations/google.agent.calendar'
 import { Route as ApiFleetEndpointsIdAvailableRouteImport } from './routes/api/fleet.endpoints.$id.available'
 import { Route as ApiFleetDefsIdVersionsRouteImport } from './routes/api/fleet.defs.$id.versions'
 import { Route as ApiFleetDefsIdMcpRouteImport } from './routes/api/fleet.defs.$id.mcp'
@@ -607,6 +611,12 @@ const ApiKbDocsIdRoute = ApiKbDocsIdRouteImport.update({
   path: '/api/kb/docs/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiIntegrationsGooglePendingRoute =
+  ApiIntegrationsGooglePendingRouteImport.update({
+    id: '/pending',
+    path: '/pending',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
 const ApiIntegrationsGoogleOrgRoute =
   ApiIntegrationsGoogleOrgRouteImport.update({
     id: '/org',
@@ -730,6 +740,12 @@ const ApiKbDocsIdBacklinksRoute = ApiKbDocsIdBacklinksRouteImport.update({
   path: '/backlinks',
   getParentRoute: () => ApiKbDocsIdRoute,
 } as any)
+const ApiIntegrationsGooglePendingIdRoute =
+  ApiIntegrationsGooglePendingIdRouteImport.update({
+    id: '/$id',
+    path: '/$id',
+    getParentRoute: () => ApiIntegrationsGooglePendingRoute,
+  } as any)
 const ApiIntegrationsGoogleOrgConnectRoute =
   ApiIntegrationsGoogleOrgConnectRouteImport.update({
     id: '/connect',
@@ -770,6 +786,18 @@ const ApiIntegrationsGoogleCalendarEventsRoute =
   ApiIntegrationsGoogleCalendarEventsRouteImport.update({
     id: '/calendar/events',
     path: '/calendar/events',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
+const ApiIntegrationsGoogleAgentGmailRoute =
+  ApiIntegrationsGoogleAgentGmailRouteImport.update({
+    id: '/agent/gmail',
+    path: '/agent/gmail',
+    getParentRoute: () => ApiIntegrationsGoogleRoute,
+  } as any)
+const ApiIntegrationsGoogleAgentCalendarRoute =
+  ApiIntegrationsGoogleAgentCalendarRouteImport.update({
+    id: '/agent/calendar',
+    path: '/agent/calendar',
     getParentRoute: () => ApiIntegrationsGoogleRoute,
   } as any)
 const ApiFleetEndpointsIdAvailableRoute =
@@ -922,6 +950,7 @@ export interface FileRoutesByFullPath {
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
+  '/api/integrations/google/pending': typeof ApiIntegrationsGooglePendingRouteWithChildren
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -942,6 +971,8 @@ export interface FileRoutesByFullPath {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/integrations/google/agent/calendar': typeof ApiIntegrationsGoogleAgentCalendarRoute
+  '/api/integrations/google/agent/gmail': typeof ApiIntegrationsGoogleAgentGmailRoute
   '/api/integrations/google/calendar/events': typeof ApiIntegrationsGoogleCalendarEventsRoute
   '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
@@ -949,6 +980,7 @@ export interface FileRoutesByFullPath {
   '/api/integrations/google/gmail/send': typeof ApiIntegrationsGoogleGmailSendRoute
   '/api/integrations/google/org/callback': typeof ApiIntegrationsGoogleOrgCallbackRoute
   '/api/integrations/google/org/connect': typeof ApiIntegrationsGoogleOrgConnectRoute
+  '/api/integrations/google/pending/$id': typeof ApiIntegrationsGooglePendingIdRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1056,6 +1088,7 @@ export interface FileRoutesByTo {
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
+  '/api/integrations/google/pending': typeof ApiIntegrationsGooglePendingRouteWithChildren
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -1076,6 +1109,8 @@ export interface FileRoutesByTo {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/integrations/google/agent/calendar': typeof ApiIntegrationsGoogleAgentCalendarRoute
+  '/api/integrations/google/agent/gmail': typeof ApiIntegrationsGoogleAgentGmailRoute
   '/api/integrations/google/calendar/events': typeof ApiIntegrationsGoogleCalendarEventsRoute
   '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
@@ -1083,6 +1118,7 @@ export interface FileRoutesByTo {
   '/api/integrations/google/gmail/send': typeof ApiIntegrationsGoogleGmailSendRoute
   '/api/integrations/google/org/callback': typeof ApiIntegrationsGoogleOrgCallbackRoute
   '/api/integrations/google/org/connect': typeof ApiIntegrationsGoogleOrgConnectRoute
+  '/api/integrations/google/pending/$id': typeof ApiIntegrationsGooglePendingIdRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1192,6 +1228,7 @@ export interface FileRoutesById {
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
+  '/api/integrations/google/pending': typeof ApiIntegrationsGooglePendingRouteWithChildren
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -1212,6 +1249,8 @@ export interface FileRoutesById {
   '/api/fleet/defs/$id/mcp': typeof ApiFleetDefsIdMcpRoute
   '/api/fleet/defs/$id/versions': typeof ApiFleetDefsIdVersionsRoute
   '/api/fleet/endpoints/$id/available': typeof ApiFleetEndpointsIdAvailableRoute
+  '/api/integrations/google/agent/calendar': typeof ApiIntegrationsGoogleAgentCalendarRoute
+  '/api/integrations/google/agent/gmail': typeof ApiIntegrationsGoogleAgentGmailRoute
   '/api/integrations/google/calendar/events': typeof ApiIntegrationsGoogleCalendarEventsRoute
   '/api/integrations/google/drive/files': typeof ApiIntegrationsGoogleDriveFilesRoute
   '/api/integrations/google/drive/import': typeof ApiIntegrationsGoogleDriveImportRoute
@@ -1219,6 +1258,7 @@ export interface FileRoutesById {
   '/api/integrations/google/gmail/send': typeof ApiIntegrationsGoogleGmailSendRoute
   '/api/integrations/google/org/callback': typeof ApiIntegrationsGoogleOrgCallbackRoute
   '/api/integrations/google/org/connect': typeof ApiIntegrationsGoogleOrgConnectRoute
+  '/api/integrations/google/pending/$id': typeof ApiIntegrationsGooglePendingIdRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
@@ -1328,6 +1368,7 @@ export interface FileRouteTypes {
     | '/api/integrations/google/callback'
     | '/api/integrations/google/connect'
     | '/api/integrations/google/org'
+    | '/api/integrations/google/pending'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1348,6 +1389,8 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/integrations/google/agent/calendar'
+    | '/api/integrations/google/agent/gmail'
     | '/api/integrations/google/calendar/events'
     | '/api/integrations/google/drive/files'
     | '/api/integrations/google/drive/import'
@@ -1355,6 +1398,7 @@ export interface FileRouteTypes {
     | '/api/integrations/google/gmail/send'
     | '/api/integrations/google/org/callback'
     | '/api/integrations/google/org/connect'
+    | '/api/integrations/google/pending/$id'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -1462,6 +1506,7 @@ export interface FileRouteTypes {
     | '/api/integrations/google/callback'
     | '/api/integrations/google/connect'
     | '/api/integrations/google/org'
+    | '/api/integrations/google/pending'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1482,6 +1527,8 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/integrations/google/agent/calendar'
+    | '/api/integrations/google/agent/gmail'
     | '/api/integrations/google/calendar/events'
     | '/api/integrations/google/drive/files'
     | '/api/integrations/google/drive/import'
@@ -1489,6 +1536,7 @@ export interface FileRouteTypes {
     | '/api/integrations/google/gmail/send'
     | '/api/integrations/google/org/callback'
     | '/api/integrations/google/org/connect'
+    | '/api/integrations/google/pending/$id'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -1597,6 +1645,7 @@ export interface FileRouteTypes {
     | '/api/integrations/google/callback'
     | '/api/integrations/google/connect'
     | '/api/integrations/google/org'
+    | '/api/integrations/google/pending'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1617,6 +1666,8 @@ export interface FileRouteTypes {
     | '/api/fleet/defs/$id/mcp'
     | '/api/fleet/defs/$id/versions'
     | '/api/fleet/endpoints/$id/available'
+    | '/api/integrations/google/agent/calendar'
+    | '/api/integrations/google/agent/gmail'
     | '/api/integrations/google/calendar/events'
     | '/api/integrations/google/drive/files'
     | '/api/integrations/google/drive/import'
@@ -1624,6 +1675,7 @@ export interface FileRouteTypes {
     | '/api/integrations/google/gmail/send'
     | '/api/integrations/google/org/callback'
     | '/api/integrations/google/org/connect'
+    | '/api/integrations/google/pending/$id'
     | '/api/kb/docs/$id/backlinks'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
@@ -2337,6 +2389,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKbDocsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/integrations/google/pending': {
+      id: '/api/integrations/google/pending'
+      path: '/pending'
+      fullPath: '/api/integrations/google/pending'
+      preLoaderRoute: typeof ApiIntegrationsGooglePendingRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
     '/api/integrations/google/org': {
       id: '/api/integrations/google/org'
       path: '/org'
@@ -2505,6 +2564,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKbDocsIdBacklinksRouteImport
       parentRoute: typeof ApiKbDocsIdRoute
     }
+    '/api/integrations/google/pending/$id': {
+      id: '/api/integrations/google/pending/$id'
+      path: '/$id'
+      fullPath: '/api/integrations/google/pending/$id'
+      preLoaderRoute: typeof ApiIntegrationsGooglePendingIdRouteImport
+      parentRoute: typeof ApiIntegrationsGooglePendingRoute
+    }
     '/api/integrations/google/org/connect': {
       id: '/api/integrations/google/org/connect'
       path: '/connect'
@@ -2552,6 +2618,20 @@ declare module '@tanstack/react-router' {
       path: '/calendar/events'
       fullPath: '/api/integrations/google/calendar/events'
       preLoaderRoute: typeof ApiIntegrationsGoogleCalendarEventsRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
+    '/api/integrations/google/agent/gmail': {
+      id: '/api/integrations/google/agent/gmail'
+      path: '/agent/gmail'
+      fullPath: '/api/integrations/google/agent/gmail'
+      preLoaderRoute: typeof ApiIntegrationsGoogleAgentGmailRouteImport
+      parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
+    '/api/integrations/google/agent/calendar': {
+      id: '/api/integrations/google/agent/calendar'
+      path: '/agent/calendar'
+      fullPath: '/api/integrations/google/agent/calendar'
+      preLoaderRoute: typeof ApiIntegrationsGoogleAgentCalendarRouteImport
       parentRoute: typeof ApiIntegrationsGoogleRoute
     }
     '/api/fleet/endpoints/$id/available': {
@@ -2999,10 +3079,27 @@ const ApiIntegrationsGoogleOrgRouteWithChildren =
     ApiIntegrationsGoogleOrgRouteChildren,
   )
 
+interface ApiIntegrationsGooglePendingRouteChildren {
+  ApiIntegrationsGooglePendingIdRoute: typeof ApiIntegrationsGooglePendingIdRoute
+}
+
+const ApiIntegrationsGooglePendingRouteChildren: ApiIntegrationsGooglePendingRouteChildren =
+  {
+    ApiIntegrationsGooglePendingIdRoute: ApiIntegrationsGooglePendingIdRoute,
+  }
+
+const ApiIntegrationsGooglePendingRouteWithChildren =
+  ApiIntegrationsGooglePendingRoute._addFileChildren(
+    ApiIntegrationsGooglePendingRouteChildren,
+  )
+
 interface ApiIntegrationsGoogleRouteChildren {
   ApiIntegrationsGoogleCallbackRoute: typeof ApiIntegrationsGoogleCallbackRoute
   ApiIntegrationsGoogleConnectRoute: typeof ApiIntegrationsGoogleConnectRoute
   ApiIntegrationsGoogleOrgRoute: typeof ApiIntegrationsGoogleOrgRouteWithChildren
+  ApiIntegrationsGooglePendingRoute: typeof ApiIntegrationsGooglePendingRouteWithChildren
+  ApiIntegrationsGoogleAgentCalendarRoute: typeof ApiIntegrationsGoogleAgentCalendarRoute
+  ApiIntegrationsGoogleAgentGmailRoute: typeof ApiIntegrationsGoogleAgentGmailRoute
   ApiIntegrationsGoogleCalendarEventsRoute: typeof ApiIntegrationsGoogleCalendarEventsRoute
   ApiIntegrationsGoogleDriveFilesRoute: typeof ApiIntegrationsGoogleDriveFilesRoute
   ApiIntegrationsGoogleDriveImportRoute: typeof ApiIntegrationsGoogleDriveImportRoute
@@ -3014,6 +3111,11 @@ const ApiIntegrationsGoogleRouteChildren: ApiIntegrationsGoogleRouteChildren = {
   ApiIntegrationsGoogleCallbackRoute: ApiIntegrationsGoogleCallbackRoute,
   ApiIntegrationsGoogleConnectRoute: ApiIntegrationsGoogleConnectRoute,
   ApiIntegrationsGoogleOrgRoute: ApiIntegrationsGoogleOrgRouteWithChildren,
+  ApiIntegrationsGooglePendingRoute:
+    ApiIntegrationsGooglePendingRouteWithChildren,
+  ApiIntegrationsGoogleAgentCalendarRoute:
+    ApiIntegrationsGoogleAgentCalendarRoute,
+  ApiIntegrationsGoogleAgentGmailRoute: ApiIntegrationsGoogleAgentGmailRoute,
   ApiIntegrationsGoogleCalendarEventsRoute:
     ApiIntegrationsGoogleCalendarEventsRoute,
   ApiIntegrationsGoogleDriveFilesRoute: ApiIntegrationsGoogleDriveFilesRoute,

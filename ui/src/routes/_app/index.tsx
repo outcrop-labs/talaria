@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles, CalendarDays, Plus, ExternalLink, Mail, Send, X } from 'lucide-react'
+import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles, CalendarDays, Plus, ExternalLink, Mail, Send, X, ShieldCheck, Check } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -68,6 +68,8 @@ function HomePage() {
         </div>
 
         <AssistantCard />
+
+        <ApprovalsPanel />
 
         <AgendaPanel />
 
@@ -482,5 +484,80 @@ function ComposeModal({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </div>
+  )
+}
+
+interface PendingAction {
+  id: string
+  kind: string
+  summary: string | null
+  agentModel: string | null
+  createdAt: string
+}
+
+// Agent-drafted Google actions (send email / create event) awaiting the user's
+// approval — confirm-sends. Hidden when there's nothing to approve.
+function ApprovalsPanel() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['google-pending'],
+    queryFn: async (): Promise<{ pending: PendingAction[] }> => {
+      const r = await fetch('/api/integrations/google/pending')
+      if (!r.ok) return { pending: [] }
+      return r.json()
+    },
+    refetchInterval: 60_000,
+  })
+  const [busy, setBusy] = useState<string | null>(null)
+  const pending = data?.pending ?? []
+  if (pending.length === 0) return null
+
+  const decide = async (id: string, decision: 'approve' | 'reject') => {
+    setBusy(id)
+    try {
+      const r = await fetch(`/api/integrations/google/pending/${id}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      })
+      if (!r.ok) {
+        const j = (await r.json().catch(() => null)) as { message?: string } | null
+        alert(j?.message ?? 'Could not complete that action.')
+      }
+      await qc.invalidateQueries({ queryKey: ['google-pending'] })
+      await qc.invalidateQueries({ queryKey: ['agenda'] })
+      await qc.invalidateQueries({ queryKey: ['gmail'] })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const kindLabel = (k: string) => (k === 'gmail_send' ? 'Send email' : k === 'calendar_create' ? 'Create event' : k)
+
+  return (
+    <Panel>
+      <div className="mb-3 flex items-center gap-2">
+        <ShieldCheck size={16} style={{ color: 'var(--theme-warning)' }} />
+        <span className="text-sm font-semibold text-fg">Needs your approval</span>
+        <span className="text-xs text-muted">an agent wants to act as you</span>
+      </div>
+      <div className="divide-y divide-line-subtle">
+        {pending.map((a) => (
+          <div key={a.id} className="flex items-center gap-3 py-2.5">
+            <span className="shrink-0 rounded border border-line-subtle px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">{kindLabel(a.kind)}</span>
+            <span className="min-w-0 flex-1 truncate text-sm text-fg">{a.summary ?? '(action)'}</span>
+            {a.agentModel && <span className="hidden shrink-0 text-[11px] text-muted sm:block">{a.agentModel}</span>}
+            <div className="flex shrink-0 items-center gap-1">
+              <Button size="sm" disabled={busy === a.id} onClick={() => void decide(a.id, 'approve')}>
+                <Check size={13} className="mr-1" /> Approve
+              </Button>
+              <Button variant="ghost" size="sm" disabled={busy === a.id} onClick={() => void decide(a.id, 'reject')}>
+                Reject
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
   )
 }
