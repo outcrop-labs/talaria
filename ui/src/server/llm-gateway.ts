@@ -9,6 +9,7 @@
 // ledger with the calling key's identity. This is the litellm replacement,
 // engineered into Talaria itself.
 import { db } from './db/pg'
+import { getSetting, setSetting } from './audit'
 import { listEndpoints, type LlmEndpoint } from './agent-defs'
 import { NATIVE_BASE, openrouterUsPool, resolveEndpointKey } from './provider-catalog'
 import { guardCompletion } from './guardrails'
@@ -111,6 +112,7 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
   if (body.stream) body.stream_options = { include_usage: true, ...(body.stream_options as object | undefined) }
   // Pre-strip parameters this endpoint+model has already rejected (learned
   // live from 400s below — dynamic specs with no maintained tables).
+  await loadUnsupportedParams()
   for (const p of unsupportedParams.get(`${ep.name}:${route.upstreamModel}`) ?? []) delete body[p]
   return { url: `${base}/chat/completions`, headers, body }
 }
@@ -120,7 +122,21 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
 // 'top_p'…"), we strip it, retry, and remember — the next call pre-strips.
 // Newer models routinely retire tunables (sonnet-5 rejects temperature); no
 // spec table could keep up, but the provider itself is always current.
+// Learnings persist in app_settings so a restart doesn't re-pay the 400s.
 const unsupportedParams = new Map<string, Set<string>>()
+let unsupportedLoaded: Promise<void> | null = null
+const loadUnsupportedParams = (): Promise<void> =>
+  (unsupportedLoaded ??= (async () => {
+    const stored = await getSetting<Record<string, string[]>>('gateway_unsupported_params', {})
+    for (const [key, params] of Object.entries(stored)) {
+      unsupportedParams.set(key, new Set([...(unsupportedParams.get(key) ?? []), ...params]))
+    }
+  })().catch(() => {}))
+
+const persistUnsupportedParams = (): void => {
+  const obj = Object.fromEntries([...unsupportedParams].map(([k, v]) => [k, [...v]]))
+  void setSetting('gateway_unsupported_params', obj).catch(() => {})
+}
 
 const rejectedParam = (errText: string): string | null => {
   const m =
@@ -169,7 +185,12 @@ export async function fetchUpstream(call: UpstreamCall, route?: ResolvedRoute): 
     delete call.body[param]
     if (route) {
       const key = `${route.endpoint.name}:${route.upstreamModel}`
-      unsupportedParams.set(key, new Set([...(unsupportedParams.get(key) ?? []), param]))
+      const set = unsupportedParams.get(key) ?? new Set<string>()
+      if (!set.has(param)) {
+        set.add(param)
+        unsupportedParams.set(key, set)
+        persistUnsupportedParams()
+      }
     }
   }
   return send()
