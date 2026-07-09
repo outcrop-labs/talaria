@@ -74,10 +74,11 @@ engineering-facing tracker.
   governance), all non-DM channels, implicit editor on org-visible KB docs +
   artifacts. Never: DMs, others' private items, owner-only actions. Only
   effective while the owner is an admin; audited. Admin → Users toggle.
-- **Multiplayer Plan** — plans are owner-private today; Jon's direction: Plan is
-  "iterating on a document with agentic coworkers" and needs multiple humans on
-  one plan (shared plan conversations + the living doc, presence, mentions
-  already notify doc readers). The biggest open product thread.
+- ✅ **Multiplayer Plan (2026-07-09)** — `conversation_members` + member-aware
+  access across chat/doc/draft/sync; share by email (header avatars + picker),
+  auto doc editor grants (revoked on leave), author names on turns (UI + agent
+  transcript), presence rings (Redis TTL), "Shared with you" sidebar section,
+  share notifications with `/plan?p=` deep link.
 - ✅ **Comms follow-through (2026-07-09)** — per-member read cursors → unread
   badges on channels/relays/DMs (open = read, live); plain DM messages notify
   (deduped while unread, `/comms?c=` deep link); agent thread expand-chevron.

@@ -19,6 +19,8 @@ interface DisplayMessage {
   tools?: ToolCall[]
   status?: 'streaming' | 'complete' | 'error'
   attachments?: Attachment[]
+  /** Who wrote a user turn — shown in multiplayer plans to tell voices apart. */
+  authorLabel?: string | null
 }
 
 const toDisplay = (m: StoredMessage): DisplayMessage => ({
@@ -28,6 +30,7 @@ const toDisplay = (m: StoredMessage): DisplayMessage => ({
   tools: m.tools,
   status: m.status,
   attachments: m.attachments,
+  authorLabel: m.authorLabel,
 })
 
 // A durable chat thread. Server owns history; this loads an existing conversation
@@ -263,7 +266,18 @@ export function ChatView({
         ) : (
           messages.map((m, i) =>
             m.role === 'user' ? (
-              <UserBubble key={i} content={m.content} attachments={m.attachments} />
+              // In multiplayer plans, label user turns whenever more than one
+              // human voice appears in the thread.
+              <UserBubble
+                key={i}
+                content={m.content}
+                attachments={m.attachments}
+                author={
+                  m.authorLabel && messages.some((o) => o.role === 'user' && o.authorLabel && o.authorLabel !== m.authorLabel)
+                    ? m.authorLabel
+                    : null
+                }
+              />
             ) : (
               <AssistantTurn key={i} message={m} agentModel={agentModel} live={(streaming || resuming) && i === messages.length - 1} />
             ),
@@ -307,9 +321,10 @@ export function ChatView({
   )
 }
 
-function UserBubble({ content, attachments }: { content: string; attachments?: Attachment[] }) {
+function UserBubble({ content, attachments, author }: { content: string; attachments?: Attachment[]; author?: string | null }) {
   return (
-    <div className="flex justify-end">
+    <div className="flex flex-col items-end">
+      {author && <div className="mb-0.5 pr-1 text-[10px] font-medium text-muted">{author}</div>}
       <div
         className="max-w-[85%] whitespace-pre-wrap rounded-2xl border px-4 py-2.5 text-sm text-[color:var(--chat-user-foreground)]"
         style={{ background: 'var(--chat-user-bg)', borderColor: 'var(--chat-user-border)' }}

@@ -23,6 +23,17 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Multiplayer Plan — several humans, one plan.** Plans are no longer
+  owner-private: the owner shares a plan by email (avatars + share control in
+  the plan header), and collaborators get the whole surface — the conversation
+  (they talk to the same agent; turns carry author names so voices stay
+  distinct, in the UI and in the agent's transcript), the living document
+  (auto editor grant, revoked on leave), ticket drafting, and agent Sync. A
+  "Shared with you" sidebar section surfaces plans riding other agents;
+  sharing notifies with a `/plan?p=` deep link; presence rings show who's
+  viewing right now. Owner shares/removes; collaborators can leave. The doc
+  stays owned by the plan's owner, and @mention notifications now reach every
+  collaborator (they're doc readers by construction).
 - **QA judge scores against the ticket template.** At quality review the judge
   now resolves the same template chain ticket creation uses (assignee binding →
   board default) and receives the skeleton as an objective rubric: every

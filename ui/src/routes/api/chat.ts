@@ -6,12 +6,13 @@ import { routedModelFor } from '@/server/fleet-agents'
 import { getSessionUser } from '@/server/auth/session'
 import { canUseAgentModel } from '@/server/users'
 import {
+  accessibleConversation,
   activeStreamingAssistant,
   createConversation,
   insertStreamingAssistant,
   insertUserMessage,
+  listPlanMembers,
   nextSeq,
-  ownedConversation,
   priorMessages,
   touchConversation,
 } from '@/server/conversations'
@@ -51,17 +52,22 @@ export const Route = createFileRoute('/api/chat')({
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const { model, conversationId, content } = parsed.data
 
-        // Resolve the conversation (ownership-checked) or create a new one.
+        // Resolve the conversation (access-checked: yours, or a plan you're a
+        // member of) or create a new one.
         let convId = conversationId ?? null
         let agentModel = model
         let kind: 'chat' | 'plan' = parsed.data.kind ?? 'chat'
         let planTitle: string | null = null
+        let planOwnerId = user.id
+        let multiVoice = false
         if (convId) {
-          const owned = await ownedConversation(user.id, convId)
-          if (!owned) return json({ error: 'conversation not found' }, { status: 404 })
-          agentModel = owned.agentModel
-          kind = owned.kind
-          planTitle = owned.title
+          const conv = await accessibleConversation(user.id, convId)
+          if (!conv) return json({ error: 'conversation not found' }, { status: 404 })
+          agentModel = conv.agentModel
+          kind = conv.kind
+          planTitle = conv.title
+          planOwnerId = conv.ownerUserId
+          if (kind === 'plan') multiVoice = (await listPlanMembers(convId)).length > 1
         }
 
         // Owner-aware gate: blocks another user from driving someone's personal
@@ -93,20 +99,20 @@ export const Route = createFileRoute('/api/chat')({
         // new message isn't duplicated into the prior list).
         const prior = queued ? [] : await priorMessages(convId)
         const userSeq = await nextSeq(convId)
-        const userMsgId = await insertUserMessage(convId, userSeq, content, attachments)
+        const userMsgId = await insertUserMessage(convId, userSeq, content, attachments, user.id)
         await touchConversation(convId, title)
 
-        // Plan turns feed the ambient activity brain (owner-scoped) and notify
-        // @mentioned teammates who can read the plan's document. Never blocking.
+        // Plan turns feed the ambient activity brain (plan-owner-scoped) and
+        // notify @mentioned teammates who can read the plan's document.
         const senderLabel = user.name ?? user.email ?? 'someone'
-        const planMeta = kind === 'plan' ? { ownerUserId: user.id, title: planTitle } : null
+        const planMeta = kind === 'plan' ? { ownerUserId: planOwnerId, title: planTitle } : null
         if (kind === 'plan' && content.trim()) {
           void indexActivity({
             sourceType: 'plan',
             sourceId: userMsgId,
             title: `Plan (${planTitle || 'Untitled'}) · ${senderLabel}`,
             text: content,
-            payload: { planId: convId, planOwnerId: user.id },
+            payload: { planId: convId, planOwnerId },
             href: '/plan',
           }).catch(() => {})
           void notifyPlanMentions(convId, { id: user.id, label: senderLabel }, content, planTitle).catch(() => {})
@@ -127,13 +133,16 @@ export const Route = createFileRoute('/api/chat')({
         const imageUrls = (
           await Promise.all(attachments.filter((a) => isImage(a.mime)).map((a) => attachmentAsDataUrl(a.id)))
         ).filter((u): u is string => !!u)
+        // Multiplayer plans: prefix this turn with the sender's name (history
+        // is already prefixed by priorMessages) so the agent tells voices apart.
+        const spokenContent = multiVoice && content ? `${senderLabel}: ${content}` : content
         const userContent =
           imageUrls.length > 0
             ? [
-                ...(content ? [{ type: 'text', text: content }] : []),
+                ...(spokenContent ? [{ type: 'text', text: spokenContent }] : []),
                 ...imageUrls.map((url) => ({ type: 'image_url', image_url: { url } })),
               ]
-            : content
+            : spokenContent
         const messages = [...prior, { role: 'user' as const, content: userContent as unknown as string }]
         const assistantId = await insertStreamingAssistant(convId, userSeq + 1)
 

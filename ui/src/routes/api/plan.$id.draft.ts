@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { ownedConversationModel } from '@/server/conversations'
+import { accessibleConversation } from '@/server/conversations'
 import { planFromConversation } from '@/server/channel-plan'
 import { routedModelFor } from '@/server/fleet-agents'
 import { canUseAgentModel } from '@/server/users'
@@ -23,7 +23,7 @@ export const Route = createFileRoute('/api/plan/$id/draft')({
       POST: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const agentModel = await ownedConversationModel(user.id, params.id)
+        const agentModel = (await accessibleConversation(user.id, params.id))?.agentModel ?? null
         if (!agentModel) return json({ error: 'plan not found' }, { status: 404 })
         if (!(await canUseAgentModel(user.id, user.role, agentModel))) {
           return json({ error: 'you do not have access to that agent' }, { status: 403 })

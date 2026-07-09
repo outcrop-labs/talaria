@@ -753,6 +753,17 @@ const MIGRATIONS: string[] = [
   `alter table agent_defs add column if not exists elevated boolean not null default false`,
   // Per-member read cursor → unread badges in the Comms sidebar.
   `alter table channel_members add column if not exists last_read_seq integer not null default 0`,
+  // Multiplayer plans: collaborators on a plan conversation (the owner stays
+  // conversations.user_id). Chats remain strictly private — members are only
+  // ever consulted for kind='plan'.
+  `create table if not exists conversation_members (
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (conversation_id, user_id)
+   )`,
+  // Who wrote a user turn — multiplayer plans need voices told apart.
+  `alter table messages add column if not exists author_user_id uuid references users(id) on delete set null`,
 ]
 
 function ensureMigrated(): Promise<void> {
