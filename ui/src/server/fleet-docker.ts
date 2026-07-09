@@ -4,9 +4,24 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
-import { FLEET_DIR, FLEET_ENV } from './fleet-render'
+import { FLEET_DIR, FLEET_ENV, fleetNetworkName } from './fleet-render'
 
 const run = promisify(execFile)
+
+/** The fleet joins an EXTERNAL network (shared with app/bridge/MCP containers),
+ *  which compose declares but never creates. Create it here when missing so a
+ *  fresh install works without any setup script. Idempotent, race-safe. */
+async function ensureFleetNetwork(): Promise<void> {
+  const name = await fleetNetworkName()
+  try {
+    await run('docker', ['network', 'inspect', name], { timeout: 10_000 })
+  } catch {
+    await run('docker', ['network', 'create', name], { timeout: 10_000 }).catch(async () => {
+      // lost a create race, or a real failure — only the latter should throw
+      await run('docker', ['network', 'inspect', name], { timeout: 10_000 })
+    })
+  }
+}
 
 const composeArgs = (args: string[]) => [
   'compose',
@@ -20,6 +35,7 @@ const composeArgs = (args: string[]) => [
 ]
 
 export async function fleetUp(department: string): Promise<string> {
+  await ensureFleetNetwork()
   const { stderr } = await run('docker', composeArgs(['up', '-d', `agent-${department}`]), { timeout: 120_000 })
   return stderr.trim()
 }

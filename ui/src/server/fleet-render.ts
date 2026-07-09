@@ -28,6 +28,14 @@ export const FLEET_ENV = () => join(FLEET_DIR(), '.env')
 /** The chassis every agent renders from: one service block + per-slug extras.
  *  Talaria-owned (extracted once at cutover from the legacy stack). */
 const CHASSIS_FILE = () => process.env.TALARIA_CHASSIS_FILE ?? join(FLEET_DIR(), 'chassis.yml')
+
+/** The EXTERNAL docker network the whole fleet joins (compose never creates
+ *  external networks — fleet-docker ensures it exists before any `up`). */
+export async function fleetNetworkName(): Promise<string> {
+  const text = await readFile(CHASSIS_FILE(), 'utf8').catch(() => null)
+  const chassis = text ? (parseYaml(text, { merge: true, version: '1.1' }) as Chassis) : null
+  return chassis?.network?.name ?? 'talaria'
+}
 // Docker-level names inherited from the pre-Talaria stack: imported agents'
 // state volumes (ai_hermes-<dept>) and the shared infra network (ai_default).
 // These are volume/network NAMES, not a code dependency on that repo.
