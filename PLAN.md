@@ -61,9 +61,10 @@ state (boards, tickets, teams, cost, activity) in its own Postgres and Redis, ow
    (each a full Hermes agent)
 ```
 
-This is the piece that is shipped and running today, alongside the PM suite and auth. Everything else in the
-README (group chat, plan surface, finance, coding, versioned agent internals, and so on) is still ahead of
-us.
+This is the piece that is shipped and running today, alongside the product surfaces — the PM suite, Comms,
+the multiplayer Plan view, Knowledge/Artifacts, versioned agent internals, personal assistants, and auth.
+See [`README.md`](./README.md) and [`ROADMAP.md`](./ROADMAP.md) for current status; finance, design, and
+in-app coding are still ahead of us.
 
 ---
 

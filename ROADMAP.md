@@ -7,10 +7,11 @@ together in real time, with sensible human-in-the-loop guardrails. Talaria has i
 [Hermes](https://github.com/outsourc-e/hermes-workspace) agent.
 
 > ⚠️ **Work in progress, not production ready.** Shipping today: the PM suite, the unified Comms surface
-> (channels · relays · DMs), the Plan view with its living document, ticket/plan templates, org identity,
-> the fleet engine and full agent harness (versioned internals, zero-downtime rolling replacement), the
-> token ledger with auto-priced costs, and the ops surfaces. Kick the tires, follow along, but don't bet
-> your business on it yet.
+> (channels · relays · DMs, unread badges + DM notifications), the multiplayer Plan view with its shared
+> living document, ticket/plan templates, org identity, personal assistants (identity proxy, privacy-gated
+> group channels, admin elevation), the fleet engine and full agent harness (versioned internals,
+> zero-downtime rolling replacement, brain-routability health), the token ledger with auto-priced costs,
+> and the ops surfaces. Kick the tires, follow along, but don't bet your business on it yet.
 
 **Status legend:** ✅ shipped · 🚧 in progress · 🔭 planned.
 
@@ -43,11 +44,16 @@ The project management suite, the fleet engine, and auth are live and running:
   then archive), teammate DMs, and agent DMs where every topic starts a fresh thread. @mention an agent
   (or `@agent:tier`) and its reply streams in live over SSE; membership manages inline from the header.
   Idle agent chats **distill** into the retrievable activity brain and archive — context survives,
-  scrollback doesn't.
-- **Plan view** ✅. Plan conversations with a side-by-side **living plan document** (a real artifact) the
-  agent keeps synced. **Draft tickets** treats the document as the source of truth and proposes real
-  dependencies; you review and create the keepers onto any board — into inbox, never assigned. The same
-  drafting works from any channel or relay.
+  scrollback doesn't. Unread badges on every channel/relay/DM (read cursors clear live); DM messages
+  notify the inbox (deduped while unread) and deep-link back; agent thread lists peek open from the
+  sidebar.
+- **Plan view — multiplayer** ✅. Plan conversations with a side-by-side **living plan document** (a real
+  artifact) the agent keeps synced. Share a plan by email and collaborators get the whole surface: the
+  same conversation (turns carry author names, in the UI and in the agent's transcript), the document
+  (auto editor grant, revoked on leave), drafting, and Sync — with presence rings showing who's viewing
+  now. **Draft tickets** treats the document as the source of truth and proposes real dependencies; you
+  review and create the keepers onto any board — into inbox, never assigned. The same drafting works
+  from any channel or relay.
 - **Ticket & plan templates** ✅. An org library of formats (markdown skeleton + agent guidance); boards
   bind their set with a default, agents can carry overrides, and every creation surface resolves the
   right one automatically — including bare quick-add tickets.
@@ -71,7 +77,9 @@ The project management suite, the fleet engine, and auth are live and running:
   zero config — with manual overrides; `/cost` shows spend, the local/cloud mixture, and per-agent $;
   agents report per-ticket token spend over MCP and tickets show tokens · $.
 - **Ops surfaces** ✅. `/activity` (one merged workspace feed), `/alerts` (live-derived health: containers,
-  gateway, ledger blind spots, stuck work), `/inference` (local backends probed live + local throughput).
+  gateway, **brain routability** — an agent whose configured model drops off its endpoint raises a
+  critical alert and a card chip instead of freezing chats — ledger blind spots, stuck work),
+  `/inference` (local backends probed live + local throughput).
 
 ## Next / planned
 
@@ -84,8 +92,11 @@ Roughly in the order we're chasing it. Full detail in
   [opencode](https://github.com/sst/opencode) wired into the UI).
 - **Personal assistants** ✅ / **base agents** 🔭. Per-person Hermes assistants shipped: a guided
   onboarding wizard, owner-scoped controls (handle, model tier, personality, skills, memory, schedules),
-  private knowledge, own container + key. Role-ready base agents for common business roles remain planned
-  (Muse-designed agents cover much of the gap today).
+  private knowledge, own container + key. The assistant acts **as its owner** (identity proxy) for board
+  governance (move between teams, share/unshare, agent policy — via MCP), joins group channels behind a
+  privacy gate that keeps the owner's private context in DMs, and an admin's assistant can be **elevated**
+  to org-wide view/edit (never DMs or others' private items; collapses on demotion). Role-ready base
+  agents for common business roles remain planned (Muse-designed agents cover much of the gap today).
 - **Marketplace** 🔭. A per-agent marketplace for MCP servers, skills, and tools.
 - **Connectors** 🔭. Chat connectors (Slack, Mattermost, Matrix) for outbound notifications and autonomous
   outreach, an MCP connector to pull Talaria's agents into desktop/terminal apps, and accounting/HR/ops
@@ -102,13 +113,15 @@ Roughly in the order we're chasing it. Full detail in
 - **Analytics / ROI** 🚧. The ledger, auto-priced costs, local/cloud mixture, and per-ticket spend ship
   today; full analytics across work, chats, and projects (board rollups, trends, ROI) is next.
 - **Permissions** 🚧. Real, fine-grained access control for agents and people, growing from the guardrails
-  we already ship.
+  we already ship. First slices live: per-user agent allow-lists and view gating, owner-only personal
+  assistants with an identity proxy, and admin-elevated assistants (explicit, audited, role-bound).
 - **Output guardrails** ✅ (first layer). The confab guard is Talaria-native at the LLM gateway: a
   pluggable rule registry (zero-tool claims, ungrounded refs, fabricated outages, secret leaks) with
   confidence scoring and off/observe/annotate/strict modes, deriving the turn's tool record from the
   request itself — no trace export needed. A QA judge (advisory or enforcing per board) reviews ticket
-  outcomes with a bounded revision loop. Later: guard coverage on the direct chat path, and
-  library-backed semantic rails (NeMo Guardrails / Guardrails AI class).
+  outcomes with a bounded revision loop, scoring against the ticket's resolved **template as an objective
+  rubric**. Later: guard coverage on the direct chat path, and library-backed semantic rails
+  (NeMo Guardrails / Guardrails AI class).
 - **Open source, free forever + managed cloud** 🔭. The whole thing is OSS and self-hostable (MIT); a
   managed cloud for busier companies comes later.
 - **Other agent runtimes** 🔭. Every agent is a full Hermes agent today; other runtimes are planned.

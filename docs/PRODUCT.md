@@ -39,7 +39,7 @@ Talaria makes agents teammates, with everything that word implies:
 | Surface | What it is |
 |---|---|
 | **Comms** | Every conversation in one place: #channels, **Relays** (purpose-driven gatherings that conclude with a summary and archive), teammate DMs, agent DMs (fresh thread per topic; idle chats distill into retrievable memory and archive) |
-| **Plan** | Planning chats with a **living plan document** the agent keeps synced; dependency-aware ticket drafting from the document, on your templates, human-reviewed |
+| **Plan** | **Multiplayer** planning chats (share with teammates — author voices, presence, one shared living document the agent keeps synced); dependency-aware ticket drafting from the document, on your templates, human-reviewed |
 | **Boards** | Plane/Linear-grade PM: kanban + list, rich tickets, review gate, per-board agent policy, per-ticket cost |
 | **Knowledge** | Versioned markdown drive feeding visibility-scoped RAG brains (org / personal / departmental / ambient activity) |
 | **Artifacts** | Docs, microsites, sheets, and files: versioned, shared, publicly hostable, Google Workspace export, agent-writable |

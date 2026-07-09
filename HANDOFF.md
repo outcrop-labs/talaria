@@ -26,12 +26,15 @@ multiplexer / mission-control / conductor bits are **legacy Phase-1 scaffolding*
 now removed from the architecture.
 
 Heads up: Talaria is a work in progress, not production ready. Shipping today: the PM
-suite, the unified **Comms** surface (channels · relays · DMs, with distill-then-archive
-decay), the **Plan view** (living plan document + templated, dependency-aware ticket
-drafting), **org identity**, the fleet engine and full agent harness
+suite, the unified **Comms** surface (channels · relays · DMs, with unread read-cursors,
+DM notifications, and distill-then-archive decay), the **multiplayer Plan view**
+(shared plan conversations + living plan document with member grants, presence, and
+templated, dependency-aware ticket drafting), **org identity**, **personal assistants**
+(identity proxy for owner governance, privacy-gated group channels, admin elevation),
+the fleet engine and full agent harness
 (federate/design/render/orchestrate/create/retire, versioned config + MCP edits,
-skills/memory management, **zero-downtime rolling replacement**), the token ledger with
-auto-fetched pricing, activity/alerts, and auth.
+skills/memory management, **zero-downtime rolling replacement**, brain-routability
+alerts), the token ledger with auto-fetched pricing, activity/alerts, and auth.
 
 ## Current state (what's built in Phase 2)
 
@@ -53,14 +56,18 @@ Full project-management suite, all live in `ui/`:
 - **Agent guardrails** - agents can create/triage but **cannot** self-assign
   (`assigned` → 403) or self-complete (`done` → `quality_review`), and can't change
   assignees.
-- **Agent MCP (`talaria-mcp`)** - MCP server in [`mcp/`](./mcp) (stdio, TS, built with
-  `npm run build`) exposing only the safe tools (`list_boards`, `list_tickets`,
-  `get_ticket`, `create_ticket`, `triage_ticket`, `comment`, `report_outcome`,
-  `add_time`, `add_dependency`); no assign/complete tools. Backed by agent-key HTTP
-  paths on boards/tasks/comments/dependencies: `TALARIA_AGENT_KEY` + a new
-  `x-agent-name` header, board agent policy enforced everywhere, activity attributed
-  to the named agent. Create lands in `inbox`, always unassigned. Unnamed key callers
-  (legacy plugin heartbeat/report) keep their old access on `PUT /api/tasks/:id`.
+- **Agent MCP (`talaria-mcp`)** - MCP server in [`mcp/`](./mcp) (TS, built with
+  `npm run build`; stdio for one agent, or fleet **streamable-HTTP** mode via
+  `MCP_HTTP_PORT` — per-request identity by `x-agent-name`, self-hosted by the app
+  via `server/mcp-service.ts` and injected into every rendered config). Exposes only
+  the safe tools — tickets, documents/artifacts, channels, KB, search, Google
+  confirm-sends, and board governance for personal assistants (see
+  [`mcp/src/index.ts`](./mcp/src/index.ts) for the full set); no assign/complete
+  tools. Backed by agent-key HTTP paths: `TALARIA_AGENT_KEY` + an `x-agent-name`
+  header, board agent policy enforced everywhere (elevated assistants pass), activity
+  attributed to the named agent. Create lands in `inbox`, always unassigned. Unnamed
+  key callers (legacy plugin heartbeat/report) keep their old access on
+  `PUT /api/tasks/:id`.
   See [`mcp/README.md`](./mcp/README.md) for client config.
 - **Chat (1:1)** - the home surface: agent picker over the fleet manifest's
   `/v1/models`, durable server-owned conversations in Postgres, streamed replies
@@ -83,11 +90,14 @@ Full project-management suite, all live in `ui/`:
   (chips + combobox with `allowCreate`). Users set display names in Settings
   (`PUT /api/profile`); prefer `name ?? email` when rendering people.
 
-- **Notifications** - user @mentions in channels land in the **Inbox** (`/inbox`,
-  unread badge in the nav; 30s poll). `server/notifications.ts` +
-  `GET/PUT /api/notifications`; the composer autocompletes members and agents.
-  Mention tokens: email localpart / dashed name / first name
-  (`userMentionTokens` in `server/channel-replies.ts` — the composer mirrors it).
+- **Notifications** - user @mentions in channels, plain **DM messages** (kind `dm`,
+  deduped while one sits unread, deep-linking via `/comms?c=<id>`), and **plan shares**
+  (kind `plan-share`, `/plan?p=<id>`) land in the **Inbox** (`/inbox`, unread badge in
+  the nav; 30s poll). `server/notifications.ts` + `GET/PUT /api/notifications`; the
+  composer autocompletes members and agents. Mention tokens: email localpart / dashed
+  name / first name (`userMentionTokens` in `server/mentions.ts` — the composer mirrors
+  it). Channel unread badges ride `channel_members.last_read_seq` read cursors
+  (`POST /api/channels/:id/read`).
 - **Token ledger** - `usage_events` (one row per agent generation), recorded from
   both persist paths (`chat-persist.ts`, `channel-replies.ts`). Real counts via
   `stream_options.include_usage` (the agent gateways honour it — prompt tokens run
@@ -368,24 +378,23 @@ Full project-management suite, all live in `ui/`:
 ## Next up
 
 The living backlog is [`docs/TODO.md`](./docs/TODO.md) — much of the old list here
-shipped (artifacts, @mentions, the per-agent Talaria toolkit, QA judge,
-Talaria-native confab guard, Google Workspace, personal assistants, Muse, native
-crons, federation, per-agent secrets, blank-machine setup, plan view, comms,
-templates, org identity, rolling replacement).
+shipped (artifacts incl. file uploads, @mentions, the per-agent Talaria toolkit,
+QA judge with template rubric, Talaria-native confab guard, Google Workspace,
+personal assistants with identity proxy + admin elevation, Muse, native crons,
+federation, per-agent secrets, blank-machine setup, **multiplayer plan view**,
+comms with unread badges + DM notifications, brain-routability health, templates,
+org identity, rolling replacement).
 Highest-leverage remaining threads:
 
-1. **Multiplayer Plan** — plans are owner-private; the direction is multiple
-   humans sharing a plan conversation + living doc.
-2. **Comms follow-through** — unread indicators, DM message notifications,
-   thread visibility without selecting the agent.
-3. **Brain-routability health** — surface "brain unroutable" (provider pools
-   churn under no-train routing) on agent cards/alerts.
-4. **Toolkit onboarding skill** — the toolkit MCP is now ATTACHED to every
+1. **Research view (#56)** — a research surface informing chats/plans/boards;
+   wire its output into the activity brain (closes the #63 tail with reranking).
+2. **Toolkit onboarding skill** — the toolkit MCP is now ATTACHED to every
    agent (fleet HTTP mode, `server/mcp-service.ts` + render injection); what
    remains is the Hermes-side skill teaching agents to reach for it (#78).
-5. **Guard coverage for the direct chat path** (`/api/chat` + channel replies),
+3. **Guard coverage for the direct chat path** (`/api/chat` + channel replies),
    then retire the agent-side confab-guard plugin.
-6. **QA judge template conformance**; **Research view (#56)**; **input sweep (#49)**.
+4. **Artifact tail** — S3 behind `storage_ref`; attachments on tickets/chat.
+5. **Input sweep (#49)**; **explicit plan-template picker**.
 
 ## Dev environment
 

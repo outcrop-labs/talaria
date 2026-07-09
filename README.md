@@ -51,10 +51,13 @@ your team, and watch the work (and what it costs) move in one place.
 - **Comms.** Every conversation in one place, Slack-shaped but agent-native: persistent **#channels**,
   **Relays** (named gatherings of people + agents around a purpose, which *conclude* with a summary and
   archive), teammate DMs, and agent DMs where each topic starts a fresh thread. @mention an agent (or
-  `@agent:tier`) and the reply streams in live.
+  `@agent:tier`) and the reply streams in live. Unread badges everywhere; DM messages notify your
+  inbox and deep-link back.
 - **Plan.** Think through the work with an agent while a **living plan document** takes shape beside
-  the chat, kept in sync by the agent itself. Then draft dependency-aware tickets from the document
-  onto any board, formatted on your templates, reviewed by you before anything is created.
+  the chat, kept in sync by the agent itself — **multiplayer**: share a plan with teammates and
+  everyone joins the same conversation and document (author names on turns, presence showing who's
+  here now). Then draft dependency-aware tickets from the document onto any board, formatted on your
+  templates, reviewed by you before anything is created.
 - **Boards.** Plane/Linear-grade project management: kanban + list views, rich tickets (effort,
   multiple assignees, dependencies, watchers, a review gate, per-ticket cost), teams, and a per-board
   agent policy. Fully multiplayer.
@@ -69,7 +72,10 @@ your team, and watch the work (and what it costs) move in one place.
 - **Hire in minutes.** Describe the role and Muse designs the whole agent (identity, soul, starter
   skills) for your review. Federate existing Hermes agents in as natives.
 - **A personal assistant for everyone.** Each person gets their own agent: named, personalized,
-  owner-controlled, with its own container, key, and private knowledge.
+  owner-controlled, with its own container, key, and private knowledge. It acts *as you* where you'd
+  delegate (moving your boards, sharing them, drafting your mail — always confirm-send), joins group
+  channels behind a privacy gate that keeps your private context in DMs, and an admin's assistant can
+  be **elevated** to org-wide view/edit for true chief-of-staff work.
 - **Templates for how your org works.** A library of ticket and plan formats (the headings are the
   schema, plus guidance for agents); boards bind their set, agents can carry overrides, and every
   creation surface applies the right one automatically.
@@ -84,8 +90,10 @@ your team, and watch the work (and what it costs) move in one place.
 
 - **Guardrails at the protocol layer.** The agent-facing MCP exposes no assign tool and no complete
   tool; agents report up to quality review and a human closes.
-- **Quality gates.** An optional QA judge reviews agent work at the review gate (advisory or
-  enforcing, with a bounded revision loop); a gateway-native confab guard catches fabricated claims.
+- **Quality gates.** An optional QA judge reviews agent work at the review gate against your ticket
+  templates as the rubric (advisory or enforcing, with a bounded revision loop); a gateway-native
+  confab guard catches fabricated claims; unroutable agent models surface as alerts before a chat can
+  silently freeze.
 - **Secrets stay sealed.** Provider keys and agent secrets are envelope-encrypted (AES-256-GCM) in
   Postgres with one-click key rotation. A config file never holds a live credential.
 - **One gateway, one ledger.** Every agent's LLM traffic routes through Talaria's own OpenAI-compatible
@@ -147,14 +155,15 @@ provider; Talaria maintains no internal model lists.
 
 ## Status & roadmap
 
-**Shipped and running today:** the PM suite · Comms (channels/relays/DMs with distill-then-archive) ·
-Plan (living document, templates, dependency-aware drafting) · Knowledge + RAG brains · Artifacts
-(incl. Google Workspace) · the full agent harness (Muse design, federation, versioned internals,
-personal assistants, org identity, rolling replacement, crons, encrypted secrets) · the LLM gateway ·
-QA judge + confab guard · the priced ledger · ops surfaces (activity/alerts/inference) · auth + admin
-governance.
+**Shipped and running today:** the PM suite · Comms (channels/relays/DMs with unread badges, DM
+notifications, and distill-then-archive) · multiplayer Plan (shared living document, presence,
+templates, dependency-aware drafting) · Knowledge + RAG brains · Artifacts (docs/sheets/sites/files,
+incl. Google Workspace) · the full agent harness (Muse design, federation, versioned internals,
+personal assistants with identity proxy + admin elevation, org identity, rolling replacement, crons,
+encrypted secrets) · the LLM gateway · QA judge (template rubric) + confab guard + brain-routability
+health · the priced ledger · ops surfaces (activity/alerts/inference) · auth + admin governance.
 
-**On the way:** multiplayer Plan · design & creative surfaces · finance · agentic coding in-app ·
+**On the way:** research view · design & creative surfaces · finance · agentic coding in-app ·
 role-ready base agents · marketplace · connectors (Slack/Matrix, MCP-out, accounting/HR) · business
 multitenancy · fine-grained permissions · managed cloud.
 
