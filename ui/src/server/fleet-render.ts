@@ -20,6 +20,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
+import { orgProfile, orgSoulHeader } from './org'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
@@ -155,6 +156,9 @@ export async function renderFleet(): Promise<RenderResult> {
   const chassis = parseYaml(chassisText, { merge: true, version: '1.1' }) as Chassis
   if (!chassis?.service) throw new Error(`fleet chassis at ${CHASSIS_FILE()} has no "service" block`)
 
+  // Every rendered soul opens with the organization context (when configured).
+  const soulHeader = orgSoulHeader(await orgProfile())
+
   // Every agent's LLM specs are rewritten to route through Talaria's gateway —
   // model names the gateway doesn't serve fall back to the default (warned once).
   const gwModels = await gatewayModelSet()
@@ -194,7 +198,10 @@ export async function renderFleet(): Promise<RenderResult> {
         // "on"/"off" stay quoted instead of turning into booleans.
         stringifyYaml(routed, { version: '1.1' }),
     )
-    await writeFile(join(agentDir, 'SOUL.md'), version.soul)
+    // The rendered soul carries the organization header (a projection — the
+    // stored soul stays clean; the header tracks the org settings), so every
+    // agent knows whose team it's on, including ones authored before org config.
+    await writeFile(join(agentDir, 'SOUL.md'), soulHeader ? `${soulHeader}\n\n${version.soul}` : version.soul)
     result.files.push(join(agentDir, 'config.yaml'), join(agentDir, 'SOUL.md'))
 
     const serviceName = `agent-${def.department}`

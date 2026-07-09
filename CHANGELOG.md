@@ -23,6 +23,12 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Organization config — agents join YOUR team.** Admin → Organization sets
+  the business name + what it does. Woven in automatically everywhere agent
+  identity forms: muse-generated agents/souls/personalities anchor to the
+  business, and every rendered SOUL.md opens with an org header (a render-time
+  projection — stored souls stay clean, existing agents pick it up on the next
+  render/restart). Agents stop introducing themselves as "on the Hermes team."
 - **Comms — every conversation in one place.** Chat and Channels merge into a
   single Slack-shaped, agent-native surface (`/comms`): persistent **#channels**
   (ambient talk), **Relays** (named ad-hoc gatherings of people + agents around
