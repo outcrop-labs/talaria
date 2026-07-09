@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { createChannel, listChannels, listChannelsForAgent } from '@/server/channels'
 import { maybeSweepIdleChats } from '@/server/comms-decay'
+import { ensureMcpService } from '@/server/mcp-service'
 
 // GET /api/channels → the user's channels/relays/DMs. POST { name, topic?,
 // kind? } → create a channel (default) or a Relay (kind 'group').
@@ -21,6 +22,7 @@ export const Route = createFileRoute('/api/channels')({
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         maybeSweepIdleChats() // distill-then-archive idle agent DMs (throttled, detached)
+        ensureMcpService() // keep the fleet's toolkit MCP endpoint alive (probe-guarded)
         return json({ channels: await listChannels(user.id) })
       },
       POST: async ({ request }) => {

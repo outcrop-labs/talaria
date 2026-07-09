@@ -20,18 +20,22 @@ import { z } from 'zod'
 const BASE = (process.env.TALARIA_URL ?? 'http://localhost:5273').replace(/\/+$/, '')
 const KEY = process.env.TALARIA_AGENT_KEY ?? ''
 const AGENT = process.env.TALARIA_AGENT_NAME ?? ''
+/** When set, serve MCP over streamable HTTP for the WHOLE fleet (per-request
+ *  agent identity via X-Agent-Name) instead of stdio for one agent. */
+const HTTP_PORT = Number(process.env.MCP_HTTP_PORT ?? 0)
 
-if (!KEY || !AGENT) {
-  console.error('talaria-mcp: TALARIA_AGENT_KEY and TALARIA_AGENT_NAME are required')
+if (!KEY) {
+  console.error('talaria-mcp: TALARIA_AGENT_KEY is required')
   process.exit(1)
 }
 
-async function api(method: string, path: string, body?: unknown): Promise<unknown> {
+function makeApi(agent: string) {
+  return async function api(method: string, path: string, body?: unknown): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: {
       'x-api-key': KEY,
-      'x-agent-name': AGENT,
+      'x-agent-name': agent,
       ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -48,11 +52,16 @@ async function api(method: string, path: string, body?: unknown): Promise<unknow
     throw new Error(`Talaria API ${res.status}: ${msg}`)
   }
   return data
+  }
 }
 
 const ok = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] })
 
-const server = new McpServer({ name: 'talaria', version: '0.1.0' })
+// One server instance per identity: stdio builds it once for the env agent;
+// HTTP mode builds per request (stateless) for the connecting agent.
+function buildServer(agent: string): McpServer {
+  const api = makeApi(agent)
+  const server = new McpServer({ name: 'talaria', version: '0.1.0' })
 
 // Statuses an agent may set. No 'assigned' (humans assign), no 'done' (the API
 // would coerce it to quality_review anyway — we don't even offer it).
@@ -234,7 +243,7 @@ server.registerTool(
     },
   },
   async ({ path, title, folder }) =>
-    ok(await api('POST', `/api/agent-media/${encodeURIComponent(AGENT)}/save`, { path, title, folder })),
+    ok(await api('POST', `/api/agent-media/${encodeURIComponent(agent)}/save`, { path, title, folder })),
 )
 
 server.registerTool(
@@ -418,6 +427,68 @@ server.registerTool(
   async ({ taskId, dependsOnId }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/dependencies`, { dependsOnId })),
 )
 
-const transport = new StdioServerTransport()
-await server.connect(transport)
-console.error(`talaria-mcp: connected (agent "${AGENT}" → ${BASE})`)
+  return server
+}
+
+if (HTTP_PORT) {
+  // Fleet mode: one HTTP endpoint every containerized agent connects to
+  // (config-injected url + headers). Stateless streamable HTTP: each POST is
+  // handled by a fresh server bound to the calling agent's identity. Auth:
+  // the fleet key must ride along — the port is host-bound for containers.
+  const { StreamableHTTPServerTransport } = await import('@modelcontextprotocol/sdk/server/streamableHttp.js')
+  const { createServer } = await import('node:http')
+  const readBody = (req: import('node:http').IncomingMessage): Promise<unknown> =>
+    new Promise((resolve, reject) => {
+      const chunks: Buffer[] = []
+      req.on('data', (c: Buffer) => chunks.push(c))
+      req.on('end', () => {
+        try {
+          resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : undefined)
+        } catch (e) {
+          reject(e as Error)
+        }
+      })
+      req.on('error', reject)
+    })
+
+  createServer((req, res) => {
+    void (async () => {
+      if (!req.url?.startsWith('/mcp') || req.method !== 'POST') {
+        res.writeHead(req.method === 'GET' || req.method === 'DELETE' ? 405 : 404).end()
+        return
+      }
+      if (req.headers['x-api-key'] !== KEY) {
+        res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'bad key' }))
+        return
+      }
+      const agent = String(req.headers['x-agent-name'] ?? '')
+      if (!agent) {
+        res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'x-agent-name required' }))
+        return
+      }
+      const body = await readBody(req)
+      const server = buildServer(agent)
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+      res.on('close', () => {
+        void transport.close()
+        void server.close()
+      })
+      await server.connect(transport)
+      await transport.handleRequest(req, res, body)
+    })().catch((e) => {
+      try {
+        res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: String(e) }))
+      } catch {
+        /* headers already sent */
+      }
+    })
+  }).listen(HTTP_PORT, '0.0.0.0', () => console.error(`talaria-mcp: fleet HTTP on :${HTTP_PORT} → ${BASE}`))
+} else {
+  if (!AGENT) {
+    console.error('talaria-mcp: TALARIA_AGENT_NAME is required in stdio mode')
+    process.exit(1)
+  }
+  const server = buildServer(AGENT)
+  await server.connect(new StdioServerTransport())
+  console.error(`talaria-mcp: connected (agent "${AGENT}" → ${BASE})`)
+}

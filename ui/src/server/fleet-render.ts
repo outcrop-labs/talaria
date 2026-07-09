@@ -20,6 +20,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
+import { ensureMcpService, MCP_FLEET_URL } from './mcp-service'
 import { orgProfile, orgSoulHeader } from './org'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
@@ -29,6 +30,17 @@ export const FLEET_ENV = () => join(FLEET_DIR(), '.env')
 /** The chassis every agent renders from: one service block + per-slug extras.
  *  Talaria-owned (extracted once at cutover from the legacy stack). */
 const CHASSIS_FILE = () => process.env.TALARIA_CHASSIS_FILE ?? join(FLEET_DIR(), 'chassis.yml')
+
+/** fleet/.env must carry TALARIA_AGENT_KEY so compose can interpolate it into
+ *  each agent's env (the toolkit MCP header reads it there). Append-once. */
+async function ensureFleetEnvKey(): Promise<void> {
+  const key = process.env.TALARIA_AGENT_KEY
+  if (!key) return
+  const envPath = FLEET_ENV()
+  const current = await readFile(envPath, 'utf8').catch(() => '')
+  if (/^TALARIA_AGENT_KEY=/m.test(current)) return
+  await writeFile(envPath, `${current.replace(/\n?$/, '\n')}TALARIA_AGENT_KEY=${key}\n`)
+}
 
 /** The EXTERNAL docker network the whole fleet joins (compose never creates
  *  external networks — fleet-docker ensures it exists before any `up`). */
@@ -176,6 +188,11 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
   // Every rendered soul opens with the organization context (when configured).
   const soulHeader = orgSoulHeader(await orgProfile())
 
+  // Agents' configs point at the toolkit MCP — make sure it's actually up,
+  // and that the compose env can interpolate the fleet key into the header.
+  ensureMcpService()
+  await ensureFleetEnvKey()
+
   // Every agent's LLM specs are rewritten to route through Talaria's gateway —
   // model names the gateway doesn't serve fall back to the default (warned once).
   const gwModels = await gatewayModelSet()
@@ -207,7 +224,18 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     const raw = (version.config as { raw?: unknown }).raw
     // Un-interweave: all model tiers point at Talaria's gateway, never at
     // litellm/inference-router/anthropic directly.
-    const routed = routeConfigThroughGateway(raw ?? {}, gwModels, (m) => remapped.add(m))
+    const routed = routeConfigThroughGateway(raw ?? {}, gwModels, (m) => remapped.add(m)) as Record<string, unknown>
+    // Every agent gets the Talaria toolkit MCP (tickets, artifacts, channels,
+    // KB, save-image — the whole safe surface) — served by talaria-mcp in
+    // fleet HTTP mode, identity via the injected X-Agent-Name header, keyed by
+    // the fleet agent key (env-interpolated in the container).
+    routed.mcp_servers = {
+      ...((routed.mcp_servers as Record<string, unknown> | undefined) ?? {}),
+      talaria: {
+        url: MCP_FLEET_URL(),
+        headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '${TALARIA_AGENT_KEY}' },
+      },
+    }
     await writeFile(
       join(agentDir, 'config.yaml'),
       `# Rendered by Talaria — ${def.model} v${version.version}. Do not hand-edit; edit in Talaria.\n` +
@@ -241,6 +269,8 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     const env = { ...((svc.environment ?? {}) as Record<string, unknown>), ...(extras?.environment ?? {}) }
     env.API_SERVER_KEY = `\${HERMES_KEY_${def.slug.toUpperCase()}}`
     env.API_SERVER_MODEL_NAME = def.model
+    // The toolkit MCP header interpolates this from the container env.
+    env.TALARIA_AGENT_KEY = '${TALARIA_AGENT_KEY}'
     svc.environment = env
 
     // Per-agent state volume: imported agents keep their pre-Talaria volume

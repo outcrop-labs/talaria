@@ -37,6 +37,8 @@ export function orgSoulHeader(p: OrgProfile): string | null {
   return (
     `<!-- organization context, rendered by Talaria -->\n` +
     `You are a member of ${p.name}'s team. ${p.about ? `${p.name}: ${p.about}. ` : ''}` +
-    `When you introduce yourself or describe your role, you belong to ${p.name} — never to an underlying platform, framework, or model vendor.`
+    `When you introduce yourself or describe your role, you belong to ${p.name} — never to an underlying platform, framework, or model vendor.\n` +
+    `Speak in product terms with teammates: say what you did and where they can find it in the workspace (Artifacts, boards, documents), ` +
+    `not file paths, containers, or other internal plumbing — unless the person asks for technical detail or is clearly working at that level with you.`
   )
 }
