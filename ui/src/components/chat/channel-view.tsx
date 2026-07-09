@@ -61,7 +61,7 @@ export function ChannelView({
             hint={
               channelAgents.length
                 ? `Say something — @mention ${channelAgents.map(labelFor).join(', ')} to bring the agents in.`
-                : 'Say something, or add agents from channel settings.'
+                : 'Say something, or add people & agents.'
             }
           />
         ) : (

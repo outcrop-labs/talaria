@@ -156,7 +156,13 @@ export function ChatView({
         else if (ev.type === 'reasoning') patchLast((m) => ({ ...m, reasoning: (m.reasoning ?? '') + ev.text }))
         else if (ev.type === 'tool') patchLast((m) => ({ ...m, tools: mergeTool(m.tools ?? [], ev) }))
       }
-      patchLast((m) => ({ ...m, status: 'complete' }))
+      // A stream that ends having produced NOTHING is a failure, not a reply —
+      // typically the agent's model isn't routable. Say so instead of leaving
+      // a silent empty bubble (reads as a frozen chat).
+      patchLast((m) => ({
+        ...m,
+        status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
+      }))
     } catch (e) {
       if ((e as Error).name !== 'AbortError') setError((e as Error).message)
     } finally {
@@ -317,7 +323,11 @@ function AssistantTurn({ message, live }: { message: DisplayMessage; live: boole
           <div className="text-xs text-muted">· saved (was in progress)</div>
         )}
         {!live && status === 'error' && (
-          <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>· interrupted</div>
+          <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
+            {empty
+              ? 'The agent returned nothing — its model may not be routable. Check its config and /models.'
+              : '· interrupted'}
+          </div>
         )}
       </div>
     </div>

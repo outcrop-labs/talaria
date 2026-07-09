@@ -15,7 +15,17 @@ import { useAgents } from '@/lib/agents'
 import { useSession } from '@/lib/session'
 import { useUsers } from '@/lib/users'
 import { useConversations } from '@/lib/conversations'
-import { createChannel, openDm, useChannelDetail, useChannels, type Channel } from '@/lib/channels'
+import {
+  addChannelAgent,
+  addChannelMember,
+  createChannel,
+  openDm,
+  removeChannelAgent,
+  removeChannelMember,
+  useChannelDetail,
+  useChannels,
+  type Channel,
+} from '@/lib/channels'
 
 export const Route = createFileRoute('/_app/comms')({
   component: CommsPage,
@@ -199,10 +209,36 @@ function CommsPage() {
               {selected.topic && <span className="truncate text-xs text-muted">{selected.topic}</span>}
               <span className="ml-auto" />
               {detail && selected.kind !== 'dm' && (
-                <span className="text-xs text-muted">
-                  {detail.members.length} {detail.members.length === 1 ? 'person' : 'people'}
-                  {detail.agents.length > 0 && ` · ${detail.agents.length} ${detail.agents.length === 1 ? 'agent' : 'agents'}`}
-                </span>
+                <>
+                  {/* Membership managed right here — the settings modal is for renames/danger. */}
+                  <HeaderPicker
+                    label={`${detail.members.length} ${detail.members.length === 1 ? 'person' : 'people'}`}
+                    options={users
+                      .filter((u) => u.email)
+                      .map((u) => ({
+                        value: u.id,
+                        label: u.name ?? u.email ?? u.id,
+                        locked: detail.members.some((m) => m.userId === u.id && m.role === 'owner'),
+                      }))}
+                    selected={detail.members.map((m) => m.userId)}
+                    onToggle={async (id, on) => {
+                      const email = users.find((u) => u.id === id)?.email
+                      if (on && email) await addChannelMember(selected.id, email)
+                      if (!on) await removeChannelMember(selected.id, id)
+                      await qc.invalidateQueries({ queryKey: ['channel', selected.id] })
+                    }}
+                  />
+                  <HeaderPicker
+                    label={`${detail.agents.length} ${detail.agents.length === 1 ? 'agent' : 'agents'}`}
+                    options={fleet.map((a) => ({ value: a.id, label: a.label }))}
+                    selected={detail.agents}
+                    onToggle={async (model, on) => {
+                      if (on) await addChannelAgent(selected.id, model)
+                      else await removeChannelAgent(selected.id, model)
+                      await qc.invalidateQueries({ queryKey: ['channel', selected.id] })
+                    }}
+                  />
+                </>
               )}
               {(detail?.agents.length ?? 0) > 0 && (
                 <IconAction title="Draft tickets from this conversation" onClick={() => setPlanOpen(true)}>
@@ -398,6 +434,83 @@ function RowButton({
 const Hint = ({ children }: { children: React.ReactNode }) => (
   <li className="px-2 py-1 text-[11px] leading-relaxed text-muted">{children}</li>
 )
+
+// A neat little header multiselect: a pill ("3 people ▾") opening a checklist
+// popover. Toggles apply immediately; locked rows (owners) can't be removed.
+function HeaderPicker({
+  label,
+  options,
+  selected,
+  onToggle,
+}: {
+  label: string
+  options: { value: string; label: string; locked?: boolean }[]
+  selected: string[]
+  onToggle: (value: string, on: boolean) => Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const picked = new Set(selected)
+  const chosen = options.filter((o) => picked.has(o.value))
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          'flex items-center gap-1.5 rounded-lg border border-line-subtle px-2 py-1 text-xs transition-colors hover:text-fg',
+          open ? 'bg-card text-fg' : 'text-muted',
+        )}
+      >
+        {/* Truncated avatar stack — fixed width so the header never jiggles. */}
+        <span className="flex w-11 shrink-0 justify-start -space-x-2">
+          {chosen.slice(0, 3).map((o) => (
+            <Avatar key={o.value} name={o.label} className="h-5 w-5 shrink-0 text-[9px] ring-2 ring-[color:var(--theme-bg)]" />
+          ))}
+          {chosen.length > 3 && (
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-card text-[9px] text-muted ring-2 ring-[color:var(--theme-bg)]">
+              +{chosen.length - 3}
+            </span>
+          )}
+          {chosen.length === 0 && (
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-dashed border-line-subtle text-[9px] text-muted">
+              +
+            </span>
+          )}
+        </span>
+        {label} <span className="opacity-60">▾</span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="mercury-panel absolute right-0 top-full z-20 mt-1 max-h-64 w-56 overflow-y-auto rounded-xl p-1">
+            {options.length === 0 && <div className="px-2 py-1.5 text-xs text-muted">Nothing to add.</div>}
+            {options.map((o) => {
+              const on = picked.has(o.value)
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  disabled={o.locked}
+                  title={o.locked ? 'The owner stays' : undefined}
+                  onClick={() => void onToggle(o.value, !on)}
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors',
+                    o.locked ? 'cursor-default opacity-60' : 'hover:bg-card',
+                    on ? 'text-fg' : 'text-muted',
+                  )}
+                >
+                  <Avatar name={o.label} className="h-5 w-5 shrink-0 text-[10px]" />
+                  <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                  {on && <span className="shrink-0 text-[color:var(--theme-success)]">✓</span>}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
 
 /** Compact header action: icon-only, tooltip via title. */
 function IconAction({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
