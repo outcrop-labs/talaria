@@ -3,9 +3,9 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { createBoard, listBoards, listBoardsForAgent } from '@/server/boards'
+import { createBoard, listAllBoards, listBoards, listBoardsForAgent } from '@/server/boards'
 import { teamRole } from '@/server/teams'
-import { personalAssistantOwners } from '@/server/users'
+import { isElevatedAssistant, personalAssistantOwners } from '@/server/users'
 
 // GET /api/boards → boards the user owns or that are shared with them.
 // Agent-key + x-agent-name → boards whose policy allows that agent; a personal
@@ -24,7 +24,11 @@ export const Route = createFileRoute('/api/boards')({
           if (!ownerId) return json({ boards: policyBoards })
           const ownerBoards = await listBoards(ownerId)
           const seen = new Set(ownerBoards.map((b) => b.id))
-          return json({ boards: [...ownerBoards, ...policyBoards.filter((b) => !seen.has(b.id))] })
+          // Elevated assistants see every live board org-wide (as editor).
+          const rest = (await isElevatedAssistant(agent))
+            ? (await listAllBoards()).map((b) => ({ ...b, role: 'editor' as const }))
+            : policyBoards
+          return json({ boards: [...ownerBoards, ...rest.filter((b) => !seen.has(b.id))] })
         }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })

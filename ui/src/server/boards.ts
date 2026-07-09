@@ -1,6 +1,7 @@
 // Boards — user-owned kanban boards, shareable across the team. Membership is
 // the share mechanism (role: owner | editor | viewer).
 import { db } from './db/pg'
+import { isElevatedAssistant } from './users'
 
 export type BoardRole = 'owner' | 'editor' | 'viewer'
 
@@ -185,10 +186,24 @@ export async function setBoardAgentConfig(boardId: string, allowAll: boolean, mo
 }
 
 /** Whether an agent may be assigned on a board. Restrictive by default — a board
- *  allows an agent only if allow-all is on OR the agent is explicitly listed. */
+ *  allows an agent only if allow-all is on OR the agent is explicitly listed.
+ *  An admin-elevated personal assistant passes everywhere (org-wide access). */
 export async function boardAllowsAgent(boardId: string, model: string): Promise<boolean> {
   const cfg = await getBoardAgentConfig(boardId)
-  return cfg.allowAll || cfg.models.includes(model)
+  if (cfg.allowAll || cfg.models.includes(model)) return true
+  return isElevatedAssistant(model)
+}
+
+/** Every live board, org-wide — the elevated-assistant listing. No role. */
+export async function listAllBoards(): Promise<Array<Omit<Board, 'role'>>> {
+  const sql = await db()
+  const rows = await sql`
+    select b.id, b.name, b.owner_id as "ownerId", b.team_id as "teamId", t.name as "teamName",
+           b.created_at as "createdAt", b.updated_at as "updatedAt", b.archived_at as "archivedAt"
+    from boards b left join teams t on t.id = b.team_id
+    where b.archived_at is null order by b.updated_at desc
+  `
+  return rows as unknown as Array<Omit<Board, 'role'>>
 }
 
 /** Boards an agent may work on (allow-all boards + boards listing it). The

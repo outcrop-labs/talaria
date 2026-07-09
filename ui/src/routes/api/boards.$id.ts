@@ -16,7 +16,8 @@ export const Route = createFileRoute('/api/boards/$id')({
         // Humans, or a personal assistant acting as its owner (identity proxy).
         const user = await actingUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const role = await boardRole(user.id, params.id)
+        // An elevated assistant edits any board (never owner-level).
+        const role = (await boardRole(user.id, params.id)) ?? (user.elevated ? 'editor' : null)
         if (role !== 'owner' && role !== 'editor') return json({ error: 'forbidden' }, { status: 403 })
         const parsed = z
           .object({
