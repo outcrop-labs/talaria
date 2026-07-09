@@ -85,9 +85,10 @@ engineering-facing tracker.
   every enabled agent's main/tier/fallback targets against the gateway
   registry (30s cache); critical alert + red card chip for unroutable mains,
   warning + amber chip for dead tiers/fallbacks.
-- **QA judge template conformance** — ticket templates give the judge an
-  objective rubric (are the skeleton's sections present and filled?); wire the
-  resolved template into the judge prompt at quality review.
+- ✅ **QA judge template conformance (2026-07-09)** — the judge resolves the
+  ticket's template (assignee binding → board default) and scores against its
+  sections as an objective rubric; missing/skeleton sections are named
+  "revise" issues.
 - **Per-agent Talaria toolkit (#58)** — *in progress.* Agents already have tickets
   (comment/triage/create/report/deps/time), artifacts (create/update/list/get),
   RAG `search_knowledge`, and Google. ✅ **Knowledgebase tools** now added:
