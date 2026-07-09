@@ -3,13 +3,15 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { createTeam, listTeams } from '@/server/teams'
+import { actingUser } from '@/server/users'
 
-// GET → the user's teams. POST { name } → create a team (user becomes owner).
+// GET → the user's teams (humans, or a personal assistant acting as its owner).
+// POST { name } → create a team (user becomes owner; humans only).
 export const Route = createFileRoute('/api/teams')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
+        const user = await actingUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         return json({ teams: await listTeams(user.id) })
       },

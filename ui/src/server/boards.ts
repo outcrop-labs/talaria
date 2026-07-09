@@ -100,6 +100,16 @@ export async function renameBoard(boardId: string, name: string): Promise<void> 
   await sql`update boards set name = ${name}, updated_at = now() where id = ${boardId}`
 }
 
+/** Move a board between teams (null → personal). The team must exist. */
+export async function setBoardTeam(boardId: string, teamId: string | null): Promise<void> {
+  const sql = await db()
+  if (teamId) {
+    const rows = await sql`select 1 from teams where id = ${teamId}`
+    if (rows.length === 0) throw new Error('unknown team')
+  }
+  await sql`update boards set team_id = ${teamId}, updated_at = now() where id = ${boardId}`
+}
+
 export async function archiveBoard(boardId: string, archived: boolean): Promise<void> {
   const sql = await db()
   await sql`update boards set archived_at = ${archived ? sql`now()` : null}, updated_at = now() where id = ${boardId}`

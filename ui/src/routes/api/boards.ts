@@ -5,9 +5,12 @@ import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { createBoard, listBoards, listBoardsForAgent } from '@/server/boards'
 import { teamRole } from '@/server/teams'
+import { personalAssistantOwners } from '@/server/users'
 
 // GET /api/boards → boards the user owns or that are shared with them.
-// Agent-key + x-agent-name → boards whose policy allows that agent.
+// Agent-key + x-agent-name → boards whose policy allows that agent; a personal
+// assistant additionally sees its owner's boards (with the owner's role) so it
+// can govern them on the owner's behalf.
 // POST /api/boards { name } → create a board (user becomes owner).
 export const Route = createFileRoute('/api/boards')({
   server: {
@@ -16,7 +19,12 @@ export const Route = createFileRoute('/api/boards')({
         if (checkAgentKey(request)) {
           const agent = agentName(request)
           if (!agent) return json({ error: 'x-agent-name required' }, { status: 400 })
-          return json({ boards: await listBoardsForAgent(agent) })
+          const policyBoards = await listBoardsForAgent(agent)
+          const ownerId = (await personalAssistantOwners()).get(agent)
+          if (!ownerId) return json({ boards: policyBoards })
+          const ownerBoards = await listBoards(ownerId)
+          const seen = new Set(ownerBoards.map((b) => b.id))
+          return json({ boards: [...ownerBoards, ...policyBoards.filter((b) => !seen.has(b.id))] })
         }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })

@@ -22,6 +22,29 @@ secrets encrypted at rest.
   and the legacy build-based `stack/` — **no Dockerfiles** remain; the run path
   is compose-only (official/published images) + host-run app.
 
+### Added
+- **Drag boards between teams.** In the nav rail, a board's owner can drag it
+  onto another team group (or Personal) to move it — groups highlight as drop
+  targets, empty groups say "drop here". Server-side the move is owner-only
+  (it changes who can see the board): `PATCH /api/boards/:id { teamId }`, or
+  `{ teamName }` by name ("personal" clears the team).
+- **Personal assistants can join group channels — behind a privacy gate.** The
+  hard block is gone: your assistant can be added to a shared channel (still
+  only by YOU — someone else's assistant never shows up in your picker). Its
+  group replies carry a privacy gate above channel instructions: never reveal
+  the owner's private context (memory, mail, calendar, private docs) outside a
+  DM with the owner, and never use owner-identity tools on a channel's behalf —
+  it declines and points people at the owner.
+- **Ask your assistant to run your boards.** A personal assistant now acts as
+  its owner for board governance (`actingUser` identity proxy): move a board
+  between teams, share/unshare it by email, and allow/remove agents. Five new
+  MCP tools — `list_teams`, `move_board_to_team`, `add_board_member`,
+  `remove_board_member`, `set_board_agents` — assistant-only by construction
+  (general agents get 401; the routes resolve identity server-side, and team
+  moves still require the owner role). `list_boards` now shows a personal
+  assistant its owner's boards (with the owner's role) alongside its
+  policy-allowed boards, and `GET /api/teams` answers to the identity proxy.
+
 ### Changed
 - **Inbox is tailored to you AND the org.** Two zones: the personal column
   (notifications, approvals, your triage/review/blocked queues, agenda, mail,

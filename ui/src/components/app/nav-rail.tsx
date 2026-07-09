@@ -1,12 +1,15 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { Plus, Users, Archive } from 'lucide-react'
 import { WingMark } from '@/components/brand'
 import { TeamsModal } from '@/components/board/teams-modal'
 import { CreateBoardModal } from '@/components/board/create-board-modal'
+import { alert } from '@/components/ui/confirm'
 import { cn } from '@/lib/cn'
 import { NAV } from '@/lib/nav'
-import { useBoards, useArchivedBoards, type Board } from '@/lib/boards'
+import { useBoards, useArchivedBoards, moveBoardToTeam, type Board } from '@/lib/boards'
+import { useTeams } from '@/lib/teams'
 import { useNotifications } from '@/lib/notifications'
 import { useDeniedViews, type SessionUser } from '@/lib/session'
 
@@ -67,25 +70,52 @@ export function NavRail({ user }: { user: SessionUser }) {
 }
 
 function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onNew: () => void; onTeams: () => void }) {
+  const qc = useQueryClient()
   const { data: boards = [] } = useBoards()
   const { data: archived = [] } = useArchivedBoards()
+  const { data: teams = [] } = useTeams()
   const [showArchived, setShowArchived] = useState(false)
+  // Drag a board you own onto a team header to move it (Personal = no team).
+  const [dragging, setDragging] = useState<Board | null>(null)
+  const [overGroup, setOverGroup] = useState<string | null>(null)
 
-  const groups = new Map<string, Board[]>()
+  const groups = new Map<string, { teamId: string | null; boards: Board[] }>()
+  groups.set('Personal', { teamId: null, boards: [] })
+  for (const t of teams) groups.set(t.name, { teamId: t.id, boards: [] })
   for (const b of boards) {
     const key = b.teamName ?? 'Personal'
-    if (!groups.has(key)) groups.set(key, [])
-    groups.get(key)!.push(b)
+    if (!groups.has(key)) groups.set(key, { teamId: b.teamId, boards: [] })
+    groups.get(key)!.boards.push(b)
   }
-  const ordered = [...groups.entries()].sort((a, b) => (a[0] === 'Personal' ? -1 : b[0] === 'Personal' ? 1 : a[0].localeCompare(b[0])))
+  const ordered = [...groups.entries()]
+    .filter(([key, g]) => g.boards.length > 0 || (dragging !== null && key !== (dragging.teamName ?? 'Personal')))
+    .sort((a, b) => (a[0] === 'Personal' ? -1 : b[0] === 'Personal' ? 1 : a[0].localeCompare(b[0])))
+
+  const drop = async (teamId: string | null, key: string) => {
+    setOverGroup(null)
+    const b = dragging
+    setDragging(null)
+    if (!b || (b.teamId ?? null) === teamId) return
+    const r = (await moveBoardToTeam(b.id, teamId)) as { error?: string }
+    if (r?.error) void alert({ title: 'Could not move board', message: r.error })
+    await qc.invalidateQueries({ queryKey: ['boards'] })
+    void key
+  }
 
   const boardLink = (b: Board) => (
     <Link
       to="/boards/$boardId"
       params={{ boardId: b.id }}
+      draggable={b.role === 'owner'}
+      onDragStart={() => setDragging(b)}
+      onDragEnd={() => {
+        setDragging(null)
+        setOverGroup(null)
+      }}
       className={cn(
         'block truncate rounded-md px-2 py-1 text-xs transition-colors hover:bg-card hover:text-fg',
         activePath === `/boards/${b.id}` ? 'bg-card text-fg' : 'text-muted',
+        dragging?.id === b.id && 'opacity-40',
       )}
     >
       {b.name}
@@ -94,13 +124,29 @@ function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onN
 
   return (
     <div className="ml-3 mt-0.5 space-y-2 border-l border-line-subtle pl-2">
-      {ordered.map(([group, gboards]) => (
-        <div key={group}>
+      {ordered.map(([group, g]) => (
+        <div
+          key={group}
+          onDragOver={(e) => {
+            if (!dragging) return
+            e.preventDefault()
+            setOverGroup(group)
+          }}
+          onDragLeave={() => overGroup === group && setOverGroup(null)}
+          onDrop={(e) => {
+            e.preventDefault()
+            void drop(g.teamId, group)
+          }}
+          className={cn(dragging && overGroup === group && 'rounded-md bg-card ring-1 ring-[color:var(--theme-accent-border)]')}
+        >
           <div className="px-2 text-[9px] font-semibold uppercase tracking-wider text-muted opacity-70">{group}</div>
           <ul className="space-y-0.5">
-            {gboards.map((b) => (
+            {g.boards.map((b) => (
               <li key={b.id}>{boardLink(b)}</li>
             ))}
+            {g.boards.length === 0 && dragging && (
+              <li className="px-2 py-0.5 text-[10px] italic text-muted">drop here</li>
+            )}
           </ul>
         </div>
       ))}

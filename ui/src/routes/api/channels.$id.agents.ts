@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { addChannelAgent, channelRole, removeChannelAgent } from '@/server/channels'
-import { canUseAgentModel, personalAssistantOwners } from '@/server/users'
+import { canUseAgentModel } from '@/server/users'
 
 const Body = z.object({ model: z.string().min(1).max(200) })
 
@@ -18,12 +18,10 @@ export const Route = createFileRoute('/api/channels/$id/agents')({
         if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        // A personal assistant acts AS its owner (their Google, memory, private
-        // soul); it must never live in a shared channel where other members could
-        // prompt it. Block it regardless of who's adding.
-        if ((await personalAssistantOwners()).has(parsed.data.model)) {
-          return json({ error: 'forbidden: personal assistants can’t be added to shared channels' }, { status: 403 })
-        }
+        // Personal assistants may join shared channels — but only their OWNER
+        // can bring them (canUseAgentModel enforces that), and their group
+        // replies carry the privacy gate (channel-replies): the owner's
+        // private context never surfaces outside a DM with the owner.
         if (!(await canUseAgentModel(user.id, user.role, parsed.data.model))) {
           return json({ error: 'forbidden: no access to this agent' }, { status: 403 })
         }
