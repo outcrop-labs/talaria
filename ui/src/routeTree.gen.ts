@@ -132,6 +132,7 @@ import { Route as ApiAuthGoogleCallbackRouteImport } from './routes/api/auth/goo
 import { Route as ApiArtifactsPublicSlugRouteImport } from './routes/api/artifacts.public.$slug'
 import { Route as ApiArtifactsIdLinksRouteImport } from './routes/api/artifacts.$id.links'
 import { Route as ApiAgentsIdHeartbeatRouteImport } from './routes/api/agents.$id.heartbeat'
+import { Route as ApiAgentMediaModelSaveRouteImport } from './routes/api/agent-media.$model.save'
 import { Route as AppBoardsBoardIdTaskIdRouteImport } from './routes/_app/boards/$boardId.$taskId'
 import { Route as ApiLlmV1ChatCompletionsRouteImport } from './routes/api/llm.v1.chat.completions'
 import { Route as ApiKbSpacesIdDocsRouteImport } from './routes/api/kb.spaces.$id.docs'
@@ -777,6 +778,11 @@ const ApiAgentsIdHeartbeatRoute = ApiAgentsIdHeartbeatRouteImport.update({
   path: '/$id/heartbeat',
   getParentRoute: () => ApiAgentsRoute,
 } as any)
+const ApiAgentMediaModelSaveRoute = ApiAgentMediaModelSaveRouteImport.update({
+  id: '/save',
+  path: '/save',
+  getParentRoute: () => ApiAgentMediaModelRoute,
+} as any)
 const AppBoardsBoardIdTaskIdRoute = AppBoardsBoardIdTaskIdRouteImport.update({
   id: '/$taskId',
   path: '/$taskId',
@@ -975,7 +981,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
-  '/api/agent-media/$model': typeof ApiAgentMediaModelRoute
+  '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
   '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
@@ -1011,6 +1017,7 @@ export interface FileRoutesByFullPath {
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards/': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
+  '/api/agent-media/$model/save': typeof ApiAgentMediaModelSaveRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
   '/api/artifacts/$id/links': typeof ApiArtifactsIdLinksRoute
   '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRouteWithChildren
@@ -1125,7 +1132,7 @@ export interface FileRoutesByTo {
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
-  '/api/agent-media/$model': typeof ApiAgentMediaModelRoute
+  '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
   '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
@@ -1161,6 +1168,7 @@ export interface FileRoutesByTo {
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
+  '/api/agent-media/$model/save': typeof ApiAgentMediaModelSaveRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
   '/api/artifacts/$id/links': typeof ApiArtifactsIdLinksRoute
   '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRouteWithChildren
@@ -1277,7 +1285,7 @@ export interface FileRoutesById {
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
-  '/api/agent-media/$model': typeof ApiAgentMediaModelRoute
+  '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
   '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
@@ -1313,6 +1321,7 @@ export interface FileRoutesById {
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/_app/boards/': typeof AppBoardsIndexRoute
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
+  '/api/agent-media/$model/save': typeof ApiAgentMediaModelSaveRoute
   '/api/agents/$id/heartbeat': typeof ApiAgentsIdHeartbeatRoute
   '/api/artifacts/$id/links': typeof ApiArtifactsIdLinksRoute
   '/api/artifacts/public/$slug': typeof ApiArtifactsPublicSlugRouteWithChildren
@@ -1465,6 +1474,7 @@ export interface FileRouteTypes {
     | '/kb/space/$slug'
     | '/boards/'
     | '/boards/$boardId/$taskId'
+    | '/api/agent-media/$model/save'
     | '/api/agents/$id/heartbeat'
     | '/api/artifacts/$id/links'
     | '/api/artifacts/public/$slug'
@@ -1615,6 +1625,7 @@ export interface FileRouteTypes {
     | '/kb/space/$slug'
     | '/boards'
     | '/boards/$boardId/$taskId'
+    | '/api/agent-media/$model/save'
     | '/api/agents/$id/heartbeat'
     | '/api/artifacts/$id/links'
     | '/api/artifacts/public/$slug'
@@ -1766,6 +1777,7 @@ export interface FileRouteTypes {
     | '/kb/space/$slug'
     | '/_app/boards/'
     | '/_app/boards/$boardId/$taskId'
+    | '/api/agent-media/$model/save'
     | '/api/agents/$id/heartbeat'
     | '/api/artifacts/$id/links'
     | '/api/artifacts/public/$slug'
@@ -1864,7 +1876,7 @@ export interface RootRouteChildren {
   ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
   ApiAdminSettingsRoute: typeof ApiAdminSettingsRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
-  ApiAgentMediaModelRoute: typeof ApiAgentMediaModelRoute
+  ApiAgentMediaModelRoute: typeof ApiAgentMediaModelRouteWithChildren
   ApiAuthGoogleRoute: typeof ApiAuthGoogleRouteWithChildren
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
   ApiAuthPasswordRoute: typeof ApiAuthPasswordRoute
@@ -2751,6 +2763,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAgentsIdHeartbeatRouteImport
       parentRoute: typeof ApiAgentsRoute
     }
+    '/api/agent-media/$model/save': {
+      id: '/api/agent-media/$model/save'
+      path: '/save'
+      fullPath: '/api/agent-media/$model/save'
+      preLoaderRoute: typeof ApiAgentMediaModelSaveRouteImport
+      parentRoute: typeof ApiAgentMediaModelRoute
+    }
     '/_app/boards/$boardId/$taskId': {
       id: '/_app/boards/$boardId/$taskId'
       path: '/$taskId'
@@ -3304,6 +3323,17 @@ const ApiUploadsRouteWithChildren = ApiUploadsRoute._addFileChildren(
   ApiUploadsRouteChildren,
 )
 
+interface ApiAgentMediaModelRouteChildren {
+  ApiAgentMediaModelSaveRoute: typeof ApiAgentMediaModelSaveRoute
+}
+
+const ApiAgentMediaModelRouteChildren: ApiAgentMediaModelRouteChildren = {
+  ApiAgentMediaModelSaveRoute: ApiAgentMediaModelSaveRoute,
+}
+
+const ApiAgentMediaModelRouteWithChildren =
+  ApiAgentMediaModelRoute._addFileChildren(ApiAgentMediaModelRouteChildren)
+
 interface ApiAuthGoogleRouteChildren {
   ApiAuthGoogleCallbackRoute: typeof ApiAuthGoogleCallbackRoute
 }
@@ -3489,7 +3519,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminJudgeRoute: ApiAdminJudgeRoute,
   ApiAdminSettingsRoute: ApiAdminSettingsRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,
-  ApiAgentMediaModelRoute: ApiAgentMediaModelRoute,
+  ApiAgentMediaModelRoute: ApiAgentMediaModelRouteWithChildren,
   ApiAuthGoogleRoute: ApiAuthGoogleRouteWithChildren,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
   ApiAuthPasswordRoute: ApiAuthPasswordRoute,
