@@ -30,7 +30,22 @@ interface Queue {
   count: number
   items: WorkItem[]
 }
+interface OrgActivity {
+  at: string
+  kind: string
+  actor: string
+  context: string
+  detail: string
+  href: string
+}
+
 interface HomeSummary {
+  org: {
+    name: string
+    activity: OrgActivity[]
+    alerts: number | null
+    costToday: { tokens: number; usd: number } | null
+  }
   queues: { triage: Queue; review: Queue; blocked: Queue }
   unread: number
   boards: number
@@ -63,83 +78,155 @@ function HomePage() {
 
   return (
     <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto max-w-5xl space-y-8">
+      <div className="mx-auto max-w-6xl space-y-6">
         <div>
           <h1 className="mercury-text text-2xl font-semibold">{greeting(session?.name ?? session?.email)}</h1>
-          <p className="mt-1 text-sm text-muted">Your inbox: what needs you, and where the fleet stands.</p>
+          <p className="mt-1 text-sm text-muted">Your inbox: what needs you, and how the org is doing.</p>
         </div>
 
-        {/* Notifications first — this IS the inbox now. */}
-        <NotificationsPanel />
+        {/* Two zones: YOURS (left) — everything waiting on you — and THE ORG
+            (right rail) — the shared at-a-glance. */}
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem]">
+          <div className="min-w-0 space-y-6">
+            {/* Notifications first — this IS the inbox now. */}
+            <NotificationsPanel />
 
-        <AssistantCard />
+            <ApprovalsPanel />
 
-        <ApprovalsPanel />
+            {isLoading ? (
+              <div className="text-sm text-muted">Loading your day…</div>
+            ) : (
+              <div className="grid gap-4 xl:grid-cols-3">
+                <QueuePanel
+                  title="To triage"
+                  hint="New tickets waiting to be assigned"
+                  queue={data!.queues.triage}
+                  accent="var(--theme-accent)"
+                  onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
+                />
+                <QueuePanel
+                  title="To review"
+                  hint="Agent work awaiting your sign-off"
+                  queue={data!.queues.review}
+                  accent="var(--theme-success)"
+                  onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
+                />
+                <QueuePanel
+                  title="Blocked"
+                  hint="Stalled — needs you to unblock"
+                  queue={data!.queues.blocked}
+                  accent="var(--theme-warning)"
+                  onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
+                />
+              </div>
+            )}
 
-        <AgendaPanel />
+            <AgendaPanel />
 
-        <MailPanel />
+            <MailPanel />
 
-        {/* Quick entries into the work surfaces */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <QuickCard to="/comms" icon={<MessageSquare size={18} />} label="Comms" sub="Channels · relays · DMs" />
-          <QuickCard to="/plan" icon={<Hash size={18} />} label="Plan" sub="Think, then ticket" />
-          <QuickCard to="/boards" icon={<LayoutGrid size={18} />} label="Boards" sub="Move work" />
-          <QuickCard to="/artifacts" icon={<InboxIcon size={18} />} label="Artifacts" sub="Docs · files · memes" />
-        </div>
-
-        {isLoading ? (
-          <div className="text-sm text-muted">Loading your day…</div>
-        ) : (
-          <>
-            {/* The human's queues: triage, review, unblock */}
-            <div className="grid gap-4 lg:grid-cols-3">
-              <QueuePanel
-                title="To triage"
-                hint="New tickets waiting to be assigned"
-                queue={data!.queues.triage}
-                accent="var(--theme-accent)"
-                onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
-              />
-              <QueuePanel
-                title="To review"
-                hint="Agent work awaiting your sign-off"
-                queue={data!.queues.review}
-                accent="var(--theme-success)"
-                onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
-              />
-              <QueuePanel
-                title="Blocked"
-                hint="Stalled — needs you to unblock"
-                queue={data!.queues.blocked}
-                accent="var(--theme-warning)"
-                onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
-              />
+            {/* Quick entries into the work surfaces */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <QuickCard to="/comms" icon={<MessageSquare size={18} />} label="Comms" sub="Channels · relays · DMs" />
+              <QuickCard to="/plan" icon={<Hash size={18} />} label="Plan" sub="Think, then ticket" />
+              <QuickCard to="/boards" icon={<LayoutGrid size={18} />} label="Boards" sub="Move work" />
+              <QuickCard to="/artifacts" icon={<InboxIcon size={18} />} label="Artifacts" sub="Docs · files · memes" />
             </div>
 
-            {/* Fleet health glance */}
-            <Panel>
-              <div className="flex items-center gap-3">
-                <span
-                  className="h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{ background: data!.fleet.down.length ? 'var(--theme-warning)' : 'var(--theme-success)' }}
-                />
-                <span className="text-sm font-semibold text-fg">Fleet</span>
-                <span className="text-sm text-muted">
-                  {data!.fleet.online}/{data!.fleet.total} agents online
-                  {data!.fleet.down.length > 0 && ` · ${data!.fleet.down.slice(0, 3).join(', ')} offline`}
-                </span>
-                {session?.role === 'admin' && (
-                  <Link to="/agents" className="ml-auto text-xs text-accent hover:underline">
-                    Manage →
-                  </Link>
-                )}
-              </div>
-            </Panel>
-          </>
-        )}
+            <AssistantCard />
+          </div>
+
+          <OrgRail data={data} isAdmin={session?.role === 'admin'} />
+        </div>
       </div>
     </div>
+  )
+}
+
+// The org's at-a-glance rail: fleet health, a live activity pulse everyone
+// sees, and — for admins — alerts and today's spend. The personal column is
+// "what needs me"; this is "how are we doing."
+function OrgRail({ data, isAdmin }: { data: HomeSummary | undefined; isAdmin: boolean }) {
+  const navigate = useNavigate()
+  if (!data) return <div className="hidden lg:block" />
+  const { org, fleet } = data
+  return (
+    <aside className="space-y-4">
+      <div className="px-1 text-[11px] uppercase tracking-wide text-muted">{org.name || 'Your org'}</div>
+
+      <Panel>
+        <div className="flex items-center gap-3">
+          <span
+            className="h-2.5 w-2.5 shrink-0 rounded-full"
+            style={{ background: fleet.down.length ? 'var(--theme-warning)' : 'var(--theme-success)' }}
+          />
+          <span className="text-sm font-semibold text-fg">Fleet</span>
+          <span className="min-w-0 flex-1 truncate text-sm text-muted">
+            {fleet.online}/{fleet.total} online
+            {fleet.down.length > 0 && ` · ${fleet.down.slice(0, 2).join(', ')} down`}
+          </span>
+          {isAdmin && (
+            <Link to="/agents" className="shrink-0 text-xs text-accent hover:underline">
+              Manage →
+            </Link>
+          )}
+        </div>
+      </Panel>
+
+      {isAdmin && (
+        <div className="grid grid-cols-2 gap-3">
+          <Link to="/alerts" className="block">
+            <Panel className="p-4">
+              <div className="text-xs uppercase tracking-wide text-muted">Alerts</div>
+              <div
+                className="mt-1 text-xl font-semibold"
+                style={{ color: (org.alerts ?? 0) > 0 ? 'var(--theme-warning)' : 'var(--theme-success)' }}
+              >
+                {org.alerts ?? 0}
+              </div>
+            </Panel>
+          </Link>
+          <Link to="/cost" className="block">
+            <Panel className="p-4">
+              <div className="text-xs uppercase tracking-wide text-muted">Spend today</div>
+              <div className="mt-1 truncate text-xl font-semibold text-fg">
+                {org.costToday ? `$${org.costToday.usd.toFixed(2)}` : '—'}
+              </div>
+              {org.costToday && (
+                <div className="text-[11px] text-muted">{(org.costToday.tokens / 1000).toFixed(0)}k tokens</div>
+              )}
+            </Panel>
+          </Link>
+        </div>
+      )}
+
+      <Panel>
+        <div className="mb-2 text-sm font-semibold text-fg">Pulse</div>
+        {org.activity.length === 0 ? (
+          <div className="text-xs text-muted">Quiet so far — activity across boards, comms, and the fleet shows here.</div>
+        ) : (
+          <ul className="space-y-2">
+            {org.activity.map((a, i) => (
+              <li key={i}>
+                <button
+                  type="button"
+                  onClick={() => a.href && void navigate({ to: a.href })}
+                  className="w-full rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-card"
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className="min-w-0 flex-1 truncate text-xs text-fg">
+                      <span className="font-medium">{a.actor}</span> · {a.detail}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-muted">{relativeTime(a.at)}</span>
+                  </div>
+                  <div className="truncate pl-0 text-[11px] text-muted">{a.context}</div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+    </aside>
   )
 }
 

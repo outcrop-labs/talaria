@@ -23,6 +23,12 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Changed
+- **Inbox is tailored to you AND the org.** Two zones: the personal column
+  (notifications, approvals, your triage/review/blocked queues, agenda, mail,
+  quick cards, assistant) beside an org rail titled with the business name —
+  fleet health, a live activity **Pulse** across boards/comms/fleet, and for
+  admins two glance tiles: live alert count and today's spend (both deep-link).
+  Members see the pulse without the admin numbers.
 - **Home and Inbox merged.** `/` is now **Inbox** — the top nav item and the
   landing surface: notifications up top (mark-read on open, mark-all-read, the
   panel disappears when quiet), then the day's dashboard (assistant, approvals,

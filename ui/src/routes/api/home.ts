@@ -10,7 +10,7 @@ export const Route = createFileRoute('/api/home')({
       GET: async ({ request }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        return json(await homeSummary(user.id))
+        return json(await homeSummary(user.id, user.role))
       },
     },
   },
