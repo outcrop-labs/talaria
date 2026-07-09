@@ -91,8 +91,11 @@ engineering-facing tracker.
   ✅ **Channel tools** — `list_channels` / `read_channel` / `post_to_channel`;
   an agent participates in channels a human has added it to (gated on channel-
   agent membership; agent posts don't trigger other agents — no reply storms).
-  ⏳ Remaining: a "Talaria toolkit" onboarding skill (lands with #78, Hermes-side)
-  (overlaps #59).
+  ✅ **Toolkit ATTACHED (2026-07-09)** — talaria-mcp fleet HTTP mode
+  (per-request identity, fleet-key auth), self-hosted by the app, injected into
+  every rendered config; visible + probeable as the "built-in" server on the
+  MCP tab. ⏳ Remaining: a "Talaria toolkit" onboarding skill (lands with #78,
+  Hermes-side) (overlaps #59).
 - **Research view (#56)** — informs chats / plans / boards; when built, wire its
   output into the **activity brain** (closes the rest of #63).
 - **RAG registry tail (#63)** — reranking over merged multi-collection results;

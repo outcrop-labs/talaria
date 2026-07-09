@@ -468,6 +468,14 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
             return (
               <div key={s.name} className="flex items-center gap-3 py-2.5 text-sm">
                 <span className="w-28 shrink-0 truncate font-medium text-fg">{s.name}</span>
+                {s.extras.includes('built-in') && (
+                  <span
+                    className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted"
+                    title="The Talaria toolkit — attached to every managed agent automatically"
+                  >
+                    built-in
+                  </span>
+                )}
                 <span className="min-w-0 flex-1 truncate text-muted">{s.url}</span>
                 {probe === 'testing' ? (
                   <Loader2 size={13} className="shrink-0 animate-spin text-muted" />
@@ -479,7 +487,7 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
                 <button type="button" onClick={() => void test(s)} className="shrink-0 text-xs text-muted hover:text-accent">
                   Test
                 </button>
-                {isAdmin && (
+                {isAdmin && !s.extras.includes('built-in') && (
                   <button
                     type="button"
                     disabled={busy}
