@@ -47,7 +47,9 @@ function AppLayout() {
     <>
       <MercuryBackdrop />
       <div className="flex h-screen flex-col">
-        <header className="flex items-center justify-between gap-3 border-b border-line-subtle px-6 py-3 backdrop-blur">
+        {/* z-40: the header (and the user-menu flyover inside it) stacks above
+            all page content and its popovers; modals portal to body at z-50. */}
+        <header className="relative z-40 flex items-center justify-between gap-3 border-b border-line-subtle px-6 py-3 backdrop-blur">
           <Brand />
           <UserMenu user={user} onLogout={() => void logout()} />
         </header>
