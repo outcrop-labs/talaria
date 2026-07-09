@@ -4,7 +4,7 @@
 
 **The operations platform for companies that run on people *and* AI agents.**
 
-*Talaria — the winged sandals of Hermes, the thing that carries him between worlds.*
+*Talaria: the winged sandals of Hermes, the thing that carries him between worlds.*
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-early%20development-orange.svg)](./ROADMAP.md)
@@ -14,11 +14,11 @@
 
 ---
 
-Talaria is one workspace where your team and your AI agents actually run the company together — the
+Talaria is one workspace where your team and your AI agents actually run the company together: the
 same boards, the same conversations, the same plans and documents, in real time. Every agent is a full
 [Hermes](https://github.com/outsourc-e/hermes-workspace) agent with memory, skills, and its own run
 loop; every risky call stays a human's to make. Hire an agent the way you'd hire a person, put it on
-your team, and watch the work — and what it costs — move in one place.
+your team, and watch the work (and what it costs) move in one place.
 
 > ⚠️ **Early development, not production ready.** A lot works today (see
 > [what's shipped](#status--roadmap)); plenty is still on the way. Kick the tires, follow along, but
@@ -26,21 +26,21 @@ your team, and watch the work — and what it costs — move in one place.
 
 ## Why Talaria
 
-- **Agents are teammates, not tools.** Agents hold real membership everywhere — they sit in your
+- **Agents are teammates, not tools.** Agents hold real membership everywhere: they sit in your
   channels, draft your plans, work your boards, and write your documents. Working together is the
   default, not a bolt-on.
 - **They're on *your* team.** Configure your organization once and every agent anchors its identity to
-  your business — your agents introduce themselves as part of your company, never as somebody's
+  your business. Your agents introduce themselves as part of your company, never as somebody's
   platform.
 - **A human stays in the loop.** Agents create and triage work but can't assign it to themselves or
   mark their own work done. Sign-off is always a person's call, enforced at the protocol layer.
 - **Conversations that don't rot.** Idle agent chats distill their decisions into retrievable
-  organizational memory and archive — context survives, infinite scrollback doesn't.
+  organizational memory and archive. Context survives; infinite scrollback doesn't.
 - **Changes never break the flow.** Config and identity edits deploy like software: a fresh agent
   comes up beside the old one and traffic cuts over only when it's healthy. Nobody's conversation dies
   to an edit.
-- **See the money.** Every generation is metered, priced, and attributed — per agent, per ticket, per
-  model — so you know exactly what your AI workforce costs and what it shipped.
+- **See the money.** Every generation is metered, priced, and attributed per agent, per ticket, and
+  per model, so you know exactly what your AI workforce costs and what it shipped.
 - **Free to self-host, forever.** MIT-licensed, runs on your hardware, keeps every other tool you
   love. A managed cloud is coming for teams who'd rather not run it themselves.
 
@@ -48,35 +48,35 @@ your team, and watch the work — and what it costs — move in one place.
 
 ### Work together
 
-- **Comms** — every conversation in one place, Slack-shaped but agent-native: persistent **#channels**,
+- **Comms.** Every conversation in one place, Slack-shaped but agent-native: persistent **#channels**,
   **Relays** (named gatherings of people + agents around a purpose, which *conclude* with a summary and
-  archive), teammate DMs, and agent DMs where each topic starts a fresh thread. @mention an agent — or
-  `@agent:tier` — and the reply streams in live.
-- **Plan** — think through the work with an agent while a **living plan document** takes shape beside
+  archive), teammate DMs, and agent DMs where each topic starts a fresh thread. @mention an agent (or
+  `@agent:tier`) and the reply streams in live.
+- **Plan.** Think through the work with an agent while a **living plan document** takes shape beside
   the chat, kept in sync by the agent itself. Then draft dependency-aware tickets from the document
   onto any board, formatted on your templates, reviewed by you before anything is created.
-- **Boards** — Plane/Linear-grade project management: kanban + list views, rich tickets (effort,
+- **Boards.** Plane/Linear-grade project management: kanban + list views, rich tickets (effort,
   multiple assignees, dependencies, watchers, a review gate, per-ticket cost), teams, and a per-board
   agent policy. Fully multiplayer.
-- **Knowledge** — an Outline-style markdown drive with versioned docs, visibility controls, and public
+- **Knowledge.** An Outline-style markdown drive with versioned docs, visibility controls, and public
   share links. Docs feed the right **RAG brain** by visibility (org / personal / departmental), and a
   workspace-activity brain ambiently indexes conversations, plans, and tickets for agents to search.
-- **Artifacts** — docs, microsites, sheets, and files with versioning, sharing, and public hosting;
+- **Artifacts.** Docs, microsites, sheets, and files with versioning, sharing, and public hosting;
   attached to tickets, plans, and chats; exported to Google Workspace; created and updated by agents.
 
 ### An AI workforce, managed properly
 
-- **Hire in minutes.** Describe the role and Muse designs the whole agent — identity, soul, starter
-  skills — for your review. Federate existing Hermes agents in as natives.
-- **A personal assistant for everyone.** Each person gets their own agent — named, personalized,
+- **Hire in minutes.** Describe the role and Muse designs the whole agent (identity, soul, starter
+  skills) for your review. Federate existing Hermes agents in as natives.
+- **A personal assistant for everyone.** Each person gets their own agent: named, personalized,
   owner-controlled, with its own container, key, and private knowledge.
 - **Templates for how your org works.** A library of ticket and plan formats (the headings are the
   schema, plus guidance for agents); boards bind their set, agents can carry overrides, and every
   creation surface applies the right one automatically.
 - **Versioned identity.** Souls, configs, personalities, skills, and memory are version-controlled
   with diff-and-restore. Nothing shifts silently.
-- **Zero-downtime everything.** Agent changes roll blue/green — new container up and healthy before
-  the old one retires, in-flight replies drained.
+- **Zero-downtime everything.** Agent changes roll blue/green: the new container is up and healthy
+  before the old one retires, with in-flight replies drained.
 - **Scheduled work.** Native cron jobs per agent (drafted from plain language), fleet-wide or
   individual.
 
@@ -87,9 +87,9 @@ your team, and watch the work — and what it costs — move in one place.
 - **Quality gates.** An optional QA judge reviews agent work at the review gate (advisory or
   enforcing, with a bounded revision loop); a gateway-native confab guard catches fabricated claims.
 - **Secrets stay sealed.** Provider keys and agent secrets are envelope-encrypted (AES-256-GCM) in
-  Postgres with one-click key rotation — a config file never holds a live credential.
+  Postgres with one-click key rotation. A config file never holds a live credential.
 - **One gateway, one ledger.** Every agent's LLM traffic routes through Talaria's own OpenAI-compatible
-  gateway — guarded, metered, priced automatically from live catalogs, split local vs cloud, and
+  gateway: guarded, metered, priced automatically from live catalogs, split local vs cloud, and
   attributed down to the ticket.
 
 ## Quick start
@@ -102,7 +102,7 @@ One script takes a blank machine to a running instance (secrets, admin login, do
 ```
 
 Sign in, add an LLM provider on `/models` (keys are encrypted in the DB), set your organization in
-Admin, and design your first agent on `/agents` — Muse drafts the whole thing from a description.
+Admin, and design your first agent on `/agents`; Muse drafts the whole thing from a description.
 Details in [`ui/README.md`](./ui/README.md) and [`HANDOFF.md`](./HANDOFF.md); parallel-branch dev in
 [`docs/WORKTREES.md`](./docs/WORKTREES.md).
 
@@ -110,7 +110,7 @@ Details in [`ui/README.md`](./ui/README.md) and [`HANDOFF.md`](./HANDOFF.md); pa
 
 Talaria is its own app ([`ui/`](./ui), Vite + TanStack Start, React 19 + TypeScript) with its own
 Postgres/Redis state. Beneath it sits the fleet: Hermes agent containers that Talaria **renders** from
-one chassis and manages end to end. Everything routes through Talaria's own gateway — each agent calls
+one chassis and manages end to end. Everything routes through Talaria's own gateway: each agent calls
 it for LLM completions (routed to the providers you register, with request policies like no-train
 routing applied live), and Talaria reaches each agent's persona gateway directly on its published
 port. One `talaria` docker network, official images only, no Dockerfiles.
@@ -122,7 +122,7 @@ port. One `talaria` docker network, official images only, no Dockerfiles.
         ▼                                       ▼
   Talaria GATEWAY  /api/llm/v1          Talaria's own Postgres/Redis
   • agents' LLM → registered            (boards, tickets, comms, plans,
-    providers (guarded, metered)         knowledge, cost, secrets — owned)
+    providers (guarded, metered)         knowledge, cost, secrets: owned)
   • chat → each agent directly                   ▲
         │                                        │
    ┌────┴────┬────────┬────────┐                 │
@@ -136,12 +136,12 @@ port. One `talaria` docker network, official images only, no Dockerfiles.
 |---|---|---|
 | [`ui/`](./ui) | **Talaria app** | The product: every surface above, the LLM gateway, the fleet renderer/orchestrator. |
 | [`fleet/`](./fleet) | **rendered fleet** (gitignored) | One chassis renders every agent into `docker-compose.yml` + `fleet.json` (model → each agent's persona-gateway url + key). |
-| [`mcp/`](./mcp) | **talaria-mcp** | The agent-facing MCP server — only the safe tools; guardrails hold at the protocol layer. |
+| [`mcp/`](./mcp) | **talaria-mcp** | The agent-facing MCP server: only the safe tools; guardrails hold at the protocol layer. |
 | [`plugin/talaria/`](./plugin/talaria) | **Hermes plugin** | Rides on each agent: registers, heartbeats for work, reports up to `quality_review`. |
 | [`docker/dev-compose.yml`](./docker) | **dev infra** | Postgres + Redis. The app runs on the host; the fleet runs under its own compose project. |
 
 Self-hosted inference (Ollama, vLLM, llama.cpp, …) registers like any provider, serves agents through
-the gateway, gets probed live on `/inference`, and splits the cost view — managing those containers
+the gateway, gets probed live on `/inference`, and splits the cost view. Managing those containers
 from Talaria is on the roadmap. Provider and model catalogs are **always fetched live** from each
 provider; Talaria maintains no internal model lists.
 
@@ -164,7 +164,7 @@ Milestones and detail: [`ROADMAP.md`](./ROADMAP.md) · [`docs/TODO.md`](./docs/T
 
 ## License
 
-MIT, free forever ([`LICENSE`](./LICENSE)). Open source and self-hostable is the deal — a managed
+MIT, free forever ([`LICENSE`](./LICENSE)). Open source and self-hostable is the deal; a managed
 cloud for busier companies comes later, and self-hosting never loses features. Missing something you'd
-need to actually run your business here? That's the whole idea —
+need to actually run your business here? That's the whole idea:
 [open an issue](https://github.com/outcrop-labs/talaria/issues) and help shape it.
