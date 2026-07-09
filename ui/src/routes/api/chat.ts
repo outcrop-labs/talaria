@@ -6,6 +6,7 @@ import { routedModelFor } from '@/server/fleet-agents'
 import { getSessionUser } from '@/server/auth/session'
 import { canUseAgentModel } from '@/server/users'
 import {
+  activeStreamingAssistant,
   createConversation,
   insertStreamingAssistant,
   insertUserMessage,
@@ -14,7 +15,7 @@ import {
   priorMessages,
   touchConversation,
 } from '@/server/conversations'
-import { persistAssistantStream } from '@/server/chat-persist'
+import { continueConversation, persistAssistantStream } from '@/server/chat-persist'
 import { attachmentAsDataUrl, resolveAttachments, isImage } from '@/server/uploads'
 import { notifyPlanMentions } from '@/server/plan-doc'
 import { indexActivity } from '@/server/retrieval/sources'
@@ -29,6 +30,8 @@ const Body = z.object({
   attachmentIds: z.array(z.string().uuid()).max(10).optional(),
   /** New conversations are 'chat' unless started from the Plan surface. */
   kind: z.enum(['chat', 'plan']).optional(),
+  /** Sent while a reply streams: queue into history, never interrupt. */
+  queue: z.boolean().optional(),
 })
 
 const titleFrom = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 80)
@@ -80,8 +83,15 @@ export const Route = createFileRoute('/api/chat')({
           planTitle = title
         }
 
-        // Build gateway history from the DB (prior turns), then record this turn.
-        const prior = await priorMessages(convId)
+        // Claude-style flow: while a reply is streaming, new messages QUEUE
+        // into history instead of interrupting — the completing turn (or the
+        // continuation below, if the stream just ended) picks them up.
+        const inFlight = await activeStreamingAssistant(convId)
+        const queued = inFlight !== null || parsed.data.queue === true
+
+        // Record this turn (history is built AFTER for normal turns, so the
+        // new message isn't duplicated into the prior list).
+        const prior = queued ? [] : await priorMessages(convId)
         const userSeq = await nextSeq(convId)
         const userMsgId = await insertUserMessage(convId, userSeq, content, attachments)
         await touchConversation(convId, title)
@@ -89,6 +99,7 @@ export const Route = createFileRoute('/api/chat')({
         // Plan turns feed the ambient activity brain (owner-scoped) and notify
         // @mentioned teammates who can read the plan's document. Never blocking.
         const senderLabel = user.name ?? user.email ?? 'someone'
+        const planMeta = kind === 'plan' ? { ownerUserId: user.id, title: planTitle } : null
         if (kind === 'plan' && content.trim()) {
           void indexActivity({
             sourceType: 'plan',
@@ -99,6 +110,15 @@ export const Route = createFileRoute('/api/chat')({
             href: '/plan',
           }).catch(() => {})
           void notifyPlanMentions(convId, { id: user.id, label: senderLabel }, content, planTitle).catch(() => {})
+        }
+
+        if (queued) {
+          // If the stream ended between the client's view and this landing,
+          // nothing would pick the message up — chain the next turn ourselves.
+          if (!inFlight) {
+            void continueConversation(convId, { agentModel, tier: parsed.data.tier ?? null, plan: planMeta }).catch(() => {})
+          }
+          return json({ queued: true, conversationId: convId }, { status: 202 })
         }
 
         // Give a vision-capable model the actual images (data URLs work even
@@ -135,7 +155,7 @@ export const Route = createFileRoute('/api/chat')({
           agentModel,
           promptChars,
           tier: parsed.data.tier ?? null,
-          plan: kind === 'plan' ? { ownerUserId: user.id, title: planTitle } : null,
+          plan: planMeta,
         })
         return new Response(toClient, { status: upstream.status, headers })
       },

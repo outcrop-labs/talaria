@@ -4,11 +4,60 @@
 // Also records the turn in the token ledger (real usage or a char estimate).
 
 import { parseAgentStream, mergeTool, type ToolCall } from '@/lib/sse-parse'
-import { touchConversation, updateAssistant } from './conversations'
+import {
+  activeStreamingAssistant,
+  insertStreamingAssistant,
+  nextSeq,
+  priorMessages,
+  touchConversation,
+  updateAssistant,
+} from './conversations'
+import { routedModelFor } from './fleet-agents'
 import { estimateTokens, recordUsage } from './usage'
 import { guardChatReply } from './guardrails'
-import { describeAgent } from './gateway'
+import { describeAgent, proxyChat } from './gateway'
 import { indexActivity } from './retrieval/sources'
+
+export interface TurnMeta {
+  agentModel: string
+  tier?: string | null
+  /** Set for plan conversations: replies feed the activity brain, owner-scoped. */
+  plan?: { ownerUserId: string; title: string | null } | null
+}
+
+// One continuation at a time per conversation (in-process guard — the check
+// below re-reads the DB, this just closes the tiny double-start window).
+const continuing = new Set<string>()
+
+/** Claude-style flow: messages sent while a reply streamed queued into
+ *  history — start the NEXT turn covering them. Called when a reply finishes
+ *  and when a queued message lands with nothing in flight; chains until the
+ *  conversation goes quiet. No-op unless the last message is the user's. */
+export async function continueConversation(conversationId: string, meta: TurnMeta): Promise<void> {
+  if (continuing.has(conversationId)) return
+  continuing.add(conversationId)
+  try {
+    if (await activeStreamingAssistant(conversationId)) return
+    const messages = await priorMessages(conversationId)
+    if (messages[messages.length - 1]?.role !== 'user') return
+    const routed = (meta.tier ? await routedModelFor(meta.agentModel, meta.tier).catch(() => null) : null) ?? meta.agentModel
+    const assistantId = await insertStreamingAssistant(conversationId, await nextSeq(conversationId))
+    const upstream = await proxyChat({ model: routed, messages })
+    if (!upstream.ok || !upstream.body) {
+      await updateAssistant(assistantId, { content: '', reasoning: '', tools: [], status: 'error' })
+      return
+    }
+    const promptChars = messages.reduce((n, m) => n + m.content.length, 0)
+    void persistAssistantStream(upstream.body, assistantId, conversationId, {
+      agentModel: meta.agentModel,
+      promptChars,
+      tier: meta.tier ?? null,
+      plan: meta.plan ?? null,
+    })
+  } finally {
+    continuing.delete(conversationId)
+  }
+}
 
 export async function persistAssistantStream(
   stream: ReadableStream<Uint8Array>,
@@ -68,6 +117,14 @@ export async function persistAssistantStream(
         text: content,
         payload: { planId: conversationId, planOwnerId: usageMeta.plan.ownerUserId },
         href: '/plan',
+      }).catch(() => {})
+    }
+    // Messages queued while this reply streamed become the next turn.
+    if (usageMeta) {
+      void continueConversation(conversationId, {
+        agentModel: usageMeta.agentModel,
+        tier: usageMeta.tier ?? null,
+        plan: usageMeta.plan ?? null,
       }).catch(() => {})
     }
     // Confab guard on the final reply (structural; fire-and-forget). The fleet

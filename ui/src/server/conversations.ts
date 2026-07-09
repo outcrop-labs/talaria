@@ -117,6 +117,26 @@ export async function insertUserMessage(
   return (rows[0] as { id: string }).id
 }
 
+/** The conversation's in-flight assistant reply, if any. A streaming row
+ *  older than 10 minutes is a crashed persist — mark it errored and report
+ *  none, so a dead stream can never wedge the conversation's turn-taking. */
+export async function activeStreamingAssistant(conversationId: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select id, created_at < now() - interval '10 minutes' as stale
+    from messages
+    where conversation_id = ${conversationId} and role = 'assistant' and status = 'streaming'
+    order by seq desc limit 1
+  `) as unknown as Array<{ id: string; stale: boolean }>
+  const row = rows[0]
+  if (!row) return null
+  if (row.stale) {
+    await sql`update messages set status = 'error' where id = ${row.id}`
+    return null
+  }
+  return row.id
+}
+
 /** Create the assistant row (status='streaming'); returns its id. */
 export async function insertStreamingAssistant(conversationId: string, seq: number): Promise<string> {
   const sql = await db()
