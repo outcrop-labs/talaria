@@ -17,6 +17,8 @@ export interface Channel {
   updatedAt: string
   /** For DMs: the other person. */
   peer?: { userId: string; name: string | null; email: string | null } | null
+  /** Others' messages past your read cursor. */
+  unreadCount?: number
 }
 
 export interface ChannelMember {
@@ -105,6 +107,10 @@ export const createChannel = async (name: string, kind: 'channel' | 'group' = 'c
 /** Find-or-create the DM with a teammate. */
 export const openDm = async (userId: string): Promise<Channel> =>
   (await j<{ channel: Channel }>(await post('/api/dms', { userId }))).channel
+
+export const markChannelRead = async (id: string, seq: number): Promise<void> => {
+  await post(`/api/channels/${id}/read`, { seq })
+}
 
 export const sendChannelMessage = async (id: string, content: string, attachmentIds: string[] = []): Promise<void> => {
   await j(await post(`/api/channels/${id}/messages`, { content, attachmentIds }))

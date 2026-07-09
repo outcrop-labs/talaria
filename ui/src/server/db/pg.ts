@@ -751,6 +751,8 @@ const MIGRATIONS: string[] = [
   // org-wide view/edit (all boards, all non-DM channels, implicit editor on
   // non-private KB/artifacts). Only effective while the owner is an admin.
   `alter table agent_defs add column if not exists elevated boolean not null default false`,
+  // Per-member read cursor → unread badges in the Comms sidebar.
+  `alter table channel_members add column if not exists last_read_seq integer not null default 0`,
 ]
 
 function ensureMigrated(): Promise<void> {

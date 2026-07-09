@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { agentMayAccessChannel, channelRole, insertChannelMessage, listChannelMessages } from '@/server/channels'
-import { notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
+import { notifyDmMessage, notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
 import { resolveAttachments } from '@/server/uploads'
 import { indexActivity } from '@/server/retrieval/sources'
 import { db } from '@/server/db/pg'
@@ -72,7 +72,14 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
           }).catch(() => {})
         }
         void triggerAgentReplies(params.id, channelName, parsed.data.content).catch(() => {})
-        void notifyUserMentions(params.id, channelName, user.id, user.name ?? author, parsed.data.content).catch(() => {})
+        // A DM message notifies the peer outright (deduped while unread);
+        // channel/relay messages notify only on @mention.
+        const kind = ((await sql`select kind from channels where id = ${params.id}`)[0] as { kind?: string } | undefined)?.kind
+        if (kind === 'dm') {
+          void notifyDmMessage(params.id, user.id, user.name ?? author, parsed.data.content).catch(() => {})
+        } else {
+          void notifyUserMentions(params.id, channelName, user.id, user.name ?? author, parsed.data.content).catch(() => {})
+        }
         return json({ message })
       },
     },

@@ -30,6 +30,9 @@ import {
 
 export const Route = createFileRoute('/_app/comms')({
   component: CommsPage,
+  // ?c=<channelId> deep-links a channel/DM (notifications land here).
+  validateSearch: (search: Record<string, unknown>): { c?: string } =>
+    typeof search.c === 'string' && search.c ? { c: search.c } : {},
 })
 
 // Comms — every conversation in one place, Slack-shaped but agent-native:
@@ -53,6 +56,8 @@ function CommsPage() {
   const { data: conversations = [] } = useConversations('chat')
 
   const [sel, setSel] = useState<Sel>(null)
+  // Agents whose thread list is pinned open (chevron) without being selected.
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set())
   // Bumped on every deliberate fresh-thread start; drives ChatView's reset.
   const [fresh, setFresh] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -78,13 +83,24 @@ function CommsPage() {
   const people = users.filter((u) => u.id !== session?.id)
   const dmByPeer = useMemo(() => new Map(dms.map((c) => [c.peer?.userId, c])), [dms])
 
+  // A ?c= deep link (from a DM notification) wins once, then normal selection.
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  useEffect(() => {
+    if (search.c && channels.some((ch) => ch.id === search.c)) {
+      setSel({ t: 'channel', id: search.c })
+      void navigate({ search: {}, replace: true })
+    }
+  }, [search.c, channels, navigate])
+
   // Default to the first channel; heal a selection that vanished (archived).
   useEffect(() => {
+    if (search.c) return // deep link resolving — don't race it
     if (!sel && channels[0]) setSel({ t: 'channel', id: channels[0].id })
     if (sel?.t === 'channel' && !channels.some((c) => c.id === sel.id)) {
       setSel(channels[0] ? { t: 'channel', id: channels[0].id } : null)
     }
-  }, [channels, sel])
+  }, [channels, sel, search.c])
 
   const selected: Channel | null = sel?.t === 'channel' ? (channels.find((c) => c.id === sel.id) ?? null) : null
   const { data: detail } = useChannelDetail(selected?.id ?? null)
@@ -135,6 +151,7 @@ function CommsPage() {
             <RowButton key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
               <span className="shrink-0 opacity-60">#</span>
               <span className="min-w-0 flex-1 truncate">{c.name}</span>
+              <UnreadBadge count={c.unreadCount} />
             </RowButton>
           ))}
           {rooms.length === 0 && <Hint>{isLoading ? 'Loading…' : 'Ambient, persistent talk.'}</Hint>}
@@ -145,6 +162,7 @@ function CommsPage() {
             <RowButton key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
               <span className="shrink-0 opacity-60">⇄</span>
               <span className="min-w-0 flex-1 truncate">{c.name}</span>
+              <UnreadBadge count={c.unreadCount} />
             </RowButton>
           ))}
           {relays.length === 0 && <Hint>Gather people + agents around a purpose; conclude when done.</Hint>}
@@ -161,6 +179,7 @@ function CommsPage() {
               >
                 <Avatar name={u.name ?? u.email ?? '?'} className="h-5 w-5 shrink-0 text-[10px]" />
                 <span className="min-w-0 flex-1 truncate">{u.name ?? u.email}</span>
+                <UnreadBadge count={dm?.unreadCount} />
               </RowButton>
             )
           })}
@@ -170,7 +189,11 @@ function CommsPage() {
         <Section label="Agents">
           {fleet.map((a) => {
             const activeAgent = sel?.t === 'agent' && sel.model === a.id
-            const threads = activeAgent ? conversations.filter((c) => c.agentModel === a.id).slice(0, 8) : []
+            const agentThreads = conversations.filter((c) => c.agentModel === a.id)
+            // Threads unfold for the active agent, or via the chevron —
+            // peeking at an agent's threads shouldn't require selecting it.
+            const expanded = activeAgent || expandedAgents.has(a.id)
+            const threads = expanded ? agentThreads.slice(0, 8) : []
             return (
               <li key={a.id}>
                 <ul className="space-y-0.5">
@@ -183,6 +206,24 @@ function CommsPage() {
                     )}
                     {activeAgent && sel.conversationId === null && (
                       <span className="shrink-0 text-[10px] text-muted">new</span>
+                    )}
+                    {agentThreads.length > 0 && !activeAgent && (
+                      <span
+                        role="button"
+                        title={expanded ? 'Hide threads' : `Show threads (${agentThreads.length})`}
+                        className="shrink-0 rounded px-0.5 text-[10px] text-muted hover:text-fg"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setExpandedAgents((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(a.id)) next.delete(a.id)
+                            else next.add(a.id)
+                            return next
+                          })
+                        }}
+                      >
+                        {expanded ? '▾' : '▸'}
+                      </span>
                     )}
                   </RowButton>
                   {threads.map((c) => (
@@ -453,6 +494,14 @@ function RowButton({
 const Hint = ({ children }: { children: React.ReactNode }) => (
   <li className="px-2 py-1 text-[11px] leading-relaxed text-muted">{children}</li>
 )
+
+/** Unread-message count pill; renders nothing when all caught up. */
+const UnreadBadge = ({ count }: { count?: number }) =>
+  count ? (
+    <span className="ml-auto shrink-0 rounded-full bg-accent px-1.5 text-[10px] font-semibold leading-4 text-surface">
+      {count > 99 ? '99+' : count}
+    </span>
+  ) : null
 
 // A neat little header multiselect: a pill ("3 people ▾") opening a checklist
 // popover. Toggles apply immediately; locked rows (owners) can't be removed.
