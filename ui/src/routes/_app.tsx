@@ -1,5 +1,5 @@
 import { createFileRoute, Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Brand } from '@/components/brand'
 import { MercuryBackdrop } from '@/components/mercury-backdrop'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -69,8 +69,30 @@ function AppLayout() {
 // a flyover (profile, settings, theme, sign out) — the menu bar stays clean.
 function UserMenu({ user, onLogout }: { user: SessionUser; onLogout: () => void }) {
   const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  // Outside-click + Escape close via document listeners. (A fixed inset-0
+  // overlay can't work here: the header's backdrop-filter makes it the
+  // containing block for fixed descendants, so an overlay would only cover
+  // the header strip, not the page.)
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
   return (
-    <div className="relative">
+    <div ref={ref} className="relative">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -81,9 +103,7 @@ function UserMenu({ user, onLogout }: { user: SessionUser; onLogout: () => void 
         <span className="text-xs text-muted">▾</span>
       </button>
       {open && (
-        <>
-          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
-          <div className="mercury-panel absolute right-0 top-full z-30 mt-2 w-60 rounded-xl p-1">
+        <div className="mercury-panel absolute right-0 top-full z-30 mt-2 w-60 rounded-xl p-1">
             <div className="border-b border-line-subtle px-3 py-2.5">
               <div className="truncate text-sm font-medium text-fg">{user.name ?? user.email}</div>
               <div className="flex items-baseline gap-2">
@@ -102,15 +122,14 @@ function UserMenu({ user, onLogout }: { user: SessionUser; onLogout: () => void 
               <span>Theme</span>
               <ThemeToggle />
             </div>
-            <button
-              type="button"
-              onClick={onLogout}
-              className="block w-full rounded-lg px-3 py-2 text-left text-sm text-muted transition-colors hover:bg-card hover:text-fg"
-            >
-              Sign out
-            </button>
-          </div>
-        </>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-muted transition-colors hover:bg-card hover:text-fg"
+          >
+            Sign out
+          </button>
+        </div>
       )}
     </div>
   )
