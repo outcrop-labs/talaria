@@ -5,6 +5,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { confirm } from '@/components/ui/confirm'
 import { Combobox } from '@/components/ui/combobox'
 import { Button, buttonClasses } from '@/components/ui/button'
+import { Generating } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -361,6 +362,14 @@ function EncryptionPanel() {
         <Button size="sm" onClick={() => void rotate()} disabled={busy}>
           {busy ? 'Rotating…' : 'Rotate keys'}
         </Button>
+      </div>
+      <div className="mt-3">
+        {busy && (
+          <Generating
+            label="Rotating the data key — re-encrypting provider keys, agent secrets, and OAuth tokens in one pass…"
+            lines={2}
+          />
+        )}
       </div>
       {newRoot.trim() && (
         <p className="mt-2 text-[11px] text-muted">

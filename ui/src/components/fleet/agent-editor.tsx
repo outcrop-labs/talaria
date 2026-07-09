@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
+import { Generating } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
 import { ModelPicker } from '@/components/fleet/model-picker'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
@@ -58,13 +59,13 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
   const [aliases, setAliases] = useState<AliasRow[]>(cfg?.aliases ?? [])
   const [fallbacks, setFallbacks] = useState<ModelTarget[]>(cfg?.fallbacks ?? [])
   const [note, setNote] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<false | 'save' | 'apply'>(false)
   const [soulOpen, setSoulOpen] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   const save = async (apply: boolean) => {
     setErr(null)
-    setBusy(true)
+    setBusy(apply ? 'apply' : 'save')
     try {
       const r = await saveAgentEdit(def.id, { soul, main, aliases, fallbacks, note: note || undefined, apply })
       if (r.error) return setErr(r.error)
@@ -139,7 +140,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
               subtitle="Who the agent is. Saving publishes a soul-only version on top of the last saved config."
               value={soul}
               editable
-              saving={busy}
+              saving={!!busy}
               onSave={async (md) => {
                 // Soul-only publish: model targets come from the LAST SAVED
                 // version, not the form — pending model edits stay drafts.
@@ -168,14 +169,20 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
           </div>
         )}
 
+        {busy === 'apply' && (
+          <Generating
+            label={`Applying to ${def.displayName} — new container rolling up beside the old one, health check, then traffic cuts over…`}
+            lines={2}
+          />
+        )}
         <div className="flex items-center gap-2 border-t border-line-subtle pt-3">
           <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="version note (optional)" size="sm" className="min-w-0 flex-1" />
-          <Button variant="outline" size="sm" onClick={() => void save(false)} disabled={busy}>
+          <Button variant="outline" size="sm" onClick={() => void save(false)} disabled={!!busy}>
             Save version
           </Button>
           {def.managed && (
-            <Button size="sm" onClick={() => void save(true)} disabled={busy}>
-              {busy ? 'Applying…' : 'Save & apply'}
+            <Button size="sm" onClick={() => void save(true)} disabled={!!busy}>
+              {busy === 'apply' ? 'Applying…' : 'Save & apply'}
             </Button>
           )}
         </div>
