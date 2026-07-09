@@ -64,11 +64,27 @@ export interface LlmEndpoint {
   requestDefaults?: Record<string, unknown>
 }
 
+export interface BrainTarget {
+  kind: 'main' | 'tier' | 'fallback'
+  name?: string
+  endpoint: string
+  model: string
+  ok: boolean
+  reason?: string
+}
+
+export interface AgentBrainHealth {
+  agent: string
+  displayName: string
+  ok: boolean
+  targets: BrainTarget[]
+}
+
 export function useFleetDefs(enabled: boolean) {
   return useQuery({
     queryKey: ['fleet-defs'],
     enabled,
-    queryFn: async (): Promise<{ defs: AgentDef[]; endpoints: LlmEndpoint[] } | null> => {
+    queryFn: async (): Promise<{ defs: AgentDef[]; endpoints: LlmEndpoint[]; brains?: AgentBrainHealth[] } | null> => {
       const r = await fetch('/api/fleet/defs', { credentials: 'same-origin' })
       if (!r.ok) return null
       return r.json()

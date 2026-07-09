@@ -20,6 +20,7 @@ import {
   controlAgent,
   useFleetContainers,
   useFleetDefs,
+  type AgentBrainHealth,
   type AgentContainers,
   type AgentDef,
   type FleetAction,
@@ -38,6 +39,28 @@ const HEALTH_COLOR: Record<Health, string> = {
   down: 'var(--theme-danger)',
   retired: 'var(--theme-line)',
 }
+/** "brain unroutable" chip — the agent's configured model lost its gateway
+ *  route (provider-pool churn). Main = red, tier/fallback only = amber. */
+function BrainChip({ brain }: { brain?: AgentBrainHealth }) {
+  if (!brain) return null
+  const bad = brain.targets.filter((t) => !t.ok)
+  if (bad.length === 0) return null
+  const detail = bad.map((t) => `${t.kind}${t.name ? ` "${t.name}"` : ''} → ${t.endpoint}/${t.model}: ${t.reason}`).join('\n')
+  return (
+    <span
+      title={detail}
+      className={cn(
+        'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
+        !brain.ok
+          ? 'bg-[color:var(--theme-danger)]/15 text-[color:var(--theme-danger)]'
+          : 'bg-[color:var(--theme-warning)]/15 text-[color:var(--theme-warning)]',
+      )}
+    >
+      {!brain.ok ? 'brain unroutable' : `${bad.length} tier${bad.length === 1 ? '' : 's'} down`}
+    </span>
+  )
+}
+
 function healthOf(d: AgentDef, c: AgentContainers | null): { health: Health; running: boolean } {
   if (!d.enabled) return { health: 'retired', running: false }
   const state = c?.managed ?? null
@@ -55,6 +78,7 @@ function AgentsPage() {
   const byDept = new Map(containers.map((c) => [c.department, c]))
   const defs = defsData?.defs ?? []
   const endpoints = defsData?.endpoints ?? []
+  const brainByAgent = new Map((defsData?.brains ?? []).map((b) => [b.agent, b]))
   const t = fleet?.totals
 
   const [view, setView] = useState<'grid' | 'list'>('grid')
@@ -124,14 +148,14 @@ function AgentsPage() {
         ) : view === 'grid' ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {defs.map((d) => (
-              <AgentTile key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} onDuplicate={() => setDuplicateFrom(d)} />
+              <AgentTile key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} brain={brainByAgent.get(d.model)} onDuplicate={() => setDuplicateFrom(d)} />
             ))}
           </div>
         ) : (
           <Panel className="p-0">
             <ul className="divide-y divide-line-subtle">
               {defs.map((d) => (
-                <AgentListRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} onDuplicate={() => setDuplicateFrom(d)} />
+                <AgentListRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} brain={brainByAgent.get(d.model)} onDuplicate={() => setDuplicateFrom(d)} />
               ))}
             </ul>
           </Panel>
@@ -260,7 +284,7 @@ function StatusDot({ def: d, containers }: { def: AgentDef; containers: AgentCon
   return <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: HEALTH_COLOR[health] }} title={health} />
 }
 
-function AgentTile({ def: d, containers, endpoints, onDuplicate }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[]; onDuplicate: () => void }) {
+function AgentTile({ def: d, containers, endpoints, brain, onDuplicate }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[]; brain?: AgentBrainHealth; onDuplicate: () => void }) {
   const [manage, setManage] = useState(false)
   const { running } = healthOf(d, containers)
   return (
@@ -272,6 +296,7 @@ function AgentTile({ def: d, containers, endpoints, onDuplicate }: { def: AgentD
             <div className="truncate text-sm font-medium text-fg">{d.displayName}</div>
             <div className="truncate text-xs text-muted">{d.role ?? `v${d.currentVersion}`}</div>
           </button>
+          <BrainChip brain={brain} />
           <StatusDot def={d} containers={containers} />
         </div>
         <div className="flex justify-end">
@@ -283,7 +308,7 @@ function AgentTile({ def: d, containers, endpoints, onDuplicate }: { def: AgentD
   )
 }
 
-function AgentListRow({ def: d, containers, endpoints, onDuplicate }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[]; onDuplicate: () => void }) {
+function AgentListRow({ def: d, containers, endpoints, brain, onDuplicate }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[]; brain?: AgentBrainHealth; onDuplicate: () => void }) {
   const [manage, setManage] = useState(false)
   const { running } = healthOf(d, containers)
   return (
@@ -295,6 +320,7 @@ function AgentListRow({ def: d, containers, endpoints, onDuplicate }: { def: Age
           <span className="text-sm font-medium text-fg">{d.displayName}</span>
           {d.role && <span className="ml-2 text-xs text-muted">{d.role}</span>}
         </button>
+        <BrainChip brain={brain} />
         <Controls def={d} running={running} onManage={() => setManage(true)} onDuplicate={onDuplicate} />
       </li>
       {manage && <AgentManageModal open={manage} onClose={() => setManage(false)} def={d} endpoints={endpoints} isAdmin />}

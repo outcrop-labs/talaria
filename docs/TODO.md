@@ -81,10 +81,10 @@ engineering-facing tracker.
 - ✅ **Comms follow-through (2026-07-09)** — per-member read cursors → unread
   badges on channels/relays/DMs (open = read, live); plain DM messages notify
   (deduped while unread, `/comms?c=` deep link); agent thread expand-chevron.
-- **Brain-routability health** — provider pools churn under no-train routing
-  (qwen lost its US pool mid-day and chats silently froze pre-fix). Surface
-  "brain unroutable" on agent cards / alerts by probing each agent's rendered
-  model against the gateway registry.
+- ✅ **Brain-routability health (2026-07-09)** — `fleetBrainHealth()` probes
+  every enabled agent's main/tier/fallback targets against the gateway
+  registry (30s cache); critical alert + red card chip for unroutable mains,
+  warning + amber chip for dead tiers/fallbacks.
 - **QA judge template conformance** — ticket templates give the judge an
   objective rubric (are the skeleton's sections present and filled?); wire the
   resolved template into the judge prompt at quality review.

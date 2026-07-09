@@ -23,6 +23,13 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Brain-routability health — unroutable agents surface instead of freezing.**
+  Provider pools churn under no-train routing; when an agent's configured
+  model drops off its endpoint, chats used to hang silently. Every enabled
+  agent's config targets (main / tiers / fallbacks) are now probed against the
+  gateway registry (30s cache): an unroutable MAIN raises a critical alert
+  ("X's brain is unroutable") and a red chip on the agent's card; dead
+  tiers/fallbacks get a warning + amber chip. Fix from /models or the agent.
 - **Comms follow-through: unread badges, DM notifications, thread peek.**
   Per-member read cursors (`channel_members.last_read_seq`) drive unread
   count pills on every channel/relay/DM row; having a channel open marks it
