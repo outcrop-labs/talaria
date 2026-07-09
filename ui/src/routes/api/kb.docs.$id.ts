@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setOfficial } from '@/server/kb'
 import { canEditAgent, canEditHuman, canRead, canReadAgent, isOwner, setEditors } from '@/server/kb-perms'
+import { isElevatedAssistant } from '@/server/users'
 import { logAudit } from '@/server/audit'
 
 const Editor = z.object({ principalType: z.enum(['user', 'agent']), principalId: z.string().min(1).max(200), role: z.enum(['viewer', 'editor']).default('viewer') })
@@ -53,7 +54,9 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         let owner = false
         if (checkAgentKey(request)) {
           const name = agentName(request)
-          if (!name || !canEditAgent(name, grants)) return json({ error: 'forbidden' }, { status: 403 })
+          // Editor grant — or an admin-elevated assistant on any non-private doc.
+          const mayEdit = !!name && (canEditAgent(name, grants) || (perms.visibility !== 'private' && (await isElevatedAssistant(name))))
+          if (!name || !mayEdit) return json({ error: 'forbidden' }, { status: 403 })
           actor = name
           parsed.data.visibility = undefined
           parsed.data.editPolicy = undefined

@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { channelRole, insertChannelMessage, listChannelAgents, listChannelMessages } from '@/server/channels'
+import { agentMayAccessChannel, channelRole, insertChannelMessage, listChannelMessages } from '@/server/channels'
 import { notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
 import { resolveAttachments } from '@/server/uploads'
 import { indexActivity } from '@/server/retrieval/sources'
@@ -16,10 +16,10 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
     handlers: {
       GET: async ({ request, params }) => {
         const since = Number(new URL(request.url).searchParams.get('since') ?? -1)
-        // Agents in the channel can read it.
+        // Agents in the channel can read it (elevated assistants: any non-DM).
         if (checkAgentKey(request)) {
           const name = agentName(request)
-          if (!name || !(await listChannelAgents(params.id)).includes(name)) return json({ error: 'forbidden' }, { status: 403 })
+          if (!name || !(await agentMayAccessChannel(params.id, name))) return json({ error: 'forbidden' }, { status: 403 })
           return json({ messages: await listChannelMessages(params.id, Number.isFinite(since) ? since : -1) })
         }
         const user = await getSessionUser(request)
@@ -39,7 +39,7 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
         // reply storms) and can't attach uploads.
         if (checkAgentKey(request)) {
           const name = agentName(request)
-          if (!name || !(await listChannelAgents(params.id)).includes(name)) return json({ error: 'forbidden' }, { status: 403 })
+          if (!name || !(await agentMayAccessChannel(params.id, name))) return json({ error: 'forbidden' }, { status: 403 })
           if (!parsed.data.content.trim()) return json({ error: 'bad request' }, { status: 400 })
           const msg = await insertChannelMessage(params.id, 'agent', name, parsed.data.content, 'complete')
           const sql0 = await db()

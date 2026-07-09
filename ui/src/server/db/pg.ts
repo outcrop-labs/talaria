@@ -747,6 +747,10 @@ const MIGRATIONS: string[] = [
   `alter table channels add column if not exists kind text not null default 'channel'`,
   `alter table channels add column if not exists dm_key text`,
   `create unique index if not exists channels_dm_key_idx on channels(dm_key) where dm_key is not null`,
+  // Elevated personal assistants: an admin can promote an admin's assistant to
+  // org-wide view/edit (all boards, all non-DM channels, implicit editor on
+  // non-private KB/artifacts). Only effective while the owner is an admin.
+  `alter table agent_defs add column if not exists elevated boolean not null default false`,
 ]
 
 function ensureMigrated(): Promise<void> {

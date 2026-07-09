@@ -73,6 +73,9 @@ export interface ActingUser {
   /** For attribution: the human, or "<assistant> (for <human>)". */
   label: string
   viaAssistant: boolean
+  /** Admin-elevated assistant (org-wide view/edit; owner must be an admin).
+   *  Always false for humans — a human admin's access is unchanged by this. */
+  elevated: boolean
 }
 
 /** Who a request acts AS: the signed-in human — or, for a PERSONAL assistant
@@ -85,17 +88,48 @@ export async function actingUser(request: Request): Promise<ActingUser | null> {
     if (!model) return null
     const sql = await db()
     const rows = (await sql`
-      select u.id, u.role, u.email, u.name from agent_defs d
+      select u.id, u.role, u.email, u.name, d.elevated from agent_defs d
       join users u on u.id = d.owner_user_id
       where d.model = ${model} and d.owner_user_id is not null
-    `) as unknown as Array<{ id: string; role: Role; email: string | null; name: string | null }>
+    `) as unknown as Array<{ id: string; role: Role; email: string | null; name: string | null; elevated: boolean }>
     const owner = rows[0]
     if (!owner) return null // not a personal assistant → no proxied identity
-    return { id: owner.id, role: owner.role, label: `${model} (for ${owner.email ?? owner.name ?? owner.id})`, viaAssistant: true }
+    return {
+      id: owner.id,
+      role: owner.role,
+      label: `${model} (for ${owner.email ?? owner.name ?? owner.id})`,
+      viaAssistant: true,
+      // Elevation only bites while the owner is still an admin — demote the
+      // human and the assistant's reach collapses with them.
+      elevated: owner.elevated && owner.role === 'admin',
+    }
   }
   const user = await getSessionUser(request)
   if (!user) return null
-  return { id: user.id, role: user.role, label: user.email ?? user.name ?? 'user', viaAssistant: false }
+  return { id: user.id, role: user.role, label: user.email ?? user.name ?? 'user', viaAssistant: false, elevated: false }
+}
+
+/** True only for a personal assistant an admin explicitly promoted AND whose
+ *  owner is currently an admin. Gates org-wide agent access (all boards, all
+ *  non-DM channels, implicit editor on non-private KB/artifacts). */
+export async function isElevatedAssistant(model: string): Promise<boolean> {
+  const sql = await db()
+  const rows = await sql`
+    select 1 from agent_defs d join users u on u.id = d.owner_user_id
+    where d.model = ${model} and d.elevated and u.role = 'admin'
+  `
+  return rows.length > 0
+}
+
+/** Flip org-wide elevation on a user's personal assistant. Returns false if
+ *  the user has no assistant. Elevating requires the owner to be an admin. */
+export async function setAssistantElevated(userId: string, elevated: boolean): Promise<boolean> {
+  const sql = await db()
+  const rows = await sql`
+    update agent_defs set elevated = ${elevated}
+    where owner_user_id = ${userId} returning model
+  `
+  return rows.length > 0
 }
 
 /** A user's role (member when unknown — the restrictive default). */
@@ -139,6 +173,10 @@ export interface AdminUser {
   deniedViews: string[]
   /** Email is in AUTH_ADMIN_EMAILS — role is pinned to admin at every login. */
   pinnedAdmin: boolean
+  /** The user's personal assistant model, if they have one. */
+  assistantModel: string | null
+  /** Assistant promoted to org-wide view/edit (only effective while admin). */
+  assistantElevated: boolean
 }
 
 /** The admin console's user list: roles, activity, and agent allow-lists. */
@@ -147,8 +185,11 @@ export async function listUsersAdmin(): Promise<AdminUser[]> {
   const rows = await sql`
     select u.id, u.email, u.name, u.role, u.can_mint_keys as "canMintKeys", u.denied_views as "deniedViews",
            u.last_seen_at as "lastSeenAt", u.created_at as "createdAt",
-           coalesce(array_agg(a.agent_model) filter (where a.agent_model is not null), '{}') as "agentModels"
-    from users u left join user_agent_access a on a.user_id = u.id
+           coalesce(array_agg(a.agent_model) filter (where a.agent_model is not null), '{}') as "agentModels",
+           min(d.model) as "assistantModel", coalesce(bool_or(d.elevated), false) as "assistantElevated"
+    from users u
+    left join user_agent_access a on a.user_id = u.id
+    left join agent_defs d on d.owner_user_id = u.id
     group by u.id
     order by lower(coalesce(u.email, u.name, '')) asc
   `

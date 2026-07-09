@@ -6,6 +6,7 @@ import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteArtifact, getArtifact, guarded, saveArtifact, setArtifactOfficial, targetsForArtifact } from '@/server/artifacts'
 import { indexPlanDoc } from '@/server/plan-doc'
 import { canEditAgent, canEditHuman, canRead, isOwner, listEditors, setEditors } from '@/server/kb-perms'
+import { isElevatedAssistant } from '@/server/users'
 import { logAudit } from '@/server/audit'
 
 const Editor = z.object({ principalType: z.enum(['user', 'agent']), principalId: z.string().min(1).max(200), role: z.enum(['viewer', 'editor']).default('viewer') })
@@ -55,7 +56,9 @@ export const Route = createFileRoute('/api/artifacts/$id')({
         let owner = false
         if (checkAgentKey(request)) {
           const name = agentName(request)
-          if (!name || !canEditAgent(name, editors)) return json({ error: 'forbidden' }, { status: 403 })
+          // Editor grant — or an admin-elevated assistant on any non-private artifact.
+          const mayEdit = !!name && (canEditAgent(name, editors) || (artifact.visibility !== 'private' && (await isElevatedAssistant(name))))
+          if (!name || !mayEdit) return json({ error: 'forbidden' }, { status: 403 })
           actor = name
           parsed.data.visibility = undefined
           parsed.data.editPolicy = undefined

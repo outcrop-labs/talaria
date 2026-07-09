@@ -23,6 +23,16 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Elevated assistants — promote an admin's assistant to org-wide view/edit.**
+  Admin → Users gains an "elevated assistant" toggle on admin rows
+  (`agent_defs.elevated`). An elevated personal assistant reaches every live
+  board (tickets + governance as editor), every channel and relay, and gets
+  implicit editor rights on org-visible knowledge docs and artifacts. Hard
+  lines that elevation never crosses: human↔human DMs, other users' private
+  items, owner-only actions (board team moves, deletes, sharing changes).
+  Elevation is only effective while the owner is an admin — demote the human
+  and the assistant's reach collapses with them (demotion also clears the
+  flag). Audited (`user.assistant_elevated`).
 - **Drag boards between teams.** In the nav rail, a board's owner can drag it
   onto another team group (or Personal) to move it — groups highlight as drop
   targets, empty groups say "drop here". Server-side the move is owner-only

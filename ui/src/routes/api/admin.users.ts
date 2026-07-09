@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser, updateSessionsForUser } from '@/server/auth/session'
-import { listUsersAdmin, setDeniedViews, setUserAgentAccess, setUserCanMintKeys, setUserRole } from '@/server/users'
+import { listUsersAdmin, setAssistantElevated, setDeniedViews, setUserAgentAccess, setUserCanMintKeys, setUserRole } from '@/server/users'
 import { logAudit } from '@/server/audit'
 
 // Admin console API. GET → all users with roles + agent allow-lists.
@@ -27,6 +27,8 @@ export const Route = createFileRoute('/api/admin/users')({
             agentModels: z.array(z.string().max(200)).max(100).optional(),
             canMintKeys: z.boolean().optional(),
             deniedViews: z.array(z.string().max(60)).max(40).optional(),
+            /** Promote/demote the user's personal assistant to org-wide view/edit. */
+            assistantElevated: z.boolean().optional(),
           })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
@@ -40,6 +42,19 @@ export const Route = createFileRoute('/api/admin/users')({
           // Live sessions pick the role up immediately — no re-login dance.
           await updateSessionsForUser(parsed.data.userId, { role: parsed.data.role })
           void logAudit({ actor, action: 'user.role', targetType: 'user', targetId: parsed.data.userId, after: { role: parsed.data.role } })
+          // Demotion collapses the assistant's org-wide reach with the human.
+          if (parsed.data.role === 'member') await setAssistantElevated(parsed.data.userId, false)
+        }
+        if (parsed.data.assistantElevated !== undefined) {
+          if (parsed.data.assistantElevated) {
+            // Only an admin's assistant can be elevated — it inherits their standing.
+            const target = (await listUsersAdmin()).find((u) => u.id === parsed.data.userId)
+            const targetRole = parsed.data.role ?? target?.role
+            if (targetRole !== 'admin') return json({ error: 'only an admin’s assistant can be elevated' }, { status: 400 })
+            if (!target?.assistantModel) return json({ error: 'that user has no personal assistant' }, { status: 400 })
+          }
+          await setAssistantElevated(parsed.data.userId, parsed.data.assistantElevated)
+          void logAudit({ actor, action: 'user.assistant_elevated', targetType: 'user', targetId: parsed.data.userId, after: { assistantElevated: parsed.data.assistantElevated } })
         }
         if (parsed.data.agentModels) {
           await setUserAgentAccess(parsed.data.userId, parsed.data.agentModels)

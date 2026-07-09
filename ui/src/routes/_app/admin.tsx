@@ -32,6 +32,8 @@ interface AdminUser {
   canMintKeys: boolean
   deniedViews: string[]
   pinnedAdmin: boolean
+  assistantModel: string | null
+  assistantElevated: boolean
 }
 
 function useAdminUsers() {
@@ -54,7 +56,7 @@ function AdminPage() {
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
   const [error, setError] = useState<string | null>(null)
 
-  const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[] }) => {
+  const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[]; assistantElevated?: boolean }) => {
     setError(null)
     const r = await fetch('/api/admin/users', {
       method: 'PUT',
@@ -139,6 +141,20 @@ function AdminPage() {
                       />
                       keys
                     </label>
+                    {u.role === 'admin' && u.assistantModel && (
+                      <label
+                        className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
+                        title={`Give ${u.assistantModel} org-wide view/edit: every board, every channel and relay (never DMs), and editor rights on all org-visible knowledge and artifacts. Only while this user is an admin.`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={u.assistantElevated}
+                          onChange={(e) => void update(u.id, { assistantElevated: e.target.checked })}
+                          className="accent-[var(--theme-accent)]"
+                        />
+                        elevated assistant
+                      </label>
+                    )}
                     <span className="w-16 shrink-0 text-right text-xs text-muted">{relativeTime(u.lastSeenAt)}</span>
                   </div>
                   {u.role !== 'admin' && (

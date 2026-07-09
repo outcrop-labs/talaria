@@ -21,7 +21,7 @@ export const Route = createFileRoute('/api/boards/$id/agents')({
       PUT: async ({ request, params }) => {
         const user = await actingUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
+        if (!canEdit(await boardRole(user.id, params.id)) && !user.elevated) return json({ error: 'forbidden' }, { status: 403 })
         const parsed = z
           .object({
             allowAll: z.boolean().optional(),

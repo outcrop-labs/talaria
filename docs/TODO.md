@@ -69,6 +69,11 @@ engineering-facing tracker.
   - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
 
 ## High-value, ready to pick up
+- ✅ **Elevated admin assistants (2026-07-09)** — admins can promote an admin's
+  personal assistant to org-wide view/edit: all boards (editor-level, incl.
+  governance), all non-DM channels, implicit editor on org-visible KB docs +
+  artifacts. Never: DMs, others' private items, owner-only actions. Only
+  effective while the owner is an admin; audited. Admin → Users toggle.
 - **Multiplayer Plan** — plans are owner-private today; Jon's direction: Plan is
   "iterating on a document with agentic coworkers" and needs multiple humans on
   one plan (shared plan conversations + the living doc, presence, mentions

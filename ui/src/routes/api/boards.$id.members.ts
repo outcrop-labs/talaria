@@ -21,7 +21,7 @@ export const Route = createFileRoute('/api/boards/$id/members')({
       POST: async ({ request, params }) => {
         const user = await actingUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
+        if (!canEdit(await boardRole(user.id, params.id)) && !user.elevated) return json({ error: 'forbidden' }, { status: 403 })
         const parsed = z
           .object({ email: z.string().email(), role: z.enum(['editor', 'viewer']).default('editor') })
           .safeParse(await request.json().catch(() => null))
@@ -32,7 +32,7 @@ export const Route = createFileRoute('/api/boards/$id/members')({
       DELETE: async ({ request, params }) => {
         const user = await actingUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
+        if (!canEdit(await boardRole(user.id, params.id)) && !user.elevated) return json({ error: 'forbidden' }, { status: 403 })
         const parsed = z
           .object({ userId: z.string().uuid().optional(), email: z.string().email().optional() })
           .refine((b) => b.userId || b.email, { message: 'userId or email required' })

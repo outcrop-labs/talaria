@@ -5,6 +5,7 @@
 // a per-channel counter so concurrent writers can't collide.
 import { db } from './db/pg'
 import { publishChannel } from './realtime'
+import { isElevatedAssistant } from './users'
 
 export type ChannelRole = 'owner' | 'member'
 
@@ -184,12 +185,32 @@ export async function listChannelAgents(channelId: string): Promise<string[]> {
 /** Channels a given agent (by model) has been added to. */
 export async function listChannelsForAgent(model: string): Promise<Channel[]> {
   const sql = await db()
+  // An elevated assistant sees every live channel and relay — never DMs
+  // (human↔human direct messages stay private regardless of elevation).
+  if (await isElevatedAssistant(model)) {
+    const all = await sql`
+      select c.id, c.name, c.topic, c.kind, c.created_at as "createdAt", c.updated_at as "updatedAt"
+      from channels c where c.archived_at is null and c.kind <> 'dm'
+      order by c.updated_at desc
+    `
+    return all as unknown as Channel[]
+  }
   const rows = await sql`
     select c.id, c.name, c.topic, c.kind, c.created_at as "createdAt", c.updated_at as "updatedAt"
     from channels c join channel_agents a on a.channel_id = c.id and a.agent_model = ${model}
     where c.archived_at is null order by c.updated_at desc
   `
   return rows as unknown as Channel[]
+}
+
+/** May this agent read/post in this channel? Membership — or org-wide
+ *  elevation, which still never reaches DMs. */
+export async function agentMayAccessChannel(channelId: string, model: string): Promise<boolean> {
+  if ((await listChannelAgents(channelId)).includes(model)) return true
+  if (!(await isElevatedAssistant(model))) return false
+  const sql = await db()
+  const rows = await sql`select 1 from channels where id = ${channelId} and kind <> 'dm' and archived_at is null`
+  return rows.length > 0
 }
 
 export async function addChannelAgent(channelId: string, model: string): Promise<void> {
