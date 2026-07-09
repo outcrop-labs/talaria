@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CalendarClock, Loader2, Pause, Play, Sparkles, Trash2, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
@@ -281,7 +282,7 @@ export function CronsPanel({ agentId, intro }: { agentId: string; intro?: string
   }
 
   const act = async (jobId: string, action: 'pause' | 'resume' | 'run' | 'remove') => {
-    if (action === 'remove' && !confirm('Delete this scheduled job?')) return
+    if (action === 'remove' && !(await confirm({ title: 'Delete scheduled job', message: 'Delete this scheduled job?', confirmLabel: 'Delete', danger: true }))) return
     setBusy(true)
     setErr(null)
     try {
@@ -379,7 +380,7 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
   }
 
   const act = async (agentId: string, jobId: string, action: 'pause' | 'resume' | 'run' | 'remove') => {
-    if (action === 'remove' && !confirm('Delete this scheduled job?')) return
+    if (action === 'remove' && !(await confirm({ title: 'Delete scheduled job', message: 'Delete this scheduled job?', confirmLabel: 'Delete', danger: true }))) return
     if (action === 'remove') await fetch(`/api/fleet/agents/${agentId}/crons/${jobId}`, { method: 'DELETE', credentials: 'same-origin' })
     else
       await fetch(`/api/fleet/agents/${agentId}/crons/${jobId}`, {

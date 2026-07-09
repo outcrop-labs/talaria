@@ -32,13 +32,13 @@ export const NAV: NavSection[] = [
   {
     title: 'Work',
     items: [
-      { to: '/', label: 'Home', icon: '◇' },
+      { to: '/', label: 'Home', icon: '⌂' },
       { to: '/chat', label: 'Chat', icon: '◈' },
       { to: '/channels', label: 'Channels', icon: '⋕' },
       { to: '/boards', label: 'Boards', icon: '⧉' },
       { to: '/knowledge', label: 'Knowledge', icon: '❖' },
       { to: '/artifacts', label: 'Artifacts', icon: '◆' },
-      { to: '/inbox', label: 'Inbox', icon: '⌾' },
+      { to: '/inbox', label: 'Inbox', icon: '▽' },
     ],
   },
   {
@@ -47,9 +47,9 @@ export const NAV: NavSection[] = [
     items: [
       { to: '/agents', label: 'Agents', icon: '◍' },
       { to: '/models', label: 'Models', icon: '▤' },
-      { to: '/inference', label: 'Compute', icon: '▚' },
+      { to: '/inference', label: 'Compute', icon: '▦' },
       { to: '/cost', label: 'Cost', icon: '⌗' },
-      { to: '/activity', label: 'Audit', icon: '⌁' },
+      { to: '/activity', label: 'Audit', icon: '☰' },
       { to: '/alerts', label: 'Alerts', icon: '△' },
     ],
   },

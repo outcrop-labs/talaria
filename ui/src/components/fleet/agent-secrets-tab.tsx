@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/empty-state'
 import { relativeTime } from '@/lib/fleet'
@@ -53,7 +54,7 @@ export function SecretsTab({ agentId }: { agentId: string }) {
   }
 
   const remove = async (n: string) => {
-    if (!confirm(`Remove ${n}? The agent loses it on its next start.`)) return
+    if (!(await confirm({ title: 'Remove secret', message: `Remove ${n}? The agent loses it on its next start.`, confirmLabel: 'Remove', danger: true }))) return
     await fetch(`/api/fleet/agents/${agentId}/secrets?name=${encodeURIComponent(n)}`, { method: 'DELETE', credentials: 'same-origin' })
     await qc.invalidateQueries({ queryKey: key })
   }

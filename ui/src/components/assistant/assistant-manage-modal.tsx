@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Plus, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
+import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -298,7 +299,7 @@ function SkillEditor({
   }
 
   const remove = async () => {
-    if (!confirm(`Remove the "${name}" skill?`)) return
+    if (!(await confirm({ title: 'Remove skill', message: `Remove the "${name}" skill?`, confirmLabel: 'Remove', danger: true }))) return
     await fetch(`/api/skills/${assistant.slug}/${name}`, { method: 'DELETE', credentials: 'same-origin' })
     onChanged()
     onClose()

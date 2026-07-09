@@ -57,7 +57,7 @@ function InferencePage() {
           <div className="text-sm text-muted">Probing backends…</div>
         ) : backends.length === 0 ? (
           <EmptyState
-            icon="▚"
+            icon="▦"
             title="No self-hosted backends"
             hint="Add a self-hosted provider (Ollama, vLLM, a router) on the Models page — LAN and loopback URLs are classed self-hosted automatically."
           />

@@ -8,6 +8,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { prompt } from './confirm'
 
 // A slash-command menu (like Outline's block menu): type "/" to insert a block.
 // Filterable, keyboard-navigable, positioned at the caret. Built on TipTap's
@@ -33,8 +34,8 @@ const ITEMS: SlashItem[] = [
   { title: 'Code block', hint: 'Fenced code with highlighting', icon: SquareCode, keywords: ['code', 'pre', 'fence', 'snippet'], run: (e, r) => e.chain().focus().deleteRange(r).toggleCodeBlock().run() },
   { title: 'Table', hint: '3×3 table with a header row', icon: TableIcon, keywords: ['grid', 'sheet', 'cells'], run: (e, r) => e.chain().focus().deleteRange(r).insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
   { title: 'Divider', hint: 'A horizontal rule', icon: Minus, keywords: ['hr', 'rule', 'separator', 'line'], run: (e, r) => e.chain().focus().deleteRange(r).setHorizontalRule().run() },
-  { title: 'Image', hint: 'Embed an image by URL', icon: ImageIcon, keywords: ['photo', 'picture', 'img'], run: (e, r) => {
-    const url = window.prompt('Image URL')?.trim()
+  { title: 'Image', hint: 'Embed an image by URL', icon: ImageIcon, keywords: ['photo', 'picture', 'img'], run: async (e, r) => {
+    const url = (await prompt({ title: 'Insert image', placeholder: 'https://…', confirmLabel: 'Insert' }))?.trim()
     const chain = e.chain().focus().deleteRange(r)
     if (url) chain.setImage({ src: url }).run()
     else chain.run()

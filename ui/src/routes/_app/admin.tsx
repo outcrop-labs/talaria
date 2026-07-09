@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Avatar } from '@/components/ui/avatar'
+import { confirm } from '@/components/ui/confirm'
 import { Combobox } from '@/components/ui/combobox'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -241,7 +242,7 @@ function EncryptionPanel() {
   const [newRoot, setNewRoot] = useState('')
 
   const rotate = async () => {
-    if (!confirm('Rotate the encryption key? Every stored secret is re-encrypted under a fresh key in one pass. Existing secrets keep working.')) return
+    if (!(await confirm({ title: 'Rotate encryption key', message: 'Rotate the encryption key? Every stored secret is re-encrypted under a fresh key in one pass. Existing secrets keep working.', confirmLabel: 'Rotate' }))) return
     setBusy(true)
     setMsg(null)
     try {
@@ -475,7 +476,7 @@ function OrgGooglePanel() {
   }, [qc])
 
   const disconnect = async () => {
-    if (!confirm('Disconnect the org Google account? General agents lose Drive/Docs access.')) return
+    if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect the org Google account? General agents lose Drive/Docs access.', confirmLabel: 'Disconnect', danger: true }))) return
     await fetch('/api/integrations/google/org', { method: 'DELETE' })
     await qc.invalidateQueries({ queryKey: ['org-google'] })
   }

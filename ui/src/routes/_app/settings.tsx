@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Avatar } from '@/components/ui/avatar'
+import { confirm } from '@/components/ui/confirm'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -153,7 +154,7 @@ function IntegrationsSection() {
   }, [qc])
 
   const disconnect = async () => {
-    if (!confirm('Disconnect Google? Agents and exports lose access to your Drive.')) return
+    if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect Google? Agents and exports lose access to your Drive.', confirmLabel: 'Disconnect', danger: true }))) return
     await fetch('/api/integrations/google', { method: 'DELETE' })
     await qc.invalidateQueries({ queryKey: ['integration-google'] })
   }
@@ -252,7 +253,7 @@ function ApiKeysSection() {
   }
 
   const revoke = async (id: string) => {
-    if (!confirm('Revoke this key? Anything using it stops working immediately.')) return
+    if (!(await confirm({ title: 'Revoke key', message: 'Revoke this key? Anything using it stops working immediately.', confirmLabel: 'Revoke', danger: true }))) return
     await fetch(`/api/keys/${id}`, { method: 'DELETE' })
     await qc.invalidateQueries({ queryKey: ['api-keys'] })
   }

@@ -37,7 +37,7 @@ function InboxPage() {
       </div>
 
       {items.length === 0 ? (
-        <EmptyState icon="⌾" title="Nothing here yet" hint="@mentions from channels land in your inbox." />
+        <EmptyState icon="▽" title="Nothing here yet" hint="@mentions from channels land in your inbox." />
       ) : (
         <ul className="space-y-1">
           {items.map((n) => (

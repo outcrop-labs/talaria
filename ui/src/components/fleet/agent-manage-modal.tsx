@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { stringify as stringifyYaml } from 'yaml'
 import { Loader2, Check, Lock, X, RotateCcw, Plug } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { Markdown } from '@/components/ui/markdown'
@@ -263,7 +264,7 @@ function SkillEditorModal({ slug, name, isAdmin, onClose }: { slug: string; name
     }
   }
   const remove = async () => {
-    if (!confirm(`Delete the "${name}" skill?`)) return
+    if (!(await confirm({ title: 'Delete skill', message: `Delete the "${name}" skill?`, confirmLabel: 'Delete', danger: true }))) return
     await fetch(`/api/skills/${slug}/${name}`, { method: 'DELETE' })
     await qc.invalidateQueries({ queryKey: ['skills'] })
     onClose()
@@ -426,7 +427,7 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => confirm(`Remove "${s.name}"?`) && void edit({ remove: [s.name] })}
+                    onClick={async () => { if (await confirm({ title: 'Remove skill', message: `Remove "${s.name}"?`, confirmLabel: 'Remove', danger: true })) void edit({ remove: [s.name] }) }}
                     className="shrink-0 text-xs text-muted hover:text-[color:var(--theme-danger)]"
                   >
                     Remove
@@ -470,7 +471,7 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   const [busy, setBusy] = useState<number | null>(null)
   const [configOpen, setConfigOpen] = useState(false)
   const revert = async (v: number) => {
-    if (!confirm(`Revert ${def.displayName} to v${v}? This publishes it as a new version.`)) return
+    if (!(await confirm({ title: 'Revert version', message: `Revert ${def.displayName} to v${v}? This publishes it as a new version.`, confirmLabel: 'Revert' }))) return
     setBusy(v)
     try {
       await fetch(`/api/fleet/defs/${def.id}/versions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revertTo: v }) })

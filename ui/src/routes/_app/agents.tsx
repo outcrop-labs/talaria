@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Loader2, Copy, UserPlus, Plus } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
+import { confirm } from '@/components/ui/confirm'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -171,7 +172,7 @@ function useAgentControls(d: AgentDef) {
   const qc = useQueryClient()
   const [pending, setPending] = useState<string | null>(null)
   const act = async (action: FleetAction, label: string, confirmMsg?: string) => {
-    if (confirmMsg && !confirm(confirmMsg)) return
+    if (confirmMsg && !(await confirm({ title: label, message: confirmMsg, confirmLabel: label }))) return
     setPending(label)
     try {
       await controlAgent(d.id, action)
