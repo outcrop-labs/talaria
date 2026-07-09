@@ -427,6 +427,74 @@ server.registerTool(
   async ({ taskId, dependsOnId }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/dependencies`, { dependsOnId })),
 )
 
+// ── Board governance (personal assistants only) ─────────────────────────────
+// These act AS your owner (identity proxy). They only work if you're someone's
+// personal assistant AND your owner has the required board role — general
+// agents get 401/403. Talaria enforces both server-side.
+server.registerTool(
+  'list_teams',
+  {
+    description:
+      "List the teams your owner belongs to (personal assistants only). Use the names with move_board_to_team.",
+    inputSchema: {},
+  },
+  async () => ok(await api('GET', '/api/teams')),
+)
+
+server.registerTool(
+  'move_board_to_team',
+  {
+    description:
+      "Move a board into a team, or back to Personal (personal assistants only, and only for boards your owner OWNS — it changes who can see the board). Team is matched by name; use 'personal' to remove it from any team.",
+    inputSchema: {
+      boardId: z.string().describe('Board id (from list_boards)'),
+      teamName: z.string().max(120).describe("Team name (see list_teams), or 'personal' for no team"),
+    },
+  },
+  async ({ boardId, teamName }) => ok(await api('PATCH', `/api/boards/${encodeURIComponent(boardId)}`, { teamName })),
+)
+
+server.registerTool(
+  'add_board_member',
+  {
+    description:
+      "Share a board with a person by email (personal assistants only; your owner needs owner/editor on the board). Role 'editor' can change the board, 'viewer' is read-only.",
+    inputSchema: {
+      boardId: z.string().describe('Board id (from list_boards)'),
+      email: z.string().describe("The person's email"),
+      role: z.enum(['editor', 'viewer']).optional().describe("Access level (default 'editor')"),
+    },
+  },
+  async ({ boardId, email, role }) => ok(await api('POST', `/api/boards/${encodeURIComponent(boardId)}/members`, { email, role })),
+)
+
+server.registerTool(
+  'remove_board_member',
+  {
+    description:
+      "Remove a person from a board by email (personal assistants only; your owner needs owner/editor on the board). The board owner can't be removed.",
+    inputSchema: {
+      boardId: z.string().describe('Board id (from list_boards)'),
+      email: z.string().describe("The person's email"),
+    },
+  },
+  async ({ boardId, email }) => ok(await api('DELETE', `/api/boards/${encodeURIComponent(boardId)}/members`, { email })),
+)
+
+server.registerTool(
+  'set_board_agents',
+  {
+    description:
+      "Add or remove fleet agents on a board (personal assistants only; your owner needs owner/editor). Pass agent model names (e.g. 'dex-developer'). Returns the board's resulting agent policy.",
+    inputSchema: {
+      boardId: z.string().describe('Board id (from list_boards)'),
+      add: z.array(z.string().max(200)).max(100).optional().describe('Agent models to allow on the board'),
+      remove: z.array(z.string().max(200)).max(100).optional().describe('Agent models to remove from the board'),
+    },
+  },
+  async ({ boardId, add, remove }) => ok(await api('PUT', `/api/boards/${encodeURIComponent(boardId)}/agents`, { add, remove })),
+)
+
   return server
 }
 

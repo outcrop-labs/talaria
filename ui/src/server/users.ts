@@ -8,6 +8,8 @@
 // manage member allow-lists (UI later).
 
 import { db } from './db/pg'
+import { agentName, checkAgentKey } from './agent-auth'
+import { getSessionUser } from './auth/session'
 
 export type Role = 'admin' | 'member'
 
@@ -63,6 +65,37 @@ export async function upsertUser(identity: Identity): Promise<User> {
 export async function setUserName(userId: string, name: string): Promise<void> {
   const sql = await db()
   await sql`update users set name = ${name} where id = ${userId}`
+}
+
+export interface ActingUser {
+  id: string
+  role: Role
+  /** For attribution: the human, or "<assistant> (for <human>)". */
+  label: string
+  viaAssistant: boolean
+}
+
+/** Who a request acts AS: the signed-in human — or, for a PERSONAL assistant
+ *  calling with the fleet key, its owner (the identity-proxy model: your
+ *  assistant manages your boards for you). General agents resolve to null
+ *  here; governance actions stay human(-proxied). */
+export async function actingUser(request: Request): Promise<ActingUser | null> {
+  if (checkAgentKey(request)) {
+    const model = agentName(request)
+    if (!model) return null
+    const sql = await db()
+    const rows = (await sql`
+      select u.id, u.role, u.email, u.name from agent_defs d
+      join users u on u.id = d.owner_user_id
+      where d.model = ${model} and d.owner_user_id is not null
+    `) as unknown as Array<{ id: string; role: Role; email: string | null; name: string | null }>
+    const owner = rows[0]
+    if (!owner) return null // not a personal assistant → no proxied identity
+    return { id: owner.id, role: owner.role, label: `${model} (for ${owner.email ?? owner.name ?? owner.id})`, viaAssistant: true }
+  }
+  const user = await getSessionUser(request)
+  if (!user) return null
+  return { id: user.id, role: user.role, label: user.email ?? user.name ?? 'user', viaAssistant: false }
 }
 
 /** A user's role (member when unknown — the restrictive default). */

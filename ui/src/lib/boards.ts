@@ -163,6 +163,14 @@ export function useTask(taskId: string | null) {
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 export const createBoard = (name: string, teamId?: string | null) => post('/api/boards', { name, teamId }).then(j)
+/** Move a board between teams (null → personal). Owner only. */
+export const moveBoardToTeam = (boardId: string, teamId: string | null) =>
+  fetch(`/api/boards/${boardId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ teamId }),
+  }).then((r) => r.json().catch(() => ({})))
 export const createTask = (
   boardId: string,
   input: {
