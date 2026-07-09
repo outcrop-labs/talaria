@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ChatView } from '@/components/chat/chat-view'
 import { ConversationSidebar } from '@/components/chat/conversation-sidebar'
 import { PlanModal } from '@/components/chat/plan-modal'
+import { PlanDoc } from '@/components/chat/plan-doc'
 import { Button } from '@/components/ui/button'
 import { useAgents } from '@/lib/agents'
 import { useConversations, type Conversation } from '@/lib/conversations'
@@ -51,30 +52,43 @@ function PlanPage() {
 
   return (
     <div className="flex h-full min-h-0">
-      <main className="min-h-0 flex-1">
+      <main className="flex min-h-0 flex-1">
         {selectedAgent && current ? (
-          <ChatView
-            key={selectedAgent}
-            agentModel={selectedAgent}
-            agentLabel={current.label}
-            tiers={current.tiers ?? []}
-            conversationId={selectedConversationId}
-            newChatSignal={newChatSignal}
-            onCreated={onCreated}
-            kind="plan"
-            headerAction={
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!selectedConversationId}
-                onClick={() => setPlanOpen(true)}
-              >
-                Draft tickets
-              </Button>
-            }
-          />
+          <>
+            <div className="min-w-0 flex-1">
+              <ChatView
+                key={selectedAgent}
+                agentModel={selectedAgent}
+                agentLabel={current.label}
+                tiers={current.tiers ?? []}
+                conversationId={selectedConversationId}
+                newChatSignal={newChatSignal}
+                onCreated={onCreated}
+                kind="plan"
+                headerAction={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!selectedConversationId}
+                    onClick={() => setPlanOpen(true)}
+                  >
+                    Draft tickets
+                  </Button>
+                }
+              />
+            </div>
+            {/* The plan's living document — side by side with the chat. */}
+            {selectedConversationId ? (
+              <div className="hidden min-w-0 basis-[44%] lg:flex">
+                <PlanDoc
+                  planId={selectedConversationId}
+                  planTitle={conversations.find((c) => c.id === selectedConversationId)?.title ?? null}
+                />
+              </div>
+            ) : null}
+          </>
         ) : (
-          <div className="grid h-full place-items-center text-sm text-muted">
+          <div className="grid h-full flex-1 place-items-center text-sm text-muted">
             {agentsLoading ? 'Loading the fleet…' : 'No agents available.'}
           </div>
         )}
