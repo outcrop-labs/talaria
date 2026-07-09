@@ -36,8 +36,10 @@ engineering-facing tracker.
   - ✅ Microsite kind — HTML editing + sandboxed live preview + public hosting.
   - ✅ Attach an artifact to anything (`artifact_links`; KB docs are the first
     consumer with an Attachments section).
-  - ⏳ **File kind + uploads** — store binaries (reuse the uploads infra), host
-    + download; the `storage_ref` column is ready.
+  - ✅ **File kind + uploads** — verified working end-to-end (2026-07-09):
+    create file artifact → multipart upload → attach `storage_ref` →
+    authenticated download + public-slug download. (Landed with the
+    image-artifact/Drive-import work; this entry was stale.)
   - ✅ **Sheet kind** — editable grid, CSV/markdown round-trip, public view.
   - ✅ **Google Workspace export** — per-user OAuth (offline) → push a
     doc/sheet/file into the owner's Drive as a native Google Doc/Sheet. See
