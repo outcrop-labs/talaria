@@ -20,8 +20,14 @@ say(){ printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 ok(){ printf '  \033[32m✓\033[0m %s\n' "$*"; }
 die(){ printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
-# Deterministic per-name port offset (1..89) so names map to stable ports.
-N=$(( ( $(printf '%s' "$NAME" | cksum | cut -d' ' -f1) % 89 ) + 1 ))
+# Allocate the first FREE port slot (app 53xx / pg 56xx / redis 65xx) so any
+# number of worktrees can run at once without colliding.
+port_free(){ ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+N=0
+for c in $(seq 1 89); do
+  if port_free $((5300+c)) && port_free $((5600+c)) && port_free $((6500+c)); then N=$c; break; fi
+done
+[ "$N" -gt 0 ] || die "no free port slot — tear down some worktrees (docker compose -p talaria-wt-<n> down -v)"
 APP_PORT=$((5300 + N)); PG_PORT=$((5600 + N)); REDIS_PORT=$((6500 + N))
 WT="$ROOT/../talaria-$NAME"
 PROJECT="talaria-wt-$NAME"
