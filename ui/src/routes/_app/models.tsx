@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { confirm } from '@/components/ui/confirm'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -22,6 +22,7 @@ import {
   type AffectedAgent,
   type EndpointOpResult,
 } from '@/lib/models'
+import { useModels } from '@/lib/muse'
 import type { LlmEndpoint } from '@/lib/fleet-defs'
 
 export const Route = createFileRoute('/_app/models')({
@@ -66,6 +67,7 @@ function ModelsPage() {
           <>
             <Section title="Self-hosted — your hardware & on-prem" endpoints={local} />
             <Section title="Cloud" endpoints={cloud} />
+            <MemberAccessPanel />
           </>
         )}
 
@@ -348,6 +350,91 @@ function ModelAdder({ catalog, existing, onAdd }: { catalog: string[]; existing:
         </div>
       )}
     </div>
+  )
+}
+
+// Which models MEMBERS may pick (preferred model, muse drafting). Admins are
+// never restricted; an empty allowlist means everything is open. This is how
+// admins keep the expensive/powerful brains for deliberate use.
+function MemberAccessPanel() {
+  const qc = useQueryClient()
+  const { data: catalog } = useModels()
+  const { data: settings } = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: async (): Promise<{ memberModels: string[] }> => {
+      const r = await fetch('/api/admin/settings', { credentials: 'same-origin' })
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+  })
+  const models = (catalog?.models ?? []).filter((m) => !m.qualified)
+  const saved = settings?.memberModels ?? []
+  const [draft, setDraft] = useState<string[] | null>(null)
+  const selection = draft ?? saved
+  const restricted = selection.length > 0
+  const dirty = draft !== null && JSON.stringify([...draft].sort()) !== JSON.stringify([...saved].sort())
+
+  const save = async (ids: string[]) => {
+    await fetch('/api/admin/settings', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ memberModels: ids }),
+    })
+    setDraft(null)
+    await qc.invalidateQueries({ queryKey: ['admin-settings'] })
+    await qc.invalidateQueries({ queryKey: ['gateway-models'] })
+  }
+  const toggle = (id: string) =>
+    setDraft(selection.includes(id) ? selection.filter((x) => x !== id) : [...selection, id])
+
+  return (
+    <Panel>
+      <div className="mb-1 text-sm font-semibold text-fg">Member access</div>
+      <p className="mb-3 text-xs text-muted">
+        Which models non-admins may pick for AI drafting and as their preferred model. Keep the expensive or
+        powerful ones for deliberate, admin-configured use — agents' own brains are set per agent and unaffected.
+      </p>
+      <label className="mb-3 flex cursor-pointer items-center gap-2 text-sm text-fg">
+        <input
+          type="checkbox"
+          checked={restricted}
+          onChange={(e) => setDraft(e.target.checked ? selection : [])}
+          className="accent-[var(--theme-accent)]"
+        />
+        Limit members to selected models
+      </label>
+      {restricted && (
+        <div className="space-y-1 rounded-xl border border-line-subtle p-2">
+          {models.map((m) => (
+            <label key={m.id} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-card">
+              <input
+                type="checkbox"
+                checked={selection.includes(m.id)}
+                onChange={() => toggle(m.id)}
+                className="mt-1 shrink-0 accent-[var(--theme-accent)]"
+              />
+              <span className="min-w-0">
+                <span className="block truncate text-sm text-fg">{m.label ?? m.id}</span>
+                <span className="block truncate text-xs text-muted">{m.blurb || m.id}</span>
+              </span>
+            </label>
+          ))}
+          {models.length === 0 && <div className="px-2 py-1.5 text-xs text-muted">No models registered yet.</div>}
+        </div>
+      )}
+      <div className="mt-3 flex items-center gap-2">
+        <span className="text-xs text-muted">
+          {restricted
+            ? `${selection.length} model${selection.length === 1 ? '' : 's'} available to members`
+            : 'All registered models are available to members'}
+        </span>
+        <span className="ml-auto" />
+        <Button size="sm" onClick={() => void save(selection)} disabled={!dirty || (restricted && selection.length === 0)}>
+          Save
+        </Button>
+      </div>
+    </Panel>
   )
 }
 

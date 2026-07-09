@@ -65,6 +65,13 @@ export async function setUserName(userId: string, name: string): Promise<void> {
   await sql`update users set name = ${name} where id = ${userId}`
 }
 
+/** A user's role (member when unknown — the restrictive default). */
+export async function getUserRole(userId: string): Promise<Role> {
+  const sql = await db()
+  const rows = (await sql`select role from users where id = ${userId}`) as unknown as Array<{ role: Role }>
+  return rows[0]?.role ?? 'member'
+}
+
 /** Preferred gateway model for AI drafting (muse); null = server default. */
 export async function getPreferredModel(userId: string): Promise<string | null> {
   const sql = await db()

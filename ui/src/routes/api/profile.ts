@@ -2,6 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser, updateSessionUser } from '@/server/auth/session'
+import { gatewayModels } from '@/server/llm-gateway'
+import { memberModelAllowlist, modelAllowedFor } from '@/server/model-access'
 import { getPreferredModel, setPreferredModel, setUserName } from '@/server/users'
 
 // The signed-in user's profile. GET → preferences (preferred model). PUT
@@ -32,7 +34,20 @@ export const Route = createFileRoute('/api/profile')({
           await setUserName(user.id, name)
           updated = (await updateSessionUser(request, { name })) ?? user
         }
-        if (parsed.data.preferredModel !== undefined) await setPreferredModel(user.id, parsed.data.preferredModel)
+        if (parsed.data.preferredModel !== undefined) {
+          // Members may only pick allowlisted models — enforced here, not just
+          // hidden in the picker (admins gate the expensive brains).
+          if (parsed.data.preferredModel !== null) {
+            const allowed = modelAllowedFor(
+              user.role,
+              parsed.data.preferredModel,
+              await memberModelAllowlist(),
+              await gatewayModels(),
+            )
+            if (!allowed) return json({ error: 'that model is not available to you — ask an admin' }, { status: 403 })
+          }
+          await setPreferredModel(user.id, parsed.data.preferredModel)
+        }
         return json({ user: updated })
       },
     },

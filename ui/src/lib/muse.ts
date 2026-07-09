@@ -44,6 +44,10 @@ export interface GatewayModel {
   /** True for "<endpoint>/<model>" pins; false for bare model ids (which may
    *  themselves contain "/", e.g. OpenRouter names). */
   qualified: boolean
+  /** Pretty display name from the public catalog, when known. */
+  label?: string
+  /** One line on what the model is good at, when known. */
+  blurb?: string
 }
 
 /** The model catalog + the model the caller's muse resolves to right now. */
@@ -70,13 +74,15 @@ export function usePreferredModel() {
   })
 }
 
-export async function savePreferredModel(model: string | null): Promise<void> {
-  await fetch('/api/profile', {
+export async function savePreferredModel(model: string | null): Promise<{ error?: string }> {
+  const r = await fetch('/api/profile', {
     method: 'PUT',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ preferredModel: model }),
   })
+  if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }) ?? { error: `save failed (${r.status})` }
+  return {}
 }
 
 /** Parse the muse's cron JSON (tolerates stray fences/prose around it). */
