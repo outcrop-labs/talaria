@@ -105,6 +105,7 @@ import { Route as ApiTasksIdDependenciesRouteImport } from './routes/api/tasks.$
 import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.comments'
 import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
 import { Route as ApiRagCollectionsIdRouteImport } from './routes/api/rag.collections.$id'
+import { Route as ApiPlansIdMembersRouteImport } from './routes/api/plans.$id.members'
 import { Route as ApiPlanIdDraftRouteImport } from './routes/api/plan.$id.draft'
 import { Route as ApiPlanIdDocRouteImport } from './routes/api/plan.$id.doc'
 import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
@@ -640,6 +641,11 @@ const ApiRagCollectionsIdRoute = ApiRagCollectionsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ApiRagCollectionsRoute,
 } as any)
+const ApiPlansIdMembersRoute = ApiPlansIdMembersRouteImport.update({
+  id: '/api/plans/$id/members',
+  path: '/api/plans/$id/members',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPlanIdDraftRoute = ApiPlanIdDraftRouteImport.update({
   id: '/api/plan/$id/draft',
   path: '/api/plan/$id/draft',
@@ -1052,6 +1058,7 @@ export interface FileRoutesByFullPath {
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
+  '/api/plans/$id/members': typeof ApiPlansIdMembersRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
@@ -1204,6 +1211,7 @@ export interface FileRoutesByTo {
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
+  '/api/plans/$id/members': typeof ApiPlansIdMembersRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
@@ -1358,6 +1366,7 @@ export interface FileRoutesById {
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
+  '/api/plans/$id/members': typeof ApiPlansIdMembersRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
@@ -1512,6 +1521,7 @@ export interface FileRouteTypes {
     | '/api/llm/v1/models'
     | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
+    | '/api/plans/$id/members'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
@@ -1664,6 +1674,7 @@ export interface FileRouteTypes {
     | '/api/llm/v1/models'
     | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
+    | '/api/plans/$id/members'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
@@ -1817,6 +1828,7 @@ export interface FileRouteTypes {
     | '/api/llm/v1/models'
     | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
+    | '/api/plans/$id/members'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
@@ -1908,6 +1920,7 @@ export interface RootRouteChildren {
   ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
   ApiPlanIdDocRoute: typeof ApiPlanIdDocRoute
   ApiPlanIdDraftRoute: typeof ApiPlanIdDraftRoute
+  ApiPlansIdMembersRoute: typeof ApiPlansIdMembersRoute
   ApiKbPublicSpaceSlugRoute: typeof ApiKbPublicSpaceSlugRoute
   ApiLlmV1ChatCompletionsRoute: typeof ApiLlmV1ChatCompletionsRoute
 }
@@ -2585,6 +2598,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/rag/collections/$id'
       preLoaderRoute: typeof ApiRagCollectionsIdRouteImport
       parentRoute: typeof ApiRagCollectionsRoute
+    }
+    '/api/plans/$id/members': {
+      id: '/api/plans/$id/members'
+      path: '/api/plans/$id/members'
+      fullPath: '/api/plans/$id/members'
+      preLoaderRoute: typeof ApiPlansIdMembersRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/plan/$id/draft': {
       id: '/api/plan/$id/draft'
@@ -3560,6 +3580,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,
   ApiPlanIdDocRoute: ApiPlanIdDocRoute,
   ApiPlanIdDraftRoute: ApiPlanIdDraftRoute,
+  ApiPlansIdMembersRoute: ApiPlansIdMembersRoute,
   ApiKbPublicSpaceSlugRoute: ApiKbPublicSpaceSlugRoute,
   ApiLlmV1ChatCompletionsRoute: ApiLlmV1ChatCompletionsRoute,
 }

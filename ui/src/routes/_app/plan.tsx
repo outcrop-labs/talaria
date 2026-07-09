@@ -1,23 +1,96 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { UserPlus, X } from 'lucide-react'
 import { ChatView } from '@/components/chat/chat-view'
 import { ConversationSidebar } from '@/components/chat/conversation-sidebar'
 import { PlanModal } from '@/components/chat/plan-modal'
 import { PlanDoc } from '@/components/chat/plan-doc'
 import { userMentionInsert } from '@/components/chat/mentions'
+import { UserPicker } from '@/components/app/user-picker'
+import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+import { alert } from '@/components/ui/confirm'
+import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
+import { useSession } from '@/lib/session'
 import { useStickyAgent } from '@/lib/sticky-agent'
-import { useConversations, type Conversation } from '@/lib/conversations'
+import { sharePlan, unsharePlan, usePlanMembers, useConversations, type Conversation } from '@/lib/conversations'
 import { useUsers } from '@/lib/users'
 
 // Plan surface: think through the work with an agent, then draft tickets and
-// send them to a board. A plan is a durable conversation (kind='plan') — same
-// stream as chat, plus the "Draft tickets" action.
+// send them to a board. A plan is a durable MULTIPLAYER conversation
+// (kind='plan'): the owner shares it with teammates, everyone talks to the
+// same agent and living document, presence shows who's here now.
 export const Route = createFileRoute('/_app/plan')({
   component: PlanPage,
+  // ?p=<planId> deep-links a shared plan (share notifications land here).
+  validateSearch: (search: Record<string, unknown>): { p?: string } =>
+    typeof search.p === 'string' && search.p ? { p: search.p } : {},
 })
+
+/** Members + presence + share, in the plan chat header. Owner shares/removes;
+ *  a collaborator can leave. Green ring = viewing right now. */
+function PlanMembers({ planId }: { planId: string }) {
+  const { data } = usePlanMembers(planId)
+  const { data: session } = useSession()
+  const qc = useQueryClient()
+  const [adding, setAdding] = useState(false)
+  const members = data?.members ?? []
+  const active = new Set(data?.active ?? [])
+  const isOwner = !!session?.id && session.id === members.find((m) => m.role === 'owner')?.userId
+  const refresh = () => qc.invalidateQueries({ queryKey: ['plan-members', planId] })
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="flex -space-x-1.5">
+        {members.map((m) => (
+          <span key={m.userId} className="group relative" title={`${m.name ?? m.email}${m.role === 'owner' ? ' (owner)' : ''}${active.has(m.userId) ? ' — here now' : ''}`}>
+            <Avatar
+              name={m.name ?? m.email ?? '?'}
+              className={cn('h-6 w-6 text-[10px] ring-2 ring-surface', active.has(m.userId) && 'ring-[color:var(--theme-success,#22c55e)]')}
+            />
+            {(isOwner && m.role !== 'owner') || (m.userId === session?.id && m.role === 'collaborator') ? (
+              <button
+                type="button"
+                title={m.userId === session?.id ? 'Leave this plan' : `Remove ${m.name ?? m.email}`}
+                onClick={() => void unsharePlan(planId, m.userId).then(refresh)}
+                className="absolute -right-1 -top-1 hidden h-3.5 w-3.5 place-items-center rounded-full bg-card text-muted shadow group-hover:grid hover:text-fg"
+              >
+                <X size={9} />
+              </button>
+            ) : null}
+          </span>
+        ))}
+      </div>
+      {isOwner &&
+        (adding ? (
+          <UserPicker
+            size="sm"
+            className="w-48"
+            placeholder="Share with…"
+            exclude={members.map((m) => m.userId)}
+            onPick={(u) => {
+              setAdding(false)
+              if (!u.email) return
+              void sharePlan(planId, u.email)
+                .then(refresh)
+                .catch((e) => void alert({ title: 'Could not share', message: (e as Error).message }))
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            title="Share this plan with a teammate"
+            onClick={() => setAdding(true)}
+            className="grid h-6 w-6 place-items-center rounded-full border border-dashed border-line text-muted hover:text-fg"
+          >
+            <UserPlus size={12} />
+          </button>
+        ))}
+    </div>
+  )
+}
 
 function PlanPage() {
   const qc = useQueryClient()
@@ -57,6 +130,19 @@ function PlanPage() {
     void qc.invalidateQueries({ queryKey: ['conversations'] })
   }
 
+  // A ?p= deep link (share notification) selects that plan once it's loaded.
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  useEffect(() => {
+    if (!search.p) return
+    const target = conversations.find((c) => c.id === search.p)
+    if (target) {
+      selectConversation(target)
+      void navigate({ search: {}, replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search.p, conversations])
+
   const current = agents.find((a) => a.id === selectedAgent)
 
   return (
@@ -76,14 +162,17 @@ function PlanPage() {
                 kind="plan"
                 mentionables={mentionables}
                 headerAction={
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!selectedConversationId}
-                    onClick={() => setPlanOpen(true)}
-                  >
-                    Draft tickets
-                  </Button>
+                  <div className="flex items-center gap-3">
+                    {selectedConversationId && <PlanMembers planId={selectedConversationId} />}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!selectedConversationId}
+                      onClick={() => setPlanOpen(true)}
+                    >
+                      Draft tickets
+                    </Button>
+                  </div>
                 }
               />
             </div>

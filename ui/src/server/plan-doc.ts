@@ -12,9 +12,9 @@ import {
   saveArtifact,
   type Artifact,
 } from './artifacts'
-import { priorMessages } from './conversations'
+import { listPlanMembers, priorMessages } from './conversations'
 import { describeAgent, proxyChat } from './gateway'
-import { canRead, listEditors } from './kb-perms'
+import { canRead, listEditors, setEditors } from './kb-perms'
 import { notifyMentions } from './mentions'
 import { indexActivity } from './retrieval/sources'
 import { resolveTemplate, templatePrompt } from './templates'
@@ -50,6 +50,12 @@ export async function ensurePlanDoc(
     ownerUserId: owner.id,
   })
   await attachArtifact(artifact.id, { targetType: 'plan', targetId: conversationId }, owner.label)
+  // Collaborators already on the plan get editor grants on the doc the moment
+  // it exists (later shares grant at share time).
+  const collaborators = (await listPlanMembers(conversationId)).filter((m) => m.role === 'collaborator')
+  if (collaborators.length) {
+    await setEditors('artifact', artifact.id, collaborators.map((m) => ({ principalType: 'user' as const, principalId: m.userId, role: 'editor' as const })))
+  }
   if (template?.body.trim()) {
     return (await saveArtifact(artifact.id, { body: template.body }, owner.label)) ?? artifact
   }

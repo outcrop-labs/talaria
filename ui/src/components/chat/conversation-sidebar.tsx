@@ -27,6 +27,7 @@ export function ConversationSidebar({
   onNewChat: () => void
 }) {
   const agentConvs = conversations.filter((c) => c.agentModel === selectedAgent)
+  const sharedElsewhere = conversations.filter((c) => c.role === 'collaborator' && c.agentModel !== selectedAgent)
 
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-l border-line-subtle bg-sidebar">
@@ -59,10 +60,37 @@ export function ConversationSidebar({
                   )}
                 >
                   {c.title || 'Untitled'}
+                  {c.role === 'collaborator' && c.ownerLabel && (
+                    <span className="ml-1.5 text-[10px] text-muted">· {c.ownerLabel}</span>
+                  )}
                 </button>
               </li>
             ))}
           </ul>
+        )}
+        {/* Plans shared WITH you ride other agents — surface them regardless
+            of which agent is picked above. */}
+        {sharedElsewhere.length > 0 && (
+          <>
+            <div className="mt-4 px-2 text-[10px] font-semibold uppercase tracking-wide text-muted">Shared with you</div>
+            <ul className="mt-1 space-y-0.5">
+              {sharedElsewhere.map((c) => (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    onClick={() => onSelectConversation(c)}
+                    className={cn(
+                      'w-full truncate rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-card',
+                      c.id === selectedConversationId ? 'bg-card text-fg' : 'text-muted',
+                    )}
+                  >
+                    {c.title || 'Untitled'}
+                    {c.ownerLabel && <span className="ml-1.5 text-[10px] text-muted">· {c.ownerLabel}</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
       </div>
     </aside>
