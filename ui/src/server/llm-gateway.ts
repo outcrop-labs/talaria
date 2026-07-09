@@ -10,12 +10,15 @@
 // engineered into Talaria itself.
 import { db } from './db/pg'
 import { listEndpoints, type LlmEndpoint } from './agent-defs'
-import { NATIVE_BASE, resolveEndpointKey } from './provider-catalog'
+import { NATIVE_BASE, openrouterUsPool, resolveEndpointKey } from './provider-catalog'
 import { guardCompletion } from './guardrails'
 
 export interface GatewayModel {
   id: string
   endpoints: string[]
+  /** True for "<endpoint>/<model>" pins. Bare model ids may themselves contain
+   *  "/" (OpenRouter, HF-style names) — only this flag tells the two apart. */
+  qualified: boolean
 }
 
 /** All callable model ids: bare names + endpoint-qualified names. */
@@ -25,11 +28,11 @@ export async function gatewayModels(): Promise<GatewayModel[]> {
   const out: GatewayModel[] = []
   for (const ep of eps) {
     for (const m of ep.models) {
-      out.push({ id: `${ep.name}/${m}`, endpoints: [ep.name] })
+      out.push({ id: `${ep.name}/${m}`, endpoints: [ep.name], qualified: true })
       bare.set(m, [...(bare.get(m) ?? []), ep.name])
     }
   }
-  for (const [id, endpoints] of bare) out.push({ id, endpoints })
+  for (const [id, endpoints] of bare) out.push({ id, endpoints, qualified: false })
   return out.sort((a, b) => a.id.localeCompare(b.id))
 }
 
@@ -92,10 +95,18 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
     if (ep.provider === 'anthropic') headers['x-api-key'] = key
   }
 
-  const defaults = ((ep as unknown as { requestDefaults?: Record<string, unknown> }).requestDefaults ?? {}) as Record<
+  let defaults = ((ep as unknown as { requestDefaults?: Record<string, unknown> }).requestDefaults ?? {}) as Record<
     string,
     unknown
   >
+  // No-train routing on an OpenRouter endpoint: the US pool is fetched LIVE
+  // from OpenRouter's provider catalog on every call (briefly cached), never
+  // maintained by hand — a stored `only` list is only the offline fallback.
+  const prov = defaults.provider as { data_collection?: string; only?: string[] } | undefined
+  if (ep.provider === 'openrouter' && prov?.data_collection === 'deny') {
+    const pool = await openrouterUsPool()
+    if (pool) defaults = { ...defaults, provider: { ...prov, only: pool } }
+  }
   const body: Record<string, unknown> = { ...deepMerge(defaults, clientBody), model: route.upstreamModel }
   if (body.stream) body.stream_options = { include_usage: true, ...(body.stream_options as object | undefined) }
   return { url: `${base}/chat/completions`, headers, body }
