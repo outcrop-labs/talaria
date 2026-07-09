@@ -38,8 +38,14 @@ else
 DATABASE_URL=postgres://talaria:talaria@127.0.0.1:${PG_PORT}/talaria
 REDIS_URL=redis://127.0.0.1:${REDIS_PORT}
 
-# Sessions + secretbox encryption key (rotating it orphans stored secrets)
+# Session signing (safe to rotate — only invalidates live logins).
 AUTH_SECRET=$(rand 32)
+
+# Encryption root key (KEK) for secrets at rest. DEDICATED and STABLE: keep it
+# constant — changing it makes every encrypted secret unrecoverable. Worktrees
+# MUST share this exact value (scripts/worktree.sh copies it) so a second stack
+# can decrypt data seeded from this one.
+TALARIA_SECRET_KEY=$(rand 32)
 
 # Password sign-in. Format: email:password[,email:password...]
 AUTH_PASSWORD_ENABLED=1
@@ -86,6 +92,11 @@ say "App dependencies"
 if [ -d ui/node_modules ]; then skip "ui/node_modules"; else
   (cd ui && npm install --no-fund --no-audit) && ok "npm install"
 fi
+
+say "Git convenience"
+# `git wt <name>` → an isolated dev worktree (own DB seeded from main). Using this
+# instead of a plain `git worktree add` keeps a second app off your main DB.
+git config alias.wt '!bash scripts/worktree.sh' 2>/dev/null && ok "git wt → scripts/worktree.sh" || skip "git alias"
 
 echo
 printf '\033[1;32mSetup complete.\033[0m\n\n'

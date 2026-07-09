@@ -7,7 +7,7 @@
 // Every cipher column in the database is listed here; add new ones as secrets
 // are introduced so rotation stays complete.
 import { db } from './db/pg'
-import { currentKeyVersion, installActiveKey, newDek, open, sealWith, wrapDekFor } from './secretbox'
+import { currentKeyVersion, installActiveKey, loadedVersions, newDek, open, rewrapVersion, sealWith, wrapDekFor } from './secretbox'
 
 /** Every table+column holding a secretbox ciphertext, with its primary key. */
 const CIPHER_TARGETS: Array<{ table: string; column: string; pk: string[] }> = [
@@ -43,7 +43,7 @@ export async function rotateSecrets(newRootMaterial?: string): Promise<RotationR
         `select ${cols} from ${ident(table)} where ${ident(column)} is not null`,
       )) as unknown as Array<Record<string, string>>
       for (const row of rows) {
-        const resealed = sealWith(fresh, open(row.cipher!)) // decrypt (current key) → re-encrypt (new key)
+        const resealed = sealWith(fresh, nextVersion, open(row.cipher!)) // decrypt (current) → re-encrypt (new, versioned)
         const whereClause = pk.map((c, i) => `${ident(c)} = $${i + 2}`).join(' and ')
         await tx.unsafe(
           `update ${ident(table)} set ${ident(column)} = $1 where ${whereClause}`,
@@ -52,7 +52,15 @@ export async function rotateSecrets(newRootMaterial?: string): Promise<RotationR
         reencrypted++
       }
     }
-    // Publish the new key version, wrapped under the (possibly new) root.
+    // If the root secret is changing, re-wrap every RETAINED key version under
+    // the new KEK so old versions stay unwrappable (old ciphertext keeps working).
+    if (newRootMaterial) {
+      for (const v of loadedVersions()) {
+        await tx`update secret_keys set wrapped_dek = ${rewrapVersion(v, newRootMaterial)} where version = ${v}`
+      }
+    }
+    // Publish the new active version — prior versions are KEPT (marked inactive)
+    // so their ciphertext still decrypts.
     await tx`update secret_keys set active = false where active`
     await tx`insert into secret_keys (version, wrapped_dek, active)
              values (${nextVersion}, ${wrapDekFor(fresh, newRootMaterial)}, true)`

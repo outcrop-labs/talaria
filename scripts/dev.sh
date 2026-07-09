@@ -7,6 +7,17 @@ cd "$(dirname "$0")/.."
 
 [ -f ui/.env ] || { echo "ui/.env missing — run ./scripts/setup.sh first" >&2; exit 1; }
 
+# Guard: a LINKED git worktree (its .git is a file, not a dir) must have its own
+# isolated stack, or it will run a second app against the MAIN dev DB and can
+# corrupt shared state (see docs/WORKTREES.md). scripts/worktree.sh stamps
+# TALARIA_WORKTREE; a plain `git worktree add` won't have it.
+if [ -f .git ] && ! grep -q '^TALARIA_WORKTREE=' ui/.env; then
+  echo "✗ This is a git worktree without an isolated stack." >&2
+  echo "  Don't run dev.sh here — it would share the main dev database." >&2
+  echo "  Create isolated worktrees with:  ./scripts/worktree.sh <name>   (see docs/WORKTREES.md)" >&2
+  exit 1
+fi
+
 echo "▸ infra (postgres + redis)"
 docker compose -f docker/dev-compose.yml up -d
 

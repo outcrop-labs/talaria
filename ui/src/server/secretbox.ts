@@ -5,18 +5,23 @@
 // quantum-resistant). No asymmetric crypto is used, so Shor's algorithm has
 // nothing to attack.
 //
-// Envelope encryption (KEK → DEK):
+// Envelope encryption (KEK → DEK), versioned so it's safe across processes:
 //   • KEK (key-encryption key) — derived via scrypt from the root secret
 //     (TALARIA_SECRET_KEY, or TALARIA_SECRET_KEY_FILE contents, or AUTH_SECRET).
-//     This is the ONLY key material that lives outside the database.
-//   • DEK (data-encryption key) — a random 256-bit key that actually encrypts
-//     every secret. It is stored in the DB *wrapped* by the KEK, so the key that
-//     "unlocks everything" is never in a config file.
+//     The ONLY key material outside the DB. Keep it STABLE — if it changes, the
+//     wrapped DEKs can't be unwrapped and secrets are unrecoverable.
+//   • DEK (data-encryption key) — a random 256-bit key that encrypts every
+//     secret. Stored in `secret_keys` *wrapped* by the KEK. Every version is kept
+//     forever, so old ciphertext always decrypts.
 //
-// Rotation re-generates the DEK and re-encrypts every secret under it in one
-// pass (see secret-rotation.ts) — the root secret can be rotated cheaply by
-// re-wrapping the DEK. Ciphertext is `v1:<iv>:<tag>:<data>` (KEK-direct legacy)
-// or `v2:<iv>:<tag>:<data>` (DEK) — base64url parts.
+// Ciphertext:
+//   v1:<iv>:<tag>:<data>            KEK-direct (legacy; also how a DEK is wrapped)
+//   v2:<iv>:<tag>:<data>            DEK, unversioned (legacy — pre-versioning)
+//   v2:<ver>:<iv>:<tag>:<data>      DEK version <ver>  ← what seal() writes now
+//
+// Because every current token names its DEK version, a second app instance or a
+// key rotation can NEVER decrypt with the wrong key or orphan a secret: open()
+// loads exactly the version the token was sealed with. All parts are base64url.
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -24,12 +29,16 @@ import type { Sql } from 'postgres'
 
 const SALT = 'talaria.secretbox.v1'
 
+// In-memory key material lives on globalThis so a Vite HMR reload of this module
+// (dev) doesn't wipe the loaded DEKs while the one-time migration/init stays
+// cached — which would leave seal()/open() with no key until a full restart.
+const g = globalThis as unknown as { __sbKek?: Buffer; __sbDeks?: Map<number, Buffer>; __sbActive?: number }
+g.__sbDeks ??= new Map<number, Buffer>()
+
 // ── KEK: the root of trust, derived from the operator secret ──────────────────
-let cachedKek: Buffer | null = null
 function kekMaterial(): string {
   let material = process.env.TALARIA_SECRET_KEY || ''
   if (!material && process.env.TALARIA_SECRET_KEY_FILE) {
-    // A key-file keeps the root secret out of the app config / repo entirely.
     material = readFileSync(process.env.TALARIA_SECRET_KEY_FILE, 'utf8').trim()
   }
   material ||= process.env.AUTH_SECRET || ''
@@ -37,8 +46,8 @@ function kekMaterial(): string {
   return material
 }
 function kek(): Buffer {
-  if (!cachedKek) cachedKek = scryptSync(kekMaterial(), SALT, 32)
-  return cachedKek
+  if (!g.__sbKek) g.__sbKek = scryptSync(kekMaterial(), SALT, 32)
+  return g.__sbKek
 }
 /** Derive a KEK from arbitrary root material (used when rotating the root). */
 export function deriveKek(material: string): Buffer {
@@ -46,82 +55,118 @@ export function deriveKek(material: string): Buffer {
 }
 
 // ── Low-level AES-256-GCM ─────────────────────────────────────────────────────
-function encWith(k: Buffer, plaintext: string, version: 'v1' | 'v2'): string {
+function encRaw(k: Buffer, plaintext: string): { iv: string; tag: string; data: string } {
   const iv = randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', k, iv)
   const data = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
-  const tag = cipher.getAuthTag()
-  return [version, iv.toString('base64url'), tag.toString('base64url'), data.toString('base64url')].join(':')
+  return { iv: iv.toString('base64url'), tag: cipher.getAuthTag().toString('base64url'), data: data.toString('base64url') }
 }
-function decWith(k: Buffer, token: string): string {
-  const parts = token.split(':')
-  if (parts.length !== 4 || (parts[0] !== 'v1' && parts[0] !== 'v2')) throw new Error('secretbox: unrecognized token')
-  const decipher = createDecipheriv('aes-256-gcm', k, Buffer.from(parts[1]!, 'base64url'))
-  decipher.setAuthTag(Buffer.from(parts[2]!, 'base64url'))
-  return Buffer.concat([decipher.update(Buffer.from(parts[3]!, 'base64url')), decipher.final()]).toString('utf8')
+function decRaw(k: Buffer, iv: string, tag: string, data: string): string {
+  const decipher = createDecipheriv('aes-256-gcm', k, Buffer.from(iv, 'base64url'))
+  decipher.setAuthTag(Buffer.from(tag, 'base64url'))
+  return Buffer.concat([decipher.update(Buffer.from(data, 'base64url')), decipher.final()]).toString('utf8')
 }
 
-// ── DEK: the data key, wrapped in the DB under the KEK, cached in memory ───────
-let cachedDek: { key: Buffer; version: number } | null = null
+// ── DEK registry: every version, loaded once, kept in memory ──────────────────
 
-/** Wrap a DEK for storage (a v1 token whose plaintext is the base64 DEK). */
 function wrapDek(dek: Buffer, k: Buffer = kek()): string {
-  return encWith(k, dek.toString('base64'), 'v1')
+  const { iv, tag, data } = encRaw(k, dek.toString('base64'))
+  return ['v1', iv, tag, data].join(':')
 }
 function unwrapDek(wrapped: string, k: Buffer = kek()): Buffer {
-  return Buffer.from(decWith(k, wrapped), 'base64')
+  const [, iv, tag, data] = wrapped.split(':')
+  return Buffer.from(decRaw(k, iv!, tag!, data!), 'base64')
 }
 
-/** Load (or, on first run, create) the active DEK. Called once during migration
- *  so seal()/open() stay synchronous in every request path afterwards. */
+/** Load EVERY DEK version into memory (unwrapping each with the KEK), or create
+ *  the first one. Called during migration, so seal()/open() stay synchronous. */
 export async function initSecretbox(sql: Sql): Promise<void> {
-  if (cachedDek) return
   const rows = (await sql`
-    select version, wrapped_dek as "wrappedDek" from secret_keys where active order by version desc limit 1
-  `) as unknown as Array<{ version: number; wrappedDek: string }>
-  if (rows[0]) {
-    cachedDek = { key: unwrapDek(rows[0].wrappedDek), version: rows[0].version }
+    select version, wrapped_dek as "wrappedDek", active from secret_keys order by version asc
+  `) as unknown as Array<{ version: number; wrappedDek: string; active: boolean }>
+
+  if (rows.length === 0) {
+    const dek = randomBytes(32) // 256-bit
+    await sql`insert into secret_keys (version, wrapped_dek, active) values (1, ${wrapDek(dek)}, true)`
+    g.__sbDeks!.set(1, dek)
+    g.__sbActive = 1
     return
   }
-  const dek = randomBytes(32) // 256-bit — post-quantum-safe
-  await sql`insert into secret_keys (version, wrapped_dek, active) values (1, ${wrapDek(dek)}, true)`
-  cachedDek = { key: dek, version: 1 }
+  for (const r of rows) {
+    if (g.__sbDeks!.has(r.version)) continue
+    try {
+      g.__sbDeks!.set(r.version, unwrapDek(r.wrappedDek))
+      if (r.active) g.__sbActive = r.version
+    } catch {
+      // Loud, but don't brick the app: a version we can't unwrap means the root
+      // secret changed. Its ciphertext will fail to decrypt (callers fall back);
+      // secrets sealed under loadable versions keep working.
+      console.error(
+        `[secretbox] cannot unwrap data key v${r.version} — TALARIA_SECRET_KEY/AUTH_SECRET differs from when it was created. ` +
+          `Restore the original root secret to recover secrets sealed with v${r.version}.`,
+      )
+    }
+  }
+  if (!g.__sbActive) g.__sbActive = g.__sbDeks!.size ? Math.max(...g.__sbDeks!.keys()) : 0
+  if (!g.__sbActive) console.error('[secretbox] no usable data key — new secrets cannot be sealed until the root secret is restored')
 }
 
-function dek(): { key: Buffer; version: number } {
-  if (!cachedDek) throw new Error('secretbox: not initialized (initSecretbox must run during DB migration)')
-  return cachedDek
+function dekFor(version: number): Buffer {
+  const key = g.__sbDeks!.get(version)
+  if (!key) throw new Error(`secretbox: data key v${version} not loaded (rotated by another process? restart to pick it up)`)
+  return key
+}
+function active(): { key: Buffer; version: number } {
+  if (!g.__sbActive) throw new Error('secretbox: not initialized (initSecretbox must run during DB migration)')
+  return { key: dekFor(g.__sbActive), version: g.__sbActive }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
-/** Encrypt a UTF-8 string with the current DEK. */
+/** Encrypt with the active DEK; the token records its version. */
 export function seal(plaintext: string): string {
-  return encWith(dek().key, plaintext, 'v2')
+  const { key, version } = active()
+  const { iv, tag, data } = encRaw(key, plaintext)
+  return ['v2', String(version), iv, tag, data].join(':')
 }
-/** Decrypt a token from seal(). Handles legacy v1 (KEK-direct) and v2 (DEK). */
+/** Decrypt any token this module has produced. */
 export function open(token: string): string {
-  return decWith(token.startsWith('v1:') ? kek() : dek().key, token)
+  const p = token.split(':')
+  if (p[0] === 'v1') return decRaw(kek(), p[1]!, p[2]!, p[3]!)
+  if (p[0] === 'v2' && p.length === 5) return decRaw(dekFor(Number(p[1])), p[2]!, p[3]!, p[4]!) // versioned
+  if (p[0] === 'v2' && p.length === 4) return decRaw(active().key, p[1]!, p[2]!, p[3]!) // legacy unversioned
+  throw new Error('secretbox: unrecognized token')
 }
 
 // ── Rotation support (used by secret-rotation.ts) ─────────────────────────────
 export function currentKeyVersion(): number {
-  return dek().version
-}
-/** Encrypt with an explicit DEK — for re-encrypting rows under a fresh key. */
-export function sealWith(dekKey: Buffer, plaintext: string): string {
-  return encWith(dekKey, plaintext, 'v2')
+  return active().version
 }
 /** A fresh random 256-bit DEK. */
 export function newDek(): Buffer {
   return randomBytes(32)
 }
+/** Every DEK version currently loaded (for re-wrapping on a root-key rotation). */
+export function loadedVersions(): number[] {
+  return [...g.__sbDeks!.keys()]
+}
+/** Re-wrap an existing version's DEK under a KEK derived from new root material. */
+export function rewrapVersion(version: number, rootMaterial: string): string {
+  return wrapDek(dekFor(version), deriveKek(rootMaterial))
+}
+/** Encrypt with an explicit DEK + version — for re-encrypting under a new key. */
+export function sealWith(dekKey: Buffer, version: number, plaintext: string): string {
+  const { iv, tag, data } = encRaw(dekKey, plaintext)
+  return ['v2', String(version), iv, tag, data].join(':')
+}
 /** Wrap a DEK under the current KEK, or a KEK derived from new root material. */
 export function wrapDekFor(dekKey: Buffer, rootMaterial?: string): string {
   return wrapDek(dekKey, rootMaterial ? deriveKek(rootMaterial) : kek())
 }
-/** Swap the in-memory active DEK (and, if the root changed, the KEK) after a
- *  successful rotation, so subsequent seal()/open() use the new key. */
+/** Register a freshly-rotated DEK as active (keeping all prior versions). If the
+ *  root changed, the KEK moves too — every retained version stays wrapped under
+ *  whatever the DB holds, so re-wrap them there in the same transaction. */
 export function installActiveKey(dekKey: Buffer, version: number, rootMaterial?: string): void {
-  cachedDek = { key: dekKey, version }
-  if (rootMaterial) cachedKek = deriveKek(rootMaterial)
+  if (rootMaterial) g.__sbKek = deriveKek(rootMaterial)
+  g.__sbDeks!.set(version, dekKey)
+  g.__sbActive = version
 }

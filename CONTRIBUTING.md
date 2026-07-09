@@ -52,6 +52,13 @@ recreate the agents to pick it up.
 - **Reuse the primitives.** Build on the components in `ui/src/components/ui/`; don't recreate them.
 - Match surrounding style; the app is strict TypeScript, the plugin is stdlib-only Python.
 
+## Working in parallel
+
+Spin up an **isolated** dev stack per branch instead of running two servers
+against one database — see [`docs/WORKTREES.md`](./docs/WORKTREES.md)
+(`./scripts/worktree.sh <name>`). How secrets are protected and the one rule that
+keeps them recoverable is in [`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md).
+
 ## Pull requests
 
 Include what you verified (tsc + the exercised path) and update `CHANGELOG.md`.
