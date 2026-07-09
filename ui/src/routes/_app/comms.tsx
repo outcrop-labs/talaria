@@ -62,6 +62,15 @@ function CommsPage() {
     setFresh((n) => n + 1)
   }
 
+  // Clicking an agent lands on its WORKING thread when a reply is in flight —
+  // leaving mid-stream and coming back must show the agent still at it, not a
+  // blank new thread that makes the work look lost. Otherwise: fresh thread.
+  const openAgent = (model: string) => {
+    const working = conversations.find((c) => c.agentModel === model && c.working)
+    if (working) setSel({ t: 'agent', model, conversationId: working.id })
+    else newThread(model)
+  }
+
   const rooms = channels.filter((c) => c.kind === 'channel')
   const relays = channels.filter((c) => c.kind === 'group')
   const dms = channels.filter((c) => c.kind === 'dm')
@@ -160,10 +169,13 @@ function CommsPage() {
             return (
               <li key={a.id}>
                 <ul className="space-y-0.5">
-                  {/* Clicking the agent = a fresh thread (bounded context by default). */}
-                  <RowButton active={activeAgent && sel.conversationId === null} onClick={() => newThread(a.id)}>
+                  {/* Clicking the agent = its working thread if one is live, else fresh. */}
+                  <RowButton active={activeAgent && sel.conversationId === null} onClick={() => openAgent(a.id)}>
                     <span className="shrink-0 opacity-60">◍</span>
                     <span className="min-w-0 flex-1 truncate">{a.label}</span>
+                    {conversations.some((c) => c.agentModel === a.id && c.working) && (
+                      <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" title="working on a reply" />
+                    )}
                     {activeAgent && sel.conversationId === null && (
                       <span className="shrink-0 text-[10px] text-muted">new</span>
                     )}
@@ -176,6 +188,7 @@ function CommsPage() {
                       className="pl-7 text-xs"
                     >
                       <span className="min-w-0 flex-1 truncate">{c.title || 'Untitled'}</span>
+                      {c.working && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />}
                     </RowButton>
                   ))}
                 </ul>

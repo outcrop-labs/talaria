@@ -30,6 +30,13 @@ export async function removeContainerByName(name: string): Promise<void> {
   await run('docker', ['rm', '-f', name], { timeout: 60_000 })
 }
 
+/** The managed container's CURRENT name — anything that docker-execs into an
+ *  agent must resolve through this, never hardcode the slot-a name (a rolled
+ *  agent lives in "-b-1" until its next roll). */
+export async function managedContainer(department: string): Promise<string> {
+  return slotContainer(department, await activeSlot(department))
+}
+
 /** The fleet joins an EXTERNAL network (shared with app/bridge/MCP containers),
  *  which compose declares but never creates. Create it here when missing so a
  *  fresh install works without any setup script. Idempotent, race-safe. */

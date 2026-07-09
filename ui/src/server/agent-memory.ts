@@ -4,6 +4,7 @@
 // there's no second copy to drift. Requires the container to be up.
 import { execFile } from 'node:child_process'
 import { db } from './db/pg'
+import { managedContainer } from './fleet-docker'
 import { snapshot } from './internal-history'
 
 const MEMORY_PATH = '/opt/data/memories/MEMORY.md'
@@ -29,11 +30,12 @@ async function departmentFor(defId: string): Promise<{ department: string; displ
   return rows[0]
 }
 
-const container = (department: string) => `talaria-fleet-agent-${department}-1`
+// Slot-aware: a rolled agent lives in the '-b' service until its next roll.
+const container = (department: string) => managedContainer(department)
 
 export async function readMemory(defId: string): Promise<{ content: string; container: string }> {
   const { department } = await departmentFor(defId)
-  const name = container(department)
+  const name = await container(department)
   const { stdout } = await exec(['exec', name, 'cat', MEMORY_PATH]).catch((e: Error) => {
     if (/no such file/i.test(e.message)) return { stdout: '', stderr: '' }
     throw new Error(`cannot read memory from ${name}: ${e.message}`)
@@ -46,7 +48,7 @@ export async function readMemory(defId: string): Promise<{ content: string; cont
  *  is snapshotted so any prior memory is recoverable. */
 export async function writeMemory(defId: string, content: string, author?: string | null): Promise<void> {
   const { department } = await departmentFor(defId)
-  const name = container(department)
+  const name = await container(department)
   await exec(['exec', '-i', name, 'sh', '-c', `cat > ${MEMORY_PATH}`], content).catch((e: Error) => {
     throw new Error(`cannot write memory in ${name}: ${e.message}`)
   })
