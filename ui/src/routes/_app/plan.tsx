@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ChatView } from '@/components/chat/chat-view'
 import { ConversationSidebar } from '@/components/chat/conversation-sidebar'
@@ -7,6 +7,7 @@ import { PlanModal } from '@/components/chat/plan-modal'
 import { PlanDoc } from '@/components/chat/plan-doc'
 import { Button } from '@/components/ui/button'
 import { useAgents } from '@/lib/agents'
+import { useStickyAgent } from '@/lib/sticky-agent'
 import { useConversations, type Conversation } from '@/lib/conversations'
 
 // Plan surface: think through the work with an agent, then draft tickets and
@@ -22,21 +23,17 @@ function PlanPage() {
   const agents = useMemo(() => fleet?.agents ?? [], [fleet])
   const { data: conversations = [] } = useConversations('plan')
 
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
+  const [selectedAgent, pickAgent] = useStickyAgent('plan', agents)
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [newChatSignal, setNewChatSignal] = useState(0)
   const [planOpen, setPlanOpen] = useState(false)
 
-  useEffect(() => {
-    if (!selectedAgent && agents[0]) setSelectedAgent(agents[0].id)
-  }, [agents, selectedAgent])
-
   const selectConversation = (c: Conversation) => {
-    setSelectedAgent(c.agentModel)
+    pickAgent(c.agentModel)
     setSelectedConversationId(c.id)
   }
   const selectAgent = (agentModel: string) => {
-    setSelectedAgent(agentModel)
+    pickAgent(agentModel)
     setSelectedConversationId(null)
     setNewChatSignal((n) => n + 1)
   }
