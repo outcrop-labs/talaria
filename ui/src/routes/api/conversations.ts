@@ -11,7 +11,8 @@ export const Route = createFileRoute('/api/conversations')({
       GET: async ({ request }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        return json({ conversations: await listConversations(user.id) })
+        const kind = new URL(request.url).searchParams.get('kind') === 'plan' ? 'plan' : 'chat'
+        return json({ conversations: await listConversations(user.id, kind) })
       },
     },
   },

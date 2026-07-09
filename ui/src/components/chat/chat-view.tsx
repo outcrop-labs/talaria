@@ -37,6 +37,8 @@ export function ChatView({
   conversationId,
   newChatSignal,
   onCreated,
+  kind = 'chat',
+  headerAction,
 }: {
   agentModel: string
   agentLabel: string
@@ -45,6 +47,10 @@ export function ChatView({
   conversationId: string | null
   newChatSignal: number
   onCreated: (id: string) => void
+  /** 'plan' conversations live in the Plan surface and draft tickets. */
+  kind?: 'chat' | 'plan'
+  /** Optional actions rendered in a top bar (e.g. Plan's "Draft tickets"). */
+  headerAction?: React.ReactNode
 }) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [input, setInput] = useState('')
@@ -131,7 +137,7 @@ export function ChatView({
     abortRef.current = ctrl
     try {
       for await (const ev of streamChat(
-        { model: agentModel, conversationId: convIdRef.current ?? undefined, content: text, tier: tier || undefined, attachmentIds: atts.map((a) => a.id) },
+        { model: agentModel, conversationId: convIdRef.current ?? undefined, content: text, tier: tier || undefined, attachmentIds: atts.map((a) => a.id), kind },
         (meta) => {
           if (!convIdRef.current) {
             convIdRef.current = meta.conversationId
@@ -163,12 +169,21 @@ export function ChatView({
 
   return (
     <div className="mx-auto flex h-full w-full max-w-[var(--chat-content-max-width)] flex-col">
+      {headerAction && (
+        <div className="flex items-center justify-end gap-2 border-b border-line-subtle px-6 py-2">{headerAction}</div>
+      )}
       <div className="flex-1 space-y-5 overflow-y-auto px-6 py-6">
         {messages.length === 0 ? (
           <div className="grid h-full place-items-center text-center">
             <div>
-              <div className="mercury-text mb-1 text-lg font-semibold">Talk to {agentLabel}</div>
-              <div className="text-sm text-muted">Ask anything — memory, skills, and tools intact.</div>
+              <div className="mercury-text mb-1 text-lg font-semibold">
+                {kind === 'plan' ? `Plan with ${agentLabel}` : `Talk to ${agentLabel}`}
+              </div>
+              <div className="text-sm text-muted">
+                {kind === 'plan'
+                  ? 'Think through the work together, then draft tickets and send them to a board.'
+                  : 'Ask anything — memory, skills, and tools intact.'}
+              </div>
             </div>
           </div>
         ) : (

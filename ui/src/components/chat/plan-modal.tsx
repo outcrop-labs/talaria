@@ -17,24 +17,22 @@ interface Proposal {
   include: boolean
 }
 
-// Plan chat: a channel agent drafts tickets from the conversation; the human
-// reviews/edits here and creates the keepers — into inbox, never assigned.
+// Plan chat: an agent drafts tickets from a conversation (a channel or a plan);
+// the human reviews/edits here and creates the keepers — into inbox, never
+// assigned. `draftUrl` returns { proposals } — the channel or plan draft route.
 export function PlanModal({
   open,
   onClose,
-  channelId,
-  channelAgents,
-  fleet,
+  draftUrl,
+  agents,
 }: {
   open: boolean
   onClose: () => void
-  channelId: string
-  channelAgents: string[]
-  fleet: AgentModel[]
+  draftUrl: string
+  agents: AgentModel[]
 }) {
   const qc = useQueryClient()
   const { data: boards = [] } = useBoards()
-  const agents = fleet.filter((a) => channelAgents.includes(a.id))
   const [agentModel, setAgentModel] = useState(agents[0]?.id ?? '')
   const [tier, setTier] = useState('')
   const [boardId, setBoardId] = useState('')
@@ -52,7 +50,7 @@ export function PlanModal({
     setNote(null)
     setProposals(null)
     try {
-      const r = await fetch(`/api/channels/${channelId}/plan`, {
+      const r = await fetch(draftUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ agentModel: picked?.id, tier: tier || null }),
@@ -123,7 +121,7 @@ export function PlanModal({
         ) : proposals === null ? (
           <>
             <p className="text-sm text-muted">
-              A channel agent reads the conversation and drafts tickets. You review before anything is created.
+              An agent reads the conversation and drafts tickets. You review before anything is created.
             </p>
             <div className="grid grid-cols-2 gap-3">
               <div>

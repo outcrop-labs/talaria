@@ -704,6 +704,8 @@ const MIGRATIONS: string[] = [
   // Stable host port per agent, so the app (on the host) reaches each agent's
   // persona gateway directly — no separate bridge/multiplexer container.
   `alter table agent_defs add column if not exists gateway_port int`,
+  // Conversation kind — 'chat' (default) or 'plan' (the planning surface).
+  `alter table conversations add column if not exists kind text not null default 'chat'`,
 ]
 
 function ensureMigrated(): Promise<void> {

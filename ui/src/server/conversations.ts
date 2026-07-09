@@ -19,13 +19,13 @@ export interface MessageRow {
   attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
 }
 
-/** The user's conversations, newest activity first. */
-export async function listConversations(userId: string): Promise<ConversationRow[]> {
+/** The user's conversations of a given kind, newest activity first. */
+export async function listConversations(userId: string, kind: 'chat' | 'plan' = 'chat'): Promise<ConversationRow[]> {
   const sql = await db()
   const rows = await sql`
     select id, agent_model as "agentModel", title, updated_at as "updatedAt"
     from conversations
-    where user_id = ${userId} and archived = false
+    where user_id = ${userId} and archived = false and kind = ${kind}
     order by updated_at desc
   `
   return rows as unknown as ConversationRow[]
@@ -49,12 +49,17 @@ export async function getConversation(
   return { conversation: conv[0] as unknown as ConversationRow, messages: messages as unknown as MessageRow[] }
 }
 
-/** Create a conversation for a user + agent. */
-export async function createConversation(userId: string, agentModel: string, title: string): Promise<string> {
+/** Create a conversation for a user + agent (kind 'chat' or 'plan'). */
+export async function createConversation(
+  userId: string,
+  agentModel: string,
+  title: string,
+  kind: 'chat' | 'plan' = 'chat',
+): Promise<string> {
   const sql = await db()
   const rows = await sql`
-    insert into conversations (user_id, agent_model, title)
-    values (${userId}, ${agentModel}, ${title})
+    insert into conversations (user_id, agent_model, title, kind)
+    values (${userId}, ${agentModel}, ${title}, ${kind})
     returning id
   `
   return (rows[0] as { id: string }).id

@@ -15,6 +15,7 @@ export interface NavItem {
 export const GATEABLE_VIEWS: { to: string; label: string }[] = [
   { to: '/chat', label: 'Chat' },
   { to: '/channels', label: 'Channels' },
+  { to: '/plan', label: 'Plan' },
   { to: '/boards', label: 'Boards' },
   { to: '/knowledge', label: 'Knowledge' },
   { to: '/artifacts', label: 'Artifacts' },
@@ -35,6 +36,7 @@ export const NAV: NavSection[] = [
       { to: '/', label: 'Home', icon: '⌂' },
       { to: '/chat', label: 'Chat', icon: '◈' },
       { to: '/channels', label: 'Channels', icon: '⋕' },
+      { to: '/plan', label: 'Plan', icon: '⊞' },
       { to: '/boards', label: 'Boards', icon: '⧉' },
       { to: '/knowledge', label: 'Knowledge', icon: '❖' },
       { to: '/artifacts', label: 'Artifacts', icon: '◆' },
