@@ -8,6 +8,7 @@
 
 import { completeViaGateway } from './llm-gateway'
 import { guardText, recordFindings } from './guardrails'
+import { resolveTemplate } from './templates'
 import { getSetting, setSetting } from './audit'
 import { db } from './db/pg'
 import { publishBoard } from './realtime'
@@ -65,17 +66,25 @@ Return ONLY a JSON object, no prose around it:
 - "revise": concrete gaps, unmet requirements, or likely defects the agent should fix. List them in issues.
 - "escalate": needs a human decision — ambiguous/contradictory requirements, a risky or irreversible action, or a claim you cannot assess. Explain in issues.
 
+When a TICKET TEMPLATE is provided, treat it as the objective rubric: the ticket's requirements are its sections. Check each template section is meaningfully addressed by the ticket and its outcome ("n/a" only where truly inapplicable). A section that is missing, empty, or still skeleton text is a concrete "revise" issue — name the section.
+
 Be concrete. Prefer "revise" over "pass" when the outcome is vague, unverifiable, or skips a requirement. Judge the WORK, not the writing.`
 
-function buildPrompt(task: {
-  title: string
-  description?: string | null
-  outcome?: string | null
-  resolution?: string | null
-  errorMessage?: string | null
-}): string {
+function buildPrompt(
+  task: {
+    title: string
+    description?: string | null
+    outcome?: string | null
+    resolution?: string | null
+    errorMessage?: string | null
+  },
+  template?: { name: string; body: string } | null,
+): string {
   const parts = [`TICKET: ${task.title}`]
   if (task.description) parts.push(`\nREQUIREMENTS:\n${task.description}`)
+  if (template) {
+    parts.push(`\nTICKET TEMPLATE ("${template.name}" — the rubric this ticket is expected to follow):\n<<<\n${template.body}\n>>>`)
+  }
   parts.push(`\nAGENT REPORTED OUTCOME:\n${task.outcome || '(none provided)'}`)
   if (task.resolution) parts.push(`\nHOW IT WAS RESOLVED:\n${task.resolution}`)
   if (task.errorMessage) parts.push(`\nREPORTED ERROR:\n${task.errorMessage}`)
@@ -103,12 +112,17 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
   try {
     const sql = await db()
     const [task] = (await sql`
-      select board_id as "boardId", title, description, outcome, resolution, error_message as "errorMessage"
+      select board_id as "boardId", title, description, outcome, resolution, error_message as "errorMessage", assigned_to as "assignedTo"
       from tasks where id = ${taskId}
-    `) as unknown as Array<{ boardId: string; title: string; description: string | null; outcome: string | null; resolution: string | null; errorMessage: string | null }>
+    `) as unknown as Array<{ boardId: string; title: string; description: string | null; outcome: string | null; resolution: string | null; errorMessage: string | null; assignedTo: string | null }>
     if (!task) return null
     const { run, model, mode } = await shouldJudge(task.boardId)
     if (!run) return null
+
+    // Template conformance: resolve the same chain ticket creation uses
+    // (assignee's binding → board default) and hand the judge the skeleton as
+    // an objective rubric.
+    const template = await resolveTemplate('ticket', { agentModel: task.assignedTo, boardId: task.boardId }).catch(() => null)
 
     // Layered tiering: a cheap structural pre-pass (gate-safe guard rules, e.g.
     // secret-leak) over the reported outcome, fed to the judge as evidence.
@@ -124,7 +138,7 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
       model ?? 'pl-main',
       [
         { role: 'system', content: SYSTEM },
-        { role: 'user', content: buildPrompt(task) + preNote },
+        { role: 'user', content: buildPrompt(task, template) + preNote },
       ],
       { temperature: 0, caller: `judge${model ? `:${model}` : ''}` },
     )

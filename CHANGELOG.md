@@ -23,6 +23,11 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **QA judge scores against the ticket template.** At quality review the judge
+  now resolves the same template chain ticket creation uses (assignee binding →
+  board default) and receives the skeleton as an objective rubric: every
+  section must be meaningfully addressed ("n/a" only where truly inapplicable);
+  missing or skeleton sections come back as named "revise" issues.
 - **Brain-routability health — unroutable agents surface instead of freezing.**
   Provider pools churn under no-train routing; when an agent's configured
   model drops off its endpoint, chats used to hang silently. Every enabled
