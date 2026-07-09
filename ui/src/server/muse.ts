@@ -5,8 +5,9 @@
 // respects the same model registry as everything else, on the user's
 // preferred model.
 import { gatewayModels, resolveRoute } from './llm-gateway'
+import { memberModelAllowlist, modelAllowedFor } from './model-access'
 import { orgLine, orgProfile } from './org'
-import { getPreferredModel } from './users'
+import { getPreferredModel, getUserRole } from './users'
 
 export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document'
 
@@ -82,13 +83,23 @@ export async function buildMuseMessages(input: MuseInput): Promise<Array<{ role:
   ]
 }
 
-/** The model powering a user's muse: their preference if it still routes,
- *  else the env default, else pl-main, else the first registered model. */
+/** The model powering a user's muse: their preference if it still routes AND
+ *  their role may use it, else the env default, else pl-main, else the first
+ *  registered model the role may use. Admins gate the expensive brains via
+ *  the member model allowlist (see model-access). */
 export async function museModelFor(userId: string): Promise<string | null> {
-  const candidates = [await getPreferredModel(userId), process.env.TALARIA_COPILOT_MODEL ?? null, 'pl-main']
+  const role = await getUserRole(userId)
+  const catalog = await gatewayModels()
+  const allow = await memberModelAllowlist()
+  const pref = await getPreferredModel(userId)
+  const candidates = [
+    pref && modelAllowedFor(role, pref, allow, catalog) ? pref : null,
+    process.env.TALARIA_COPILOT_MODEL ?? null,
+    'pl-main',
+  ]
   for (const m of candidates) {
     if (m && (await resolveRoute(m))) return m
   }
-  const first = (await gatewayModels()).find((m) => !m.qualified)
+  const first = catalog.find((m) => !m.qualified && modelAllowedFor(role, m.id, allow, catalog))
   return first?.id ?? null
 }

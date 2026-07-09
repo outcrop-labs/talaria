@@ -5,7 +5,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { confirm } from '@/components/ui/confirm'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
+import { Combobox } from '@/components/ui/combobox'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
 import { savePreferredModel, useModels, usePreferredModel } from '@/lib/muse'
@@ -84,18 +84,23 @@ function SettingsPage() {
 }
 
 // The model that powers AI drafting (souls, skills, memories, crons…) across
-// Talaria. Picks from the org's configured model registry; empty = default.
+// Talaria. Picks from the models the caller may use (the server filters by the
+// admin's member allowlist), shown with pretty names + what each is good at —
+// normal users shouldn't need to know what "qwen/qwen3-14b" means.
 function PreferredModelPicker() {
   const qc = useQueryClient()
   const { data: catalog } = useModels()
   const { data: prefs } = usePreferredModel()
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   // Bare model names only — endpoint-qualified ids stay available as raw ids
   // for power users via the same list (they're in the catalog too).
-  const options = (catalog?.models ?? []).filter((m) => !m.qualified)
+  const models = (catalog?.models ?? []).filter((m) => !m.qualified)
 
   const save = async (model: string | null) => {
-    await savePreferredModel(model)
+    setError(null)
+    const r = await savePreferredModel(model)
+    if (r && typeof r === 'object' && 'error' in r && r.error) setError(String(r.error))
     await qc.invalidateQueries({ queryKey: ['profile-prefs'] })
     await qc.invalidateQueries({ queryKey: ['gateway-models'] })
     setSaved(true)
@@ -105,17 +110,23 @@ function PreferredModelPicker() {
   return (
     <div className="mt-5 border-t border-line-subtle pt-4">
       <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Preferred model</label>
-      <Select value={prefs?.preferredModel ?? ''} onChange={(e) => void save(e.target.value || null)}>
-        <option value="">Default{catalog?.effective && !prefs?.preferredModel ? ` (${catalog.effective})` : ''}</option>
-        {options.map((m) => (
-          <option key={m.id} value={m.id}>
-            {m.id}
-          </option>
-        ))}
-      </Select>
+      <Combobox
+        options={[
+          {
+            value: '',
+            label: `Default${catalog?.effective && !prefs?.preferredModel ? ` (${catalog.effective})` : ''}`,
+            sub: 'Let Talaria pick a sensible model',
+          },
+          ...models.map((m) => ({ value: m.id, label: m.label ?? m.id, sub: m.blurb || m.id })),
+        ]}
+        selected={[prefs?.preferredModel ?? '']}
+        onChange={([v]) => void save(v || null)}
+        placeholder="Pick a model…"
+      />
       <p className="mt-1 text-xs text-muted">
         Powers AI drafting across Talaria — souls, skills, memories, schedules.
-        {saved && <span className="ml-2 text-[color:var(--theme-success)]">Saved</span>}
+        {saved && !error && <span className="ml-2 text-[color:var(--theme-success)]">Saved</span>}
+        {error && <span className="ml-2" style={{ color: 'var(--theme-danger)' }}>{error}</span>}
       </p>
     </div>
   )

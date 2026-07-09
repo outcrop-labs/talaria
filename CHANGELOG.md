@@ -23,6 +23,14 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Member model access + human-friendly model picking.** Admins choose which
+  models non-admins may pick for AI drafting / preferred model (Models →
+  Member access; empty = all, admins never restricted), enforced server-side
+  in the catalog, the preference save, and muse resolution (a restricted
+  preference falls back). The picker itself grew up: models show a pretty name
+  and a one-line "what it's good at" blurb, populated automatically from the
+  public catalog (no maintained lists; unknown/self-hosted models simply show
+  their id).
 - **Rolling agent replacement — edits never kill a conversation.** Each managed
   agent runs in one of two compose slots; applying a change brings the incoming
   slot up on a **fresh port** beside the old container, cuts the manifest over
