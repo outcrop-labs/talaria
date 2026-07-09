@@ -128,7 +128,19 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
   const qc = useQueryClient()
   const { data: available } = useAvailableModels(ep.id)
   const [err, setErr] = useState<string | null>(null)
+  const [key, setKey] = useState('')
+  const [savingKey, setSavingKey] = useState(false)
   const refresh = () => qc.invalidateQueries({ queryKey: ['fleet-endpoints'] })
+
+  const saveKey = async (value: string | null) => {
+    setSavingKey(true)
+    try {
+      await run(patchEndpoint(ep.id, { apiKey: value }))
+      setKey('')
+    } finally {
+      setSavingKey(false)
+    }
+  }
 
   const run = async (p: Promise<{ error?: string }>) => {
     setErr(null)
@@ -162,7 +174,6 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
       <div className="space-y-5">
         <div className="flex items-center gap-3 text-xs text-muted">
           {ep.baseUrl && <span className="truncate">{ep.baseUrl}</span>}
-          {ep.apiKeyEnv && <span className="shrink-0">key: ${ep.apiKeyEnv}</span>}
           <span className="ml-auto" />
           {ep.provider === 'custom' ? (
             <Select value={ep.class} size="sm" onChange={(e) => void run(patchEndpoint(ep.id, { class: e.target.value as 'local' | 'cloud' }))}>
@@ -175,6 +186,36 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
             </span>
           )}
         </div>
+
+        {/* Provider API key — stored encrypted at rest, never shown again */}
+        <section>
+          <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted">
+            <span>API key</span>
+            {ep.hasKey ? (
+              <span style={{ color: 'var(--theme-success)' }}>● encrypted key stored</span>
+            ) : (
+              <span>none stored{ep.apiKeyEnv ? ` — using $${ep.apiKeyEnv}` : ''}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Input
+              type="password"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder={ep.hasKey ? 'paste a new key to rotate' : 'paste the provider key'}
+              autoComplete="off"
+            />
+            <Button size="sm" disabled={!key.trim() || savingKey} onClick={() => void saveKey(key.trim())}>
+              {ep.hasKey ? 'Rotate' : 'Save'}
+            </Button>
+            {ep.hasKey && (
+              <Button variant="ghost" size="sm" disabled={savingKey} onClick={() => void saveKey('')}>
+                Clear
+              </Button>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-muted">Encrypted with the Talaria secret (AES-256-GCM). Stored in the database, never in a config file.</p>
+        </section>
 
         {/* Models the org can use from this provider */}
         <section>
@@ -348,6 +389,7 @@ function AddProviderModal({ open, onClose }: { open: boolean; onClose: () => voi
   const [name, setName] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKeyEnv, setApiKeyEnv] = useState('')
+  const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -363,6 +405,7 @@ function AddProviderModal({ open, onClose }: { open: boolean; onClose: () => voi
         // Users never pick local/cloud — known providers carry it, custom infers from the URL.
         class: preset.configurableUrl ? inferClass(url) : preset.class,
         apiKeyEnv: (apiKeyEnv.trim() || preset.apiKeyEnv) ?? null,
+        apiKey: apiKey.trim() || null,
         models: preset.models,
         modelPrices: preset.modelPrices,
       })
@@ -405,10 +448,17 @@ function AddProviderModal({ open, onClose }: { open: boolean; onClose: () => voi
           </div>
         )}
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">API key env var</label>
-          <Input value={apiKeyEnv} onChange={(e) => setApiKeyEnv(e.target.value)} placeholder={preset.apiKeyEnv ?? 'MY_PROVIDER_KEY'} />
-          <p className="mt-1 text-xs text-muted">The variable name in your stack .env — Talaria never stores key values.</p>
+          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">API key</label>
+          <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste the provider key" autoComplete="off" />
+          <p className="mt-1 text-xs text-muted">Stored encrypted at rest (AES-256-GCM) — never written to a config file or shown again.</p>
         </div>
+        <details>
+          <summary className="cursor-pointer text-[11px] uppercase tracking-wide text-muted">Advanced: env-var fallback</summary>
+          <div className="mt-2">
+            <Input value={apiKeyEnv} onChange={(e) => setApiKeyEnv(e.target.value)} placeholder={preset.apiKeyEnv ?? 'MY_PROVIDER_KEY'} />
+            <p className="mt-1 text-xs text-muted">Optional: an env-var name to read the key from if none is stored above (ops override).</p>
+          </div>
+        </details>
         {err && (
           <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>
             {err}

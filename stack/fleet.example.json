@@ -1,8 +1,0 @@
-[
-  { "model": "penny-administrative-assistant", "url": "http://agent-administrative-assistant:8642", "key": "CHANGE_ME", "label": "Penny" },
-  { "model": "dex-developer",                  "url": "http://agent-developer:8642",                "key": "CHANGE_ME", "label": "Dex" },
-  { "model": "sam-support",                    "url": "http://agent-support:8642",                  "key": "CHANGE_ME", "label": "Sam" },
-
-  { "model": "iris-research", "url": "http://hermes-host:8643", "key": "CHANGE_ME", "label": "Iris", "profile": "iris" },
-  { "model": "otto-ops",      "url": "http://hermes-host:8644", "key": "CHANGE_ME", "label": "Otto", "profile": "otto" }
-]

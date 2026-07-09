@@ -19,6 +19,7 @@ import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
 import { materializeAgentSecrets } from './agent-secrets'
+import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
@@ -27,8 +28,6 @@ export const FLEET_ENV = () => join(FLEET_DIR(), '.env')
 /** The chassis every agent renders from: one service block + per-slug extras.
  *  Talaria-owned (extracted once at cutover from the legacy stack). */
 const CHASSIS_FILE = () => process.env.TALARIA_CHASSIS_FILE ?? join(FLEET_DIR(), 'chassis.yml')
-const BRIDGE_MANIFEST = () =>
-  process.env.TALARIA_BRIDGE_MANIFEST ?? resolve(process.cwd(), '../stack/fleet.json')
 // Docker-level names inherited from the pre-Talaria stack: imported agents'
 // state volumes (ai_hermes-<dept>) and the shared infra network (ai_default).
 // These are volume/network NAMES, not a code dependency on that repo.
@@ -47,6 +46,29 @@ type ComposeService = Record<string, unknown> & {
 interface RenderTarget {
   def: AgentDef
   version: AgentVersion
+}
+
+// The host the app reaches agents on. Loopback in dev (host app + published
+// ports); set to a service DNS name for a fully containerized deployment.
+export const AGENT_HOST = () => process.env.TALARIA_AGENT_HOST ?? '127.0.0.1'
+const GATEWAY_PORT_BASE = 8770
+
+/** Assign each managed agent a stable loopback port (persisted, never reused),
+ *  so the rendered compose and the manifest agree across membership changes. */
+async function ensureGatewayPorts(slugs: string[]): Promise<Map<string, number>> {
+  const sql = await db()
+  const existing = (await sql`
+    select slug, gateway_port as port from agent_defs where gateway_port is not null
+  `) as unknown as Array<{ slug: string; port: number }>
+  const map = new Map<string, number>(existing.map((r) => [r.slug, r.port]))
+  let next = (map.size ? Math.max(...map.values()) : GATEWAY_PORT_BASE - 1) + 1
+  for (const slug of slugs) {
+    if (map.has(slug)) continue
+    const port = next++
+    await sql`update agent_defs set gateway_port = ${port} where slug = ${slug}`
+    map.set(slug, port)
+  }
+  return map
 }
 
 async function managedAgents(): Promise<RenderTarget[]> {
@@ -104,6 +126,17 @@ export async function renderFleet(): Promise<RenderResult> {
   const targets = await managedAgents()
   const result: RenderResult = { agents: [], files: [], warnings: [] }
 
+  // The fleet's default brain is Talaria's own gateway: provision the gateway
+  // credential into the Talaria-owned .env so agents route through /api/llm/v1
+  // (guarded + metered + observable). Best-effort — never blocks a render.
+  const brain = await ensureGatewayBrain().catch((e: Error) => {
+    result.warnings.push(`gateway brain: ${e.message}`)
+    return null
+  })
+  if (brain?.managed && !brain.model) {
+    result.warnings.push('gateway brain: no model configured yet — add an LLM endpoint on /models to give agents a brain')
+  }
+
   // Parse in YAML 1.1 — docker compose's own dialect (go-yaml). This matters:
   // `mode: 0400` is OCTAL in 1.1 (256) but decimal 400 in 1.2, which would
   // silently turn a root-only secret into a group-writable one.
@@ -113,6 +146,13 @@ export async function renderFleet(): Promise<RenderResult> {
   }
   const chassis = parseYaml(chassisText, { merge: true, version: '1.1' }) as Chassis
   if (!chassis?.service) throw new Error(`fleet chassis at ${CHASSIS_FILE()} has no "service" block`)
+
+  // Every agent's LLM specs are rewritten to route through Talaria's gateway —
+  // model names the gateway doesn't serve fall back to the default (warned once).
+  const gwModels = await gatewayModelSet()
+  const remapped = new Set<string>()
+  // Stable host port per agent — the app calls each persona gateway directly.
+  const ports = await ensureGatewayPorts(targets.map((t) => t.def.slug))
 
   const services: Record<string, ComposeService> = {}
   const secrets: Record<string, unknown> = {}
@@ -136,12 +176,15 @@ export async function renderFleet(): Promise<RenderResult> {
     }
 
     const raw = (version.config as { raw?: unknown }).raw
+    // Un-interweave: all model tiers point at Talaria's gateway, never at
+    // litellm/inference-router/anthropic directly.
+    const routed = routeConfigThroughGateway(raw ?? {}, gwModels, (m) => remapped.add(m))
     await writeFile(
       join(agentDir, 'config.yaml'),
       `# Rendered by Talaria — ${def.model} v${version.version}. Do not hand-edit; edit in Talaria.\n` +
         // Hermes reads this with PyYAML (YAML 1.1): emit 1.1 so strings like
         // "on"/"off" stay quoted instead of turning into booleans.
-        stringifyYaml(raw ?? {}, { version: '1.1' }),
+        stringifyYaml(routed, { version: '1.1' }),
     )
     await writeFile(join(agentDir, 'SOUL.md'), version.soul)
     result.files.push(join(agentDir, 'config.yaml'), join(agentDir, 'SOUL.md'))
@@ -154,8 +197,11 @@ export async function renderFleet(): Promise<RenderResult> {
     const svc: ComposeService = JSON.parse(JSON.stringify(chassis.service)) as ComposeService
     delete svc.build
     delete svc.depends_on
-    delete svc.ports
     delete svc.profiles
+    // Publish the persona gateway on a stable loopback port so the app reaches
+    // this agent directly (no bridge/multiplexer). Loopback-only; the HERMES key
+    // still gates it.
+    svc.ports = [`127.0.0.1:${ports.get(def.slug)}:8642`]
 
     const env = { ...((svc.environment ?? {}) as Record<string, unknown>), ...(extras?.environment ?? {}) }
     env.API_SERVER_KEY = `\${HERMES_KEY_${def.slug.toUpperCase()}}`
@@ -210,12 +256,15 @@ export async function renderFleet(): Promise<RenderResult> {
     result.agents.push(def.model)
   }
 
+  for (const m of remapped) result.warnings.push(`gateway: ${m} (register the provider on /models to restore this tier)`)
+
   const compose = {
     name: 'talaria-fleet',
     services,
     volumes,
     ...(Object.keys(secrets).length ? { secrets } : {}),
-    networks: { fleet: { external: true, name: chassis.network?.name ?? `${LEGACY_DOCKER_PROJECT}_default` } },
+    // One unified Talaria network for every Talaria container.
+    networks: { fleet: { external: true, name: chassis.network?.name ?? 'talaria' } },
   }
   const composePath = join(FLEET_DIR(), 'docker-compose.yml')
   await mkdir(FLEET_DIR(), { recursive: true })
@@ -229,19 +278,18 @@ export async function renderFleet(): Promise<RenderResult> {
   return result
 }
 
-/** The gateway-plane manifest: every enabled agent (managed or legacy), keys
- *  drawn from the stack's .env (HERMES_KEY_<SLUG>) — plus one entry per model
- *  tier (`<base>-<alias>`): the agent's own gateway resolves the alias to its
- *  provider/model, so Talaria can route a request to a specific tier. Written
- *  where the bridge watches it, so topology changes apply without a restart. */
+/** The fleet manifest Talaria reads to reach agents directly: every enabled
+ *  agent's persona gateway URL (host + its published port) + HERMES key, plus
+ *  one entry per model tier (`<base>-<alias>`). No bridge — the app calls each
+ *  URL itself. Written to fleet/fleet.json. */
 async function writeFleetManifest(result: RenderResult): Promise<void> {
   const sql = await db()
   const defs = (await sql`
-    select d.slug, d.department, d.model, v.config
+    select d.slug, d.department, d.model, d.gateway_port as "gatewayPort", v.config
     from agent_defs d
     left join agent_versions v on v.agent_id = d.id and v.version = d.current_version
     where d.enabled order by d.slug
-  `) as unknown as Array<{ slug: string; department: string; model: string; config: AgentConfig | null }>
+  `) as unknown as Array<{ slug: string; department: string; model: string; gatewayPort: number | null; config: AgentConfig | null }>
 
   const env = await readFile(FLEET_ENV(), 'utf8').catch(() => '')
   const keys = new Map<string, string>()
@@ -253,16 +301,15 @@ async function writeFleetManifest(result: RenderResult): Promise<void> {
   const manifest = defs.flatMap((d) => {
     const key = keys.get(d.slug) ?? ''
     if (!key) result.warnings.push(`${d.slug}: no HERMES_KEY_${d.slug.toUpperCase()} in the fleet .env`)
-    const url = `http://agent-${d.department}:8642`
+    if (!d.gatewayPort) result.warnings.push(`${d.slug}: no gateway port assigned yet — render again`)
+    const url = `http://${AGENT_HOST()}:${d.gatewayPort ?? 0}`
     return [
       { model: d.model, url, key },
       ...(d.config?.aliases ?? []).map((a) => ({ model: `${d.model}-${a.name}`, url, key })),
     ]
   })
-  const json = JSON.stringify(manifest)
-  for (const path of [join(FLEET_DIR(), 'fleet.json'), BRIDGE_MANIFEST()]) {
-    await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, json)
-    result.files.push(path)
-  }
+  const path = join(FLEET_DIR(), 'fleet.json')
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, JSON.stringify(manifest))
+  result.files.push(path)
 }

@@ -38,11 +38,8 @@ import { Route as ApiAlertsRouteImport } from './routes/api/alerts'
 import { Route as ApiAgentsRouteImport } from './routes/api/agents'
 import { Route as ApiActivityRouteImport } from './routes/api/activity'
 import { Route as ASlugRouteImport } from './routes/a.$slug'
-import { Route as AppSkillsRouteImport } from './routes/_app/skills'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppModelsRouteImport } from './routes/_app/models'
-import { Route as AppMemoryRouteImport } from './routes/_app/memory'
-import { Route as AppMcpRouteImport } from './routes/_app/mcp'
 import { Route as AppKnowledgeRouteImport } from './routes/_app/knowledge'
 import { Route as AppInferenceRouteImport } from './routes/_app/inference'
 import { Route as AppInboxRouteImport } from './routes/_app/inbox'
@@ -92,6 +89,7 @@ import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminSettingsRouteImport } from './routes/api/admin.settings'
 import { Route as ApiAdminJudgeRouteImport } from './routes/api/admin.judge'
 import { Route as ApiAdminGuardrailsRouteImport } from './routes/api/admin.guardrails'
+import { Route as ApiAdminEncryptionRouteImport } from './routes/api/admin.encryption'
 import { Route as AppBoardsBoardIdRouteImport } from './routes/_app/boards/$boardId'
 import { Route as ApiTeamsIdMembersRouteImport } from './routes/api/teams.$id.members'
 import { Route as ApiTasksIdWatchersRouteImport } from './routes/api/tasks.$id.watchers'
@@ -295,11 +293,6 @@ const ASlugRoute = ASlugRouteImport.update({
   path: '/a/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AppSkillsRoute = AppSkillsRouteImport.update({
-  id: '/skills',
-  path: '/skills',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppSettingsRoute = AppSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -308,16 +301,6 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
 const AppModelsRoute = AppModelsRouteImport.update({
   id: '/models',
   path: '/models',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppMemoryRoute = AppMemoryRouteImport.update({
-  id: '/memory',
-  path: '/memory',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppMcpRoute = AppMcpRouteImport.update({
-  id: '/mcp',
-  path: '/mcp',
   getParentRoute: () => AppRoute,
 } as any)
 const AppKnowledgeRoute = AppKnowledgeRouteImport.update({
@@ -563,6 +546,11 @@ const ApiAdminJudgeRoute = ApiAdminJudgeRouteImport.update({
 const ApiAdminGuardrailsRoute = ApiAdminGuardrailsRouteImport.update({
   id: '/api/admin/guardrails',
   path: '/api/admin/guardrails',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAdminEncryptionRoute = ApiAdminEncryptionRouteImport.update({
+  id: '/api/admin/encryption',
+  path: '/api/admin/encryption',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppBoardsBoardIdRoute = AppBoardsBoardIdRouteImport.update({
@@ -889,11 +877,8 @@ export interface FileRoutesByFullPath {
   '/inbox': typeof AppInboxRoute
   '/inference': typeof AppInferenceRoute
   '/knowledge': typeof AppKnowledgeRoute
-  '/mcp': typeof AppMcpRoute
-  '/memory': typeof AppMemoryRoute
   '/models': typeof AppModelsRoute
   '/settings': typeof AppSettingsRoute
-  '/skills': typeof AppSkillsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -921,6 +906,7 @@ export interface FileRoutesByFullPath {
   '/api/users': typeof ApiUsersRoute
   '/kb/$slug': typeof KbSlugRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
@@ -1030,11 +1016,8 @@ export interface FileRoutesByTo {
   '/inbox': typeof AppInboxRoute
   '/inference': typeof AppInferenceRoute
   '/knowledge': typeof AppKnowledgeRoute
-  '/mcp': typeof AppMcpRoute
-  '/memory': typeof AppMemoryRoute
   '/models': typeof AppModelsRoute
   '/settings': typeof AppSettingsRoute
-  '/skills': typeof AppSkillsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1063,6 +1046,7 @@ export interface FileRoutesByTo {
   '/kb/$slug': typeof KbSlugRoute
   '/': typeof AppIndexRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
@@ -1174,11 +1158,8 @@ export interface FileRoutesById {
   '/_app/inbox': typeof AppInboxRoute
   '/_app/inference': typeof AppInferenceRoute
   '/_app/knowledge': typeof AppKnowledgeRoute
-  '/_app/mcp': typeof AppMcpRoute
-  '/_app/memory': typeof AppMemoryRoute
   '/_app/models': typeof AppModelsRoute
   '/_app/settings': typeof AppSettingsRoute
-  '/_app/skills': typeof AppSkillsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1207,6 +1188,7 @@ export interface FileRoutesById {
   '/kb/$slug': typeof KbSlugRoute
   '/_app/': typeof AppIndexRoute
   '/_app/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
@@ -1319,11 +1301,8 @@ export interface FileRouteTypes {
     | '/inbox'
     | '/inference'
     | '/knowledge'
-    | '/mcp'
-    | '/memory'
     | '/models'
     | '/settings'
-    | '/skills'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -1351,6 +1330,7 @@ export interface FileRouteTypes {
     | '/api/users'
     | '/kb/$slug'
     | '/boards/$boardId'
+    | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/judge'
     | '/api/admin/settings'
@@ -1460,11 +1440,8 @@ export interface FileRouteTypes {
     | '/inbox'
     | '/inference'
     | '/knowledge'
-    | '/mcp'
-    | '/memory'
     | '/models'
     | '/settings'
-    | '/skills'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -1493,6 +1470,7 @@ export interface FileRouteTypes {
     | '/kb/$slug'
     | '/'
     | '/boards/$boardId'
+    | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/judge'
     | '/api/admin/settings'
@@ -1603,11 +1581,8 @@ export interface FileRouteTypes {
     | '/_app/inbox'
     | '/_app/inference'
     | '/_app/knowledge'
-    | '/_app/mcp'
-    | '/_app/memory'
     | '/_app/models'
     | '/_app/settings'
-    | '/_app/skills'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -1636,6 +1611,7 @@ export interface FileRouteTypes {
     | '/kb/$slug'
     | '/_app/'
     | '/_app/boards/$boardId'
+    | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/judge'
     | '/api/admin/settings'
@@ -1761,6 +1737,7 @@ export interface RootRouteChildren {
   ApiUploadsRoute: typeof ApiUploadsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
   KbSlugRoute: typeof KbSlugRoute
+  ApiAdminEncryptionRoute: typeof ApiAdminEncryptionRoute
   ApiAdminGuardrailsRoute: typeof ApiAdminGuardrailsRoute
   ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
   ApiAdminSettingsRoute: typeof ApiAdminSettingsRoute
@@ -1991,13 +1968,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ASlugRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_app/skills': {
-      id: '/_app/skills'
-      path: '/skills'
-      fullPath: '/skills'
-      preLoaderRoute: typeof AppSkillsRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/settings': {
       id: '/_app/settings'
       path: '/settings'
@@ -2010,20 +1980,6 @@ declare module '@tanstack/react-router' {
       path: '/models'
       fullPath: '/models'
       preLoaderRoute: typeof AppModelsRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/memory': {
-      id: '/_app/memory'
-      path: '/memory'
-      fullPath: '/memory'
-      preLoaderRoute: typeof AppMemoryRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/mcp': {
-      id: '/_app/mcp'
-      path: '/mcp'
-      fullPath: '/mcp'
-      preLoaderRoute: typeof AppMcpRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/knowledge': {
@@ -2367,6 +2323,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/guardrails'
       fullPath: '/api/admin/guardrails'
       preLoaderRoute: typeof ApiAdminGuardrailsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin/encryption': {
+      id: '/api/admin/encryption'
+      path: '/api/admin/encryption'
+      fullPath: '/api/admin/encryption'
+      preLoaderRoute: typeof ApiAdminEncryptionRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/boards/$boardId': {
@@ -2802,11 +2765,8 @@ interface AppRouteChildren {
   AppInboxRoute: typeof AppInboxRoute
   AppInferenceRoute: typeof AppInferenceRoute
   AppKnowledgeRoute: typeof AppKnowledgeRoute
-  AppMcpRoute: typeof AppMcpRoute
-  AppMemoryRoute: typeof AppMemoryRoute
   AppModelsRoute: typeof AppModelsRoute
   AppSettingsRoute: typeof AppSettingsRoute
-  AppSkillsRoute: typeof AppSkillsRoute
   AppIndexRoute: typeof AppIndexRoute
   AppBoardsBoardIdRoute: typeof AppBoardsBoardIdRouteWithChildren
   AppBoardsIndexRoute: typeof AppBoardsIndexRoute
@@ -2825,11 +2785,8 @@ const AppRouteChildren: AppRouteChildren = {
   AppInboxRoute: AppInboxRoute,
   AppInferenceRoute: AppInferenceRoute,
   AppKnowledgeRoute: AppKnowledgeRoute,
-  AppMcpRoute: AppMcpRoute,
-  AppMemoryRoute: AppMemoryRoute,
   AppModelsRoute: AppModelsRoute,
   AppSettingsRoute: AppSettingsRoute,
-  AppSkillsRoute: AppSkillsRoute,
   AppIndexRoute: AppIndexRoute,
   AppBoardsBoardIdRoute: AppBoardsBoardIdRouteWithChildren,
   AppBoardsIndexRoute: AppBoardsIndexRoute,
@@ -3310,6 +3267,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiUploadsRoute: ApiUploadsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
   KbSlugRoute: KbSlugRoute,
+  ApiAdminEncryptionRoute: ApiAdminEncryptionRoute,
   ApiAdminGuardrailsRoute: ApiAdminGuardrailsRoute,
   ApiAdminJudgeRoute: ApiAdminJudgeRoute,
   ApiAdminSettingsRoute: ApiAdminSettingsRoute,

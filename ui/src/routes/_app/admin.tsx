@@ -82,6 +82,8 @@ function AdminPage() {
 
         <RetrievalPanel />
 
+        <EncryptionPanel />
+
         <Panel>
           <div className="mb-2 text-sm font-semibold text-fg">People</div>
           <p className="mb-4 text-xs text-muted">
@@ -218,6 +220,86 @@ function SettingsPanel() {
 
 // The automated QA judge — an advisory reliability gate. When a ticket hits
 // quality_review, a judge model reviews the agent's work and posts a verdict.
+function EncryptionPanel() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['admin-encryption'],
+    queryFn: async (): Promise<{
+      keyVersion: number | null
+      rotatedAt: string | null
+      secretCount: number
+      rootSource: string
+      algorithm: string
+    }> => {
+      const r = await fetch('/api/admin/encryption')
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+  })
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [newRoot, setNewRoot] = useState('')
+
+  const rotate = async () => {
+    if (!confirm('Rotate the encryption key? Every stored secret is re-encrypted under a fresh key in one pass. Existing secrets keep working.')) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await fetch('/api/admin/encryption', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(newRoot.trim() ? { newRootSecret: newRoot.trim() } : {}),
+      })
+      const j = await r.json()
+      if (!r.ok) return setMsg(j.error ?? 'rotation failed')
+      setMsg(`Re-encrypted ${j.reencrypted} secret${j.reencrypted === 1 ? '' : 's'} · now key v${j.version}`)
+      setNewRoot('')
+      await qc.invalidateQueries({ queryKey: ['admin-encryption'] })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Panel>
+      <div className="mb-2 text-sm font-semibold text-fg">Encryption</div>
+      <p className="mb-4 text-xs text-muted">
+        Every stored secret — provider API keys, agent secrets, Google tokens — is encrypted at rest with{' '}
+        <strong>{data?.algorithm ?? 'AES-256-GCM'}</strong>. A random data key encrypts the secrets; that key is itself
+        stored wrapped by the root secret, so the key that unlocks everything is never in a config file. Rotating
+        re-encrypts <strong>every</strong> secret under a fresh key in one pass — no per-secret steps.
+      </p>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted">
+        <span>Key version: <strong className="text-fg">v{data?.keyVersion ?? '—'}</strong></span>
+        <span>Secrets protected: <strong className="text-fg">{data?.secretCount ?? '—'}</strong></span>
+        <span>Root of trust: <strong className="text-fg">{data?.rootSource ?? '—'}</strong></span>
+        {data?.rotatedAt && <span>Rotated: {new Date(data.rotatedAt).toLocaleString()}</span>}
+      </div>
+      <div className="mt-4 flex flex-wrap items-end gap-3">
+        <div className="flex-1 min-w-[16rem]">
+          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">New root secret (optional)</label>
+          <Input
+            type="password"
+            value={newRoot}
+            onChange={(e) => setNewRoot(e.target.value)}
+            placeholder="leave blank to keep the current root"
+            autoComplete="off"
+          />
+        </div>
+        <Button size="sm" onClick={() => void rotate()} disabled={busy}>
+          {busy ? 'Rotating…' : 'Rotate keys'}
+        </Button>
+      </div>
+      {newRoot.trim() && (
+        <p className="mt-2 text-[11px] text-muted">
+          After rotating with a new root secret, update <code>TALARIA_SECRET_KEY</code> (or the key-file) to match before the next restart.
+        </p>
+      )}
+      {msg && <p className="mt-2 text-xs text-[color:var(--theme-success)]">{msg}</p>}
+    </Panel>
+  )
+}
+
 function JudgePanel() {
   const qc = useQueryClient()
   const { data } = useQuery({

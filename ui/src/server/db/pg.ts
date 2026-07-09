@@ -3,6 +3,7 @@
 // first query. Cached on globalThis so HMR doesn't open a new pool each reload.
 
 import postgres from 'postgres'
+import { initSecretbox } from '../secretbox'
 
 type Sql = ReturnType<typeof postgres>
 const g = globalThis as unknown as { __talariaSql?: Sql; __talariaMigrated?: Promise<void> }
@@ -689,6 +690,20 @@ const MIGRATIONS: string[] = [
    )`,
   `create index if not exists guard_findings_recent_idx on guard_findings(created_at desc)`,
   `alter table guard_findings add column if not exists confidence real not null default 0.5`,
+  // Provider API keys, encrypted at rest (secretbox) — the durable, secure store.
+  // api_key_env stays as an optional ops override; keys no longer live in configs.
+  `alter table llm_endpoints add column if not exists api_key_cipher text`,
+  // Envelope encryption: the wrapped data-encryption key(s). One active row; old
+  // versions kept for audit. The DEK is never stored unwrapped.
+  `create table if not exists secret_keys (
+     version int primary key,
+     wrapped_dek text not null,
+     active boolean not null default true,
+     created_at timestamptz not null default now()
+   )`,
+  // Stable host port per agent, so the app (on the host) reaches each agent's
+  // persona gateway directly — no separate bridge/multiplexer container.
+  `alter table agent_defs add column if not exists gateway_port int`,
 ]
 
 function ensureMigrated(): Promise<void> {
@@ -696,6 +711,8 @@ function ensureMigrated(): Promise<void> {
     const sql = getSql()
     g.__talariaMigrated = (async () => {
       for (const stmt of MIGRATIONS) await sql.unsafe(stmt)
+      // Load/create the data key so seal()/open() are synchronous thereafter.
+      await initSecretbox(sql)
     })()
   }
   return g.__talariaMigrated

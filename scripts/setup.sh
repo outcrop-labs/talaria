@@ -53,9 +53,6 @@ AUTH_GOOGLE_CLIENT_SECRET=
 
 # Agents authenticate to Talaria's APIs with this key + x-agent-name header
 TALARIA_AGENT_KEY=$(rand 32)
-
-# Optional: the gateway-plane bridge URL (leave empty on a fresh install)
-TALARIA_GATEWAY_URL=
 EOF
   ok "ui/.env generated"
 fi

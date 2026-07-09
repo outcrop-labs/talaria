@@ -47,6 +47,8 @@ export interface LlmEndpoint {
   baseUrl: string | null
   class: 'local' | 'cloud'
   apiKeyEnv?: string | null
+  /** Whether an encrypted API key is stored (the value never reaches the client). */
+  hasKey?: boolean
   contextLength: number | null
   priceInPerMtok?: number | null
   priceOutPerMtok?: number | null

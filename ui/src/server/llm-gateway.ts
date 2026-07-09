@@ -10,7 +10,7 @@
 // engineered into Talaria itself.
 import { db } from './db/pg'
 import { listEndpoints, type LlmEndpoint } from './agent-defs'
-import { DEFAULT_KEY_ENV, NATIVE_BASE, resolveKey } from './provider-catalog'
+import { NATIVE_BASE, resolveEndpointKey } from './provider-catalog'
 import { guardCompletion } from './guardrails'
 
 export interface GatewayModel {
@@ -83,7 +83,7 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
   const ep = route.endpoint
   const base = (ep.baseUrl ?? NATIVE_BASE[ep.provider])?.replace(/\/$/, '')
   if (!base) throw new Error(`endpoint "${ep.name}" has no base URL`)
-  const key = await resolveKey(ep.apiKeyEnv ?? DEFAULT_KEY_ENV[ep.provider] ?? null)
+  const key = await resolveEndpointKey(ep)
 
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (key) {
