@@ -7,6 +7,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMember, type ChannelMessage } from '@/lib/channels'
 import { useUsers } from '@/lib/users'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
+import { resolveAgentMedia } from '@/lib/agent-media'
 import { MentionMenu, useMentions, userMentionInsert, type Mentionable } from '@/components/chat/mentions'
 import type { Attachment } from '@/lib/attachments'
 import type { AgentModel } from '@/lib/agents'
@@ -134,7 +135,7 @@ function MessageRow({
         </div>
         <div className="text-sm">
           {m.content ? (
-            <Markdown>{m.content}</Markdown>
+            <Markdown>{m.authorType === 'agent' ? resolveAgentMedia(m.content, m.author) : m.content}</Markdown>
           ) : live ? (
             <span className="inline-flex gap-1 py-1">
               <Dot /> <Dot delay={0.15} /> <Dot delay={0.3} />
