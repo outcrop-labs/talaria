@@ -22,6 +22,14 @@ secrets encrypted at rest.
   and the legacy build-based `stack/` — **no Dockerfiles** remain; the run path
   is compose-only (official/published images) + host-run app.
 
+### Changed
+- **Home and Inbox merged.** `/` is now **Inbox** — the top nav item and the
+  landing surface: notifications up top (mark-read on open, mark-all-read, the
+  panel disappears when quiet), then the day's dashboard (assistant, approvals,
+  agenda, mail, triage/review/blocked queues, fleet glance). The unread badge
+  moved to the top-level item; `/inbox` redirects; quick cards point at the
+  current surfaces (Comms · Plan · Boards · Artifacts).
+
 ### Added
 - **The Talaria toolkit is ATTACHED — every agent has its tools.** talaria-mcp
   grew a fleet HTTP mode (stateless streamable-HTTP, per-request identity via

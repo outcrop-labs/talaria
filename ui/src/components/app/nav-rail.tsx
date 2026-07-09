@@ -40,7 +40,7 @@ export function NavRail({ user }: { user: SessionUser }) {
                   >
                     <span className="nav-ico w-4 text-center text-muted">{item.icon}</span>
                     <span className="flex-1 truncate">{item.label}</span>
-                    {item.to === '/inbox' && unread > 0 && (
+                    {item.to === '/' && unread > 0 && (
                       <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-surface">{unread}</span>
                     )}
                     {item.adminOnly && <span className="text-[10px] text-accent">admin</span>}

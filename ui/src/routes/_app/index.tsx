@@ -7,6 +7,7 @@ import { alert } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from '@/components/assistant/assistant-wizard'
+import { NotificationsPanel } from '@/components/app/notifications-panel'
 import { relativeTime } from '@/lib/fleet'
 import { cn } from '@/lib/cn'
 import { useAssistant } from '@/lib/assistant'
@@ -65,8 +66,11 @@ function HomePage() {
       <div className="mx-auto max-w-5xl space-y-8">
         <div>
           <h1 className="mercury-text text-2xl font-semibold">{greeting(session?.name ?? session?.email)}</h1>
-          <p className="mt-1 text-sm text-muted">Here's what needs you, and where the fleet stands.</p>
+          <p className="mt-1 text-sm text-muted">Your inbox: what needs you, and where the fleet stands.</p>
         </div>
+
+        {/* Notifications first — this IS the inbox now. */}
+        <NotificationsPanel />
 
         <AssistantCard />
 
@@ -78,10 +82,10 @@ function HomePage() {
 
         {/* Quick entries into the work surfaces */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <QuickCard to="/chat" icon={<MessageSquare size={18} />} label="Chat" sub="Talk to an agent" />
-          <QuickCard to="/channels" icon={<Hash size={18} />} label="Channels" sub="Team + agents" />
+          <QuickCard to="/comms" icon={<MessageSquare size={18} />} label="Comms" sub="Channels · relays · DMs" />
+          <QuickCard to="/plan" icon={<Hash size={18} />} label="Plan" sub="Think, then ticket" />
           <QuickCard to="/boards" icon={<LayoutGrid size={18} />} label="Boards" sub="Move work" />
-          <QuickCard to="/inbox" icon={<InboxIcon size={18} />} label="Inbox" sub={data?.unread ? `${data.unread} unread` : 'Mentions'} badge={data?.unread} />
+          <QuickCard to="/artifacts" icon={<InboxIcon size={18} />} label="Artifacts" sub="Docs · files · memes" />
         </div>
 
         {isLoading ? (
