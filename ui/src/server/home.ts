@@ -3,7 +3,11 @@
 // surfaces exactly those queues (scoped to boards the user can see) plus unread
 // mentions and a glance at fleet health. One round-trip, cheap aggregates.
 import { db } from './db/pg'
+import { activityFeed, type ActivityEvent } from './activity-feed'
+import { computeAlerts } from './alerts'
 import { containerStatus } from './fleet-docker'
+import { orgProfile } from './org'
+import { costOverview } from './usage'
 
 export interface WorkItem {
   id: string
@@ -15,7 +19,19 @@ export interface WorkItem {
   updatedAt: string
 }
 
+export interface OrgGlance {
+  /** The business name (Admin → Organization), for the rail's title. */
+  name: string
+  /** A compact recent-activity pulse across the workspace. */
+  activity: ActivityEvent[]
+  /** Admin-only: live alert count (null for members). */
+  alerts: number | null
+  /** Admin-only: today's metered spend (null for members). */
+  costToday: { tokens: number; usd: number } | null
+}
+
 export interface HomeSummary {
+  org: OrgGlance
   queues: {
     triage: { count: number; items: WorkItem[] } // inbox — needs a human to assign
     review: { count: number; items: WorkItem[] } // quality_review — needs sign-off
@@ -28,7 +44,7 @@ export interface HomeSummary {
 
 const WINDOW = 5
 
-export async function homeSummary(userId: string): Promise<HomeSummary> {
+export async function homeSummary(userId: string, role: 'admin' | 'member' = 'member'): Promise<HomeSummary> {
   const sql = await db()
 
   // One pass over the user's visible, active tickets in the three human queues.
@@ -77,7 +93,25 @@ export async function homeSummary(userId: string): Promise<HomeSummary> {
           .filter((m) => states.find((s) => s.department === m.department)?.managed?.state !== 'running')
           .map((m) => m.displayName)
 
+  // The org half of the glance: name, an activity pulse everyone sees, and
+  // (admins) live alerts + today's spend. Failures degrade to quiet, never 500.
+  const isAdmin = role === 'admin'
+  const [profile, activity, alertCount, cost] = await Promise.all([
+    orgProfile().catch(() => ({ name: '', about: '' })),
+    activityFeed(userId, [], 8, isAdmin).catch(() => []),
+    isAdmin ? computeAlerts(userId).then((a) => a.length).catch(() => null) : Promise.resolve(null),
+    isAdmin ? costOverview().catch(() => null) : Promise.resolve(null),
+  ])
+
   return {
+    org: {
+      name: profile.name,
+      activity,
+      alerts: alertCount,
+      costToday: cost
+        ? { tokens: cost.totals.today.prompt + cost.totals.today.completion, usd: cost.totals.today.cost }
+        : null,
+    },
     queues: { triage: bucket('inbox'), review: bucket('quality_review'), blocked: bucket('blocked') },
     unread,
     boards,
