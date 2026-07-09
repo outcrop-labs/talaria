@@ -380,8 +380,9 @@ Highest-leverage remaining threads:
    thread visibility without selecting the agent.
 3. **Brain-routability health** — surface "brain unroutable" (provider pools
    churn under no-train routing) on agent cards/alerts.
-4. **Wire the Talaria toolkit MCP into agent configs** — the toolkit is built
-   (`mcp/`, stdio); an HTTP transport for containerized agents is the open bit.
+4. **Toolkit onboarding skill** — the toolkit MCP is now ATTACHED to every
+   agent (fleet HTTP mode, `server/mcp-service.ts` + render injection); what
+   remains is the Hermes-side skill teaching agents to reach for it (#78).
 5. **Guard coverage for the direct chat path** (`/api/chat` + channel replies),
    then retire the agent-side confab-guard plugin.
 6. **QA judge template conformance**; **Research view (#56)**; **input sweep (#49)**.

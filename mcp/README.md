@@ -68,3 +68,14 @@ API side, agent-created tickets are forced to `inbox` with no assignees, `status
 assigned` is rejected, and `status: done` is coerced to `quality_review`. This MCP
 server additionally never offers the unsafe inputs, so a well-behaved agent never
 even sees them.
+
+
+## Fleet HTTP mode
+
+Set `MCP_HTTP_PORT` and talaria-mcp serves the WHOLE fleet over stateless
+streamable HTTP instead of stdio: each request is handled by a fresh server
+bound to the calling agent's identity (`X-Agent-Name` header) and must carry
+the fleet key (`X-Api-Key` = `TALARIA_AGENT_KEY`). Talaria runs this mode
+itself (`ui/src/server/mcp-service.ts`) and injects the connection into every
+rendered agent config — you never start it by hand. Stdio mode (one agent via
+`TALARIA_AGENT_NAME`) remains for external clients.

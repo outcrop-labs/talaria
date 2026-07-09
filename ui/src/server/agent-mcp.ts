@@ -4,6 +4,7 @@
 // entries pass through byte-for-byte — headers, tool filters, timeouts all
 // survive.
 import { db } from './db/pg'
+import { MCP_FLEET_URL } from './mcp-service'
 import type { AgentConfig } from './agent-defs'
 
 export interface McpServerEntry {
@@ -40,12 +41,21 @@ export async function listAgentMcp(): Promise<AgentMcp[]> {
     slug: r.slug,
     displayName: r.displayName,
     managed: r.managed,
-    servers: Object.entries(rawServers(r.config)).map(([name, entry]) => ({
-      name,
-      url: String(entry.url ?? ''),
-      timeout: typeof entry.timeout === 'number' ? entry.timeout : null,
-      extras: Object.keys(entry).filter((k) => !['url', 'timeout'].includes(k)),
-    })),
+    servers: [
+      // The Talaria toolkit is injected at RENDER time (not stored in the
+      // version config) — surface it here so admins can see and probe it.
+      ...(r.managed
+        ? [{ name: 'talaria', url: MCP_FLEET_URL(), timeout: null, extras: ['built-in'] }]
+        : []),
+      ...Object.entries(rawServers(r.config))
+        .filter(([name]) => name !== 'talaria')
+        .map(([name, entry]) => ({
+          name,
+          url: String(entry.url ?? ''),
+          timeout: typeof entry.timeout === 'number' ? entry.timeout : null,
+          extras: Object.keys(entry).filter((k) => !['url', 'timeout'].includes(k)),
+        })),
+    ],
   }))
 }
 
