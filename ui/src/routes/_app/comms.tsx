@@ -1,12 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { CheckCheck, ClipboardList, Plus, Settings, SquarePen } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { Avatar } from '@/components/ui/avatar'
-import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
-import { InlineCreate } from '@/components/ui/inline-create'
-import { Select } from '@/components/ui/select'
+import { Input } from '@/components/ui/input'
 import { alert, confirm } from '@/components/ui/confirm'
 import { ChatView } from '@/components/chat/chat-view'
 import { ChannelView } from '@/components/chat/channel-view'
@@ -26,9 +25,12 @@ export const Route = createFileRoute('/_app/comms')({
 //   #channels  persistent, ambient (general talk, quick questions)
 //   Relays     named ad-hoc gatherings of people + agents around a purpose;
 //              they CONCLUDE (summary posted + indexed) and archive
-//   DMs        teammates (channel machinery) and agents (durable chat threads
-//              that distill into the activity brain and archive when idle)
-type Sel = { t: 'channel'; id: string } | { t: 'agent'; model: string } | null
+//   DMs        teammates (channel machinery) and agents (nested threads that
+//              distill into the activity brain and archive when idle)
+// Talking to an agent starts a NEW thread by default — bounded context per
+// topic, no giant-scrollback bloat riding along on every turn. Recent threads
+// nest under the agent in the sidebar for resuming deliberately.
+type Sel = { t: 'channel'; id: string } | { t: 'agent'; model: string; conversationId: string | null } | null
 
 function CommsPage() {
   const qc = useQueryClient()
@@ -37,10 +39,18 @@ function CommsPage() {
   const fleet = fleetData?.agents ?? []
   const { data: channels = [], isLoading } = useChannels()
   const { data: users = [] } = useUsers()
+  const { data: conversations = [] } = useConversations('chat')
 
   const [sel, setSel] = useState<Sel>(null)
+  // Bumped on every deliberate fresh-thread start; drives ChatView's reset.
+  const [fresh, setFresh] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [planOpen, setPlanOpen] = useState(false)
+
+  const newThread = (model: string) => {
+    setSel({ t: 'agent', model, conversationId: null })
+    setFresh((n) => n + 1)
+  }
 
   const rooms = channels.filter((c) => c.kind === 'channel')
   const relays = channels.filter((c) => c.kind === 'group')
@@ -96,27 +106,21 @@ function CommsPage() {
   return (
     <div className="flex h-full min-h-0">
       <aside className="flex h-full w-64 shrink-0 flex-col overflow-y-auto border-r border-line-subtle bg-sidebar p-3">
-        <Section
-          label="Channels"
-          create={<InlineCreate label="New channel" placeholder="channel name" onSubmit={(v) => void create(v, 'channel')} className="w-full" />}
-        >
+        <Section label="Channels" createPlaceholder="channel name" onCreate={(v) => void create(v, 'channel')}>
           {rooms.map((c) => (
             <RowButton key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
-              <span className="mr-1 opacity-60">#</span>
-              {c.name}
+              <span className="shrink-0 opacity-60">#</span>
+              <span className="min-w-0 flex-1 truncate">{c.name}</span>
             </RowButton>
           ))}
           {rooms.length === 0 && <Hint>{isLoading ? 'Loading…' : 'Ambient, persistent talk.'}</Hint>}
         </Section>
 
-        <Section
-          label="Relays"
-          create={<InlineCreate label="New relay" placeholder="what's it about?" onSubmit={(v) => void create(v, 'group')} className="w-full" />}
-        >
+        <Section label="Relays" createPlaceholder="what's it about?" onCreate={(v) => void create(v, 'group')}>
           {relays.map((c) => (
             <RowButton key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
-              <span className="mr-1 opacity-60">⇄</span>
-              {c.name}
+              <span className="shrink-0 opacity-60">⇄</span>
+              <span className="min-w-0 flex-1 truncate">{c.name}</span>
             </RowButton>
           ))}
           {relays.length === 0 && <Hint>Gather people + agents around a purpose; conclude when done.</Hint>}
@@ -131,8 +135,8 @@ function CommsPage() {
                 active={sel?.t === 'channel' && sel.id === dm?.id}
                 onClick={() => (dm ? setSel({ t: 'channel', id: dm.id }) : void startDm(u.id))}
               >
-                <Avatar name={u.name ?? u.email ?? '?'} className="mr-1.5 inline-flex h-4 w-4 align-text-bottom text-[9px]" />
-                {u.name ?? u.email}
+                <Avatar name={u.name ?? u.email ?? '?'} className="h-5 w-5 shrink-0 text-[10px]" />
+                <span className="min-w-0 flex-1 truncate">{u.name ?? u.email}</span>
               </RowButton>
             )
           })}
@@ -140,19 +144,52 @@ function CommsPage() {
         </Section>
 
         <Section label="Agents">
-          {fleet.map((a) => (
-            <RowButton key={a.id} active={sel?.t === 'agent' && sel.model === a.id} onClick={() => setSel({ t: 'agent', model: a.id })}>
-              <span className="mr-1 opacity-60">◍</span>
-              {a.label}
-            </RowButton>
-          ))}
+          {fleet.map((a) => {
+            const activeAgent = sel?.t === 'agent' && sel.model === a.id
+            const threads = activeAgent ? conversations.filter((c) => c.agentModel === a.id).slice(0, 8) : []
+            return (
+              <li key={a.id}>
+                <ul className="space-y-0.5">
+                  {/* Clicking the agent = a fresh thread (bounded context by default). */}
+                  <RowButton active={activeAgent && sel.conversationId === null} onClick={() => newThread(a.id)}>
+                    <span className="shrink-0 opacity-60">◍</span>
+                    <span className="min-w-0 flex-1 truncate">{a.label}</span>
+                    {activeAgent && sel.conversationId === null && (
+                      <span className="shrink-0 text-[10px] text-muted">new</span>
+                    )}
+                  </RowButton>
+                  {threads.map((c) => (
+                    <RowButton
+                      key={c.id}
+                      active={activeAgent && sel.conversationId === c.id}
+                      onClick={() => setSel({ t: 'agent', model: a.id, conversationId: c.id })}
+                      className="pl-7 text-xs"
+                    >
+                      <span className="min-w-0 flex-1 truncate">{c.title || 'Untitled'}</span>
+                    </RowButton>
+                  ))}
+                </ul>
+              </li>
+            )
+          })}
           {fleet.length === 0 && <Hint>No agents yet — hire on /agents.</Hint>}
         </Section>
       </aside>
 
       <main className="min-h-0 min-w-0 flex-1">
         {sel?.t === 'agent' ? (
-          <AgentDmPane key={sel.model} model={sel.model} fleet={fleet} />
+          <AgentDmPane
+            key={sel.model}
+            model={sel.model}
+            fleet={fleet}
+            conversationId={sel.conversationId}
+            newChatSignal={fresh}
+            onNewThread={() => newThread(sel.model)}
+            onCreated={(id) => {
+              setSel({ t: 'agent', model: sel.model, conversationId: id })
+              void qc.invalidateQueries({ queryKey: ['conversations'] })
+            }}
+          />
         ) : selected ? (
           <div className="flex h-full min-h-0 flex-col">
             <header className="flex items-center gap-2 border-b border-line-subtle px-5 py-3">
@@ -168,19 +205,19 @@ function CommsPage() {
                 </span>
               )}
               {(detail?.agents.length ?? 0) > 0 && (
-                <Button variant="outline" size="sm" onClick={() => setPlanOpen(true)}>
-                  Plan
-                </Button>
+                <IconAction title="Draft tickets from this conversation" onClick={() => setPlanOpen(true)}>
+                  <ClipboardList size={16} />
+                </IconAction>
               )}
               {selected.kind === 'group' && (
-                <Button variant="outline" size="sm" onClick={() => void conclude()}>
-                  Conclude
-                </Button>
+                <IconAction title="Conclude — summarize what was decided, then archive" onClick={() => void conclude()}>
+                  <CheckCheck size={16} />
+                </IconAction>
               )}
               {selected.kind !== 'dm' && (
-                <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
-                  Settings
-                </Button>
+                <IconAction title="Settings — people, agents, rename" onClick={() => setSettingsOpen(true)}>
+                  <Settings size={16} />
+                </IconAction>
               )}
             </header>
             <div className="min-h-0 flex-1">
@@ -230,51 +267,34 @@ function CommsPage() {
   )
 }
 
-// One agent's DM pane: the durable 1:1 thread, with a switcher over past
-// conversations (until they distill + archive) and a fresh-thread action.
-function AgentDmPane({ model, fleet }: { model: string; fleet: { id: string; label: string; tiers?: string[] }[] }) {
-  const qc = useQueryClient()
-  const { data: conversations = [] } = useConversations('chat')
-  const mine = conversations.filter((c) => c.agentModel === model)
-  const [conversationId, setConversationId] = useState<string | null>(null)
-  const [newChatSignal, setNewChatSignal] = useState(0)
+// One agent's DM pane. Threads are selected in the sidebar (nested under the
+// agent); a fresh thread is the default — bounded context per topic.
+function AgentDmPane({
+  model,
+  fleet,
+  conversationId,
+  newChatSignal,
+  onNewThread,
+  onCreated,
+}: {
+  model: string
+  fleet: { id: string; label: string; tiers?: string[] }[]
+  conversationId: string | null
+  newChatSignal: number
+  onNewThread: () => void
+  onCreated: (id: string) => void
+}) {
   const agent = fleet.find((a) => a.id === model)
-
-  // Land on the latest thread with this agent (if any).
-  useEffect(() => {
-    if (conversationId === null && mine[0]) setConversationId(mine[0].id)
-  }, [mine, conversationId])
-
   if (!agent) return null
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex items-center gap-2 border-b border-line-subtle px-5 py-3">
         <span className="text-sm font-semibold text-fg">◍ {agent.label}</span>
+        {conversationId === null && <span className="text-xs text-muted">new thread — history stays out of context</span>}
         <span className="ml-auto" />
-        {mine.length > 0 && (
-          <Select
-            size="sm"
-            value={conversationId ?? ''}
-            onChange={(e) => setConversationId(e.target.value || null)}
-            className="max-w-56"
-          >
-            {mine.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.title || 'Untitled'}
-              </option>
-            ))}
-          </Select>
-        )}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            setConversationId(null)
-            setNewChatSignal((n) => n + 1)
-          }}
-        >
-          New thread
-        </Button>
+        <IconAction title="New thread — fresh context" onClick={onNewThread}>
+          <SquarePen size={16} />
+        </IconAction>
       </header>
       <div className="min-h-0 flex-1">
         <ChatView
@@ -283,35 +303,90 @@ function AgentDmPane({ model, fleet }: { model: string; fleet: { id: string; lab
           tiers={agent.tiers ?? []}
           conversationId={conversationId}
           newChatSignal={newChatSignal}
-          onCreated={(id) => {
-            setConversationId(id)
-            void qc.invalidateQueries({ queryKey: ['conversations'] })
-          }}
+          onCreated={onCreated}
         />
       </div>
     </div>
   )
 }
 
-function Section({ label, create, children }: { label: string; create?: React.ReactNode; children: React.ReactNode }) {
+// Sidebar section: the create affordance is a small "+" IN the heading (Slack-
+// style) that expands to an inline name input — no chunky buttons under lists.
+function Section({
+  label,
+  createPlaceholder,
+  onCreate,
+  children,
+}: {
+  label: string
+  createPlaceholder?: string
+  onCreate?: (name: string) => void
+  children: React.ReactNode
+}) {
+  const [creating, setCreating] = useState(false)
+  const [name, setName] = useState('')
+  const submit = (cancelled: boolean) => {
+    const v = name.trim()
+    setCreating(false)
+    setName('')
+    if (v && !cancelled) onCreate?.(v)
+  }
   return (
     <div className="mb-4">
-      <div className="mb-1.5 px-2 text-[11px] uppercase tracking-wide text-muted">{label}</div>
+      <div className="mb-1 flex items-center px-2">
+        <span className="text-[11px] uppercase tracking-wide text-muted">{label}</span>
+        {onCreate && (
+          <button
+            type="button"
+            title={`New ${label.toLowerCase().replace(/s$/, '')}`}
+            onClick={() => setCreating(true)}
+            className="ml-auto grid h-5 w-5 place-items-center rounded text-muted transition-colors hover:bg-card hover:text-fg"
+          >
+            <Plus size={13} />
+          </button>
+        )}
+      </div>
+      {creating && (
+        <div className="mb-1 px-1">
+          <Input
+            autoFocus
+            size="sm"
+            value={name}
+            placeholder={createPlaceholder}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submit(false)
+              else if (e.key === 'Escape') submit(true)
+            }}
+            onBlur={() => submit(false)}
+          />
+        </div>
+      )}
       <ul className="space-y-0.5">{children}</ul>
-      {create && <div className="mt-1.5">{create}</div>}
     </div>
   )
 }
 
-function RowButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function RowButton({
+  active,
+  onClick,
+  className,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  className?: string
+  children: React.ReactNode
+}) {
   return (
     <li>
       <button
         type="button"
         onClick={onClick}
         className={cn(
-          'w-full truncate rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-card',
+          'flex w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-card',
           active ? 'bg-card text-fg' : 'text-muted',
+          className,
         )}
       >
         {children}
@@ -323,3 +398,18 @@ function RowButton({ active, onClick, children }: { active: boolean; onClick: ()
 const Hint = ({ children }: { children: React.ReactNode }) => (
   <li className="px-2 py-1 text-[11px] leading-relaxed text-muted">{children}</li>
 )
+
+/** Compact header action: icon-only, tooltip via title. */
+function IconAction({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-card hover:text-fg"
+    >
+      {children}
+    </button>
+  )
+}
