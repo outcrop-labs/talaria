@@ -1,38 +1,45 @@
 import { cn } from '@/lib/cn'
+import { PROVIDER_LOGOS } from './provider-logos'
 
-// Brand-colored monogram marks for model providers (not trademarked artwork —
-// clean initials on the provider's signature color).
-const MARKS: Record<string, { bg: string; fg: string; glyph: string }> = {
-  anthropic: { bg: '#D97757', fg: '#1a1a18', glyph: 'A' },
-  openai: { bg: '#10a37f', fg: '#ffffff', glyph: '◯' },
-  openrouter: { bg: '#6467f2', fg: '#ffffff', glyph: 'OR' },
-  deepseek: { bg: '#4d6bfe', fg: '#ffffff', glyph: 'D' },
-  'x-ai': { bg: '#000000', fg: '#ffffff', glyph: '𝕏' },
-  google: { bg: '#4285F4', fg: '#ffffff', glyph: 'G' },
-  mistral: { bg: '#ff7000', fg: '#ffffff', glyph: 'M' },
-  groq: { bg: '#f55036', fg: '#ffffff', glyph: 'g' },
-  ollama: { bg: '#ffffff', fg: '#000000', glyph: '🦙' },
-  vllm: { bg: '#fcb92c', fg: '#30302e', glyph: 'v' },
-  litellm: { bg: '#2e8bff', fg: '#ffffff', glyph: 'L' },
+// Neutral monogram fallback for providers we have no real mark for (OpenAI, Groq,
+// LiteLLM, Together, …). Kept monochrome to sit beside the real logos cleanly.
+const MONOGRAM: Record<string, string> = {
+  openai: 'AI',
+  groq: 'gq',
+  litellm: 'LL',
+  together: 'T',
+  fireworks: 'F',
+  cerebras: 'C',
+  deepinfra: 'DI',
 }
 
-/** A provider's mark; unknown providers get a neutral monogram of their name. */
+// Map an endpoint's provider/name onto a known logo slug. Endpoint names often
+// say more than the provider ('custom' covers Gemini, Groq, …), so try name first.
+function resolve(provider: string, name?: string): { logo?: string; mono: string } {
+  const keys = [name?.toLowerCase(), provider.toLowerCase()].filter(Boolean) as string[]
+  for (const k of keys) if (PROVIDER_LOGOS[k]) return { logo: PROVIDER_LOGOS[k], mono: '' }
+  for (const k of keys) if (MONOGRAM[k]) return { mono: MONOGRAM[k] }
+  return { mono: (name ?? provider).charAt(0).toUpperCase() }
+}
+
+/** A provider's real monochrome brand mark; unknown providers get a neutral monogram. */
 export function ProviderMark({ provider, name, className }: { provider: string; name?: string; className?: string }) {
-  const key = provider.toLowerCase()
-  // Endpoint names often say more than provider ('custom'): try name first.
-  const m = MARKS[(name ?? '').toLowerCase()] ?? MARKS[key]
-  const glyph = m?.glyph ?? (name ?? provider).charAt(0).toUpperCase()
+  const { logo, mono } = resolve(provider, name)
   return (
     <span
       aria-hidden
-      className={cn('grid h-5 w-5 shrink-0 place-items-center rounded-md text-[10px] font-bold', className)}
-      style={{
-        background: m?.bg ?? 'var(--theme-line)',
-        color: m?.fg ?? 'var(--theme-fg)',
-        border: m?.bg === '#ffffff' ? '1px solid var(--theme-line)' : undefined,
-      }}
+      className={cn(
+        'grid h-5 w-5 shrink-0 place-items-center rounded-md border border-line-subtle bg-card2 text-fg',
+        className,
+      )}
     >
-      {glyph}
+      {logo ? (
+        <svg viewBox="0 0 24 24" fill="currentColor" className="h-3.5 w-3.5">
+          <path d={logo} />
+        </svg>
+      ) : (
+        <span className="text-[10px] font-bold text-muted">{mono}</span>
+      )}
     </span>
   )
 }

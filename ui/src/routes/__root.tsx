@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useState } from 'react'
 import appCss from '../styles.css?url'
 import { DEFAULT_THEME } from '@/lib/theme'
+import { ConfirmHost } from '@/components/ui/confirm'
 
 // Apply the stored Mercury theme before first paint (no flash-of-wrong-theme).
 const themeBootScript = `(function(){try{
@@ -50,6 +51,7 @@ function RootDocument() {
       <body>
         <QueryClientProvider client={queryClient}>
           <Outlet />
+          <ConfirmHost />
         </QueryClientProvider>
         <Scripts />
       </body>

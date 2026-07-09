@@ -4,6 +4,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
 import { Modal } from '@/components/ui/modal'
+import { confirm } from '@/components/ui/confirm'
 import { UserPicker } from '@/components/app/user-picker'
 import {
   addChannelAgent,
@@ -122,8 +123,8 @@ export function ChannelSettingsModal({
             <Button
               variant="danger"
               size="sm"
-              onClick={() => {
-                if (!confirm(`Delete #${channelName} and all its messages?`)) return
+              onClick={async () => {
+                if (!(await confirm({ title: 'Delete channel', message: `Delete #${channelName} and all its messages?`, confirmLabel: 'Delete', danger: true }))) return
                 void run(() => deleteChannel(channelId)).then(onDeleted)
               }}
             >

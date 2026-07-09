@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
+import { confirm } from '@/components/ui/confirm'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
@@ -35,7 +36,7 @@ function ModelsPage() {
   const { data: endpoints = [] } = useEndpoints(isAdmin)
   const [adding, setAdding] = useState(false)
 
-  if (session && !isAdmin) return <EmptyState icon="▚" title="Admins only" />
+  if (session && !isAdmin) return <EmptyState icon="▤" title="Admins only" />
 
   const local = endpoints.filter((e) => e.class === 'local')
   const cloud = endpoints.filter((e) => e.class === 'cloud')
@@ -52,7 +53,7 @@ function ModelsPage() {
 
         {endpoints.length === 0 ? (
           <EmptyState
-            icon="▚"
+            icon="▤"
             title="No model backends yet"
             hint="Add a provider, or import your stack on the Agents page to seed them."
             action={<Button size="sm" onClick={() => setAdding(true)}>Add provider</Button>}
@@ -152,9 +153,12 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
     setErr(null)
     let r = await op(false)
     if (r.needsForce && r.affected) {
-      const go = confirm(
-        `Still used by:\n${describeAffected(r.affected)}\n\nRemove it from those agents too? Each gets a new config version (revertible); running managed agents restart.`,
-      )
+      const go = await confirm({
+        title: 'Still in use',
+        message: `Still used by:\n${describeAffected(r.affected)}\n\nRemove it from those agents too? Each gets a new config version (revertible); running managed agents restart.`,
+        confirmLabel: 'Remove everywhere',
+        danger: true,
+      })
       if (go) r = await op(true)
     }
     if (r.error) setErr(r.error)
@@ -284,7 +288,7 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => confirm(`Remove the ${ep.name} provider?`) && (void runCascading((force) => removeEndpoint(ep.id, force)).then(onClose))}
+            onClick={async () => { if (await confirm({ title: 'Remove provider', message: `Remove the ${ep.name} provider?`, confirmLabel: 'Remove', danger: true })) void runCascading((force) => removeEndpoint(ep.id, force)).then(onClose) }}
           >
             Remove provider
           </Button>

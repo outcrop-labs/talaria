@@ -80,7 +80,7 @@ function ActivityPage() {
           <div className="text-sm text-muted">Loading activity…</div>
         ) : events.length === 0 ? (
           <EmptyState
-            icon="⌁"
+            icon="☰"
             title="Nothing yet"
             hint="Ticket updates, channel messages, and agent config changes land here."
           />

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Panel } from '@/components/ui/panel'
+import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Combobox } from '@/components/ui/combobox'
@@ -86,7 +87,7 @@ function CollectionRow({ col }: { col: RagCollection }) {
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
   }
   const del = async () => {
-    if (!confirm(`Delete the "${col.name}" collection and its index?`)) return
+    if (!(await confirm({ title: 'Delete collection', message: `Delete the "${col.name}" collection and its index?`, confirmLabel: 'Delete', danger: true }))) return
     await fetch(`/api/rag/collections/${col.id}`, { method: 'DELETE' })
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
   }

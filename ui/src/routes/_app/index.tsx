@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles, CalendarDays, Plus, ExternalLink, Mail, Send, X, ShieldCheck, Check } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
+import { alert } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from '@/components/assistant/assistant-wizard'
@@ -523,7 +524,7 @@ function ApprovalsPanel() {
       })
       if (!r.ok) {
         const j = (await r.json().catch(() => null)) as { message?: string } | null
-        alert(j?.message ?? 'Could not complete that action.')
+        await alert({ title: "Couldn't complete", message: j?.message ?? 'Could not complete that action.' })
       }
       await qc.invalidateQueries({ queryKey: ['google-pending'] })
       await qc.invalidateQueries({ queryKey: ['agenda'] })

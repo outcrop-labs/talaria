@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, X, Upload, ExternalLink, DownloadCloud, Search, type LucideIcon } from 'lucide-react'
 import { Button, buttonClasses } from '@/components/ui/button'
+import { confirm, alert } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -212,7 +213,7 @@ function DriveImportModal({ onClose, onImported }: { onClose: () => void; onImpo
       })
       const j = (await r.json().catch(() => null)) as { artifact?: { id: string }; message?: string } | null
       if (r.ok && j?.artifact?.id) onImported(j.artifact.id)
-      else alert(j?.message ?? 'Import failed.')
+      else await alert({ title: 'Import failed', message: j?.message ?? 'Import failed.' })
     } finally {
       setImporting(null)
     }
@@ -362,7 +363,7 @@ function FolderNode({
         <button
           type="button"
           title="Delete folder"
-          onClick={async () => { if (confirm(`Delete folder "${folder.name}"? Its artifacts move to the top level.`)) { await deleteFolder(folder.id); await onRefresh() } }}
+          onClick={async () => { if (await confirm({ title: 'Delete folder', message: `Delete folder "${folder.name}"? Its artifacts move to the top level.`, confirmLabel: 'Delete', danger: true })) { await deleteFolder(folder.id); await onRefresh() } }}
           className="shrink-0 rounded p-0.5 opacity-0 hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
         >
           <X size={12} />
@@ -461,11 +462,11 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
         await qc.invalidateQueries({ queryKey: ['artifact', id] })
         window.open(j.file.url, '_blank', 'noopener')
       } else if (j?.error === 'not_connected') {
-        if (confirm('Connect a Google account to export to Drive. Go to Settings now?')) {
+        if (await confirm({ title: 'Connect Google', message: 'Connect a Google account to export to Drive. Go to Settings now?', confirmLabel: 'Go to Settings' })) {
           window.location.href = '/settings'
         }
       } else {
-        alert(j?.message ?? 'Export to Google Drive failed.')
+        await alert({ title: 'Export failed', message: j?.message ?? 'Export to Google Drive failed.' })
       }
     } finally {
       setExporting(false)
@@ -543,7 +544,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
                 type="button"
                 onClick={async () => {
                   setMenuOpen(false)
-                  if (!confirm(`Delete "${artifact.title}"?`)) return
+                  if (!(await confirm({ title: 'Delete artifact', message: `Delete "${artifact.title}"?`, confirmLabel: 'Delete', danger: true }))) return
                   await deleteArtifact(id)
                   await qc.invalidateQueries({ queryKey: ['artifacts'] })
                   onDeleted()

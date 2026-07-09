@@ -7,6 +7,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { Markdown } from '@/components/ui/markdown'
@@ -600,8 +601,8 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
               label: 'Delete folder',
               icon: Trash2,
               danger: true,
-              onClick: () => {
-                if (confirm(`Delete "${space.name}" and all its docs?`)) onDeleted()
+              onClick: async () => {
+                if (await confirm({ title: 'Delete folder', message: `Delete "${space.name}" and all its docs?`, confirmLabel: 'Delete', danger: true })) onDeleted()
               },
             },
           ]}
@@ -891,7 +892,7 @@ function DocEditor({
               icon: Trash2,
               danger: true,
               onClick: async () => {
-                if (!confirm(`Delete "${doc.title}"?`)) return
+                if (!(await confirm({ title: 'Delete document', message: `Delete "${doc.title}"?`, confirmLabel: 'Delete', danger: true }))) return
                 await deleteDoc(docId)
                 await qc.invalidateQueries({ queryKey: ['kb-docs', doc.spaceId] })
                 onDeleted()
