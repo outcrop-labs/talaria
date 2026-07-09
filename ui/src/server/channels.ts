@@ -1,19 +1,26 @@
-// Group chat — Slack-style channels where humans and fleet agents are members.
-// Talaria owns the state; agents join as channel_agents and reply (streamed)
-// when @mentioned. Message seq comes from a per-channel counter so concurrent
-// writers can't collide.
+// Comms — one machinery behind three shapes of conversation: persistent
+// #channels, Relays (named ad-hoc gatherings of humans + agents that conclude
+// and archive), and human↔human DMs. Talaria owns the state; agents join as
+// channel_agents and reply (streamed) when @mentioned. Message seq comes from
+// a per-channel counter so concurrent writers can't collide.
 import { db } from './db/pg'
 import { publishChannel } from './realtime'
 
 export type ChannelRole = 'owner' | 'member'
 
+/** 'channel' = persistent + ambient; 'group' = a Relay; 'dm' = human↔human. */
+export type ChannelKind = 'channel' | 'group' | 'dm'
+
 export interface Channel {
   id: string
   name: string
   topic: string | null
+  kind: ChannelKind
   role: ChannelRole
   createdAt: string
   updatedAt: string
+  /** For DMs: the other person (display identity). */
+  peer?: { userId: string; name: string | null; email: string | null } | null
 }
 
 export interface ChannelMember {
@@ -34,17 +41,25 @@ export interface ChannelMessage {
   attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
 }
 
-/** Channels the user belongs to, newest activity first. */
+/** Channels/relays/DMs the user belongs to, newest activity first. DMs carry
+ *  the other person's identity so the UI can label them. */
 export async function listChannels(userId: string): Promise<Channel[]> {
   const sql = await db()
-  const rows = await sql`
-    select c.id, c.name, c.topic, m.role,
-           c.created_at as "createdAt", c.updated_at as "updatedAt"
-    from channels c join channel_members m on m.channel_id = c.id and m.user_id = ${userId}
+  const rows = (await sql`
+    select c.id, c.name, c.topic, c.kind, m.role,
+           c.created_at as "createdAt", c.updated_at as "updatedAt",
+           pu.id as "peerId", pu.name as "peerName", pu.email as "peerEmail"
+    from channels c
+    join channel_members m on m.channel_id = c.id and m.user_id = ${userId}
+    left join channel_members p on c.kind = 'dm' and p.channel_id = c.id and p.user_id <> ${userId}
+    left join users pu on pu.id = p.user_id
     where c.archived_at is null
     order by c.updated_at desc
-  `
-  return rows as unknown as Channel[]
+  `) as unknown as Array<Channel & { peerId: string | null; peerName: string | null; peerEmail: string | null }>
+  return rows.map(({ peerId, peerName, peerEmail, ...c }) => ({
+    ...c,
+    peer: peerId ? { userId: peerId, name: peerName, email: peerEmail } : null,
+  }))
 }
 
 export async function channelRole(userId: string, channelId: string): Promise<ChannelRole | null> {
@@ -55,16 +70,51 @@ export async function channelRole(userId: string, channelId: string): Promise<Ch
   return rows.length ? (rows[0] as { role: ChannelRole }).role : null
 }
 
-/** Create a channel; the creator becomes its owner (and first member). */
-export async function createChannel(userId: string, name: string, topic?: string | null): Promise<Channel> {
+/** Create a channel or a Relay; the creator becomes its owner (and first member). */
+export async function createChannel(
+  userId: string,
+  name: string,
+  topic?: string | null,
+  kind: Exclude<ChannelKind, 'dm'> = 'channel',
+): Promise<Channel> {
   const sql = await db()
   const row = await sql.begin(async (tx) => {
     const rows = await tx`
-      insert into channels (name, topic, created_by) values (${name}, ${topic ?? null}, ${userId})
-      returning id, name, topic, created_at as "createdAt", updated_at as "updatedAt"
+      insert into channels (name, topic, kind, created_by) values (${name}, ${topic ?? null}, ${kind}, ${userId})
+      returning id, name, topic, kind, created_at as "createdAt", updated_at as "updatedAt"
     `
     const c = rows[0] as Omit<Channel, 'role'>
     await tx`insert into channel_members (channel_id, user_id, role) values (${c.id}, ${userId}, 'owner')`
+    return c
+  })
+  return { ...row, role: 'owner' }
+}
+
+/** Find-or-create the DM between two people (deduped on the sorted id pair).
+ *  Both sides are owners — a DM has no hierarchy. */
+export async function ensureDm(userId: string, otherUserId: string): Promise<Channel> {
+  if (userId === otherUserId) throw new Error('cannot DM yourself')
+  const sql = await db()
+  const dmKey = [userId, otherUserId].sort().join(':')
+  const existing = (await sql`
+    select id, name, topic, kind, created_at as "createdAt", updated_at as "updatedAt"
+    from channels where dm_key = ${dmKey}
+  `) as unknown as Array<Omit<Channel, 'role'>>
+  if (existing[0]) {
+    // Un-archive on revisit — a DM never really ends.
+    await sql`update channels set archived_at = null where id = ${existing[0].id} and archived_at is not null`
+    return { ...existing[0], role: 'owner' }
+  }
+  const row = await sql.begin(async (tx) => {
+    const rows = await tx`
+      insert into channels (name, topic, kind, dm_key, created_by)
+      values ('', null, 'dm', ${dmKey}, ${userId})
+      on conflict (dm_key) where dm_key is not null do update set updated_at = now()
+      returning id, name, topic, kind, created_at as "createdAt", updated_at as "updatedAt"
+    `
+    const c = rows[0] as Omit<Channel, 'role'>
+    await tx`insert into channel_members (channel_id, user_id, role) values (${c.id}, ${userId}, 'owner') on conflict do nothing`
+    await tx`insert into channel_members (channel_id, user_id, role) values (${c.id}, ${otherUserId}, 'owner') on conflict do nothing`
     return c
   })
   return { ...row, role: 'owner' }
@@ -135,7 +185,7 @@ export async function listChannelAgents(channelId: string): Promise<string[]> {
 export async function listChannelsForAgent(model: string): Promise<Channel[]> {
   const sql = await db()
   const rows = await sql`
-    select c.id, c.name, c.topic, c.created_at as "createdAt", c.updated_at as "updatedAt"
+    select c.id, c.name, c.topic, c.kind, c.created_at as "createdAt", c.updated_at as "updatedAt"
     from channels c join channel_agents a on a.channel_id = c.id and a.agent_model = ${model}
     where c.archived_at is null order by c.updated_at desc
   `

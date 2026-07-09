@@ -28,6 +28,7 @@ import { Route as ApiInferenceRouteImport } from './routes/api/inference'
 import { Route as ApiHomeRouteImport } from './routes/api/home'
 import { Route as ApiHistoryRouteImport } from './routes/api/history'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
+import { Route as ApiDmsRouteImport } from './routes/api/dms'
 import { Route as ApiCostRouteImport } from './routes/api/cost'
 import { Route as ApiConversationsRouteImport } from './routes/api/conversations'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
@@ -47,6 +48,7 @@ import { Route as AppInferenceRouteImport } from './routes/_app/inference'
 import { Route as AppInboxRouteImport } from './routes/_app/inbox'
 import { Route as AppFleetRouteImport } from './routes/_app/fleet'
 import { Route as AppCostRouteImport } from './routes/_app/cost'
+import { Route as AppCommsRouteImport } from './routes/_app/comms'
 import { Route as AppChatRouteImport } from './routes/_app/chat'
 import { Route as AppChannelsRouteImport } from './routes/_app/channels'
 import { Route as AppArtifactsRouteImport } from './routes/_app/artifacts'
@@ -118,6 +120,7 @@ import { Route as ApiChannelsIdPlanRouteImport } from './routes/api/channels.$id
 import { Route as ApiChannelsIdMessagesRouteImport } from './routes/api/channels.$id.messages'
 import { Route as ApiChannelsIdMembersRouteImport } from './routes/api/channels.$id.members'
 import { Route as ApiChannelsIdEventsRouteImport } from './routes/api/channels.$id.events'
+import { Route as ApiChannelsIdConcludeRouteImport } from './routes/api/channels.$id.conclude'
 import { Route as ApiChannelsIdAgentsRouteImport } from './routes/api/channels.$id.agents'
 import { Route as ApiBoardsIdTemplatesRouteImport } from './routes/api/boards.$id.templates'
 import { Route as ApiBoardsIdTasksRouteImport } from './routes/api/boards.$id.tasks'
@@ -249,6 +252,11 @@ const ApiFleetRoute = ApiFleetRouteImport.update({
   path: '/api/fleet',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDmsRoute = ApiDmsRouteImport.update({
+  id: '/api/dms',
+  path: '/api/dms',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiCostRoute = ApiCostRouteImport.update({
   id: '/api/cost',
   path: '/api/cost',
@@ -342,6 +350,11 @@ const AppFleetRoute = AppFleetRouteImport.update({
 const AppCostRoute = AppCostRouteImport.update({
   id: '/cost',
   path: '/cost',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppCommsRoute = AppCommsRouteImport.update({
+  id: '/comms',
+  path: '/comms',
   getParentRoute: () => AppRoute,
 } as any)
 const AppChatRoute = AppChatRouteImport.update({
@@ -703,6 +716,11 @@ const ApiChannelsIdEventsRoute = ApiChannelsIdEventsRouteImport.update({
   path: '/events',
   getParentRoute: () => ApiChannelsIdRoute,
 } as any)
+const ApiChannelsIdConcludeRoute = ApiChannelsIdConcludeRouteImport.update({
+  id: '/conclude',
+  path: '/conclude',
+  getParentRoute: () => ApiChannelsIdRoute,
+} as any)
 const ApiChannelsIdAgentsRoute = ApiChannelsIdAgentsRouteImport.update({
   id: '/agents',
   path: '/agents',
@@ -908,6 +926,7 @@ export interface FileRoutesByFullPath {
   '/artifacts': typeof AppArtifactsRoute
   '/channels': typeof AppChannelsRoute
   '/chat': typeof AppChatRoute
+  '/comms': typeof AppCommsRoute
   '/cost': typeof AppCostRoute
   '/fleet': typeof AppFleetRoute
   '/inbox': typeof AppInboxRoute
@@ -927,6 +946,7 @@ export interface FileRoutesByFullPath {
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
+  '/api/dms': typeof ApiDmsRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
@@ -994,6 +1014,7 @@ export interface FileRoutesByFullPath {
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
   '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
   '/api/channels/$id/agents': typeof ApiChannelsIdAgentsRoute
+  '/api/channels/$id/conclude': typeof ApiChannelsIdConcludeRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
@@ -1053,6 +1074,7 @@ export interface FileRoutesByTo {
   '/artifacts': typeof AppArtifactsRoute
   '/channels': typeof AppChannelsRoute
   '/chat': typeof AppChatRoute
+  '/comms': typeof AppCommsRoute
   '/cost': typeof AppCostRoute
   '/fleet': typeof AppFleetRoute
   '/inbox': typeof AppInboxRoute
@@ -1072,6 +1094,7 @@ export interface FileRoutesByTo {
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
+  '/api/dms': typeof ApiDmsRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
@@ -1140,6 +1163,7 @@ export interface FileRoutesByTo {
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
   '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
   '/api/channels/$id/agents': typeof ApiChannelsIdAgentsRoute
+  '/api/channels/$id/conclude': typeof ApiChannelsIdConcludeRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
@@ -1201,6 +1225,7 @@ export interface FileRoutesById {
   '/_app/artifacts': typeof AppArtifactsRoute
   '/_app/channels': typeof AppChannelsRoute
   '/_app/chat': typeof AppChatRoute
+  '/_app/comms': typeof AppCommsRoute
   '/_app/cost': typeof AppCostRoute
   '/_app/fleet': typeof AppFleetRoute
   '/_app/inbox': typeof AppInboxRoute
@@ -1220,6 +1245,7 @@ export interface FileRoutesById {
   '/api/chat': typeof ApiChatRoute
   '/api/conversations': typeof ApiConversationsRouteWithChildren
   '/api/cost': typeof ApiCostRoute
+  '/api/dms': typeof ApiDmsRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
@@ -1288,6 +1314,7 @@ export interface FileRoutesById {
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
   '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
   '/api/channels/$id/agents': typeof ApiChannelsIdAgentsRoute
+  '/api/channels/$id/conclude': typeof ApiChannelsIdConcludeRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
@@ -1350,6 +1377,7 @@ export interface FileRouteTypes {
     | '/artifacts'
     | '/channels'
     | '/chat'
+    | '/comms'
     | '/cost'
     | '/fleet'
     | '/inbox'
@@ -1369,6 +1397,7 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/conversations'
     | '/api/cost'
+    | '/api/dms'
     | '/api/fleet'
     | '/api/history'
     | '/api/home'
@@ -1436,6 +1465,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/tasks'
     | '/api/boards/$id/templates'
     | '/api/channels/$id/agents'
+    | '/api/channels/$id/conclude'
     | '/api/channels/$id/events'
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
@@ -1495,6 +1525,7 @@ export interface FileRouteTypes {
     | '/artifacts'
     | '/channels'
     | '/chat'
+    | '/comms'
     | '/cost'
     | '/fleet'
     | '/inbox'
@@ -1514,6 +1545,7 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/conversations'
     | '/api/cost'
+    | '/api/dms'
     | '/api/fleet'
     | '/api/history'
     | '/api/home'
@@ -1582,6 +1614,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/tasks'
     | '/api/boards/$id/templates'
     | '/api/channels/$id/agents'
+    | '/api/channels/$id/conclude'
     | '/api/channels/$id/events'
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
@@ -1642,6 +1675,7 @@ export interface FileRouteTypes {
     | '/_app/artifacts'
     | '/_app/channels'
     | '/_app/chat'
+    | '/_app/comms'
     | '/_app/cost'
     | '/_app/fleet'
     | '/_app/inbox'
@@ -1661,6 +1695,7 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/conversations'
     | '/api/cost'
+    | '/api/dms'
     | '/api/fleet'
     | '/api/history'
     | '/api/home'
@@ -1729,6 +1764,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/tasks'
     | '/api/boards/$id/templates'
     | '/api/channels/$id/agents'
+    | '/api/channels/$id/conclude'
     | '/api/channels/$id/events'
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
@@ -1794,6 +1830,7 @@ export interface RootRouteChildren {
   ApiChatRoute: typeof ApiChatRoute
   ApiConversationsRoute: typeof ApiConversationsRouteWithChildren
   ApiCostRoute: typeof ApiCostRoute
+  ApiDmsRoute: typeof ApiDmsRoute
   ApiFleetRoute: typeof ApiFleetRouteWithChildren
   ApiHistoryRoute: typeof ApiHistoryRoute
   ApiHomeRoute: typeof ApiHomeRoute
@@ -1973,6 +2010,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFleetRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/dms': {
+      id: '/api/dms'
+      path: '/api/dms'
+      fullPath: '/api/dms'
+      preLoaderRoute: typeof ApiDmsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/cost': {
       id: '/api/cost'
       path: '/api/cost'
@@ -2104,6 +2148,13 @@ declare module '@tanstack/react-router' {
       path: '/cost'
       fullPath: '/cost'
       preLoaderRoute: typeof AppCostRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/comms': {
+      id: '/_app/comms'
+      path: '/comms'
+      fullPath: '/comms'
+      preLoaderRoute: typeof AppCommsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/chat': {
@@ -2603,6 +2654,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiChannelsIdEventsRouteImport
       parentRoute: typeof ApiChannelsIdRoute
     }
+    '/api/channels/$id/conclude': {
+      id: '/api/channels/$id/conclude'
+      path: '/conclude'
+      fullPath: '/api/channels/$id/conclude'
+      preLoaderRoute: typeof ApiChannelsIdConcludeRouteImport
+      parentRoute: typeof ApiChannelsIdRoute
+    }
     '/api/channels/$id/agents': {
       id: '/api/channels/$id/agents'
       path: '/agents'
@@ -2877,6 +2935,7 @@ interface AppRouteChildren {
   AppArtifactsRoute: typeof AppArtifactsRoute
   AppChannelsRoute: typeof AppChannelsRoute
   AppChatRoute: typeof AppChatRoute
+  AppCommsRoute: typeof AppCommsRoute
   AppCostRoute: typeof AppCostRoute
   AppFleetRoute: typeof AppFleetRoute
   AppInboxRoute: typeof AppInboxRoute
@@ -2898,6 +2957,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppArtifactsRoute: AppArtifactsRoute,
   AppChannelsRoute: AppChannelsRoute,
   AppChatRoute: AppChatRoute,
+  AppCommsRoute: AppCommsRoute,
   AppCostRoute: AppCostRoute,
   AppFleetRoute: AppFleetRoute,
   AppInboxRoute: AppInboxRoute,
@@ -3016,6 +3076,7 @@ const ApiBoardsRouteWithChildren = ApiBoardsRoute._addFileChildren(
 
 interface ApiChannelsIdRouteChildren {
   ApiChannelsIdAgentsRoute: typeof ApiChannelsIdAgentsRoute
+  ApiChannelsIdConcludeRoute: typeof ApiChannelsIdConcludeRoute
   ApiChannelsIdEventsRoute: typeof ApiChannelsIdEventsRoute
   ApiChannelsIdMembersRoute: typeof ApiChannelsIdMembersRoute
   ApiChannelsIdMessagesRoute: typeof ApiChannelsIdMessagesRoute
@@ -3024,6 +3085,7 @@ interface ApiChannelsIdRouteChildren {
 
 const ApiChannelsIdRouteChildren: ApiChannelsIdRouteChildren = {
   ApiChannelsIdAgentsRoute: ApiChannelsIdAgentsRoute,
+  ApiChannelsIdConcludeRoute: ApiChannelsIdConcludeRoute,
   ApiChannelsIdEventsRoute: ApiChannelsIdEventsRoute,
   ApiChannelsIdMembersRoute: ApiChannelsIdMembersRoute,
   ApiChannelsIdMessagesRoute: ApiChannelsIdMessagesRoute,
@@ -3385,6 +3447,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiChatRoute: ApiChatRoute,
   ApiConversationsRoute: ApiConversationsRouteWithChildren,
   ApiCostRoute: ApiCostRoute,
+  ApiDmsRoute: ApiDmsRoute,
   ApiFleetRoute: ApiFleetRouteWithChildren,
   ApiHistoryRoute: ApiHistoryRoute,
   ApiHomeRoute: ApiHomeRoute,

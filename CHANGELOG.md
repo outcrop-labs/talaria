@@ -23,6 +23,19 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Comms — every conversation in one place.** Chat and Channels merge into a
+  single Slack-shaped, agent-native surface (`/comms`): persistent **#channels**
+  (ambient talk), **Relays** (named ad-hoc gatherings of people + agents around
+  a purpose), **teammate DMs** (human↔human, riding the channel machinery,
+  deduped per pair), and **agent DMs** (durable 1:1 threads). One sidebar, four
+  sections; old `/chat` and `/channels` routes redirect.
+- **Conversations decay instead of accumulating.** Relays **conclude**: a
+  summary of what was decided is posted as the final message, indexed for
+  retrieval (channel-membership ACL), and the relay archives. Idle agent DMs
+  (default 14 days, `TALARIA_CHAT_TTL_DAYS`) are **distilled** — durable
+  substance summarized into the activity brain, owner-scoped — then archived
+  out of the sidebar. Sweeps run opportunistically (throttled hourly, never
+  blocking a request); plans are exempt (they're documents, not scrollback).
 - **Ticket & plan templates.** An org-wide template library (markdown skeleton
   + agent guidance per template — the headings are the schema): boards bind the
   ticket templates they use and mark a default (Board settings → General);

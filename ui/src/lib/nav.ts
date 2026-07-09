@@ -13,8 +13,7 @@ export interface NavItem {
 // Views an admin can grant/revoke per user. Home and Settings are always
 // reachable; admin-only views (the whole Manage section) are gated by role.
 export const GATEABLE_VIEWS: { to: string; label: string }[] = [
-  { to: '/chat', label: 'Chat' },
-  { to: '/channels', label: 'Channels' },
+  { to: '/comms', label: 'Comms' },
   { to: '/plan', label: 'Plan' },
   { to: '/boards', label: 'Boards' },
   { to: '/knowledge', label: 'Knowledge' },
@@ -34,8 +33,7 @@ export const NAV: NavSection[] = [
     title: 'Work',
     items: [
       { to: '/', label: 'Home', icon: '⌂' },
-      { to: '/chat', label: 'Chat', icon: '◈' },
-      { to: '/channels', label: 'Channels', icon: '⋕' },
+      { to: '/comms', label: 'Comms', icon: '◈' },
       { to: '/plan', label: 'Plan', icon: '⊞' },
       { to: '/boards', label: 'Boards', icon: '⧉' },
       { to: '/knowledge', label: 'Knowledge', icon: '❖' },

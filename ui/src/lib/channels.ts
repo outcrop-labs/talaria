@@ -4,13 +4,19 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 export type ChannelRole = 'owner' | 'member'
 
+/** 'channel' = persistent + ambient; 'group' = a Relay; 'dm' = human↔human. */
+export type ChannelKind = 'channel' | 'group' | 'dm'
+
 export interface Channel {
   id: string
   name: string
   topic: string | null
+  kind: ChannelKind
   role: ChannelRole
   createdAt: string
   updatedAt: string
+  /** For DMs: the other person. */
+  peer?: { userId: string; name: string | null; email: string | null } | null
 }
 
 export interface ChannelMember {
@@ -93,8 +99,12 @@ const post = (url: string, body: unknown, method = 'POST') =>
     body: JSON.stringify(body),
   })
 
-export const createChannel = async (name: string): Promise<Channel> =>
-  (await j<{ channel: Channel }>(await post('/api/channels', { name }))).channel
+export const createChannel = async (name: string, kind: 'channel' | 'group' = 'channel', topic?: string | null): Promise<Channel> =>
+  (await j<{ channel: Channel }>(await post('/api/channels', { name, kind, topic: topic ?? null }))).channel
+
+/** Find-or-create the DM with a teammate. */
+export const openDm = async (userId: string): Promise<Channel> =>
+  (await j<{ channel: Channel }>(await post('/api/dms', { userId }))).channel
 
 export const sendChannelMessage = async (id: string, content: string, attachmentIds: string[] = []): Promise<void> => {
   await j(await post(`/api/channels/${id}/messages`, { content, attachmentIds }))
