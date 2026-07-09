@@ -4,8 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { addEndpointModels, addVersionIfChanged, applyConfigEdits, getAgentDef, listEndpoints, listVersions } from '@/server/agent-defs'
 import { availableModels } from '@/server/provider-catalog'
-import { fleetRestart } from '@/server/fleet-docker'
-import { renderFleet } from '@/server/fleet-render'
+import { rollAgent } from '@/server/fleet-reconcile'
 
 const Target = z.object({
   endpoint: z.string().min(1).max(100),
@@ -78,8 +77,11 @@ export const Route = createFileRoute('/api/fleet/defs/$id/edit')({
           })
           let applied = false
           if (created && parsed.data.apply && def.managed) {
-            await renderFleet()
-            await fleetRestart(def.department)
+            // Roll, don't restart: the new config comes up beside the old
+            // container and traffic cuts over only after health — applying an
+            // edit never interrupts conversations in flight.
+            const roll = await rollAgent(def.department)
+            if (!roll.ok) return json({ ok: true, version, created, applied: false, warning: roll.error })
             applied = true
           }
           return json({ ok: true, version, created, applied })

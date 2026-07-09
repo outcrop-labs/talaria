@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { auditRetentionDays, logAudit, setSetting } from '@/server/audit'
 import { orgProfile, setOrgProfile } from '@/server/org'
+import { rollRunningAgents } from '@/server/fleet-reconcile'
 
 // App settings (admin). GET → current values. PUT → update. Grows as more
 // app-wide settings land; audit retention is the first.
@@ -38,6 +39,10 @@ export const Route = createFileRoute('/api/admin/settings')({
         }
         if (parsed.data.org) {
           await setOrgProfile(parsed.data.org)
+          // The org lives in every rendered soul — propagate by ROLLING running
+          // agents (new container up + healthy before the old one retires), so
+          // an identity edit never kills anyone's in-flight conversation.
+          void rollRunningAgents().catch(() => {})
           void logAudit({
             actor: user.email ?? user.name ?? 'admin',
             action: 'settings.org',

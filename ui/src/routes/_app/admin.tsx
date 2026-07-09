@@ -213,7 +213,8 @@ function OrgPanel() {
       <div className="mb-1 text-sm font-semibold text-fg">Organization</div>
       <p className="mb-3 text-xs text-muted">
         The business your agents work for. Baked into every agent's identity automatically — generated souls anchor to
-        this team, and running agents introduce themselves as part of it (re-render/restart agents after changing).
+        this team, and saving here rolls running agents (a fresh container comes up and traffic cuts over only once
+        it's healthy), so the fleet speaks the new identity without interrupting anyone's conversation.
       </p>
       <div className="space-y-3">
         <div>

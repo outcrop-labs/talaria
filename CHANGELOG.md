@@ -23,6 +23,15 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Rolling agent replacement — edits never kill a conversation.** Each managed
+  agent runs in one of two compose slots; applying a change brings the incoming
+  slot up on a **fresh port** beside the old container, cuts the manifest over
+  only after real health (the app re-reads it per call, so traffic shifts
+  instantly), drains in-flight replies (`TALARIA_ROLL_DRAIN_SECONDS`, default
+  45), then retires the old container. A newcomer that never gets healthy is
+  discarded — the old agent never blinks. Org saves and config/MCP applies roll
+  instead of restarting; `proxyChat` additionally holds-and-retries through any
+  residual gap instead of failing (or answering with the mock).
 - **Organization config — agents join YOUR team.** Admin → Organization sets
   the business name + what it does. Woven in automatically everywhere agent
   identity forms: muse-generated agents/souls/personalities anchor to the
