@@ -3,6 +3,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
 import rehypeHighlight from 'rehype-highlight'
+import { AgentMediaImage } from '@/components/artifacts/save-media-image'
 import { cn } from '@/lib/cn'
 import { CodeBlock } from '@/components/ui/code-block'
 
@@ -60,7 +61,16 @@ const components: Partial<Components> = {
   strong: ({ children }) => <strong className="font-semibold text-fg">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
   hr: () => <hr className="my-3 border-line-subtle" />,
-  img: ({ src, alt }) => (src ? <img src={src} alt={alt ?? ''} className="my-2 max-h-96 rounded-lg border border-line" /> : null),
+  // Agent-produced images (served out of an agent container) get the
+  // save-to-artifacts affordance; ordinary images render plain.
+  img: ({ src, alt }) =>
+    src ? (
+      src.startsWith('/api/agent-media/') ? (
+        <AgentMediaImage src={src} alt={alt ?? ''} />
+      ) : (
+        <img src={src} alt={alt ?? ''} className="my-2 max-h-96 rounded-lg border border-line" />
+      )
+    ) : null,
   table: ({ children }) => (
     <div className="my-3 max-w-full overflow-x-auto rounded-lg border border-line">
       <table className="w-full border-collapse text-sm">{children}</table>

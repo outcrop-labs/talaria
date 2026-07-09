@@ -23,6 +23,12 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Save agent images to Artifacts.** Every agent-produced image in chat gets
+  a hover "Save to Artifacts" (title + folder picker) that copies it out of
+  the agent's container into a durable file artifact. Agents can do it
+  themselves too: the talaria MCP grew `save_image_artifact` (path + title +
+  folder-by-name, find-or-create) — agent saves default org-visible so the
+  team actually sees them. For science. And company meme folders.
 - **Agents can show images in chat.** Files an agent creates in its own
   container and references as `MEDIA:<path>` render inline in DMs and
   channels, streamed through `/api/agent-media/:model` — gated on the same

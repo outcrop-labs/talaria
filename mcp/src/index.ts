@@ -223,6 +223,21 @@ server.registerTool(
 )
 
 server.registerTool(
+  'save_image_artifact',
+  {
+    description:
+      'Save an image from YOUR workspace (a file you created under /opt/data, e.g. a chart, screenshot, or meme) as a durable file artifact in Talaria — versioned, shareable, and visible on the Artifacts page. Optionally file it into a folder by name (created if missing). Use this when a human should keep the image beyond this conversation. Images only (png/jpg/gif/webp), max 25MB.',
+    inputSchema: {
+      path: z.string().min(1).max(1000).describe('Absolute path inside your workspace, e.g. /opt/data/charts/q3.png'),
+      title: z.string().max(200).optional().describe('Artifact title (defaults to the filename)'),
+      folder: z.string().max(120).optional().describe('Folder name to file it under, e.g. "Memes" (find-or-create)'),
+    },
+  },
+  async ({ path, title, folder }) =>
+    ok(await api('POST', `/api/agent-media/${encodeURIComponent(AGENT)}/save`, { path, title, folder })),
+)
+
+server.registerTool(
   'export_to_google_doc',
   {
     description:
