@@ -35,7 +35,7 @@ export const Route = createFileRoute('/api/muse')({
         const route = await resolveRoute(model)
         if (!route) return json({ error: `model "${model}" is not routable` }, { status: 400 })
 
-        const messages = buildMuseMessages({ ...parsed.data, kind: parsed.data.kind as MuseKind })
+        const messages = await buildMuseMessages({ ...parsed.data, kind: parsed.data.kind as MuseKind })
         let upstream
         try {
           upstream = await buildUpstream(route, { model, messages, stream: true, temperature: 0.4 })

@@ -6,6 +6,7 @@ import { confirm } from '@/components/ui/confirm'
 import { Combobox } from '@/components/ui/combobox'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
@@ -72,6 +73,8 @@ function AdminPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-4xl space-y-8">
         <h1 className="mercury-text text-2xl font-semibold">Admin</h1>
+
+        <OrgPanel />
 
         <SettingsPanel />
 
@@ -172,6 +175,74 @@ function AdminPage() {
 }
 
 // App-wide settings (grows over time). Audit retention is the first.
+// The business every agent works for. Woven automatically into agent design
+// (muse-generated souls anchor to this team) and every rendered SOUL.md — so
+// no agent introduces itself as belonging to the underlying platform.
+function OrgPanel() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: async (): Promise<{ auditRetentionDays: number; org: { name: string; about: string } }> => {
+      const r = await fetch('/api/admin/settings')
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+  })
+  const [name, setName] = useState<string | null>(null)
+  const [about, setAbout] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+  const nameVal = name ?? data?.org.name ?? ''
+  const aboutVal = about ?? data?.org.about ?? ''
+  const dirty = nameVal !== (data?.org.name ?? '') || aboutVal !== (data?.org.about ?? '')
+
+  const save = async () => {
+    await fetch('/api/admin/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ org: { name: nameVal, about: aboutVal } }),
+    })
+    setName(null)
+    setAbout(null)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 1500)
+    await qc.invalidateQueries({ queryKey: ['admin-settings'] })
+  }
+
+  return (
+    <Panel>
+      <div className="mb-1 text-sm font-semibold text-fg">Organization</div>
+      <p className="mb-3 text-xs text-muted">
+        The business your agents work for. Baked into every agent's identity automatically — generated souls anchor to
+        this team, and saving here rolls running agents (a fresh container comes up and traffic cuts over only once
+        it's healthy), so the fleet speaks the new identity without interrupting anyone's conversation.
+      </p>
+      <div className="space-y-3">
+        <div>
+          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Business name</label>
+          <Input size="sm" value={nameVal} onChange={(e) => setName(e.target.value)} placeholder="e.g. Boxie" className="max-w-xs" />
+        </div>
+        <div>
+          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">What the business does</label>
+          <Textarea
+            rows={2}
+            value={aboutVal}
+            onChange={(e) => setAbout(e.target.value)}
+            placeholder="One or two sentences agents can anchor their mission to."
+            className="w-full text-sm"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
+          <span className="ml-auto" />
+          <Button size="sm" onClick={() => void save()} disabled={!dirty}>
+            Save
+          </Button>
+        </div>
+      </div>
+    </Panel>
+  )
+}
+
 function SettingsPanel() {
   const qc = useQueryClient()
   const { data } = useQuery({

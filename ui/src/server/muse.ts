@@ -5,6 +5,7 @@
 // respects the same model registry as everything else, on the user's
 // preferred model.
 import { gatewayModels, resolveRoute } from './llm-gateway'
+import { orgLine, orgProfile } from './org'
 import { getPreferredModel } from './users'
 
 export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document'
@@ -58,8 +59,19 @@ export interface MuseInput {
   chat?: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
-export function buildMuseMessages(input: MuseInput): Array<{ role: string; content: string }> {
+/** Kinds that define WHO an agent is — these anchor to the organization. */
+const ORG_KINDS = new Set<MuseKind>(['agent', 'soul', 'personality'])
+
+export async function buildMuseMessages(input: MuseInput): Promise<Array<{ role: string; content: string }>> {
   let system = SYSTEM[input.kind]
+  if (ORG_KINDS.has(input.kind)) {
+    const org = orgLine(await orgProfile())
+    if (org) {
+      system +=
+        `\n\nOrganization: ${org}. The agent is a member of this business's team — anchor its identity, mission, and voice to the business ` +
+        `(name it in "## Who you are"); it never presents itself as belonging to an underlying platform, framework, or model vendor.`
+    }
+  }
   if (input.context) system += `\n\nContext: ${input.context}`
   if (input.current?.trim()) system += `\n\nCurrent version:\n<<<\n${input.current}\n>>>`
   else system += '\n\nThere is no current version yet — write one from scratch.'

@@ -4,8 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { addVersionIfChanged, getAgentDef, listVersions } from '@/server/agent-defs'
 import { applyMcpEdits } from '@/server/agent-mcp'
-import { fleetRestart } from '@/server/fleet-docker'
-import { renderFleet } from '@/server/fleet-render'
+import { rollAgent } from '@/server/fleet-reconcile'
 
 const Body = z.object({
   add: z
@@ -50,8 +49,9 @@ export const Route = createFileRoute('/api/fleet/defs/$id/mcp')({
           })
           let applied = false
           if (created && parsed.data.apply && def.managed) {
-            await renderFleet()
-            await fleetRestart(def.department)
+            // Roll, don't restart — see fleet.defs.$id.edit.
+            const roll = await rollAgent(def.department)
+            if (!roll.ok) return json({ ok: true, version, created, applied: false, warning: roll.error })
             applied = true
           }
           return json({ ok: true, version, created, applied })

@@ -23,6 +23,34 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Rolling agent replacement — edits never kill a conversation.** Each managed
+  agent runs in one of two compose slots; applying a change brings the incoming
+  slot up on a **fresh port** beside the old container, cuts the manifest over
+  only after real health (the app re-reads it per call, so traffic shifts
+  instantly), drains in-flight replies (`TALARIA_ROLL_DRAIN_SECONDS`, default
+  45), then retires the old container. A newcomer that never gets healthy is
+  discarded — the old agent never blinks. Org saves and config/MCP applies roll
+  instead of restarting; `proxyChat` additionally holds-and-retries through any
+  residual gap instead of failing (or answering with the mock).
+- **Organization config — agents join YOUR team.** Admin → Organization sets
+  the business name + what it does. Woven in automatically everywhere agent
+  identity forms: muse-generated agents/souls/personalities anchor to the
+  business, and every rendered SOUL.md opens with an org header (a render-time
+  projection — stored souls stay clean, existing agents pick it up on the next
+  render/restart). Agents stop introducing themselves as "on the Hermes team."
+- **Comms — every conversation in one place.** Chat and Channels merge into a
+  single Slack-shaped, agent-native surface (`/comms`): persistent **#channels**
+  (ambient talk), **Relays** (named ad-hoc gatherings of people + agents around
+  a purpose), **teammate DMs** (human↔human, riding the channel machinery,
+  deduped per pair), and **agent DMs** (durable 1:1 threads). One sidebar, four
+  sections; old `/chat` and `/channels` routes redirect.
+- **Conversations decay instead of accumulating.** Relays **conclude**: a
+  summary of what was decided is posted as the final message, indexed for
+  retrieval (channel-membership ACL), and the relay archives. Idle agent DMs
+  (default 14 days, `TALARIA_CHAT_TTL_DAYS`) are **distilled** — durable
+  substance summarized into the activity brain, owner-scoped — then archived
+  out of the sidebar. Sweeps run opportunistically (throttled hourly, never
+  blocking a request); plans are exempt (they're documents, not scrollback).
 - **Ticket & plan templates.** An org-wide template library (markdown skeleton
   + agent guidance per template — the headings are the schema): boards bind the
   ticket templates they use and mark a default (Board settings → General);

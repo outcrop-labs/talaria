@@ -138,6 +138,8 @@ async function activityScope(principal: { userId?: string; agentModel?: string }
         // Plans (conversations + their living documents) are private to their
         // owner — only that user retrieves them from the ambient index.
         { key: 'planOwnerId', match: { value: principal.userId } },
+        // Distilled agent chats are likewise owner-private.
+        { key: 'ownerUserId', match: { value: principal.userId } },
       ],
     }
   }

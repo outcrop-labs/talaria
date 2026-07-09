@@ -20,6 +20,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
+import { orgProfile, orgSoulHeader } from './org'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
@@ -83,6 +84,7 @@ async function managedAgents(): Promise<RenderTarget[]> {
   const sql = await db()
   const rows = (await sql`
     select d.id, d.slug, d.department, d.model, d.display_name as "displayName", d.enabled, d.managed, d.source,
+           d.active_slot as "activeSlot",
            d.current_version as "currentVersion", d.created_at as "createdAt", d.updated_at as "updatedAt",
            v.id as vid, v.version, v.soul, v.config, v.note, v.created_by as "createdBy", v.created_at as vcreated
     from agent_defs d
@@ -130,7 +132,23 @@ export interface RenderResult {
   warnings: string[]
 }
 
-export async function renderFleet(): Promise<RenderResult> {
+/** During a roll: additionally render this agent's INCOMING slot alongside its
+ *  active one, on the given port. The manifest keeps pointing at the active
+ *  port — cutover is a DB update + a plain re-render after health. */
+export interface RollOverlay {
+  slug: string
+  slot: 'a' | 'b'
+  port: number
+}
+
+/** The next unclaimed loopback port for an incoming slot. */
+export async function nextFreePort(): Promise<number> {
+  const sql = await db()
+  const rows = (await sql`select coalesce(max(gateway_port), ${GATEWAY_PORT_BASE - 1}) as m from agent_defs`) as unknown as Array<{ m: number }>
+  return Math.max(rows[0]!.m, GATEWAY_PORT_BASE - 1) + 1
+}
+
+export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<RenderResult> {
   const targets = await managedAgents()
   const result: RenderResult = { agents: [], files: [], warnings: [] }
 
@@ -154,6 +172,9 @@ export async function renderFleet(): Promise<RenderResult> {
   }
   const chassis = parseYaml(chassisText, { merge: true, version: '1.1' }) as Chassis
   if (!chassis?.service) throw new Error(`fleet chassis at ${CHASSIS_FILE()} has no "service" block`)
+
+  // Every rendered soul opens with the organization context (when configured).
+  const soulHeader = orgSoulHeader(await orgProfile())
 
   // Every agent's LLM specs are rewritten to route through Talaria's gateway —
   // model names the gateway doesn't serve fall back to the default (warned once).
@@ -194,10 +215,16 @@ export async function renderFleet(): Promise<RenderResult> {
         // "on"/"off" stay quoted instead of turning into booleans.
         stringifyYaml(routed, { version: '1.1' }),
     )
-    await writeFile(join(agentDir, 'SOUL.md'), version.soul)
+    // The rendered soul carries the organization header (a projection — the
+    // stored soul stays clean; the header tracks the org settings), so every
+    // agent knows whose team it's on, including ones authored before org config.
+    await writeFile(join(agentDir, 'SOUL.md'), soulHeader ? `${soulHeader}\n\n${version.soul}` : version.soul)
     result.files.push(join(agentDir, 'config.yaml'), join(agentDir, 'SOUL.md'))
 
-    const serviceName = `agent-${def.department}`
+    // The service name carries the active slot ('a' = bare, 'b' = "-b") so a
+    // roll can run both generations side by side under one compose project.
+    const slot = ((def as unknown as { activeSlot?: string }).activeSlot === 'b' ? 'b' : 'a') as 'a' | 'b'
+    const serviceName = `agent-${def.department}${slot === 'b' ? '-b' : ''}`
     const imported = (def as AgentDef & { source?: string }).source === 'imported'
     const extras = chassis.extras?.[def.slug]
 
@@ -261,6 +288,15 @@ export async function renderFleet(): Promise<RenderResult> {
       })
     }
     services[serviceName] = svc
+
+    // Mid-roll: the INCOMING slot renders alongside, identical except for its
+    // fresh published port. Same mounts and state volume — the old container
+    // retires right after cutover + drain, so the overlap stays brief.
+    if (opts.roll && opts.roll.slug === def.slug) {
+      const incoming = JSON.parse(JSON.stringify(svc)) as ComposeService
+      incoming.ports = [`127.0.0.1:${opts.roll.port}:8642`]
+      services[`agent-${def.department}${opts.roll.slot === 'b' ? '-b' : ''}`] = incoming
+    }
     result.agents.push(def.model)
   }
 

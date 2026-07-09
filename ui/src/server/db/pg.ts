@@ -729,6 +729,17 @@ const MIGRATIONS: string[] = [
   // the resolve chain: explicit pick → agent binding → board default → none.
   `alter table agent_defs add column if not exists ticket_template_id uuid references templates(id) on delete set null`,
   `alter table agent_defs add column if not exists plan_template_id uuid references templates(id) on delete set null`,
+  // Rolling replacement: each managed agent runs in one of two compose slots
+  // ('a' → agent-<dept>, 'b' → agent-<dept>-b). A roll brings the other slot up
+  // on a fresh port, cuts the manifest over after health, then retires the old
+  // container — identity/config changes never take an agent away mid-reply.
+  `alter table agent_defs add column if not exists active_slot text not null default 'a'`,
+  // Comms unification: channels carry a kind — 'channel' (persistent, ambient),
+  // 'group' (a Relay: named ad-hoc gathering that concludes and archives), or
+  // 'dm' (human↔human direct messages). DMs dedupe on the sorted user-id pair.
+  `alter table channels add column if not exists kind text not null default 'channel'`,
+  `alter table channels add column if not exists dm_key text`,
+  `create unique index if not exists channels_dm_key_idx on channels(dm_key) where dm_key is not null`,
 ]
 
 function ensureMigrated(): Promise<void> {

@@ -62,37 +62,69 @@ interface ChatPayload {
   [k: string]: unknown
 }
 
-/** Proxy a streaming chat straight to the agent's persona gateway. */
-export async function proxyChat(payload: ChatPayload): Promise<Response> {
-  const manifest = await readManifest()
-  const entry = manifest.find((m) => m.model === payload.model)
-  if (!entry) return mockChatStream(payload)
+/** Proxy a streaming chat straight to the agent's persona gateway.
+ *
+ *  A restarting agent (org/config propagation, an edit being applied) refuses
+ *  connections for tens of seconds. Instead of failing the turn — or worse,
+ *  answering with the mock — HOLD it and retry until the deadline: the manifest
+ *  is re-read on every attempt (a re-render may have moved the agent's port),
+ *  and the completion streams the moment the agent is back. The user just sees
+ *  a slightly longer thinking state; nobody's work is lost to an edit. */
+export async function proxyChat(payload: ChatPayload, opts: { waitMs?: number } = {}): Promise<Response> {
+  const deadline = Date.now() + (opts.waitMs ?? 120_000)
+  let attempt = 0
+  for (;;) {
+    const manifest = await readManifest()
+    const entry = manifest.find((m) => m.model === payload.model)
+    if (!entry && attempt >= 2) return mockChatStream(payload) // never rendered — not a restart
 
-  const upstream = await fetch(`${entry.url}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(entry.key ? { Authorization: `Bearer ${entry.key}` } : {}),
-    },
-    // include_usage: the final chunk reports token counts for the ledger
-    // (gateways that don't support it just ignore the option).
-    body: JSON.stringify({ ...payload, stream: true, stream_options: { include_usage: true } }),
-  }).catch(() => null)
-  if (!upstream) return mockChatStream(payload)
-  return new Response(upstream.body, {
-    status: upstream.status,
-    headers: {
-      'Content-Type': upstream.headers.get('content-type') ?? 'text/event-stream',
-      'Cache-Control': 'no-cache',
-    },
-  })
+    if (entry) {
+      const upstream = await fetch(`${entry.url}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(entry.key ? { Authorization: `Bearer ${entry.key}` } : {}),
+        },
+        // include_usage: the final chunk reports token counts for the ledger
+        // (gateways that don't support it just ignore the option).
+        body: JSON.stringify({ ...payload, stream: true, stream_options: { include_usage: true } }),
+      }).catch(() => null)
+      // 502/503/504 = the gateway process is up but not serving yet — keep waiting.
+      if (upstream && ![502, 503, 504].includes(upstream.status)) {
+        return new Response(upstream.body, {
+          status: upstream.status,
+          headers: {
+            'Content-Type': upstream.headers.get('content-type') ?? 'text/event-stream',
+            'Cache-Control': 'no-cache',
+          },
+        })
+      }
+    }
+
+    if (Date.now() >= deadline) return unavailableChatStream(payload)
+    await new Promise((r) => setTimeout(r, Math.min(5_000, 1_500 * ++attempt)))
+  }
+}
+
+/** The agent stayed down past the hold window: say so honestly (streamed as a
+ *  normal reply so history shows what happened, not a silent failure). */
+function unavailableChatStream(payload: ChatPayload): Response {
+  const who = describeAgent(payload.model).label
+  return cannedChatStream(
+    `${who} is restarting (or down) and didn't come back within two minutes — your message is saved; send it again in a moment.`,
+  )
 }
 
 /** Offline fallback: stream a canned SSE reply in OpenAI chunk format. */
 function mockChatStream(payload: ChatPayload): Response {
   const who = describeAgent(payload.model).label
-  const text = `Hi — this is ${who} (mock mode: the fleet isn't rendered yet). ` +
-    `Create and start an agent to chat for real.`
+  return cannedChatStream(
+    `Hi — this is ${who} (mock mode: the fleet isn't rendered yet). Create and start an agent to chat for real.`,
+  )
+}
+
+/** Stream fixed text as OpenAI-format SSE chunks (mock + unavailable paths). */
+function cannedChatStream(text: string): Response {
   const words = text.split(' ')
   const enc = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
