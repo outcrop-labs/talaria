@@ -110,19 +110,21 @@ Full project-management suite, all live in `ui/`:
 - **Agent harness (phase B)** - the renderer + orchestrator. `server/fleet-render.ts`
   materializes managed versions into gitignored `fleet/` (config.yaml as **YAML
   1.1** — PyYAML semantics). Every agent renders from ONE Talaria-owned chassis
-  (`fleet/chassis.yml`: service block + per-slug extras + a `network:` name;
-  fresh installs get `talaria-fleet`, this machine keeps the historical
-  `ai_default`). Per-agent secrets (`agent_secrets`, secretbox-encrypted, Secrets
-  tab) materialize into `fleet/agents/<slug>/secrets.env` (0600) wired via
-  env_file. The renderer writes the gateway manifest to `stack/fleet.json`, which
-  the bridge **hot-reloads** (watchFleet, 2s poll); manifest keys come from the
-  Talaria-owned `fleet/.env`. `server/fleet-docker.ts` drives
-  `docker compose -p talaria-fleet` with `--env-file fleet/.env`. Lifecycle API
-  `POST /api/fleet/agents/:id/control` (up/stop/retire/unretire; owners of a
-  personal assistant may up/stop their own), containers API, and live status +
-  buttons on `/agents`. Imported agents keep their pre-Talaria state VOLUME
-  NAMES (`ai_hermes-<dept>`, external) so no memory was lost in the migration —
-  the one deliberate docker-level remnant.
+  (`fleet/chassis.yml`: service block + per-slug extras + a `network:` name — now
+  the single unified `talaria` network for every Talaria container). Every model
+  spec in the rendered config.yaml is rewritten to route through Talaria's own
+  gateway (`base_url ${LLM_BASE_URL}`), so agents have exactly one upstream. Each
+  agent's persona gateway is published on a stable loopback port
+  (`agent_defs.gateway_port`), and the renderer writes `fleet/fleet.json` (model →
+  each agent's url + key) which Talaria reads to reach agents **directly** — no
+  bridge/multiplexer. Per-agent secrets (`agent_secrets`, secretbox-encrypted,
+  Secrets tab) materialize into `fleet/agents/<slug>/secrets.env` (0600) wired via
+  env_file. `server/fleet-docker.ts` drives `docker compose -p talaria-fleet` with
+  `--env-file fleet/.env`. Lifecycle API `POST /api/fleet/agents/:id/control`
+  (up/stop/retire/unretire; owners of a personal assistant may up/stop their own),
+  containers API, and live status + buttons on `/agents`. Imported agents keep
+  their pre-Talaria state VOLUME NAMES (`ai_hermes-<dept>`, external) so no memory
+  was lost in the migration — the one deliberate docker-level remnant.
 
 - **Agent harness (phase C1)** - in-app config control + the cost split.
   `POST /api/fleet/defs/:id/edit` saves soul/main/aliases/fallbacks as a new
@@ -333,7 +335,8 @@ Highest-leverage remaining threads:
   per process. If the app boots while Postgres/Redis are **down**, it caches the
   failure and every request 500s until you **restart the dev server** after the DBs
   are up. Always bring up the containers first.
-- **Gateway plane:** `TALARIA_GATEWAY_URL=http://127.0.0.1:8642` (bridge container).
+- **Agent chat:** the app reads `fleet/fleet.json` and calls each agent's persona
+  gateway directly on its published loopback port (no bridge/multiplexer).
 
 ## Auth
 

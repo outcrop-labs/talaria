@@ -701,6 +701,9 @@ const MIGRATIONS: string[] = [
      active boolean not null default true,
      created_at timestamptz not null default now()
    )`,
+  // Stable host port per agent, so the app (on the host) reaches each agent's
+  // persona gateway directly — no separate bridge/multiplexer container.
+  `alter table agent_defs add column if not exists gateway_port int`,
 ]
 
 function ensureMigrated(): Promise<void> {
