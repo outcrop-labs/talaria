@@ -23,6 +23,16 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Org-voice model blurbs.** Model descriptions get ONE rewrite pass into
+  task-oriented one-liners ("what it's good at, when to pick it") in the org's
+  voice, cached in `model_blurbs`; newly registered models get theirs on the
+  next catalog read (throttled, detached). Raw public-catalog text is the
+  fallback; nothing is invented for unknown models.
+- **Learned parameter support at the gateway.** When an upstream 400 names a
+  parameter we sent (newer models retire tunables — sonnet-5 rejects
+  `temperature`), the gateway strips it, retries, and remembers per
+  endpoint+model so later calls pre-strip. Dynamic specs straight from the
+  provider — no tables to maintain.
 - **Member model access + human-friendly model picking.** Admins choose which
   models non-admins may pick for AI drafting / preferred model (Models →
   Member access; empty = all, admins never restricted), enforced server-side

@@ -729,6 +729,13 @@ const MIGRATIONS: string[] = [
   // the resolve chain: explicit pick → agent binding → board default → none.
   `alter table agent_defs add column if not exists ticket_template_id uuid references templates(id) on delete set null`,
   `alter table agent_defs add column if not exists plan_template_id uuid references templates(id) on delete set null`,
+  // Model blurbs, rewritten once in the org's voice (task-oriented one-liners
+  // for pickers) and cached here; new models get theirs on the next sweep.
+  `create table if not exists model_blurbs (
+     model_id text primary key,
+     blurb text not null,
+     created_at timestamptz not null default now()
+   )`,
   // Rolling replacement: each managed agent runs in one of two compose slots
   // ('a' → agent-<dept>, 'b' → agent-<dept>-b). A roll brings the other slot up
   // on a fresh port, cuts the manifest over after health, then retires the old

@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { getSessionUser } from '@/server/auth/session'
 import { gatewayModelsFor } from '@/server/model-access'
-import { modelInfo } from '@/server/model-info'
+import { maybeRewriteBlurbs, modelInfo } from '@/server/model-info'
 import { museModelFor } from '@/server/muse'
 
 // The gateway model catalog for signed-in users (the /api/llm/v1/models twin
@@ -16,6 +16,7 @@ export const Route = createFileRoute('/api/models')({
       GET: async ({ request }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        maybeRewriteBlurbs() // new registered models get their org-voice blurb (throttled, detached)
         const models = await Promise.all(
           (await gatewayModelsFor(user.role)).map(async (m) => {
             const info = await modelInfo(m.qualified ? m.id.slice(m.id.indexOf('/') + 1) : m.id)
