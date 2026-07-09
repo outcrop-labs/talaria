@@ -125,10 +125,25 @@ export async function openrouterUsPool(): Promise<string[] | null> {
   }
 }
 
+/** Perplexity has no /models API — its DOCS are the catalog. The models index
+ *  (Mintlify serves it as markdown) links one card per model, and each card's
+ *  slug IS the API model id (verified against the request examples on the
+ *  per-model pages, e.g. "model": "sonar-pro"). Still live-fetched — no
+ *  maintained list; if they ship new models, new cards appear here. */
+async function perplexityModels(): Promise<string[]> {
+  const r = await fetch('https://docs.perplexity.ai/docs/sonar/models.md', { signal: AbortSignal.timeout(10_000) })
+  if (!r.ok) throw new Error(`the Perplexity docs answered ${r.status}`)
+  const ids = [...(await r.text()).matchAll(/\/docs\/sonar\/models\/([a-z0-9][a-z0-9.-]*)/g)].map((m) => m[1]!)
+  const unique = [...new Set(ids)]
+  if (unique.length === 0) throw new Error('could not read the model list from the Perplexity docs — type an id manually')
+  return unique
+}
+
 /** The models a provider reports right now. Throws with a human message. */
 export async function availableModels(ep: LlmEndpoint): Promise<string[]> {
   const base = (ep.baseUrl ?? NATIVE_BASE[ep.provider])?.replace(/\/$/, '')
   if (!base) throw new Error('no API base known for this provider')
+  if (base.includes('api.perplexity.ai')) return perplexityModels()
   const keyEnv = ep.apiKeyEnv ?? DEFAULT_KEY_ENV[ep.provider] ?? null
   const key = await resolveEndpointKey(ep)
 

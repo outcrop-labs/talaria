@@ -146,7 +146,7 @@ engineering-facing tracker.
   board bindings with default, per-agent overrides, resolution chain everywhere
   tickets/plan docs form (incl. bare ticket creation seeding).
 - **Provider catalogs hardened**: live `/models` everywhere (pagination, bare
-  arrays, Gemini id normalization; Perplexity has no catalog API — flagged),
+  arrays, Gemini id normalization; Perplexity, which has no catalog API, reads its live docs instead),
   live OpenRouter US no-train pool (no maintained lists), config saves
   auto-register picked models on their endpoint.
 - Knowledgebase: Outline-style editor (slash menu, headings, block-escape),
