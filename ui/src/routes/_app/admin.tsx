@@ -219,7 +219,7 @@ function OrgPanel() {
       <div className="space-y-3">
         <div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Business name</label>
-          <Input size="sm" value={nameVal} onChange={(e) => setName(e.target.value)} placeholder="e.g. Boxie" className="max-w-xs" />
+          <Input size="sm" value={nameVal} onChange={(e) => setName(e.target.value)} placeholder="e.g. Outcrop Labs" className="max-w-xs" />
         </div>
         <div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">What the business does</label>
