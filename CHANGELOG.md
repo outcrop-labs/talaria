@@ -22,6 +22,28 @@ secrets encrypted at rest.
   and the legacy build-based `stack/` — **no Dockerfiles** remain; the run path
   is compose-only (official/published images) + host-run app.
 
+### Fixed
+- **Fresh-install model selection.** Bare model ids that contain `/`
+  (OpenRouter-style, e.g. `qwen/qwen3-14b`) were mistaken for
+  `endpoint/model` pins, leaving the preferred-model picker empty and the muse
+  with "no models configured". The gateway catalog now tags qualified ids
+  explicitly (`GatewayModel.qualified`).
+- **No-train routing pool is fetched live.** The OpenRouter US no-train
+  provider pool comes from `GET /providers` (US datacenters/HQ) on every call
+  (briefly cached) instead of a hardcoded six-provider list that had gone stale
+  and 404'd models it no longer served ("No allowed providers are available").
+  A stored `only` list is only the offline fallback.
+- **Provider catalogs are always live.** Preset seed model lists are gone —
+  adding a provider drops straight into the endpoint's manage modal, where
+  models come from the provider's live `/models` catalog: full list browseable
+  on focus (the old picker capped at 8 alphabetical matches, hiding newer
+  models), provider ordering preserved (OpenRouter lists newest first), and
+  pagination followed (Anthropic pages at 20 by default).
+- **Fleet network self-creates.** `fleetUp` ensures the external `talaria`
+  docker network exists before `compose up` — a fresh install no longer fails
+  with "network talaria declared as external, but could not be found"
+  (`setup.sh` also created the wrong name, `talaria-fleet`).
+
 ### Security
 - **Provider API keys encrypted in the DB**, not in configs. Sealed with
   AES-256-GCM in `llm_endpoints.api_key_cipher`; entered on `/models`, never

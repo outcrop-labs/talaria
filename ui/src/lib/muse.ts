@@ -41,6 +41,9 @@ export async function streamMuse(input: MuseRequest, onChunk: (piece: string) =>
 export interface GatewayModel {
   id: string
   endpoints: string[]
+  /** True for "<endpoint>/<model>" pins; false for bare model ids (which may
+   *  themselves contain "/", e.g. OpenRouter names). */
+  qualified: boolean
 }
 
 /** The model catalog + the model the caller's muse resolves to right now. */

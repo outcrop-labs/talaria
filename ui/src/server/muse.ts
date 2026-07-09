@@ -77,6 +77,6 @@ export async function museModelFor(userId: string): Promise<string | null> {
   for (const m of candidates) {
     if (m && (await resolveRoute(m))) return m
   }
-  const first = (await gatewayModels()).find((m) => !m.id.includes('/'))
+  const first = (await gatewayModels()).find((m) => !m.qualified)
   return first?.id ?? null
 }

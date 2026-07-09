@@ -31,7 +31,7 @@ export const Route = createFileRoute('/api/muse')({
         if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
 
         const model = await museModelFor(user.id)
-        if (!model) return json({ error: 'no models configured — add an endpoint first' }, { status: 400 })
+        if (!model) return json({ error: 'no routable model found — add an endpoint with models on /models first' }, { status: 400 })
         const route = await resolveRoute(model)
         if (!route) return json({ error: `model "${model}" is not routable` }, { status: 400 })
 

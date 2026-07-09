@@ -39,6 +39,7 @@ import { Route as ApiAgentsRouteImport } from './routes/api/agents'
 import { Route as ApiActivityRouteImport } from './routes/api/activity'
 import { Route as ASlugRouteImport } from './routes/a.$slug'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppPlanRouteImport } from './routes/_app/plan'
 import { Route as AppModelsRouteImport } from './routes/_app/models'
 import { Route as AppKnowledgeRouteImport } from './routes/_app/knowledge'
 import { Route as AppInferenceRouteImport } from './routes/_app/inference'
@@ -99,6 +100,7 @@ import { Route as ApiTasksIdDependenciesRouteImport } from './routes/api/tasks.$
 import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.comments'
 import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
 import { Route as ApiRagCollectionsIdRouteImport } from './routes/api/rag.collections.$id'
+import { Route as ApiPlanIdDraftRouteImport } from './routes/api/plan.$id.draft'
 import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
 import { Route as ApiKbPublicSlugRouteImport } from './routes/api/kb.public.$slug'
@@ -296,6 +298,11 @@ const ASlugRoute = ASlugRouteImport.update({
 const AppSettingsRoute = AppSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppPlanRoute = AppPlanRouteImport.update({
+  id: '/plan',
+  path: '/plan',
   getParentRoute: () => AppRoute,
 } as any)
 const AppModelsRoute = AppModelsRouteImport.update({
@@ -598,6 +605,11 @@ const ApiRagCollectionsIdRoute = ApiRagCollectionsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ApiRagCollectionsRoute,
 } as any)
+const ApiPlanIdDraftRoute = ApiPlanIdDraftRouteImport.update({
+  id: '/api/plan/$id/draft',
+  path: '/api/plan/$id/draft',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiLlmV1ModelsRoute = ApiLlmV1ModelsRouteImport.update({
   id: '/api/llm/v1/models',
   path: '/api/llm/v1/models',
@@ -878,6 +890,7 @@ export interface FileRoutesByFullPath {
   '/inference': typeof AppInferenceRoute
   '/knowledge': typeof AppKnowledgeRoute
   '/models': typeof AppModelsRoute
+  '/plan': typeof AppPlanRoute
   '/settings': typeof AppSettingsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
@@ -968,6 +981,7 @@ export interface FileRoutesByFullPath {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
@@ -1017,6 +1031,7 @@ export interface FileRoutesByTo {
   '/inference': typeof AppInferenceRoute
   '/knowledge': typeof AppKnowledgeRoute
   '/models': typeof AppModelsRoute
+  '/plan': typeof AppPlanRoute
   '/settings': typeof AppSettingsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
@@ -1108,6 +1123,7 @@ export interface FileRoutesByTo {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
@@ -1159,6 +1175,7 @@ export interface FileRoutesById {
   '/_app/inference': typeof AppInferenceRoute
   '/_app/knowledge': typeof AppKnowledgeRoute
   '/_app/models': typeof AppModelsRoute
+  '/_app/plan': typeof AppPlanRoute
   '/_app/settings': typeof AppSettingsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
@@ -1250,6 +1267,7 @@ export interface FileRoutesById {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
@@ -1302,6 +1320,7 @@ export interface FileRouteTypes {
     | '/inference'
     | '/knowledge'
     | '/models'
+    | '/plan'
     | '/settings'
     | '/a/$slug'
     | '/api/activity'
@@ -1392,6 +1411,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/plan/$id/draft'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
@@ -1441,6 +1461,7 @@ export interface FileRouteTypes {
     | '/inference'
     | '/knowledge'
     | '/models'
+    | '/plan'
     | '/settings'
     | '/a/$slug'
     | '/api/activity'
@@ -1532,6 +1553,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/plan/$id/draft'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
@@ -1582,6 +1604,7 @@ export interface FileRouteTypes {
     | '/_app/inference'
     | '/_app/knowledge'
     | '/_app/models'
+    | '/_app/plan'
     | '/_app/settings'
     | '/a/$slug'
     | '/api/activity'
@@ -1673,6 +1696,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/plan/$id/draft'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
@@ -1759,6 +1783,7 @@ export interface RootRouteChildren {
   ApiKbDocsIdRoute: typeof ApiKbDocsIdRouteWithChildren
   ApiKbPublicSlugRoute: typeof ApiKbPublicSlugRoute
   ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
+  ApiPlanIdDraftRoute: typeof ApiPlanIdDraftRoute
   ApiKbPublicSpaceSlugRoute: typeof ApiKbPublicSpaceSlugRoute
   ApiLlmV1ChatCompletionsRoute: typeof ApiLlmV1ChatCompletionsRoute
 }
@@ -1973,6 +1998,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/plan': {
+      id: '/_app/plan'
+      path: '/plan'
+      fullPath: '/plan'
+      preLoaderRoute: typeof AppPlanRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/models': {
@@ -2395,6 +2427,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiRagCollectionsIdRouteImport
       parentRoute: typeof ApiRagCollectionsRoute
     }
+    '/api/plan/$id/draft': {
+      id: '/api/plan/$id/draft'
+      path: '/api/plan/$id/draft'
+      fullPath: '/api/plan/$id/draft'
+      preLoaderRoute: typeof ApiPlanIdDraftRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/llm/v1/models': {
       id: '/api/llm/v1/models'
       path: '/api/llm/v1/models'
@@ -2766,6 +2805,7 @@ interface AppRouteChildren {
   AppInferenceRoute: typeof AppInferenceRoute
   AppKnowledgeRoute: typeof AppKnowledgeRoute
   AppModelsRoute: typeof AppModelsRoute
+  AppPlanRoute: typeof AppPlanRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
   AppBoardsBoardIdRoute: typeof AppBoardsBoardIdRouteWithChildren
@@ -2786,6 +2826,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppInferenceRoute: AppInferenceRoute,
   AppKnowledgeRoute: AppKnowledgeRoute,
   AppModelsRoute: AppModelsRoute,
+  AppPlanRoute: AppPlanRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,
   AppBoardsBoardIdRoute: AppBoardsBoardIdRouteWithChildren,
@@ -3289,6 +3330,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKbDocsIdRoute: ApiKbDocsIdRouteWithChildren,
   ApiKbPublicSlugRoute: ApiKbPublicSlugRoute,
   ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,
+  ApiPlanIdDraftRoute: ApiPlanIdDraftRoute,
   ApiKbPublicSpaceSlugRoute: ApiKbPublicSpaceSlugRoute,
   ApiLlmV1ChatCompletionsRoute: ApiLlmV1ChatCompletionsRoute,
 }

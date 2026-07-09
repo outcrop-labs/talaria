@@ -82,8 +82,8 @@ EOF
 fi
 
 say "Docker plumbing"
-docker network inspect talaria-fleet >/dev/null 2>&1 && skip "network talaria-fleet" || {
-  docker network create talaria-fleet >/dev/null && ok "network talaria-fleet"
+docker network inspect talaria >/dev/null 2>&1 && skip "network talaria" || {
+  docker network create talaria >/dev/null && ok "network talaria"
 }
 docker compose -f docker/dev-compose.yml pull -q 2>/dev/null || true
 ok "postgres + redis images ready"

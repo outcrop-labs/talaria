@@ -47,12 +47,12 @@ export const Route = createFileRoute('/api/fleet/endpoints')({
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         try {
-          await createEndpoint({ ...parsed.data, baseUrl: parsed.data.baseUrl ?? null, apiKeyEnv: parsed.data.apiKeyEnv ?? null, apiKey: parsed.data.apiKey ?? null })
+          const id = await createEndpoint({ ...parsed.data, baseUrl: parsed.data.baseUrl ?? null, apiKeyEnv: parsed.data.apiKeyEnv ?? null, apiKey: parsed.data.apiKey ?? null })
           void logAudit({ actor: user.email ?? user.name ?? 'admin', action: 'endpoint.create', targetType: 'endpoint', targetLabel: parsed.data.name, after: { provider: parsed.data.provider, class: parsed.data.class } })
           // Price the new provider's models in the background — never block an
           // interactive save on a fetch to openrouter.ai (15s worst case offline).
           void refreshAutoPrices().catch(() => {})
-          return json({ ok: true })
+          return json({ ok: true, id })
         } catch (e) {
           return json({ error: (e as Error).message.includes('duplicate') ? 'an endpoint with that name exists' : (e as Error).message }, { status: 400 })
         }

@@ -153,14 +153,16 @@ export async function createEndpoint(e: {
   apiKey?: string | null
   models?: string[]
   modelPrices?: Record<string, { in?: number; out?: number }>
-}): Promise<void> {
+}): Promise<string> {
   const sql = await db()
   const cipher = e.apiKey ? seal(e.apiKey.trim()) : null
-  await sql`
+  const rows = await sql`
     insert into llm_endpoints (name, provider, base_url, class, api_key_env, api_key_cipher, models, model_prices)
     values (${e.name}, ${e.provider}, ${e.baseUrl ?? null}, ${e.class}, ${e.apiKeyEnv ?? null}, ${cipher},
             ${sql.json(e.models ?? [])}, ${sql.json(e.modelPrices ?? {})})
+    returning id
   `
+  return (rows[0] as { id: string }).id
 }
 
 /** Remove an endpoint. Refused while any ENABLED agent's CURRENT version

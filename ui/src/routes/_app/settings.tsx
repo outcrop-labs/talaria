@@ -92,7 +92,7 @@ function PreferredModelPicker() {
   const [saved, setSaved] = useState(false)
   // Bare model names only — endpoint-qualified ids stay available as raw ids
   // for power users via the same list (they're in the catalog too).
-  const options = (catalog?.models ?? []).filter((m) => !m.id.includes('/'))
+  const options = (catalog?.models ?? []).filter((m) => !m.qualified)
 
   const save = async (model: string | null) => {
     await savePreferredModel(model)

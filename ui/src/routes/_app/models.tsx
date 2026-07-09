@@ -35,6 +35,10 @@ function ModelsPage() {
   const isAdmin = session?.role === 'admin'
   const { data: endpoints = [] } = useEndpoints(isAdmin)
   const [adding, setAdding] = useState(false)
+  // A just-added provider: jump straight into its manage modal so models get
+  // picked from the provider's live catalog (endpoints start with none).
+  const [manageId, setManageId] = useState<string | null>(null)
+  const managing = manageId ? endpoints.find((e) => e.id === manageId) : undefined
 
   if (session && !isAdmin) return <EmptyState icon="▤" title="Admins only" />
 
@@ -65,7 +69,8 @@ function ModelsPage() {
           </>
         )}
 
-        {adding && <AddProviderModal open={adding} onClose={() => setAdding(false)} />}
+        {adding && <AddProviderModal open={adding} onClose={() => setAdding(false)} onAdded={setManageId} />}
+        {managing && <EndpointModal ep={managing} onClose={() => setManageId(null)} />}
       </div>
     </div>
   )
@@ -300,11 +305,13 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
   )
 }
 
-// Add a model to a provider: search its live catalog, or type any id (multi-
-// model providers serve more than the catalog reports). NOT a label — a model.
+// Add a model to a provider: browse/search its live catalog (in the provider's
+// own order — OpenRouter lists newest first), or type any id (multi-model
+// providers serve more than the catalog reports). NOT a label — a model.
 function ModelAdder({ catalog, existing, onAdd }: { catalog: string[]; existing: string[]; onAdd: (id: string) => void }) {
   const [q, setQ] = useState('')
-  const suggestions = catalog.filter((m) => !existing.includes(m) && m.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 8)
+  const [open, setOpen] = useState(false)
+  const suggestions = catalog.filter((m) => !existing.includes(m) && m.toLowerCase().includes(q.trim().toLowerCase()))
   const add = (id: string) => {
     onAdd(id)
     setQ('')
@@ -316,15 +323,17 @@ function ModelAdder({ catalog, existing, onAdd }: { catalog: string[]; existing:
           size="sm"
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setOpen(false)}
           onKeyDown={(e) => e.key === 'Enter' && q.trim() && add(q.trim())}
-          placeholder="Add a model — search the catalog or type an id"
+          placeholder={`Add a model — browse the live catalog${catalog.length ? ` (${catalog.length})` : ''} or type an id`}
           className="flex-1"
         />
         <Button size="sm" onClick={() => q.trim() && add(q.trim())} disabled={!q.trim()}>
           Add
         </Button>
       </div>
-      {q.trim() && suggestions.length > 0 && (
+      {open && suggestions.length > 0 && (
         <div className="mercury-panel absolute z-10 mt-1 max-h-52 w-full overflow-y-auto rounded-xl p-1">
           {suggestions.map((m) => (
             <button
@@ -342,12 +351,11 @@ function ModelAdder({ catalog, existing, onAdd }: { catalog: string[]; existing:
   )
 }
 
-// The OpenRouter no-train routing default: restrict to a US, no-store/no-train
-// provider pool and deny data collection. Other providers get the portable
-// data_collection:deny (ignored where unsupported).
+// The OpenRouter no-train routing default: deny data collection and restrict
+// to US providers. No provider list is stored — the gateway injects the live
+// US pool from OpenRouter's provider catalog on every call (llm-gateway).
 const OPENROUTER_NO_TRAIN = {
   provider: {
-    only: ['fireworks', 'together', 'parasail', 'cloudflare', 'digitalocean', 'wandb'],
     data_collection: 'deny',
     allow_fallbacks: true,
   },
@@ -386,7 +394,7 @@ function PrivacyRow({ ep, run }: { ep: LlmEndpoint; run: (p: Promise<{ error?: s
   )
 }
 
-function AddProviderModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+function AddProviderModal({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded: (id: string) => void }) {
   const qc = useQueryClient()
   const [presetKey, setPresetKey] = useState(PROVIDER_PRESETS[0]!.key)
   const preset = PROVIDER_PRESETS.find((p) => p.key === presetKey)!
@@ -402,6 +410,8 @@ function AddProviderModal({ open, onClose }: { open: boolean; onClose: () => voi
     setBusy(true)
     try {
       const url = (preset.configurableUrl ? baseUrl.trim() || preset.baseUrl : preset.baseUrl) ?? null
+      // No seed models — the endpoint starts empty and the manage modal opens
+      // next, where models come from the provider's LIVE catalog.
       const r = await addEndpoint({
         name: name.trim() || preset.key,
         provider: preset.provider,
@@ -410,12 +420,11 @@ function AddProviderModal({ open, onClose }: { open: boolean; onClose: () => voi
         class: preset.configurableUrl ? inferClass(url) : preset.class,
         apiKeyEnv: (apiKeyEnv.trim() || preset.apiKeyEnv) ?? null,
         apiKey: apiKey.trim() || null,
-        models: preset.models,
-        modelPrices: preset.modelPrices,
       })
       if (r.error) return setErr(r.error)
       await qc.invalidateQueries({ queryKey: ['fleet-endpoints'] })
       onClose()
+      if (r.id) onAdded(r.id)
     } finally {
       setBusy(false)
     }
