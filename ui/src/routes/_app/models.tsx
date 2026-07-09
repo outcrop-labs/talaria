@@ -369,18 +369,24 @@ function MemberAccessPanel() {
   })
   const models = (catalog?.models ?? []).filter((m) => !m.qualified)
   const saved = settings?.memberModels ?? []
+  // Restriction MODE is its own state — it can't derive from the selection,
+  // or toggling it on with nothing selected could never stick.
+  const [modeOverride, setModeOverride] = useState<boolean | null>(null)
   const [draft, setDraft] = useState<string[] | null>(null)
+  const restricted = modeOverride ?? saved.length > 0
   const selection = draft ?? saved
-  const restricted = selection.length > 0
-  const dirty = draft !== null && JSON.stringify([...draft].sort()) !== JSON.stringify([...saved].sort())
+  // What would be saved right now: the selection when limiting, [] when open.
+  const effective = restricted ? selection : []
+  const dirty = JSON.stringify([...effective].sort()) !== JSON.stringify([...saved].sort())
 
-  const save = async (ids: string[]) => {
+  const save = async () => {
     await fetch('/api/admin/settings', {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ memberModels: ids }),
+      body: JSON.stringify({ memberModels: effective }),
     })
+    setModeOverride(null)
     setDraft(null)
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
     await qc.invalidateQueries({ queryKey: ['gateway-models'] })
@@ -399,7 +405,7 @@ function MemberAccessPanel() {
         <input
           type="checkbox"
           checked={restricted}
-          onChange={(e) => setDraft(e.target.checked ? selection : [])}
+          onChange={(e) => setModeOverride(e.target.checked)}
           className="accent-[var(--theme-accent)]"
         />
         Limit members to selected models
@@ -426,11 +432,13 @@ function MemberAccessPanel() {
       <div className="mt-3 flex items-center gap-2">
         <span className="text-xs text-muted">
           {restricted
-            ? `${selection.length} model${selection.length === 1 ? '' : 's'} available to members`
+            ? selection.length === 0
+              ? 'Pick at least one model members may use'
+              : `${selection.length} model${selection.length === 1 ? '' : 's'} available to members`
             : 'All registered models are available to members'}
         </span>
         <span className="ml-auto" />
-        <Button size="sm" onClick={() => void save(selection)} disabled={!dirty || (restricted && selection.length === 0)}>
+        <Button size="sm" onClick={() => void save()} disabled={!dirty || (restricted && selection.length === 0)}>
           Save
         </Button>
       </div>
