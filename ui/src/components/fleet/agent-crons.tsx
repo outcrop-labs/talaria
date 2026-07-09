@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CalendarClock, Loader2, Pause, Play, Sparkles, Trash2, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { confirm } from '@/components/ui/confirm'
+import { Generating } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
@@ -180,6 +181,7 @@ function CronForm({
         </Button>
       </div>
       {draftErr && <p className="text-xs text-[color:var(--theme-danger)]">{draftErr}</p>}
+      {drafting && <Generating label="Designing the job — name, schedule, and the prompt it runs…" lines={2} />}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <div>

@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { Generating } from '@/components/ui/generating'
 import { addDependency, createTask, useBoards } from '@/lib/boards'
 import { useTemplates } from '@/lib/templates'
 import type { AgentModel } from '@/lib/agents'
@@ -142,6 +143,24 @@ export function PlanModal({
               </Button>
             </div>
           </>
+        ) : phase === 'drafting' ? (
+          <>
+            {/* The result replaces these: skeleton proposal cards, sized like the real ones. */}
+            <div className="flex items-center gap-2 text-sm text-muted">
+              <span className="font-medium text-fg">{picked?.label ?? 'The agent'}</span> is reading the conversation and
+              drafting tickets{templateId || boardId ? ' on your template' : ''}…
+            </div>
+            <div className="space-y-3">
+              <Generating lines={2} />
+              <Generating lines={3} />
+              <Generating lines={2} />
+            </div>
+            <div className="flex justify-end border-t border-line-subtle pt-3">
+              <Button variant="ghost" size="sm" onClick={onClose}>
+                Cancel
+              </Button>
+            </div>
+          </>
         ) : proposals === null ? (
           <>
             <p className="text-sm text-muted">
@@ -202,8 +221,8 @@ export function PlanModal({
               <Button variant="ghost" size="sm" onClick={onClose}>
                 Cancel
               </Button>
-              <Button size="sm" onClick={() => void draft()} disabled={phase === 'drafting' || !picked || !boardId}>
-                {phase === 'drafting' ? 'Drafting…' : 'Draft tickets'}
+              <Button size="sm" onClick={() => void draft()} disabled={!picked || !boardId}>
+                Draft tickets
               </Button>
             </div>
           </>
@@ -228,7 +247,9 @@ export function PlanModal({
                 Back
               </Button>
               <Button size="sm" onClick={() => void createAll()} disabled={phase === 'creating' || !boardId || included.length === 0}>
-                {phase === 'creating' ? 'Creating…' : `Create ${included.length} ticket${included.length === 1 ? '' : 's'}`}
+                {phase === 'creating'
+                  ? `Creating… ${included.length} left`
+                  : `Create ${included.length} ticket${included.length === 1 ? '' : 's'}`}
               </Button>
             </div>
           </>

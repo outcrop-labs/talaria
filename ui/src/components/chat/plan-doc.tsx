@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
+import { GeneratingOverlay } from '@/components/ui/generating'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { saveArtifact, useArtifact } from '@/lib/artifacts'
 
@@ -84,7 +85,8 @@ function DocEditor({ id, planId }: { id: string; planId: string }) {
         </Link>
       </div>
       {syncErr && <div className="border-b border-line-subtle px-4 py-1.5 text-xs" style={{ color: 'var(--theme-danger)' }}>{syncErr}</div>}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="relative min-h-0 flex-1 overflow-y-auto">
+        {syncing && <GeneratingOverlay label="Rewriting the plan document from the conversation…" />}
         <RichEditor
           key={`${id}:${syncNonce}`}
           ref={editorRef}

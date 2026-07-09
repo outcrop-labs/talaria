@@ -36,6 +36,11 @@ secrets encrypted at rest.
   chips, and creation wires real ticket dependencies. The review modal itself
   is board-first (the board's template shapes drafts), roomier (wide layout,
   full description editing), and numbered for dependency reference.
+- **Generation-in-progress states.** A shared `Generating` treatment (shimmer
+  skeleton lines + stepped dots, plus an in-place overlay variant) replaces
+  button-label-only waits: drafting tickets shows skeleton proposal cards,
+  the plan document veils while the agent rewrites it, cron drafting shows a
+  designing row, and ticket creation counts down.
 - **Plan view, phase 2 — the document lives.** "Sync from chat" has the plan's
   own agent rewrite the living plan document from the conversation so far
   (`POST /api/plan/:id/doc`, metered like any chat turn; agent preamble and
