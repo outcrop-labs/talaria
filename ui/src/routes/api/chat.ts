@@ -25,6 +25,8 @@ const Body = z.object({
   /** Model tier (alias name) to route this turn to; omit for the main model. */
   tier: z.string().max(60).optional(),
   attachmentIds: z.array(z.string().uuid()).max(10).optional(),
+  /** New conversations are 'chat' unless started from the Plan surface. */
+  kind: z.enum(['chat', 'plan']).optional(),
 })
 
 const titleFrom = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 80)
@@ -66,7 +68,7 @@ export const Route = createFileRoute('/api/chat')({
 
         // Validate attachments belong to real uploads before stamping them.
         const attachments = await resolveAttachments(parsed.data.attachmentIds ?? [])
-        if (!convId) convId = await createConversation(user.id, agentModel, titleFrom(content || attachments[0]?.filename || 'chat'))
+        if (!convId) convId = await createConversation(user.id, agentModel, titleFrom(content || attachments[0]?.filename || 'chat'), parsed.data.kind ?? 'chat')
 
         // Build gateway history from the DB (prior turns), then record this turn.
         const prior = await priorMessages(convId)

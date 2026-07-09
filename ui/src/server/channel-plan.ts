@@ -5,6 +5,7 @@ import { describeAgent, proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
 import { estimateTokens, recordUsage } from './usage'
 import { listChannelMessages } from './channels'
+import { priorMessages } from './conversations'
 
 export interface TicketProposal {
   title: string
@@ -75,21 +76,20 @@ function parseArrayAt(text: string, start: number): unknown[] | null {
   return null
 }
 
-export async function planFromChannel(
-  channelId: string,
+/** Draft ticket proposals from a transcript. Shared by the channel Plan button
+ *  and the first-class Plan surface. */
+async function planFromTranscript(
+  transcript: string,
   agentModel: string,
   routedModel: string,
+  refId: string,
+  source: 'channel' | 'chat',
 ): Promise<{ proposals: TicketProposal[]; raw: string }> {
-  const history = await listChannelMessages(channelId, -1, 80)
-  const transcript = history
-    .filter((m) => m.status === 'complete' && m.content)
-    .map((m) => `${m.authorType === 'agent' ? describeAgent(m.author).label : m.author}: ${m.content}`)
-    .join('\n\n')
-  if (!transcript) return { proposals: [], raw: '' }
+  if (!transcript.trim()) return { proposals: [], raw: '' }
 
   const messages = [
     { role: 'system', content: PLAN_PROMPT },
-    { role: 'user', content: `Transcript of #channel:\n\n${transcript}` },
+    { role: 'user', content: `Transcript:\n\n${transcript}` },
   ]
   const upstream = await proxyChat({ model: routedModel, messages })
   if (!upstream.ok || !upstream.body) throw new Error(`gateway error ${upstream.status}`)
@@ -102,8 +102,8 @@ export async function planFromChannel(
   }
   void recordUsage({
     agentModel,
-    source: 'channel',
-    refId: channelId,
+    source,
+    refId,
     tier: routedModel !== agentModel ? routedModel.slice(agentModel.length + 1) : null,
     promptTokens: usage?.promptTokens ?? estimateTokens(messages.reduce((n, m) => n + m.content.length, 0)),
     completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
@@ -111,4 +111,32 @@ export async function planFromChannel(
   }).catch(() => {})
 
   return { proposals: extractProposals(text), raw: text }
+}
+
+export async function planFromChannel(
+  channelId: string,
+  agentModel: string,
+  routedModel: string,
+): Promise<{ proposals: TicketProposal[]; raw: string }> {
+  const history = await listChannelMessages(channelId, -1, 80)
+  const transcript = history
+    .filter((m) => m.status === 'complete' && m.content)
+    .map((m) => `${m.authorType === 'agent' ? describeAgent(m.author).label : m.author}: ${m.content}`)
+    .join('\n\n')
+  return planFromTranscript(transcript, agentModel, routedModel, channelId, 'channel')
+}
+
+/** Draft tickets from a plan conversation (the Plan surface). */
+export async function planFromConversation(
+  conversationId: string,
+  agentModel: string,
+  routedModel: string,
+): Promise<{ proposals: TicketProposal[]; raw: string }> {
+  const label = describeAgent(agentModel).label
+  const msgs = await priorMessages(conversationId)
+  const transcript = msgs
+    .filter((m) => m.content)
+    .map((m) => `${m.role === 'assistant' ? label : 'User'}: ${m.content}`)
+    .join('\n\n')
+  return planFromTranscript(transcript, agentModel, routedModel, conversationId, 'chat')
 }
