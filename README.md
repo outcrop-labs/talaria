@@ -46,15 +46,21 @@ everything, with your agents right there beside you.
 - **Project management** ✅. Plane/Linear-grade boards, rich tickets (effort, multiple assignees,
   dependencies, a blocked lane, time that adds itself up), teams, watchers, a review gate, list and
   kanban views, tickets you can link straight to. All live and multiplayer.
-- **Group chat** 🔭. Multi-agent and human channels. Think Slack, except your agents are real members.
-- **Plan chat** 🔭. A place where humans and agents plan together, then turn the conversation into
-  realistic tickets (missions) and drop them onto any connected kanban.
+- **Comms** ✅. Every conversation in one place, Slack-shaped but agent-native: persistent **#channels**,
+  **Relays** (named ad-hoc gatherings of people + agents around a purpose — they *conclude* with a
+  summary and archive), teammate DMs, and agent DMs where every topic starts a fresh thread and idle
+  chats distill into the org's retrievable memory instead of piling up scrollback forever.
+- **Plan** ✅. A first-class planning surface: think through the work with an agent while a **living plan
+  document** (a real artifact) takes shape side by side — the agent keeps it synced from the
+  conversation — then draft dependency-aware tickets from the document onto any board, formatted on your
+  org's ticket templates. Multiplayer plans are next.
 - **Design and creative** 🔭. Agents and humans making creative work side by side.
 - **Finance** 🔭. Agent and human finance that plugs into the big accounting and HR platforms.
 - **Coding** 🔭. Agent-driven coding right in the app (probably [opencode](https://github.com/sst/opencode)
   wired into the UI).
-- **Artifacts that stick around** 🔭. Spin up artifacts on the fly and pin them to the tickets they
-  belong to, right from chats, plans, and work sessions. No more good work getting lost in a chat scroll.
+- **Artifacts that stick around** ✅. Docs, microsites, sheets, and files with versioning, sharing, and
+  public hosting — attached to tickets, plans, chats, and KB docs, exported to Google Workspace, created
+  and updated by agents through the toolkit. Good work stops getting lost in a chat scroll.
 
 ## The agents, treated like first-class team members
 
@@ -66,6 +72,12 @@ everything, with your agents right there beside you.
   with its own container, key, and private knowledge.
 - **Versioned identity** ✅. Each agent's soul, config, personality, skills, and memory are version
   controlled with diff-and-restore workspaces — and Muse drafts or refines any of them from a prompt.
+- **On YOUR team** ✅. Configure the organization once (Admin → Organization) and every agent anchors its
+  identity to your business — in generated souls and in every rendered one. No agent introduces itself
+  as belonging to a platform or model vendor.
+- **Zero-downtime changes** ✅. Applying a config, MCP, or org change *rolls* the agent: a fresh container
+  comes up on a new port, traffic cuts over only once it's healthy, in-flight replies drain. Edits never
+  kill a conversation.
 - **Self-improving and lean** 🔭. Agents build their own skills and tools, and the ones they stop using
   get auto-archived so context doesn't bloat.
 - **Marketplace** 🔭. A per-agent marketplace for MCP servers, skills, and tools.
@@ -110,8 +122,9 @@ full Hermes agent.
      register / heartbeat / report
 ```
 
-- **Run your own LLMs** 🔭. Manage your own inference (Ollama, vLLM, llama.cpp, and friends) right
-  alongside hosted models.
+- **Run your own LLMs** 🚧. Self-hosted backends (Ollama, vLLM, llama.cpp, and friends) already register
+  alongside hosted providers, serve agents through the gateway, get probed live on `/inference`, and
+  split the cost view. Managing the inference containers themselves from Talaria is next.
 - **Container orchestration** 🔭. A [Dokploy](https://dokploy.com)-style backend for the containers
   Talaria spins up (personal agents, services), self-hosted.
 - **Analytics everywhere** 🔭. Full agent analytics plus analytics across work, chats, and projects, with
@@ -135,8 +148,19 @@ The workspace, the fleet harness, and the money view are shipped and running:
 - Rich tickets: WYSIWYG markdown description, comments, activity, watchers, a review gate, effort,
   multiple assignees, dependencies, time that adds itself up, per-ticket token spend, and links straight
   to any ticket. Drag-and-drop board plus a configurable list view; multiplayer over Redis pub/sub + SSE.
-- Chat (1:1, any model tier) and Slack-style channels where agents are real members: @mention an agent —
-  or `@agent:tier` — and the reply streams in live. **Plan** turns a conversation into reviewed tickets.
+- **Comms**: channels, Relays, teammate DMs, and agent DMs in one view. @mention an agent — or
+  `@agent:tier` — and the reply streams in live. Relays **conclude** (summary posted + indexed, then
+  archive); idle agent chats **distill** into the activity brain and archive; every new agent topic is a
+  fresh thread so context stays bounded. Membership manages inline (avatar-stack pickers in the header).
+- **Plan**: plan conversations with a side-by-side living plan document the agent keeps synced; Draft
+  tickets treats the document as the source of truth and proposes real dependencies you review as
+  "blocked by" chips before anything is created.
+- **Templates**: an org library of ticket + plan formats (markdown skeleton + agent guidance). Boards
+  bind their set with a default, agents can carry overrides, and every creation surface — agent
+  drafting, plan docs, even bare quick-add tickets — resolves and applies the right one automatically.
+- **Organization identity**: set the business name + what it does once; muse-generated souls anchor to
+  it and every rendered agent introduces itself as part of your team. Saving rolls the fleet with zero
+  downtime (fresh container up + healthy before the old one retires, in-flight replies drained).
 - The agent harness: design agents from a description (Muse drafts the identity, soul, and starter
   skills for review), federate outside Hermes agents in as natives, and run everything from one
   Talaria-owned chassis. Souls/models/tiers/MCP servers are immutable revertible versions with diffs;
@@ -190,8 +214,8 @@ Dockerfiles. Each agent's LLM and persona chat route through Talaria's own
 gateway; the app reaches each agent directly on its published port.
 
 Agents themselves are designed/federated in the app and rendered into `fleet/`
-automatically; the bridge's routing manifest (`stack/fleet.json`) is generated
-by the renderer. See [`stack/README.md`](./stack/README.md).
+automatically, including the routing manifest (`fleet/fleet.json`) the app uses
+to reach each agent directly.
 
 ## Safe by design
 

@@ -1,6 +1,6 @@
 # Talaria - handoff for the next agent
 
-_Last updated: 2026-07-08. Scope: Talaria as the fleet's harness + product UI. This file is a fast
+_Last updated: 2026-07-09. Scope: Talaria as the fleet's harness + product UI. This file is a fast
 on-ramp; the authoritative docs are [`docs/TODO.md`](./docs/TODO.md),
 [`ROADMAP.md`](./ROADMAP.md), [`CHANGELOG.md`](./CHANGELOG.md), and [`ui/README.md`](./ui/README.md)._
 
@@ -26,9 +26,12 @@ multiplexer / mission-control / conductor bits are **legacy Phase-1 scaffolding*
 now removed from the architecture.
 
 Heads up: Talaria is a work in progress, not production ready. Shipping today: the PM
-suite, chat + channels (with plan chat), the fleet engine and full agent harness
-(federate/design/render/orchestrate/create/retire, versioned config + MCP edits, skills/memory
-management), the token ledger with auto-fetched pricing, activity/alerts, and auth.
+suite, the unified **Comms** surface (channels · relays · DMs, with distill-then-archive
+decay), the **Plan view** (living plan document + templated, dependency-aware ticket
+drafting), **org identity**, the fleet engine and full agent harness
+(federate/design/render/orchestrate/create/retire, versioned config + MCP edits,
+skills/memory management, **zero-downtime rolling replacement**), the token ledger with
+auto-fetched pricing, activity/alerts, and auth.
 
 ## Current state (what's built in Phase 2)
 
@@ -305,23 +308,83 @@ Full project-management suite, all live in `ui/`:
   `until curl .../api/auth/providers; do sleep 4; done` — nohup from the wrong
   cwd silently no-ops.
 
+## Current state (Phase 7, 2026-07-09) — comms, identity, rolling fleet
+
+- **Comms** — Chat + Channels unified into `/comms` (`routes/_app/comms.tsx`; old
+  routes redirect). `channels.kind` = `'channel' | 'group' | 'dm'` on ONE
+  machinery (members/agents/SSE/mentions/plan). **Relays** (kind `group`) are
+  named ad-hoc gatherings that **Conclude** (`/api/channels/:id/conclude` →
+  summary posted as the final message + indexed under channel ACL → archive);
+  **teammate DMs** (kind `dm`, deduped on sorted user-id pair via `dm_key`,
+  `POST /api/dms`); **agent DMs** default to a FRESH thread per topic (bounded
+  context; recent threads nest under the agent in the sidebar). Idle agent chats
+  **distill then archive** (`server/comms-decay.ts`, `TALARIA_CHAT_TTL_DAYS`
+  default 14, hourly-throttled opportunistic sweep off the channels listing;
+  failed distillation never archives; plans exempt). Activity-brain ACL grew
+  `planOwnerId` + `ownerUserId` owner-scoping clauses (`retrieval/index.ts`).
+  Header: user-chip flyover (settings/theme/sign-out); membership pickers with
+  avatar stacks live in the pane header.
+- **Plan view (#55, shipped)** — plan conversations (`conversations.kind='plan'`)
+  + a side-by-side **living plan document** (a real `doc` artifact linked via
+  `artifact_links target_type='plan'`; find-or-create server-side, template-
+  seeded). "Sync from chat" = the plan's own agent rewrites it
+  (`server/plan-doc.ts`, `POST /api/plan/:id/doc`; preamble/fence stripping).
+  Draft tickets is board-first, doc-aware (the document is the source of
+  truth), and **dependency-aware** (`dependsOn` same-batch indices → real
+  `task_dependencies` on create). Plan turns + docs index into the activity
+  brain. NOT yet multiplayer — that's the top open thread.
+- **Templates** — org library `templates` (kind `ticket|plan`; markdown skeleton
+  = the schema + prompt-only guidance), `board_templates` bindings w/ default,
+  `agent_defs.ticket_template_id`/`plan_template_id` overrides.
+  `resolveTemplate()` chain (explicit → agent → board default → none) applies in
+  plan/channel drafting, plan-doc create+sync, and bare ticket creation
+  (`server/templates.ts`; library modal + Board settings section + agent
+  Summary-tab bindings).
+- **Org identity** — Admin → Organization (`org_name`/`org_about` in
+  app_settings, `server/org.ts`). Injected into muse generation for identity
+  kinds AND prepended to every RENDERED SOUL.md (a projection; stored souls stay
+  clean). Org saves propagate via `rollRunningAgents()`.
+- **Rolling replacement** — two compose slots per agent (`agent-<dept>` /
+  `agent-<dept>-b`, `agent_defs.active_slot`). `rollAgent()`
+  (`server/fleet-reconcile.ts`): overlay render (both slots) → incoming
+  container on a freshly allocated port → health gate (failure discards the
+  newcomer) → DB cutover + re-render (manifest read per call → instant traffic
+  shift) → drain (`TALARIA_ROLL_DRAIN_SECONDS`, default 45) → retire old by
+  container name. Config-edit + MCP applies and org saves all roll.
+  `fleet-docker.ts` resolves the active slot internally so existing call sites
+  are untouched; `containerStatus` recognizes either slot. `proxyChat`
+  (`server/gateway.ts`) holds-and-retries connection failures for up to 2min
+  (manifest re-read per attempt) — no more mock replies mid-restart.
+- **Provider catalogs (hardened)** — always live, never maintained lists:
+  full `/models` fetch everywhere (Anthropic pagination, Together bare arrays,
+  Gemini `models/` prefix normalization; Perplexity has no catalog API),
+  live OpenRouter **US no-train pool** from `GET /providers` injected at request
+  time (`provider-catalog.ts` + `llm-gateway.ts`), gateway catalog entries carry
+  `qualified` (bare ids may contain `/`), and **config saves auto-register**
+  picked models on their endpoint from the live catalog (root cause of a
+  frozen-chat bug: unregistered model → gateway 404 → agent aborts silently).
+  Beware: provider pools CHURN — a model can lose its US pool mid-day.
+
 ## Next up
 
 The living backlog is [`docs/TODO.md`](./docs/TODO.md) — much of the old list here
-shipped (artifacts, @mentions in channels, the per-agent Talaria toolkit, QA
-judge, Talaria-native confab guard, Google Workspace, personal assistants,
-Muse, native crons, federation, per-agent secrets, blank-machine setup).
+shipped (artifacts, @mentions, the per-agent Talaria toolkit, QA judge,
+Talaria-native confab guard, Google Workspace, personal assistants, Muse, native
+crons, federation, per-agent secrets, blank-machine setup, plan view, comms,
+templates, org identity, rolling replacement).
 Highest-leverage remaining threads:
 
-1. **Wire the Talaria toolkit MCP into agent configs** — the toolkit is built
-   (`mcp/`, stdio); agents currently have no channel/ticket tools until it's
-   attached (an HTTP transport for containerized agents is the open design bit).
-2. **Guard coverage for the direct chat path** (`/api/chat` + channel replies
-   via the fleet gateway), then retire the agent-side confab-guard plugin —
-   the last old-stack mount.
-3. **Muse editorial follow-through** — souls/skills reference the new Talaria
-   tools generically; tighten once the toolkit tool names are final.
-4. **Plan view (#55)** + **Research view (#56)**; **input sweep (#49)**.
+1. **Multiplayer Plan** — plans are owner-private; the direction is multiple
+   humans sharing a plan conversation + living doc.
+2. **Comms follow-through** — unread indicators, DM message notifications,
+   thread visibility without selecting the agent.
+3. **Brain-routability health** — surface "brain unroutable" (provider pools
+   churn under no-train routing) on agent cards/alerts.
+4. **Wire the Talaria toolkit MCP into agent configs** — the toolkit is built
+   (`mcp/`, stdio); an HTTP transport for containerized agents is the open bit.
+5. **Guard coverage for the direct chat path** (`/api/chat` + channel replies),
+   then retire the agent-side confab-guard plugin.
+6. **QA judge template conformance**; **Research view (#56)**; **input sweep (#49)**.
 
 ## Dev environment
 

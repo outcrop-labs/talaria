@@ -94,10 +94,14 @@ exposes only these safe operations is shipped — see [`../mcp/README.md`](../mc
 
 ## Where this is headed
 
-Shipped: the PM suite, the agent MCP (`talaria-mcp`), group chat with tier
-mentions, plan chat (conversation → reviewed tickets), the full agent harness
+Shipped: the PM suite, the agent MCP (`talaria-mcp`), the unified **Comms**
+surface (channels · relays · teammate DMs · agent DMs with tier mentions and
+distill-then-archive decay), the **Plan view** (living plan document + templated,
+dependency-aware ticket drafting), ticket/plan **templates**, **org identity**,
+the full agent harness
 (design agents from a description with Muse, federate outside agents in,
-render/orchestrate from one Talaria-owned chassis, per-agent encrypted secrets,
+render/orchestrate from one Talaria-owned chassis with **zero-downtime rolling
+replacement**, per-agent encrypted secrets,
 native Hermes crons; souls, models, tiers, and MCP servers as immutable
 revertible versions; skills + memory in versioned diff-and-restore workspaces),
 personal assistants, the knowledge base, artifacts (incl. Google Drive export),
