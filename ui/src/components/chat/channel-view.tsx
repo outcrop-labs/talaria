@@ -31,10 +31,19 @@ export function ChannelView({
   const { data: users = [] } = useUsers()
   useChannelEvents(channelId)
   const [error, setError] = useState<string | null>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const prevCount = useRef(0)
 
+  // Instant, pinned-only follow (see chat-view): streamed flushes + smooth
+  // scrolling rubber-band into a bounce, and reading history must never be
+  // yanked back down. A fresh channel load always lands at the end.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = scrollRef.current
+    if (!el) return
+    const loaded = prevCount.current === 0 && messages.length > 0
+    prevCount.current = messages.length
+    const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+    if (loaded || pinned) el.scrollTop = el.scrollHeight
   }, [messages])
 
   const labelFor = (model: string) => fleet.find((a) => a.id === model)?.label ?? model
@@ -53,7 +62,7 @@ export function ChannelView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
+      <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
         {messages.length === 0 ? (
           <EmptyState
             icon="#"
@@ -72,7 +81,6 @@ export function ChannelView({
             {error}
           </div>
         )}
-        <div ref={bottomRef} />
       </div>
 
       <Composer

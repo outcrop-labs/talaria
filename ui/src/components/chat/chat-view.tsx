@@ -65,11 +65,21 @@ export function ChatView({
   const [caret, setCaret] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
   const convIdRef = useRef<string | null>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const prevCount = useRef(0)
   const taRef = useRef<HTMLTextAreaElement>(null)
 
+  // Follow the stream WITHOUT smooth-scrolling: token flushes fire this every
+  // few ms, and overlapping smooth animations rubber-band (the "bounce").
+  // Instant jumps, and only while pinned near the bottom — scrolling up to
+  // read history is never yanked away. A fresh load always lands at the end.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = scrollRef.current
+    if (!el) return
+    const loaded = prevCount.current === 0 && messages.length > 0
+    prevCount.current = messages.length
+    const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+    if (loaded || pinned) el.scrollTop = el.scrollHeight
   }, [messages])
   useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -107,7 +117,7 @@ export function ChatView({
     let stop = false
     let ticks = 0
     const iv = setInterval(async () => {
-      if (stop || ++ticks > 90) return clearInterval(iv)
+      if (stop || ++ticks > 300) return clearInterval(iv) // ~4 min — long agent replies keep animating
       const res = await loadConversation(id)
       if (!stop && res) setMessages(res.messages.map(toDisplay))
     }, 800)
@@ -235,7 +245,7 @@ export function ChatView({
       {headerAction && (
         <div className="flex items-center justify-end gap-2 border-b border-line-subtle px-6 py-2">{headerAction}</div>
       )}
-      <div className="flex-1 space-y-5 overflow-y-auto px-6 py-6">
+      <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto px-6 py-6">
         {messages.length === 0 ? (
           <div className="grid h-full place-items-center text-center">
             <div>
@@ -259,7 +269,6 @@ export function ChatView({
           )
         )}
         {error && <div className="text-center text-sm" style={{ color: 'var(--theme-danger)' }}>{error}</div>}
-        <div ref={bottomRef} />
       </div>
 
       <div className="relative px-6 pb-6">

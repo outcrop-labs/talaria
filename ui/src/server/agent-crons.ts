@@ -5,6 +5,7 @@
 // the running container (docker exec). Requires the container to be up.
 import { execFile } from 'node:child_process'
 import { db } from './db/pg'
+import { managedContainer } from './fleet-docker'
 
 const JOBS_PATH = '/opt/data/cron/jobs.json'
 
@@ -25,7 +26,8 @@ async function agentFor(defId: string): Promise<{ department: string; slug: stri
   return rows[0]
 }
 
-const container = (department: string) => `talaria-fleet-agent-${department}-1`
+// Slot-aware: a rolled agent lives in the '-b' service until its next roll.
+const container = (department: string) => managedContainer(department)
 
 export interface CronJob {
   id: string
@@ -57,9 +59,10 @@ interface RawJob {
 
 export async function listCronJobs(defId: string): Promise<CronJob[]> {
   const { department } = await agentFor(defId)
-  const { stdout } = await exec(['exec', container(department), 'cat', JOBS_PATH]).catch((e: Error) => {
+  const name = await container(department)
+  const { stdout } = await exec(['exec', name, 'cat', JOBS_PATH]).catch((e: Error) => {
     if (/no such file/i.test(e.message)) return { stdout: '{"jobs":[]}', stderr: '' }
-    throw new Error(`cannot read crons from ${container(department)}: ${e.message}`)
+    throw new Error(`cannot read crons from ${name}: ${e.message}`)
   })
   const raw = (JSON.parse(stdout) as { jobs?: RawJob[] }).jobs ?? []
   return raw.map((j) => ({
@@ -97,7 +100,7 @@ export async function createCronJob(
   if (prompt.startsWith('-')) throw new Error('prompt cannot start with "-"')
   const { stdout } = await exec([
     'exec',
-    container(department),
+    await container(department),
     'hermes',
     'cron',
     'create',
@@ -116,7 +119,7 @@ const JOB_ID = /^[a-f0-9]{6,32}$/
 async function jobAction(defId: string, jobId: string, action: 'remove' | 'pause' | 'resume' | 'run'): Promise<void> {
   if (!JOB_ID.test(jobId)) throw new Error('bad job id')
   const { department } = await agentFor(defId)
-  await exec(['exec', container(department), 'hermes', 'cron', action, jobId])
+  await exec(['exec', await container(department), 'hermes', 'cron', action, jobId])
 }
 
 export const removeCronJob = (defId: string, jobId: string) => jobAction(defId, jobId, 'remove')

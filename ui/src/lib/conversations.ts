@@ -6,6 +6,8 @@ export interface Conversation {
   agentModel: string
   title: string | null
   updatedAt: string
+  /** An assistant reply is streaming right now (the agent is working). */
+  working?: boolean
 }
 
 export interface StoredMessage {
@@ -27,6 +29,9 @@ export function useConversations(kind: 'chat' | 'plan' = 'chat') {
       const data = (await r.json()) as { conversations: Conversation[] }
       return data.conversations
     },
+    // While any thread has a reply in flight, keep the list fresh so the
+    // "working" indicator (and the reply's completion) show up on their own.
+    refetchInterval: (q) => (q.state.data?.some((c) => c.working) ? 4_000 : false),
   })
 }
 

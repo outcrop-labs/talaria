@@ -7,6 +7,8 @@ export interface ConversationRow {
   agentModel: string
   title: string | null
   updatedAt: string
+  /** An assistant reply is streaming right now (the agent is working). */
+  working: boolean
 }
 
 export interface MessageRow {
@@ -19,14 +21,21 @@ export interface MessageRow {
   attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
 }
 
-/** The user's conversations of a given kind, newest activity first. */
+/** The user's conversations of a given kind, newest activity first. `working`
+ *  marks threads with a reply streaming right now — the sidebar shows them and
+ *  selecting the agent lands on them instead of a fresh thread. */
 export async function listConversations(userId: string, kind: 'chat' | 'plan' = 'chat'): Promise<ConversationRow[]> {
   const sql = await db()
   const rows = await sql`
-    select id, agent_model as "agentModel", title, updated_at as "updatedAt"
-    from conversations
-    where user_id = ${userId} and archived = false and kind = ${kind}
-    order by updated_at desc
+    select c.id, c.agent_model as "agentModel", c.title, c.updated_at as "updatedAt",
+           exists(
+             select 1 from messages m
+             where m.conversation_id = c.id and m.role = 'assistant' and m.status = 'streaming'
+               and m.created_at > now() - interval '10 minutes'
+           ) as working
+    from conversations c
+    where c.user_id = ${userId} and c.archived = false and c.kind = ${kind}
+    order by c.updated_at desc
   `
   return rows as unknown as ConversationRow[]
 }
