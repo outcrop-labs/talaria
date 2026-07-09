@@ -18,11 +18,11 @@ export interface StoredMessage {
   attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
 }
 
-export function useConversations() {
+export function useConversations(kind: 'chat' | 'plan' = 'chat') {
   return useQuery({
-    queryKey: ['conversations'],
+    queryKey: ['conversations', kind],
     queryFn: async (): Promise<Conversation[]> => {
-      const r = await fetch('/api/conversations', { credentials: 'same-origin' })
+      const r = await fetch(`/api/conversations?kind=${kind}`, { credentials: 'same-origin' })
       if (!r.ok) return []
       const data = (await r.json()) as { conversations: Conversation[] }
       return data.conversations

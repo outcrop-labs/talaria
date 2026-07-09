@@ -121,9 +121,8 @@ function ChannelsPage() {
         <PlanModal
           open={planOpen}
           onClose={() => setPlanOpen(false)}
-          channelId={selected.id}
-          channelAgents={detail.agents}
-          fleet={fleet}
+          draftUrl={`/api/channels/${selected.id}/plan`}
+          agents={fleet.filter((a) => detail.agents.includes(a.id))}
         />
       )}
 
