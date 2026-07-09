@@ -38,8 +38,14 @@ else
 DATABASE_URL=postgres://talaria:talaria@127.0.0.1:${PG_PORT}/talaria
 REDIS_URL=redis://127.0.0.1:${REDIS_PORT}
 
-# Sessions + secretbox encryption key (rotating it orphans stored secrets)
+# Session signing (safe to rotate — only invalidates live logins).
 AUTH_SECRET=$(rand 32)
+
+# Encryption root key (KEK) for secrets at rest. DEDICATED and STABLE: keep it
+# constant — changing it makes every encrypted secret unrecoverable. Worktrees
+# MUST share this exact value (scripts/worktree.sh copies it) so a second stack
+# can decrypt data seeded from this one.
+TALARIA_SECRET_KEY=$(rand 32)
 
 # Password sign-in. Format: email:password[,email:password...]
 AUTH_PASSWORD_ENABLED=1
