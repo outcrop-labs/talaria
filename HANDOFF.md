@@ -18,10 +18,12 @@ into our own UI, and we lifted mission-control's capabilities (task queue, cost,
 activity) straight into our stack. We do **not** run hermes-workspace and we do **not**
 proxy mission-control. Talaria owns its own state.
 
-Underneath the app is the fleet engine, the runtime that talks to your agents. The
-current fleet engine is the **gateway plane** (fleet multiplexer on `:8642`). The
-older mission-control bridge / conductor bits are **legacy Phase-1 scaffolding**, kept
-around but not part of Talaria's current identity or architecture.
+Underneath the app is the fleet, the Hermes agent containers Talaria renders and
+manages. Everything routes through Talaria's own **gateway**: agents call it for
+LLM completions (Talaria routes to the providers you register on `/models`), and
+Talaria reaches each agent's persona gateway directly for chat. The older bridge
+multiplexer / mission-control / conductor bits are **legacy Phase-1 scaffolding**,
+now removed from the architecture.
 
 Heads up: Talaria is a work in progress, not production ready. Shipping today: the PM
 suite, chat + channels (with plan chat), the fleet engine and full agent harness
@@ -57,7 +59,7 @@ Full project-management suite, all live in `ui/`:
   to the named agent. Create lands in `inbox`, always unassigned. Unnamed key callers
   (legacy plugin heartbeat/report) keep their old access on `PUT /api/tasks/:id`.
   See [`mcp/README.md`](./mcp/README.md) for client config.
-- **Chat (1:1)** - the home surface: agent picker over the gateway plane's
+- **Chat (1:1)** - the home surface: agent picker over the fleet manifest's
   `/v1/models`, durable server-owned conversations in Postgres, streamed replies
   that survive a reload (teed persist).
 - **Group chat (channels)** - Slack-style channels (`/channels`) where teammates and
@@ -85,7 +87,7 @@ Full project-management suite, all live in `ui/`:
   (`userMentionTokens` in `server/channel-replies.ts` — the composer mirrors it).
 - **Token ledger** - `usage_events` (one row per agent generation), recorded from
   both persist paths (`chat-persist.ts`, `channel-replies.ts`). Real counts via
-  `stream_options.include_usage` (the gateway plane honours it — prompt tokens run
+  `stream_options.include_usage` (the agent gateways honour it — prompt tokens run
   ~17-35k/turn because each turn carries the agent's full context); char/4
   estimates flagged when absent. `GET /api/cost` + the `/cost` page (tiles, 14-day
   strip, per-agent). Dollar cost needs per-LLM pricing attribution (next-up #2).

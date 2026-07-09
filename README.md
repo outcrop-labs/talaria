@@ -87,29 +87,27 @@ bin we pull from. Same story with mission-control: we lifted its capabilities (t
 activity) into our own Postgres and Redis instead of proxying a running copy. Talaria is the whole
 surface now, and it owns its own state.
 
-Underneath the app is the fleet runtime: a gateway plane that multiplexes your Hermes agents so Talaria
-can talk to the whole fleet through one endpoint. You declare a fleet once, and every node stays a full
-Hermes agent.
+Underneath the app is the fleet: Hermes agent containers that Talaria renders and manages. Everything
+routes through Talaria's own **gateway** — each agent calls it for LLM completions (Talaria routes to the
+providers you register), and Talaria reaches each agent's persona gateway directly for chat. One
+`talaria` network, published images, no Dockerfiles. You declare a fleet once, and every node stays a
+full Hermes agent.
 
 ```
                      Talaria UI  (our own app)
                            │
-                           ▼
-         ┌──────────────────────────────┐
-         │ GATEWAY PLANE  :8642          │
-         │ fleet multiplexer             │
-         │ • /v1/models = whole fleet    │
-         │ • /v1/chat routed by model    │
-         │   to the right agent, per-    │
-         │   agent key, SSE streamed     │
-         └───────────────┬──────────────┘
-           per-agent      │                     Talaria's own Postgres/Redis
-           routing        ▼                     (boards, tickets, teams, cost,
-   ┌────────┬────────┬────────┐                 activity, owned not proxied)
-   ▼        ▼        ▼        ▼                          ▲
- agent-1  agent-2  …      agent-N ──────────────────────┘
- gateway  gateway         gateway     register / heartbeat / report
-   (each a full Hermes agent)
+        ┌──────────────────┴───────────────────┐
+        ▼                                       ▼
+  Talaria GATEWAY  /api/llm/v1          Talaria's own Postgres/Redis
+  • agents' LLM → registered            (boards, tickets, teams, cost,
+    providers (guarded, metered)         activity, secrets — owned not proxied)
+  • chat → each agent directly                   ▲
+        │                                        │
+   ┌────┴────┬────────┬────────┐                 │
+   ▼         ▼        ▼        ▼                  │
+ agent-1  agent-2   …       agent-N ─────────────┘
+   (each a full Hermes agent, on the talaria network)
+     register / heartbeat / report
 ```
 
 - **Run your own LLMs** 🔭. Manage your own inference (Ollama, vLLM, llama.cpp, and friends) right

@@ -2,6 +2,37 @@
 
 All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md).
 
+## [Unreleased]: Phase 7 — self-contained under Talaria (2026-07-09)
+
+Everything routes through Talaria, on one network, with no Dockerfiles and
+secrets encrypted at rest.
+
+### Changed
+- **Fleet routes through Talaria's gateway.** Every model spec in each rendered
+  agent config is rewritten to point at Talaria's gateway (`/api/llm/v1`);
+  Talaria routes each model to the provider you register on `/models`. Agents
+  have exactly one upstream. Legacy litellm model names are bridged to real
+  provider ids (`glm → z-ai/glm-5.2`).
+- **One `talaria` docker network** for every Talaria container (dropped the
+  legacy `ai_default`). The self-hosted inference server is just a registered
+  provider, reached like any other.
+- **Bridge eliminated.** The app reaches each agent's persona gateway directly
+  on a stable published loopback port (`fleet/fleet.json` = model → url + key);
+  `proxyChat`/`listAgents` read the manifest. Removed `bridge/`, `ui/Dockerfile`,
+  and the legacy build-based `stack/` — **no Dockerfiles** remain; the run path
+  is compose-only (official/published images) + host-run app.
+
+### Security
+- **Provider API keys encrypted in the DB**, not in configs. Sealed with
+  AES-256-GCM in `llm_endpoints.api_key_cipher`; entered on `/models`, never
+  returned to a client. Existing config keys are migrated into the DB
+  automatically.
+- **Envelope encryption + one-click rotation.** A random 256-bit DEK encrypts
+  every secret and is stored wrapped by the root secret, so the
+  unlock-everything key is never in a config. Admin → Encryption rotates the key
+  and re-encrypts every secret (provider keys, agent secrets, OAuth tokens) in a
+  single pass. All symmetric AES-256 — post-quantum-safe (no asymmetric crypto).
+
 ## [Unreleased]: Phase 6 — product depth (2026-07-06)
 
 Turning the elegant shell into a capable product: one place to manage each
