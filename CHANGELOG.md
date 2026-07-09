@@ -23,6 +23,13 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Agents can show images in chat.** Files an agent creates in its own
+  container and references as `MEDIA:<path>` render inline in DMs and
+  channels, streamed through `/api/agent-media/:model` — gated on the same
+  access as chatting with the agent, restricted to images under the agent's
+  own `/opt/data` volume (traversal-proof, size-capped, nosniff), slot-aware.
+  The rewrite happens at render time, so past messages light up too; remote
+  image URLs in replies already rendered via markdown.
 - **Send while the agent is replying.** Agent chats flow like Claude: messages
   sent mid-reply queue into history without interrupting, and when the current
   reply finishes the server automatically runs the next turn covering

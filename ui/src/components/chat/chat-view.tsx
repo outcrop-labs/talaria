@@ -6,6 +6,7 @@ import { MentionMenu, useMentions, type Mentionable } from '@/components/chat/me
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { Markdown } from '@/components/ui/markdown'
 import { Disclosure } from '@/components/ui/disclosure'
+import { resolveAgentMedia } from '@/lib/agent-media'
 import { queueChatMessage, streamChat } from '@/lib/chat'
 import { mergeTool, type ToolCall } from '@/lib/sse-parse'
 import { loadConversation, type StoredMessage } from '@/lib/conversations'
@@ -264,7 +265,7 @@ export function ChatView({
             m.role === 'user' ? (
               <UserBubble key={i} content={m.content} attachments={m.attachments} />
             ) : (
-              <AssistantTurn key={i} message={m} live={(streaming || resuming) && i === messages.length - 1} />
+              <AssistantTurn key={i} message={m} agentModel={agentModel} live={(streaming || resuming) && i === messages.length - 1} />
             ),
           )
         )}
@@ -320,7 +321,7 @@ function UserBubble({ content, attachments }: { content: string; attachments?: A
   )
 }
 
-function AssistantTurn({ message, live }: { message: DisplayMessage; live: boolean }) {
+function AssistantTurn({ message, agentModel, live }: { message: DisplayMessage; agentModel: string; live: boolean }) {
   const { content, reasoning, tools, status } = message
   const hasReasoning = !!reasoning?.trim()
   const hasTools = !!tools?.length
@@ -360,7 +361,7 @@ function AssistantTurn({ message, live }: { message: DisplayMessage; live: boole
           </Disclosure>
         )}
 
-        {content && <Markdown>{content}</Markdown>}
+        {content && <Markdown>{resolveAgentMedia(content, agentModel)}</Markdown>}
 
         {empty && live && (
           <span className="inline-flex gap-1 py-1">

@@ -90,6 +90,7 @@ import { Route as ApiArtifactsForRouteImport } from './routes/api/artifacts.for'
 import { Route as ApiArtifactsIdRouteImport } from './routes/api/artifacts.$id'
 import { Route as ApiArtifactFoldersIdRouteImport } from './routes/api/artifact-folders.$id'
 import { Route as ApiAgentsRegisterRouteImport } from './routes/api/agents.register'
+import { Route as ApiAgentMediaModelRouteImport } from './routes/api/agent-media.$model'
 import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminSettingsRouteImport } from './routes/api/admin.settings'
 import { Route as ApiAdminJudgeRouteImport } from './routes/api/admin.judge'
@@ -562,6 +563,11 @@ const ApiAgentsRegisterRoute = ApiAgentsRegisterRouteImport.update({
   path: '/register',
   getParentRoute: () => ApiAgentsRoute,
 } as any)
+const ApiAgentMediaModelRoute = ApiAgentMediaModelRouteImport.update({
+  id: '/api/agent-media/$model',
+  path: '/api/agent-media/$model',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAdminUsersRoute = ApiAdminUsersRouteImport.update({
   id: '/api/admin/users',
   path: '/api/admin/users',
@@ -969,6 +975,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
+  '/api/agent-media/$model': typeof ApiAgentMediaModelRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
   '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
@@ -1118,6 +1125,7 @@ export interface FileRoutesByTo {
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
+  '/api/agent-media/$model': typeof ApiAgentMediaModelRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
   '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
@@ -1269,6 +1277,7 @@ export interface FileRoutesById {
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
+  '/api/agent-media/$model': typeof ApiAgentMediaModelRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
   '/api/artifacts/$id': typeof ApiArtifactsIdRouteWithChildren
@@ -1420,6 +1429,7 @@ export interface FileRouteTypes {
     | '/api/admin/judge'
     | '/api/admin/settings'
     | '/api/admin/users'
+    | '/api/agent-media/$model'
     | '/api/agents/register'
     | '/api/artifact-folders/$id'
     | '/api/artifacts/$id'
@@ -1569,6 +1579,7 @@ export interface FileRouteTypes {
     | '/api/admin/judge'
     | '/api/admin/settings'
     | '/api/admin/users'
+    | '/api/agent-media/$model'
     | '/api/agents/register'
     | '/api/artifact-folders/$id'
     | '/api/artifacts/$id'
@@ -1719,6 +1730,7 @@ export interface FileRouteTypes {
     | '/api/admin/judge'
     | '/api/admin/settings'
     | '/api/admin/users'
+    | '/api/agent-media/$model'
     | '/api/agents/register'
     | '/api/artifact-folders/$id'
     | '/api/artifacts/$id'
@@ -1852,6 +1864,7 @@ export interface RootRouteChildren {
   ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
   ApiAdminSettingsRoute: typeof ApiAdminSettingsRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
+  ApiAgentMediaModelRoute: typeof ApiAgentMediaModelRoute
   ApiAuthGoogleRoute: typeof ApiAuthGoogleRouteWithChildren
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
   ApiAuthPasswordRoute: typeof ApiAuthPasswordRoute
@@ -2443,6 +2456,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/agents/register'
       preLoaderRoute: typeof ApiAgentsRegisterRouteImport
       parentRoute: typeof ApiAgentsRoute
+    }
+    '/api/agent-media/$model': {
+      id: '/api/agent-media/$model'
+      path: '/api/agent-media/$model'
+      fullPath: '/api/agent-media/$model'
+      preLoaderRoute: typeof ApiAgentMediaModelRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/admin/users': {
       id: '/api/admin/users'
@@ -3469,6 +3489,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminJudgeRoute: ApiAdminJudgeRoute,
   ApiAdminSettingsRoute: ApiAdminSettingsRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,
+  ApiAgentMediaModelRoute: ApiAgentMediaModelRoute,
   ApiAuthGoogleRoute: ApiAuthGoogleRouteWithChildren,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,
   ApiAuthPasswordRoute: ApiAuthPasswordRoute,
