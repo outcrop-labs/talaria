@@ -23,6 +23,14 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Send while the agent is replying.** Agent chats flow like Claude: messages
+  sent mid-reply queue into history without interrupting, and when the current
+  reply finishes the server automatically runs the next turn covering
+  everything queued (chaining until the conversation goes quiet, surviving
+  reloads — the follow-up turn is server-driven). The composer stays live
+  during streaming (Stop and Send side by side); dead streams can't wedge a
+  conversation (10-minute staleness guard). Applies to agent DMs and Plan
+  chats; channels were already non-blocking.
 - **Org-voice model blurbs.** Model descriptions get ONE rewrite pass into
   task-oriented one-liners ("what it's good at, when to pick it") in the org's
   voice, cached in `model_blurbs`; newly registered models get theirs on the

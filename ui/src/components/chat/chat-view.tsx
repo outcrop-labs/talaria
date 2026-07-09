@@ -6,7 +6,7 @@ import { MentionMenu, useMentions, type Mentionable } from '@/components/chat/me
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { Markdown } from '@/components/ui/markdown'
 import { Disclosure } from '@/components/ui/disclosure'
-import { streamChat } from '@/lib/chat'
+import { queueChatMessage, streamChat } from '@/lib/chat'
 import { mergeTool, type ToolCall } from '@/lib/sse-parse'
 import { loadConversation, type StoredMessage } from '@/lib/conversations'
 import type { Attachment } from '@/lib/attachments'
@@ -117,13 +117,42 @@ export function ChatView({
     }
   }, [resuming])
 
+  // Refresh from the server's truth: queued messages, and any follow-up turn
+  // the server chained (the resuming poller then animates it live).
+  const syncFromServer = async () => {
+    const id = convIdRef.current
+    if (!id) return
+    const res = await loadConversation(id)
+    if (res && convIdRef.current === id) setMessages(res.messages.map(toDisplay))
+  }
+
   const send = async () => {
     const text = input.trim()
-    if ((!text && attachments.length === 0) || streaming) return
+    if (!text && attachments.length === 0) return
     const atts = attachments
     setError(null)
     setInput('')
     setAttachments([])
+
+    // Claude-style flow: sending while the agent is replying never interrupts —
+    // the message queues into history and the agent picks it up next turn.
+    if (streaming && convIdRef.current) {
+      setMessages((prev) => [...prev, { role: 'user', content: text, attachments: atts }])
+      try {
+        await queueChatMessage({
+          model: agentModel,
+          conversationId: convIdRef.current,
+          content: text,
+          tier: tier || undefined,
+          attachmentIds: atts.map((a) => a.id),
+          kind,
+        })
+      } catch (e) {
+        setError((e as Error).message)
+      }
+      return
+    }
+
     setMessages((prev) => [
       ...prev,
       { role: 'user', content: text, attachments: atts },
@@ -155,6 +184,12 @@ export function ChatView({
         if (ev.type === 'content') patchLast((m) => ({ ...m, content: m.content + ev.text }))
         else if (ev.type === 'reasoning') patchLast((m) => ({ ...m, reasoning: (m.reasoning ?? '') + ev.text }))
         else if (ev.type === 'tool') patchLast((m) => ({ ...m, tools: mergeTool(m.tools ?? [], ev) }))
+        else if (ev.type === 'queued') {
+          // A reply was already streaming server-side (e.g. a chained turn we
+          // hadn't seen) — drop the placeholder; the sync below shows reality.
+          setMessages((prev) => (prev[prev.length - 1]?.role === 'assistant' ? prev.slice(0, -1) : prev))
+          break
+        }
       }
       // A stream that ends having produced NOTHING is a failure, not a reply —
       // typically the agent's model isn't routable. Say so instead of leaving
@@ -168,6 +203,10 @@ export function ChatView({
     } finally {
       setStreaming(false)
       abortRef.current = null
+      // Pick up whatever happened meanwhile: queued messages, and the
+      // follow-up turn the server chains for them (the resuming poller
+      // animates it live once it appears).
+      void syncFromServer()
     }
   }
 
@@ -245,11 +284,12 @@ export function ChatView({
               className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
             />
             {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
-            {streaming ? (
+            {streaming && (
               <Button variant="outline" onClick={stop}>Stop</Button>
-            ) : (
-              <Button onClick={() => void send()} disabled={!input.trim() && attachments.length === 0}>Send</Button>
             )}
+            <Button onClick={() => void send()} disabled={!input.trim() && attachments.length === 0}>
+              Send
+            </Button>
           </div>
         </div>
       </div>
