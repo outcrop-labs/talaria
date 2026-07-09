@@ -25,9 +25,10 @@ The project management suite, the fleet engine, and auth are live and running:
   up, and links straight to any ticket. Lanes: Inbox, Assigned, In progress, Blocked, Quality review,
   Done.
 - **Multiplayer** ✅. Every surface is live over Redis pub/sub and SSE. Teams and members baked in.
-- **Fleet engine (gateway plane)** ✅. A gateway plane on `:8642` multiplexes your Hermes fleet so Talaria
-  reaches every agent through one endpoint: `/v1/models` is the whole fleet, `/v1/chat/completions` routes
-  by model to the right agent's real gateway (per-agent key, SSE streamed).
+- **Fleet engine (Talaria gateway)** ✅. Every agent routes its LLM **and** its persona chat through
+  Talaria's own gateway; Talaria renders the fleet and reaches each agent directly on its published port.
+  One `talaria` network, providers registered in-app, provider secrets encrypted in the DB — no bridge,
+  no Dockerfiles.
 - **Redis-backed auth** ✅. A pluggable, env-gated provider registry (Google OAuth or username/password),
   stateless HMAC sessions, and a login screen that renders only what's enabled.
 - **Guardrails** ✅. Agents can create and triage work, but they can't assign it to themselves or mark
@@ -102,9 +103,9 @@ Roughly in the order we're chasing it. Full detail in
 Talaria started life as a bridge in front of external tools, with milestones M0-M5 (verified live against
 `scripts/verify-stack.sh`). That scaffolding is where the fleet engine came from:
 
-- **Gateway plane (fleet multiplexer)** ✅ (**lives on as the current fleet engine**). One endpoint
-  multiplexes the fleet: each agent is an OpenAI model, `/v1/chat/completions` routes by model to that
-  agent's real gateway (per-agent key, SSE streamed). This is how Talaria reaches the fleet today.
+- **Gateway plane (fleet multiplexer)** ✅ → **retired**. The original bridge multiplexed the fleet on a
+  single `:8642` endpoint. Once every agent routed its LLM and chat through Talaria's own gateway, the
+  bridge was removed — Talaria now reaches each agent directly on its published port.
 - **Dashboard plane / mission-control bridge / conductor mission routing / mission-control adapter**
   (M0-M5), **legacy Phase-1 scaffolding**. These fronted a running hermes-workspace + mission-control:
   conductor missions and a kanban view served from mission-control, the plugin registering/heartbeating/

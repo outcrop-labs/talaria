@@ -3,30 +3,36 @@
 Talaria is MIT-licensed. It's a multiplayer-first agentic business platform: one workspace where your
 people and your AI agents share boards, chats, plans, and more, and run the business together with
 human-in-the-loop guardrails. The product is Talaria's own app in [`ui/`](./ui) (Vite + TanStack Start),
-backed by its own Postgres/Redis. Underneath the app sits the fleet engine, the runtime that talks to
-your Hermes agents. The current fleet engine is the **gateway plane** in [`bridge/`](./bridge) (a fleet
-multiplexer). The Python Hermes **plugin** rides on each agent; the mission-control **adapter** and the
-older bridge routes are legacy Phase-1 scaffolding, kept but no longer the architecture. A docker
-**stack** wires the runtime together.
+backed by its own Postgres/Redis. Underneath the app sits the fleet: a set of Hermes agent containers
+that Talaria renders and manages. Every agent routes its LLM **and** its persona chat through Talaria's
+own gateway — Talaria reaches each agent directly on its published port, so there's no separate
+multiplexer. The Python Hermes **plugin** rides on each agent (register / heartbeat / report). The whole
+thing runs on one `talaria` docker network with **no Dockerfiles** — official/published images plus the
+host-run app.
 
 ## Layout
 
 | Path | What | Build / test |
 |---|---|---|
-| `bridge/` | gateway plane: fleet multiplexer (legacy dashboard/conductor routes live here too) | `cd bridge && npm i && npm run build` (`npm run typecheck`) |
+| `ui/` | the Talaria app (product + LLM gateway + fleet renderer) | `cd ui && npm i && npm run dev`; `npx tsc --noEmit` |
+| `mcp/` | `talaria-mcp` — the agent-facing MCP server | `cd mcp && npm i && npm run build` |
 | `plugin/talaria/` | per-agent Hermes plugin (register / heartbeat / report) | `python3 -m py_compile plugin/talaria/*.py` |
-| `adapter/` | mission-control `HermesAdapter` (legacy Phase-1 lift source) | applied to a mission-control checkout |
-| `stack/` | compose that wires the fleet engine together | `docker compose -f stack/docker-compose.yml config` |
-| `scripts/verify-stack.sh` | end-to-end smoke test (M1-M3) | run against an up stack |
+| `docker/dev-compose.yml` | dev infra (Postgres + Redis) | `docker compose -f docker/dev-compose.yml config` |
+| `scripts/setup.sh`, `scripts/dev.sh` | first-run setup + bring-up | `./scripts/setup.sh` then `./scripts/dev.sh` |
+
+The fleet itself is **rendered**, not hand-written: Talaria materializes `fleet/` (gitignored —
+`docker-compose.yml`, `fleet.json`, per-agent config) from one Talaria-owned chassis when you design an
+agent in the app.
 
 ## Dev loop
 
-1. Bring up the stack (see [`stack/README.md`](./stack/README.md)). It needs the shared `edge` network
-   and reachable agent gateways. (The legacy Phase-1 mission-control build is documented in
-   `stack/docker-compose.yml` with its pinned commit if you need it.)
-2. Iterate on the gateway plane: `docker compose -f stack/docker-compose.yml up -d --build talaria-bridge`.
-   Set `TALARIA_LOG_REQUESTS=1` to log requests (handy for capturing new routes).
-3. Verify: `scripts/verify-stack.sh` (exits non-zero on the first failing check).
+1. `./scripts/setup.sh` once (generates `ui/.env`, the fleet config plane, the `talaria` network, pulls
+   infra images, installs deps — prints your admin login).
+2. `./scripts/dev.sh` brings up Postgres + Redis and the app on <http://localhost:5273>.
+3. Add an LLM endpoint on `/models` (your provider's key is stored **encrypted in the DB**), then design
+   an agent on `/agents`. Talaria renders the fleet and brings it up under the `talaria-fleet` compose
+   project; each agent's models route through Talaria's gateway.
+4. Verify your change: `npx tsc --noEmit` in `ui/`, and exercise the affected path in the running app.
 
 ### Plugin distribution: "one dev instance, sync the rest"
 
@@ -37,15 +43,15 @@ recreate the agents to pick it up.
 
 ## Conventions
 
-- **Non-destructive first.** The gateway plane passes unknown routes through untouched
-  (allowlist-intercept, never denylist). The plugin only reaches *out* and never alters agent output.
+- **Everything through Talaria.** Agent LLM and persona chat route through Talaria's gateway, so calls
+  are guarded, metered, and observable in one place. Don't wire agents at raw provider endpoints.
+- **Secrets in the DB, never in configs.** Provider keys and tokens are sealed (AES-256-GCM envelope
+  encryption) in Postgres; a config file never holds a live credential.
 - **Keep the guardrails.** Agents create and triage, but they can't self-assign or self-complete. Never
   force a `done` transition; the final sign-off is a human's call.
-- Keep the compatibility matrix (README) honest. Upstreams move fast, so pin what you verify.
-- Match surrounding style; the gateway plane is strict TypeScript, the plugin is stdlib-only Python.
+- **Reuse the primitives.** Build on the components in `ui/src/components/ui/`; don't recreate them.
+- Match surrounding style; the app is strict TypeScript, the plugin is stdlib-only Python.
 
 ## Pull requests
 
-Include what you verified (ideally a `verify-stack.sh` run) and update `CHANGELOG.md`. Upstream
-contributions (the `HERMES_MISSION_API_URL` workspace PR, the mission-control adapter) are tracked in
-[`docs/m0-contract.md`](./docs/m0-contract.md) and [`adapter/`](./adapter).
+Include what you verified (tsc + the exercised path) and update `CHANGELOG.md`.
