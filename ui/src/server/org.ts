@@ -5,7 +5,7 @@
 import { getSetting, setSetting } from './audit'
 
 export interface OrgProfile {
-  /** The business name, e.g. "Boxie". */
+  /** The business name, e.g. "Outcrop Labs". */
   name: string
   /** One or two sentences on what the business does. */
   about: string
