@@ -23,6 +23,18 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **The Talaria toolkit is ATTACHED — every agent has its tools.** talaria-mcp
+  grew a fleet HTTP mode (stateless streamable-HTTP, per-request identity via
+  X-Agent-Name, fleet-key auth); the app self-hosts it as a supervised child
+  (probe-guarded, respawning) and every rendered config now carries the
+  `talaria` MCP entry automatically. Agents get the whole safe surface —
+  tickets, artifacts, channels, KB, `save_image_artifact` — on their next
+  roll. Closes the long-standing "HTTP transport for containerized agents"
+  backlog item (#58).
+- **Agents speak product, not plumbing.** The org soul header now instructs
+  agents to point teammates at workspace surfaces (Artifacts, boards, docs)
+  instead of file paths and containers, unless the person is working at that
+  technical level.
 - **Save agent images to Artifacts.** Every agent-produced image in chat gets
   a hover "Save to Artifacts" (title + folder picker) that copies it out of
   the agent's container into a durable file artifact. Agents can do it
