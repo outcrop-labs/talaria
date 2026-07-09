@@ -706,6 +706,29 @@ const MIGRATIONS: string[] = [
   `alter table agent_defs add column if not exists gateway_port int`,
   // Conversation kind — 'chat' (default) or 'plan' (the planning surface).
   `alter table conversations add column if not exists kind text not null default 'chat'`,
+  // Ticket/plan templates — an org-wide library of markdown skeletons + prompt
+  // guidance. Tickets and plan docs stay markdown; the skeleton IS the schema.
+  `create table if not exists templates (
+     id uuid primary key default gen_random_uuid(),
+     name text not null,
+     kind text not null,
+     body text not null default '',
+     guidance text not null default '',
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // Which templates a board uses (and its default). Kind 'ticket' bindings only.
+  `create table if not exists board_templates (
+     board_id uuid not null references boards(id) on delete cascade,
+     template_id uuid not null references templates(id) on delete cascade,
+     is_default boolean not null default false,
+     primary key (board_id, template_id)
+   )`,
+  // Agent template overrides — "this agent always writes eng tickets". Part of
+  // the resolve chain: explicit pick → agent binding → board default → none.
+  `alter table agent_defs add column if not exists ticket_template_id uuid references templates(id) on delete set null`,
+  `alter table agent_defs add column if not exists plan_template_id uuid references templates(id) on delete set null`,
 ]
 
 function ensureMigrated(): Promise<void> {

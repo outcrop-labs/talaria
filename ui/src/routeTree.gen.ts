@@ -15,6 +15,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as KbSlugRouteImport } from './routes/kb.$slug'
 import { Route as ApiUsersRouteImport } from './routes/api/users'
 import { Route as ApiUploadsRouteImport } from './routes/api/uploads'
+import { Route as ApiTemplatesRouteImport } from './routes/api/templates'
 import { Route as ApiTeamsRouteImport } from './routes/api/teams'
 import { Route as ApiSkillsRouteImport } from './routes/api/skills'
 import { Route as ApiProfileRouteImport } from './routes/api/profile'
@@ -56,6 +57,7 @@ import { Route as AppActivityRouteImport } from './routes/_app/activity'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as KbSpaceSlugRouteImport } from './routes/kb.space.$slug'
 import { Route as ApiUploadsIdRouteImport } from './routes/api/uploads.$id'
+import { Route as ApiTemplatesIdRouteImport } from './routes/api/templates.$id'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
 import { Route as ApiRagSearchRouteImport } from './routes/api/rag.search'
 import { Route as ApiRagCollectionsRouteImport } from './routes/api/rag.collections'
@@ -101,6 +103,7 @@ import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.c
 import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
 import { Route as ApiRagCollectionsIdRouteImport } from './routes/api/rag.collections.$id'
 import { Route as ApiPlanIdDraftRouteImport } from './routes/api/plan.$id.draft'
+import { Route as ApiPlanIdDocRouteImport } from './routes/api/plan.$id.doc'
 import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
 import { Route as ApiKbPublicSlugRouteImport } from './routes/api/kb.public.$slug'
@@ -116,6 +119,7 @@ import { Route as ApiChannelsIdMessagesRouteImport } from './routes/api/channels
 import { Route as ApiChannelsIdMembersRouteImport } from './routes/api/channels.$id.members'
 import { Route as ApiChannelsIdEventsRouteImport } from './routes/api/channels.$id.events'
 import { Route as ApiChannelsIdAgentsRouteImport } from './routes/api/channels.$id.agents'
+import { Route as ApiBoardsIdTemplatesRouteImport } from './routes/api/boards.$id.templates'
 import { Route as ApiBoardsIdTasksRouteImport } from './routes/api/boards.$id.tasks'
 import { Route as ApiBoardsIdMembersRouteImport } from './routes/api/boards.$id.members'
 import { Route as ApiBoardsIdEventsRouteImport } from './routes/api/boards.$id.events'
@@ -178,6 +182,11 @@ const ApiUsersRoute = ApiUsersRouteImport.update({
 const ApiUploadsRoute = ApiUploadsRouteImport.update({
   id: '/api/uploads',
   path: '/api/uploads',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiTemplatesRoute = ApiTemplatesRouteImport.update({
+  id: '/api/templates',
+  path: '/api/templates',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiTeamsRoute = ApiTeamsRouteImport.update({
@@ -384,6 +393,11 @@ const ApiUploadsIdRoute = ApiUploadsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
   getParentRoute: () => ApiUploadsRoute,
+} as any)
+const ApiTemplatesIdRoute = ApiTemplatesIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiTemplatesRoute,
 } as any)
 const ApiTasksIdRoute = ApiTasksIdRouteImport.update({
   id: '/api/tasks/$id',
@@ -610,6 +624,11 @@ const ApiPlanIdDraftRoute = ApiPlanIdDraftRouteImport.update({
   path: '/api/plan/$id/draft',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPlanIdDocRoute = ApiPlanIdDocRouteImport.update({
+  id: '/api/plan/$id/doc',
+  path: '/api/plan/$id/doc',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiLlmV1ModelsRoute = ApiLlmV1ModelsRouteImport.update({
   id: '/api/llm/v1/models',
   path: '/api/llm/v1/models',
@@ -688,6 +707,11 @@ const ApiChannelsIdAgentsRoute = ApiChannelsIdAgentsRouteImport.update({
   id: '/agents',
   path: '/agents',
   getParentRoute: () => ApiChannelsIdRoute,
+} as any)
+const ApiBoardsIdTemplatesRoute = ApiBoardsIdTemplatesRouteImport.update({
+  id: '/templates',
+  path: '/templates',
+  getParentRoute: () => ApiBoardsIdRoute,
 } as any)
 const ApiBoardsIdTasksRoute = ApiBoardsIdTasksRouteImport.update({
   id: '/tasks',
@@ -915,6 +939,7 @@ export interface FileRoutesByFullPath {
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
+  '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
   '/kb/$slug': typeof KbSlugRoute
@@ -954,6 +979,7 @@ export interface FileRoutesByFullPath {
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
+  '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards/': typeof AppBoardsIndexRoute
@@ -966,6 +992,7 @@ export interface FileRoutesByFullPath {
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
   '/api/boards/$id/members': typeof ApiBoardsIdMembersRoute
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
+  '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
   '/api/channels/$id/agents': typeof ApiChannelsIdAgentsRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
@@ -981,6 +1008,7 @@ export interface FileRoutesByFullPath {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -1056,6 +1084,7 @@ export interface FileRoutesByTo {
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
+  '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
   '/kb/$slug': typeof KbSlugRoute
@@ -1096,6 +1125,7 @@ export interface FileRoutesByTo {
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
+  '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards': typeof AppBoardsIndexRoute
@@ -1108,6 +1138,7 @@ export interface FileRoutesByTo {
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
   '/api/boards/$id/members': typeof ApiBoardsIdMembersRoute
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
+  '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
   '/api/channels/$id/agents': typeof ApiChannelsIdAgentsRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
@@ -1123,6 +1154,7 @@ export interface FileRoutesByTo {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -1200,6 +1232,7 @@ export interface FileRoutesById {
   '/api/profile': typeof ApiProfileRoute
   '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
+  '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
   '/kb/$slug': typeof KbSlugRoute
@@ -1240,6 +1273,7 @@ export interface FileRoutesById {
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
+  '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/_app/boards/': typeof AppBoardsIndexRoute
@@ -1252,6 +1286,7 @@ export interface FileRoutesById {
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
   '/api/boards/$id/members': typeof ApiBoardsIdMembersRoute
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
+  '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
   '/api/channels/$id/agents': typeof ApiChannelsIdAgentsRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
@@ -1267,6 +1302,7 @@ export interface FileRoutesById {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -1345,6 +1381,7 @@ export interface FileRouteTypes {
     | '/api/profile'
     | '/api/skills'
     | '/api/teams'
+    | '/api/templates'
     | '/api/uploads'
     | '/api/users'
     | '/kb/$slug'
@@ -1384,6 +1421,7 @@ export interface FileRouteTypes {
     | '/api/rag/collections'
     | '/api/rag/search'
     | '/api/tasks/$id'
+    | '/api/templates/$id'
     | '/api/uploads/$id'
     | '/kb/space/$slug'
     | '/boards/'
@@ -1396,6 +1434,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/events'
     | '/api/boards/$id/members'
     | '/api/boards/$id/tasks'
+    | '/api/boards/$id/templates'
     | '/api/channels/$id/agents'
     | '/api/channels/$id/events'
     | '/api/channels/$id/members'
@@ -1411,6 +1450,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
@@ -1486,6 +1526,7 @@ export interface FileRouteTypes {
     | '/api/profile'
     | '/api/skills'
     | '/api/teams'
+    | '/api/templates'
     | '/api/uploads'
     | '/api/users'
     | '/kb/$slug'
@@ -1526,6 +1567,7 @@ export interface FileRouteTypes {
     | '/api/rag/collections'
     | '/api/rag/search'
     | '/api/tasks/$id'
+    | '/api/templates/$id'
     | '/api/uploads/$id'
     | '/kb/space/$slug'
     | '/boards'
@@ -1538,6 +1580,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/events'
     | '/api/boards/$id/members'
     | '/api/boards/$id/tasks'
+    | '/api/boards/$id/templates'
     | '/api/channels/$id/agents'
     | '/api/channels/$id/events'
     | '/api/channels/$id/members'
@@ -1553,6 +1596,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
@@ -1629,6 +1673,7 @@ export interface FileRouteTypes {
     | '/api/profile'
     | '/api/skills'
     | '/api/teams'
+    | '/api/templates'
     | '/api/uploads'
     | '/api/users'
     | '/kb/$slug'
@@ -1669,6 +1714,7 @@ export interface FileRouteTypes {
     | '/api/rag/collections'
     | '/api/rag/search'
     | '/api/tasks/$id'
+    | '/api/templates/$id'
     | '/api/uploads/$id'
     | '/kb/space/$slug'
     | '/_app/boards/'
@@ -1681,6 +1727,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/events'
     | '/api/boards/$id/members'
     | '/api/boards/$id/tasks'
+    | '/api/boards/$id/templates'
     | '/api/channels/$id/agents'
     | '/api/channels/$id/events'
     | '/api/channels/$id/members'
@@ -1696,6 +1743,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
@@ -1758,6 +1806,7 @@ export interface RootRouteChildren {
   ApiProfileRoute: typeof ApiProfileRoute
   ApiSkillsRoute: typeof ApiSkillsRouteWithChildren
   ApiTeamsRoute: typeof ApiTeamsRouteWithChildren
+  ApiTemplatesRoute: typeof ApiTemplatesRouteWithChildren
   ApiUploadsRoute: typeof ApiUploadsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
   KbSlugRoute: typeof KbSlugRoute
@@ -1783,6 +1832,7 @@ export interface RootRouteChildren {
   ApiKbDocsIdRoute: typeof ApiKbDocsIdRouteWithChildren
   ApiKbPublicSlugRoute: typeof ApiKbPublicSlugRoute
   ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
+  ApiPlanIdDocRoute: typeof ApiPlanIdDocRoute
   ApiPlanIdDraftRoute: typeof ApiPlanIdDraftRoute
   ApiKbPublicSpaceSlugRoute: typeof ApiKbPublicSpaceSlugRoute
   ApiLlmV1ChatCompletionsRoute: typeof ApiLlmV1ChatCompletionsRoute
@@ -1830,6 +1880,13 @@ declare module '@tanstack/react-router' {
       path: '/api/uploads'
       fullPath: '/api/uploads'
       preLoaderRoute: typeof ApiUploadsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/templates': {
+      id: '/api/templates'
+      path: '/api/templates'
+      fullPath: '/api/templates'
+      preLoaderRoute: typeof ApiTemplatesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/teams': {
@@ -2118,6 +2175,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/uploads/$id'
       preLoaderRoute: typeof ApiUploadsIdRouteImport
       parentRoute: typeof ApiUploadsRoute
+    }
+    '/api/templates/$id': {
+      id: '/api/templates/$id'
+      path: '/$id'
+      fullPath: '/api/templates/$id'
+      preLoaderRoute: typeof ApiTemplatesIdRouteImport
+      parentRoute: typeof ApiTemplatesRoute
     }
     '/api/tasks/$id': {
       id: '/api/tasks/$id'
@@ -2434,6 +2498,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPlanIdDraftRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/plan/$id/doc': {
+      id: '/api/plan/$id/doc'
+      path: '/api/plan/$id/doc'
+      fullPath: '/api/plan/$id/doc'
+      preLoaderRoute: typeof ApiPlanIdDocRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/llm/v1/models': {
       id: '/api/llm/v1/models'
       path: '/api/llm/v1/models'
@@ -2538,6 +2609,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/channels/$id/agents'
       preLoaderRoute: typeof ApiChannelsIdAgentsRouteImport
       parentRoute: typeof ApiChannelsIdRoute
+    }
+    '/api/boards/$id/templates': {
+      id: '/api/boards/$id/templates'
+      path: '/templates'
+      fullPath: '/api/boards/$id/templates'
+      preLoaderRoute: typeof ApiBoardsIdTemplatesRouteImport
+      parentRoute: typeof ApiBoardsIdRoute
     }
     '/api/boards/$id/tasks': {
       id: '/api/boards/$id/tasks'
@@ -2909,6 +2987,7 @@ interface ApiBoardsIdRouteChildren {
   ApiBoardsIdEventsRoute: typeof ApiBoardsIdEventsRoute
   ApiBoardsIdMembersRoute: typeof ApiBoardsIdMembersRoute
   ApiBoardsIdTasksRoute: typeof ApiBoardsIdTasksRoute
+  ApiBoardsIdTemplatesRoute: typeof ApiBoardsIdTemplatesRoute
 }
 
 const ApiBoardsIdRouteChildren: ApiBoardsIdRouteChildren = {
@@ -2916,6 +2995,7 @@ const ApiBoardsIdRouteChildren: ApiBoardsIdRouteChildren = {
   ApiBoardsIdEventsRoute: ApiBoardsIdEventsRoute,
   ApiBoardsIdMembersRoute: ApiBoardsIdMembersRoute,
   ApiBoardsIdTasksRoute: ApiBoardsIdTasksRoute,
+  ApiBoardsIdTemplatesRoute: ApiBoardsIdTemplatesRoute,
 }
 
 const ApiBoardsIdRouteWithChildren = ApiBoardsIdRoute._addFileChildren(
@@ -3118,6 +3198,18 @@ const ApiTeamsRouteWithChildren = ApiTeamsRoute._addFileChildren(
   ApiTeamsRouteChildren,
 )
 
+interface ApiTemplatesRouteChildren {
+  ApiTemplatesIdRoute: typeof ApiTemplatesIdRoute
+}
+
+const ApiTemplatesRouteChildren: ApiTemplatesRouteChildren = {
+  ApiTemplatesIdRoute: ApiTemplatesIdRoute,
+}
+
+const ApiTemplatesRouteWithChildren = ApiTemplatesRoute._addFileChildren(
+  ApiTemplatesRouteChildren,
+)
+
 interface ApiUploadsRouteChildren {
   ApiUploadsIdRoute: typeof ApiUploadsIdRoute
 }
@@ -3305,6 +3397,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiProfileRoute: ApiProfileRoute,
   ApiSkillsRoute: ApiSkillsRouteWithChildren,
   ApiTeamsRoute: ApiTeamsRouteWithChildren,
+  ApiTemplatesRoute: ApiTemplatesRouteWithChildren,
   ApiUploadsRoute: ApiUploadsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
   KbSlugRoute: KbSlugRoute,
@@ -3330,6 +3423,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKbDocsIdRoute: ApiKbDocsIdRouteWithChildren,
   ApiKbPublicSlugRoute: ApiKbPublicSlugRoute,
   ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,
+  ApiPlanIdDocRoute: ApiPlanIdDocRoute,
   ApiPlanIdDraftRoute: ApiPlanIdDraftRoute,
   ApiKbPublicSpaceSlugRoute: ApiKbPublicSpaceSlugRoute,
   ApiLlmV1ChatCompletionsRoute: ApiLlmV1ChatCompletionsRoute,

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
+import { Select } from '@/components/ui/select'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
 import { cn } from '@/lib/cn'
@@ -15,6 +16,7 @@ import { CronsPanel } from '@/components/fleet/agent-crons'
 import { SecretsTab } from '@/components/fleet/agent-secrets-tab'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { patchAgentMeta, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
+import { useTemplates } from '@/lib/templates'
 
 type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'secrets' | 'mcp' | 'versions'
 const TABS: { id: Tab; label: string }[] = [
@@ -146,6 +148,56 @@ function SummaryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       {!!cfg?.mcpServers?.length && (
         <Stat label="MCP" value={cfg.mcpServers.join(', ')} />
       )}
+      <TemplateBindings def={def} isAdmin={isAdmin} />
+    </div>
+  )
+}
+
+// This agent's template overrides — they beat the board default wherever the
+// agent drafts or creates tickets, and shape its plan documents.
+function TemplateBindings({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
+  const qc = useQueryClient()
+  const { data: templates = [] } = useTemplates()
+  const nameOf = (id: string | null) => templates.find((t) => t.id === id)?.name ?? '—'
+  const bind = async (patch: { ticketTemplateId?: string | null; planTemplateId?: string | null }) => {
+    await patchAgentMeta(def.id, patch)
+    await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+  }
+  const pick = (kind: 'ticket' | 'plan', value: string | null, onChange: (v: string | null) => void) => (
+    <Select value={value ?? ''} size="sm" onChange={(e) => onChange(e.target.value || null)} className="w-full">
+      <option value="">{kind === 'ticket' ? 'Board default' : 'Freeform'}</option>
+      {templates
+        .filter((t) => t.kind === kind)
+        .map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name}
+          </option>
+        ))}
+    </Select>
+  )
+  return (
+    <div>
+      <div className="mb-1.5 text-xs uppercase tracking-wide text-muted">Templates</div>
+      {isAdmin ? (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <div className="mb-1 text-[11px] text-muted">Tickets</div>
+            {pick('ticket', def.ticketTemplateId, (v) => void bind({ ticketTemplateId: v }))}
+          </div>
+          <div>
+            <div className="mb-1 text-[11px] text-muted">Plan documents</div>
+            {pick('plan', def.planTemplateId, (v) => void bind({ planTemplateId: v }))}
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <Stat label="Tickets" value={nameOf(def.ticketTemplateId)} />
+          <Stat label="Plan documents" value={nameOf(def.planTemplateId)} />
+        </div>
+      )}
+      <div className="mt-1 text-[11px] text-muted">
+        A bound template wins over the board's default wherever this agent writes tickets or plans.
+      </div>
     </div>
   )
 }

@@ -43,6 +43,9 @@ export interface AgentDef {
   managed: boolean
   /** 'imported' keeps its pre-Talaria state volume name; 'created' is fresh. */
   source: 'imported' | 'created'
+  /** Template overrides — this agent always formats tickets/plans on these. */
+  ticketTemplateId: string | null
+  planTemplateId: string | null
   currentVersion: number
   createdAt: string
   updatedAt: string
@@ -204,6 +207,7 @@ export async function listAgentDefs(): Promise<Array<AgentDef & { latest: AgentV
   const sql = await db()
   const defs = (await sql`
     select id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
+           ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
            current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
     from agent_defs order by slug asc
   `) as unknown as AgentDef[]
@@ -228,6 +232,7 @@ export async function getAgentDef(id: string): Promise<AgentDef | null> {
   const sql = await db()
   const rows = await sql`
     select id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
+           ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
            current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
     from agent_defs where id = ${id}
   `
@@ -252,6 +257,7 @@ export async function upsertAgentDef(input: {
       -- keep an existing role unless a new one is supplied (imports don't carry it)
       role = coalesce(excluded.role, agent_defs.role), updated_at = now()
     returning id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
+              ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
               current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
   `
   return rows[0] as unknown as AgentDef

@@ -36,6 +36,9 @@ export interface AgentDef {
   enabled: boolean
   managed: boolean
   source: 'imported' | 'created'
+  /** Template overrides — this agent always formats tickets/plans on these. */
+  ticketTemplateId: string | null
+  planTemplateId: string | null
   currentVersion: number
   latest: AgentVersion | null
 }
@@ -155,8 +158,11 @@ export async function createFleetAgent(input: {
   return (await r.json().catch(() => ({ error: `create failed (${r.status})` }))) as { error?: string }
 }
 
-/** Update an agent's editable identity (role, display name). */
-export async function patchAgentMeta(id: string, patch: { role?: string | null; displayName?: string }): Promise<{ ok?: boolean; error?: string }> {
+/** Update an agent's editable identity (role, display name, template bindings). */
+export async function patchAgentMeta(
+  id: string,
+  patch: { role?: string | null; displayName?: string; ticketTemplateId?: string | null; planTemplateId?: string | null },
+): Promise<{ ok?: boolean; error?: string }> {
   const r = await fetch(`/api/fleet/defs/${id}`, {
     method: 'PATCH',
     credentials: 'same-origin',

@@ -67,12 +67,20 @@ export async function createConversation(
 
 /** Verify a conversation belongs to the user; return its agent model. */
 export async function ownedConversationModel(userId: string, conversationId: string): Promise<string | null> {
+  return (await ownedConversation(userId, conversationId))?.agentModel ?? null
+}
+
+/** Ownership-checked conversation identity: agent model + kind + title. */
+export async function ownedConversation(
+  userId: string,
+  conversationId: string,
+): Promise<{ agentModel: string; kind: 'chat' | 'plan'; title: string | null } | null> {
   const sql = await db()
   const rows = await sql`
-    select agent_model as "agentModel" from conversations
+    select agent_model as "agentModel", kind, title from conversations
     where id = ${conversationId} and user_id = ${userId}
   `
-  return rows.length ? (rows[0] as { agentModel: string }).agentModel : null
+  return rows.length ? (rows[0] as { agentModel: string; kind: 'chat' | 'plan'; title: string | null }) : null
 }
 
 /** Prior turns (role + content) for the gateway, oldest first. */
@@ -93,17 +101,20 @@ export async function nextSeq(conversationId: string): Promise<number> {
   return (rows[0] as { next: number }).next
 }
 
+/** Insert the user's turn; returns the message id (activity indexing keys on it). */
 export async function insertUserMessage(
   conversationId: string,
   seq: number,
   content: string,
   attachments: unknown[] = [],
-): Promise<void> {
+): Promise<string> {
   const sql = await db()
-  await sql`
+  const rows = await sql`
     insert into messages (conversation_id, seq, role, content, status, attachments)
     values (${conversationId}, ${seq}, 'user', ${content}, 'complete', ${sql.json(attachments as never)})
+    returning id
   `
+  return (rows[0] as { id: string }).id
 }
 
 /** Create the assistant row (status='streaming'); returns its id. */

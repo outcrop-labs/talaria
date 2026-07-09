@@ -22,6 +22,39 @@ secrets encrypted at rest.
   and the legacy build-based `stack/` — **no Dockerfiles** remain; the run path
   is compose-only (official/published images) + host-run app.
 
+### Added
+- **Ticket & plan templates.** An org-wide template library (markdown skeleton
+  + agent guidance per template — the headings are the schema): boards bind the
+  ticket templates they use and mark a default (Board settings → General);
+  agents can carry overrides (agent modal → Summary → Templates). Resolution
+  everywhere: explicit pick → agent binding → board default → freeform. Applied
+  when agents draft tickets from plans/channels, when the plan document is
+  created/synced, and at ticket creation itself — a bare ticket (quick-add or
+  an agent's create tool) is seeded with the resolved skeleton.
+- **Dependency-aware ticket drafting.** Planners propose `dependsOn` ordering
+  between drafted tickets; the review modal shows/edits them as "blocked by"
+  chips, and creation wires real ticket dependencies. The review modal itself
+  is board-first (the board's template shapes drafts), roomier (wide layout,
+  full description editing), and numbered for dependency reference.
+- **Generation-in-progress states.** A shared `Generating` treatment (shimmer
+  skeleton lines + stepped dots, plus an in-place overlay variant) replaces
+  button-label-only waits: drafting tickets shows skeleton proposal cards,
+  the plan document veils while the agent rewrites it, cron drafting shows a
+  designing row, and ticket creation counts down.
+- **Plan view, phase 2 — the document lives.** "Sync from chat" has the plan's
+  own agent rewrite the living plan document from the conversation so far
+  (`POST /api/plan/:id/doc`, metered like any chat turn; agent preamble and
+  code fences are stripped). Draft tickets now treats the plan document as the
+  curated source of truth, with the transcript as supporting context.
+- **@mentions on the plan surface (#60).** The plan composer autocompletes
+  teammates (shared mention machinery extracted from channels into
+  `components/chat/mentions.tsx`); mentioned users are notified once they can
+  read the plan's document (owner-private plans mention silently until shared).
+- **Plans feed the activity brain (#63).** Plan turns and the living plan
+  document are indexed into the ambient activity collection, ACL-scoped to the
+  plan's owner (`planOwnerId`) — private planning never surfaces for anyone
+  else. Hand edits to the doc re-index via the artifact save path.
+
 ### Fixed
 - **Fresh-install model selection.** Bare model ids that contain `/`
   (OpenRouter-style, e.g. `qwen/qwen3-14b`) were mistaken for
