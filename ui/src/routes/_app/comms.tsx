@@ -6,6 +6,7 @@ import { cn } from '@/lib/cn'
 import { Avatar } from '@/components/ui/avatar'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
+import { GeneratingOverlay } from '@/components/ui/generating'
 import { alert, confirm } from '@/components/ui/confirm'
 import { ChatView } from '@/components/chat/chat-view'
 import { ChannelView } from '@/components/chat/channel-view'
@@ -102,6 +103,7 @@ function CommsPage() {
     setSel({ t: 'channel', id: c.id })
   }
 
+  const [concluding, setConcluding] = useState(false)
   const conclude = async () => {
     if (!selected) return
     if (
@@ -112,7 +114,10 @@ function CommsPage() {
       }))
     )
       return
-    const r = await fetch(`/api/channels/${selected.id}/conclude`, { method: 'POST', credentials: 'same-origin' })
+    setConcluding(true)
+    const r = await fetch(`/api/channels/${selected.id}/conclude`, { method: 'POST', credentials: 'same-origin' }).finally(() =>
+      setConcluding(false),
+    )
     const j = (await r.json().catch(() => ({}))) as { summary?: string; error?: string }
     if (!r.ok) return void alert({ title: 'Could not conclude', message: j.error ?? `failed (${r.status})` })
     await refresh()
@@ -269,7 +274,8 @@ function CommsPage() {
                 </IconAction>
               )}
             </header>
-            <div className="min-h-0 flex-1">
+            <div className="relative min-h-0 flex-1">
+              {concluding && <GeneratingOverlay label="Concluding — summarizing what was decided, then archiving…" />}
               <ChannelView
                 key={selected.id}
                 channelId={selected.id}

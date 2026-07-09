@@ -6,6 +6,7 @@ import { confirm } from '@/components/ui/confirm'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
+import { Generating } from '@/components/ui/generating'
 import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
@@ -162,6 +163,7 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
     if (r.error) setErr(r.error)
     await refresh()
   }
+  const [cascading, setCascading] = useState(false)
   const runCascading = async (op: (force: boolean) => Promise<EndpointOpResult>) => {
     setErr(null)
     let r = await op(false)
@@ -172,7 +174,14 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
         confirmLabel: 'Remove everywhere',
         danger: true,
       })
-      if (go) r = await op(true)
+      if (go) {
+        setCascading(true)
+        try {
+          r = await op(true)
+        } finally {
+          setCascading(false)
+        }
+      }
     }
     if (r.error) setErr(r.error)
     await refresh()
@@ -295,6 +304,9 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
 
         {ep.class === 'cloud' && <PrivacyRow ep={ep} run={run} />}
 
+        {cascading && (
+          <Generating label="Removing across the fleet — new agent versions, re-render, rolling the affected agents…" lines={2} />
+        )}
         {err && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
 
         <div className="flex items-center gap-2 border-t border-line-subtle pt-3">

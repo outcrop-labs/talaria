@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Generating } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
@@ -242,6 +243,16 @@ export function CreateAgentModal({
           <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} className="accent-[color:var(--theme-accent)]" />
           Start the container now
         </label>
+        {busy && (
+          <Generating
+            label={
+              start
+                ? `Hiring ${displayName || slug} — rendering the config, starting the container, waiting for health…`
+                : `Creating ${displayName || slug}…`
+            }
+            lines={3}
+          />
+        )}
         {err && (
           <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>
             {err}

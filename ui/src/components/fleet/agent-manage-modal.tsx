@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
+import { Generating } from '@/components/ui/generating'
 import { Select } from '@/components/ui/select'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -455,6 +456,9 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
 
   return (
     <div className="space-y-3">
+      {busy && (
+        <Generating label={`Applying MCP change — rolling ${def.displayName} so the new version takes effect…`} lines={2} />
+      )}
       {servers.length === 0 ? (
         <div className="text-sm text-muted">No MCP servers connected.</div>
       ) : (
@@ -538,6 +542,11 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
     <div className="text-sm text-muted">No version history.</div>
   ) : (
     <div className="divide-y divide-line-subtle">
+      {busy !== null && (
+        <div className="pb-2.5">
+          <Generating label={`Reverting to v${busy} — publishing as a new version…`} lines={2} />
+        </div>
+      )}
       <div className="flex items-center gap-2 pb-2.5">
         <span className="text-xs text-muted">Reverting publishes the old content as a new version.</span>
         <Button variant="outline" size="sm" className="ml-auto" onClick={() => setConfigOpen(true)}>
