@@ -93,6 +93,11 @@ if [ -d ui/node_modules ]; then skip "ui/node_modules"; else
   (cd ui && npm install --no-fund --no-audit) && ok "npm install"
 fi
 
+say "Git convenience"
+# `git wt <name>` → an isolated dev worktree (own DB seeded from main). Using this
+# instead of a plain `git worktree add` keeps a second app off your main DB.
+git config alias.wt '!bash scripts/worktree.sh' 2>/dev/null && ok "git wt → scripts/worktree.sh" || skip "git alias"
+
 echo
 printf '\033[1;32mSetup complete.\033[0m\n\n'
 echo "  Start everything:   ./scripts/dev.sh"

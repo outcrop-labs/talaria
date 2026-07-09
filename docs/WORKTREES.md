@@ -6,12 +6,16 @@ main dev environment.
 ## TL;DR
 
 ```bash
-./scripts/worktree.sh <name>          # create an isolated stack seeded from main
+git wt <name>                         # = ./scripts/worktree.sh <name> (alias set by setup.sh)
 cd ../talaria-<name>/ui && npm run dev -- --port <printed>
 # … hack away …
 docker compose -p talaria-wt-<name> down -v   # tear down when done
 git worktree remove ../talaria-<name> && git branch -D wt/<name>
 ```
+
+`setup.sh` registers `git wt` as the alias, and `dev.sh` **refuses to start** in a
+linked worktree that wasn't set up this way (see [Manual worktrees](#manual-worktrees))
+— so you can't accidentally point a second app at your main DB.
 
 Each worktree is **fully isolated**: its own git worktree, its own Postgres +
 Redis, its own `ui/.env` on unique ports. It **cannot** touch your main dev DB,
@@ -59,7 +63,9 @@ It prints the exact `npm run dev` command and the teardown steps.
 
 ## Manual worktrees
 
-If you make a worktree by hand (`git worktree add …`) instead of using the
-script, you are **sharing the main DB** unless you also give it its own
-`DATABASE_URL`. Don't run a second `npm run dev` against the main DB — use
-`worktree.sh` so you get an isolated stack.
+`worktree.sh` stamps `TALARIA_WORKTREE=<name>` in the worktree's `ui/.env`. If you
+make a worktree by hand (`git worktree add …`) instead, that marker is absent, so
+**`dev.sh` will refuse to start there** — because without its own stack it would
+share the main DB. Either use `git wt <name>` / `worktree.sh`, or, if you know
+what you're doing, give the worktree its own `DATABASE_URL`/`REDIS_URL` and add
+`TALARIA_WORKTREE=<name>` to its `ui/.env` yourself.
