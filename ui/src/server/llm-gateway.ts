@@ -109,29 +109,70 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
   }
   const body: Record<string, unknown> = { ...deepMerge(defaults, clientBody), model: route.upstreamModel }
   if (body.stream) body.stream_options = { include_usage: true, ...(body.stream_options as object | undefined) }
+  // Pre-strip parameters this endpoint+model has already rejected (learned
+  // live from 400s below — dynamic specs with no maintained tables).
+  for (const p of unsupportedParams.get(`${ep.name}:${route.upstreamModel}`) ?? []) delete body[p]
   return { url: `${base}/chat/completions`, headers, body }
 }
 
-/** POST to the upstream with the dev-mode fallback: docker-internal hostnames
- *  (bare names like inference-router) don't resolve from the host — retry on
- *  localhost with the same port, where the compose stacks publish. */
-export async function fetchUpstream(call: UpstreamCall): Promise<Response> {
-  const init = () => ({
-    method: 'POST' as const,
-    headers: call.headers,
-    body: JSON.stringify(call.body),
-    signal: AbortSignal.timeout(600_000),
-  })
-  try {
-    return await fetch(call.url, init())
-  } catch (err) {
-    const m = /^(https?):\/\/([^/:]+)(:\d+)?(\/.*)?$/.exec(call.url)
-    const host = m?.[2] ?? ''
-    if (m && host && !host.includes('.') && host !== 'localhost') {
-      return await fetch(`${m[1]}://localhost${m[3] ?? ''}${m[4] ?? ''}`, init())
+// Parameter support, learned from the source: when an upstream 400 names a
+// parameter we sent ("`temperature` is deprecated…", "Unsupported parameter:
+// 'top_p'…"), we strip it, retry, and remember — the next call pre-strips.
+// Newer models routinely retire tunables (sonnet-5 rejects temperature); no
+// spec table could keep up, but the provider itself is always current.
+const unsupportedParams = new Map<string, Set<string>>()
+
+const rejectedParam = (errText: string): string | null => {
+  const m =
+    /[`"']([a-z_]+)[`"'] is (?:deprecated|not supported|unsupported)/i.exec(errText) ??
+    /unsupported parameter[:\s`"']+([a-z_]+)/i.exec(errText) ??
+    /[`"']([a-z_]+)[`"'][^.]{0,40}(?:deprecated|not supported)/i.exec(errText)
+  return m?.[1] ?? null
+}
+
+/** POST to the upstream with two adaptations: the dev-mode hostname fallback
+ *  (docker-internal bare names don't resolve from the host → retry localhost),
+ *  and parameter-rejection recovery (a 400 naming a parameter we sent strips
+ *  it and retries, remembering per endpoint:model). */
+export async function fetchUpstream(call: UpstreamCall, route?: ResolvedRoute): Promise<Response> {
+  const send = async (): Promise<Response> => {
+    const init = () => ({
+      method: 'POST' as const,
+      headers: call.headers,
+      body: JSON.stringify(call.body),
+      signal: AbortSignal.timeout(600_000),
+    })
+    try {
+      return await fetch(call.url, init())
+    } catch (err) {
+      const m = /^(https?):\/\/([^/:]+)(:\d+)?(\/.*)?$/.exec(call.url)
+      const host = m?.[2] ?? ''
+      if (m && host && !host.includes('.') && host !== 'localhost') {
+        return await fetch(`${m[1]}://localhost${m[3] ?? ''}${m[4] ?? ''}`, init())
+      }
+      throw err
     }
-    throw err
   }
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await send()
+    if (res.status !== 400) return res
+    const text = await res.text().catch(() => '')
+    const param = rejectedParam(text)
+    if (!param || !(param in call.body) || param === 'model' || param === 'messages') {
+      // Not a strippable-parameter rejection — hand back the original error.
+      return new Response(text, {
+        status: res.status,
+        headers: { 'content-type': res.headers.get('content-type') ?? 'application/json' },
+      })
+    }
+    delete call.body[param]
+    if (route) {
+      const key = `${route.endpoint.name}:${route.upstreamModel}`
+      unsupportedParams.set(key, new Set([...(unsupportedParams.get(key) ?? []), param]))
+    }
+  }
+  return send()
 }
 
 /** Server-side non-streaming completion through the org gateway (routing +
@@ -147,7 +188,7 @@ export async function completeViaGateway(
   const clientBody: Record<string, unknown> = { model, messages, stream: false }
   if (opts.temperature !== undefined) clientBody.temperature = opts.temperature
   const call = await buildUpstream(route, clientBody)
-  const res = await fetchUpstream(call)
+  const res = await fetchUpstream(call, route)
   if (!res.ok) throw new Error(`gateway completion ${res.status}: ${await res.text()}`)
   const j = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>

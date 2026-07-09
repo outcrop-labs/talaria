@@ -43,7 +43,7 @@ export const Route = createFileRoute('/api/muse')({
           return json({ error: (e as Error).message }, { status: 502 })
         }
 
-        const res = await fetchUpstream(upstream).catch((e: Error) => e)
+        const res = await fetchUpstream(upstream, route).catch((e: Error) => e)
         if (res instanceof Error) return json({ error: `upstream unreachable: ${res.message}` }, { status: 502 })
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => '')

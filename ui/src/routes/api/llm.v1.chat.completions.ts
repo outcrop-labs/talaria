@@ -43,7 +43,7 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
           0,
         )
 
-        const res = await fetchUpstream(upstream).catch((e: Error) => e)
+        const res = await fetchUpstream(upstream, route).catch((e: Error) => e)
         if (res instanceof Error) return json({ error: { message: `upstream unreachable: ${res.message}` } }, { status: 502 })
 
         const ledger = (usage: { prompt_tokens?: number; completion_tokens?: number } | null, contentChars: number) => {
