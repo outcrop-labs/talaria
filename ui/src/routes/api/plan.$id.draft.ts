@@ -7,7 +7,13 @@ import { planFromConversation } from '@/server/channel-plan'
 import { routedModelFor } from '@/server/fleet-agents'
 import { canUseAgentModel } from '@/server/users'
 
-const Body = z.object({ tier: z.string().max(60).nullish() })
+const Body = z.object({
+  tier: z.string().max(60).nullish(),
+  /** Where the tickets will land — lets the board's default template apply. */
+  boardId: z.string().uuid().nullish(),
+  /** Explicit template pick (overrides agent/board resolution). */
+  templateId: z.string().uuid().nullish(),
+})
 
 // POST → draft ticket proposals from a plan conversation. Owner only; nothing is
 // created here — the human reviews and creates via the boards API (PlanModal).
@@ -27,7 +33,10 @@ export const Route = createFileRoute('/api/plan/$id/draft')({
         const routed =
           (parsed.data.tier ? await routedModelFor(agentModel, parsed.data.tier).catch(() => null) : null) ?? agentModel
         try {
-          const { proposals, raw } = await planFromConversation(params.id, agentModel, routed)
+          const { proposals, raw } = await planFromConversation(params.id, agentModel, routed, {
+            boardId: parsed.data.boardId,
+            templateId: parsed.data.templateId,
+          })
           if (proposals.length === 0) {
             return json({ proposals: [], note: raw ? 'the agent did not return parseable tickets' : 'nothing to plan yet' })
           }

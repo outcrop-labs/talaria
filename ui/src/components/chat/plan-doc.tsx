@@ -3,35 +3,27 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
-import { attachArtifact, createArtifact, saveArtifact, useArtifact, useTargetArtifacts } from '@/lib/artifacts'
+import { saveArtifact, useArtifact } from '@/lib/artifacts'
 
 // The plan's living document — a real `doc` artifact, side-by-side with the chat.
-// One per plan (linked via artifact_links target_type='plan'); created on first
-// open. Editable on the fly, autosaved, and referenceable anywhere in the app.
-export function PlanDoc({ planId, planTitle }: { planId: string; planTitle: string | null }) {
-  const qc = useQueryClient()
-  const { data: linked, isLoading } = useTargetArtifacts('plan', planId)
+// One per plan (linked via artifact_links target_type='plan'); found-or-created
+// server-side on first open, seeded from the agent's plan template when one is
+// bound. Editable on the fly, autosaved, referenceable anywhere in the app.
+export function PlanDoc({ planId }: { planId: string; planTitle?: string | null }) {
   const [docId, setDocId] = useState<string | null>(null)
-  const creating = useRef(false)
 
-  // Adopt the existing linked doc, or create one the first time a plan is opened.
   useEffect(() => {
-    if (isLoading) return
-    const existing = linked?.find((a) => a.kind === 'doc')
-    if (existing) {
-      setDocId(existing.id)
-      return
+    setDocId(null)
+    let cancelled = false
+    void fetch(`/api/plan/${planId}/doc`, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? (r.json() as Promise<{ artifact: { id: string } }>) : null))
+      .then((j) => {
+        if (!cancelled && j) setDocId(j.artifact.id)
+      })
+    return () => {
+      cancelled = true
     }
-    if (creating.current || docId) return
-    creating.current = true
-    void (async () => {
-      const { artifact } = await createArtifact({ kind: 'doc', title: `Plan — ${planTitle || 'Untitled'}` })
-      await attachArtifact(artifact.id, 'plan', planId)
-      await qc.invalidateQueries({ queryKey: ['artifacts-for', 'plan', planId] })
-      setDocId(artifact.id)
-      creating.current = false
-    })()
-  }, [isLoading, linked, planId, planTitle, docId, qc])
+  }, [planId])
 
   return (
     <div className="flex min-w-0 flex-col border-l border-line-subtle">

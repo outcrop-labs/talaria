@@ -23,6 +23,19 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Ticket & plan templates.** An org-wide template library (markdown skeleton
+  + agent guidance per template — the headings are the schema): boards bind the
+  ticket templates they use and mark a default (Board settings → General);
+  agents can carry overrides (agent modal → Summary → Templates). Resolution
+  everywhere: explicit pick → agent binding → board default → freeform. Applied
+  when agents draft tickets from plans/channels, when the plan document is
+  created/synced, and at ticket creation itself — a bare ticket (quick-add or
+  an agent's create tool) is seeded with the resolved skeleton.
+- **Dependency-aware ticket drafting.** Planners propose `dependsOn` ordering
+  between drafted tickets; the review modal shows/edits them as "blocked by"
+  chips, and creation wires real ticket dependencies. The review modal itself
+  is board-first (the board's template shapes drafts), roomier (wide layout,
+  full description editing), and numbered for dependency reference.
 - **Plan view, phase 2 — the document lives.** "Sync from chat" has the plan's
   own agent rewrite the living plan document from the conversation so far
   (`POST /api/plan/:id/doc`, metered like any chat turn; agent preamble and

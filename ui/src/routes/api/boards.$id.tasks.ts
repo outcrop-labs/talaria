@@ -6,6 +6,7 @@ import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
 import { createTask, listBoardTasks, EFFORTS, PRIORITIES } from '@/server/tasks'
 import { indexTicket } from '@/server/retrieval/sources'
+import { resolveTemplate } from '@/server/templates'
 
 /** Resolves who's calling: a board-allowed agent (by key + name), an editing
  *  user, or nobody. Agents must pass the board's agent policy. */
@@ -63,10 +64,21 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
             return json({ error: `agent "${a}" is not allowed on this board` }, { status: 400 })
           }
         }
+        // Templatize bare tickets: an empty description is seeded from the
+        // resolved ticket template (creating agent's binding → board default),
+        // so every creation surface — quick-add, agent tools — gets the format.
+        let description = parsed.data.description
+        if (!description?.trim()) {
+          const template = await resolveTemplate('ticket', {
+            agentModel: who.agent ? who.actor : null,
+            boardId: params.id,
+          })
+          if (template?.body.trim()) description = template.body
+        }
         const task = await createTask({
           boardId: params.id,
           title: parsed.data.title,
-          description: parsed.data.description,
+          description,
           priority: parsed.data.priority,
           effort: parsed.data.effort ?? null,
           assignees: parsed.data.assignees ?? [],

@@ -17,6 +17,7 @@ import { describeAgent, proxyChat } from './gateway'
 import { canRead, listEditors } from './kb-perms'
 import { notifyMentions } from './mentions'
 import { indexActivity } from './retrieval/sources'
+import { resolveTemplate, templatePrompt } from './templates'
 import { estimateTokens, recordUsage } from './usage'
 import { listUsers } from './users'
 
@@ -30,15 +31,18 @@ export async function planDocFor(conversationId: string): Promise<Artifact | nul
   return linked.find((a) => a.kind === 'doc') ?? null
 }
 
-/** Find-or-create the plan's document (the UI normally creates it on first
- *  open; this covers syncs that arrive first). Owned by the plan's owner. */
+/** Find-or-create the plan's document, seeded from the agent's plan template
+ *  when one is bound (the skeleton is the starting structure). Owned by the
+ *  plan's owner. */
 export async function ensurePlanDoc(
   conversationId: string,
   owner: { id: string; label: string },
   planTitle: string | null,
+  agentModel?: string,
 ): Promise<Artifact> {
   const existing = await planDocFor(conversationId)
   if (existing) return existing
+  const template = agentModel ? await resolveTemplate('plan', { agentModel }) : null
   const artifact = await createArtifact({
     kind: 'doc',
     title: `Plan — ${planTitle || 'Untitled'}`,
@@ -46,6 +50,9 @@ export async function ensurePlanDoc(
     ownerUserId: owner.id,
   })
   await attachArtifact(artifact.id, { targetType: 'plan', targetId: conversationId }, owner.label)
+  if (template?.body.trim()) {
+    return (await saveArtifact(artifact.id, { body: template.body }, owner.label)) ?? artifact
+  }
   return artifact
 }
 
@@ -82,7 +89,7 @@ export async function syncPlanDoc(
   agentModel: string,
   routedModel: string,
 ): Promise<Artifact> {
-  const doc = await ensurePlanDoc(conversationId, owner, planTitle)
+  const doc = await ensurePlanDoc(conversationId, owner, planTitle, agentModel)
   const label = describeAgent(agentModel).label
   const msgs = await priorMessages(conversationId)
   const transcript = msgs
@@ -91,9 +98,11 @@ export async function syncPlanDoc(
     .join('\n\n')
   if (!transcript.trim()) return doc
 
+  const template = await resolveTemplate('plan', { agentModel })
+  const system = template ? `${SYNC_PROMPT}\n\n${templatePrompt(template, 'the plan document')}` : SYNC_PROMPT
   const current = doc.body.trim()
   const messages = [
-    { role: 'system', content: SYNC_PROMPT },
+    { role: 'system', content: system },
     {
       role: 'user',
       content:

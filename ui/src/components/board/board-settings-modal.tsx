@@ -7,8 +7,10 @@ import { Select } from '@/components/ui/select'
 import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
 import { UserPicker } from '@/components/app/user-picker'
+import { TemplateLibraryModal } from '@/components/templates/template-library-modal'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
+import { setBoardTemplates, useBoardTemplates, useTemplates } from '@/lib/templates'
 import {
   archiveBoard,
   deleteBoard,
@@ -65,6 +67,71 @@ export function BoardSettingsModal({
       {tab === 'people' && <PeopleTab board={board} />}
       {tab === 'agents' && <AgentsTab board={board} />}
     </Modal>
+  )
+}
+
+// The ticket templates this board uses: bind from the org library, mark one as
+// the default (it seeds bare tickets and shapes agent drafting on this board).
+function TemplatesSection({ board }: { board: Board }) {
+  const qc = useQueryClient()
+  const { data: templates = [] } = useTemplates()
+  const { data: bindings = [] } = useBoardTemplates(board.id)
+  const [managing, setManaging] = useState(false)
+  const ticketTemplates = templates.filter((t) => t.kind === 'ticket')
+  const bound = new Set(bindings.map((b) => b.templateId))
+  const defaultId = bindings.find((b) => b.isDefault)?.templateId ?? null
+
+  const save = async (ids: string[], def: string | null) => {
+    await setBoardTemplates(board.id, ids, def && ids.includes(def) ? def : (ids[0] ?? null))
+    await qc.invalidateQueries({ queryKey: ['board-templates', board.id] })
+  }
+  const toggle = (id: string) => {
+    const ids = bound.has(id) ? [...bound].filter((x) => x !== id) : [...bound, id]
+    void save(ids, defaultId)
+  }
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center">
+        <label className="text-[11px] uppercase tracking-wide text-muted">Ticket templates</label>
+        <button type="button" className="ml-auto text-xs text-accent hover:underline" onClick={() => setManaging(true)}>
+          Manage library
+        </button>
+      </div>
+      {ticketTemplates.length === 0 ? (
+        <div className="text-xs text-muted">No ticket templates in the library yet — create one to templatize this board's tickets.</div>
+      ) : (
+        <div className="space-y-1 rounded-xl border border-line-subtle p-2">
+          {ticketTemplates.map((t) => (
+            <div key={t.id} className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={bound.has(t.id)}
+                onChange={() => toggle(t.id)}
+                className="shrink-0 accent-[var(--theme-accent)]"
+              />
+              <span className="min-w-0 flex-1 truncate text-fg">{t.name}</span>
+              {bound.has(t.id) && (
+                <label className="flex shrink-0 items-center gap-1 text-[11px] text-muted">
+                  <input
+                    type="radio"
+                    name={`default-template-${board.id}`}
+                    checked={defaultId === t.id}
+                    onChange={() => void save([...bound], t.id)}
+                    className="accent-[var(--theme-accent)]"
+                  />
+                  default
+                </label>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-1 text-[11px] text-muted">
+        The default seeds new tickets and formats agent-drafted ones on this board (an agent's own template binding wins).
+      </div>
+      {managing && <TemplateLibraryModal open={managing} onClose={() => setManaging(false)} />}
+    </div>
   )
 }
 
@@ -126,6 +193,8 @@ function GeneralTab({
           When an agent hands a ticket to quality review, the judge reviews it. Enforcing bounces “revise” verdicts back to the agent with the issues before a human sees them.
         </div>
       </div>
+
+      <TemplatesSection board={board} />
 
       <div className="rounded-xl border border-line-subtle p-3">
         <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Danger zone</div>

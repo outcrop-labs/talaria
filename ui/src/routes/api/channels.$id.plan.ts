@@ -10,6 +10,10 @@ import { canUseAgentModel } from '@/server/users'
 const Body = z.object({
   agentModel: z.string().min(1).max(200),
   tier: z.string().max(60).nullish(),
+  /** Where the tickets will land — lets the board's default template apply. */
+  boardId: z.string().uuid().nullish(),
+  /** Explicit template pick (overrides agent/board resolution). */
+  templateId: z.string().uuid().nullish(),
 })
 
 // POST → ask a channel agent to draft ticket proposals from the transcript.
@@ -37,7 +41,10 @@ export const Route = createFileRoute('/api/channels/$id/plan')({
           parsed.data.agentModel
 
         try {
-          const { proposals, raw } = await planFromChannel(params.id, parsed.data.agentModel, routed)
+          const { proposals, raw } = await planFromChannel(params.id, parsed.data.agentModel, routed, {
+            boardId: parsed.data.boardId,
+            templateId: parsed.data.templateId,
+          })
           if (proposals.length === 0) {
             return json({ proposals: [], note: raw ? 'the agent did not return parseable tickets' : 'nothing to plan yet' })
           }
