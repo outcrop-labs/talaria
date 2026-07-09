@@ -84,17 +84,44 @@ export const DEFAULT_KEY_ENV: Record<string, string> = {
 /** Fetch with a dev-mode fallback: docker-internal hostnames (bare names like
  *  inference-router) don't resolve from the host — retry on localhost with the
  *  same port, where the compose stacks publish their ports. */
-async function fetchModels(base: string, headers: Record<string, string>): Promise<Response> {
+async function fetchModels(base: string, headers: Record<string, string>, qs = ''): Promise<Response> {
   try {
-    return await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(10_000) })
+    return await fetch(`${base}/models${qs}`, { headers, signal: AbortSignal.timeout(10_000) })
   } catch (err) {
     const m = /^(https?):\/\/([^/:]+)(:\d+)?(\/.*)?$/.exec(base)
     const host = m?.[2] ?? ''
     if (m && host && !host.includes('.') && host !== 'localhost') {
       const local = `${m[1]}://localhost${m[3] ?? ''}${m[4] ?? ''}`
-      return await fetch(`${local}/models`, { headers, signal: AbortSignal.timeout(10_000) })
+      return await fetch(`${local}/models${qs}`, { headers, signal: AbortSignal.timeout(10_000) })
     }
     throw err
+  }
+}
+
+/** OpenRouter's live US provider pool for no-train routing: every provider
+ *  whose datacenters include the US (or, when datacenters are unreported, is
+ *  US-headquartered). Fetched fresh — never a maintained list — and cached
+ *  briefly; a failed fetch serves the last good pool. The no-train half of the
+ *  policy is `data_collection: 'deny'`, which OpenRouter enforces dynamically. */
+let usPoolCache: { at: number; slugs: string[] } | null = null
+const US_POOL_TTL_MS = 15 * 60_000
+
+export async function openrouterUsPool(): Promise<string[] | null> {
+  if (usPoolCache && Date.now() - usPoolCache.at < US_POOL_TTL_MS) return usPoolCache.slugs
+  try {
+    const r = await fetch(`${NATIVE_BASE['openrouter']}/providers`, { signal: AbortSignal.timeout(10_000) })
+    if (!r.ok) throw new Error(`providers ${r.status}`)
+    const j = (await r.json()) as {
+      data?: Array<{ slug?: string; headquarters?: string | null; datacenters?: string[] | null }>
+    }
+    const slugs = (j.data ?? [])
+      .filter((p) => p.slug && (p.datacenters?.length ? p.datacenters.includes('US') : p.headquarters === 'US'))
+      .map((p) => p.slug!)
+      .sort()
+    if (slugs.length) usPoolCache = { at: Date.now(), slugs }
+    return usPoolCache?.slugs ?? null
+  } catch {
+    return usPoolCache?.slugs ?? null
   }
 }
 
@@ -114,11 +141,25 @@ export async function availableModels(ep: LlmEndpoint): Promise<string[]> {
     headers['Authorization'] = `Bearer ${key}`
   }
 
-  const r = await fetchModels(base, headers)
-  if (!r.ok) throw new Error(`provider answered ${r.status}${r.status === 401 ? ' — check the API key env' : ''}`)
-  const j = (await r.json()) as { data?: Array<{ id?: string }>; models?: Array<{ id?: string; name?: string }> }
-  const ids = (j.data ?? j.models ?? [])
-    .map((m) => m.id ?? (m as { name?: string }).name ?? '')
-    .filter(Boolean)
-  return [...new Set(ids)].sort()
+  // Follow pagination where the provider pages (Anthropic defaults to 20 per
+  // page); OpenAI-compatible catalogs return everything in one response. The
+  // provider's own ordering is preserved — OpenRouter lists newest first.
+  const ids: string[] = []
+  let qs = ep.provider === 'anthropic' ? '?limit=1000' : ''
+  for (let page = 0; page < 20; page++) {
+    const r = await fetchModels(base, headers, qs)
+    if (!r.ok) throw new Error(`provider answered ${r.status}${r.status === 401 ? ' — check the API key env' : ''}`)
+    const j = (await r.json()) as {
+      data?: Array<{ id?: string }>
+      models?: Array<{ id?: string; name?: string }>
+      has_more?: boolean
+      last_id?: string
+    }
+    ids.push(
+      ...(j.data ?? j.models ?? []).map((m) => m.id ?? (m as { name?: string }).name ?? '').filter(Boolean),
+    )
+    if (!j.has_more || !j.last_id) break
+    qs = `${ep.provider === 'anthropic' ? '?limit=1000&' : '?'}after_id=${encodeURIComponent(j.last_id)}`
+  }
+  return [...new Set(ids)]
 }

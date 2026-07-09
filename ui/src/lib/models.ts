@@ -3,8 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import type { LlmEndpoint } from '@/lib/fleet-defs'
 
 /** Every common US model provider, preconfigured: base URLs and provider
- *  wiring are baked in so adding one is pick → name the key env → done. Model
- *  lists are starting points — the catalog is editable per endpoint. */
+ *  wiring are baked in so adding one is pick → name the key env → done. NO
+ *  model lists live here — a new endpoint starts empty and models are always
+ *  picked from the provider's LIVE catalog, so nothing here can go stale. */
 export const PROVIDER_PRESETS: Array<{
   key: string
   label: string
@@ -12,10 +13,6 @@ export const PROVIDER_PRESETS: Array<{
   class: 'local' | 'cloud'
   baseUrl?: string
   apiKeyEnv?: string
-  models: string[]
-  /** Per-model $/MTok overrides. Usually unnecessary — prices auto-fetch from
-   *  the public OpenRouter catalog server-side; overrides always win. */
-  modelPrices?: Record<string, { in: number; out: number }>
   /** Show the base-URL field (local/custom endpoints only). */
   configurableUrl?: boolean
 }> = [
@@ -25,7 +22,6 @@ export const PROVIDER_PRESETS: Array<{
     provider: 'anthropic',
     class: 'cloud',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
-    models: ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   },
   {
     key: 'openai',
@@ -33,7 +29,6 @@ export const PROVIDER_PRESETS: Array<{
     provider: 'openai',
     class: 'cloud',
     apiKeyEnv: 'OPENAI_API_KEY',
-    models: ['gpt-5.4', 'gpt-5.4-mini'],
   },
   {
     key: 'google',
@@ -42,7 +37,6 @@ export const PROVIDER_PRESETS: Array<{
     class: 'cloud',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     apiKeyEnv: 'GEMINI_API_KEY',
-    models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   },
   {
     key: 'x-ai',
@@ -50,7 +44,6 @@ export const PROVIDER_PRESETS: Array<{
     provider: 'x-ai',
     class: 'cloud',
     apiKeyEnv: 'XAI_API_KEY',
-    models: ['grok-4'],
   },
   {
     key: 'meta',
@@ -59,7 +52,6 @@ export const PROVIDER_PRESETS: Array<{
     class: 'cloud',
     baseUrl: 'https://api.llama.com/compat/v1',
     apiKeyEnv: 'LLAMA_API_KEY',
-    models: ['llama-4-maverick', 'llama-4-scout'],
   },
   {
     key: 'openrouter',
@@ -67,7 +59,6 @@ export const PROVIDER_PRESETS: Array<{
     provider: 'openrouter',
     class: 'cloud',
     apiKeyEnv: 'OPENROUTER_API_KEY',
-    models: ['anthropic/claude-sonnet-4-6', 'deepseek/deepseek-v4-pro', 'meta-llama/llama-4-70b'],
   },
   {
     key: 'groq',
@@ -76,7 +67,6 @@ export const PROVIDER_PRESETS: Array<{
     class: 'cloud',
     baseUrl: 'https://api.groq.com/openai/v1',
     apiKeyEnv: 'GROQ_API_KEY',
-    models: ['llama-4-70b', 'qwen3-32b'],
   },
   {
     key: 'together',
@@ -85,7 +75,6 @@ export const PROVIDER_PRESETS: Array<{
     class: 'cloud',
     baseUrl: 'https://api.together.xyz/v1',
     apiKeyEnv: 'TOGETHER_API_KEY',
-    models: [],
   },
   {
     key: 'fireworks',
@@ -94,7 +83,6 @@ export const PROVIDER_PRESETS: Array<{
     class: 'cloud',
     baseUrl: 'https://api.fireworks.ai/inference/v1',
     apiKeyEnv: 'FIREWORKS_API_KEY',
-    models: [],
   },
   {
     key: 'cerebras',
@@ -103,7 +91,6 @@ export const PROVIDER_PRESETS: Array<{
     class: 'cloud',
     baseUrl: 'https://api.cerebras.ai/v1',
     apiKeyEnv: 'CEREBRAS_API_KEY',
-    models: [],
   },
   {
     key: 'perplexity',
@@ -112,7 +99,6 @@ export const PROVIDER_PRESETS: Array<{
     class: 'cloud',
     baseUrl: 'https://api.perplexity.ai',
     apiKeyEnv: 'PERPLEXITY_API_KEY',
-    models: ['sonar-pro'],
   },
   {
     key: 'deepinfra',
@@ -121,7 +107,6 @@ export const PROVIDER_PRESETS: Array<{
     class: 'cloud',
     baseUrl: 'https://api.deepinfra.com/v1/openai',
     apiKeyEnv: 'DEEPINFRA_API_KEY',
-    models: [],
   },
   {
     key: 'deepseek',
@@ -129,7 +114,6 @@ export const PROVIDER_PRESETS: Array<{
     provider: 'deepseek',
     class: 'cloud',
     apiKeyEnv: 'DEEPSEEK_API_KEY',
-    models: ['deepseek-v4-pro', 'deepseek-v4-flash'],
   },
   {
     key: 'ollama',
@@ -137,7 +121,6 @@ export const PROVIDER_PRESETS: Array<{
     provider: 'custom',
     class: 'local',
     baseUrl: 'http://localhost:11434/v1',
-    models: [],
     configurableUrl: true,
   },
   {
@@ -147,10 +130,9 @@ export const PROVIDER_PRESETS: Array<{
     class: 'local',
     baseUrl: 'http://localhost:8000/v1',
     apiKeyEnv: 'LLM_API_KEY',
-    models: [],
     configurableUrl: true,
   },
-  { key: 'custom', label: 'Custom (OpenAI-compatible)', provider: 'custom', class: 'cloud', models: [], configurableUrl: true },
+  { key: 'custom', label: 'Custom (OpenAI-compatible)', provider: 'custom', class: 'cloud', configurableUrl: true },
 ]
 
 /** Class inference: users never pick local/cloud — LAN/loopback hosts are
@@ -163,12 +145,12 @@ export function inferClass(baseUrl?: string | null): 'local' | 'cloud' {
     : 'cloud'
 }
 
-/** The provider's live catalog — what it offers right now (server-side fetch,
- *  cached; `note` explains an empty result, e.g. missing key). */
+/** The provider's live catalog — what it offers right now (server-side fetch
+ *  on every open; `note` explains an empty result, e.g. missing key). */
 export function useAvailableModels(endpointId: string) {
   return useQuery({
     queryKey: ['available-models', endpointId],
-    staleTime: 15 * 60_000,
+    staleTime: 60_000,
     queryFn: async (): Promise<{ models: string[]; note?: string }> => {
       const r = await fetch(`/api/fleet/endpoints/${endpointId}/available`, { credentials: 'same-origin' })
       if (!r.ok) return { models: [] }
@@ -198,6 +180,8 @@ export interface AffectedAgent {
 
 export interface EndpointOpResult {
   ok?: boolean
+  /** The created endpoint's id (POST /api/fleet/endpoints). */
+  id?: string
   error?: string
   needsForce?: boolean
   affected?: AffectedAgent[]
@@ -219,8 +203,6 @@ export const addEndpoint = (e: {
   apiKeyEnv?: string | null
   /** Raw provider key — sealed (encrypted) server-side. */
   apiKey?: string | null
-  models?: string[]
-  modelPrices?: Record<string, { in: number; out: number }>
 }) =>
   fetch('/api/fleet/endpoints', {
     method: 'POST',
