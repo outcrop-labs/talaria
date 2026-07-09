@@ -29,8 +29,13 @@ import type { Sql } from 'postgres'
 
 const SALT = 'talaria.secretbox.v1'
 
+// In-memory key material lives on globalThis so a Vite HMR reload of this module
+// (dev) doesn't wipe the loaded DEKs while the one-time migration/init stays
+// cached — which would leave seal()/open() with no key until a full restart.
+const g = globalThis as unknown as { __sbKek?: Buffer; __sbDeks?: Map<number, Buffer>; __sbActive?: number }
+g.__sbDeks ??= new Map<number, Buffer>()
+
 // ── KEK: the root of trust, derived from the operator secret ──────────────────
-let cachedKek: Buffer | null = null
 function kekMaterial(): string {
   let material = process.env.TALARIA_SECRET_KEY || ''
   if (!material && process.env.TALARIA_SECRET_KEY_FILE) {
@@ -41,8 +46,8 @@ function kekMaterial(): string {
   return material
 }
 function kek(): Buffer {
-  if (!cachedKek) cachedKek = scryptSync(kekMaterial(), SALT, 32)
-  return cachedKek
+  if (!g.__sbKek) g.__sbKek = scryptSync(kekMaterial(), SALT, 32)
+  return g.__sbKek
 }
 /** Derive a KEK from arbitrary root material (used when rotating the root). */
 export function deriveKek(material: string): Buffer {
@@ -63,8 +68,6 @@ function decRaw(k: Buffer, iv: string, tag: string, data: string): string {
 }
 
 // ── DEK registry: every version, loaded once, kept in memory ──────────────────
-const dekVersions = new Map<number, Buffer>()
-let activeVersion = 0
 
 function wrapDek(dek: Buffer, k: Buffer = kek()): string {
   const { iv, tag, data } = encRaw(k, dek.toString('base64'))
@@ -85,15 +88,15 @@ export async function initSecretbox(sql: Sql): Promise<void> {
   if (rows.length === 0) {
     const dek = randomBytes(32) // 256-bit
     await sql`insert into secret_keys (version, wrapped_dek, active) values (1, ${wrapDek(dek)}, true)`
-    dekVersions.set(1, dek)
-    activeVersion = 1
+    g.__sbDeks!.set(1, dek)
+    g.__sbActive = 1
     return
   }
   for (const r of rows) {
-    if (dekVersions.has(r.version)) continue
+    if (g.__sbDeks!.has(r.version)) continue
     try {
-      dekVersions.set(r.version, unwrapDek(r.wrappedDek))
-      if (r.active) activeVersion = r.version
+      g.__sbDeks!.set(r.version, unwrapDek(r.wrappedDek))
+      if (r.active) g.__sbActive = r.version
     } catch {
       // Loud, but don't brick the app: a version we can't unwrap means the root
       // secret changed. Its ciphertext will fail to decrypt (callers fall back);
@@ -104,18 +107,18 @@ export async function initSecretbox(sql: Sql): Promise<void> {
       )
     }
   }
-  if (!activeVersion) activeVersion = dekVersions.size ? Math.max(...dekVersions.keys()) : 0
-  if (!activeVersion) console.error('[secretbox] no usable data key — new secrets cannot be sealed until the root secret is restored')
+  if (!g.__sbActive) g.__sbActive = g.__sbDeks!.size ? Math.max(...g.__sbDeks!.keys()) : 0
+  if (!g.__sbActive) console.error('[secretbox] no usable data key — new secrets cannot be sealed until the root secret is restored')
 }
 
 function dekFor(version: number): Buffer {
-  const key = dekVersions.get(version)
+  const key = g.__sbDeks!.get(version)
   if (!key) throw new Error(`secretbox: data key v${version} not loaded (rotated by another process? restart to pick it up)`)
   return key
 }
 function active(): { key: Buffer; version: number } {
-  if (!activeVersion) throw new Error('secretbox: not initialized (initSecretbox must run during DB migration)')
-  return { key: dekFor(activeVersion), version: activeVersion }
+  if (!g.__sbActive) throw new Error('secretbox: not initialized (initSecretbox must run during DB migration)')
+  return { key: dekFor(g.__sbActive), version: g.__sbActive }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -144,7 +147,7 @@ export function newDek(): Buffer {
 }
 /** Every DEK version currently loaded (for re-wrapping on a root-key rotation). */
 export function loadedVersions(): number[] {
-  return [...dekVersions.keys()]
+  return [...g.__sbDeks!.keys()]
 }
 /** Re-wrap an existing version's DEK under a KEK derived from new root material. */
 export function rewrapVersion(version: number, rootMaterial: string): string {
@@ -163,7 +166,7 @@ export function wrapDekFor(dekKey: Buffer, rootMaterial?: string): string {
  *  root changed, the KEK moves too — every retained version stays wrapped under
  *  whatever the DB holds, so re-wrap them there in the same transaction. */
 export function installActiveKey(dekKey: Buffer, version: number, rootMaterial?: string): void {
-  if (rootMaterial) cachedKek = deriveKek(rootMaterial)
-  dekVersions.set(version, dekKey)
-  activeVersion = version
+  if (rootMaterial) g.__sbKek = deriveKek(rootMaterial)
+  g.__sbDeks!.set(version, dekKey)
+  g.__sbActive = version
 }
