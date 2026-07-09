@@ -6,6 +6,7 @@ import { parseAgentStream } from '@/lib/sse-parse'
 import { estimateTokens, recordUsage } from './usage'
 import { listChannelMessages } from './channels'
 import { priorMessages } from './conversations'
+import { planDocFor } from './plan-doc'
 
 export interface TicketProposal {
   title: string
@@ -17,12 +18,13 @@ export interface TicketProposal {
 const PRIORITIES = new Set(['low', 'medium', 'high', 'urgent'])
 const EFFORTS = new Set(['xs', 's', 'm', 'l', 'xl'])
 
-const PLAN_PROMPT = `You are a planning assistant. Read the conversation transcript and break the discussed work into concrete, actionable tickets.
+const PLAN_PROMPT = `You are a planning assistant. Break the discussed work into concrete, actionable tickets.
+When a plan document is provided, it is the curated source of truth — draft tickets from it and use the transcript only for supporting context; the raw chat never overrides the document.
 
 Respond with ONLY a JSON array — no prose before or after, no markdown fence. Each element:
 {"title": "imperative, <= 80 chars", "description": "markdown body with enough context that someone who didn't read the chat can act on it", "priority": "low|medium|high|urgent", "effort": "xs|s|m|l|xl"}
 
-Rules: 2-10 tickets. Each independently actionable. Don't invent work nobody discussed. Capture decisions and constraints from the chat in the descriptions.`
+Rules: 2-10 tickets. Each independently actionable. Don't invent work nobody discussed. Capture decisions and constraints (and any @mentioned people) in the descriptions.`
 
 /** Extract a JSON array of proposals from model output. Tries EVERY '['
  *  candidate (prose like "[DONE]" or markdown links before the real array must
@@ -84,12 +86,18 @@ async function planFromTranscript(
   routedModel: string,
   refId: string,
   source: 'channel' | 'chat',
+  /** The plan's living document — the authoritative source when present. */
+  planDoc?: string,
 ): Promise<{ proposals: TicketProposal[]; raw: string }> {
-  if (!transcript.trim()) return { proposals: [], raw: '' }
+  if (!transcript.trim() && !planDoc?.trim()) return { proposals: [], raw: '' }
 
+  const parts = [
+    ...(planDoc?.trim() ? [`Plan document (source of truth):\n\n${planDoc}`] : []),
+    ...(transcript.trim() ? [`Transcript:\n\n${transcript}`] : []),
+  ]
   const messages = [
     { role: 'system', content: PLAN_PROMPT },
-    { role: 'user', content: `Transcript:\n\n${transcript}` },
+    { role: 'user', content: parts.join('\n\n---\n\n') },
   ]
   const upstream = await proxyChat({ model: routedModel, messages })
   if (!upstream.ok || !upstream.body) throw new Error(`gateway error ${upstream.status}`)
@@ -126,7 +134,8 @@ export async function planFromChannel(
   return planFromTranscript(transcript, agentModel, routedModel, channelId, 'channel')
 }
 
-/** Draft tickets from a plan conversation (the Plan surface). */
+/** Draft tickets from a plan conversation (the Plan surface). The plan's living
+ *  document, when it has content, is the primary source; chat is context. */
 export async function planFromConversation(
   conversationId: string,
   agentModel: string,
@@ -138,5 +147,6 @@ export async function planFromConversation(
     .filter((m) => m.content)
     .map((m) => `${m.role === 'assistant' ? label : 'User'}: ${m.content}`)
     .join('\n\n')
-  return planFromTranscript(transcript, agentModel, routedModel, conversationId, 'chat')
+  const doc = await planDocFor(conversationId)
+  return planFromTranscript(transcript, agentModel, routedModel, conversationId, 'chat', doc?.body)
 }

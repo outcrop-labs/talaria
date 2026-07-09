@@ -7,12 +7,20 @@ import { parseAgentStream, mergeTool, type ToolCall } from '@/lib/sse-parse'
 import { touchConversation, updateAssistant } from './conversations'
 import { estimateTokens, recordUsage } from './usage'
 import { guardChatReply } from './guardrails'
+import { describeAgent } from './gateway'
+import { indexActivity } from './retrieval/sources'
 
 export async function persistAssistantStream(
   stream: ReadableStream<Uint8Array>,
   messageId: string,
   conversationId: string,
-  usageMeta?: { agentModel: string; promptChars: number; tier?: string | null },
+  usageMeta?: {
+    agentModel: string
+    promptChars: number
+    tier?: string | null
+    /** Set for plan conversations: the reply feeds the activity brain, owner-scoped. */
+    plan?: { ownerUserId: string; title: string | null } | null
+  },
 ): Promise<void> {
   let content = ''
   let reasoning = ''
@@ -52,6 +60,16 @@ export async function persistAssistantStream(
     await flush('complete')
     await touchConversation(conversationId)
     ledger()
+    if (usageMeta?.plan && content.trim()) {
+      void indexActivity({
+        sourceType: 'plan',
+        sourceId: messageId,
+        title: `Plan (${usageMeta.plan.title || 'Untitled'}) · ${describeAgent(usageMeta.agentModel).label}`,
+        text: content,
+        payload: { planId: conversationId, planOwnerId: usageMeta.plan.ownerUserId },
+        href: '/plan',
+      }).catch(() => {})
+    }
     // Confab guard on the final reply (structural; fire-and-forget). The fleet
     // stream gives tool names, so zero-tool-claim + secret-leak apply here.
     if (usageMeta && content) {

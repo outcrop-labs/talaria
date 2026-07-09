@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { cn } from '@/lib/cn'
+import { useEffect, useRef, useState } from 'react'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Markdown } from '@/components/ui/markdown'
@@ -8,15 +7,9 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMember, type ChannelMessage } from '@/lib/channels'
 import { useUsers } from '@/lib/users'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
+import { MentionMenu, useMentions, userMentionInsert, type Mentionable } from '@/components/chat/mentions'
 import type { Attachment } from '@/lib/attachments'
 import type { AgentModel } from '@/lib/agents'
-
-/** A composer mention option: `insert` is the token typed into the message. */
-interface Mentionable {
-  insert: string
-  label: string
-  sub?: string
-}
 
 // One channel: live message feed + composer. Agents reply when @mentioned;
 // their streamed replies arrive over the channel's SSE feed like anyone else's.
@@ -95,8 +88,7 @@ export function ChannelView({
             })),
           ),
           ...members.map((m) => ({
-            // Mirror the server's mention tokens: email localpart, else dashed name.
-            insert: m.email?.split('@')[0] ?? (m.name ?? '').toLowerCase().replace(/\s+/g, '-'),
+            insert: userMentionInsert(m),
             label: m.name ?? m.email ?? m.userId,
             sub: m.email ?? undefined,
           })),
@@ -166,34 +158,16 @@ function Composer({
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [caret, setCaret] = useState(0)
-  const [picked, setPicked] = useState(0)
   const taRef = useRef<HTMLTextAreaElement>(null)
 
-  // An "@word" immediately before the caret opens the mention menu.
-  const mention = useMemo(() => {
-    const upto = input.slice(0, caret)
-    const m = /(^|\s)@([a-z0-9-]*(?::[a-z0-9-]*)?)$/i.exec(upto)
-    if (!m) return null
-    const q = m[2]!.toLowerCase()
-    const options = mentionables.filter(
-      (a) => a.label.toLowerCase().startsWith(q) || a.insert.toLowerCase().startsWith(q),
-    )
-    return options.length ? { start: upto.length - m[2]!.length - 1, options } : null
-  }, [input, caret, mentionables])
-
-  useEffect(() => setPicked(0), [mention?.options.length])
-
-  const insertMention = (label: string) => {
-    if (!mention) return
-    const next = `${input.slice(0, mention.start)}@${label} ${input.slice(caret)}`
+  const { mention, picked, insert, onKeyDown: onMentionKey } = useMentions(input, caret, setCaret, mentionables, (next, pos) => {
     setInput(next)
-    const pos = mention.start + label.length + 2
     requestAnimationFrame(() => {
       taRef.current?.focus()
       taRef.current?.setSelectionRange(pos, pos)
       setCaret(pos)
     })
-  }
+  })
 
   const send = () => {
     const text = input.trim()
@@ -205,20 +179,7 @@ function Composer({
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (mention) {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault()
-        const d = e.key === 'ArrowDown' ? 1 : -1
-        setPicked((p) => (p + d + mention.options.length) % mention.options.length)
-        return
-      }
-      if (e.key === 'Tab' || e.key === 'Enter') {
-        e.preventDefault()
-        insertMention(mention.options[picked]!.insert)
-        return
-      }
-      if (e.key === 'Escape') return setCaret(0)
-    }
+    if (onMentionKey(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()
@@ -229,28 +190,7 @@ function Composer({
 
   return (
     <div className="relative px-6 pb-6">
-      {mention && (
-        <div className="mercury-panel absolute bottom-full left-4 z-10 mb-1 w-64 overflow-hidden rounded-xl p-1">
-          {mention.options.map((a, i) => (
-            <button
-              key={`${a.insert}-${a.sub ?? ''}`}
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault()
-                insertMention(a.insert)
-              }}
-              className={cn(
-                'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm',
-                i === picked ? 'bg-card text-fg' : 'text-muted',
-              )}
-            >
-              <Avatar name={a.label} className="h-5 w-5 text-xs" />
-              <span className="truncate">{a.label}</span>
-              {a.sub && <span className="ml-auto truncate text-xs text-muted">{a.sub}</span>}
-            </button>
-          ))}
-        </div>
-      )}
+      {mention && <MentionMenu mention={mention} picked={picked} onPick={insert} className="absolute bottom-full left-4 mb-1" />}
       <div className="mercury-panel rounded-2xl p-2">
         <PendingAttachments items={attachments} onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} />
         <div className="flex items-end gap-2">

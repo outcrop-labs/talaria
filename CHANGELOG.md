@@ -22,6 +22,21 @@ secrets encrypted at rest.
   and the legacy build-based `stack/` — **no Dockerfiles** remain; the run path
   is compose-only (official/published images) + host-run app.
 
+### Added
+- **Plan view, phase 2 — the document lives.** "Sync from chat" has the plan's
+  own agent rewrite the living plan document from the conversation so far
+  (`POST /api/plan/:id/doc`, metered like any chat turn; agent preamble and
+  code fences are stripped). Draft tickets now treats the plan document as the
+  curated source of truth, with the transcript as supporting context.
+- **@mentions on the plan surface (#60).** The plan composer autocompletes
+  teammates (shared mention machinery extracted from channels into
+  `components/chat/mentions.tsx`); mentioned users are notified once they can
+  read the plan's document (owner-private plans mention silently until shared).
+- **Plans feed the activity brain (#63).** Plan turns and the living plan
+  document are indexed into the ambient activity collection, ACL-scoped to the
+  plan's owner (`planOwnerId`) — private planning never surfaces for anyone
+  else. Hand edits to the doc re-index via the artifact save path.
+
 ### Fixed
 - **Fresh-install model selection.** Bare model ids that contain `/`
   (OpenRouter-style, e.g. `qwen/qwen3-14b`) were mistaken for

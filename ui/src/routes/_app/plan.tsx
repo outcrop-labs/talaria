@@ -5,10 +5,12 @@ import { ChatView } from '@/components/chat/chat-view'
 import { ConversationSidebar } from '@/components/chat/conversation-sidebar'
 import { PlanModal } from '@/components/chat/plan-modal'
 import { PlanDoc } from '@/components/chat/plan-doc'
+import { userMentionInsert } from '@/components/chat/mentions'
 import { Button } from '@/components/ui/button'
 import { useAgents } from '@/lib/agents'
 import { useStickyAgent } from '@/lib/sticky-agent'
 import { useConversations, type Conversation } from '@/lib/conversations'
+import { useUsers } from '@/lib/users'
 
 // Plan surface: think through the work with an agent, then draft tickets and
 // send them to a board. A plan is a durable conversation (kind='plan') — same
@@ -22,6 +24,16 @@ function PlanPage() {
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   const agents = useMemo(() => fleet?.agents ?? [], [fleet])
   const { data: conversations = [] } = useConversations('plan')
+  // @mention teammates while planning — they're notified once they can read
+  // the plan's document (i.e. after it's shared). Tokens mirror the server's.
+  const { data: users = [] } = useUsers()
+  const mentionables = useMemo(
+    () =>
+      users
+        .map((u) => ({ insert: userMentionInsert(u), label: u.name ?? u.email ?? u.id, sub: u.email ?? undefined }))
+        .filter((m) => m.insert),
+    [users],
+  )
 
   const [selectedAgent, pickAgent] = useStickyAgent('plan', agents)
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
@@ -62,6 +74,7 @@ function PlanPage() {
                 newChatSignal={newChatSignal}
                 onCreated={onCreated}
                 kind="plan"
+                mentionables={mentionables}
                 headerAction={
                   <Button
                     size="sm"

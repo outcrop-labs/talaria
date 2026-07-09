@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { TierPicker } from '@/components/chat/tier-picker'
+import { MentionMenu, useMentions, type Mentionable } from '@/components/chat/mentions'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { Markdown } from '@/components/ui/markdown'
 import { Disclosure } from '@/components/ui/disclosure'
@@ -39,6 +40,7 @@ export function ChatView({
   onCreated,
   kind = 'chat',
   headerAction,
+  mentionables = [],
 }: {
   agentModel: string
   agentLabel: string
@@ -51,6 +53,8 @@ export function ChatView({
   kind?: 'chat' | 'plan'
   /** Optional actions rendered in a top bar (e.g. Plan's "Draft tickets"). */
   headerAction?: React.ReactNode
+  /** Composer @mention options (e.g. the plan surface offers teammates). */
+  mentionables?: Mentionable[]
 }) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [input, setInput] = useState('')
@@ -58,9 +62,11 @@ export function ChatView({
   const [tier, setTier] = useState('') // '' = the agent's main model
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [caret, setCaret] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
   const convIdRef = useRef<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const taRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -160,7 +166,19 @@ export function ChatView({
   }
 
   const stop = () => abortRef.current?.abort()
+
+  const { mention, picked, insert, onKeyDown: onMentionKey } = useMentions(input, caret, setCaret, mentionables, (next, pos) => {
+    setInput(next)
+    requestAnimationFrame(() => {
+      taRef.current?.focus()
+      taRef.current?.setSelectionRange(pos, pos)
+      setCaret(pos)
+    })
+  })
+  const trackCaret = () => setCaret(taRef.current?.selectionStart ?? 0)
+
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (onMentionKey(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void send()
@@ -199,16 +217,23 @@ export function ChatView({
         <div ref={bottomRef} />
       </div>
 
-      <div className="px-6 pb-6">
+      <div className="relative px-6 pb-6">
+        {mention && <MentionMenu mention={mention} picked={picked} onPick={insert} className="absolute bottom-full left-4 mb-1" />}
         <div className="mercury-panel rounded-2xl p-2">
           <PendingAttachments items={attachments} onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} />
           <div className="flex items-end gap-2">
             <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} disabled={streaming} />
             <Textarea
+              ref={taRef}
               autoGrow
               rows={1}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value)
+                trackCaret()
+              }}
+              onKeyUp={trackCaret}
+              onClick={trackCaret}
               onKeyDown={onKeyDown}
               placeholder={`Message ${agentLabel}…`}
               className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"

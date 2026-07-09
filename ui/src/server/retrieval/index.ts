@@ -135,6 +135,9 @@ async function activityScope(principal: { userId?: string; agentModel?: string }
       should: [
         { key: 'channelId', match: { any: chans.map((c) => c.id) } },
         { key: 'boardId', match: { any: boards.map((b) => b.id) } },
+        // Plans (conversations + their living documents) are private to their
+        // owner — only that user retrieves them from the ambient index.
+        { key: 'planOwnerId', match: { value: principal.userId } },
       ],
     }
   }

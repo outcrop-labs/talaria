@@ -101,6 +101,7 @@ import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.c
 import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
 import { Route as ApiRagCollectionsIdRouteImport } from './routes/api/rag.collections.$id'
 import { Route as ApiPlanIdDraftRouteImport } from './routes/api/plan.$id.draft'
+import { Route as ApiPlanIdDocRouteImport } from './routes/api/plan.$id.doc'
 import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
 import { Route as ApiKbPublicSlugRouteImport } from './routes/api/kb.public.$slug'
@@ -610,6 +611,11 @@ const ApiPlanIdDraftRoute = ApiPlanIdDraftRouteImport.update({
   path: '/api/plan/$id/draft',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPlanIdDocRoute = ApiPlanIdDocRouteImport.update({
+  id: '/api/plan/$id/doc',
+  path: '/api/plan/$id/doc',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiLlmV1ModelsRoute = ApiLlmV1ModelsRouteImport.update({
   id: '/api/llm/v1/models',
   path: '/api/llm/v1/models',
@@ -981,6 +987,7 @@ export interface FileRoutesByFullPath {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -1123,6 +1130,7 @@ export interface FileRoutesByTo {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -1267,6 +1275,7 @@ export interface FileRoutesById {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
@@ -1411,6 +1420,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
@@ -1553,6 +1563,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
@@ -1696,6 +1707,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
     | '/api/rag/collections/$id'
     | '/api/skills/$owner/$name'
@@ -1783,6 +1795,7 @@ export interface RootRouteChildren {
   ApiKbDocsIdRoute: typeof ApiKbDocsIdRouteWithChildren
   ApiKbPublicSlugRoute: typeof ApiKbPublicSlugRoute
   ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
+  ApiPlanIdDocRoute: typeof ApiPlanIdDocRoute
   ApiPlanIdDraftRoute: typeof ApiPlanIdDraftRoute
   ApiKbPublicSpaceSlugRoute: typeof ApiKbPublicSpaceSlugRoute
   ApiLlmV1ChatCompletionsRoute: typeof ApiLlmV1ChatCompletionsRoute
@@ -2432,6 +2445,13 @@ declare module '@tanstack/react-router' {
       path: '/api/plan/$id/draft'
       fullPath: '/api/plan/$id/draft'
       preLoaderRoute: typeof ApiPlanIdDraftRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/plan/$id/doc': {
+      id: '/api/plan/$id/doc'
+      path: '/api/plan/$id/doc'
+      fullPath: '/api/plan/$id/doc'
+      preLoaderRoute: typeof ApiPlanIdDocRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/llm/v1/models': {
@@ -3330,6 +3350,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKbDocsIdRoute: ApiKbDocsIdRouteWithChildren,
   ApiKbPublicSlugRoute: ApiKbPublicSlugRoute,
   ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,
+  ApiPlanIdDocRoute: ApiPlanIdDocRoute,
   ApiPlanIdDraftRoute: ApiPlanIdDraftRoute,
   ApiKbPublicSpaceSlugRoute: ApiKbPublicSpaceSlugRoute,
   ApiLlmV1ChatCompletionsRoute: ApiLlmV1ChatCompletionsRoute,

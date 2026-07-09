@@ -10,12 +10,14 @@ import {
   insertStreamingAssistant,
   insertUserMessage,
   nextSeq,
-  ownedConversationModel,
+  ownedConversation,
   priorMessages,
   touchConversation,
 } from '@/server/conversations'
 import { persistAssistantStream } from '@/server/chat-persist'
 import { attachmentAsDataUrl, resolveAttachments, isImage } from '@/server/uploads'
+import { notifyPlanMentions } from '@/server/plan-doc'
+import { indexActivity } from '@/server/retrieval/sources'
 
 const Body = z.object({
   model: z.string().min(1),
@@ -49,10 +51,14 @@ export const Route = createFileRoute('/api/chat')({
         // Resolve the conversation (ownership-checked) or create a new one.
         let convId = conversationId ?? null
         let agentModel = model
+        let kind: 'chat' | 'plan' = parsed.data.kind ?? 'chat'
+        let planTitle: string | null = null
         if (convId) {
-          const owned = await ownedConversationModel(user.id, convId)
+          const owned = await ownedConversation(user.id, convId)
           if (!owned) return json({ error: 'conversation not found' }, { status: 404 })
-          agentModel = owned
+          agentModel = owned.agentModel
+          kind = owned.kind
+          planTitle = owned.title
         }
 
         // Owner-aware gate: blocks another user from driving someone's personal
@@ -68,13 +74,32 @@ export const Route = createFileRoute('/api/chat')({
 
         // Validate attachments belong to real uploads before stamping them.
         const attachments = await resolveAttachments(parsed.data.attachmentIds ?? [])
-        if (!convId) convId = await createConversation(user.id, agentModel, titleFrom(content || attachments[0]?.filename || 'chat'), parsed.data.kind ?? 'chat')
+        const title = titleFrom(content || attachments[0]?.filename || 'chat')
+        if (!convId) {
+          convId = await createConversation(user.id, agentModel, title, kind)
+          planTitle = title
+        }
 
         // Build gateway history from the DB (prior turns), then record this turn.
         const prior = await priorMessages(convId)
         const userSeq = await nextSeq(convId)
-        await insertUserMessage(convId, userSeq, content, attachments)
-        await touchConversation(convId, titleFrom(content || attachments[0]?.filename || 'chat'))
+        const userMsgId = await insertUserMessage(convId, userSeq, content, attachments)
+        await touchConversation(convId, title)
+
+        // Plan turns feed the ambient activity brain (owner-scoped) and notify
+        // @mentioned teammates who can read the plan's document. Never blocking.
+        const senderLabel = user.name ?? user.email ?? 'someone'
+        if (kind === 'plan' && content.trim()) {
+          void indexActivity({
+            sourceType: 'plan',
+            sourceId: userMsgId,
+            title: `Plan (${planTitle || 'Untitled'}) · ${senderLabel}`,
+            text: content,
+            payload: { planId: convId, planOwnerId: user.id },
+            href: '/plan',
+          }).catch(() => {})
+          void notifyPlanMentions(convId, { id: user.id, label: senderLabel }, content, planTitle).catch(() => {})
+        }
 
         // Give a vision-capable model the actual images (data URLs work even
         // when the agent can't reach Talaria over the network). Text-only
@@ -110,6 +135,7 @@ export const Route = createFileRoute('/api/chat')({
           agentModel,
           promptChars,
           tier: parsed.data.tier ?? null,
+          plan: kind === 'plan' ? { ownerUserId: user.id, title: planTitle } : null,
         })
         return new Response(toClient, { status: upstream.status, headers })
       },

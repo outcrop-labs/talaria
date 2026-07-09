@@ -3,7 +3,8 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { deleteArtifact, getArtifact, guarded, saveArtifact, setArtifactOfficial } from '@/server/artifacts'
+import { deleteArtifact, getArtifact, guarded, saveArtifact, setArtifactOfficial, targetsForArtifact } from '@/server/artifacts'
+import { indexPlanDoc } from '@/server/plan-doc'
 import { canEditAgent, canEditHuman, canRead, isOwner, listEditors, setEditors } from '@/server/kb-perms'
 import { logAudit } from '@/server/audit'
 
@@ -77,6 +78,17 @@ export const Route = createFileRoute('/api/artifacts/$id')({
         if (parsed.data.official !== undefined && parsed.data.official !== updated.official) {
           updated = (await setArtifactOfficial(params.id, parsed.data.official, actor)) ?? updated
           void logAudit({ actor, action: parsed.data.official ? 'artifact.officialize' : 'artifact.deofficialize', targetType: 'artifact', targetId: params.id, targetLabel: updated.title })
+        }
+        // A plan's living document stays current in the activity brain on every
+        // edit — hand edits in the side-by-side editor land here too.
+        if (parsed.data.body !== undefined || parsed.data.title !== undefined) {
+          const u = updated
+          void targetsForArtifact(params.id)
+            .then((ts) => {
+              const plan = ts.find((t) => t.targetType === 'plan')
+              if (plan) return indexPlanDoc(u, plan.targetId)
+            })
+            .catch(() => {})
         }
         return json({ artifact: updated, editors: await listEditors('artifact', params.id) })
       },
