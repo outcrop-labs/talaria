@@ -1,7 +1,7 @@
 # Talaria — backlog / TODO
 
-Running list of remaining work, so nothing gets lost while we push on artifacts.
-Status as of 2026-07-07. Newest product direction lives in the app; this is the
+Running list of remaining work, so nothing gets lost between pushes.
+Status as of 2026-07-09. Newest product direction lives in the app; this is the
 engineering-facing tracker.
 
 ## In progress
@@ -69,6 +69,20 @@ engineering-facing tracker.
   - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
 
 ## High-value, ready to pick up
+- **Multiplayer Plan** — plans are owner-private today; Jon's direction: Plan is
+  "iterating on a document with agentic coworkers" and needs multiple humans on
+  one plan (shared plan conversations + the living doc, presence, mentions
+  already notify doc readers). The biggest open product thread.
+- **Comms follow-through** — unread indicators + message notifications for DMs
+  (mention notifications exist; plain DM messages don't notify); consider an
+  expand-chevron so an agent's threads are visible without selecting it.
+- **Brain-routability health** — provider pools churn under no-train routing
+  (qwen lost its US pool mid-day and chats silently froze pre-fix). Surface
+  "brain unroutable" on agent cards / alerts by probing each agent's rendered
+  model against the gateway registry.
+- **QA judge template conformance** — ticket templates give the judge an
+  objective rubric (are the skeleton's sections present and filled?); wire the
+  resolved template into the judge prompt at quality review.
 - **Per-agent Talaria toolkit (#58)** — *in progress.* Agents already have tickets
   (comment/triage/create/report/deps/time), artifacts (create/update/list/get),
   RAG `search_knowledge`, and Google. ✅ **Knowledgebase tools** now added:
@@ -79,15 +93,24 @@ engineering-facing tracker.
   agent membership; agent posts don't trigger other agents — no reply storms).
   ⏳ Remaining: a "Talaria toolkit" onboarding skill (lands with #78, Hermes-side)
   (overlaps #59).
-- **Plan view (#55)** — a first-class planning surface that turns conversations
-  into reviewed tickets and feeds boards/chat. Self-contained.
 - **Research view (#56)** — informs chats / plans / boards; when built, wire its
-  output into the **activity brain** (closes part of #63).
+  output into the **activity brain** (closes the rest of #63).
 - **RAG registry tail (#63)** — reranking over merged multi-collection results;
-  index the remaining activity sources (plans / research; channels + tickets +
-  comments already done). A Retrieval admin view exists.
+  research remains to index (plans + plan docs + relay summaries + chat
+  distills now feed the activity brain; channels/tickets/comments were already
+  done). A Retrieval admin view exists.
 
 ## Later
+- **Roll volume isolation** — during a rolling replacement both slots briefly
+  share the agent's state volume (benign for chat-serving agents; a heavy
+  mid-write could theoretically conflict). Escalation if it ever bites:
+  per-roll volume snapshot/clone.
+- **Org profile depth** — tone/values fields on the org profile for fleet-wide
+  voice consistency; feed the org line into channel/relay replies and the QA
+  judge's context.
+- **Explicit plan-template picker** — plan docs seed from the agent's bound
+  template today; an explicit per-plan pick (like tickets have) is the missing
+  half of the chain.
 - **Talaria identity proxy (#42)** — *first slice shipped:* per-user Google
   connection; agents export artifacts into the owner's Drive as that user. Next:
   extend the same per-user connection to more Google surfaces (Calendar, Gmail)
@@ -105,6 +128,27 @@ engineering-facing tracker.
 - **Design view (#57)** — future, broad scope.
 
 ## Done recently (context)
+- **Comms (2026-07-09)**: Chat + Channels unified into `/comms` — #channels,
+  **Relays** (named ad-hoc gatherings that Conclude → summary posted + indexed →
+  archive), teammate DMs, agent DMs (fresh thread by default, threads nested in
+  the sidebar). Distill-then-archive decay for idle agent chats
+  (`TALARIA_CHAT_TTL_DAYS`). Header user-chip flyover.
+- **Rolling agent replacement (2026-07-09)**: two compose slots per agent; a
+  change brings the new container up on a fresh port, cuts over after health,
+  drains, retires the old — org/config/MCP applies never kill a conversation.
+  `proxyChat` holds-and-retries residual gaps.
+- **Org identity (2026-07-09)**: Admin → Organization; muse generation and every
+  rendered SOUL.md anchor agents to the business; saves propagate by rolling.
+- **Plan view #55 (2026-07-08/09)**: plan conversations + side-by-side living
+  plan document (a real artifact) with agent Sync, doc-aware + dependency-aware
+  ticket drafting, @mentions, activity-brain indexing.
+- **Ticket & plan templates**: org library (markdown skeleton + agent guidance),
+  board bindings with default, per-agent overrides, resolution chain everywhere
+  tickets/plan docs form (incl. bare ticket creation seeding).
+- **Provider catalogs hardened**: live `/models` everywhere (pagination, bare
+  arrays, Gemini id normalization; Perplexity has no catalog API — flagged),
+  live OpenRouter US no-train pool (no maintained lists), config saves
+  auto-register picked models on their endpoint.
 - Knowledgebase: Outline-style editor (slash menu, headings, block-escape),
   read/edit + fullscreen, autosave, nested tree, search, TOC, backlinks.
 - KB sharing: visibility + viewer/editor roles for humans **and** agents, a

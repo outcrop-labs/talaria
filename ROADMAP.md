@@ -6,10 +6,11 @@ together in real time, with sensible human-in-the-loop guardrails. Talaria has i
 [`ui/`](./ui)), its own Postgres/Redis state, and every agent is a full
 [Hermes](https://github.com/outsourc-e/hermes-workspace) agent.
 
-> ⚠️ **Work in progress, not production ready.** Shipping today: the PM suite, chat + channels with plan
-> chat, the fleet engine and full agent harness (versioned internals included), the token ledger with
-> auto-priced costs, and the ops surfaces. Kick the tires, follow along, but don't bet your business on
-> it yet.
+> ⚠️ **Work in progress, not production ready.** Shipping today: the PM suite, the unified Comms surface
+> (channels · relays · DMs), the Plan view with its living document, ticket/plan templates, org identity,
+> the fleet engine and full agent harness (versioned internals, zero-downtime rolling replacement), the
+> token ledger with auto-priced costs, and the ops surfaces. Kick the tires, follow along, but don't bet
+> your business on it yet.
 
 **Status legend:** ✅ shipped · 🚧 in progress · 🔭 planned.
 
@@ -37,11 +38,25 @@ The project management suite, the fleet engine, and auth are live and running:
   read, create (into inbox), triage, comment, report outcome, log time, link dependencies. No assign tool,
   no complete tool: the guardrails hold at the protocol layer, and each agent only sees boards whose
   policy allows it.
-- **Group chat** ✅. Slack-style channels where teammates and fleet agents are real members. @mention an
-  agent (or `@agent:tier` to pick a model tier) and its reply streams into the channel for everyone, live
-  over SSE. Composer autocompletes mentions; channel settings manage people and agents.
-- **Plan chat** ✅. Hit **Plan** in a channel: an agent drafts tickets from the conversation, you review,
-  edit, and create the keepers onto any board — into inbox, never assigned.
+- **Comms** ✅. Every conversation in one Slack-shaped, agent-native surface: persistent **#channels**,
+  **Relays** (named ad-hoc gatherings of people + agents that *conclude* — summary posted + indexed —
+  then archive), teammate DMs, and agent DMs where every topic starts a fresh thread. @mention an agent
+  (or `@agent:tier`) and its reply streams in live over SSE; membership manages inline from the header.
+  Idle agent chats **distill** into the retrievable activity brain and archive — context survives,
+  scrollback doesn't.
+- **Plan view** ✅. Plan conversations with a side-by-side **living plan document** (a real artifact) the
+  agent keeps synced. **Draft tickets** treats the document as the source of truth and proposes real
+  dependencies; you review and create the keepers onto any board — into inbox, never assigned. The same
+  drafting works from any channel or relay.
+- **Ticket & plan templates** ✅. An org library of formats (markdown skeleton + agent guidance); boards
+  bind their set with a default, agents can carry overrides, and every creation surface resolves the
+  right one automatically — including bare quick-add tickets.
+- **Organization identity** ✅. Set the business name + description once; muse-generated souls anchor to
+  it and every rendered agent introduces itself as part of your team. Org saves propagate by rolling the
+  fleet.
+- **Rolling agent replacement** ✅. Config, MCP, and org changes deploy blue/green: the incoming container
+  comes up on a fresh port, traffic cuts over only after health, in-flight replies drain, then the old
+  container retires. Edits never kill a conversation.
 - **Agent harness** ✅. Talaria is the fleet's source of truth: design new agents from a plain-language
   description (Muse drafts identity, soul, and starter skills for review), federate outside Hermes agents
   in as natives, render and orchestrate everything from one Talaria-owned chassis (`fleet/chassis.yml`,
