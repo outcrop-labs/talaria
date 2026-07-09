@@ -148,18 +148,32 @@ export async function availableModels(ep: LlmEndpoint): Promise<string[]> {
   let qs = ep.provider === 'anthropic' ? '?limit=1000' : ''
   for (let page = 0; page < 20; page++) {
     const r = await fetchModels(base, headers, qs)
-    if (!r.ok) throw new Error(`provider answered ${r.status}${r.status === 401 ? ' — check the API key env' : ''}`)
-    const j = (await r.json()) as {
-      data?: Array<{ id?: string }>
-      models?: Array<{ id?: string; name?: string }>
-      has_more?: boolean
-      last_id?: string
+    if (!r.ok) {
+      const hint =
+        r.status === 401
+          ? ' — check the API key env'
+          : r.status === 404
+            ? " — this provider doesn't publish a model catalog; type model ids from its docs"
+            : ''
+      throw new Error(`provider answered ${r.status}${hint}`)
     }
-    ids.push(
-      ...(j.data ?? j.models ?? []).map((m) => m.id ?? (m as { name?: string }).name ?? '').filter(Boolean),
-    )
-    if (!j.has_more || !j.last_id) break
+    const j = (await r.json()) as
+      | Array<{ id?: string; name?: string }> // Together returns a bare array
+      | {
+          data?: Array<{ id?: string }>
+          models?: Array<{ id?: string; name?: string }>
+          has_more?: boolean
+          last_id?: string
+        }
+    const list = Array.isArray(j) ? j : (j.data ?? j.models ?? [])
+    ids.push(...list.map((m) => m.id ?? (m as { name?: string }).name ?? '').filter(Boolean))
+    if (Array.isArray(j) || !j.has_more || !j.last_id) break
     qs = `${ep.provider === 'anthropic' ? '?limit=1000&' : '?'}after_id=${encodeURIComponent(j.last_id)}`
   }
-  return [...new Set(ids)]
+  // Gemini's OpenAI-compat layer reports ids as "models/gemini-…" while its
+  // chat API is documented with the bare id — normalize to what chat expects.
+  const normalize = base.includes('generativelanguage.googleapis.com')
+    ? (id: string) => id.replace(/^models\//, '')
+    : (id: string) => id
+  return [...new Set(ids.map(normalize))]
 }
