@@ -138,7 +138,13 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
   const [err, setErr] = useState<string | null>(null)
   const [key, setKey] = useState('')
   const [savingKey, setSavingKey] = useState(false)
-  const refresh = () => qc.invalidateQueries({ queryKey: ['fleet-endpoints'] })
+  // Registry edits change the gateway catalog too — refresh it so the Member
+  // access panel and every model picker see additions/removals immediately.
+  const refresh = () =>
+    Promise.all([
+      qc.invalidateQueries({ queryKey: ['fleet-endpoints'] }),
+      qc.invalidateQueries({ queryKey: ['gateway-models'] }),
+    ])
 
   const saveKey = async (value: string | null) => {
     setSavingKey(true)
@@ -368,7 +374,13 @@ function MemberAccessPanel() {
     },
   })
   const models = (catalog?.models ?? []).filter((m) => !m.qualified)
-  const saved = settings?.memberModels ?? []
+  const rawSaved = settings?.memberModels ?? []
+  // Models removed from the registry drop out of the list here (and get
+  // persisted out on the next save) — the allowlist tracks reality. Guarded
+  // on the catalog having loaded so a slow fetch can't wipe the selection.
+  const registered = new Set(models.map((m) => m.id))
+  const saved = models.length ? rawSaved.filter((id) => registered.has(id)) : rawSaved
+  const pruned = rawSaved.length - saved.length
   // Restriction MODE is its own state — it can't derive from the selection,
   // or toggling it on with nothing selected could never stick.
   const [modeOverride, setModeOverride] = useState<boolean | null>(null)
@@ -377,7 +389,7 @@ function MemberAccessPanel() {
   const selection = draft ?? saved
   // What would be saved right now: the selection when limiting, [] when open.
   const effective = restricted ? selection : []
-  const dirty = JSON.stringify([...effective].sort()) !== JSON.stringify([...saved].sort())
+  const dirty = JSON.stringify([...effective].sort()) !== JSON.stringify([...rawSaved].sort())
 
   const save = async () => {
     await fetch('/api/admin/settings', {
@@ -436,6 +448,7 @@ function MemberAccessPanel() {
               ? 'Pick at least one model members may use'
               : `${selection.length} model${selection.length === 1 ? '' : 's'} available to members`
             : 'All registered models are available to members'}
+          {pruned > 0 && ` · ${pruned} unregistered model${pruned === 1 ? '' : 's'} will drop off on save`}
         </span>
         <span className="ml-auto" />
         <Button size="sm" onClick={() => void save()} disabled={!dirty || (restricted && selection.length === 0)}>
