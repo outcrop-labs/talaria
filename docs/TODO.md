@@ -78,9 +78,9 @@ engineering-facing tracker.
   "iterating on a document with agentic coworkers" and needs multiple humans on
   one plan (shared plan conversations + the living doc, presence, mentions
   already notify doc readers). The biggest open product thread.
-- **Comms follow-through** — unread indicators + message notifications for DMs
-  (mention notifications exist; plain DM messages don't notify); consider an
-  expand-chevron so an agent's threads are visible without selecting it.
+- ✅ **Comms follow-through (2026-07-09)** — per-member read cursors → unread
+  badges on channels/relays/DMs (open = read, live); plain DM messages notify
+  (deduped while unread, `/comms?c=` deep link); agent thread expand-chevron.
 - **Brain-routability health** — provider pools churn under no-train routing
   (qwen lost its US pool mid-day and chats silently froze pre-fix). Surface
   "brain unroutable" on agent cards / alerts by probing each agent's rendered

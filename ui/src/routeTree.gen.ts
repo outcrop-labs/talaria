@@ -117,6 +117,7 @@ import { Route as ApiIntegrationsGoogleConnectRouteImport } from './routes/api/i
 import { Route as ApiIntegrationsGoogleCallbackRouteImport } from './routes/api/integrations/google.callback'
 import { Route as ApiFleetEndpointsIdRouteImport } from './routes/api/fleet.endpoints.$id'
 import { Route as ApiFleetDefsIdRouteImport } from './routes/api/fleet.defs.$id'
+import { Route as ApiChannelsIdReadRouteImport } from './routes/api/channels.$id.read'
 import { Route as ApiChannelsIdPlanRouteImport } from './routes/api/channels.$id.plan'
 import { Route as ApiChannelsIdMessagesRouteImport } from './routes/api/channels.$id.messages'
 import { Route as ApiChannelsIdMembersRouteImport } from './routes/api/channels.$id.members'
@@ -703,6 +704,11 @@ const ApiFleetDefsIdRoute = ApiFleetDefsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ApiFleetDefsRoute,
 } as any)
+const ApiChannelsIdReadRoute = ApiChannelsIdReadRouteImport.update({
+  id: '/read',
+  path: '/read',
+  getParentRoute: () => ApiChannelsIdRoute,
+} as any)
 const ApiChannelsIdPlanRoute = ApiChannelsIdPlanRouteImport.update({
   id: '/plan',
   path: '/plan',
@@ -1033,6 +1039,7 @@ export interface FileRoutesByFullPath {
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
+  '/api/channels/$id/read': typeof ApiChannelsIdReadRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
@@ -1184,6 +1191,7 @@ export interface FileRoutesByTo {
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
+  '/api/channels/$id/read': typeof ApiChannelsIdReadRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
@@ -1337,6 +1345,7 @@ export interface FileRoutesById {
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
   '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
+  '/api/channels/$id/read': typeof ApiChannelsIdReadRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
@@ -1490,6 +1499,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
     | '/api/channels/$id/plan'
+    | '/api/channels/$id/read'
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
     | '/api/integrations/google/callback'
@@ -1641,6 +1651,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
     | '/api/channels/$id/plan'
+    | '/api/channels/$id/read'
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
     | '/api/integrations/google/callback'
@@ -1793,6 +1804,7 @@ export interface FileRouteTypes {
     | '/api/channels/$id/members'
     | '/api/channels/$id/messages'
     | '/api/channels/$id/plan'
+    | '/api/channels/$id/read'
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
     | '/api/integrations/google/callback'
@@ -2658,6 +2670,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFleetDefsIdRouteImport
       parentRoute: typeof ApiFleetDefsRoute
     }
+    '/api/channels/$id/read': {
+      id: '/api/channels/$id/read'
+      path: '/read'
+      fullPath: '/api/channels/$id/read'
+      preLoaderRoute: typeof ApiChannelsIdReadRouteImport
+      parentRoute: typeof ApiChannelsIdRoute
+    }
     '/api/channels/$id/plan': {
       id: '/api/channels/$id/plan'
       path: '/plan'
@@ -3120,6 +3139,7 @@ interface ApiChannelsIdRouteChildren {
   ApiChannelsIdMembersRoute: typeof ApiChannelsIdMembersRoute
   ApiChannelsIdMessagesRoute: typeof ApiChannelsIdMessagesRoute
   ApiChannelsIdPlanRoute: typeof ApiChannelsIdPlanRoute
+  ApiChannelsIdReadRoute: typeof ApiChannelsIdReadRoute
 }
 
 const ApiChannelsIdRouteChildren: ApiChannelsIdRouteChildren = {
@@ -3129,6 +3149,7 @@ const ApiChannelsIdRouteChildren: ApiChannelsIdRouteChildren = {
   ApiChannelsIdMembersRoute: ApiChannelsIdMembersRoute,
   ApiChannelsIdMessagesRoute: ApiChannelsIdMessagesRoute,
   ApiChannelsIdPlanRoute: ApiChannelsIdPlanRoute,
+  ApiChannelsIdReadRoute: ApiChannelsIdReadRoute,
 }
 
 const ApiChannelsIdRouteWithChildren = ApiChannelsIdRoute._addFileChildren(

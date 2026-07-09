@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/button'
 import { Markdown } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
-import { sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMember, type ChannelMessage } from '@/lib/channels'
+import { useQueryClient } from '@tanstack/react-query'
+import { markChannelRead, sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMember, type ChannelMessage } from '@/lib/channels'
 import { useUsers } from '@/lib/users'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { resolveAgentMedia } from '@/lib/agent-media'
@@ -34,6 +35,19 @@ export function ChannelView({
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const prevCount = useRef(0)
+  const qc = useQueryClient()
+
+  // Having the channel open = having read it: advance the read cursor as
+  // messages land, so the sidebar badge clears live.
+  const lastReadPosted = useRef<{ id: string; seq: number }>({ id: '', seq: 0 })
+  useEffect(() => {
+    const latest = messages[messages.length - 1]?.seq ?? 0
+    if (!latest) return
+    const prev = lastReadPosted.current
+    if (prev.id === channelId && latest <= prev.seq) return
+    lastReadPosted.current = { id: channelId, seq: latest }
+    void markChannelRead(channelId, latest).then(() => qc.invalidateQueries({ queryKey: ['channels'] })).catch(() => {})
+  }, [messages, channelId, qc])
 
   // Instant, pinned-only follow (see chat-view): streamed flushes + smooth
   // scrolling rubber-band into a bounce, and reading history must never be

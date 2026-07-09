@@ -23,6 +23,13 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Comms follow-through: unread badges, DM notifications, thread peek.**
+  Per-member read cursors (`channel_members.last_read_seq`) drive unread
+  count pills on every channel/relay/DM row; having a channel open marks it
+  read live. A DM message now drops an inbox notification outright (deduped:
+  while one sits unread, further messages fold into it), deep-linking back to
+  the conversation via `/comms?c=<id>`. Agent rows in the sidebar gained an
+  expand chevron so you can peek at an agent's threads without selecting it.
 - **Elevated assistants — promote an admin's assistant to org-wide view/edit.**
   Admin → Users gains an "elevated assistant" toggle on admin rows
   (`agent_defs.elevated`). An elevated personal assistant reaches every live

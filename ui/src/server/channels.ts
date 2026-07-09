@@ -22,6 +22,8 @@ export interface Channel {
   updatedAt: string
   /** For DMs: the other person (display identity). */
   peer?: { userId: string; name: string | null; email: string | null } | null
+  /** Others' messages past this member's read cursor (member listings only). */
+  unreadCount?: number
 }
 
 export interface ChannelMember {
@@ -43,15 +45,21 @@ export interface ChannelMessage {
 }
 
 /** Channels/relays/DMs the user belongs to, newest activity first. DMs carry
- *  the other person's identity so the UI can label them. */
+ *  the other person's identity so the UI can label them. unreadCount is the
+ *  member's read cursor vs. others' complete messages. */
 export async function listChannels(userId: string): Promise<Channel[]> {
   const sql = await db()
   const rows = (await sql`
     select c.id, c.name, c.topic, c.kind, m.role,
            c.created_at as "createdAt", c.updated_at as "updatedAt",
-           pu.id as "peerId", pu.name as "peerName", pu.email as "peerEmail"
+           pu.id as "peerId", pu.name as "peerName", pu.email as "peerEmail",
+           (select count(*)::int from channel_messages msg
+             where msg.channel_id = c.id and msg.seq > m.last_read_seq and msg.status = 'complete'
+               and not (msg.author_type = 'user' and msg.author = coalesce(self.email, self.name, 'user'))
+           ) as "unreadCount"
     from channels c
     join channel_members m on m.channel_id = c.id and m.user_id = ${userId}
+    join users self on self.id = ${userId}
     left join channel_members p on c.kind = 'dm' and p.channel_id = c.id and p.user_id <> ${userId}
     left join users pu on pu.id = p.user_id
     where c.archived_at is null
@@ -61,6 +69,15 @@ export async function listChannels(userId: string): Promise<Channel[]> {
     ...c,
     peer: peerId ? { userId: peerId, name: peerName, email: peerEmail } : null,
   }))
+}
+
+/** Advance the member's read cursor (never backwards). */
+export async function markChannelRead(channelId: string, userId: string, seq: number): Promise<void> {
+  const sql = await db()
+  await sql`
+    update channel_members set last_read_seq = greatest(last_read_seq, ${seq})
+    where channel_id = ${channelId} and user_id = ${userId}
+  `
 }
 
 export async function channelRole(userId: string, channelId: string): Promise<ChannelRole | null> {

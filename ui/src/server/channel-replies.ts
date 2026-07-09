@@ -7,6 +7,8 @@ import { describeAgent, proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
 import { guardChatReply } from './guardrails'
 import { notifyMentions } from './mentions'
+import { addNotification } from './notifications'
+import { db } from './db/pg'
 import { estimateTokens, recordUsage } from './usage'
 import { routedModelFor } from './fleet-agents'
 import { listUsers, personalAssistantOwners } from './users'
@@ -18,6 +20,33 @@ import {
   updateChannelMessage,
   type ChannelMessage,
 } from './channels'
+
+/** Notify the other side of a DM about a new message. Deduped: while a DM
+ *  notification for this channel sits unread, further messages fold into it —
+ *  no pile-up from a fast back-and-forth. */
+export async function notifyDmMessage(
+  channelId: string,
+  senderUserId: string,
+  senderLabel: string,
+  content: string,
+): Promise<void> {
+  const sql = await db()
+  const href = `/comms?c=${channelId}`
+  for (const m of await listChannelMembers(channelId)) {
+    if (m.userId === senderUserId) continue
+    const pending = await sql`
+      select 1 from notifications
+      where user_id = ${m.userId} and kind = 'dm' and href = ${href} and read_at is null limit 1
+    `
+    if (pending.length) continue
+    await addNotification(m.userId, {
+      kind: 'dm',
+      title: `${senderLabel} sent you a message`,
+      body: content.length > 200 ? `${content.slice(0, 200)}…` : content,
+      href,
+    }).catch(() => {})
+  }
+}
 
 /** Notify channel members the message @mentions (never the sender). */
 export async function notifyUserMentions(
