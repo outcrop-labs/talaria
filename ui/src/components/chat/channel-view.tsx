@@ -8,6 +8,7 @@ import { markChannelRead, sendChannelMessage, useChannelEvents, useChannelMessag
 import { useUsers } from '@/lib/users'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { SendButton } from '@/components/chat/composer-buttons'
+import { KeyHint } from '@/components/ui/kbd'
 import { resolveAgentMedia } from '@/lib/agent-media'
 import { MentionMenu, useMentions, userMentionInsert, type Mentionable } from '@/components/chat/mentions'
 import type { Attachment } from '@/lib/attachments'
@@ -234,6 +235,7 @@ function Composer({
             placeholder={`Message #${channelName} — @mention an agent to bring it in`}
             className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
           />
+          <KeyHint keys="⏎" label="send" visible={!!input.trim() || attachments.length > 0} className="self-end mb-3" />
           <SendButton onClick={send} disabled={!input.trim() && attachments.length === 0} />
         </div>
       </div>

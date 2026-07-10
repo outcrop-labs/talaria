@@ -28,7 +28,7 @@ export function AttachButton({ onAttach, disabled }: { onAttach: (a: Attachment)
         title="Attach files"
         disabled={disabled || busy}
         onClick={() => ref.current?.click()}
-        className="grid h-9 w-9 shrink-0 place-items-center self-center rounded-lg text-muted transition-colors hover:bg-card hover:text-fg disabled:opacity-40"
+        className="grid h-9 w-9 shrink-0 place-items-center self-end mb-1 rounded-lg text-muted transition-colors hover:bg-card hover:text-fg disabled:opacity-40"
       >
         {busy ? <Loader2 size={16} className="animate-spin" /> : <Paperclip size={16} />}
       </button>

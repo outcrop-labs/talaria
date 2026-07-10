@@ -32,8 +32,14 @@ Components: `components/app/surface.tsx` (`RailSurface`, `Rail`, `Stage`,
 - **One chat width.** Every conversation surface (agent DMs, channels,
   research reports and composers) centers on `--chat-content-max-width`
   (900px). No per-surface widths. The ONE exception: plan mode, where chat sits side by side with the living document and fills its pane.
-- **Send is an icon** (ArrowUp, `title="Send — Enter"`); Enter submits in
-  every composer. No "Go", no wide "Send".
+- **Send is an icon** (ArrowUp); Enter submits in every composer, Esc stops a
+  streaming reply. No "Go", no wide "Send".
+- **Keyboard-first, visibly.** Composers show contextual KeyHint chips ("⏎
+  send", "esc stop") that fade in when the shortcut is live. Motion marks
+  interruptible moments: Stop pulses while a reply streams.
+- **Composer geometry.** Rows are `flex items-end`; h-9 controls carry
+  `self-end mb-1`, pill controls `self-end mb-[7px]` — one optical line
+  against the resting textarea, bottom-anchored as it grows.
 - **No ellipsis in UI copy.** Buttons, placeholders, menu items, and loading
   states use plain words ("Delete channel", "Loading", "Search") — never a
   trailing "…". Content truncation markers on clipped USER text are the only

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Textarea } from '@/components/ui/textarea'
 import { TierPicker } from '@/components/chat/tier-picker'
 import { SendButton, StopButton } from '@/components/chat/composer-buttons'
+import { KeyHint } from '@/components/ui/kbd'
 import { MentionMenu, useMentions, type Mentionable } from '@/components/chat/mentions'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { Markdown } from '@/components/ui/markdown'
@@ -243,7 +244,22 @@ export function ChatView({
       e.preventDefault()
       void send()
     }
+    if (e.key === 'Escape' && streaming) {
+      e.preventDefault()
+      stop()
+    }
   }
+
+  // Esc stops the stream even when focus wandered off the textarea.
+  useEffect(() => {
+    if (!streaming) return
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') stop()
+    }
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming])
 
   return (
     <div className={fill ? 'flex h-full w-full flex-col' : 'mx-auto flex h-full w-full max-w-[var(--chat-content-max-width)] flex-col'}>
@@ -306,6 +322,12 @@ export function ChatView({
               className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
             />
             {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
+            <KeyHint
+              keys={streaming ? 'esc' : '⏎'}
+              label={streaming ? 'stop' : 'send'}
+              visible={streaming || !!input.trim() || attachments.length > 0}
+              className="self-end mb-3"
+            />
             {streaming && <StopButton onClick={stop} />}
             <SendButton onClick={() => void send()} disabled={!input.trim() && attachments.length === 0} />
           </div>
