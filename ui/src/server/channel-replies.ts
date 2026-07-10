@@ -12,6 +12,7 @@ import { db } from './db/pg'
 import { estimateTokens, recordUsage } from './usage'
 import { routedModelFor } from './fleet-agents'
 import { listUsers, personalAssistantOwners } from './users'
+import { refBlocks } from './refs'
 import {
   insertChannelMessage,
   listChannelAgents,
@@ -84,12 +85,13 @@ export function mentionedAgents(content: string, channelAgents: string[]): Array
 function transcriptFor(model: string, messages: ChannelMessage[]): Array<{ role: string; content: string }> {
   const turns: Array<{ role: string; content: string }> = []
   for (const m of messages) {
-    if (m.status !== 'complete' || !m.content) continue
+    const refs = refBlocks(m.attachments)
+    if (m.status !== 'complete' || (!m.content && !refs)) continue
     if (m.authorType === 'agent' && m.author === model) {
       turns.push({ role: 'assistant', content: m.content })
     } else {
       const name = m.authorType === 'agent' ? describeAgent(m.author).label : m.author
-      turns.push({ role: 'user', content: `${name}: ${m.content}` })
+      turns.push({ role: 'user', content: `${name}: ${m.content}${refs}` })
     }
   }
   return turns

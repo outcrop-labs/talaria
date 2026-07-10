@@ -3,7 +3,15 @@ export interface Attachment {
   filename: string
   mime: string
   size: number
+  /** Set for knowledge/artifact reference chips (not uploads). */
+  refType?: 'kb-doc' | 'artifact'
 }
+
+/** Split a pending list into upload ids + reference descriptors for send. */
+export const splitAttachments = (items: Attachment[]) => ({
+  attachmentIds: items.filter((a) => !a.refType).map((a) => a.id),
+  refs: items.filter((a) => a.refType).map((a) => ({ type: a.refType!, id: a.id })),
+})
 
 export const isImage = (mime: string) => /^image\//.test(mime)
 export const attachmentUrl = (id: string) => `/api/uploads/${id}`

@@ -22,7 +22,20 @@ secrets encrypted at rest.
   and the legacy build-based `stack/` — **no Dockerfiles** remain; the run path
   is compose-only (official/published images) + host-run app.
 
+### Added
+- **Attach anything — knowledge, artifacts, or files.** The composer paperclip
+  is now a menu: attach a knowledge doc or an artifact (search pickers) or
+  upload a file. Knowledge/artifact picks become reference chips on the
+  message — the referenced content travels to the model on that turn and on
+  every later history rebuild (queued turns, resumes, channel transcripts),
+  ACL-checked against the attacher, with truly-private items silently
+  undiscoverable. Chips render in history and link back to their source.
 ### Changed
+- **Chats are keyboard-first — the send button is gone.** Enter sends
+  everywhere (Esc stops a streaming reply); the enlarged "⏎ send" / "esc
+  stop" key chips beside the input are the affordance, fading in when live.
+  Composer controls all sit on one optical line, with depth/agent/tier pills
+  hugging the input's right edge.
 - **UI consistency pass — one app, not fifteen.** A full audit (screenshots +
   code inventory, docs/UI-CONVENTIONS.md is the contract) and the first big
   unification: shared surface primitives (`RailSurface`/`Rail`/`Stage`/

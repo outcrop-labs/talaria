@@ -112,8 +112,13 @@ export const markChannelRead = async (id: string, seq: number): Promise<void> =>
   await post(`/api/channels/${id}/read`, { seq })
 }
 
-export const sendChannelMessage = async (id: string, content: string, attachmentIds: string[] = []): Promise<void> => {
-  await j(await post(`/api/channels/${id}/messages`, { content, attachmentIds }))
+export const sendChannelMessage = async (
+  id: string,
+  content: string,
+  attachmentIds: string[] = [],
+  refs: Array<{ type: 'kb-doc' | 'artifact'; id: string }> = [],
+): Promise<void> => {
+  await j(await post(`/api/channels/${id}/messages`, { content, attachmentIds, refs }))
 }
 
 export const updateChannel = async (id: string, patch: { name?: string; topic?: string | null }): Promise<void> => {

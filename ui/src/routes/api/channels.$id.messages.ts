@@ -6,6 +6,7 @@ import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { agentMayAccessChannel, channelRole, insertChannelMessage, listChannelMessages } from '@/server/channels'
 import { notifyDmMessage, notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
 import { resolveAttachments } from '@/server/uploads'
+import { resolveRefs } from '@/server/refs'
 import { indexActivity } from '@/server/retrieval/sources'
 import { db } from '@/server/db/pg'
 
@@ -29,9 +30,13 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
       },
       POST: async ({ request, params }) => {
         const parsed = z
-          .object({ content: z.string().max(20_000).default(''), attachmentIds: z.array(z.string().uuid()).max(10).optional() })
+          .object({
+            content: z.string().max(20_000).default(''),
+            attachmentIds: z.array(z.string().uuid()).max(10).optional(),
+            refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
+          })
           .safeParse(await request.json().catch(() => null))
-        if (!parsed.success || (!parsed.data.content && !parsed.data.attachmentIds?.length)) {
+        if (!parsed.success || (!parsed.data.content && !parsed.data.attachmentIds?.length && !parsed.data.refs?.length)) {
           return json({ error: 'bad request' }, { status: 400 })
         }
 
@@ -52,8 +57,9 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
         const author = user.email ?? user.name ?? 'user'
-        const attachments = await resolveAttachments(parsed.data.attachmentIds ?? [])
-        const message = await insertChannelMessage(params.id, 'user', author, parsed.data.content, 'complete', attachments)
+        const uploads = await resolveAttachments(parsed.data.attachmentIds ?? [])
+        const refChips = await resolveRefs(user, parsed.data.refs ?? [])
+        const message = await insertChannelMessage(params.id, 'user', author, parsed.data.content, 'complete', [...uploads, ...refChips])
 
         // Agent replies + mention notifications run detached; the POST returns at once.
         const sql = await db()

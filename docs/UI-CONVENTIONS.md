@@ -32,11 +32,14 @@ Components: `components/app/surface.tsx` (`RailSurface`, `Rail`, `Stage`,
 - **One chat width.** Every conversation surface (agent DMs, channels,
   research reports and composers) centers on `--chat-content-max-width`
   (900px). No per-surface widths. The ONE exception: plan mode, where chat sits side by side with the living document and fills its pane.
-- **Send is an icon** (ArrowUp); Enter submits in every composer, Esc stops a
-  streaming reply. No "Go", no wide "Send".
+- **There is no send button.** Enter IS send, in every composer; Esc stops a
+  streaming reply. The KeyHint chip beside the input is the affordance.
 - **Keyboard-first, visibly.** Composers show contextual KeyHint chips ("⏎
   send", "esc stop") that fade in when the shortcut is live. Motion marks
   interruptible moments: Stop pulses while a reply streams.
+- **Attach is a menu, not a file browser.** The paperclip offers Knowledge
+  docs, Artifacts, and file upload; knowledge/artifact picks become reference
+  chips whose content travels to the model (ACL-checked at attach time).
 - **Composer geometry.** Rows are `flex items-end`; h-9 controls carry
   `self-end mb-1`, pill controls `self-end mb-[7px]` — one optical line
   against the resting textarea, bottom-anchored as it grows.
