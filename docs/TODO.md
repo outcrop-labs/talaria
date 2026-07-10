@@ -129,6 +129,13 @@ engineering-facing tracker.
   live model catalogs, sealed keys, fallback-to-vector-order). Brains curatable
   in Admin → Retrieval: team/user/agent bindings + KB-space→brain feeding.
 
+- **MCP toolkit gaps (from the 2026-07-10 coverage audit)** — deferred,
+  design questions attached: agents starting Relays (whose channel is it?);
+  read_plan (plans are member-scoped to humans); ticket search by title
+  (cross-board); ticket watching/subscription for agents; agent
+  self-scheduling follow-ups (crons are human-managed today); KB doc re-filing
+  (move within tree). search_knowledge's description over-promises "plans".
+
 ## Later
 - **Roll volume isolation** — during a rolling replacement both slots briefly
   share the agent's state volume (benign for chat-serving agents; a heavy

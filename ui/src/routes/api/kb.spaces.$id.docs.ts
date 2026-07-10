@@ -3,13 +3,15 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { createDoc, getSpace, listDocs } from '@/server/kb'
+import { createDoc, getSpace, listDocs, saveDoc } from '@/server/kb'
 import { canRead, canReadAgent, grantedItemIds, grantedItemIdsForAgent, listEditors } from '@/server/kb-perms'
 
 const Body = z.object({
   title: z.string().max(200).optional(),
   parentId: z.string().uuid().nullish(),
   kind: z.enum(['human', 'agent']).optional(),
+  /** Initial markdown body (the MCP create_kb_doc path sets it in one shot). */
+  body: z.string().max(500_000).optional(),
 })
 
 // A space's docs (tree). GET → doc metadata list. POST → new doc.
@@ -42,20 +44,43 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
         return json({ docs })
       },
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        return json({
-          doc: await createDoc({
+
+        // Agents (over MCP) create docs in spaces they can read. Agent docs
+        // start as drafts — they never ground the org brain until a human
+        // officializes them, so the write guardrail holds.
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+          const space = await getSpace(params.id)
+          if (!space || !canReadAgent(space, name, await listEditors('space', params.id))) {
+            return json({ error: 'forbidden' }, { status: 403 })
+          }
+          const doc = await createDoc({
             spaceId: params.id,
             parentId: parsed.data.parentId ?? null,
             title: parsed.data.title,
-            kind: parsed.data.kind,
-            createdBy: user.email ?? user.name ?? 'user',
-            ownerUserId: user.id,
-          }),
+            kind: 'agent',
+            createdBy: name,
+            ownerUserId: null,
+          })
+          const saved = parsed.data.body ? await saveDoc(doc.id, { body: parsed.data.body }, name) : doc
+          return json({ doc: saved ?? doc })
+        }
+
+        const user = await getSessionUser(request)
+        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const doc = await createDoc({
+          spaceId: params.id,
+          parentId: parsed.data.parentId ?? null,
+          title: parsed.data.title,
+          kind: parsed.data.kind,
+          createdBy: user.email ?? user.name ?? 'user',
+          ownerUserId: user.id,
         })
+        const saved = parsed.data.body ? await saveDoc(doc.id, { body: parsed.data.body }, user.email ?? user.name ?? 'user') : doc
+        return json({ doc: saved ?? doc })
       },
     },
   },

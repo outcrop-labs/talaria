@@ -30,6 +30,28 @@ secrets encrypted at rest.
   standard picker at the top of the rail (like Plan), not a bespoke composer
   pill. The composer keeps only the depth pill.
 ### Added
+- **Agents reach for Talaria first — flailing fixed at three layers.** A real
+  transcript showed an agent burning 20 tool calls hunting for Notion/
+  Obsidian/vaults when the answer was one toolkit call away. Now: (1) every
+  rendered soul carries a **toolkit contract** — the talaria MCP is the first
+  reach for anything workspace-shaped, with the tool names spelled out and a
+  hard "there is no Notion/Obsidian/Airtable" line; (2) the Hermes image's
+  **conflicting bundled skill packs** (note-taking/obsidian, productivity's
+  notion + airtable + google-workspace, the ungoverned email pack) are pruned
+  on every roll and fresh boot — surgically, everything else stays; (3) the
+  gaps that CAUSED improvisation are closed: **create_kb_doc** (the "add to
+  knowledge base" job was literally impossible), **list_teammates** (resolve
+  a name to an email for drafts/board shares), **list_board_members**,
+  **list_research**, and a folder param on create_document. Verified live:
+  the same task that flailed now completes in two calls.
+- **Agents fail gracefully — report_problem.** When something breaks on the
+  agent's side, it no longer dumps endpoints and error internals on
+  non-technical teammates: the new tool alerts every admin, files a
+  **Helpdesk** ticket with the technical details (board find-or-created),
+  and hands the agent plain-language reassurance to relay. The soul contract
+  teaches the etiquette; a new critical alert fires when the fleet's MCP
+  endpoint itself is unreachable (the root cause behind "connection refused"
+  flailing).
 - **Attach anything — knowledge, artifacts, or files.** The composer paperclip
   is now a menu: attach a knowledge doc or an artifact (search pickers) or
   upload a file. Knowledge/artifact picks become reference chips on the

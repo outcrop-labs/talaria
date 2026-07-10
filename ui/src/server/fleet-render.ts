@@ -21,7 +21,7 @@ import { db } from './db/pg'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
 import { ensureMcpService, MCP_FLEET_URL } from './mcp-service'
-import { orgProfile, orgSoulHeader } from './org'
+import { orgProfile, orgSoulHeader, toolkitSoulHeader } from './org'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
@@ -185,8 +185,11 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
   const chassis = parseYaml(chassisText, { merge: true, version: '1.1' }) as Chassis
   if (!chassis?.service) throw new Error(`fleet chassis at ${CHASSIS_FILE()} has no "service" block`)
 
-  // Every rendered soul opens with the organization context (when configured).
-  const soulHeader = orgSoulHeader(await orgProfile())
+  // Every rendered soul opens with the toolkit contract (always) and the
+  // organization context (when configured) — Talaria-first tool use is the
+  // DEFAULT for every agent, not a per-soul nicety.
+  const orgHeader = orgSoulHeader(await orgProfile())
+  const soulHeader = [orgHeader, toolkitSoulHeader()].filter(Boolean).join('\n\n')
 
   // Agents' configs point at the toolkit MCP — make sure it's actually up,
   // and that the compose env can interpolate the fleet key into the header.
@@ -246,7 +249,7 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     // The rendered soul carries the organization header (a projection — the
     // stored soul stays clean; the header tracks the org settings), so every
     // agent knows whose team it's on, including ones authored before org config.
-    await writeFile(join(agentDir, 'SOUL.md'), soulHeader ? `${soulHeader}\n\n${version.soul}` : version.soul)
+    await writeFile(join(agentDir, 'SOUL.md'), `${soulHeader}\n\n${version.soul}`)
     result.files.push(join(agentDir, 'config.yaml'), join(agentDir, 'SOUL.md'))
 
     // The service name carries the active slot ('a' = bare, 'b' = "-b") so a

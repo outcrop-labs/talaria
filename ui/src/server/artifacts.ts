@@ -98,6 +98,16 @@ async function findOrCreateFolder(name: string, parentId: string | null, created
   return (await createFolder({ name, parentId, createdBy })).id
 }
 
+/** Find-or-create a folder by NAME at the root — the "file this under X"
+ *  spelling agents use. Never throws (null = root). */
+export async function namedRootFolder(name: string, createdBy: string): Promise<string | null> {
+  try {
+    return await findOrCreateFolder(name, null, createdBy)
+  } catch {
+    return null
+  }
+}
+
 /** The agent's filing cabinet: "<Agent label>/<Category>", created on demand.
  *  Auto-created artifacts (plan docs, research reports, agent documents,
  *  media saves, chat summaries) file here instead of piling up at the root.
