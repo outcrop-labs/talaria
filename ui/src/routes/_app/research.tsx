@@ -1,10 +1,11 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Loader2, Trash2 } from 'lucide-react'
+import { Bot, ExternalLink, Gauge, Loader2, Trash2 } from 'lucide-react'
 import { RailSurface, Rail, Stage, StageHeader } from '@/components/app/surface'
 import { Chip, DangerLink, StatusDot, type DotStatus } from '@/components/ui/chip'
 import { SendButton } from '@/components/chat/composer-buttons'
+import { ComposerPicker } from '@/components/chat/composer-picker'
 import { cn } from '@/lib/cn'
 import { Avatar } from '@/components/ui/avatar'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -12,7 +13,6 @@ import { Markdown } from '@/components/ui/markdown'
 import { Panel } from '@/components/ui/panel'
 import { Textarea } from '@/components/ui/textarea'
 import { confirm } from '@/components/ui/confirm'
-import { AgentPicker } from '@/components/chat/agent-picker'
 import { useAgents } from '@/lib/agents'
 import { useArtifact } from '@/lib/artifacts'
 import { useSession } from '@/lib/session'
@@ -101,45 +101,6 @@ function ResearchPage() {
   return (
     <RailSurface>
       <Rail title="Research">
-        <div className="mb-3 space-y-2.5 border-b border-line-subtle pb-3">
-          <div className="flex items-end gap-2">
-            <Textarea
-              autoGrow
-              rows={2}
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="What should we find out?"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void start()
-                }
-              }}
-            />
-            <SendButton onClick={() => void start()} disabled={starting || !question.trim() || !agent} title="Start research — Enter" />
-          </div>
-          <div className="grid grid-cols-3 gap-1.5">
-            {(Object.keys(MODE_META) as ResearchMode[]).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMode(m)}
-                className={cn(
-                  'rounded-lg border px-2 py-1.5 text-left transition-colors',
-                  mode === m ? 'border-[color:var(--theme-accent)] bg-card' : 'border-line-subtle hover:bg-card',
-                )}
-                title={`${MODE_META[m].tagline}. The agent's expertise drives the search; every claim is cited.`}
-              >
-                <div className="text-xs font-semibold text-fg">{MODE_META[m].label}</div>
-                <div className="text-[10px] text-muted">{MODE_META[m].eta}</div>
-              </button>
-            ))}
-          </div>
-          <AgentPicker agents={agents} value={agent} onChange={pickAgent} loading={agentsLoading} fullWidth />
-          {starting && <div className="flex items-center gap-1.5 text-xs text-muted"><Loader2 size={12} className="animate-spin" /> starting</div>}
-          {error && <div className="text-xs text-[color:var(--theme-danger)]">{error}</div>}
-        </div>
-
         {runs.length === 0 ? (
           <div className="px-2 py-6 text-center text-xs text-muted">No research yet — ask something worth knowing.</div>
         ) : (
@@ -191,18 +152,70 @@ function ResearchPage() {
           ) : undefined
         }
       >
-        <div className="h-full overflow-y-auto">
-          {selectedId ? (
-            <RunView runId={selectedId} />
-          ) : (
-            <div className="grid h-full place-items-center p-8">
-              <EmptyState
-                icon="◎"
-                title="Research"
-                hint="Recon answers fast; Brief maps a topic; Expedition goes deep. Reports are cited, org-visible documents your agents can retrieve later."
-              />
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {selectedId ? (
+              <RunView runId={selectedId} />
+            ) : (
+              <div className="grid h-full place-items-center p-8">
+                <EmptyState
+                  icon="◎"
+                  title="Research"
+                  hint="Recon answers fast; Brief maps a topic; Expedition goes deep. Reports are cited, org-visible documents your agents can retrieve later."
+                />
+              </div>
+            )}
+          </div>
+
+          {/* The ask lives where every other conversation input lives — the
+              bottom of the stage. Depth and acting agent ride along as
+              composer pills, tier-picker style. */}
+          <div className="px-6 pb-6 pt-2">
+            <div className="mercury-panel mx-auto w-full max-w-[var(--chat-content-max-width)] rounded-2xl p-2">
+              <div className="flex items-end gap-2">
+                <Textarea
+                  autoGrow
+                  rows={1}
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  placeholder="What should we find out?"
+                  className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      void start()
+                    }
+                  }}
+                />
+                <ComposerPicker
+                  icon={Gauge}
+                  value={mode}
+                  onChange={(m) => setMode(m as ResearchMode)}
+                  title="Research depth"
+                  menuLabel="Depth"
+                  options={(Object.keys(MODE_META) as ResearchMode[]).map((m) => ({
+                    value: m,
+                    label: MODE_META[m].label,
+                    sub: `${MODE_META[m].tagline} · ${MODE_META[m].eta}`,
+                  }))}
+                />
+                <ComposerPicker
+                  icon={Bot}
+                  value={agent ?? ''}
+                  onChange={pickAgent}
+                  title="Whose expertise drives the search"
+                  menuLabel="Researching agent"
+                  options={agents.map((a) => ({ value: a.id, label: a.label, sub: a.role ?? undefined }))}
+                />
+                {starting ? (
+                  <span className="grid h-9 w-9 shrink-0 place-items-center"><Loader2 size={15} className="animate-spin text-muted" /></span>
+                ) : (
+                  <SendButton onClick={() => void start()} disabled={!question.trim() || !agent || agentsLoading} title="Start research — Enter" />
+                )}
+              </div>
+              {error && <div className="px-2 pb-1 text-xs text-[color:var(--theme-danger)]">{error}</div>}
             </div>
-          )}
+          </div>
         </div>
       </Stage>
     </RailSurface>
