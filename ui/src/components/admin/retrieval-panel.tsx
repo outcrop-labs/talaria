@@ -1,15 +1,18 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Loader2 } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
 import { useAgents } from '@/lib/agents'
 import { useUsers } from '@/lib/users'
+import { useTeams } from '@/lib/teams'
 
 interface Binding {
-  principalType: 'all' | 'user' | 'agent'
+  principalType: 'all' | 'user' | 'agent' | 'team'
   principalId: string | null
 }
 interface RagCollection {
@@ -19,6 +22,21 @@ interface RagCollection {
   description: string | null
   auto: boolean
   bindings: Binding[]
+}
+interface RerankProviderMeta {
+  id: string
+  label: string
+  country: string
+  needsUrl: boolean
+  needsKey: boolean
+  liveCatalog: boolean
+  fallbackModels: string[]
+}
+interface RagAdmin {
+  health: { qdrant: boolean; embeddings: boolean }
+  backfill: { state: 'idle' | 'running' | 'done' | 'error'; counts?: Record<string, number>; error?: string; finishedAt?: string }
+  rerank: { providers: RerankProviderMeta[]; config: { provider: string; url?: string; model?: string; hasKey: boolean; candidates?: number } }
+  spaces: Array<{ id: string; name: string; collectionId: string | null }>
 }
 
 const useCollections = () =>
@@ -31,11 +49,24 @@ const useCollections = () =>
     },
   })
 
-// Admin governance of the RAG registry: the two auto brains (activity + org-kb)
-// plus custom (departmental) collections, each bound to who can search it.
+const useRagAdmin = () =>
+  useQuery({
+    queryKey: ['rag-admin'],
+    queryFn: async (): Promise<RagAdmin> => {
+      const r = await fetch('/api/admin/rag')
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+    refetchInterval: (q) => (q.state.data?.backfill.state === 'running' ? 3_000 : false),
+  })
+
+// Admin governance of the RAG plane: service health + backfill, the brains
+// (auto + custom collections with who-can-search bindings), which KB spaces
+// feed which brain, and the reranker provider.
 export function RetrievalPanel() {
   const qc = useQueryClient()
   const { data: collections = [] } = useCollections()
+  const { data: rag } = useRagAdmin()
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -50,37 +81,74 @@ export function RetrievalPanel() {
       setBusy(false)
     }
   }
+  const backfill = async () => {
+    await fetch('/api/admin/rag', { method: 'POST' })
+    await qc.invalidateQueries({ queryKey: ['rag-admin'] })
+  }
 
   return (
     <Panel>
-      <div className="mb-2 text-sm font-semibold text-fg">Retrieval collections</div>
-      <p className="mb-4 text-xs text-muted">
+      <div className="mb-2 text-sm font-semibold text-fg">Retrieval</div>
+      <p className="mb-3 text-xs text-muted">
         The org's RAG brains. <span className="text-fg">Workspace activity</span> and{' '}
         <span className="text-fg">Organization knowledge</span> are automatic. Spin up more for a domain or
-        department, and bind each to who should search it.
+        team, bind who can search each, and point KB spaces at them to curate what they contain.
       </p>
+
+      {/* Services + backfill */}
+      {rag && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-line-subtle p-3">
+          <HealthDot ok={rag.health.qdrant} label="Vector store" />
+          <HealthDot ok={rag.health.embeddings} label="Embeddings" />
+          <span className="ml-auto text-xs text-muted">
+            {rag.backfill.state === 'running' ? (
+              <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> backfilling…</span>
+            ) : rag.backfill.state === 'done' && rag.backfill.counts ? (
+              `last backfill: ${Object.entries(rag.backfill.counts).map(([k, v]) => `${v} ${k}`).join(' · ')}`
+            ) : rag.backfill.state === 'error' ? (
+              <span style={{ color: 'var(--theme-danger)' }}>backfill failed: {rag.backfill.error}</span>
+            ) : null}
+          </span>
+          <Button size="sm" variant="outline" onClick={() => void backfill()} disabled={rag.backfill.state === 'running' || !rag.health.qdrant || !rag.health.embeddings}>
+            Reindex everything
+          </Button>
+        </div>
+      )}
+
       <div className="space-y-3">
         {collections.map((c) => (
-          <CollectionRow key={c.id} col={c} />
+          <CollectionRow key={c.id} col={c} spaces={rag?.spaces ?? []} />
         ))}
       </div>
       <div className="mt-4 flex items-center gap-2 border-t border-line-subtle pt-3">
-        <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder="New collection (e.g. Sales playbook)" className="flex-1" onKeyDown={(e) => e.key === 'Enter' && void create()} />
+        <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder="New brain (e.g. Sales playbook)" className="flex-1" onKeyDown={(e) => e.key === 'Enter' && void create()} />
         <Button size="sm" onClick={() => void create()} disabled={busy || !name.trim()}>
           Create
         </Button>
       </div>
+
+      {rag && <RerankSection rag={rag} />}
     </Panel>
   )
 }
 
-function CollectionRow({ col }: { col: RagCollection }) {
+const HealthDot = ({ ok, label }: { ok: boolean; label: string }) => (
+  <span className="flex items-center gap-1.5 text-xs text-muted">
+    <span className="h-2 w-2 rounded-full" style={{ background: ok ? 'var(--theme-success, #22c55e)' : 'var(--theme-danger)' }} />
+    {label} {ok ? 'up' : 'down'}
+  </span>
+)
+
+function CollectionRow({ col, spaces }: { col: RagCollection; spaces: Array<{ id: string; name: string; collectionId: string | null }> }) {
   const qc = useQueryClient()
   const { data: fleet } = useAgents()
   const { data: users = [] } = useUsers()
+  const { data: teams = [] } = useTeams()
   const bindingsAll = col.bindings.some((b) => b.principalType === 'all')
   const boundUsers = col.bindings.filter((b) => b.principalType === 'user').map((b) => b.principalId!).filter(Boolean)
   const boundAgents = col.bindings.filter((b) => b.principalType === 'agent').map((b) => b.principalId!).filter(Boolean)
+  const boundTeams = col.bindings.filter((b) => b.principalType === 'team').map((b) => b.principalId!).filter(Boolean)
+  const feedingSpaces = spaces.filter((s) => s.collectionId === col.id).map((s) => s.id)
 
   const setBindings = async (bindings: Binding[]) => {
     await fetch(`/api/rag/collections/${col.id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ bindings }) })
@@ -91,15 +159,26 @@ function CollectionRow({ col }: { col: RagCollection }) {
     await fetch(`/api/rag/collections/${col.id}`, { method: 'DELETE' })
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
   }
+  const setSpaces = async (ids: string[]) => {
+    // Diff: newly picked spaces bind to this brain; removed ones unbind.
+    const added = ids.filter((id) => !feedingSpaces.includes(id))
+    const removed = feedingSpaces.filter((id) => !ids.includes(id))
+    for (const spaceId of added) {
+      await fetch('/api/admin/rag', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ spaceBrain: { spaceId, collectionId: col.id } }) })
+    }
+    for (const spaceId of removed) {
+      await fetch('/api/admin/rag', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ spaceBrain: { spaceId, collectionId: null } }) })
+    }
+    await qc.invalidateQueries({ queryKey: ['rag-admin'] })
+  }
 
-  const applyBindings = (opts: { all?: boolean; users?: string[]; agents?: string[] }) => {
+  const applyBindings = (opts: { all?: boolean; users?: string[]; agents?: string[]; teams?: string[] }) => {
     const all = opts.all ?? bindingsAll
-    const u = opts.users ?? boundUsers
-    const a = opts.agents ?? boundAgents
     const next: Binding[] = []
     if (all) next.push({ principalType: 'all', principalId: null })
-    for (const id of u) next.push({ principalType: 'user', principalId: id })
-    for (const id of a) next.push({ principalType: 'agent', principalId: id })
+    for (const id of opts.users ?? boundUsers) next.push({ principalType: 'user', principalId: id })
+    for (const id of opts.agents ?? boundAgents) next.push({ principalType: 'agent', principalId: id })
+    for (const id of opts.teams ?? boundTeams) next.push({ principalType: 'team', principalId: id })
     void setBindings(next)
   }
 
@@ -118,7 +197,7 @@ function CollectionRow({ col }: { col: RagCollection }) {
       </div>
       {col.description && <div className="mt-0.5 text-xs text-muted">{col.description}</div>}
       {/* Auto collections have fixed access (activity = your own scope; org-kb =
-          everyone). Custom collections are bound here. */}
+          everyone). Custom collections are bound + curated here. */}
       {!col.auto && (
         <div className="mt-2.5 space-y-2">
           <label className="flex items-center gap-1.5 text-xs text-muted">
@@ -127,6 +206,15 @@ function CollectionRow({ col }: { col: RagCollection }) {
           </label>
           {!bindingsAll && (
             <div className="flex flex-col gap-2 sm:flex-row">
+              <Combobox
+                options={teams.map((t) => ({ value: t.id, label: t.name }))}
+                selected={boundTeams}
+                onChange={(ids) => applyBindings({ teams: ids })}
+                multiple
+                size="sm"
+                placeholder="Bind teams"
+                className="min-w-0 flex-1"
+              />
               <Combobox
                 options={users.map((u) => ({ value: u.id, label: u.name ?? u.email ?? u.id }))}
                 selected={boundUsers}
@@ -147,6 +235,106 @@ function CollectionRow({ col }: { col: RagCollection }) {
               />
             </div>
           )}
+          <div className="flex items-center gap-2">
+            <span className="shrink-0 text-xs text-muted">Fed by KB spaces:</span>
+            <Combobox
+              options={spaces.map((s) => ({ value: s.id, label: s.name }))}
+              selected={feedingSpaces}
+              onChange={(ids) => void setSpaces(ids)}
+              multiple
+              size="sm"
+              placeholder="None — bind spaces to curate this brain"
+              className="min-w-0 flex-1"
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Reranker provider (the precision stage after vector recall) ─────────────
+function RerankSection({ rag }: { rag: RagAdmin }) {
+  const qc = useQueryClient()
+  const cfg = rag.rerank.config
+  const [provider, setProvider] = useState(cfg.provider)
+  const [url, setUrl] = useState(cfg.url ?? '')
+  const [model, setModel] = useState(cfg.model ?? '')
+  const [key, setKey] = useState('')
+  const [models, setModels] = useState<string[] | null>(null)
+  const [saving, setSaving] = useState(false)
+  const meta = rag.rerank.providers.find((p) => p.id === provider)
+
+  const loadModels = async () => {
+    const q = key ? `&key=${encodeURIComponent(key)}` : ''
+    const r = await fetch(`/api/admin/rag?models=${provider}${q}`)
+    if (r.ok) setModels(((await r.json()) as { models: string[] }).models)
+  }
+  const save = async () => {
+    setSaving(true)
+    try {
+      await fetch('/api/admin/rag', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          reranker: {
+            provider,
+            url: url || null,
+            model: model || null,
+            ...(key ? { apiKey: key } : {}),
+          },
+        }),
+      })
+      setKey('')
+      await qc.invalidateQueries({ queryKey: ['rag-admin'] })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="mt-5 border-t border-line-subtle pt-4">
+      <div className="mb-1 text-sm font-semibold text-fg">Reranker</div>
+      <p className="mb-3 text-xs text-muted">
+        The precision stage after vector recall — a cross-encoder rescores the merged candidates so the best
+        sources win. Off = plain vector order. Self-host it, or hook up a provider and set your default.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Select size="sm" value={provider} onChange={(e) => { setProvider(e.target.value); setModels(null); setModel('') }} className="w-52">
+          <option value="off">Off (vector order)</option>
+          {rag.rerank.providers.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label} ({p.country})
+            </option>
+          ))}
+        </Select>
+        {meta?.needsUrl && <Input size="sm" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://localhost:8056 (TEI /rerank)" className="w-64" />}
+        {meta?.needsKey && (
+          <Input size="sm" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={cfg.hasKey ? 'key saved — replace…' : 'API key'} className="w-52" />
+        )}
+        {meta && meta.id !== 'tei' && (
+          <>
+            {models ? (
+              <Select size="sm" value={model} onChange={(e) => setModel(e.target.value)} className="w-64">
+                <option value="">default model</option>
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </Select>
+            ) : (
+              <Button size="sm" variant="outline" onClick={() => void loadModels()}>
+                Load models
+              </Button>
+            )}
+          </>
+        )}
+        <Button size="sm" onClick={() => void save()} disabled={saving}>
+          Save
+        </Button>
+      </div>
+      {provider !== 'off' && cfg.provider === provider && (
+        <div className="mt-1.5 text-[11px] text-muted">
+          Active: {cfg.provider}{cfg.model ? ` · ${cfg.model}` : ''}{cfg.hasKey ? ' · key sealed' : ''} · rescoring top {cfg.candidates ?? 30}
         </div>
       )}
     </div>

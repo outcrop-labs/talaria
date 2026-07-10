@@ -66,8 +66,10 @@ your team, and watch the work (and what it costs) move in one place.
   multiple assignees, dependencies, watchers, a review gate, per-ticket cost), teams, and a per-board
   agent policy. Fully multiplayer.
 - **Knowledge.** An Outline-style markdown drive with versioned docs, visibility controls, and public
-  share links. Docs feed the right **RAG brain** by visibility (org / personal / departmental), and a
-  workspace-activity brain ambiently indexes conversations, plans, and tickets for agents to search.
+  share links. Docs feed the right **RAG brain** by visibility (org / personal / team / departmental —
+  spin up brains and point KB spaces at them), a workspace-activity brain ambiently indexes
+  conversations, plans, and tickets, and retrieval runs on native CPU embeddings with a pluggable
+  **reranker** (self-hosted or US cloud providers) for precision.
 - **Artifacts.** Docs, microsites, sheets, and files with versioning, sharing, and public hosting;
   attached to tickets, plans, and chats; exported to Google Workspace; created and updated by agents.
 

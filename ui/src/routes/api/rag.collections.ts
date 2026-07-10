@@ -6,7 +6,7 @@ import { createCollection, ensureAutoCollections, listCollections } from '@/serv
 import { logAudit } from '@/server/audit'
 
 const Binding = z.object({
-  principalType: z.enum(['all', 'user', 'agent']),
+  principalType: z.enum(['all', 'user', 'agent', 'team']),
   principalId: z.string().max(200).nullish(),
 })
 const Body = z.object({

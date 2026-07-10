@@ -793,6 +793,9 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now(),
      unique (run_id, idx)
    )`,
+  // RAG curation: a KB space can feed a specific brain (custom collection) —
+  // every non-private doc in the space indexes there instead of the org brain.
+  `alter table kb_spaces add column if not exists rag_collection_id uuid references rag_collections(id) on delete set null`,
 ]
 
 function ensureMigrated(): Promise<void> {

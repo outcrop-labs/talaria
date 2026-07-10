@@ -96,6 +96,7 @@ import { Route as ApiAgentsRegisterRouteImport } from './routes/api/agents.regis
 import { Route as ApiAgentMediaModelRouteImport } from './routes/api/agent-media.$model'
 import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminSettingsRouteImport } from './routes/api/admin.settings'
+import { Route as ApiAdminRagRouteImport } from './routes/api/admin.rag'
 import { Route as ApiAdminModelRolesRouteImport } from './routes/api/admin.model-roles'
 import { Route as ApiAdminJudgeRouteImport } from './routes/api/admin.judge'
 import { Route as ApiAdminGuardrailsRouteImport } from './routes/api/admin.guardrails'
@@ -600,6 +601,11 @@ const ApiAdminSettingsRoute = ApiAdminSettingsRouteImport.update({
   path: '/api/admin/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAdminRagRoute = ApiAdminRagRouteImport.update({
+  id: '/api/admin/rag',
+  path: '/api/admin/rag',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAdminModelRolesRoute = ApiAdminModelRolesRouteImport.update({
   id: '/api/admin/model-roles',
   path: '/api/admin/model-roles',
@@ -1018,6 +1024,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
+  '/api/admin/rag': typeof ApiAdminRagRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
@@ -1175,6 +1182,7 @@ export interface FileRoutesByTo {
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
+  '/api/admin/rag': typeof ApiAdminRagRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
@@ -1334,6 +1342,7 @@ export interface FileRoutesById {
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
+  '/api/admin/rag': typeof ApiAdminRagRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
@@ -1493,6 +1502,7 @@ export interface FileRouteTypes {
     | '/api/admin/guardrails'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
+    | '/api/admin/rag'
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agent-media/$model'
@@ -1650,6 +1660,7 @@ export interface FileRouteTypes {
     | '/api/admin/guardrails'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
+    | '/api/admin/rag'
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agent-media/$model'
@@ -1808,6 +1819,7 @@ export interface FileRouteTypes {
     | '/api/admin/guardrails'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
+    | '/api/admin/rag'
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agent-media/$model'
@@ -1948,6 +1960,7 @@ export interface RootRouteChildren {
   ApiAdminGuardrailsRoute: typeof ApiAdminGuardrailsRoute
   ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
   ApiAdminModelRolesRoute: typeof ApiAdminModelRolesRoute
+  ApiAdminRagRoute: typeof ApiAdminRagRoute
   ApiAdminSettingsRoute: typeof ApiAdminSettingsRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
   ApiAgentMediaModelRoute: typeof ApiAgentMediaModelRouteWithChildren
@@ -2584,6 +2597,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/settings'
       fullPath: '/api/admin/settings'
       preLoaderRoute: typeof ApiAdminSettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin/rag': {
+      id: '/api/admin/rag'
+      path: '/api/admin/rag'
+      fullPath: '/api/admin/rag'
+      preLoaderRoute: typeof ApiAdminRagRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/admin/model-roles': {
@@ -3652,6 +3672,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminGuardrailsRoute: ApiAdminGuardrailsRoute,
   ApiAdminJudgeRoute: ApiAdminJudgeRoute,
   ApiAdminModelRolesRoute: ApiAdminModelRolesRoute,
+  ApiAdminRagRoute: ApiAdminRagRoute,
   ApiAdminSettingsRoute: ApiAdminSettingsRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,
   ApiAgentMediaModelRoute: ApiAgentMediaModelRouteWithChildren,

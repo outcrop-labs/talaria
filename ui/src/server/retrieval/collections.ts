@@ -22,7 +22,7 @@ export interface RagCollection {
 }
 
 export interface AccessBinding {
-  principalType: 'all' | 'user' | 'agent'
+  principalType: 'all' | 'user' | 'agent' | 'team'
   principalId: string | null
 }
 
@@ -183,6 +183,9 @@ export async function collectionsForPrincipal(principal: {
        or a.principal_type = 'all'
        or (a.principal_type = 'user' and ${uid} <> '' and a.principal_id = ${uid})
        or (a.principal_type = 'agent' and ${agent} <> '' and a.principal_id = ${agent})
+       or (a.principal_type = 'team' and ${uid} <> '' and exists (
+             select 1 from team_members tm where tm.team_id::text = a.principal_id and tm.user_id = ${uid}
+           ))
     order by c.name asc
   `) as unknown as RagCollection[]
   return rows
