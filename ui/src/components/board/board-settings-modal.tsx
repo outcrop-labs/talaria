@@ -100,7 +100,7 @@ function TemplatesSection({ board }: { board: Board }) {
         </button>
       </div>
       {ticketTemplates.length === 0 ? (
-        <div className="text-xs text-muted">No ticket templates in the library yet — create one to templatize this board's tickets.</div>
+        <div className="text-xs text-muted">No ticket templates in the library yet. Create one to templatize this board's tickets.</div>
       ) : (
         <div className="space-y-1 rounded-xl border border-line-subtle p-2">
           {ticketTemplates.map((t) => (
@@ -186,9 +186,9 @@ function GeneralTab({
           className="w-full"
         >
           <option value="inherit">Default (follow the org setting)</option>
-          <option value="off">Off — no automated review</option>
-          <option value="advisory">Advisory — judge posts a verdict, human decides</option>
-          <option value="enforcing">Enforcing — auto-send failing work back to the agent (up to 3×), then a human</option>
+          <option value="off">Off: no automated review</option>
+          <option value="advisory">Advisory: judge posts a verdict, human decides</option>
+          <option value="enforcing">Enforcing: auto-send failing work back to the agent (up to 3×), then a human</option>
         </Select>
         <div className="mt-1 text-[11px] text-muted">
           When an agent hands a ticket to quality review, the judge reviews it. Enforcing bounces “revise” verdicts back to the agent with the issues before a human sees them.
@@ -347,7 +347,7 @@ function AgentsTab({ board }: { board: Board }) {
   return (
     <div>
       <p className="mb-3 text-xs text-muted">
-        Restrictive by default — a ticket can only be assigned to agents allowed here.
+        Restrictive by default: a ticket can only be assigned to agents allowed here.
       </p>
       {!allowAll && <Combobox options={options} selected={agents} onChange={setAgents} multiple placeholder="Select agents" />}
       <div className="mt-4 flex items-center justify-between gap-2">

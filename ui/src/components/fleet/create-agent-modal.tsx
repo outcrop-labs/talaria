@@ -78,7 +78,7 @@ export function CreateAgentModal({
         (piece) => setGenPreview((p) => p + piece),
       )
       const draft = parseAgentDraft(full)
-      if (!draft) return setGenErr('could not design an agent from that — try adding a sentence about what it should do')
+      if (!draft) return setGenErr('could not design an agent from that. Try adding a sentence about what it should do')
       setChat((c) => [...c.slice(-8), { role: 'user', content: instruction.trim() }, { role: 'assistant', content: full }])
       applyDraft(draft)
       setStep('review')
@@ -111,7 +111,7 @@ export function CreateAgentModal({
         start,
       })
       if (r.error) return setErr(r.error)
-      if (start && r.healthy === false) setErr('created, but the container is not healthy yet — check /agents')
+      if (start && r.healthy === false) setErr('created, but the container is not healthy yet. Check /agents')
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
       await qc.invalidateQueries({ queryKey: ['fleet-containers'] })
       if (!r.error) onClose()
@@ -126,7 +126,7 @@ export function CreateAgentModal({
       <Modal open={open} onClose={onClose} title="New agent" width="max-w-lg">
         <div className="space-y-5">
           <p className="text-sm leading-relaxed text-muted">
-            Describe what this agent should do — its job, what it watches, what it produces. The AI designs the whole
+            Describe what this agent should do: its job, what it watches, what it produces. The AI designs the whole
             agent (identity, soul, starter skills) for you to review before anything is created.
           </p>
           <div className="flex items-end gap-2.5">
@@ -192,19 +192,19 @@ export function CreateAgentModal({
           </div>
         </div>
         <p className="-mt-2 text-xs text-muted">
-          Role is the roster title; department is the routing/mount key — the fleet model id becomes{' '}
+          Role is the roster title; department is the routing/mount key. The fleet model id becomes{' '}
           {slug || 'handle'}-{department || 'department'}.
         </p>
 
         <div>
           <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">
-            Chassis template <span className="normal-case">— model tiers, tools, and plugins carry over</span>
+            Chassis template <span className="normal-case">(model tiers, tools, and plugins carry over)</span>
           </label>
           <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className="w-full">
-            <option value="">Platform defaults — chassis + first local model</option>
+            <option value="">Platform defaults: chassis + first local model</option>
             {templates.map((t) => (
               <option key={t.id} value={t.id}>
-                {t.displayName} — {t.department} (v{t.currentVersion})
+                {t.displayName} · {t.department} (v{t.currentVersion})
               </option>
             ))}
           </Select>
@@ -215,7 +215,7 @@ export function CreateAgentModal({
           {soul.trim() ? (
             <Textarea autoGrow rows={6} value={soul} onChange={(e) => setSoul(e.target.value)} className="max-h-72 font-[var(--font-mono)] text-xs" />
           ) : (
-            <p className="text-xs text-muted">Starts from a scaffold you edit after creation — or go back and describe the agent to have one designed.</p>
+            <p className="text-xs text-muted">Starts from a scaffold you edit after creation, or go back and describe the agent to have one designed.</p>
           )}
         </div>
 
@@ -247,7 +247,7 @@ export function CreateAgentModal({
           <Generating
             label={
               start
-                ? `Hiring ${displayName || slug} — rendering the config, starting the container, waiting for health`
+                ? `Hiring ${displayName || slug}: rendering the config, starting the container, waiting for health`
                 : `Creating ${displayName || slug}`
             }
             lines={3}
@@ -329,7 +329,7 @@ function RefineBar({
               }
             }
           }}
-          placeholder="Refine the design — e.g. “more formal, and add a weekly retro skill”"
+          placeholder="Refine the design, e.g. “more formal, and add a weekly retro skill”"
           className="max-h-32 text-sm"
         />
         <Button

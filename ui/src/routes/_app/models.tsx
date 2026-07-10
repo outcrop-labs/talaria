@@ -66,7 +66,7 @@ function ModelsPage() {
           />
         ) : (
           <>
-            <Section title="Self-hosted — your hardware & on-prem" endpoints={local} />
+            <Section title="Self-hosted: your hardware & on-prem" endpoints={local} />
             <Section title="Cloud" endpoints={cloud} />
             <ModelRolesPanel />
             <MemberAccessPanel />
@@ -96,7 +96,7 @@ function Section({ title, endpoints }: { title: string; endpoints: LlmEndpoint[]
 
 const describeAffected = (affected: AffectedAgent[]) =>
   affected
-    .map((a) => `  • ${a.slug}${a.aliases.length ? ` — tiers: ${a.aliases.join(', ')}` : ''}${a.fallbacks ? ' — fallback' : ''}`)
+    .map((a) => `  • ${a.slug}${a.aliases.length ? ` (tiers: ${a.aliases.join(', ')})` : ''}${a.fallbacks ? ' (fallback)' : ''}`)
     .join('\n')
 
 // Compact provider card — identity + a model count + Manage. Everything
@@ -221,7 +221,7 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
             {ep.hasKey ? (
               <span style={{ color: 'var(--theme-success)' }}>● encrypted key stored</span>
             ) : (
-              <span>none stored{ep.apiKeyEnv ? ` — using $${ep.apiKeyEnv}` : ''}</span>
+              <span>none stored{ep.apiKeyEnv ? `, using $${ep.apiKeyEnv}` : ''}</span>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -306,7 +306,7 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
         {ep.class === 'cloud' && <PrivacyRow ep={ep} run={run} />}
 
         {cascading && (
-          <Generating label="Removing across the fleet — new agent versions, re-render, rolling the affected agents" lines={2} />
+          <Generating label="Removing across the fleet: new agent versions, re-render, rolling the affected agents" lines={2} />
         )}
         {err && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
 
@@ -347,7 +347,7 @@ function ModelAdder({ catalog, existing, onAdd }: { catalog: string[]; existing:
           onFocus={() => setOpen(true)}
           onBlur={() => setOpen(false)}
           onKeyDown={(e) => e.key === 'Enter' && q.trim() && add(q.trim())}
-          placeholder={`Add a model — browse the live catalog${catalog.length ? ` (${catalog.length})` : ''} or type an id`}
+          placeholder={`Add a model: browse the live catalog${catalog.length ? ` (${catalog.length})` : ''} or type an id`}
           className="flex-1"
         />
         <Button size="sm" onClick={() => q.trim() && add(q.trim())} disabled={!q.trim()}>
@@ -408,7 +408,7 @@ function ModelRolesPanel() {
     <Panel>
       <div className="mb-1 text-sm font-semibold text-fg">Model roles</div>
       <p className="mb-3 text-xs text-muted">
-        Which model handles each class of activity — tailor the stack in depth. Unset = auto (a sensible
+        Which model handles each class of activity. Tailor the stack in depth. Unset = auto (a sensible
         pick from what's registered). Agents' own brains are configured per agent and unaffected.
       </p>
       <ul className="divide-y divide-line-subtle">
@@ -494,7 +494,7 @@ function MemberAccessPanel() {
       <div className="mb-1 text-sm font-semibold text-fg">Member access</div>
       <p className="mb-3 text-xs text-muted">
         Which models non-admins may pick for AI drafting and as their preferred model. Keep the expensive or
-        powerful ones for deliberate, admin-configured use — agents' own brains are set per agent and unaffected.
+        powerful ones for deliberate, admin-configured use. Agents' own brains are set per agent and unaffected.
       </p>
       <label className="mb-3 flex cursor-pointer items-center gap-2 text-sm text-fg">
         <input
@@ -647,14 +647,14 @@ function AddProviderModal({ open, onClose, onAdded }: { open: boolean; onClose: 
             <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Base URL</label>
             <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={preset.baseUrl ?? 'https://host/v1'} />
             <p className="mt-1 text-xs text-muted">
-              LAN and loopback hosts count as <span style={{ color: 'var(--theme-success)' }}>self-hosted</span> in the cost split — inferred automatically.
+              LAN and loopback hosts count as <span style={{ color: 'var(--theme-success)' }}>self-hosted</span> in the cost split, inferred automatically.
             </p>
           </div>
         )}
         <div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">API key</label>
           <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste the provider key" autoComplete="off" />
-          <p className="mt-1 text-xs text-muted">Stored encrypted at rest (AES-256-GCM) — never written to a config file or shown again.</p>
+          <p className="mt-1 text-xs text-muted">Stored encrypted at rest (AES-256-GCM), never written to a config file or shown again.</p>
         </div>
         <details>
           <summary className="cursor-pointer text-[11px] uppercase tracking-wide text-muted">Advanced: env-var fallback</summary>

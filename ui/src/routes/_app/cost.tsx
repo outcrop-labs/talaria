@@ -61,7 +61,7 @@ function CostPage() {
 
             {(t?.unpricedCloudTokens ?? 0) > 0 && (
               <p className="text-xs" style={{ color: 'var(--theme-danger)' }}>
-                {formatTokens(t!.unpricedCloudTokens)} cloud tokens have no price configured — set per-model pricing on
+                {formatTokens(t!.unpricedCloudTokens)} cloud tokens have no price configured. Set per-model pricing on
                 the Models page so spend is complete.
               </p>
             )}
@@ -114,7 +114,7 @@ function CostPage() {
 
             {(t?.estimatedShare ?? 0) > 0 && (
               <p className="text-xs text-muted">
-                ~{Math.round((t?.estimatedShare ?? 0) * 100)}% of generations are character-based estimates — the
+                ~{Math.round((t?.estimatedShare ?? 0) * 100)}% of generations are character-based estimates. The
                 gateway didn't report token usage for them.
               </p>
             )}

@@ -138,7 +138,7 @@ function CommsPage() {
     const j = (await r.json().catch(() => ({}))) as { summary?: string; error?: string }
     if (!r.ok) return void alert({ title: 'Could not conclude', message: j.error ?? `failed (${r.status})` })
     await refresh()
-    void alert({ title: `${selected.name} — concluded`, message: j.summary ?? 'Summarized and archived.' })
+    void alert({ title: `${selected.name} concluded`, message: j.summary ?? 'Summarized and archived.' })
   }
 
   const peerLabel = (c: Channel) => c.peer?.name ?? c.peer?.email ?? 'teammate'
@@ -242,7 +242,7 @@ function CommsPage() {
               </li>
             )
           })}
-          {fleet.length === 0 && <Hint>No agents yet — hire on /agents.</Hint>}
+          {fleet.length === 0 && <Hint>No agents yet. Hire on /agents.</Hint>}
         </Section>
       </Rail>
 
@@ -306,18 +306,18 @@ function CommsPage() {
                 </IconAction>
               )}
               {selected.kind === 'group' && (
-                <IconAction title="Conclude — summarize what was decided, then archive" onClick={() => void conclude()}>
+                <IconAction title="Conclude: summarize what was decided, then archive" onClick={() => void conclude()}>
                   <CheckCheck size={16} />
                 </IconAction>
               )}
               {selected.kind !== 'dm' && (
-                <IconAction title="Settings — people, agents, rename" onClick={() => setSettingsOpen(true)}>
+                <IconAction title="Settings: people, agents, rename" onClick={() => setSettingsOpen(true)}>
                   <Settings size={16} />
                 </IconAction>
               )}
             </header>
             <div className="relative min-h-0 flex-1">
-              {concluding && <GeneratingOverlay label="Concluding — summarizing what was decided, then archiving" />}
+              {concluding && <GeneratingOverlay label="Concluding: summarizing what was decided, then archiving" />}
               <ChannelView
                 key={selected.id}
                 channelId={selected.id}
@@ -332,7 +332,7 @@ function CommsPage() {
           <EmptyState
             icon="◈"
             title="All your conversations, one place"
-            hint="Channels for ambient talk, relays for getting something decided with people and agents, DMs for everyone — human or agent."
+            hint="Channels for ambient talk, relays for getting something decided with people and agents, DMs for everyone, human or agent."
           />
         )}
       </main>
@@ -387,9 +387,9 @@ function AgentDmPane({
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-5">
         <span className="text-sm font-semibold text-fg">◍ {agent.label}</span>
-        {conversationId === null && <span className="text-xs text-muted">new thread — history stays out of context</span>}
+        {conversationId === null && <span className="text-xs text-muted">new thread; history stays out of context</span>}
         <span className="ml-auto" />
-        <IconAction title="New thread — fresh context" onClick={onNewThread}>
+        <IconAction title="New thread: fresh context" onClick={onNewThread}>
           <SquarePen size={16} />
         </IconAction>
       </header>

@@ -28,9 +28,9 @@ export interface ResearchSource {
 }
 
 export const MODE_META: Record<ResearchMode, { label: string; tagline: string; eta: string }> = {
-  recon: { label: 'Recon', tagline: 'One fast pass — a cited answer', eta: '~1 min' },
-  brief: { label: 'Brief', tagline: 'Planned angles — a briefing document', eta: 'a few min' },
-  expedition: { label: 'Expedition', tagline: 'Iterative deep dive — a full report', eta: '10 min +' },
+  recon: { label: 'Recon', tagline: 'One fast pass: a cited answer', eta: '~1 min' },
+  brief: { label: 'Brief', tagline: 'Planned angles: a briefing document', eta: 'a few min' },
+  expedition: { label: 'Expedition', tagline: 'Iterative deep dive: a full report', eta: '10 min +' },
 }
 
 export function useResearchRuns() {

@@ -643,7 +643,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
             prose
             autosave
             onSave={() => void saveBody()}
-            placeholder="Write an overview for this space — what lives here, how it's organized"
+            placeholder="Write an overview for this space: what lives here, how it's organized"
             fill
             className="min-w-0 flex-1"
           />
@@ -654,7 +654,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
             ) : (
               <div className="mx-auto max-w-[46rem] px-6 py-8">
                 <button type="button" onClick={() => setMode('edit')} className="text-sm text-muted hover:text-fg">
-                  No overview yet — click to describe this space.
+                  No overview yet. Click to describe this space.
                 </button>
               </div>
             )}
@@ -961,7 +961,7 @@ function DocEditor({
             ) : (
               <div className="mx-auto max-w-[46rem] px-6 py-8">
                 <button type="button" onClick={() => setMode('edit')} className="text-sm text-muted hover:text-fg">
-                  This document is empty — click to start writing.
+                  This document is empty. Click to start writing.
                 </button>
               </div>
             )}

@@ -27,7 +27,7 @@ const PRESETS = [
   },
   {
     label: 'Playful & curious',
-    text: 'Keep it light — a little wit is welcome. Be curious, offer ideas I did not ask for when they are good, but stay useful first.',
+    text: 'Keep it light. A little wit is welcome. Be curious, offer ideas I did not ask for when they are good, but stay useful first.',
   },
 ] as const
 
@@ -125,14 +125,14 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
             </span>
             <div className="text-sm font-medium text-fg">{created.displayName} is ready</div>
             <p className="text-xs text-muted">
-              Its workspace is starting up — it has its own memory, skills, and private knowledge, and it only works
+              Its workspace is starting up. It has its own memory, skills, and private knowledge, and it only works
               for you. Tune it any time in Settings.
             </p>
           </div>
         ) : step === 0 ? (
           <div className="space-y-4">
             <p className="text-sm text-muted">
-              Your assistant is a real agent that's just yours — its own memory, skills, and tools. Start by naming it.
+              Your assistant is a real agent that's just yours: its own memory, skills, and tools. Start by naming it.
             </p>
             <div>
               <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
@@ -155,14 +155,14 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
               <p className={cn('mt-1 text-xs', handle && !handleOk ? 'text-[color:var(--theme-danger)]' : 'text-muted')}>
                 {handle && !handleOk
                   ? 'Lowercase letters and numbers only, starting with a letter (2–30 characters).'
-                  : "How agents and integrations refer to it — can't be changed later."}
+                  : "How agents and integrations refer to it. Can't be changed later."}
               </p>
             </div>
           </div>
         ) : step === 1 ? (
           <div className="space-y-3">
             <p className="text-sm text-muted">
-              How should {name.trim() || 'it'} come across? Pick a starting point or write your own — you can refine it
+              How should {name.trim() || 'it'} come across? Pick a starting point or write your own. You can refine it
               any time.
             </p>
             <div className="flex flex-wrap gap-2">
@@ -188,13 +188,13 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
               className="max-h-60"
               value={personality}
               onChange={(e) => setPersonality(e.target.value)}
-              placeholder="Optional — e.g. “Be direct and keep things short. Remind me about loose ends.”"
+              placeholder="Optional, e.g. “Be direct and keep things short. Remind me about loose ends.”"
               maxLength={4000}
             />
           </div>
         ) : (
           <div className="space-y-3">
-            <p className="text-sm text-muted">Ready to go. Creating it starts a private workspace — this can take a minute.</p>
+            <p className="text-sm text-muted">Ready to go. Creating it starts a private workspace. This can take a minute.</p>
             <dl className="space-y-2 rounded-lg border border-line-subtle p-3 text-sm">
               <div className="flex gap-2">
                 <dt className="w-24 shrink-0 text-xs uppercase tracking-wide text-muted">Name</dt>

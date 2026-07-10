@@ -29,6 +29,22 @@ secrets encrypted at rest.
 - **Research uses the same agent selector as every other surface** — the
   standard picker at the top of the rail (like Plan), not a bespoke composer
   pill. The composer keeps only the depth pill.
+### Changed
+- **Agents converse like colleagues.** Every rendered soul now carries a
+  voice contract: acknowledge in a sentence (or ask ONE clarifying question
+  when the ask is ambiguous) before diving into tools, do the full work but
+  keep the process out of the chat, and report outcomes like a busy human:
+  what happened, where it lives, judgment calls worth flagging. Em dashes:
+  most replies need zero. Verified live: the same agent whose replies were
+  walls of process narration answered in five sentences with a sensible
+  scoping question. Souls hot-reload, so this took effect fleet-wide with no
+  restart.
+- **Em dashes swept from the platform's own copy.** Around 120 gratuitous em
+  dashes across 35 files of visible UI copy (placeholders, tooltips, empty
+  states, hints) rewritten with ordinary punctuation. The dash survives only
+  where it means something: empty-value glyphs in tables and the brand
+  tagline. Codified in docs/UI-CONVENTIONS.md.
+
 ### Fixed
 - **Queued chat messages get their reply on screen.** Sending while an agent
   was still replying queued correctly server-side, and the follow-up turn was

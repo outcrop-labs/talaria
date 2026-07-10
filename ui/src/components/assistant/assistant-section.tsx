@@ -43,7 +43,7 @@ export function AssistantSection() {
         <EmptyState
           icon={<Sparkles size={24} />}
           title="No assistant yet"
-          hint="A personal agent that's just yours — memory, skills, and tools of its own."
+          hint="A personal agent that's just yours: memory, skills, and tools of its own."
           action={
             <Button size="sm" onClick={() => setWizard(true)}>
               Set up your assistant
@@ -112,7 +112,7 @@ export function AssistantSection() {
         rows={3}
         value={personality}
         onChange={(e) => setPersonality(e.target.value)}
-        placeholder="How it should come across — tone, priorities, pet peeves."
+        placeholder="How it should come across: tone, priorities, pet peeves."
         className="max-h-64"
         maxLength={4000}
       />
@@ -121,7 +121,7 @@ export function AssistantSection() {
           open
           onClose={() => setPersonaEditor(false)}
           title={`${assistant.displayName} · Personality`}
-          subtitle="How your assistant comes across. Every save is versioned and applies right away — your assistant restarts with it."
+          subtitle="How your assistant comes across. Every save is versioned and applies right away. Your assistant restarts with it."
           value={assistant.personality ?? ''}
           editable
           saving={busy}
@@ -144,7 +144,7 @@ export function AssistantSection() {
         <Button size="sm" onClick={() => void save()} disabled={busy || !dirty || !name.trim()}>
           {busy ? 'Saving' : 'Save'}
         </Button>
-        <span className="text-xs text-muted">Changes apply right away — your assistant restarts with them.</span>
+        <span className="text-xs text-muted">Changes apply right away. Your assistant restarts with them.</span>
       </div>
       {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
       {error && <div className="mt-2 text-xs text-[color:var(--theme-danger)]">{error}</div>}

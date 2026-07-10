@@ -572,7 +572,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
               ) : (
                 <div className="mx-auto max-w-[46rem] px-6 py-8">
                   <button type="button" onClick={() => setMode('edit')} className="text-sm text-muted hover:text-fg">
-                    Empty artifact — click to start.
+                    Empty artifact. Click to start.
                   </button>
                 </div>
               )}
@@ -593,7 +593,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
             <iframe title={artifact.title} srcDoc={artifact.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" className="min-w-0 flex-1 border-0 bg-white" />
           ) : (
             <div className="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
-              <button type="button" onClick={() => setMode('edit')} className="hover:text-fg">Empty microsite — switch to Edit to write HTML.</button>
+              <button type="button" onClick={() => setMode('edit')} className="hover:text-fg">Empty microsite. Switch to Edit to write HTML.</button>
             </div>
           )
         ) : artifact.kind === 'sheet' ? (

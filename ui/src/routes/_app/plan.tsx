@@ -46,7 +46,7 @@ function PlanMembers({ planId }: { planId: string }) {
     <div className="flex items-center gap-1.5">
       <div className="flex -space-x-1.5">
         {members.map((m) => (
-          <span key={m.userId} className="group relative" title={`${m.name ?? m.email}${m.role === 'owner' ? ' (owner)' : ''}${active.has(m.userId) ? ' — here now' : ''}`}>
+          <span key={m.userId} className="group relative" title={`${m.name ?? m.email}${m.role === 'owner' ? ' (owner)' : ''}${active.has(m.userId) ? ', here now' : ''}`}>
             <Avatar
               name={m.name ?? m.email ?? '?'}
               className={cn('h-6 w-6 text-[10px] ring-2 ring-surface', active.has(m.userId) && 'ring-[color:var(--theme-success,#22c55e)]')}
@@ -208,7 +208,7 @@ function PlanPage() {
                   </div>
                   <div className="grid flex-1 place-items-center p-8 text-center">
                     <div className="max-w-56 text-xs leading-relaxed text-muted">
-                      The living document builds here as you talk — {current.label} keeps it current, and you can edit it directly.
+                      The living document builds here as you talk. {current.label} keeps it current, and you can edit it directly.
                     </div>
                   </div>
                 </div>

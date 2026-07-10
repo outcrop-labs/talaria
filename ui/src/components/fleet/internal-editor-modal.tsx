@@ -71,7 +71,7 @@ function DiffView({ diff, fallback }: { diff: DiffLine[] | null; fallback: strin
   if (!diff)
     return (
       <div className="h-full overflow-y-auto rounded-xl border border-line-subtle p-3">
-        <p className="mb-2 text-xs text-muted">Too large to diff — showing the revision's full content.</p>
+        <p className="mb-2 text-xs text-muted">Too large to diff. Showing the revision's full content.</p>
         <pre className="whitespace-pre-wrap font-[var(--font-mono)] text-xs text-fg">{fallback}</pre>
       </div>
     )
@@ -280,7 +280,7 @@ export function InternalEditorModal({
                     </>
                   ) : (
                     <>
-                      <span>Proposal — review, then accept or refine below.</span>
+                      <span>Proposal: review, then accept or refine below.</span>
                       <Button size="sm" className="ml-auto shrink-0" onClick={acceptProposal}>
                         <Check size={13} /> Accept
                       </Button>
@@ -318,7 +318,7 @@ export function InternalEditorModal({
                   <span>
                     Changes since {diffing.rev.version !== undefined ? `v${diffing.rev.version} · ` : ''}
                     {relativeTime(diffing.rev.createdAt)}
-                    {diffing.rev.createdBy ? ` · ${diffing.rev.createdBy}` : ''} — additions are what the current text
+                    {diffing.rev.createdBy ? ` · ${diffing.rev.createdBy}` : ''}. Additions are what the current text
                     gained, removals what it lost.
                   </span>
                   {editable && (
@@ -359,7 +359,7 @@ export function InternalEditorModal({
                   value={current}
                   editable={editable}
                   onSave={() => setDirty(true)}
-                  placeholder={editable ? 'Write in plain language — formatting is saved as markdown.' : undefined}
+                  placeholder={editable ? 'Write in plain language. Formatting is saved as markdown.' : undefined}
                   className="h-full"
                   fill
                 />
@@ -428,8 +428,8 @@ export function InternalEditorModal({
               }}
               placeholder={
                 proposal !== null
-                  ? 'Refine the proposal — e.g. “shorter, and add a step for weekends”'
-                  : 'Describe what you want — it drafts from the current version'
+                  ? 'Refine the proposal, e.g. “shorter, and add a step for weekends”'
+                  : 'Describe what you want. It drafts from the current version'
               }
               className="max-h-40 text-sm"
               autoFocus
@@ -446,7 +446,7 @@ export function InternalEditorModal({
               variant={museOpen ? 'outline' : 'ghost'}
               size="sm"
               onClick={() => setMuseOpen((v) => !v)}
-              title="Draft with AI — uses your preferred model (Settings)"
+              title="Draft with AI. Uses your preferred model (Settings)"
             >
               <Sparkles size={14} className="mr-1.5" /> Muse
             </Button>

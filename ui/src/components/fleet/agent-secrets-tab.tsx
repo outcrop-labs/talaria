@@ -62,7 +62,7 @@ export function SecretsTab({ agentId }: { agentId: string }) {
   return (
     <div className="space-y-4">
       <p className="text-xs leading-relaxed text-muted">
-        Environment variables just for this agent — a vendor token, a service key. Encrypted at rest, write-only here,
+        Environment variables just for this agent: a vendor token, a service key. Encrypted at rest, write-only here,
         and injected into the container when it starts from Talaria (Start recreates it with the latest values).
       </p>
       {isLoading ? null : secrets.length === 0 ? (
