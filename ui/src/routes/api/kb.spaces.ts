@@ -29,10 +29,20 @@ export const Route = createFileRoute('/api/kb/spaces')({
         return json({ spaces })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        // Agents (over MCP) may create spaces too — a space is just a shelf,
+        // and docs stay drafts until a human officializes them. No owner, so
+        // sharing/deletion stay human calls.
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+          const dup = (await listSpaces()).find((s) => s.name.trim().toLowerCase() === parsed.data.name.trim().toLowerCase())
+          if (dup) return json({ space: dup }) // find-or-create: agents retry; duplicates rot the KB
+          return json({ space: await createSpace({ ...parsed.data, createdBy: name, ownerUserId: null }) })
+        }
+        const user = await getSessionUser(request)
+        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         return json({ space: await createSpace({ ...parsed.data, createdBy: user.email ?? user.name ?? 'user', ownerUserId: user.id }) })
       },
     },

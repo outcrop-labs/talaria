@@ -328,6 +328,20 @@ server.registerTool(
 )
 
 server.registerTool(
+  'create_kb_space',
+  {
+    description:
+      "Create a knowledge space (a top-level shelf like 'Company' or 'Engineering') when no existing space fits — check list_kb_spaces first. Find-or-create by name, so retries are safe.",
+    inputSchema: {
+      name: z.string().min(1).max(80).describe('Space name'),
+      description: z.string().max(400).optional().describe('One line on what belongs here'),
+      icon: z.string().max(8).optional().describe('An emoji for the space'),
+    },
+  },
+  async (input) => ok(await api('POST', '/api/kb/spaces', input)),
+)
+
+server.registerTool(
   'create_kb_doc',
   {
     description:

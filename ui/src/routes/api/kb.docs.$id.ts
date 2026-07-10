@@ -56,8 +56,13 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         let owner = false
         if (checkAgentKey(request)) {
           const name = agentName(request)
-          // Editor grant — or an admin-elevated assistant on any non-private doc.
-          const mayEdit = !!name && (canEditAgent(name, grants) || (perms.visibility !== 'private' && (await isElevatedAssistant(name))))
+          // Its own authored doc, an editor grant — or an admin-elevated
+          // assistant on any non-private doc. Without the authorship rule an
+          // agent gets 403 on the doc it JUST created (create_kb_doc grants
+          // nothing) and works around it by creating duplicates.
+          const mayEdit =
+            !!name &&
+            (doc.createdBy === name || canEditAgent(name, grants) || (perms.visibility !== 'private' && (await isElevatedAssistant(name))))
           if (!name || !mayEdit) return json({ error: 'forbidden' }, { status: 403 })
           actor = name
           parsed.data.visibility = undefined

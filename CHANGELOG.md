@@ -29,7 +29,24 @@ secrets encrypted at rest.
 - **Research uses the same agent selector as every other surface** — the
   standard picker at the top of the rail (like Plan), not a bespoke composer
   pill. The composer keeps only the depth pill.
+### Fixed
+- **Queued chat messages get their reply on screen.** Sending while an agent
+  was still replying queued correctly server-side, and the follow-up turn was
+  generated — but the chat never showed it (it only appeared after a reload).
+  The chat now keeps watching whenever the last visible message is the
+  user's, so the server-chained reply streams in on its own. Verified live
+  with a queued mid-stream message.
+- **Agents can edit the docs they authored.** Editing a KB doc the agent
+  itself created returned 403 (edits required an explicit editor grant, and
+  create_kb_doc granted nothing) — so agents worked around it by creating
+  duplicates. Authorship now grants edit; everyone else's docs still need a
+  grant.
+
 ### Added
+- **Agents can open a knowledge space — create_kb_space.** "Put this in a
+  new Company space" no longer needs a human errand first: agents can create
+  a space (find-or-create by name, so retries never duplicate), while
+  sharing, deletion, and marking docs official stay human calls.
 - **Agents reach for Talaria first — flailing fixed at three layers.** A real
   transcript showed an agent burning 20 tool calls hunting for Notion/
   Obsidian/vaults when the answer was one toolkit call away. Now: (1) every

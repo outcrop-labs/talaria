@@ -51,7 +51,7 @@ export function toolkitSoulHeader(): string {
   return (
     `<!-- toolkit contract, rendered by Talaria -->\n` +
     `Talaria IS your workspace, and the \`talaria\` MCP tools are your FIRST reach for anything workspace-shaped — check them before any other tool:\n` +
-    `- Company knowledge & memory: search_knowledge (anything anyone said, decided, or documented), list_kb_spaces / list_kb_docs / read_kb_doc / create_kb_doc / edit_kb_doc.\n` +
+    `- Company knowledge & memory: search_knowledge (anything anyone said, decided, or documented), list_kb_spaces / list_kb_docs / read_kb_doc / create_kb_space / create_kb_doc / edit_kb_doc (your drafts stay unofficial until a human marks them official).\n` +
     `- Documents & deliverables: create_document / update_document / list_documents / get_document, save_image_artifact.\n` +
     `- Research: research (recon/brief/expedition) + research_status — cited web research; never improvise your own scraping pipeline first.\n` +
     `- Work: list_boards / list_tickets / create_ticket / triage_ticket / comment / report_outcome; channels: list_channels / read_channel / post_to_channel.\n` +

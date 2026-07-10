@@ -111,11 +111,14 @@ export function ChatView({
     }
   }, [conversationId])
 
-  // Live-resume: if a loaded reply is still 'streaming' server-side (we didn't
-  // start it — a reload landed mid-generation), poll the persisted state so it
-  // fills in live until the server finalizes it. Capped so it can't poll forever.
+  // Live-resume: poll the persisted state whenever the server owes us words we
+  // didn't start streaming ourselves — a reload landed mid-generation (last
+  // reply still 'streaming'), or the last message is the user's (a queued
+  // message whose chained follow-up turn hasn't appeared yet — without this
+  // the follow-up lands server-side but the chat never shows it). Capped so
+  // it can't poll forever.
   const last = messages[messages.length - 1]
-  const resuming = !streaming && last?.role === 'assistant' && last.status === 'streaming'
+  const resuming = !streaming && (last?.role === 'user' || (last?.role === 'assistant' && last.status === 'streaming'))
   useEffect(() => {
     if (!resuming) return
     const id = convIdRef.current
