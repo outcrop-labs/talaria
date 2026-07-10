@@ -124,7 +124,7 @@ function PreferredModelPicker() {
         placeholder="Pick a model"
       />
       <p className="mt-1 text-xs text-muted">
-        Powers AI drafting across Talaria — souls, skills, memories, schedules.
+        Powers AI drafting across Talaria: souls, skills, memories, schedules.
         {saved && !error && <span className="ml-2 text-[color:var(--theme-success)]">Saved</span>}
         {error && <span className="ml-2" style={{ color: 'var(--theme-danger)' }}>{error}</span>}
       </p>
@@ -173,8 +173,8 @@ function IntegrationsSection() {
   const flashText: Record<string, string> = {
     connected: 'Google account connected.',
     denied: 'Connection cancelled.',
-    bad_state: 'Connection expired — please try again.',
-    exchange_failed: 'Google rejected the connection — please try again.',
+    bad_state: 'Connection expired. Please try again.',
+    exchange_failed: 'Google rejected the connection. Please try again.',
     disabled: 'Google integration is not configured.',
   }
 
@@ -182,7 +182,7 @@ function IntegrationsSection() {
     <section className="mercury-panel mt-6 rounded-2xl p-6">
       <div className="mb-2 text-sm font-semibold text-fg">Connected accounts</div>
       <p className="mb-4 text-xs text-muted">
-        Connect Google to export docs and sheets into your Drive — and let the agents working for you build Google
+        Connect Google to export docs and sheets into your Drive, and let the agents working for you build Google
         Docs on your behalf.
       </p>
 
@@ -308,11 +308,11 @@ function ApiKeysSection() {
           </Button>
         </div>
       ) : (
-        <div className="text-xs text-muted">API keys are not enabled for your account — ask an admin.</div>
+        <div className="text-xs text-muted">API keys are not enabled for your account. Ask an admin.</div>
       )}
       {minted && (
         <div className="mt-3 rounded-lg border border-line-subtle p-3">
-          <div className="mb-1 text-xs text-muted">Copy it now — it won't be shown again.</div>
+          <div className="mb-1 text-xs text-muted">Copy it now. It won't be shown again.</div>
           <code className="break-all text-xs text-fg">{minted}</code>
         </div>
       )}

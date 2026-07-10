@@ -193,7 +193,7 @@ const j = async (r: Response): Promise<EndpointOpResult> =>
 
 // fetch() itself rejects on network failure (server restarting, offline) —
 // surface that as a normal error instead of an unhandled rejection.
-const netErr = (): EndpointOpResult => ({ error: 'network error — is the server up?' })
+const netErr = (): EndpointOpResult => ({ error: 'network error. Is the server up?' })
 
 export const addEndpoint = (e: {
   name: string

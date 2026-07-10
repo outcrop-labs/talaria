@@ -86,7 +86,7 @@ export function ChannelView({
             title={`Welcome to #${channelName}`}
             hint={
               channelAgents.length
-                ? `Say something — @mention ${channelAgents.map(labelFor).join(', ')} to bring the agents in.`
+                ? `Say something. @mention ${channelAgents.map(labelFor).join(', ')} to bring the agents in.`
                 : 'Say something, or add people & agents.'
             }
           />
@@ -232,7 +232,7 @@ function Composer({
             onKeyUp={trackCaret}
             onClick={trackCaret}
             onKeyDown={onKeyDown}
-            placeholder={`Message #${channelName} — @mention an agent to bring it in`}
+            placeholder={`Message #${channelName}. @mention an agent to bring it in`}
             className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
           />
           <KeyHint keys="⏎" label="send" visible={!!input.trim() || attachments.length > 0} className="self-end mb-3" />

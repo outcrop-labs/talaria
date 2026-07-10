@@ -118,11 +118,11 @@ function TemplateEditor({ template, onDelete, onSaved }: { template: Template; o
         </span>
       </div>
       <div className="min-h-0 flex-1">
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Skeleton (markdown — the sections every {template.kind} keeps)</label>
+        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Skeleton (markdown: the sections every {template.kind} keeps)</label>
         <Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={12} className="h-[16rem] w-full font-[var(--font-mono)] text-xs leading-relaxed" />
       </div>
       <div>
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Agent guidance (prompt-only — never shown on the {template.kind})</label>
+        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Agent guidance (prompt-only, never shown on the {template.kind})</label>
         <Textarea value={guidance} onChange={(e) => setGuidance(e.target.value)} rows={3} className="w-full text-xs" placeholder='e.g. "Always fill acceptance criteria; link the plan doc; keep Out of scope honest."' />
       </div>
       <div className="flex items-center gap-2">

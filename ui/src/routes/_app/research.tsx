@@ -106,7 +106,7 @@ function ResearchPage() {
           <AgentPicker agents={agents} value={agent} onChange={pickAgent} loading={agentsLoading} fullWidth />
         </div>
         {runs.length === 0 ? (
-          <div className="px-2 py-6 text-center text-xs text-muted">No research yet — ask something worth knowing.</div>
+          <div className="px-2 py-6 text-center text-xs text-muted">No research yet. Ask something worth knowing.</div>
         ) : (
           <ul className="space-y-0.5">
             {runs.map((r) => (

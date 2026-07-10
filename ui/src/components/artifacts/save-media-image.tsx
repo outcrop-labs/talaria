@@ -62,7 +62,7 @@ function SaveDialog({ src, onClose }: { src: string; onClose: () => void }) {
       {savedId ? (
         <div className="space-y-3">
           <p className="text-sm text-fg">
-            Saved. It's a durable file artifact now — versioned, shareable, folder-organized.
+            Saved. It's a durable file artifact now: versioned, shareable, folder-organized.
           </p>
           <div className="flex justify-end gap-2 border-t border-line-subtle pt-3">
             <Link to="/artifacts" className="text-sm text-accent hover:underline" onClick={onClose}>

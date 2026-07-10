@@ -243,7 +243,7 @@ function CollectionRow({ col, spaces }: { col: RagCollection; spaces: Array<{ id
               onChange={(ids) => void setSpaces(ids)}
               multiple
               size="sm"
-              placeholder="None — bind spaces to curate this brain"
+              placeholder="None. Bind spaces to curate this brain"
               className="min-w-0 flex-1"
             />
           </div>
@@ -291,7 +291,7 @@ function RerankSection({ rag }: { rag: RagAdmin }) {
     <div className="mt-5 border-t border-line-subtle pt-4">
       <div className="mb-1 text-sm font-semibold text-fg">Reranker</div>
       <p className="mb-3 text-xs text-muted">
-        The precision stage after vector recall — a cross-encoder rescores the merged candidates so the best
+        The precision stage after vector recall: a cross-encoder rescores the merged candidates so the best
         sources win. Off = plain vector order. Self-host it, or hook up a provider and set your default.
         Changes apply immediately.
       </p>
@@ -315,7 +315,7 @@ function RerankSection({ rag }: { rag: RagAdmin }) {
         )}
         {meta?.needsKey && (
           <>
-            <Input size="sm" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={cfg.hasKey ? 'key saved — replace' : 'API key'} className="w-52" />
+            <Input size="sm" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={cfg.hasKey ? 'replace saved key' : 'API key'} className="w-52" />
             {key && (
               <Button size="sm" onClick={() => void saveKey()} disabled={savingKey}>
                 Save key

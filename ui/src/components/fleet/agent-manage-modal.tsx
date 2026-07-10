@@ -81,7 +81,7 @@ export function AgentManageModal({
         {tab === 'crons' && (
           <CronsPanel
             agentId={def.id}
-            intro="Recurring jobs the agent runs on its own native scheduler — they keep firing even when Talaria is down."
+            intro="Recurring jobs the agent runs on its own native scheduler. They keep firing even when Talaria is down."
           />
         )}
         {tab === 'secrets' && (isAdmin ? <SecretsTab agentId={def.id} /> : <div className="text-sm text-muted">Admins only.</div>)}
@@ -327,7 +327,7 @@ function SkillEditorModal({ slug, name, isAdmin, onClose }: { slug: string; name
       open
       onClose={onClose}
       title={`${name} · SKILL.md`}
-      subtitle="Read live — the agent picks up edits on its next run."
+      subtitle="Read live. The agent picks up edits on its next run."
       value={data?.content ?? ''}
       editable={isAdmin}
       saving={busy}
@@ -364,13 +364,13 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       setBusy(false)
     }
   }
-  if (!def.managed) return <EmptyState icon="❖" title="Not managed" hint="Memory reads through the managed container — migrate this agent first." />
+  if (!def.managed) return <EmptyState icon="❖" title="Not managed" hint="Memory reads through the managed container. Migrate this agent first." />
   if (isLoading) return <div className="text-sm text-muted">Reading memory</div>
   if (error) return <EmptyState icon="❖" title="Can't reach the agent" hint={(error as Error).message} />
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
-        {data?.container && <span className="min-w-0 truncate text-xs text-muted">{data.container} · the agent edits this too — last writer wins</span>}
+        {data?.container && <span className="min-w-0 truncate text-xs text-muted">{data.container} · the agent edits this too; last writer wins</span>}
         {isAdmin && (
           <Button size="sm" className="ml-auto shrink-0" onClick={() => setEditing(true)}>
             Edit
@@ -457,7 +457,7 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   return (
     <div className="space-y-3">
       {busy && (
-        <Generating label={`Applying MCP change — rolling ${def.displayName} so the new version takes effect`} lines={2} />
+        <Generating label={`Applying MCP change: rolling ${def.displayName} so the new version takes effect`} lines={2} />
       )}
       {servers.length === 0 ? (
         <div className="text-sm text-muted">No MCP servers connected.</div>
@@ -471,7 +471,7 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
                 {s.extras.includes('built-in') && (
                   <span
                     className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted"
-                    title="The Talaria toolkit — attached to every managed agent automatically"
+                    title="The Talaria toolkit, attached to every managed agent automatically"
                   >
                     built-in
                   </span>
@@ -552,7 +552,7 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
     <div className="divide-y divide-line-subtle">
       {busy !== null && (
         <div className="pb-2.5">
-          <Generating label={`Reverting to v${busy} — publishing as a new version`} lines={2} />
+          <Generating label={`Reverting to v${busy}, publishing as a new version`} lines={2} />
         </div>
       )}
       <div className="flex items-center gap-2 pb-2.5">
@@ -566,7 +566,7 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
           open
           onClose={() => setConfigOpen(false)}
           title={`${def.displayName} · config`}
-          subtitle="The rendered model/tool config per version — click a revision to see what changed."
+          subtitle="The rendered model/tool config per version. Click a revision to see what changed."
           value={stringifyYaml(def.latest?.config ?? {})}
           editable={false}
           onSave={() => {}}

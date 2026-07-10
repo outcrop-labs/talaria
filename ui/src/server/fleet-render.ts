@@ -21,7 +21,7 @@ import { db } from './db/pg'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
 import { ensureMcpService, MCP_FLEET_URL } from './mcp-service'
-import { orgProfile, orgSoulHeader, toolkitSoulHeader } from './org'
+import { orgProfile, orgSoulHeader, toolkitSoulHeader, voiceSoulHeader } from './org'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
@@ -189,7 +189,7 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
   // organization context (when configured) — Talaria-first tool use is the
   // DEFAULT for every agent, not a per-soul nicety.
   const orgHeader = orgSoulHeader(await orgProfile())
-  const soulHeader = [orgHeader, toolkitSoulHeader()].filter(Boolean).join('\n\n')
+  const soulHeader = [orgHeader, voiceSoulHeader(), toolkitSoulHeader()].filter(Boolean).join('\n\n')
 
   // Agents' configs point at the toolkit MCP — make sure it's actually up,
   // and that the compose env can interpolate the fleet key into the header.

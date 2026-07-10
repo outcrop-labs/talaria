@@ -142,7 +142,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                   {/* Approval gate */}
                   {t.status === 'quality_review' && canEdit && (
                     <div className="flex items-center gap-2 rounded-lg border border-[color:var(--theme-accent-border)] bg-accent-soft p-2 text-sm">
-                      <span className="flex-1 text-fg">Ready for review — approve to complete.</span>
+                      <span className="flex-1 text-fg">Ready for review. Approve to complete.</span>
                       <Button size="sm" onClick={async () => { await reviewTask(taskId, 'approved'); refresh() }}>Approve</Button>
                       <Button variant="outline" size="sm" onClick={async () => { await reviewTask(taskId, 'rejected'); refresh() }}>Request changes</Button>
                     </div>
@@ -442,7 +442,7 @@ function DescriptionSection({
       </div>
     ) : (
       <div className="rounded-xl border border-dashed border-line-subtle px-4 py-6 text-center text-xs text-muted">
-        No description{canEdit ? ' — switch to Edit to add one.' : '.'}
+        No description{canEdit ? '. Switch to Edit to add one.' : '.'}
       </div>
     )
 

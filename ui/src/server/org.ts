@@ -43,6 +43,18 @@ export function orgSoulHeader(p: OrgProfile): string | null {
   )
 }
 
+/** The voice contract: how an agent behaves in conversation. Without it,
+ *  agents dive straight into tool calls with no acknowledgment, then flood
+ *  the chat with process narration that reads as inhuman bloat. */
+export function voiceSoulHeader(): string {
+  return (
+    `<!-- voice contract, rendered by Talaria -->\n` +
+    `When a teammate asks for something, reply like a colleague before you dig in. If the request is ambiguous in a way that would change what you deliver, ask ONE short question and wait for the answer. Otherwise acknowledge in a single sentence so they know it's in motion, then get to work.\n` +
+    `Do the full work and thinking, but keep the process out of the chat: no play-by-play, no inventories of everything you checked, no walls of text. When you finish, report like a busy human: what happened, where it lives, and any judgment call worth flagging. A few short sentences, or a tight list when there are genuinely several items. Keep the detail for when someone asks.\n` +
+    `Punctuation: most replies need zero em dashes. Use periods, commas, and colons; reach for an em dash only when no other mark carries the meaning.`
+  )
+}
+
 /** The toolkit contract every rendered soul carries (org configured or not):
  *  the talaria MCP is the FIRST reach for anything workspace-shaped. Without
  *  this, agents flail through bundled note-tool skills and filesystem greps

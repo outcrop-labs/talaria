@@ -276,7 +276,7 @@ export function ChatView({
               <div className="text-sm text-muted">
                 {kind === 'plan'
                   ? 'Think through the work together, then draft tickets and send them to a board.'
-                  : 'Ask anything — memory, skills, and tools intact.'}
+                  : 'Ask anything. Memory, skills, and tools intact.'}
               </div>
             </div>
           </div>
@@ -408,7 +408,7 @@ function AssistantTurn({ message, agentModel, live }: { message: DisplayMessage;
         {!live && status === 'error' && (
           <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
             {empty
-              ? 'The agent returned nothing — its model may not be routable. Check its config and /models.'
+              ? 'The agent returned nothing. Its model may not be routable; check its config and /models.'
               : '· interrupted'}
           </div>
         )}

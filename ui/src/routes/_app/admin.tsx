@@ -229,7 +229,7 @@ function OrgPanel() {
     <Panel>
       <div className="mb-1 text-sm font-semibold text-fg">Organization</div>
       <p className="mb-3 text-xs text-muted">
-        The business your agents work for. Baked into every agent's identity automatically — generated souls anchor to
+        The business your agents work for. Baked into every agent's identity automatically. Generated souls anchor to
         this team, and saving here rolls running agents (a fresh container comes up and traffic cuts over only once
         it's healthy), so the fleet speaks the new identity without interrupting anyone's conversation.
       </p>
@@ -356,7 +356,7 @@ function EncryptionPanel() {
         Every stored secret — provider API keys, agent secrets, Google tokens — is encrypted at rest with{' '}
         <strong>{data?.algorithm ?? 'AES-256-GCM'}</strong>. A random data key encrypts the secrets; that key is itself
         stored wrapped by the root secret, so the key that unlocks everything is never in a config file. Rotating
-        re-encrypts <strong>every</strong> secret under a fresh key in one pass — no per-secret steps.
+        re-encrypts <strong>every</strong> secret under a fresh key in one pass, no per-secret steps.
       </p>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted">
         <span>Key version: <strong className="text-fg">v{data?.keyVersion ?? '—'}</strong></span>
@@ -382,7 +382,7 @@ function EncryptionPanel() {
       <div className="mt-3">
         {busy && (
           <Generating
-            label="Rotating the data key — re-encrypting provider keys, agent secrets, and OAuth tokens in one pass"
+            label="Rotating the data key: re-encrypting provider keys, agent secrets, and OAuth tokens in one pass"
             lines={2}
           />
         )}
@@ -426,7 +426,7 @@ function JudgePanel() {
       <div className="mb-2 text-sm font-semibold text-fg">QA judge</div>
       <p className="mb-4 text-xs text-muted">
         A reliability gate: when an agent hands a ticket to <strong>quality review</strong>, a judge model reviews the
-        reported work and posts a verdict (pass / revise / escalate) with specific issues. <strong>Advisory</strong> —
+        reported work and posts a verdict (pass / revise / escalate) with specific issues. <strong>Advisory</strong>:
         the human reviewer still decides. Pick a strong model for the sharpest review.
       </p>
       <div className="flex flex-wrap items-center gap-3">
@@ -482,7 +482,7 @@ function GuardrailsPanel() {
     <Panel>
       <div className="mb-2 text-sm font-semibold text-fg">Confab guard</div>
       <p className="mb-4 text-xs text-muted">
-        A cheap structural check on every model’s output at the gateway — catches claims of work no tool did, invented
+        A cheap structural check on every model’s output at the gateway: catches claims of work no tool did, invented
         links/ids, fabricated outages, and leaked secrets. No extra model call, no added context. <strong>Observe</strong> records;
         <strong> annotate</strong> appends a caveat; <strong>strict</strong> can hold/regenerate.
       </p>
@@ -580,8 +580,8 @@ function OrgGooglePanel() {
   const msg: Record<string, string> = {
     connected: 'Org Google account connected.',
     denied: 'Connection cancelled.',
-    bad_state: 'Connection expired — try again.',
-    exchange_failed: 'Google rejected the connection — try again.',
+    bad_state: 'Connection expired. Try again.',
+    exchange_failed: 'Google rejected the connection. Try again.',
     forbidden: 'Admins only.',
     disabled: 'Google integration is not configured.',
   }

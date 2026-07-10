@@ -95,7 +95,7 @@ function DocEditor({ id, planId }: { id: string; planId: string }) {
           prose
           autosave
           onSave={() => void save()}
-          placeholder="The plan takes shape here — outline goals, scope, and decisions. Draft tickets from it when ready."
+          placeholder="The plan takes shape here: outline goals, scope, and decisions. Draft tickets from it when ready."
           fill
           className="min-w-0 flex-1"
         />

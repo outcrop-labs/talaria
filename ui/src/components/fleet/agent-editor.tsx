@@ -171,7 +171,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
 
         {busy === 'apply' && (
           <Generating
-            label={`Applying to ${def.displayName} — new container rolling up beside the old one, health check, then traffic cuts over`}
+            label={`Applying to ${def.displayName}: new container rolling up beside the old one, health check, then traffic cuts over`}
             lines={2}
           />
         )}

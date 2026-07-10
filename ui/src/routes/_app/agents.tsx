@@ -113,7 +113,7 @@ function AgentsPage() {
                   size="sm"
                   className="w-9 px-0"
                   onClick={() => setSchedulesOpen(true)}
-                  title="Schedules — crons across the fleet"
+                  title="Schedules: crons across the fleet"
                   aria-label="Schedules"
                 >
                   <CalendarClock size={15} />
@@ -137,7 +137,7 @@ function AgentsPage() {
           <Panel>
             <EmptyState
               title="No agents yet"
-              hint="Describe the first one and Muse designs it — identity, soul, and starter skills."
+              hint="Describe the first one and Muse designs it: identity, soul, and starter skills."
               action={
                 <Button size="sm" onClick={() => setCreating(true)}>
                   Design your first agent

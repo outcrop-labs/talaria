@@ -42,7 +42,7 @@ export function AssistantManageModal({ assistant, onClose }: { assistant: Assist
         {tab === 'Schedules' && (
           <CronsPanel
             agentId={assistant.id}
-            intro="Recurring jobs your assistant runs on its own — a morning brief, a Friday recap, a reminder sweep. Write each one as a self-contained instruction."
+            intro="Recurring jobs your assistant runs on its own: a morning brief, a Friday recap, a reminder sweep. Write each one as a self-contained instruction."
           />
         )}
         {tab === 'Skills' && <SkillsTab assistant={assistant} />}
@@ -72,7 +72,7 @@ function GeneralTab({ assistant }: { assistant: Assistant }) {
       if (err) setError(err)
       else {
         await refresh()
-        setNote('Done — changes are live.')
+        setNote('Done. Changes are live.')
       }
     } finally {
       setBusy(null)
@@ -97,7 +97,7 @@ function GeneralTab({ assistant }: { assistant: Assistant }) {
         <p className={cn('mt-1 text-xs', handle && !handleOk ? 'text-[color:var(--theme-danger)]' : 'text-muted')}>
           {handle && !handleOk
             ? 'Lowercase letters and numbers only, starting with a letter (2–30 characters).'
-            : 'Chats, memory, and access move with it — mentions and integrations pick up the new handle.'}
+            : 'Chats, memory, and access move with it. Mentions and integrations pick up the new handle.'}
         </p>
       </div>
 
@@ -214,7 +214,7 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
   return (
     <div className="space-y-4">
       <p className="text-xs leading-relaxed text-muted">
-        Skills are step-by-step playbooks your assistant follows for recurring jobs — weekly summaries, travel
+        Skills are step-by-step playbooks your assistant follows for recurring jobs: weekly summaries, travel
         planning, whatever you teach it.
       </p>
       {isLoading ? null : skills.length === 0 ? (
@@ -311,7 +311,7 @@ function SkillEditor({
       open
       onClose={onClose}
       title={`${name} · SKILL.md`}
-      subtitle="A playbook your assistant follows — edits are live on its next run."
+      subtitle="A playbook your assistant follows. Edits are live on its next run."
       value={data.content}
       editable
       saving={busy}
@@ -361,7 +361,7 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
   return (
     <div className="space-y-4">
       <p className="text-xs leading-relaxed text-muted">
-        What it remembers about you and your work — it updates this itself as you go, and you can edit or prune it any
+        What it remembers about you and your work. It updates this itself as you go, and you can edit or prune it any
         time. Every save is snapshotted, so nothing is ever lost.
       </p>
       {data?.content ? (

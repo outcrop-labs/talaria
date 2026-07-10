@@ -47,6 +47,13 @@ Components: `components/app/surface.tsx` (`RailSurface`, `Rail`, `Stage`,
   states use plain words ("Delete channel", "Loading", "Search") — never a
   trailing "…". Content truncation markers on clipped USER text are the only
   tolerated use.
+- **Em dashes sparingly.** In UI copy an em dash must earn its place; the
+  default is a period, comma, or colon. This applies to agent prose too (the
+  rendered soul's voice contract enforces it fleet-wide).
+- **Agents converse like colleagues.** The rendered soul carries a voice
+  contract: acknowledge (or ask ONE clarifying question) before diving into
+  tools, keep process narration out of chat, and report outcomes in a few
+  short sentences. Copy surfaces should assume replies are short.
 - **Destructive actions are never buttons.** They render as quiet red LINKS
   (`<DangerLink>`): small text, muted until hover, tucked at the edge of the
   section they affect — they must not compete for attention. The in-app

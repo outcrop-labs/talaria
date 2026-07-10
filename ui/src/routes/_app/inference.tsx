@@ -59,7 +59,7 @@ function InferencePage() {
           <EmptyState
             icon="▦"
             title="No self-hosted backends"
-            hint="Add a self-hosted provider (Ollama, vLLM, a router) on the Models page — LAN and loopback URLs are classed self-hosted automatically."
+            hint="Add a self-hosted provider (Ollama, vLLM, a router) on the Models page. LAN and loopback URLs are classed self-hosted automatically."
           />
         ) : (
           <>

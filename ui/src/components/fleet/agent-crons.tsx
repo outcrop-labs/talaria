@@ -146,7 +146,7 @@ function CronForm({
     try {
       const full = await streamMuse({ kind: 'cron', instruction: ask }, () => {})
       const j = parseCronDraft(full)
-      if (!j) return setDraftErr('could not turn that into a job — try rephrasing')
+      if (!j) return setDraftErr('could not turn that into a job. Try rephrasing')
       setName(j.name)
       setSchedule(j.schedule)
       setPrompt(j.prompt)
@@ -173,7 +173,7 @@ function CronForm({
               if (!drafting && draftAsk.trim()) void draft()
             }
           }}
-          placeholder="Describe it — e.g. “every weekday morning, summarize my inbox into a brief”"
+          placeholder="Describe it, e.g. “every weekday morning, summarize my inbox into a brief”"
           className="max-h-32 text-sm"
         />
         <Button variant="outline" className="shrink-0 whitespace-nowrap" onClick={() => void draft()} disabled={drafting || !draftAsk.trim()}>
@@ -181,7 +181,7 @@ function CronForm({
         </Button>
       </div>
       {draftErr && <p className="text-xs text-[color:var(--theme-danger)]">{draftErr}</p>}
-      {drafting && <Generating label="Designing the job — name, schedule, and the prompt it runs" lines={2} />}
+      {drafting && <Generating label="Designing the job: name, schedule, and the prompt it runs" lines={2} />}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
@@ -400,7 +400,7 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
     <Modal open onClose={onClose} title="Schedules · native Hermes crons" width="max-w-3xl">
       <div className="max-h-[70vh] space-y-5 overflow-y-auto pr-1">
         <p className="text-xs text-muted">
-          Jobs run inside each agent's own scheduler — they keep firing even if Talaria is down. Fixed-time jobs
+          Jobs run inside each agent's own scheduler. They keep firing even if Talaria is down. Fixed-time jobs
           created here are staggered 2&nbsp;minutes per agent so the fleet doesn't hit the models at once.
         </p>
         {isLoading ? (
@@ -416,7 +416,7 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
         )}
         {agents.some((a) => a.error) && (
           <p className="text-xs text-[color:var(--theme-warning)]">
-            Unreachable: {agents.filter((a) => a.error).map((a) => a.displayName).join(', ')} — are they running?
+            Unreachable: {agents.filter((a) => a.error).map((a) => a.displayName).join(', ')}. Are they running?
           </p>
         )}
 

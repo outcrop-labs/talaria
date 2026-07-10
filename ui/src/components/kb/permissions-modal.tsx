@@ -247,7 +247,7 @@ export function PermissionsModal({
               {copied ? <Check size={13} className="shrink-0 text-accent" /> : <Copy size={13} className="shrink-0" />}
             </button>
           )}
-          <p className="mt-2 text-[11px] text-muted">Agents only edit when given the Editor role here — never by default.</p>
+          <p className="mt-2 text-[11px] text-muted">Agents only edit when given the Editor role here, never by default.</p>
           {inheritable && canManage && (
             <button type="button" onClick={() => setInh(true)} className="mt-2 text-[11px] text-accent hover:underline">
               Reset to folder defaults

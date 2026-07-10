@@ -113,7 +113,7 @@ function HomePage() {
                 />
                 <QueuePanel
                   title="Blocked"
-                  hint="Stalled — needs you to unblock"
+                  hint="Stalled, needs you to unblock"
                   queue={data!.queues.blocked}
                   accent="var(--theme-warning)"
                   onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
@@ -203,7 +203,7 @@ function OrgRail({ data, isAdmin }: { data: HomeSummary | undefined; isAdmin: bo
       <Panel>
         <div className="mb-2 text-sm font-semibold text-fg">Pulse</div>
         {org.activity.length === 0 ? (
-          <div className="text-xs text-muted">Quiet so far — activity across boards, comms, and the fleet shows here.</div>
+          <div className="text-xs text-muted">Quiet so far. Activity across boards, comms, and the fleet shows here.</div>
         ) : (
           <ul className="space-y-2">
             {org.activity.map((a, i) => (
@@ -247,7 +247,7 @@ function AssistantCard() {
         <>
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium text-fg">{data.displayName}</div>
-            <div className="truncate text-xs text-muted">Your personal assistant — its own memory, skills, and tools.</div>
+            <div className="truncate text-xs text-muted">Your personal assistant, with its own memory, skills, and tools.</div>
           </div>
           <Button size="sm" onClick={() => void navigate({ to: '/chat' })}>
             Open chat
@@ -257,7 +257,7 @@ function AssistantCard() {
         <>
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium text-fg">Set up your assistant</div>
-            <div className="truncate text-xs text-muted">A personal agent that's just yours — memory, skills, and tools of its own.</div>
+            <div className="truncate text-xs text-muted">A personal agent that's just yours: memory, skills, and tools of its own.</div>
           </div>
           <Button size="sm" onClick={() => setWizard(true)}>
             Get started

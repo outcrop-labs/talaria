@@ -73,7 +73,7 @@ export function PlanModal({
       else if (!j.proposals?.length) setNote(j.note ?? 'no tickets came back')
       else setProposals(j.proposals.map((p) => ({ ...p, dependsOn: p.dependsOn ?? [], include: true })))
     } catch {
-      setNote('planning failed — is the gateway up?')
+      setNote('planning failed. Is the gateway up?')
     } finally {
       setPhase('idle')
     }
@@ -117,7 +117,7 @@ export function PlanModal({
     }
     await qc.invalidateQueries({ queryKey: ['tasks', boardId] })
     if (failed) {
-      setNote(`"${failed}" failed to create — the ones before it are done; retry creates only what's left`)
+      setNote(`"${failed}" failed to create. The ones before it are done; retry creates only what's left`)
       setPhase('idle')
     } else {
       setPhase('done')
@@ -134,7 +134,7 @@ export function PlanModal({
           <>
             <p className="text-sm text-fg">
               Created {createdCount} ticket{createdCount === 1 ? '' : 's'} in{' '}
-              <span className="font-medium">{editable.find((b) => b.id === boardId)?.name}</span> — they're in the
+              <span className="font-medium">{editable.find((b) => b.id === boardId)?.name}</span>. They're in the
               inbox, ready to assign.
             </p>
             <div className="flex justify-end border-t border-line-subtle pt-3">
@@ -164,7 +164,7 @@ export function PlanModal({
         ) : proposals === null ? (
           <>
             <p className="text-sm text-muted">
-              An agent reads the conversation and drafts tickets for the board you pick — formatted on the board's
+              An agent reads the conversation and drafts tickets for the board you pick, formatted on the board's
               ticket template. You review before anything is created.
             </p>
             <div className="grid grid-cols-2 gap-3">

@@ -32,7 +32,7 @@ export function ConversationSidebar({
   return (
     <Rail
       title="Plan"
-      actions={<IconButton size="sm" title="New plan — think it through, then draft tickets" onClick={onNewChat} disabled={!selectedAgent}><Plus size={15} /></IconButton>}
+      actions={<IconButton size="sm" title="New plan: think it through, then draft tickets" onClick={onNewChat} disabled={!selectedAgent}><Plus size={15} /></IconButton>}
     >
       <div className="mb-3">
         <AgentPicker agents={agents} value={selectedAgent} onChange={onSelectAgent} loading={agentsLoading} fullWidth />
