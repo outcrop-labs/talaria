@@ -11,7 +11,9 @@ import { getSetting, setSetting } from './audit'
 import { resolveRoute } from './llm-gateway'
 
 export type ModelRole =
-  | 'research-search'
+  | 'research-recon'
+  | 'research-brief'
+  | 'research-expedition'
   | 'utility'
   | 'vision'
   | 'image-generation'
@@ -26,9 +28,21 @@ export const MODEL_ROLES: Array<{
   wired: boolean
 }> = [
   {
-    role: 'research-search',
-    label: 'Research search',
-    hint: 'Runs the search stages of Recon / Brief / Expedition. Needs a web-search-capable model (Perplexity sonar class). Auto: best registered sonar.',
+    role: 'research-recon',
+    label: 'Research · Recon',
+    hint: 'Search stage for quick Recon passes. Needs a web-search-capable model. Auto: sonar.',
+    wired: true,
+  },
+  {
+    role: 'research-brief',
+    label: 'Research · Brief',
+    hint: 'Search stages behind Brief documents. Auto: sonar-pro.',
+    wired: true,
+  },
+  {
+    role: 'research-expedition',
+    label: 'Research · Expedition',
+    hint: 'Search stages for deep Expedition runs. Auto: sonar-pro. Assigning a deep-research-class model (e.g. sonar-deep-research) makes each stage a full sweep — the engine runs fewer, bigger queries.',
     wired: true,
   },
   {

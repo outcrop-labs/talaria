@@ -81,11 +81,12 @@ interface SearchHit {
   sources: Array<{ url: string; title: string | null; snippet: string | null }>
 }
 
-/** The search model: the "Research search" MODEL ROLE when assigned (and still
- *  routable), else the first registered sonar from the mode's preference list.
+/** The search model for a tier: its per-tier MODEL ROLE when assigned (and
+ *  still routable) — Perplexity's sonar family maps one-to-one onto the modes
+ *  — else the first registered sonar from the mode's preference list.
  *  Research needs a search-capable model on the gateway to exist. */
 export async function searchModelFor(mode: ResearchMode): Promise<string | null> {
-  const assigned = await resolveRoleModel('research-search')
+  const assigned = await resolveRoleModel(`research-${mode}`)
   if (assigned) return assigned
   const ids = new Set((await gatewayModels()).map((m) => m.id))
   for (const want of budgetFor(mode).search) {
@@ -95,6 +96,15 @@ export async function searchModelFor(mode: ResearchMode): Promise<string | null>
     if (qualified) return qualified
   }
   return null
+}
+
+/** A deep-research-class search model is an agentic researcher in itself
+ *  (each call runs its own multi-search sweep) — shrink OUR loop so effort
+ *  doesn't multiply: fewer, bigger stages instead of many small ones. */
+const isDeepResearchModel = (model: string) => /deep-research/i.test(model)
+function adaptBudget(budget: ReturnType<typeof budgetFor>, searchModel: string) {
+  if (!isDeepResearchModel(searchModel)) return budget
+  return { ...budget, rounds: Math.min(budget.rounds, 2), queries: 1 }
 }
 
 /** One search query → sonar's cited answer + its source list. Metered like any
@@ -283,8 +293,8 @@ async function runResearch(runId: string): Promise<void> {
     const got = await getResearchRun(runId)
     if (!got || got.run.status === 'error') return
     const { question, mode, agentModel, ownerUserId, requestedBy } = got.run
-    const budget = budgetFor(mode)
     const searchModel = (await searchModelFor(mode))!
+    const budget = adaptBudget(budgetFor(mode), searchModel)
     const agentLabel = describeAgent(agentModel).label
     const registry = new SourceRegistry()
     const notes: string[] = []
