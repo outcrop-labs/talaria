@@ -1,10 +1,11 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bot, ExternalLink, Gauge, Loader2, Trash2 } from 'lucide-react'
+import { ExternalLink, Gauge, Loader2, Trash2 } from 'lucide-react'
 import { RailSurface, Rail, Stage, StageHeader } from '@/components/app/surface'
 import { Chip, DangerLink, StatusDot, type DotStatus } from '@/components/ui/chip'
 import { ComposerPicker } from '@/components/chat/composer-picker'
+import { AgentPicker } from '@/components/chat/agent-picker'
 import { KeyHint } from '@/components/ui/kbd'
 import { cn } from '@/lib/cn'
 import { Avatar } from '@/components/ui/avatar'
@@ -50,7 +51,7 @@ const STATUS_DOT: Record<ResearchRun['status'], DotStatus> = {
 function ResearchPage() {
   const qc = useQueryClient()
   const { data: session } = useSession()
-  const { data: fleet } = useAgents()
+  const { data: fleet, isLoading: agentsLoading } = useAgents()
   const agents = useMemo(() => fleet?.agents ?? [], [fleet])
   const { data: runs = [] } = useResearchRuns()
 
@@ -101,6 +102,9 @@ function ResearchPage() {
   return (
     <RailSurface>
       <Rail title="Research">
+        <div className="mb-3">
+          <AgentPicker agents={agents} value={agent} onChange={pickAgent} loading={agentsLoading} fullWidth />
+        </div>
         {runs.length === 0 ? (
           <div className="px-2 py-6 text-center text-xs text-muted">No research yet — ask something worth knowing.</div>
         ) : (
@@ -199,14 +203,6 @@ function ResearchPage() {
                     label: MODE_META[m].label,
                     sub: `${MODE_META[m].tagline} · ${MODE_META[m].eta}`,
                   }))}
-                />
-                <ComposerPicker
-                  icon={Bot}
-                  value={agent ?? ''}
-                  onChange={pickAgent}
-                  title="Whose expertise drives the search"
-                  menuLabel="Researching agent"
-                  options={agents.map((a) => ({ value: a.id, label: a.label, sub: a.role ?? undefined }))}
                 />
                 {starting && (
                   <span className="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><Loader2 size={15} className="animate-spin text-muted" /></span>

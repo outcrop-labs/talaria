@@ -39,7 +39,8 @@ function useIsOwner(item: { ownerUserId: string | null; createdBy: string | null
 const docSearch: DocSearchFn = async (q) => {
   if (!q.trim()) return []
   const hits = await searchKb(q)
-  return hits.map((h) => ({ id: h.id, title: h.title, icon: h.icon, href: `/knowledge/${h.id}` }))
+  // Editor cross-links point at real docs only; space overviews have no route.
+  return hits.filter((h) => h.kind === 'doc').map((h) => ({ id: h.id, title: h.title, icon: h.icon, href: `/knowledge/${h.id}` }))
 }
 
 export const Route = createFileRoute('/_app/knowledge')({
@@ -92,9 +93,10 @@ function KnowledgePage() {
   }
 
   // Jump to a doc from search — switch to its space if needed.
-  const openDoc = (hit: { id: string; spaceId: string }) => {
+  const openDoc = (hit: { id: string; spaceId: string; kind?: 'doc' | 'space' }) => {
     if (hit.spaceId !== activeSpace?.id) setSpaceId(hit.spaceId)
-    setDocId(hit.id)
+    // A space hit opens the space's own overview document.
+    setDocId(hit.kind === 'space' ? null : hit.id)
   }
 
   return (
