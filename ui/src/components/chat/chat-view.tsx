@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { TierPicker } from '@/components/chat/tier-picker'
+import { SendButton, StopButton } from '@/components/chat/composer-buttons'
 import { MentionMenu, useMentions, type Mentionable } from '@/components/chat/mentions'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { Markdown } from '@/components/ui/markdown'
@@ -43,7 +43,6 @@ export function ChatView({
   newChatSignal,
   onCreated,
   kind = 'chat',
-  headerAction,
   mentionables = [],
 }: {
   agentModel: string
@@ -55,8 +54,6 @@ export function ChatView({
   onCreated: (id: string) => void
   /** 'plan' conversations live in the Plan surface and draft tickets. */
   kind?: 'chat' | 'plan'
-  /** Optional actions rendered in a top bar (e.g. Plan's "Draft tickets"). */
-  headerAction?: React.ReactNode
   /** Composer @mention options (e.g. the plan surface offers teammates). */
   mentionables?: Mentionable[]
 }) {
@@ -246,9 +243,6 @@ export function ChatView({
 
   return (
     <div className="mx-auto flex h-full w-full max-w-[var(--chat-content-max-width)] flex-col">
-      {headerAction && (
-        <div className="flex items-center justify-end gap-2 border-b border-line-subtle px-6 py-2">{headerAction}</div>
-      )}
       <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto px-6 py-6">
         {messages.length === 0 ? (
           <div className="grid h-full place-items-center text-center">
@@ -304,16 +298,12 @@ export function ChatView({
               onKeyUp={trackCaret}
               onClick={trackCaret}
               onKeyDown={onKeyDown}
-              placeholder={`Message ${agentLabel}…`}
+              placeholder={`Message ${agentLabel}`}
               className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
             />
             {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
-            {streaming && (
-              <Button variant="outline" onClick={stop}>Stop</Button>
-            )}
-            <Button onClick={() => void send()} disabled={!input.trim() && attachments.length === 0}>
-              Send
-            </Button>
+            {streaming && <StopButton onClick={stop} />}
+            <SendButton onClick={() => void send()} disabled={!input.trim() && attachments.length === 0} />
           </div>
         </div>
       </div>

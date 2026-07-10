@@ -105,7 +105,7 @@ export const RichEditor = forwardRef<RichEditorHandle, {
       Image.configure({ inline: false, allowBase64: false }),
       Placeholder.configure({
         placeholder: ({ node }) =>
-          slash && node.type.name === 'paragraph' ? (placeholder ? `${placeholder}  ·  type “/” for blocks` : 'Type “/” for blocks, or just write…') : (placeholder ?? ''),
+          slash && node.type.name === 'paragraph' ? (placeholder ? `${placeholder}  ·  type “/” for blocks` : 'Type “/” for blocks, or just write') : (placeholder ?? ''),
       }),
       Markdown.configure({ html: false, breaks: true, transformPastedText: true }),
       BlockEscape,
@@ -347,7 +347,7 @@ function DocLinkPopover({
   }, [q, search])
   return (
     <div ref={ref} className="absolute left-0 top-full z-30 mt-1 w-72 rounded-xl border border-line bg-card p-1.5 shadow-lg">
-      <Input autoFocus size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search documents…" className="mb-1.5" />
+      <Input autoFocus size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search documents" className="mb-1.5" />
       <div className="max-h-64 overflow-y-auto">
         {results.length === 0 ? (
           <div className="px-2 py-3 text-center text-xs text-muted">{q.trim() ? 'No matches.' : 'Type to search docs.'}</div>
@@ -457,7 +457,7 @@ function ImageModal({
         }}
       >
         <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Image URL</label>
-        <Input autoFocus value={url} onChange={(e) => onUrl(e.target.value)} placeholder="https://…/image.png" className="w-full" />
+        <Input autoFocus value={url} onChange={(e) => onUrl(e.target.value)} placeholder="https:///image.png" className="w-full" />
       </form>
     </Modal>
   )

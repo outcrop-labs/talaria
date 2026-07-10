@@ -118,8 +118,8 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
 }
 
 // Parameter support, learned from the source: when an upstream 400 names a
-// parameter we sent ("`temperature` is deprecated…", "Unsupported parameter:
-// 'top_p'…"), we strip it, retry, and remember — the next call pre-strips.
+// parameter we sent ("`temperature` is deprecated", "Unsupported parameter:
+// 'top_p'"), we strip it, retry, and remember — the next call pre-strips.
 // Newer models routinely retire tunables (sonnet-5 rejects temperature); no
 // spec table could keep up, but the provider itself is always current.
 // Learnings persist in app_settings so a restart doesn't re-pay the 400s.

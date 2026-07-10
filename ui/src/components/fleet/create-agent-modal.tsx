@@ -143,7 +143,7 @@ export function CreateAgentModal({
           </div>
           {generating && (
             <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border border-line-subtle p-3 font-[var(--font-mono)] text-xs leading-5 text-muted">
-              {genPreview || 'Designing…'}
+              {genPreview || 'Designing'}
               <span className="animate-pulse text-accent">▍</span>
             </pre>
           )}
@@ -158,7 +158,7 @@ export function CreateAgentModal({
             </Button>
             <Button onClick={() => void generate(purpose, false)} disabled={generating || !purpose.trim()}>
               {generating && <Loader2 size={14} className="animate-spin" />}
-              {generating ? 'Designing…' : 'Design agent'}
+              {generating ? 'Designing' : 'Design agent'}
             </Button>
           </div>
         </div>
@@ -247,8 +247,8 @@ export function CreateAgentModal({
           <Generating
             label={
               start
-                ? `Hiring ${displayName || slug} — rendering the config, starting the container, waiting for health…`
-                : `Creating ${displayName || slug}…`
+                ? `Hiring ${displayName || slug} — rendering the config, starting the container, waiting for health`
+                : `Creating ${displayName || slug}`
             }
             lines={3}
           />
@@ -269,7 +269,7 @@ export function CreateAgentModal({
             Cancel
           </Button>
           <Button onClick={() => void create()} disabled={busy || generating || !slug || !department || !displayName}>
-            {busy ? 'Creating…' : 'Create agent'}
+            {busy ? 'Creating' : 'Create agent'}
           </Button>
         </div>
       </div>
@@ -341,12 +341,12 @@ function RefineBar({
             setText('')
           }}
         >
-          {busy ? 'Refining…' : 'Refine'}
+          {busy ? 'Refining' : 'Refine'}
         </Button>
       </div>
       {busy && preview !== null && (
         <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line-subtle p-2.5 font-[var(--font-mono)] text-[11px] leading-4 text-muted">
-          {preview || 'Designing…'}
+          {preview || 'Designing'}
           <span className="animate-pulse text-accent">▍</span>
         </pre>
       )}

@@ -102,7 +102,7 @@ export function RetrievalPanel() {
           <HealthDot ok={rag.health.embeddings} label="Embeddings" />
           <span className="ml-auto text-xs text-muted">
             {rag.backfill.state === 'running' ? (
-              <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> backfilling…</span>
+              <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> backfilling</span>
             ) : rag.backfill.state === 'done' && rag.backfill.counts ? (
               `last backfill: ${Object.entries(rag.backfill.counts).map(([k, v]) => `${v} ${k}`).join(' · ')}`
             ) : rag.backfill.state === 'error' ? (
@@ -257,38 +257,33 @@ function CollectionRow({ col, spaces }: { col: RagCollection; spaces: Array<{ id
 function RerankSection({ rag }: { rag: RagAdmin }) {
   const qc = useQueryClient()
   const cfg = rag.rerank.config
-  const [provider, setProvider] = useState(cfg.provider)
-  const [url, setUrl] = useState(cfg.url ?? '')
-  const [model, setModel] = useState(cfg.model ?? '')
   const [key, setKey] = useState('')
   const [models, setModels] = useState<string[] | null>(null)
-  const [saving, setSaving] = useState(false)
-  const meta = rag.rerank.providers.find((p) => p.id === provider)
+  const [savingKey, setSavingKey] = useState(false)
+  const meta = rag.rerank.providers.find((p) => p.id === cfg.provider)
 
+  // Autosave: provider / url / model apply on change. Only the API key (a
+  // secret being committed) keeps an explicit save affordance.
+  const apply = async (patch: Record<string, unknown>) => {
+    await fetch('/api/admin/rag', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reranker: patch }),
+    })
+    await qc.invalidateQueries({ queryKey: ['rag-admin'] })
+  }
   const loadModels = async () => {
     const q = key ? `&key=${encodeURIComponent(key)}` : ''
-    const r = await fetch(`/api/admin/rag?models=${provider}${q}`)
+    const r = await fetch(`/api/admin/rag?models=${cfg.provider}${q}`)
     if (r.ok) setModels(((await r.json()) as { models: string[] }).models)
   }
-  const save = async () => {
-    setSaving(true)
+  const saveKey = async () => {
+    setSavingKey(true)
     try {
-      await fetch('/api/admin/rag', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          reranker: {
-            provider,
-            url: url || null,
-            model: model || null,
-            ...(key ? { apiKey: key } : {}),
-          },
-        }),
-      })
+      await apply({ apiKey: key })
       setKey('')
-      await qc.invalidateQueries({ queryKey: ['rag-admin'] })
     } finally {
-      setSaving(false)
+      setSavingKey(false)
     }
   }
 
@@ -298,9 +293,10 @@ function RerankSection({ rag }: { rag: RagAdmin }) {
       <p className="mb-3 text-xs text-muted">
         The precision stage after vector recall — a cross-encoder rescores the merged candidates so the best
         sources win. Off = plain vector order. Self-host it, or hook up a provider and set your default.
+        Changes apply immediately.
       </p>
       <div className="flex flex-wrap items-center gap-2">
-        <Select size="sm" value={provider} onChange={(e) => { setProvider(e.target.value); setModels(null); setModel('') }} className="w-52">
+        <Select size="sm" value={cfg.provider} onChange={(e) => { setModels(null); void apply({ provider: e.target.value, model: null }) }} className="w-52">
           <option value="off">Off (vector order)</option>
           {rag.rerank.providers.map((p) => (
             <option key={p.id} value={p.id}>
@@ -308,14 +304,29 @@ function RerankSection({ rag }: { rag: RagAdmin }) {
             </option>
           ))}
         </Select>
-        {meta?.needsUrl && <Input size="sm" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://localhost:8056 (TEI /rerank)" className="w-64" />}
+        {meta?.needsUrl && (
+          <Input
+            size="sm"
+            defaultValue={cfg.url ?? ''}
+            onBlur={(e) => e.target.value !== (cfg.url ?? '') && void apply({ url: e.target.value || null })}
+            placeholder="http://localhost:8056 (TEI /rerank)"
+            className="w-64"
+          />
+        )}
         {meta?.needsKey && (
-          <Input size="sm" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={cfg.hasKey ? 'key saved — replace…' : 'API key'} className="w-52" />
+          <>
+            <Input size="sm" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={cfg.hasKey ? 'key saved — replace' : 'API key'} className="w-52" />
+            {key && (
+              <Button size="sm" onClick={() => void saveKey()} disabled={savingKey}>
+                Save key
+              </Button>
+            )}
+          </>
         )}
         {meta && meta.id !== 'tei' && (
           <>
             {models ? (
-              <Select size="sm" value={model} onChange={(e) => setModel(e.target.value)} className="w-64">
+              <Select size="sm" value={cfg.model ?? ''} onChange={(e) => void apply({ model: e.target.value || null })} className="w-64">
                 <option value="">default model</option>
                 {models.map((m) => (
                   <option key={m} value={m}>{m}</option>
@@ -328,11 +339,8 @@ function RerankSection({ rag }: { rag: RagAdmin }) {
             )}
           </>
         )}
-        <Button size="sm" onClick={() => void save()} disabled={saving}>
-          Save
-        </Button>
       </div>
-      {provider !== 'off' && cfg.provider === provider && (
+      {cfg.provider !== 'off' && (
         <div className="mt-1.5 text-[11px] text-muted">
           Active: {cfg.provider}{cfg.model ? ` · ${cfg.model}` : ''}{cfg.hasKey ? ' · key sealed' : ''} · rescoring top {cfg.candidates ?? 30}
         </div>

@@ -183,7 +183,7 @@ function AddCard({ onAdd }: { onAdd: (title: string) => void }) {
       onChange={(e) => setTitle(e.target.value)}
       onKeyDown={(e) => (e.key === 'Enter' ? submit() : e.key === 'Escape' ? setOpen(false) : null)}
       onBlur={submit}
-      placeholder="Card title…"
+      placeholder="Card title"
       size="sm"
       className="w-full"
     />

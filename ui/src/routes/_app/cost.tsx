@@ -27,7 +27,7 @@ function CostPage() {
         <h1 className="mercury-text text-2xl font-semibold">Cost</h1>
 
         {isLoading ? (
-          <div className="text-sm text-muted">Loading ledger…</div>
+          <div className="text-sm text-muted">Loading ledger</div>
         ) : !data || total(t?.month) === 0 ? (
           <EmptyState
             icon="⌗"

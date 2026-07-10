@@ -38,7 +38,7 @@ function AppLayout() {
     return (
       <>
         <MercuryBackdrop />
-        <div className="grid min-h-screen place-items-center text-sm text-muted">Loading…</div>
+        <div className="grid min-h-screen place-items-center text-sm text-muted">Loading</div>
       </>
     )
   }

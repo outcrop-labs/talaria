@@ -376,13 +376,13 @@ function EncryptionPanel() {
           />
         </div>
         <Button size="sm" onClick={() => void rotate()} disabled={busy}>
-          {busy ? 'Rotating…' : 'Rotate keys'}
+          {busy ? 'Rotating' : 'Rotate keys'}
         </Button>
       </div>
       <div className="mt-3">
         {busy && (
           <Generating
-            label="Rotating the data key — re-encrypting provider keys, agent secrets, and OAuth tokens in one pass…"
+            label="Rotating the data key — re-encrypting provider keys, agent secrets, and OAuth tokens in one pass"
             lines={2}
           />
         )}
@@ -650,7 +650,7 @@ function OrgGoogleTargets({ targets }: { targets: OrgGoogle['targets'] }) {
       <div className="text-xs font-medium text-fg">Where agents build</div>
       <div>
         <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Shared Drive / folder ID</label>
-        <Input size="sm" value={drive} onChange={(e) => setDrive(e.target.value)} placeholder="0Ae1a…  (Shared Drive or folder ID)" />
+        <Input size="sm" value={drive} onChange={(e) => setDrive(e.target.value)} placeholder="Shared Drive or folder ID" />
         <div className="mt-1 text-[11px] text-muted">Files agents create land here (team-owned). Blank = the account’s My Drive. The org account must be a member of the Shared Drive.</div>
       </div>
       <div>

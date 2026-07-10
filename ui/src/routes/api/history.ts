@@ -13,7 +13,7 @@ import { ownsAgent, personalityOf } from '@/server/personal-agent'
 //   GET /api/history?kind=skill&owner=<owner>&name=<name>   → revisions
 //   GET /api/history?kind=memory&id=<defId>                 → revisions
 //   GET /api/history?kind=soul|config|personality&id=<defId>
-//   …&rev=<id>                                              → that revision's content
+//   &rev=<id>                                              → that revision's content
 // ownerKey is derived server-side (skill: "<owner>/<name>", the rest: an id) so
 // the caller never constructs the storage key. Version-backed kinds are
 // admin-or-owner: souls and configs are the agent's internals, not public.

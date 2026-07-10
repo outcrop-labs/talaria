@@ -177,11 +177,11 @@ function CronForm({
           className="max-h-32 text-sm"
         />
         <Button variant="outline" className="shrink-0 whitespace-nowrap" onClick={() => void draft()} disabled={drafting || !draftAsk.trim()}>
-          {drafting ? 'Drafting…' : 'Draft'}
+          {drafting ? 'Drafting' : 'Draft'}
         </Button>
       </div>
       {draftErr && <p className="text-xs text-[color:var(--theme-danger)]">{draftErr}</p>}
-      {drafting && <Generating label="Designing the job — name, schedule, and the prompt it runs…" lines={2} />}
+      {drafting && <Generating label="Designing the job — name, schedule, and the prompt it runs" lines={2} />}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
@@ -236,7 +236,7 @@ function CronForm({
           }
         >
           {busy && <Loader2 size={13} className="animate-spin" />}
-          {busy ? 'Creating…' : 'Create job'}
+          {busy ? 'Creating' : 'Create job'}
         </Button>
         <span className="text-[11px] leading-snug text-muted">{scheduleHint()}</span>
       </div>
@@ -404,7 +404,7 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
           created here are staggered 2&nbsp;minutes per agent so the fleet doesn't hit the models at once.
         </p>
         {isLoading ? (
-          <div className="text-sm text-muted">Reading the fleet…</div>
+          <div className="text-sm text-muted">Reading the fleet</div>
         ) : withJobs.length === 0 ? (
           <EmptyState icon={<CalendarClock size={22} />} title="Nothing scheduled anywhere" hint="Create the first job below." />
         ) : (

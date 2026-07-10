@@ -91,7 +91,7 @@ function GeneralTab({ assistant }: { assistant: Assistant }) {
             disabled={!handleOk || handle === assistant.slug || !!busy}
             onClick={() => void run('handle', () => updateAssistant({ handle }))}
           >
-            {busy === 'handle' ? 'Renaming…' : 'Rename'}
+            {busy === 'handle' ? 'Renaming' : 'Rename'}
           </Button>
         </div>
         <p className={cn('mt-1 text-xs', handle && !handleOk ? 'text-[color:var(--theme-danger)]' : 'text-muted')}>
@@ -172,7 +172,7 @@ const SKILL_TEMPLATE = (name: string) => `# ${name}
 Describe when your assistant should use this skill and how.
 
 ## Steps
-1. …
+1. 
 `
 
 function SkillsTab({ assistant }: { assistant: Assistant }) {
@@ -354,7 +354,7 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
     }
   }
 
-  if (isLoading) return <div className="text-sm text-muted">Loading…</div>
+  if (isLoading) return <div className="text-sm text-muted">Loading</div>
   if (data?.error)
     return <EmptyState icon="◌" title="Memory unavailable" hint={assistant.running ? data.error : 'Start your assistant to read its memory.'} />
 

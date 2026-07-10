@@ -94,10 +94,10 @@ export function EmojiPicker({
         align === 'right' ? 'right-0' : 'left-0',
       )}
     >
-      <Input autoFocus size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search emoji…" className="mb-2" />
+      <Input autoFocus size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search emoji" className="mb-2" />
       <div className="max-h-64 overflow-y-auto">
         {all.length === 0 ? (
-          <div className="py-8 text-center text-xs text-muted">Loading…</div>
+          <div className="py-8 text-center text-xs text-muted">Loading</div>
         ) : results ? (
           results.length === 0 ? (
             <div className="py-8 text-center text-xs text-muted">No emoji found.</div>

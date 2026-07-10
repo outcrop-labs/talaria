@@ -1,7 +1,7 @@
 // Agent-produced media in chat. Hermes agents reference files they create as
 // "MEDIA:<absolute path>" in their replies; rewrite image references into
 // inline markdown images served out of the agent's container
-// (/api/agent-media/:model?path=…). Non-image tokens stay as-is; ordinary
+// (/api/agent-media/:model?path=). Non-image tokens stay as-is; ordinary
 // remote image URLs already render through Markdown untouched.
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
 

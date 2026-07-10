@@ -12,6 +12,7 @@ import { Markdown } from '@/components/ui/markdown'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { BrainRoutingSelect } from '@/components/kb/brain-select'
+import { IconButton } from '@/components/ui/icon-button'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
@@ -92,18 +93,18 @@ function ArtifactsPage() {
   return (
     <div className="flex h-full min-h-0">
       <aside className="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar">
-        <div className="relative flex items-center justify-between gap-2 border-b border-line-subtle p-3">
-          <span className="text-sm font-semibold text-fg">Artifacts</span>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="sm" title="Import from Google Drive" onClick={() => setImportOpen(true)}>
+        <div className="relative flex h-12 shrink-0 items-center gap-1.5 border-b border-line-subtle px-4">
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg">Artifacts</span>
+          <div className="flex items-center gap-0.5">
+            <IconButton size="sm" title="Import from Google Drive" onClick={() => setImportOpen(true)}>
               <DownloadCloud size={15} />
-            </Button>
-            <Button variant="ghost" size="sm" title="New folder" onClick={() => void newFolder()}>
+            </IconButton>
+            <IconButton size="sm" title="New folder" onClick={() => void newFolder()}>
               <FolderPlus size={15} />
-            </Button>
-            <Button size="sm" onClick={() => setNewOpen((v) => !v)}>
-              <Plus size={13} className="mr-1" /> New
-            </Button>
+            </IconButton>
+            <IconButton size="sm" title="New artifact" onClick={() => setNewOpen((v) => !v)} active={newOpen}>
+              <Plus size={15} />
+            </IconButton>
           </div>
           {newOpen && (
             <div className="absolute right-3 top-full z-30 mt-1 w-44 rounded-xl border border-line bg-card p-1 shadow-lg" onMouseLeave={() => setNewOpen(false)}>
@@ -255,12 +256,12 @@ function DriveImportModal({ onClose, onImported }: { onClose: () => void; onImpo
                 autoFocus
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder="Search your Drive…"
+                placeholder="Search your Drive"
                 className="w-full bg-transparent text-sm text-fg outline-none placeholder:text-muted"
               />
             </div>
             <div className="max-h-[50vh] min-h-[12rem] overflow-y-auto p-2">
-              {state === 'loading' && <div className="p-6 text-center text-xs text-muted">Loading…</div>}
+              {state === 'loading' && <div className="p-6 text-center text-xs text-muted">Loading</div>}
               {state === 'error' && <div className="p-6 text-center text-xs text-[color:var(--theme-danger)]">Couldn’t reach Google Drive.</div>}
               {state === 'ready' && files && files.length === 0 && <div className="p-6 text-center text-xs text-muted">No files found.</div>}
               {state === 'ready' && files?.map((f) => (
@@ -274,7 +275,7 @@ function DriveImportModal({ onClose, onImported }: { onClose: () => void; onImpo
                   <span className="w-14 shrink-0 text-[11px] text-muted">{driveKind(f.mimeType)}</span>
                   <span className="min-w-0 flex-1 truncate text-sm text-fg">{f.name}</span>
                   <span className="shrink-0 text-[11px] text-muted">
-                    {importing === f.id ? 'Importing…' : f.modifiedTime ? relativeTime(f.modifiedTime) : ''}
+                    {importing === f.id ? 'Importing' : f.modifiedTime ? relativeTime(f.modifiedTime) : ''}
                   </span>
                 </button>
               ))}
@@ -475,7 +476,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
   }
   const googleLabel = artifact?.kind === 'sheet' ? 'Export to Google Sheets' : artifact?.kind === 'file' ? 'Export to Google Drive' : 'Export to Google Docs'
 
-  if (!artifact) return <div className="p-8 text-sm text-muted">Loading…</div>
+  if (!artifact) return <div className="p-8 text-sm text-muted">Loading</div>
 
   return (
     <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
@@ -535,7 +536,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
                 <History size={13} /> {showHistory ? 'Hide history' : 'Version history'}
               </button>
               <button type="button" disabled={exporting} onClick={() => void exportToGoogle()} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar disabled:opacity-50">
-                <Upload size={13} /> {exporting ? 'Exporting…' : googleLabel}
+                <Upload size={13} /> {exporting ? 'Exporting' : googleLabel}
               </button>
               {artifact.googleFileUrl && (
                 <a href={artifact.googleFileUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar">
@@ -563,7 +564,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
       <div className="flex min-h-0 flex-1">
         {artifact.kind === 'doc' ? (
           mode === 'edit' ? (
-            <RichEditor key={`${id}-${seed}`} ref={editorRef} value={artifact.body} slash prose autosave onSave={() => void saveBody()} placeholder="Draft your artifact…" fill className="min-w-0 flex-1" />
+            <RichEditor key={`${id}-${seed}`} ref={editorRef} value={artifact.body} slash prose autosave onSave={() => void saveBody()} placeholder="Draft your artifact" fill className="min-w-0 flex-1" />
           ) : (
             <div className="re-prose min-w-0 flex-1 overflow-y-auto">
               {artifact.body.trim() ? (
@@ -584,7 +585,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
               onChange={(e) => editHtml(e.target.value)}
               onBlur={() => dirty && void save({ body: html })}
               spellCheck={false}
-              placeholder={'<!doctype html>\n<html>…'}
+              placeholder={'<!doctype html>\n<html>'}
               className="min-w-0 flex-1 rounded-none border-0 font-mono text-xs leading-relaxed"
             />
           ) : artifact.body.trim() ? (
@@ -628,7 +629,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
               <label className="mx-auto flex max-w-lg cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-line-subtle p-12 text-center hover:border-[var(--theme-accent-border)]">
                 <input type="file" className="hidden" onChange={(e) => void onPickFile(e.target.files?.[0])} />
                 <Paperclip size={22} className="text-muted" />
-                <div className="text-sm text-fg">{uploading ? 'Uploading…' : 'Click to upload a file'}</div>
+                <div className="text-sm text-fg">{uploading ? 'Uploading' : 'Click to upload a file'}</div>
                 <div className="text-xs text-muted">Up to 25 MB · stored and hosted by Talaria</div>
               </label>
             )}
@@ -658,7 +659,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
       <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
         <span>edited {relativeTime(artifact.updatedAt)}{artifact.updatedBy ? ` by ${artifact.updatedBy}` : ''}</span>
         <span className="ml-auto" />
-        {mode === 'edit' && artifact.kind !== 'file' && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
+        {mode === 'edit' && artifact.kind !== 'file' && <span className="text-[11px] text-muted">{saving ? 'Saving' : 'Saved'}</span>}
       </div>
 
       <PermissionsModal

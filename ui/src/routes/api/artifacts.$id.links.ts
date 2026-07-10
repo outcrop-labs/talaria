@@ -7,7 +7,7 @@ import { canRead, listEditors } from '@/server/kb-perms'
 
 const Body = z.object({ targetType: z.string().min(1).max(40), targetId: z.string().min(1).max(200) })
 
-// Attach / detach an artifact to/from a target (KB doc, ticket, channel, …).
+// Attach / detach an artifact to/from a target (KB doc, ticket, channel, ).
 // The caller must be able to read the artifact.
 export const Route = createFileRoute('/api/artifacts/$id/links')({
   server: {

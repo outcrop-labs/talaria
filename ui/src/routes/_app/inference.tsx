@@ -54,7 +54,7 @@ function InferencePage() {
         </div>
 
         {isLoading ? (
-          <div className="text-sm text-muted">Probing backends…</div>
+          <div className="text-sm text-muted">Probing backends</div>
         ) : backends.length === 0 ? (
           <EmptyState
             icon="▦"

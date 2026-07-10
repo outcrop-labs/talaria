@@ -171,7 +171,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
 
         {busy === 'apply' && (
           <Generating
-            label={`Applying to ${def.displayName} — new container rolling up beside the old one, health check, then traffic cuts over…`}
+            label={`Applying to ${def.displayName} — new container rolling up beside the old one, health check, then traffic cuts over`}
             lines={2}
           />
         )}
@@ -182,7 +182,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
           </Button>
           {def.managed && (
             <Button size="sm" onClick={() => void save(true)} disabled={!!busy}>
-              {busy === 'apply' ? 'Applying…' : 'Save & apply'}
+              {busy === 'apply' ? 'Applying' : 'Save & apply'}
             </Button>
           )}
         </div>

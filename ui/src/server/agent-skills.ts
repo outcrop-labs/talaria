@@ -70,7 +70,7 @@ function summarize(md: string): string {
   for (const line of md.split('\n')) {
     const t = line.trim()
     if (!t || t.startsWith('#') || t.startsWith('---')) continue
-    // Frontmatter-style "description: …" wins if present.
+    // Frontmatter-style "description: " wins if present.
     const fm = /^description:\s*(.+)$/.exec(t)
     return (fm ? fm[1]! : t).slice(0, 160)
   }

@@ -142,7 +142,7 @@ export function AssistantSection() {
       )}
       <div className="mt-3 flex items-center gap-3">
         <Button size="sm" onClick={() => void save()} disabled={busy || !dirty || !name.trim()}>
-          {busy ? 'Saving…' : 'Save'}
+          {busy ? 'Saving' : 'Save'}
         </Button>
         <span className="text-xs text-muted">Changes apply right away — your assistant restarts with them.</span>
       </div>

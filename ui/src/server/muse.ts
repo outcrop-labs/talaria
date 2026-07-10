@@ -23,7 +23,7 @@ const SYSTEM: Record<MuseKind, string> = {
     DOC_RULES,
   personality:
     "You write the personality brief for someone's personal AI assistant: how it should come across — tone, priorities, pet peeves. " +
-    'Plain prose, second person ("Be…"), a few sentences to a short paragraph; no headings. ' +
+    'Plain prose, second person ("Be"), a few sentences to a short paragraph; no headings. ' +
     DOC_RULES,
   skill:
     'You write SKILL.md playbooks that an AI agent follows for a recurring job. Markdown with a # title, a line on when to use it, and concrete numbered steps; ' +

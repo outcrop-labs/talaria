@@ -1,6 +1,6 @@
 // The RAG collection registry. Talaria spins up as many collections as needed;
 // two are auto-provisioned and undeletable:
-//   activity  — the ambient workspace index (chats/channels/plans/research/…),
+//   activity  — the ambient workspace index (chats/channels/plans/research/),
 //               a retrieval TOOL agents call on demand (never auto-loaded)
 //   org-kb    — the curated knowledgebase; grounds agents by default
 // Others are custom (departmental etc.), bound to users/agents/groups.

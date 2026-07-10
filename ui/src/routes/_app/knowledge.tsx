@@ -7,6 +7,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { IconButton } from '@/components/ui/icon-button'
 import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
@@ -14,7 +15,6 @@ import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
 import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { RichEditor, type RichEditorHandle, type DocSearchFn } from '@/components/ui/rich-editor'
-import { InlineCreate } from '@/components/ui/inline-create'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { Combobox } from '@/components/ui/combobox'
 import { useArtifacts, useTargetArtifacts, attachArtifact, detachArtifact } from '@/lib/artifacts'
@@ -55,6 +55,7 @@ function KnowledgePage() {
   const { data: spaces = [] } = useSpaces()
   const [spaceId, setSpaceId] = useState<string | null>(null)
   const [docId, setDocId] = useState<string | null>(null)
+  const [creatingSpace, setCreatingSpace] = useState(false)
   const activeSpace = spaces.find((s) => s.id === spaceId) ?? spaces[0]
   const { data: docs = [] } = useDocs(activeSpace?.id ?? null)
 
@@ -98,13 +99,33 @@ function KnowledgePage() {
 
   return (
     <div className="flex h-full min-h-0">
-      <aside className="flex h-full w-64 shrink-0 flex-col border-r border-line-subtle bg-sidebar">
+      <aside className="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar">
+        <div className="flex h-12 shrink-0 items-center gap-1.5 border-b border-line-subtle px-4">
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg">Knowledge</span>
+          <IconButton size="sm" title="New space" onClick={() => setCreatingSpace((v) => !v)}>
+            <Plus size={15} />
+          </IconButton>
+        </div>
         <div className="border-b border-line-subtle p-3">
           <KbSearch onOpen={openDoc} />
         </div>
-        <div className="border-b border-line-subtle px-3 py-2">
-          <InlineCreate label="New space" placeholder="space name" onSubmit={(v) => void newSpace(v)} className="w-full" />
-        </div>
+        {creatingSpace && (
+          <div className="border-b border-line-subtle px-3 py-2">
+            <Input
+              autoFocus
+              size="sm"
+              placeholder="space name"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const v = (e.target as HTMLInputElement).value.trim()
+                  if (v) void newSpace(v)
+                  setCreatingSpace(false)
+                } else if (e.key === 'Escape') setCreatingSpace(false)
+              }}
+              onBlur={() => setCreatingSpace(false)}
+            />
+          </div>
+        )}
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {spaces.length === 0 ? (
             <div className="px-2 py-6 text-center text-xs text-muted">No spaces yet.</div>
@@ -270,7 +291,7 @@ function KbSearch({ onOpen }: { onOpen: (hit: KbSearchHit) => void }) {
         }}
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder="Search knowledge…"
+        placeholder="Search knowledge"
         className="pl-7"
       />
       {open && hits.length > 0 && (
@@ -533,7 +554,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
   }
   const saveBody = () => save({ name: name.trim() || 'Untitled', body: editorRef.current?.getMarkdown() ?? space?.body ?? '' })
 
-  if (!space) return <div className="p-8 text-sm text-muted">Loading…</div>
+  if (!space) return <div className="p-8 text-sm text-muted">Loading</div>
 
   return (
     <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
@@ -620,7 +641,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
             prose
             autosave
             onSave={() => void saveBody()}
-            placeholder="Write an overview for this space — what lives here, how it's organized…"
+            placeholder="Write an overview for this space — what lives here, how it's organized"
             fill
             className="min-w-0 flex-1"
           />
@@ -678,7 +699,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
       <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
         <span>Top-level document · child docs nest under it</span>
         <span className="ml-auto" />
-        {mode === 'edit' && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
+        {mode === 'edit' && <span className="text-[11px] text-muted">{saving ? 'Saving' : 'Saved'}</span>}
       </div>
 
       <PermissionsModal
@@ -792,7 +813,7 @@ function DocEditor({
     nodes?.[index]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
-  if (!doc) return <div className="p-8 text-sm text-muted">Loading…</div>
+  if (!doc) return <div className="p-8 text-sm text-muted">Loading</div>
 
   return (
     <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
@@ -925,7 +946,7 @@ function DocEditor({
             prose
             autosave
             onSave={() => void saveBody()}
-            placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents…' : 'Write…'}
+            placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents' : 'Write'}
             fill
             className="min-w-0 flex-1"
           />
@@ -1020,7 +1041,7 @@ function DocEditor({
         <VisibilityIcon v={doc.visibility} />
         <span>edited {relativeTime(doc.updatedAt)}{doc.updatedBy ? ` by ${doc.updatedBy}` : ''}</span>
         <span className="ml-auto" />
-        {mode === 'edit' && <span className="text-[11px] text-muted">{saving ? 'Saving…' : 'Saved'}</span>}
+        {mode === 'edit' && <span className="text-[11px] text-muted">{saving ? 'Saving' : 'Saved'}</span>}
       </div>
 
       <PermissionsModal
@@ -1077,7 +1098,7 @@ function ArtifactAttachments({ docId }: { docId: string }) {
           options={options}
           selected={[]}
           onChange={async (v) => { if (v[0]) { await attachArtifact(v[0], 'kb-doc', docId); await refresh() } }}
-          placeholder="Attach an artifact…"
+          placeholder="Attach an artifact"
           size="sm"
           className="max-w-xs"
         />
@@ -1154,7 +1175,7 @@ function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb
                 }
               }}
             >
-              {restoring ? 'Restoring…' : 'Restore this version'}
+              {restoring ? 'Restoring' : 'Restore this version'}
             </Button>
           </div>
         }

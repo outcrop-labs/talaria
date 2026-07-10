@@ -22,6 +22,19 @@ secrets encrypted at rest.
   and the legacy build-based `stack/` — **no Dockerfiles** remain; the run path
   is compose-only (official/published images) + host-run app.
 
+### Changed
+- **UI consistency pass — one app, not fifteen.** A full audit (screenshots +
+  code inventory, docs/UI-CONVENTIONS.md is the contract) and the first big
+  unification: shared surface primitives (`RailSurface`/`Rail`/`Stage`/
+  `StageHeader`/`RailRow`/`CountPill`, `IconButton`, `Chip`/`StatusDot`/
+  `DangerLink`). Plan's sidebar moved to the LEFT like every other surface and
+  gained a real header; Research, Comms, Knowledge, and Artifacts all sit on
+  the same w-72 rail with the same h-12 header line running straight across.
+  Fewer, smaller controls: contextual actions are icon buttons with tooltips
+  (no more giant "+ New space"/"+ New" primaries), Send/Go became one icon
+  affordance (Enter submits everywhere), the reranker panel autosaves on
+  change (only the API key keeps an explicit save), destructive actions are
+  quiet red links instead of buttons, and ellipsis is gone from all UI copy.
 ### Added
 - **Brain routing everywhere content lives.** The same "Brain" control now
   sits in the top menu of BOTH knowledge docs and artifacts (docs, sheets,

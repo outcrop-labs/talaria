@@ -31,7 +31,7 @@ export function PlanDoc({ planId }: { planId: string; planTitle?: string | null 
       {docId ? (
         <DocEditor id={docId} planId={planId} />
       ) : (
-        <div className="grid flex-1 place-items-center text-sm text-muted">Preparing the plan document…</div>
+        <div className="grid flex-1 place-items-center text-sm text-muted">Preparing the plan document</div>
       )}
     </div>
   )
@@ -69,7 +69,7 @@ function DocEditor({ id, planId }: { id: string; planId: string }) {
     }
   }
 
-  if (!artifact) return <div className="grid flex-1 place-items-center text-sm text-muted">Loading…</div>
+  if (!artifact) return <div className="grid flex-1 place-items-center text-sm text-muted">Loading</div>
 
   return (
     <>
@@ -77,7 +77,7 @@ function DocEditor({ id, planId }: { id: string; planId: string }) {
         <span className="text-[11px] uppercase tracking-wide text-muted">Plan document</span>
         <span className="min-w-0 flex-1 truncate text-sm text-fg">{artifact.title}</span>
         <Button size="sm" variant="outline" onClick={() => void sync()} disabled={syncing} title="The agent rewrites the document from the conversation so far">
-          {syncing ? 'Syncing…' : 'Sync from chat'}
+          {syncing ? 'Syncing' : 'Sync from chat'}
         </Button>
         <span className="shrink-0 text-[11px] text-muted">Auto-saves</span>
         <Link to="/artifacts" className="shrink-0 text-[11px] text-accent hover:underline" title="Open in Artifacts">
@@ -86,7 +86,7 @@ function DocEditor({ id, planId }: { id: string; planId: string }) {
       </div>
       {syncErr && <div className="border-b border-line-subtle px-4 py-1.5 text-xs" style={{ color: 'var(--theme-danger)' }}>{syncErr}</div>}
       <div className="relative min-h-0 flex-1 overflow-y-auto">
-        {syncing && <GeneratingOverlay label="Rewriting the plan document from the conversation…" />}
+        {syncing && <GeneratingOverlay label="Rewriting the plan document from the conversation" />}
         <RichEditor
           key={`${id}:${syncNonce}`}
           ref={editorRef}

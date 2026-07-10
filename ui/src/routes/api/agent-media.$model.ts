@@ -4,7 +4,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { canUseAgentModel } from '@/server/users'
 import { isMediaError, readAgentImage } from '@/server/agent-media'
 
-// GET ?path=/opt/data/… → stream an image out of the agent's container, so
+// GET ?path=/opt/data/ → stream an image out of the agent's container, so
 // media agents produce ("MEDIA:<path>" in replies) renders inline in chat.
 // Access + path/type guardrails live in server/agent-media.
 export const Route = createFileRoute('/api/agent-media/$model')({

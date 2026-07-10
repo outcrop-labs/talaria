@@ -77,7 +77,7 @@ function ActivityPage() {
         </div>
 
         {isLoading ? (
-          <div className="text-sm text-muted">Loading activity…</div>
+          <div className="text-sm text-muted">Loading activity</div>
         ) : events.length === 0 ? (
           <EmptyState
             icon="☰"

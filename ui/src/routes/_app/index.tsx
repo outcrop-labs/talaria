@@ -94,7 +94,7 @@ function HomePage() {
             <ApprovalsPanel />
 
             {isLoading ? (
-              <div className="text-sm text-muted">Loading your day…</div>
+              <div className="text-sm text-muted">Loading your day</div>
             ) : (
               <div className="grid gap-4 xl:grid-cols-3">
                 <QueuePanel
@@ -566,10 +566,10 @@ function ComposeModal({ onClose }: { onClose: () => void }) {
         <div className="space-y-2 p-4">
           <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="To" className="w-full rounded-lg border border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted" />
           <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" className="w-full rounded-lg border border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted" />
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your message…" rows={8} className="w-full resize-y rounded-lg border border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted" />
+          <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your message" rows={8} className="w-full resize-y rounded-lg border border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted" />
           <div className="flex items-center gap-3">
             <Button size="sm" onClick={() => void send()} disabled={busy || !to.trim()}>
-              <Send size={13} className="mr-1" /> {busy ? 'Sending…' : 'Send'}
+              <Send size={13} className="mr-1" /> {busy ? 'Sending' : 'Send'}
             </Button>
             {status && <span className="text-xs" style={{ color: 'var(--theme-danger)' }}>{status}</span>}
           </div>

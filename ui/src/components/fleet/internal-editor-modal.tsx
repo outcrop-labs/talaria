@@ -273,7 +273,7 @@ export function InternalEditorModal({
                   <Sparkles size={13} className="shrink-0 text-accent" />
                   {generating ? (
                     <>
-                      <span>Drafting…</span>
+                      <span>Drafting</span>
                       <Button variant="ghost" size="sm" className="ml-auto shrink-0" onClick={() => abortRef.current?.abort()}>
                         <Square size={12} fill="currentColor" /> Stop
                       </Button>
@@ -435,7 +435,7 @@ export function InternalEditorModal({
               autoFocus
             />
             <Button className="shrink-0" onClick={() => void generate()} disabled={generating || !instruction.trim()}>
-              {generating ? 'Drafting…' : proposal !== null ? 'Refine' : 'Draft'}
+              {generating ? 'Drafting' : proposal !== null ? 'Refine' : 'Draft'}
             </Button>
           </div>
         )}
@@ -463,7 +463,7 @@ export function InternalEditorModal({
           </Button>
           {editable && (
             <Button size="sm" onClick={() => void save()} disabled={saving || !dirty}>
-              {saving ? 'Saving…' : 'Save'}
+              {saving ? 'Saving' : 'Save'}
             </Button>
           )}
         </div>

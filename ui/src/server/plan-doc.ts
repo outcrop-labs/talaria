@@ -82,7 +82,7 @@ export async function indexPlanDoc(doc: Artifact, conversationId: string): Promi
 
 /** A model reply that wraps the whole document in a fence loses the fence, and
  *  a short conversational lead-in before the first "# " heading is dropped —
- *  persona agents narrate ("I'll update the plan…") despite the prompt. */
+ *  persona agents narrate ("I'll update the plan") despite the prompt. */
 const cleanDoc = (s: string): string => {
   let text = s.trim()
   const fenced = /^```[a-z]*\n([\s\S]*)\n```$/.exec(text)

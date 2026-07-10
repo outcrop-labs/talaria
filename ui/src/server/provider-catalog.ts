@@ -185,7 +185,7 @@ export async function availableModels(ep: LlmEndpoint): Promise<string[]> {
     if (Array.isArray(j) || !j.has_more || !j.last_id) break
     qs = `${ep.provider === 'anthropic' ? '?limit=1000&' : '?'}after_id=${encodeURIComponent(j.last_id)}`
   }
-  // Gemini's OpenAI-compat layer reports ids as "models/gemini-…" while its
+  // Gemini's OpenAI-compat layer reports ids as "models/gemini-" while its
   // chat API is documented with the bare id — normalize to what chat expects.
   const normalize = base.includes('generativelanguage.googleapis.com')
     ? (id: string) => id.replace(/^models\//, '')

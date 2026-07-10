@@ -50,7 +50,7 @@ function BoardPage() {
     )
   }, [allTasks, q, assignee, priority])
 
-  if (isLoading) return <div className="grid h-full place-items-center text-sm text-muted">Loading…</div>
+  if (isLoading) return <div className="grid h-full place-items-center text-sm text-muted">Loading</div>
   if (!board) return <EmptyState icon="⧉" title="Board not found" hint="It may have been deleted, or you don’t have access." />
 
   const toggleCls = (active: boolean) =>
@@ -71,7 +71,7 @@ function BoardPage() {
             <List size={15} />
           </button>
         </div>
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" size="sm" className="w-44" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" size="sm" className="w-44" />
         <Select value={assignee} onChange={(e) => setAssignee(e.target.value)} size="sm">
           <option value="">Any assignee</option>
           {boardAgents.map((a) => (

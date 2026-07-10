@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { GeneratingOverlay } from '@/components/ui/generating'
 import { alert, confirm } from '@/components/ui/confirm'
 import { ChatView } from '@/components/chat/chat-view'
+import { CountPill, Rail, RailRow, RailSurface } from '@/components/app/surface'
 import { ChannelView } from '@/components/chat/channel-view'
 import { ChannelSettingsModal } from '@/components/chat/channel-settings'
 import { PlanModal } from '@/components/chat/plan-modal'
@@ -144,26 +145,26 @@ function CommsPage() {
   const title = selected ? (selected.kind === 'dm' ? peerLabel(selected) : selected.name) : ''
 
   return (
-    <div className="flex h-full min-h-0">
-      <aside className="flex h-full w-64 shrink-0 flex-col overflow-y-auto border-r border-line-subtle bg-sidebar p-3">
+    <RailSurface>
+      <Rail title="Comms">
         <Section label="Channels" createPlaceholder="channel name" onCreate={(v) => void create(v, 'channel')}>
           {rooms.map((c) => (
-            <RowButton key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
+            <RailRow key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
               <span className="shrink-0 opacity-60">#</span>
               <span className="min-w-0 flex-1 truncate">{c.name}</span>
-              <UnreadBadge count={c.unreadCount} />
-            </RowButton>
+              <CountPill count={c.unreadCount} />
+            </RailRow>
           ))}
-          {rooms.length === 0 && <Hint>{isLoading ? 'Loading…' : 'Ambient, persistent talk.'}</Hint>}
+          {rooms.length === 0 && <Hint>{isLoading ? 'Loading' : 'Ambient, persistent talk.'}</Hint>}
         </Section>
 
         <Section label="Relays" createPlaceholder="what's it about?" onCreate={(v) => void create(v, 'group')}>
           {relays.map((c) => (
-            <RowButton key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
+            <RailRow key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
               <span className="shrink-0 opacity-60">⇄</span>
               <span className="min-w-0 flex-1 truncate">{c.name}</span>
-              <UnreadBadge count={c.unreadCount} />
-            </RowButton>
+              <CountPill count={c.unreadCount} />
+            </RailRow>
           ))}
           {relays.length === 0 && <Hint>Gather people + agents around a purpose; conclude when done.</Hint>}
         </Section>
@@ -172,15 +173,15 @@ function CommsPage() {
           {people.map((u) => {
             const dm = dmByPeer.get(u.id)
             return (
-              <RowButton
+              <RailRow
                 key={u.id}
                 active={sel?.t === 'channel' && sel.id === dm?.id}
                 onClick={() => (dm ? setSel({ t: 'channel', id: dm.id }) : void startDm(u.id))}
               >
                 <Avatar name={u.name ?? u.email ?? '?'} className="h-5 w-5 shrink-0 text-[10px]" />
                 <span className="min-w-0 flex-1 truncate">{u.name ?? u.email}</span>
-                <UnreadBadge count={dm?.unreadCount} />
-              </RowButton>
+                <CountPill count={dm?.unreadCount} />
+              </RailRow>
             )
           })}
           {people.length === 0 && <Hint>Just you so far.</Hint>}
@@ -198,7 +199,7 @@ function CommsPage() {
               <li key={a.id}>
                 <ul className="space-y-0.5">
                   {/* Clicking the agent = its working thread if one is live, else fresh. */}
-                  <RowButton active={activeAgent && sel.conversationId === null} onClick={() => openAgent(a.id)}>
+                  <RailRow active={activeAgent && sel.conversationId === null} onClick={() => openAgent(a.id)}>
                     <span className="shrink-0 opacity-60">◍</span>
                     <span className="min-w-0 flex-1 truncate">{a.label}</span>
                     {conversations.some((c) => c.agentModel === a.id && c.working) && (
@@ -225,9 +226,9 @@ function CommsPage() {
                         {expanded ? '▾' : '▸'}
                       </span>
                     )}
-                  </RowButton>
+                  </RailRow>
                   {threads.map((c) => (
-                    <RowButton
+                    <RailRow
                       key={c.id}
                       active={activeAgent && sel.conversationId === c.id}
                       onClick={() => setSel({ t: 'agent', model: a.id, conversationId: c.id })}
@@ -235,7 +236,7 @@ function CommsPage() {
                     >
                       <span className="min-w-0 flex-1 truncate">{c.title || 'Untitled'}</span>
                       {c.working && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />}
-                    </RowButton>
+                    </RailRow>
                   ))}
                 </ul>
               </li>
@@ -243,7 +244,7 @@ function CommsPage() {
           })}
           {fleet.length === 0 && <Hint>No agents yet — hire on /agents.</Hint>}
         </Section>
-      </aside>
+      </Rail>
 
       <main className="min-h-0 min-w-0 flex-1">
         {sel?.t === 'agent' ? (
@@ -261,7 +262,7 @@ function CommsPage() {
           />
         ) : selected ? (
           <div className="flex h-full min-h-0 flex-col">
-            <header className="flex items-center gap-2 border-b border-line-subtle px-5 py-3">
+            <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-5">
               <span className="text-sm font-semibold text-fg">
                 {selected.kind === 'channel' ? `#${title}` : selected.kind === 'group' ? `⇄ ${title}` : title}
               </span>
@@ -316,7 +317,7 @@ function CommsPage() {
               )}
             </header>
             <div className="relative min-h-0 flex-1">
-              {concluding && <GeneratingOverlay label="Concluding — summarizing what was decided, then archiving…" />}
+              {concluding && <GeneratingOverlay label="Concluding — summarizing what was decided, then archiving" />}
               <ChannelView
                 key={selected.id}
                 channelId={selected.id}
@@ -359,7 +360,7 @@ function CommsPage() {
           }}
         />
       )}
-    </div>
+    </RailSurface>
   )
 }
 
@@ -384,7 +385,7 @@ function AgentDmPane({
   if (!agent) return null
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex items-center gap-2 border-b border-line-subtle px-5 py-3">
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-5">
         <span className="text-sm font-semibold text-fg">◍ {agent.label}</span>
         {conversationId === null && <span className="text-xs text-muted">new thread — history stays out of context</span>}
         <span className="ml-auto" />
@@ -430,7 +431,7 @@ function Section({
   return (
     <div className="mb-4">
       <div className="mb-1 flex items-center px-2">
-        <span className="text-[11px] uppercase tracking-wide text-muted">{label}</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</span>
         {onCreate && (
           <button
             type="button"
@@ -463,45 +464,9 @@ function Section({
   )
 }
 
-function RowButton({
-  active,
-  onClick,
-  className,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  className?: string
-  children: React.ReactNode
-}) {
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={onClick}
-        className={cn(
-          'flex w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-card',
-          active ? 'bg-card text-fg' : 'text-muted',
-          className,
-        )}
-      >
-        {children}
-      </button>
-    </li>
-  )
-}
-
 const Hint = ({ children }: { children: React.ReactNode }) => (
   <li className="px-2 py-1 text-[11px] leading-relaxed text-muted">{children}</li>
 )
-
-/** Unread-message count pill; renders nothing when all caught up. */
-const UnreadBadge = ({ count }: { count?: number }) =>
-  count ? (
-    <span className="ml-auto shrink-0 rounded-full bg-accent px-1.5 text-[10px] font-semibold leading-4 text-surface">
-      {count > 99 ? '99+' : count}
-    </span>
-  ) : null
 
 // A neat little header multiselect: a pill ("3 people ▾") opening a checklist
 // popover. Toggles apply immediately; locked rows (owners) can't be removed.

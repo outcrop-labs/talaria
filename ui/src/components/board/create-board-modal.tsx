@@ -98,7 +98,7 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
             Allow all agents
           </label>
           {!allowAll && (
-            <Combobox options={agentOptions} selected={agents} onChange={setAgents} multiple placeholder="Select agents…" />
+            <Combobox options={agentOptions} selected={agents} onChange={setAgents} multiple placeholder="Select agents" />
           )}
         </Field>
 

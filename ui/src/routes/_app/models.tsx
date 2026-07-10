@@ -306,7 +306,7 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
         {ep.class === 'cloud' && <PrivacyRow ep={ep} run={run} />}
 
         {cascading && (
-          <Generating label="Removing across the fleet — new agent versions, re-render, rolling the affected agents…" lines={2} />
+          <Generating label="Removing across the fleet — new agent versions, re-render, rolling the affected agents" lines={2} />
         )}
         {err && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
 
@@ -635,7 +635,7 @@ function AddProviderModal({ open, onClose, onAdded }: { open: boolean; onClose: 
             }))}
             selected={[presetKey]}
             onChange={([k]) => k && setPresetKey(k)}
-            placeholder="Pick a provider…"
+            placeholder="Pick a provider"
           />
         </div>
         <div>
@@ -645,7 +645,7 @@ function AddProviderModal({ open, onClose, onAdded }: { open: boolean; onClose: 
         {preset.configurableUrl && (
           <div>
             <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Base URL</label>
-            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={preset.baseUrl ?? 'https://…/v1'} />
+            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={preset.baseUrl ?? 'https://host/v1'} />
             <p className="mt-1 text-xs text-muted">
               LAN and loopback hosts count as <span style={{ color: 'var(--theme-success)' }}>self-hosted</span> in the cost split — inferred automatically.
             </p>
@@ -673,7 +673,7 @@ function AddProviderModal({ open, onClose, onAdded }: { open: boolean; onClose: 
             Cancel
           </Button>
           <Button size="sm" onClick={() => void create()} disabled={busy}>
-            {busy ? 'Adding…' : 'Add provider'}
+            {busy ? 'Adding' : 'Add provider'}
           </Button>
         </div>
       </div>

@@ -50,7 +50,7 @@ export function LabelPicker({
         allowCreate
         disabled={disabled}
         size={size}
-        triggerLabel={<span className="text-muted">Add label…</span>}
+        triggerLabel={<span className="text-muted">Add label</span>}
       />
     </div>
   )

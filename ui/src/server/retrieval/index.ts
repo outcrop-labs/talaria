@@ -11,7 +11,7 @@ import { collectionsForPrincipal, getCollection, type RagCollection } from './co
 import { getRerankConfig, rerank } from './rerank'
 
 export interface IndexDoc {
-  sourceType: string // 'kb-doc' | 'channel' | 'chat' | 'plan' | 'research' | 'ticket' | …
+  sourceType: string // 'kb-doc' | 'channel' | 'chat' | 'plan' | 'research' | 'ticket' | 
   sourceId: string
   title?: string
   text: string

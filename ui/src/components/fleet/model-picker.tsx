@@ -58,7 +58,7 @@ export function ModelPicker({
       }}
       allowCreate
       size={size}
-      placeholder="Pick a model…"
+      placeholder="Pick a model"
       className={className}
     />
   )

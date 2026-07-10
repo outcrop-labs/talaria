@@ -2,7 +2,7 @@ import { cn } from '@/lib/cn'
 import { PROVIDER_LOGOS } from './provider-logos'
 
 // Neutral monogram fallback for providers we have no real mark for (OpenAI, Groq,
-// LiteLLM, Together, …). Kept monochrome to sit beside the real logos cleanly.
+// LiteLLM, Together, ). Kept monochrome to sit beside the real logos cleanly.
 const MONOGRAM: Record<string, string> = {
   openai: 'AI',
   groq: 'gq',
@@ -14,7 +14,7 @@ const MONOGRAM: Record<string, string> = {
 }
 
 // Map an endpoint's provider/name onto a known logo slug. Endpoint names often
-// say more than the provider ('custom' covers Gemini, Groq, …), so try name first.
+// say more than the provider ('custom' covers Gemini, Groq, ), so try name first.
 function resolve(provider: string, name?: string): { logo?: string; mono: string } {
   const keys = [name?.toLowerCase(), provider.toLowerCase()].filter(Boolean) as string[]
   for (const k of keys) if (PROVIDER_LOGOS[k]) return { logo: PROVIDER_LOGOS[k], mono: '' }

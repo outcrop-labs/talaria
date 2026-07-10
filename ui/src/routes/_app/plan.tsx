@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { UserPlus, X } from 'lucide-react'
 import { ChatView } from '@/components/chat/chat-view'
 import { ConversationSidebar } from '@/components/chat/conversation-sidebar'
+import { RailSurface, Stage, StageHeader } from '@/components/app/surface'
 import { PlanModal } from '@/components/chat/plan-modal'
 import { PlanDoc } from '@/components/chat/plan-doc'
 import { userMentionInsert } from '@/components/chat/mentions'
@@ -68,7 +69,7 @@ function PlanMembers({ planId }: { planId: string }) {
           <UserPicker
             size="sm"
             className="w-48"
-            placeholder="Share with…"
+            placeholder="Share with"
             exclude={members.map((m) => m.userId)}
             onPick={(u) => {
               setAdding(false)
@@ -145,54 +146,10 @@ function PlanPage() {
 
   const current = agents.find((a) => a.id === selectedAgent)
 
-  return (
-    <div className="flex h-full min-h-0">
-      <main className="flex min-h-0 flex-1">
-        {selectedAgent && current ? (
-          <>
-            <div className="min-w-0 flex-1">
-              <ChatView
-                key={selectedAgent}
-                agentModel={selectedAgent}
-                agentLabel={current.label}
-                tiers={current.tiers ?? []}
-                conversationId={selectedConversationId}
-                newChatSignal={newChatSignal}
-                onCreated={onCreated}
-                kind="plan"
-                mentionables={mentionables}
-                headerAction={
-                  <div className="flex items-center gap-3">
-                    {selectedConversationId && <PlanMembers planId={selectedConversationId} />}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={!selectedConversationId}
-                      onClick={() => setPlanOpen(true)}
-                    >
-                      Draft tickets
-                    </Button>
-                  </div>
-                }
-              />
-            </div>
-            {/* The plan's living document — side by side with the chat. */}
-            {selectedConversationId ? (
-              <div className="hidden min-w-0 basis-[44%] lg:flex">
-                <PlanDoc
-                  planId={selectedConversationId}
-                  planTitle={conversations.find((c) => c.id === selectedConversationId)?.title ?? null}
-                />
-              </div>
-            ) : null}
-          </>
-        ) : (
-          <div className="grid h-full flex-1 place-items-center text-sm text-muted">
-            {agentsLoading ? 'Loading the fleet…' : 'No agents available.'}
-          </div>
-        )}
-      </main>
+  const selected = conversations.find((c) => c.id === selectedConversationId) ?? null
 
+  return (
+    <RailSurface>
       <ConversationSidebar
         agents={agents}
         conversations={conversations}
@@ -204,6 +161,53 @@ function PlanPage() {
         onNewChat={newPlan}
       />
 
+      <Stage
+        header={
+          selectedAgent && current ? (
+            <StageHeader
+              title={selected ? selected.title || 'Untitled plan' : 'New plan'}
+              meta={`with ${current.label}`}
+              actions={
+                <div className="flex items-center gap-3">
+                  {selectedConversationId && <PlanMembers planId={selectedConversationId} />}
+                  <Button size="sm" variant="outline" disabled={!selectedConversationId} onClick={() => setPlanOpen(true)}>
+                    Draft tickets
+                  </Button>
+                </div>
+              }
+            />
+          ) : undefined
+        }
+      >
+        {selectedAgent && current ? (
+          <div className="flex h-full min-h-0">
+            <div className="min-w-0 flex-1">
+              <ChatView
+                key={selectedAgent}
+                agentModel={selectedAgent}
+                agentLabel={current.label}
+                tiers={current.tiers ?? []}
+                conversationId={selectedConversationId}
+                newChatSignal={newChatSignal}
+                onCreated={onCreated}
+                kind="plan"
+                mentionables={mentionables}
+              />
+            </div>
+            {/* The plan's living document — side by side with the chat. */}
+            {selectedConversationId ? (
+              <div className="hidden min-w-0 basis-[44%] lg:flex">
+                <PlanDoc planId={selectedConversationId} planTitle={selected?.title ?? null} />
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="grid h-full place-items-center text-sm text-muted">
+            {agentsLoading ? 'Loading the fleet' : 'No agents available.'}
+          </div>
+        )}
+      </Stage>
+
       {selectedConversationId && current && planOpen && (
         <PlanModal
           open={planOpen}
@@ -212,6 +216,6 @@ function PlanPage() {
           agents={[current]}
         />
       )}
-    </div>
+    </RailSurface>
   )
 }

@@ -15,7 +15,7 @@ export interface MentionState {
   options: Mentionable[]
 }
 
-/** Shared @mention machinery for composers (channels, plan, …). An "@word"
+/** Shared @mention machinery for composers (channels, plan, ). An "@word"
  *  immediately before the caret opens the menu; the host feeds keydowns here
  *  FIRST (returns true when the menu consumed the key) and renders
  *  <MentionMenu> above its input. */
