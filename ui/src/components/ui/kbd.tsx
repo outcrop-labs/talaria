@@ -7,7 +7,7 @@ export function Kbd({ children, className }: { children: React.ReactNode; classN
   return (
     <kbd
       className={cn(
-        'inline-grid h-4 min-w-4 place-items-center rounded border border-line-subtle bg-card px-1 font-mono text-[10px] leading-none text-muted',
+        'inline-grid h-5 min-w-5 place-items-center rounded-md border border-line-subtle bg-card px-1.5 font-mono text-[11px] leading-none text-muted',
         className,
       )}
     >
@@ -33,7 +33,7 @@ export function KeyHint({
     <span
       aria-hidden={!visible}
       className={cn(
-        'flex select-none items-center gap-1 text-[10px] text-muted transition-opacity duration-200',
+        'flex select-none items-center gap-1.5 text-xs text-muted transition-opacity duration-200',
         visible ? 'opacity-100' : 'opacity-0',
         className,
       )}

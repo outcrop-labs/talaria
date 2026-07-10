@@ -12,7 +12,7 @@ export interface ChatMeta {
  * conversation/message ids (from response headers) before the stream begins.
  */
 export async function* streamChat(
-  params: { model: string; conversationId?: string; content: string; tier?: string; attachmentIds?: string[]; kind?: 'chat' | 'plan' },
+  params: { model: string; conversationId?: string; content: string; tier?: string; attachmentIds?: string[]; refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>; kind?: 'chat' | 'plan' },
   onMeta?: (m: ChatMeta) => void,
   signal?: AbortSignal,
 ) {
@@ -53,6 +53,7 @@ export async function queueChatMessage(params: {
   content: string
   tier?: string
   attachmentIds?: string[]
+  refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
   kind?: 'chat' | 'plan'
 }): Promise<void> {
   const res = await fetch('/api/chat', {

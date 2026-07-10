@@ -18,6 +18,7 @@ import {
 } from '@/server/conversations'
 import { continueConversation, persistAssistantStream } from '@/server/chat-persist'
 import { attachmentAsDataUrl, resolveAttachments, isImage } from '@/server/uploads'
+import { refBlocks, resolveRefs } from '@/server/refs'
 import { notifyPlanMentions } from '@/server/plan-doc'
 import { indexActivity } from '@/server/retrieval/sources'
 
@@ -29,6 +30,8 @@ const Body = z.object({
   /** Model tier (alias name) to route this turn to; omit for the main model. */
   tier: z.string().max(60).optional(),
   attachmentIds: z.array(z.string().uuid()).max(10).optional(),
+  /** Knowledge docs / artifacts attached as references (ACL-checked). */
+  refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
   /** New conversations are 'chat' unless started from the Plan surface. */
   kind: z.enum(['chat', 'plan']).optional(),
   /** Sent while a reply streams: queue into history, never interrupt. */
@@ -81,8 +84,11 @@ export const Route = createFileRoute('/api/chat')({
         const routedModel = await routedModelFor(agentModel, parsed.data.tier)
         if (!routedModel) return json({ error: `unknown tier "${parsed.data.tier}" for ${agentModel}` }, { status: 400 })
 
-        // Validate attachments belong to real uploads before stamping them.
-        const attachments = await resolveAttachments(parsed.data.attachmentIds ?? [])
+        // Validate attachments belong to real uploads before stamping them;
+        // knowledge/artifact refs resolve to content-carrying chips.
+        const uploads = await resolveAttachments(parsed.data.attachmentIds ?? [])
+        const refChips = await resolveRefs(user, parsed.data.refs ?? [])
+        const attachments = [...uploads, ...refChips]
         const title = titleFrom(content || attachments[0]?.filename || 'chat')
         if (!convId) {
           convId = await createConversation(user.id, agentModel, title, kind)
@@ -134,12 +140,13 @@ export const Route = createFileRoute('/api/chat')({
           await Promise.all(attachments.filter((a) => isImage(a.mime)).map((a) => attachmentAsDataUrl(a.id)))
         ).filter((u): u is string => !!u)
         // Multiplayer plans: prefix this turn with the sender's name (history
-        // is already prefixed by priorMessages) so the agent tells voices apart.
-        const spokenContent = multiVoice && content ? `${senderLabel}: ${content}` : content
+        // is already prefixed by priorMessages) so the agent tells voices
+        // apart. Attached refs contribute their content blocks.
+        const spokenContent = `${multiVoice && content ? `${senderLabel}: ${content}` : content}${refBlocks(refChips)}`
         const userContent =
           imageUrls.length > 0
             ? [
-                ...(spokenContent ? [{ type: 'text', text: spokenContent }] : []),
+                ...(spokenContent.trim() ? [{ type: 'text', text: spokenContent }] : []),
                 ...imageUrls.map((url) => ({ type: 'image_url', image_url: { url } })),
               ]
             : spokenContent

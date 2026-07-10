@@ -1,5 +1,6 @@
 // Conversations + messages — durable, per-user, in Postgres.
 import { db } from './db/pg'
+import { refBlocks } from './refs'
 import type { ToolCall } from '@/lib/sse-parse'
 
 export interface ConversationRow {
@@ -182,21 +183,25 @@ export async function accessibleConversation(
 
 /** Prior turns (role + content) for the gateway, oldest first. Multiplayer
  *  plans prefix user turns with the author's name so the agent can tell
- *  voices apart; 1:1 threads stay plain. */
+ *  voices apart; 1:1 threads stay plain. Attached knowledge/artifact refs
+ *  ride along on every rebuild — a queued turn or resume never loses them. */
 export async function priorMessages(conversationId: string): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
   const sql = await db()
   const rows = (await sql`
-    select m.role, m.content, coalesce(u.name, u.email) as "authorLabel",
+    select m.role, m.content, m.attachments, coalesce(u.name, u.email) as "authorLabel",
            (select count(*)::int from conversation_members cm where cm.conversation_id = m.conversation_id) as members
     from messages m left join users u on u.id = m.author_user_id
-    where m.conversation_id = ${conversationId} and m.role in ('user','assistant') and m.content <> ''
+    where m.conversation_id = ${conversationId} and m.role in ('user','assistant')
+      and (m.content <> '' or m.attachments <> '[]'::jsonb)
     order by m.seq asc
-  `) as unknown as Array<{ role: 'user' | 'assistant'; content: string; authorLabel: string | null; members: number }>
+  `) as unknown as Array<{ role: 'user' | 'assistant'; content: string; attachments: unknown; authorLabel: string | null; members: number }>
   const multiVoice = rows.some((r) => r.members > 0)
-  return rows.map((r) => ({
-    role: r.role,
-    content: multiVoice && r.role === 'user' && r.authorLabel ? `${r.authorLabel}: ${r.content}` : r.content,
-  }))
+  return rows
+    .map((r) => {
+      const voiced = multiVoice && r.role === 'user' && r.authorLabel ? `${r.authorLabel}: ${r.content}` : r.content
+      return { role: r.role, content: `${voiced}${r.role === 'user' ? refBlocks(r.attachments) : ''}` }
+    })
+    .filter((m) => m.content.trim() !== '')
 }
 
 /** Next sequence number for a conversation. */

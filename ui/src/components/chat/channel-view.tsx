@@ -7,11 +7,10 @@ import { useQueryClient } from '@tanstack/react-query'
 import { markChannelRead, sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMember, type ChannelMessage } from '@/lib/channels'
 import { useUsers } from '@/lib/users'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
-import { SendButton } from '@/components/chat/composer-buttons'
 import { KeyHint } from '@/components/ui/kbd'
 import { resolveAgentMedia } from '@/lib/agent-media'
 import { MentionMenu, useMentions, userMentionInsert, type Mentionable } from '@/components/chat/mentions'
-import type { Attachment } from '@/lib/attachments'
+import { splitAttachments, type Attachment } from '@/lib/attachments'
 import type { AgentModel } from '@/lib/agents'
 
 // One channel: live message feed + composer. Agents reply when @mentioned;
@@ -67,10 +66,11 @@ export function ChannelView({
   const userLabel = (author: string) =>
     users.find((u) => u.email === author)?.name ?? (author.split('@')[0] || author)
 
-  const send = async (text: string, attachmentIds: string[]) => {
+  const send = async (text: string, atts: Attachment[]) => {
     setError(null)
     try {
-      await sendChannelMessage(channelId, text, attachmentIds)
+      const { attachmentIds, refs } = splitAttachments(atts)
+      await sendChannelMessage(channelId, text, attachmentIds, refs)
     } catch (e) {
       setError((e as Error).message)
     }
@@ -178,7 +178,7 @@ function Composer({
 }: {
   channelName: string
   mentionables: Mentionable[]
-  onSend: (text: string, attachmentIds: string[]) => Promise<void>
+  onSend: (text: string, attachments: Attachment[]) => Promise<void>
 }) {
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -200,7 +200,7 @@ function Composer({
     const atts = attachments
     setInput('')
     setAttachments([])
-    void onSend(text, atts.map((a) => a.id))
+    void onSend(text, atts)
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -236,7 +236,6 @@ function Composer({
             className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
           />
           <KeyHint keys="⏎" label="send" visible={!!input.trim() || attachments.length > 0} className="self-end mb-3" />
-          <SendButton onClick={send} disabled={!input.trim() && attachments.length === 0} />
         </div>
       </div>
     </div>

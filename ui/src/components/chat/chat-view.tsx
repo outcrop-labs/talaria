@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Textarea } from '@/components/ui/textarea'
 import { TierPicker } from '@/components/chat/tier-picker'
-import { SendButton, StopButton } from '@/components/chat/composer-buttons'
+import { StopButton } from '@/components/chat/composer-buttons'
 import { KeyHint } from '@/components/ui/kbd'
 import { MentionMenu, useMentions, type Mentionable } from '@/components/chat/mentions'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
@@ -11,7 +11,7 @@ import { resolveAgentMedia } from '@/lib/agent-media'
 import { queueChatMessage, streamChat } from '@/lib/chat'
 import { mergeTool, type ToolCall } from '@/lib/sse-parse'
 import { loadConversation, type StoredMessage } from '@/lib/conversations'
-import type { Attachment } from '@/lib/attachments'
+import { splitAttachments, type Attachment } from '@/lib/attachments'
 
 interface DisplayMessage {
   role: 'user' | 'assistant'
@@ -160,7 +160,7 @@ export function ChatView({
           conversationId: convIdRef.current,
           content: text,
           tier: tier || undefined,
-          attachmentIds: atts.map((a) => a.id),
+          ...splitAttachments(atts),
           kind,
         })
       } catch (e) {
@@ -188,7 +188,7 @@ export function ChatView({
     abortRef.current = ctrl
     try {
       for await (const ev of streamChat(
-        { model: agentModel, conversationId: convIdRef.current ?? undefined, content: text, tier: tier || undefined, attachmentIds: atts.map((a) => a.id), kind },
+        { model: agentModel, conversationId: convIdRef.current ?? undefined, content: text, tier: tier || undefined, ...splitAttachments(atts), kind },
         (meta) => {
           if (!convIdRef.current) {
             convIdRef.current = meta.conversationId
@@ -321,15 +321,14 @@ export function ChatView({
               placeholder={`Message ${agentLabel}`}
               className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
             />
-            {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
             <KeyHint
               keys={streaming ? 'esc' : '⏎'}
               label={streaming ? 'stop' : 'send'}
               visible={streaming || !!input.trim() || attachments.length > 0}
               className="self-end mb-3"
             />
+            {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
             {streaming && <StopButton onClick={stop} />}
-            <SendButton onClick={() => void send()} disabled={!input.trim() && attachments.length === 0} />
           </div>
         </div>
       </div>
