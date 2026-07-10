@@ -316,25 +316,42 @@ export interface KbSearchHit {
   icon: string | null
   snippet: string
   visibility: 'private' | 'org' | 'public'
+  /** Spaces are documents too (their overview) — hits open the space itself. */
+  kind: 'doc' | 'space'
 }
 
-/** Full-text search across docs the caller may read (org + own private). */
+/** Full-text search across everything the caller may read: docs AND the
+ *  top-level space overviews (a space is itself a document). */
 export async function searchDocs(query: string, viewer: string): Promise<KbSearchHit[]> {
   const sql = await db()
   const q = query.trim()
   if (!q) return []
   return (await sql`
-    select d.id, d.space_id as "spaceId", s.name as "spaceName", d.title, d.icon, d.visibility,
-           ts_headline('english', coalesce(d.body,''), plainto_tsquery('english', ${q}),
-             'MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1') as snippet
-    from kb_docs d
-    join kb_spaces s on s.id = d.space_id
-    where (d.visibility <> 'private' or d.created_by = ${viewer})
-      and to_tsvector('english', coalesce(d.title,'') || ' ' || coalesce(d.body,''))
-          @@ plainto_tsquery('english', ${q})
-    order by ts_rank(
-      to_tsvector('english', coalesce(d.title,'') || ' ' || coalesce(d.body,'')),
-      plainto_tsquery('english', ${q})) desc
+    select * from (
+      select d.id, d.space_id as "spaceId", s.name as "spaceName", d.title, d.icon, d.visibility, 'doc' as kind,
+             ts_headline('english', coalesce(d.body,''), plainto_tsquery('english', ${q}),
+               'MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1') as snippet,
+             ts_rank(
+               to_tsvector('english', coalesce(d.title,'') || ' ' || coalesce(d.body,'')),
+               plainto_tsquery('english', ${q})) as rank
+      from kb_docs d
+      join kb_spaces s on s.id = d.space_id
+      where (d.visibility <> 'private' or d.created_by = ${viewer})
+        and to_tsvector('english', coalesce(d.title,'') || ' ' || coalesce(d.body,''))
+            @@ plainto_tsquery('english', ${q})
+      union all
+      select s.id, s.id as "spaceId", s.name as "spaceName", s.name as title, s.icon, s.visibility, 'space' as kind,
+             ts_headline('english', coalesce(s.body,''), plainto_tsquery('english', ${q}),
+               'MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1') as snippet,
+             ts_rank(
+               to_tsvector('english', coalesce(s.name,'') || ' ' || coalesce(s.body,'')),
+               plainto_tsquery('english', ${q})) as rank
+      from kb_spaces s
+      where (s.visibility <> 'private' or s.created_by = ${viewer})
+        and to_tsvector('english', coalesce(s.name,'') || ' ' || coalesce(s.body,''))
+            @@ plainto_tsquery('english', ${q})
+    ) hits
+    order by rank desc
     limit 20
   `) as unknown as KbSearchHit[]
 }

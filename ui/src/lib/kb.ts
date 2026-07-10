@@ -139,6 +139,8 @@ export interface KbSearchHit {
   icon: string | null
   snippet: string
   visibility: 'private' | 'org' | 'public'
+  /** Spaces are documents too (their overview) — hits open the space itself. */
+  kind: 'doc' | 'space'
 }
 export const searchKb = (q: string) =>
   fetch(`/api/kb/search?q=${encodeURIComponent(q)}`).then((r) => (r.ok ? r.json() : { hits: [] })).then((d) => (d as { hits: KbSearchHit[] }).hits)

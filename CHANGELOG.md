@@ -22,6 +22,13 @@ secrets encrypted at rest.
   and the legacy build-based `stack/` — **no Dockerfiles** remain; the run path
   is compose-only (official/published images) + host-run app.
 
+### Fixed
+- **Knowledge search finds space overviews.** Top-level spaces are documents
+  too — search now sweeps their name + overview body alongside docs, and a
+  space hit opens the space itself.
+- **Research uses the same agent selector as every other surface** — the
+  standard picker at the top of the rail (like Plan), not a bespoke composer
+  pill. The composer keeps only the depth pill.
 ### Added
 - **Attach anything — knowledge, artifacts, or files.** The composer paperclip
   is now a menu: attach a knowledge doc or an artifact (search pickers) or
