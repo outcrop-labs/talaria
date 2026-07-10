@@ -66,13 +66,13 @@ export const MODEL_ROLES: Array<{
   {
     role: 'embedding',
     label: 'Embeddings',
-    hint: 'Reserved: RAG embeddings currently run on the dedicated embeddings service (TALARIA_EMBED_URL); this slot takes over when gateway-served embedding models land.',
+    hint: 'RAG embeddings run NATIVE on the self-hosted TEI service (TALARIA_EMBED_MODEL in compose; swap = reindex). This slot takes over if gateway-served embedding models ever land.',
     wired: false,
   },
   {
     role: 'reranker',
     label: 'Reranker',
-    hint: 'Reserved: reranking merged multi-collection RAG results (the retrieval-quality tail).',
+    hint: 'Rerank providers (self-hosted TEI, Voyage, Together, NVIDIA, Pinecone, …) are configured in Admin → Retrieval — provider APIs, not gateway models.',
     wired: false,
   },
 ]

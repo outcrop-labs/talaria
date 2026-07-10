@@ -7,6 +7,7 @@ import { listAgents } from './gateway'
 import { containerStatus } from './fleet-docker'
 import { costOverview } from './usage'
 import { fleetBrainHealth } from './brain-health'
+import { ragHealth } from './retrieval/backfill'
 
 export type AlertSeverity = 'critical' | 'warning' | 'info'
 
@@ -60,6 +61,20 @@ export async function computeAlerts(userId: string): Promise<Alert[]> {
       title: 'Gateway plane unreachable',
       detail: 'The fleet multiplexer on :8642 is not answering — chat and channel replies will fail.',
       href: '/agents',
+    })
+  }
+
+  // ── Retrieval plane: Qdrant + embeddings must be up or the brains starve ───
+  // Indexing is fire-and-forget by design, so a dead service fails silently —
+  // this alert is the guarantee it can't stay silent.
+  const rag = await ragHealth().catch(() => ({ qdrant: false, embeddings: false }))
+  if (!rag.qdrant || !rag.embeddings) {
+    const down = [!rag.qdrant && 'Qdrant (vector store)', !rag.embeddings && 'embeddings (TEI)'].filter(Boolean).join(' and ')
+    alerts.push({
+      severity: 'critical',
+      title: 'Retrieval plane down',
+      detail: `${down} unreachable — nothing new is being indexed and agent knowledge search fails. Start the services (docker/dev-compose.yml), then run the backfill in Admin → Retrieval.`,
+      href: '/admin',
     })
   }
 

@@ -8,6 +8,7 @@ import { db } from '../db/pg'
 import { embed, embedOne } from './embed'
 import { upsertPoints, deletePoints, search as qdrantSearch, type QdrantPoint } from './qdrant'
 import { collectionsForPrincipal, getCollection, type RagCollection } from './collections'
+import { getRerankConfig, rerank } from './rerank'
 
 export interface IndexDoc {
   sourceType: string // 'kb-doc' | 'channel' | 'chat' | 'plan' | 'research' | 'ticket' | …
@@ -156,8 +157,11 @@ async function activityScope(principal: { userId?: string; agentModel?: string }
   return { should: [] } // no scope → nothing from activity
 }
 
-/** Search across the principal's accessible collections, merged + ranked by
- *  score. `collectionIds` narrows to specific collections (e.g. only org-kb). */
+/** Search across the principal's accessible collections. Vector recall per
+ *  collection → merge + dedupe → (when configured) cross-encoder RERANK over
+ *  the merged candidate pool → top `limit`. Raw cosine scores aren't
+ *  comparable across collections, so the reranker is what makes the merged
+ *  ranking honest; without one we keep the old score order. */
 export async function searchForPrincipal(
   principal: { userId?: string; agentModel?: string },
   query: string,
@@ -167,6 +171,10 @@ export async function searchForPrincipal(
   if (opts.collectionIds?.length) cols = cols.filter((c) => opts.collectionIds!.includes(c.id))
   if (cols.length === 0) return []
   const limit = opts.limit ?? 8
+  const rerankCfg = await getRerankConfig()
+  const reranking = rerankCfg.provider !== 'off'
+  // With a reranker, over-fetch per collection so it has a real pool to work.
+  const perColLimit = reranking ? Math.max(limit, Math.ceil((rerankCfg.candidates ?? 30) / cols.length) + 2) : limit
   const vec = await embedOne(query)
   const activityFilter = await activityScope(principal)
 
@@ -175,7 +183,7 @@ export async function searchForPrincipal(
       // Ambient activity is ACL-filtered per item; curated/custom collections
       // are gated at the collection level (their binding).
       const filter = c.kind === 'activity' ? activityFilter ?? undefined : undefined
-      const hits = await qdrantSearch(c.qdrantName, vec, limit, filter)
+      const hits = await qdrantSearch(c.qdrantName, vec, perColLimit, filter).catch(() => [])
       return hits.map((h) => ({
         collection: c.name,
         score: h.score,
@@ -187,9 +195,9 @@ export async function searchForPrincipal(
       }))
     }),
   )
-  // Merge, dedupe by source, rank by score.
+  // Merge, dedupe by source, rank by vector score.
   const seen = new Set<string>()
-  return perCol
+  const merged = perCol
     .flat()
     .sort((a, b) => b.score - a.score)
     .filter((h) => {
@@ -198,5 +206,14 @@ export async function searchForPrincipal(
       seen.add(k)
       return true
     })
+  if (!reranking || merged.length <= 1) return merged.slice(0, limit)
+
+  // Precision pass: rescore the pool with the configured cross-encoder.
+  const pool = merged.slice(0, rerankCfg.candidates ?? 30)
+  const scores = await rerank(query, pool.map((h) => `${h.title ?? ''}\n${h.snippet}`.trim()))
+  if (!scores) return merged.slice(0, limit) // provider hiccup → vector order
+  return pool
+    .map((h, i) => ({ ...h, score: scores[i]! }))
+    .sort((a, b) => b.score - a.score)
     .slice(0, limit)
 }

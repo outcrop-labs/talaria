@@ -6,7 +6,7 @@ import { deleteCollectionById, getCollection, setBindings } from '@/server/retri
 import { logAudit } from '@/server/audit'
 
 const Body = z.object({
-  bindings: z.array(z.object({ principalType: z.enum(['all', 'user', 'agent']), principalId: z.string().max(200).nullish() })).max(200),
+  bindings: z.array(z.object({ principalType: z.enum(['all', 'user', 'agent', 'team']), principalId: z.string().max(200).nullish() })).max(200),
 })
 
 // One collection (admin). PUT → set its access bindings. DELETE → drop it (auto

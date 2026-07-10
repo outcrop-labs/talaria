@@ -23,6 +23,23 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **The RAG stack lives — and got a real retrieval pipeline.** The retrieval
+  plane (Qdrant + a native CPU embedding model via TEI, default
+  `bge-small-en-v1.5`) is now part of the self-contained compose — it had been
+  silently dead since the Phase-7 stack cut, with every index call swallowed.
+  Three defenses so that can't recur: a critical **alert** when either service
+  is unreachable, a one-click **"Reindex everything" backfill** (Admin →
+  Retrieval; content-hash idempotent) that restored the workspace's history,
+  and a **15-minute incremental sweep** that self-heals missed rows after an
+  outage. Retrieval gained a **reranker** precision stage: a provider registry
+  like LLM endpoints — self-hosted TEI, Voyage AI (US), Together AI (US),
+  NVIDIA (US), Pinecone (US), Cohere (Canada), Jina (Germany) — with live
+  model catalogs where providers expose one, sealed API keys, and graceful
+  fallback to vector order (reranking can never break search). And RAG brains
+  are finally **curatable in the UI**: create a brain, bind who can search it
+  (teams now supported alongside users/agents/everyone), and point KB spaces
+  at it — every non-private doc in a bound space feeds that brain instead of
+  the org default, re-routing immediately on bind/unbind.
 - **Artifacts file themselves — every agent gets a cabinet.** Auto-created
   artifacts stop piling up at the root: each agent gets a folder named after
   it, with category subfolders created on demand — **Plans** (plan documents),

@@ -39,6 +39,7 @@ export async function unindexOrgKb(sourceType: string, sourceId: string): Promis
 // collections it no longer belongs to — so nothing leaks or goes stale.
 export interface KbDocSync {
   id: string
+  spaceId?: string | null
   title: string
   body: string
   visibility: 'private' | 'org' | 'public'
@@ -46,12 +47,30 @@ export interface KbDocSync {
   ownerUserId: string | null
 }
 
+/** The custom collection a KB space feeds (curation: bind a space to a brain
+ *  on Admin → Retrieval), if any. */
+async function spaceBrain(spaceId: string | null | undefined): Promise<string | null> {
+  if (!spaceId) return null
+  const sql = await db()
+  const rows = (await sql`
+    select s.rag_collection_id as id from kb_spaces s
+    join rag_collections c on c.id = s.rag_collection_id
+    where s.id = ${spaceId}
+  `) as unknown as Array<{ id: string }>
+  return rows[0]?.id ?? null
+}
+
 export async function syncKbDoc(doc: KbDocSync): Promise<void> {
   const orgId = await autoCollectionId('org-kb')
   const personal = doc.ownerUserId ? await personalCollectionFor(doc.ownerUserId) : null
-  // Clear from both possible homes first (idempotent), then place it.
+  const brain = await spaceBrain(doc.spaceId)
+  // Clear from every possible home first (idempotent), then place it. Custom
+  // homes are cleared wholesale so a re-bound space can't leave stale copies.
   if (orgId) await unindexDocument(orgId, 'kb-doc', doc.id).catch(() => {})
   if (personal) await unindexDocument(personal.id, 'kb-doc', doc.id).catch(() => {})
+  const sql = await db()
+  const customs = (await sql`select id from rag_collections where kind = 'custom'`) as unknown as Array<{ id: string }>
+  for (const c of customs) await unindexDocument(c.id, 'kb-doc', doc.id).catch(() => {})
 
   const idxDoc: IndexDoc = {
     sourceType: 'kb-doc',
@@ -64,6 +83,10 @@ export async function syncKbDoc(doc: KbDocSync): Promise<void> {
     if (personal) await indexDocument(personal.id, idxDoc).catch(() => {})
     // No personal collection yet (user hasn't spun up an assistant) → the doc
     // stays private and unindexed until they do, then a save syncs it.
+  } else if (brain) {
+    // A space bound to a brain IS the curation act — every non-private doc in
+    // it feeds that brain (access governed by the brain's own bindings).
+    await indexDocument(brain, idxDoc).catch(() => {})
   } else if (doc.official && orgId) {
     await indexDocument(orgId, idxDoc).catch(() => {})
   }
@@ -77,6 +100,21 @@ export async function unindexKbDoc(id: string, ownerUserId: string | null): Prom
     const personal = await personalCollectionFor(ownerUserId)
     if (personal) await unindexDocument(personal.id, 'kb-doc', id).catch(() => {})
   }
+  const sql = await db()
+  const customs = (await sql`select id from rag_collections where kind = 'custom'`) as unknown as Array<{ id: string }>
+  for (const c of customs) await unindexDocument(c.id, 'kb-doc', id).catch(() => {})
+}
+
+/** Re-route every doc in a space through syncKbDoc — run after (re)binding a
+ *  space to a brain, so existing docs move immediately. */
+export async function resyncSpaceDocs(spaceId: string): Promise<number> {
+  const sql = await db()
+  const docs = (await sql`
+    select d.id, d.space_id as "spaceId", d.title, d.body, d.visibility, d.official, d.owner_user_id as "ownerUserId"
+    from kb_docs d where d.space_id = ${spaceId}
+  `) as unknown as KbDocSync[]
+  for (const d of docs) await syncKbDoc(d).catch(() => {})
+  return docs.length
 }
 
 export async function unindexActivity(sourceType: string, sourceId: string): Promise<void> {

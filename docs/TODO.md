@@ -121,10 +121,13 @@ engineering-facing tracker.
   engine's own loop) + utility wired (research engine, systemModel,
   museModelFor); vision / image-generation / embeddings / reranker slots
   reserved. Assignments only win while routable.
-- **RAG registry tail (#63)** — reranking over merged multi-collection results;
-  research remains to index (plans + plan docs + relay summaries + chat
-  distills now feed the activity brain; channels/tickets/comments were already
-  done). A Retrieval admin view exists.
+- ✅ **RAG registry tail (#63) (2026-07-10)** — retrieval plane resurrected
+  (Qdrant + native TEI embeddings in compose; they'd been dead since the
+  Phase-7 stack cut): unreachable-service alerts, one-click backfill, 15-min
+  incremental self-healing sweep. Reranking shipped as a provider registry
+  (TEI self-hosted, Voyage/Together/NVIDIA/Pinecone US, Cohere CA, Jina DE;
+  live model catalogs, sealed keys, fallback-to-vector-order). Brains curatable
+  in Admin → Retrieval: team/user/agent bindings + KB-space→brain feeding.
 
 ## Later
 - **Roll volume isolation** — during a rolling replacement both slots briefly
