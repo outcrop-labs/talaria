@@ -799,6 +799,9 @@ const MIGRATIONS: string[] = [
   // Per-doc routing override: 'auto' (space binding / org rules), 'none'
   // (never index), or a collection uuid (explicit brain assignment).
   `alter table kb_docs add column if not exists rag_routing text not null default 'auto'`,
+  // The same control on artifacts: 'auto' (plan/research activity flows +
+  // officialize pipeline), 'none', or an explicit brain.
+  `alter table artifacts add column if not exists rag_routing text not null default 'auto'`,
 ]
 
 function ensureMigrated(): Promise<void> {

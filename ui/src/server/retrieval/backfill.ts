@@ -6,8 +6,10 @@
 //   maybeRagSweep()    15-minute incremental catch-up over new rows, so an
 //                      outage self-heals when the services come back
 import { db } from '../db/pg'
+import { getArtifact } from '../artifacts'
 import { getSetting, setSetting } from '../audit'
 import { describeAgent } from '../gateway'
+import { applyArtifactRouting } from './artifact-routing'
 import { embedOne } from './embed'
 import { ensureCollection } from './qdrant'
 import { indexActivity, indexTicket, indexTicketComment, syncKbDoc } from './sources'
@@ -133,13 +135,21 @@ export async function backfillAll(): Promise<void> {
       counts.planTurns = (counts.planTurns ?? 0) + 1
     }
     const arts = (await sql`
-      select a.id, a.title, a.body, a.visibility, a.owner_user_id as "ownerId",
+      select a.id, a.title, a.body, a.visibility, a.owner_user_id as "ownerId", a.rag_routing as "ragRouting",
              l.target_type as "targetType", l.target_id as "targetId"
       from artifacts a
       left join artifact_links l on l.artifact_id = a.id and l.target_type in ('plan', 'research')
       where a.kind = 'doc' and a.body <> ''
-    `) as unknown as Array<{ id: string; title: string; body: string; visibility: string; ownerId: string | null; targetType: string | null; targetId: string | null }>
+    `) as unknown as Array<{ id: string; title: string; body: string; visibility: string; ownerId: string | null; ragRouting: string; targetType: string | null; targetId: string | null }>
     for (const a of arts) {
+      // Routed artifacts (explicit brain / none) are placed by their routing,
+      // not the activity flows.
+      if (a.ragRouting && a.ragRouting !== 'auto') {
+        const full = await getArtifact(a.id)
+        if (full) await applyArtifactRouting(full).catch(() => {})
+        counts.routedArtifacts = (counts.routedArtifacts ?? 0) + 1
+        continue
+      }
       if (a.targetType === 'plan') {
         await indexActivity({
           sourceType: 'plan-doc',
@@ -222,13 +232,19 @@ export async function sweepNewActivity(): Promise<number> {
     indexed++
   }
   const arts = (await sql`
-    select a.id, a.title, a.body, a.visibility, a.owner_user_id as "ownerId",
+    select a.id, a.title, a.body, a.visibility, a.owner_user_id as "ownerId", a.rag_routing as "ragRouting",
            l.target_type as "targetType", l.target_id as "targetId"
     from artifacts a
     left join artifact_links l on l.artifact_id = a.id and l.target_type in ('plan', 'research')
     where a.kind = 'doc' and a.body <> '' and a.updated_at > ${watermark} and l.target_type is not null
-  `) as unknown as Array<{ id: string; title: string; body: string; visibility: string; ownerId: string | null; targetType: string | null; targetId: string | null }>
+  `) as unknown as Array<{ id: string; title: string; body: string; visibility: string; ownerId: string | null; ragRouting: string; targetType: string | null; targetId: string | null }>
   for (const a of arts) {
+    if (a.ragRouting && a.ragRouting !== 'auto') {
+      const full = await getArtifact(a.id)
+      if (full) await applyArtifactRouting(full).catch(() => {})
+      indexed++
+      continue
+    }
     const isPlan = a.targetType === 'plan'
     if (!isPlan && a.visibility === 'private') continue
     await indexActivity({

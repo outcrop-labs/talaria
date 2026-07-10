@@ -26,6 +26,8 @@ export interface Artifact {
   kbDocId: string | null
   folderId: string | null
   ownerUserId: string | null
+  /** RAG routing: 'auto' (plan/research/official flows) | 'none' | a brain id. */
+  ragRouting: string
   googleFileId: string | null
   googleFileUrl: string | null
   createdBy: string | null
@@ -36,13 +38,13 @@ export interface Artifact {
 
 const COLS = `id, kind, title, icon, body, content_type as "contentType", storage_ref as "storageRef",
   visibility, edit_policy as "editPolicy", public_slug as "publicSlug", official, kb_doc_id as "kbDocId",
-  folder_id as "folderId", owner_user_id as "ownerUserId", google_file_id as "googleFileId", google_file_url as "googleFileUrl",
+  folder_id as "folderId", owner_user_id as "ownerUserId", rag_routing as "ragRouting", google_file_id as "googleFileId", google_file_url as "googleFileUrl",
   created_by as "createdBy", updated_by as "updatedBy",
   created_at as "createdAt", updated_at as "updatedAt"`
 // Table-qualified for joins (artifact_links also has created_by / created_at).
 const COLS_A = `a.id, a.kind, a.title, a.icon, a.body, a.content_type as "contentType", a.storage_ref as "storageRef",
   a.visibility, a.edit_policy as "editPolicy", a.public_slug as "publicSlug", a.official, a.kb_doc_id as "kbDocId",
-  a.folder_id as "folderId", a.owner_user_id as "ownerUserId", a.google_file_id as "googleFileId", a.google_file_url as "googleFileUrl",
+  a.folder_id as "folderId", a.owner_user_id as "ownerUserId", a.rag_routing as "ragRouting", a.google_file_id as "googleFileId", a.google_file_url as "googleFileUrl",
   a.created_by as "createdBy", a.updated_by as "updatedBy",
   a.created_at as "createdAt", a.updated_at as "updatedAt"`
 
@@ -229,6 +231,19 @@ export async function artifactsForTarget(targetType: string, targetId: string): 
   )) as unknown as Artifact[]
 }
 
+/** Set an artifact's RAG routing ('auto' | 'none' | a custom brain id). The
+ *  caller applies the re-placement (retrieval/artifact-routing) — split to
+ *  keep this module free of retrieval imports. */
+export async function setArtifactRouting(id: string, routing: string, actor: string): Promise<Artifact | null> {
+  const sql = await db()
+  if (routing !== 'auto' && routing !== 'none') {
+    const ok = await sql`select 1 from rag_collections where id = ${routing} and kind = 'custom'`
+    if (!ok.length) throw new Error('unknown brain')
+  }
+  await sql`update artifacts set rag_routing = ${routing}, updated_by = ${actor}, updated_at = now() where id = ${id}`
+  return getArtifact(id)
+}
+
 /** The things an artifact is attached to (for its "Attached to" list). */
 export async function targetsForArtifact(artifactId: string): Promise<ArtifactTarget[]> {
   const sql = await db()
@@ -251,7 +266,7 @@ async function ensureArtifactsSpace(actor: string): Promise<string> {
 }
 
 /** Render an artifact's content as markdown for the KB mirror. */
-function artifactToMarkdown(a: Artifact): string {
+export function artifactToMarkdown(a: Artifact): string {
   if (a.kind === 'file') return '' // no text body
   if (a.kind === 'sheet') return sheetToMarkdownTable(a.body)
   return a.body // doc + microsite are already text/markdown

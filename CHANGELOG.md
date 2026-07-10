@@ -23,6 +23,14 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Brain routing everywhere content lives.** The same "Brain" control now
+  sits in the top menu of BOTH knowledge docs and artifacts (docs, sheets,
+  microsites): Auto / a specific brain / None. For artifacts, explicit
+  assignment indexes the rendered content (sheets become tables) into that
+  brain only — plan documents and research reports routed away from Auto
+  leave the activity brain, and flipping back restores them. Content edits
+  re-index in whatever home the routing says. Owner-only on both surfaces;
+  privacy still trumps routing.
 - **Per-doc brain routing — brains contain only what's assigned to them.**
   Every KB doc gains a "Brain" control (owner-only, next to Official): **Auto**
   (space binding / official→org rules), a **specific custom brain**, or

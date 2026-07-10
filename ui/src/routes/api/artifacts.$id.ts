@@ -3,7 +3,8 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { deleteArtifact, getArtifact, guarded, saveArtifact, setArtifactOfficial, targetsForArtifact } from '@/server/artifacts'
+import { deleteArtifact, getArtifact, guarded, saveArtifact, setArtifactOfficial, setArtifactRouting, targetsForArtifact } from '@/server/artifacts'
+import { applyArtifactRouting } from '@/server/retrieval/artifact-routing'
 import { indexPlanDoc } from '@/server/plan-doc'
 import { canEditAgent, canEditHuman, canRead, isOwner, listEditors, setEditors } from '@/server/kb-perms'
 import { isElevatedAssistant } from '@/server/users'
@@ -21,6 +22,8 @@ const Patch = z.object({
   editPolicy: z.enum(['owner', 'org', 'restricted']).optional(),
   editors: z.array(Editor).max(200).optional(),
   official: z.boolean().optional(),
+  /** RAG routing: 'auto' | 'none' | a custom brain id. Owner-only. */
+  ragRouting: z.string().max(60).optional(),
 })
 
 // One artifact. Read/edit gated by its audience; sharing owner-only; agents
@@ -64,6 +67,7 @@ export const Route = createFileRoute('/api/artifacts/$id')({
           parsed.data.editPolicy = undefined
           parsed.data.editors = undefined
           parsed.data.official = undefined
+          parsed.data.ragRouting = undefined
         } else {
           const user = await getSessionUser(request)
           if (!user) return json({ error: 'unauthorized' }, { status: 401 })
@@ -72,6 +76,10 @@ export const Route = createFileRoute('/api/artifacts/$id')({
           owner = isOwner(g, user.id, user.email ?? user.name)
           const sharing = parsed.data.visibility !== undefined || parsed.data.editPolicy !== undefined || parsed.data.editors !== undefined
           if (!owner && sharing) return json({ error: 'only the owner can change sharing' }, { status: 403 })
+          // Routing decides which brain retrieves the content — owner's call.
+          if (!owner && parsed.data.ragRouting !== undefined) {
+            return json({ error: 'only the owner can change brain routing' }, { status: 403 })
+          }
         }
 
         if (!owner) parsed.data.official = undefined
@@ -82,16 +90,32 @@ export const Route = createFileRoute('/api/artifacts/$id')({
           updated = (await setArtifactOfficial(params.id, parsed.data.official, actor)) ?? updated
           void logAudit({ actor, action: parsed.data.official ? 'artifact.officialize' : 'artifact.deofficialize', targetType: 'artifact', targetId: params.id, targetLabel: updated.title })
         }
-        // A plan's living document stays current in the activity brain on every
-        // edit — hand edits in the side-by-side editor land here too.
+        // Routing change → re-place immediately (and validate the brain).
+        if (parsed.data.ragRouting !== undefined) {
+          try {
+            const routed = await setArtifactRouting(params.id, parsed.data.ragRouting, actor)
+            if (routed) {
+              updated = routed
+              void applyArtifactRouting(routed).catch(() => {})
+            }
+          } catch (e) {
+            return json({ error: (e as Error).message }, { status: 400 })
+          }
+        }
+        // Content edits keep the artifact's retrievable copy current: auto →
+        // the plan-doc activity flow; explicit brain → re-index there.
         if (parsed.data.body !== undefined || parsed.data.title !== undefined) {
           const u = updated
-          void targetsForArtifact(params.id)
-            .then((ts) => {
-              const plan = ts.find((t) => t.targetType === 'plan')
-              if (plan) return indexPlanDoc(u, plan.targetId)
-            })
-            .catch(() => {})
+          if (u.ragRouting && u.ragRouting !== 'auto') {
+            void applyArtifactRouting(u).catch(() => {})
+          } else {
+            void targetsForArtifact(params.id)
+              .then((ts) => {
+                const plan = ts.find((t) => t.targetType === 'plan')
+                if (plan) return indexPlanDoc(u, plan.targetId)
+              })
+              .catch(() => {})
+          }
         }
         return json({ artifact: updated, editors: await listEditors('artifact', params.id) })
       },
