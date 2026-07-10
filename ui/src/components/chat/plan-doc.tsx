@@ -10,7 +10,7 @@ import { saveArtifact, useArtifact } from '@/lib/artifacts'
 // One per plan (linked via artifact_links target_type='plan'); found-or-created
 // server-side on first open, seeded from the agent's plan template when one is
 // bound. Editable on the fly, autosaved, referenceable anywhere in the app.
-export function PlanDoc({ planId }: { planId: string; planTitle?: string | null }) {
+export function PlanDoc({ planId, syncSignal = 0 }: { planId: string; planTitle?: string | null; syncSignal?: number }) {
   const [docId, setDocId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -29,7 +29,7 @@ export function PlanDoc({ planId }: { planId: string; planTitle?: string | null 
   return (
     <div className="flex min-w-0 flex-col border-l border-line-subtle">
       {docId ? (
-        <DocEditor id={docId} planId={planId} />
+        <DocEditor id={docId} planId={planId} syncSignal={syncSignal} />
       ) : (
         <div className="grid flex-1 place-items-center text-sm text-muted">Preparing the plan document</div>
       )}
@@ -37,7 +37,7 @@ export function PlanDoc({ planId }: { planId: string; planTitle?: string | null 
   )
 }
 
-function DocEditor({ id, planId }: { id: string; planId: string }) {
+function DocEditor({ id, planId, syncSignal = 0 }: { id: string; planId: string; syncSignal?: number }) {
   const qc = useQueryClient()
   const { data: artifact } = useArtifact(id)
   const editorRef = useRef<RichEditorHandle>(null)
@@ -68,6 +68,21 @@ function DocEditor({ id, planId }: { id: string; planId: string }) {
       setSyncing(false)
     }
   }
+
+  // The document builds as you talk: every landed agent turn triggers a sync.
+  // Unsaved manual edits are flushed first so the rewrite starts from them
+  // instead of clobbering them. Signal 0 is mount, not a turn.
+  const lastSignal = useRef(syncSignal)
+  useEffect(() => {
+    if (syncSignal === lastSignal.current) return
+    lastSignal.current = syncSignal
+    void (async () => {
+      const md = editorRef.current?.getMarkdown()
+      if (md !== undefined && md !== artifact?.body) await save().catch(() => {})
+      await sync()
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncSignal])
 
   if (!artifact) return <div className="grid flex-1 place-items-center text-sm text-muted">Loading</div>
 

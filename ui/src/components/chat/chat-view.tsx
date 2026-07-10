@@ -46,6 +46,7 @@ export function ChatView({
   kind = 'chat',
   fill = false,
   mentionables = [],
+  onTurnComplete,
 }: {
   agentModel: string
   agentLabel: string
@@ -61,6 +62,10 @@ export function ChatView({
   fill?: boolean
   /** Composer @mention options (e.g. the plan surface offers teammates). */
   mentionables?: Mentionable[]
+  /** Fires each time an agent turn lands complete, whether this client
+   *  streamed it or the poller observed a server-chained one (the plan
+   *  surface syncs its living document on this). */
+  onTurnComplete?: () => void
 }) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [input, setInput] = useState('')
@@ -119,6 +124,22 @@ export function ChatView({
   // it can't poll forever.
   const last = messages[messages.length - 1]
   const resuming = !streaming && (last?.role === 'user' || (last?.role === 'assistant' && last.status === 'streaming'))
+
+  // Turn-landing edge: fire onTurnComplete when an IN-FLIGHT turn (one we
+  // streamed, or one the poller was watching) flips to a complete assistant
+  // reply. The ref arms only while something is in flight, so loading an old
+  // conversation never fires it.
+  const turnInFlight = useRef(false)
+  const onTurnCompleteRef = useRef(onTurnComplete)
+  onTurnCompleteRef.current = onTurnComplete
+  useEffect(() => {
+    const landed = last?.role === 'assistant' && last.status === 'complete'
+    if ((streaming || resuming) && !landed) turnInFlight.current = true
+    else if (landed && turnInFlight.current) {
+      turnInFlight.current = false
+      onTurnCompleteRef.current?.()
+    }
+  }, [last, streaming, resuming])
   useEffect(() => {
     if (!resuming) return
     const id = convIdRef.current

@@ -113,6 +113,8 @@ function PlanPage() {
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [newChatSignal, setNewChatSignal] = useState(0)
   const [planOpen, setPlanOpen] = useState(false)
+  // Bumped when an agent turn lands; the doc pane syncs itself on it.
+  const [turnSignal, setTurnSignal] = useState(0)
 
   const selectConversation = (c: Conversation) => {
     pickAgent(c.agentModel)
@@ -193,6 +195,7 @@ function PlanPage() {
                 kind="plan"
                 fill
                 mentionables={mentionables}
+                onTurnComplete={() => setTurnSignal((n) => n + 1)}
               />
             </div>
             {/* The plan's living document — side by side from the FIRST
@@ -200,7 +203,7 @@ function PlanPage() {
                 the conversation exists, the pane shows what will grow here. */}
             <div className="hidden min-w-0 basis-[44%] lg:flex">
               {selectedConversationId ? (
-                <PlanDoc planId={selectedConversationId} planTitle={selected?.title ?? null} />
+                <PlanDoc planId={selectedConversationId} planTitle={selected?.title ?? null} syncSignal={turnSignal} />
               ) : (
                 <div className="flex min-w-0 flex-1 flex-col border-l border-line-subtle">
                   <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
