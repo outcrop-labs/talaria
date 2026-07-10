@@ -5,7 +5,7 @@ import type { AgentModel } from '@/lib/agents'
 // elsewhere deep-link straight into a conversation with a specific agent via
 // `?agent=<model>`. Precedence: query param → last-used (localStorage) → first.
 export function useStickyAgent(
-  surface: 'chat' | 'plan',
+  surface: 'chat' | 'plan' | 'research',
   agents: AgentModel[],
 ): readonly [string | null, (id: string) => void] {
   const key = `talaria.agent.${surface}`

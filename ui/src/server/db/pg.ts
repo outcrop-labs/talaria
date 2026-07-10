@@ -764,6 +764,35 @@ const MIGRATIONS: string[] = [
    )`,
   // Who wrote a user turn — multiplayer plans need voices told apart.
   `alter table messages add column if not exists author_user_id uuid references users(id) on delete set null`,
+  // Research runs: cited research pipelines (Recon / Brief / Expedition). The
+  // report itself is a doc artifact; sources carry the [n] citation registry.
+  `create table if not exists research_runs (
+     id uuid primary key default gen_random_uuid(),
+     owner_user_id uuid references users(id) on delete set null,
+     requested_by text not null,
+     agent_model text not null,
+     mode text not null,
+     question text not null,
+     status text not null default 'queued',
+     phase text,
+     artifact_id uuid references artifacts(id) on delete set null,
+     error text,
+     stats jsonb not null default '{}',
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now(),
+     completed_at timestamptz
+   )`,
+  `create index if not exists research_runs_created_idx on research_runs(created_at desc)`,
+  `create table if not exists research_sources (
+     id uuid primary key default gen_random_uuid(),
+     run_id uuid not null references research_runs(id) on delete cascade,
+     idx integer not null,
+     url text not null,
+     title text,
+     snippet text,
+     created_at timestamptz not null default now(),
+     unique (run_id, idx)
+   )`,
 ]
 
 function ensureMigrated(): Promise<void> {

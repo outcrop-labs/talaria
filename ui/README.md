@@ -95,9 +95,12 @@ exposes only these safe operations is shipped — see [`../mcp/README.md`](../mc
 ## Where this is headed
 
 Shipped: the PM suite, the agent MCP (`talaria-mcp`), the unified **Comms**
-surface (channels · relays · teammate DMs · agent DMs with tier mentions and
-distill-then-archive decay), the **Plan view** (living plan document + templated,
-dependency-aware ticket drafting), ticket/plan **templates**, **org identity**,
+surface (channels · relays · teammate DMs · agent DMs with tier mentions,
+unread badges, DM notifications, and distill-then-archive decay), the
+**multiplayer Plan view** (shared plan conversations + living plan document,
+presence, templated dependency-aware ticket drafting), the **Research view**
+(Recon/Brief/Expedition cited research with **Model Roles** on `/models`),
+ticket/plan **templates**, **org identity**,
 the full agent harness
 (design agents from a description with Muse, federate outside agents in,
 render/orchestrate from one Talaria-owned chassis with **zero-downtime rolling

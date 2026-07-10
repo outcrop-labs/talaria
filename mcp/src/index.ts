@@ -427,6 +427,44 @@ server.registerTool(
   async ({ taskId, dependsOnId }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/dependencies`, { dependsOnId })),
 )
 
+// ── Research (Recon / Brief / Expedition) ────────────────────────────────────
+// Cited web research, run server-side by YOUR persona + a search model — your
+// chat context stays clean. Results are org-visible report documents.
+server.registerTool(
+  'research',
+  {
+    description:
+      "Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. Use recon for quick facts mid-task; brief/expedition for real questions worth a document.",
+    inputSchema: {
+      question: z.string().min(8).max(4000).describe('What to research, in natural language — be specific'),
+      mode: z.enum(['recon', 'brief', 'expedition']).optional().describe("Depth (default 'brief')"),
+    },
+  },
+  async ({ question, mode }) => ok(await api('POST', '/api/research', { question, mode })),
+)
+
+server.registerTool(
+  'research_status',
+  {
+    description:
+      "Check a research run: status (queued/running/done/error), current phase, and — when done — the report's documentId (read it with get_document) plus the source list.",
+    inputSchema: { runId: z.string().describe('Run id (from research)') },
+  },
+  async ({ runId }) => {
+    const r = (await api('GET', `/api/research/${encodeURIComponent(runId)}`)) as {
+      run?: { status?: string; phase?: string | null; artifactId?: string | null; error?: string | null }
+      sources?: unknown[]
+    }
+    return ok({
+      status: r.run?.status,
+      phase: r.run?.phase,
+      documentId: r.run?.artifactId,
+      error: r.run?.error,
+      sources: r.sources?.length ?? 0,
+    })
+  },
+)
+
 // ── Board governance (personal assistants only) ─────────────────────────────
 // These act AS your owner (identity proxy). They only work if you're someone's
 // personal assistant AND your owner has the required board role — general

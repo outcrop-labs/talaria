@@ -16,6 +16,7 @@ export const GATEABLE_VIEWS: { to: string; label: string }[] = [
   { to: '/comms', label: 'Comms' },
   { to: '/plan', label: 'Plan' },
   { to: '/boards', label: 'Boards' },
+  { to: '/research', label: 'Research' },
   { to: '/knowledge', label: 'Knowledge' },
   { to: '/artifacts', label: 'Artifacts' },
 ]
@@ -35,6 +36,7 @@ export const NAV: NavSection[] = [
       { to: '/comms', label: 'Comms', icon: '◈' },
       { to: '/plan', label: 'Plan', icon: '⊞' },
       { to: '/boards', label: 'Boards', icon: '⧉' },
+      { to: '/research', label: 'Research', icon: '◎' },
       { to: '/knowledge', label: 'Knowledge', icon: '❖' },
       { to: '/artifacts', label: 'Artifacts', icon: '◆' },
     ],

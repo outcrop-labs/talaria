@@ -68,6 +68,7 @@ function ModelsPage() {
           <>
             <Section title="Self-hosted — your hardware & on-prem" endpoints={local} />
             <Section title="Cloud" endpoints={cloud} />
+            <ModelRolesPanel />
             <MemberAccessPanel />
           </>
         )}
@@ -374,6 +375,76 @@ function ModelAdder({ catalog, existing, onAdd }: { catalog: string[]; existing:
 // Which models MEMBERS may pick (preferred model, muse drafting). Admins are
 // never restricted; an empty allowlist means everything is open. This is how
 // admins keep the expensive/powerful brains for deliberate use.
+// ── Model Roles — which model handles each class of activity ────────────────
+interface ModelRoleRow {
+  role: string
+  label: string
+  hint: string
+  wired: boolean
+}
+
+function ModelRolesPanel() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['model-roles'],
+    queryFn: async (): Promise<{ roles: ModelRoleRow[]; assignments: Record<string, string>; models: string[] }> => {
+      const r = await fetch('/api/admin/model-roles', { credentials: 'same-origin' })
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+  })
+  const assign = async (role: string, model: string | null) => {
+    await fetch('/api/admin/model-roles', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role, model }),
+    })
+    await qc.invalidateQueries({ queryKey: ['model-roles'] })
+  }
+  if (!data) return null
+
+  return (
+    <Panel>
+      <div className="mb-1 text-sm font-semibold text-fg">Model roles</div>
+      <p className="mb-3 text-xs text-muted">
+        Which model handles each class of activity — tailor the stack in depth. Unset = auto (a sensible
+        pick from what's registered). Agents' own brains are configured per agent and unaffected.
+      </p>
+      <ul className="divide-y divide-line-subtle">
+        {data.roles.map((r) => (
+          <li key={r.role} className="flex items-center gap-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-sm text-fg">
+                {r.label}
+                {!r.wired && (
+                  <span className="rounded bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted" title="This slot takes effect when its surface lands.">
+                    reserved
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-muted">{r.hint}</div>
+            </div>
+            <Select
+              size="sm"
+              className="w-56 shrink-0"
+              value={data.assignments[r.role] ?? ''}
+              onChange={(e) => void assign(r.role, e.target.value || null)}
+            >
+              <option value="">Auto</option>
+              {data.models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </Select>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  )
+}
+
 function MemberAccessPanel() {
   const qc = useQueryClient()
   const { data: catalog } = useModels()
