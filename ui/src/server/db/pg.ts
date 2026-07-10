@@ -796,6 +796,9 @@ const MIGRATIONS: string[] = [
   // RAG curation: a KB space can feed a specific brain (custom collection) —
   // every non-private doc in the space indexes there instead of the org brain.
   `alter table kb_spaces add column if not exists rag_collection_id uuid references rag_collections(id) on delete set null`,
+  // Per-doc routing override: 'auto' (space binding / org rules), 'none'
+  // (never index), or a collection uuid (explicit brain assignment).
+  `alter table kb_docs add column if not exists rag_routing text not null default 'auto'`,
 ]
 
 function ensureMigrated(): Promise<void> {

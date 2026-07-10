@@ -8,9 +8,18 @@
 // Reranking is best-effort — a provider failure falls back to vector order,
 // never breaks search.
 import { getSetting, setSetting } from '../audit'
+import { listEndpoints } from '../agent-defs'
+import { resolveEndpointKey } from '../provider-catalog'
 import { open, seal } from '../secretbox'
 
-export type RerankProviderId = 'off' | 'tei' | 'voyage' | 'together' | 'nvidia' | 'pinecone' | 'cohere' | 'jina'
+/** OpenRouter's key can come from the LLM endpoint the org already registered
+ *  — the rerank config only needs its own key when none exists there. */
+async function openrouterFallbackKey(): Promise<string | null> {
+  const ep = (await listEndpoints()).find((e) => e.provider === 'openrouter' || e.name === 'openrouter')
+  return ep ? resolveEndpointKey(ep) : null
+}
+
+export type RerankProviderId = 'off' | 'tei' | 'openrouter' | 'voyage' | 'together' | 'nvidia' | 'pinecone' | 'cohere' | 'jina'
 
 export interface RerankProviderMeta {
   id: RerankProviderId
@@ -35,6 +44,9 @@ export const RERANK_PROVIDERS: RerankProviderMeta[] = [
     fallbackModels: [],
     liveCatalog: false,
   },
+  // OpenRouter reuses the LLM endpoint's registered key automatically when no
+  // rerank-specific key is set — one key, whole stack.
+  { id: 'openrouter', label: 'OpenRouter', country: 'US', needsUrl: false, needsKey: true, fallbackModels: ['cohere/rerank-v3.5', 'baai/bge-reranker-v2-m3'], liveCatalog: true },
   { id: 'voyage', label: 'Voyage AI', country: 'US', needsUrl: false, needsKey: true, fallbackModels: ['rerank-2.5', 'rerank-2.5-lite', 'rerank-2', 'rerank-2-lite'], liveCatalog: false },
   { id: 'together', label: 'Together AI', country: 'US', needsUrl: false, needsKey: true, fallbackModels: ['Salesforce/Llama-Rank-V1', 'mixedbread-ai/Mxbai-Rerank-Large-V2'], liveCatalog: true },
   { id: 'nvidia', label: 'NVIDIA', country: 'US', needsUrl: false, needsKey: true, fallbackModels: ['nvidia/llama-3.2-nv-rerankqa-1b-v2', 'nvidia/nv-rerankqa-mistral-4b-v3'], liveCatalog: false },
@@ -119,6 +131,16 @@ export async function rerankModels(provider: RerankProviderId, apiKey?: string |
       const ids = j.models?.map((m) => m.model).filter((n): n is string => !!n) ?? []
       if (ids.length) return ids
     }
+    if (provider === 'openrouter') {
+      // The public catalog needs no key; rerank models are the ones tagged so.
+      const j = (await jsonFetch('https://openrouter.ai/api/v1/models')) as {
+        data?: Array<{ id?: string; architecture?: { output_modalities?: string[] } }>
+      }
+      const ids = (j.data ?? [])
+        .filter((m) => m.id && (m.architecture?.output_modalities?.includes('rerank') || /rerank/i.test(m.id)))
+        .map((m) => m.id!)
+      if (ids.length) return ids
+    }
   } catch {
     /* live catalog unreachable → documented list */
   }
@@ -150,6 +172,16 @@ export async function rerank(query: string, texts: string[]): Promise<number[] |
         if (!cfg.url) return null
         const res = (await post(`${cfg.url.replace(/\/$/, '')}/rerank`, { query, texts, truncate: true })) as TeiScored[]
         return align(res)
+      }
+      case 'openrouter': {
+        const key = cfg.keySealed ? open(cfg.keySealed) : await openrouterFallbackKey()
+        if (!key) return null
+        const res = (await post(
+          'https://openrouter.ai/api/v1/rerank',
+          { model: cfg.model || 'cohere/rerank-v3.5', query, documents: texts },
+          { authorization: `Bearer ${key}` },
+        )) as { results?: Array<{ index: number; relevance_score: number }> }
+        return align((res.results ?? []).map((r) => ({ index: r.index, score: r.relevance_score })))
       }
       case 'voyage': {
         if (!cfg.keySealed) return null

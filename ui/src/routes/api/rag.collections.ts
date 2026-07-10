@@ -23,9 +23,14 @@ export const Route = createFileRoute('/api/rag/collections')({
       GET: async ({ request }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
         await ensureAutoCollections().catch(() => {})
-        return json({ collections: await listCollections() })
+        const collections = await listCollections()
+        // Members get names only (the doc "Brain" picker); the binding matrix
+        // is admin governance.
+        if (user.role !== 'admin') {
+          return json({ collections: collections.map(({ id, name, kind, description, auto }) => ({ id, name, kind, description, auto, bindings: [] })) })
+        }
+        return json({ collections })
       },
       POST: async ({ request }) => {
         const user = await getSessionUser(request)

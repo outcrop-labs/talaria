@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setOfficial } from '@/server/kb'
+import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setDocRouting, setOfficial } from '@/server/kb'
 import { canEditAgent, canEditHuman, canRead, canReadAgent, isOwner, setEditors } from '@/server/kb-perms'
 import { isElevatedAssistant } from '@/server/users'
 import { logAudit } from '@/server/audit'
@@ -19,6 +19,8 @@ const Patch = z.object({
   permsInherited: z.boolean().optional(),
   parentId: z.string().uuid().nullish(),
   official: z.boolean().optional(),
+  /** RAG routing: 'auto' | 'none' | a custom brain id. Owner-only. */
+  ragRouting: z.string().max(60).optional(),
 })
 
 // One KB doc. Read/edit are gated by the doc's EFFECTIVE audience — inherited
@@ -71,7 +73,12 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
           owner = isOwner(perms, user.id, user.email ?? user.name)
           const sharing = parsed.data.visibility !== undefined || parsed.data.editPolicy !== undefined || parsed.data.editors !== undefined || parsed.data.permsInherited !== undefined
           if (!owner && sharing) return json({ error: 'only the owner can change sharing' }, { status: 403 })
+          // Routing decides which brain can retrieve the doc — owner's call.
+          if (!owner && parsed.data.ragRouting !== undefined) {
+            return json({ error: 'only the owner can change brain routing' }, { status: 403 })
+          }
         }
+        if (checkAgentKey(request)) parsed.data.ragRouting = undefined
 
         if (owner) {
           if (parsed.data.permsInherited === true) {
@@ -85,6 +92,13 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
           }
         }
 
+        if (parsed.data.ragRouting !== undefined) {
+          try {
+            await setDocRouting(params.id, parsed.data.ragRouting, actor)
+          } catch (e) {
+            return json({ error: (e as Error).message }, { status: 400 })
+          }
+        }
         let updated = await saveDoc(params.id, parsed.data, actor)
         if (!updated) return json({ error: 'not found' }, { status: 404 })
         if (parsed.data.official !== undefined && parsed.data.official !== updated.official) {

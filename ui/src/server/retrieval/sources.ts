@@ -63,14 +63,24 @@ async function spaceBrain(spaceId: string | null | undefined): Promise<string | 
 export async function syncKbDoc(doc: KbDocSync): Promise<void> {
   const orgId = await autoCollectionId('org-kb')
   const personal = doc.ownerUserId ? await personalCollectionFor(doc.ownerUserId) : null
-  const brain = await spaceBrain(doc.spaceId)
+  const sql = await db()
+  // Per-doc routing wins over the space default: 'auto' | 'none' | <brain id>.
+  const [routing] = (await sql`select rag_routing as r from kb_docs where id = ${doc.id}`) as unknown as Array<{ r: string }>
+  const route = routing?.r ?? 'auto'
+  const brain =
+    route !== 'auto' && route !== 'none'
+      ? ((await sql`select id from rag_collections where id = ${route} and kind = 'custom'`) as unknown as Array<{ id: string }>)[0]?.id ?? null
+      : route === 'auto'
+        ? await spaceBrain(doc.spaceId)
+        : null
   // Clear from every possible home first (idempotent), then place it. Custom
-  // homes are cleared wholesale so a re-bound space can't leave stale copies.
+  // homes are cleared wholesale so re-routing can't leave stale copies.
   if (orgId) await unindexDocument(orgId, 'kb-doc', doc.id).catch(() => {})
   if (personal) await unindexDocument(personal.id, 'kb-doc', doc.id).catch(() => {})
-  const sql = await db()
   const customs = (await sql`select id from rag_collections where kind = 'custom'`) as unknown as Array<{ id: string }>
   for (const c of customs) await unindexDocument(c.id, 'kb-doc', doc.id).catch(() => {})
+
+  if (route === 'none') return // deliberately unindexed, everywhere
 
   const idxDoc: IndexDoc = {
     sourceType: 'kb-doc',
@@ -80,12 +90,12 @@ export async function syncKbDoc(doc: KbDocSync): Promise<void> {
     href: `/knowledge/${doc.id}`,
   }
   if (doc.visibility === 'private') {
+    // Privacy trumps routing: a private doc only ever reaches its owner's
+    // personal brain, whatever the routing says.
     if (personal) await indexDocument(personal.id, idxDoc).catch(() => {})
-    // No personal collection yet (user hasn't spun up an assistant) → the doc
-    // stays private and unindexed until they do, then a save syncs it.
   } else if (brain) {
-    // A space bound to a brain IS the curation act — every non-private doc in
-    // it feeds that brain (access governed by the brain's own bindings).
+    // Explicit assignment (doc- or space-level) — access governed by the
+    // brain's own bindings.
     await indexDocument(brain, idxDoc).catch(() => {})
   } else if (doc.official && orgId) {
     await indexDocument(orgId, idxDoc).catch(() => {})

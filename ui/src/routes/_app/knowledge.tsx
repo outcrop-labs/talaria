@@ -21,10 +21,11 @@ import { useArtifacts, useTargetArtifacts, attachArtifact, detachArtifact } from
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
+import { Select } from '@/components/ui/select'
 import {
   createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, saveDoc, searchKb, updateSpace, useBacklinks,
-  useDoc, useDocs, useSpace, useSpaces,
-  type KbDocMeta, type KbSearchHit, type KbSpace,
+  useBrains, useDoc, useDocs, useSpace, useSpaces,
+  type KbDoc, type KbDocMeta, type KbSearchHit, type KbSpace,
 } from '@/lib/kb'
 
 // True when the signed-in user owns this doc/space (only owners can re-share).
@@ -701,6 +702,34 @@ interface Heading {
   level: number
   text: string
 }
+/** Which brain retrieves this doc: Auto (space binding / official→org rules),
+ *  a specific custom brain, or None (never indexed). Owner-only — routing
+ *  decides who can retrieve the content. Hidden when no custom brains exist
+ *  and routing is default (nothing to choose). */
+function BrainSelect({ doc, meId, onChange }: { doc: KbDoc; meId: string | null; onChange: (routing: string) => void }) {
+  const { data: brains = [] } = useBrains()
+  const isOwner = !!meId && doc.ownerUserId === meId
+  if (brains.length === 0 && doc.ragRouting === 'auto') return null
+  return (
+    <Select
+      size="sm"
+      className="w-36 shrink-0"
+      value={doc.ragRouting}
+      disabled={!isOwner}
+      title={isOwner ? 'Which brain retrieves this doc' : 'Only the owner can change brain routing'}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      <option value="auto">Brain: auto</option>
+      <option value="none">Brain: none</option>
+      {brains.map((b) => (
+        <option key={b.id} value={b.id}>
+          Brain: {b.name}
+        </option>
+      ))}
+    </Select>
+  )
+}
+
 function parseHeadings(md: string): Heading[] {
   const out: Heading[] = []
   let inFence = false
@@ -724,6 +753,7 @@ function DocEditor({
 }) {
   const qc = useQueryClient()
   const { data: doc } = useDoc(docId)
+  const { data: me } = useSession()
   const { data: backlinks = [] } = useBacklinks(docId)
   const editorRef = useRef<RichEditorHandle>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -878,6 +908,7 @@ function DocEditor({
         >
           <Star size={13} className="mr-1" /> {doc.official ? 'Official' : 'Make official'}
         </Button>
+        <BrainSelect doc={doc} meId={me?.id ?? null} onChange={(ragRouting) => void save({ ragRouting })} />
         <Button variant={showToc ? 'outline' : 'ghost'} size="sm" className="shrink-0" title="Table of contents" onClick={() => setShowToc((v) => !v)}>
           <ListTree size={14} />
         </Button>

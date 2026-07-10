@@ -58,6 +58,8 @@ export interface KbDocMeta {
   permsInherited: boolean
   ownerUserId: string | null
   sort: number
+  /** RAG routing: 'auto' (space binding / org rules) | 'none' | a brain id. */
+  ragRouting: string
   createdBy: string | null
   updatedBy: string | null
   updatedAt: string
@@ -134,7 +136,7 @@ export async function deleteSpace(id: string): Promise<void> {
 // ── Docs ──────────────────────────────────────────────────────────────────────
 const DOC_META = `select id, space_id as "spaceId", parent_id as "parentId", title, icon, kind, official,
   visibility, public_slug as "publicSlug", edit_policy as "editPolicy", perms_inherited as "permsInherited",
-  owner_user_id as "ownerUserId", sort,
+  owner_user_id as "ownerUserId", sort, rag_routing as "ragRouting",
   created_by as "createdBy", updated_by as "updatedBy", updated_at as "updatedAt" from kb_docs`
 
 export async function listDocs(spaceId: string): Promise<KbDocMeta[]> {
@@ -147,7 +149,7 @@ export async function getDoc(id: string): Promise<KbDoc | null> {
   const rows = (await sql.unsafe(
     `select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
             visibility, public_slug as "publicSlug", edit_policy as "editPolicy", perms_inherited as "permsInherited",
-            sort, owner_user_id as "ownerUserId",
+            sort, owner_user_id as "ownerUserId", rag_routing as "ragRouting",
             created_by as "createdBy", updated_by as "updatedBy",
             updated_at as "updatedAt" from kb_docs where id = $1`,
     [id],
@@ -248,6 +250,22 @@ export async function deleteDoc(id: string): Promise<void> {
   const doc = await getDoc(id)
   await unindexKbDoc(id, doc?.ownerUserId ?? null).catch(() => {})
   await sql`delete from kb_docs where id = ${id}`
+}
+
+/** Set a doc's RAG routing ('auto' | 'none' | a custom brain id) and re-place
+ *  it immediately. Owner-only at the route layer — routing changes who can
+ *  retrieve the doc's content. */
+export async function setDocRouting(id: string, routing: string, actor: string): Promise<KbDoc | null> {
+  const sql = await db()
+  if (routing !== 'auto' && routing !== 'none') {
+    const ok = await sql`select 1 from rag_collections where id = ${routing} and kind = 'custom'`
+    if (!ok.length) throw new Error('unknown brain')
+  }
+  await sql`update kb_docs set rag_routing = ${routing}, updated_by = ${actor}, updated_at = now() where id = ${id}`
+  const doc = await getDoc(id)
+  if (!doc) return null
+  await syncDocEffective(doc).catch(() => {})
+  return doc
 }
 
 /** Mark a doc official (→ org brain) or not. Re-routes its RAG placement. */
