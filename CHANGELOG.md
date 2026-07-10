@@ -23,6 +23,15 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Per-doc brain routing — brains contain only what's assigned to them.**
+  Every KB doc gains a "Brain" control (owner-only, next to Official): **Auto**
+  (space binding / official→org rules), a **specific custom brain**, or
+  **None** (never indexed). Explicit assignment always wins, re-placement is
+  immediate, and privacy still trumps routing — a private doc only ever
+  reaches its owner's personal brain. Members can see brain names for the
+  picker; the binding matrix stays admin-only. **OpenRouter** joined the
+  reranker registry (US) — and it reuses the LLM endpoint key you already
+  registered, so reranking needs zero extra setup.
 - **The RAG stack lives — and got a real retrieval pipeline.** The retrieval
   plane (Qdrant + a native CPU embedding model via TEI, default
   `bge-small-en-v1.5`) is now part of the self-contained compose — it had been

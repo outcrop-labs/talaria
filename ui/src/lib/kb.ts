@@ -46,6 +46,8 @@ export interface KbDocMeta {
   permsInherited: boolean
   ownerUserId: string | null
   sort: number
+  /** RAG routing: 'auto' (space binding / org rules) | 'none' | a brain id. */
+  ragRouting: string
   createdBy: string | null
   updatedBy: string | null
   updatedAt: string
@@ -109,8 +111,20 @@ export const createDoc = (spaceId: string, input: { title?: string; kind?: 'huma
 
 export const saveDoc = (
   id: string,
-  patch: Partial<Pick<KbDoc, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy' | 'permsInherited' | 'official'>> & { editors?: KbEditor[] },
+  patch: Partial<Pick<KbDoc, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy' | 'permsInherited' | 'official' | 'ragRouting'>> & { editors?: KbEditor[] },
 ) => fetch(`/api/kb/docs/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
+
+/** Custom brains (names only for members) — the doc "Brain" routing picker. */
+export const useBrains = () =>
+  useQuery({
+    queryKey: ['rag-collections-public'],
+    queryFn: async (): Promise<Array<{ id: string; name: string; kind: string }>> => {
+      const r = await fetch('/api/rag/collections')
+      if (!r.ok) return []
+      const all = ((await r.json()) as { collections: Array<{ id: string; name: string; kind: string }> }).collections
+      return all.filter((c) => c.kind === 'custom')
+    },
+  })
 
 export const deleteDoc = (id: string) => fetch(`/api/kb/docs/${id}`, { method: 'DELETE' })
 
