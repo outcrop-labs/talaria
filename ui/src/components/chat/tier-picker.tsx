@@ -40,7 +40,7 @@ export function TierPicker({ tiers, value, onChange }: { tiers: string[]; value:
         ref={btnRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex shrink-0 items-center gap-1.5 self-center rounded-full border border-line-subtle px-2.5 py-1.5 text-xs text-muted transition-colors hover:border-accent hover:text-fg"
+        className="flex shrink-0 items-center gap-1.5 self-end mb-[7px] rounded-full border border-line-subtle px-2.5 py-1.5 text-xs text-muted transition-colors hover:border-accent hover:text-fg"
         title="Model tier for this chat"
       >
         <Cpu size={13} />

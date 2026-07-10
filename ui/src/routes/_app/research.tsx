@@ -6,6 +6,7 @@ import { RailSurface, Rail, Stage, StageHeader } from '@/components/app/surface'
 import { Chip, DangerLink, StatusDot, type DotStatus } from '@/components/ui/chip'
 import { SendButton } from '@/components/chat/composer-buttons'
 import { ComposerPicker } from '@/components/chat/composer-picker'
+import { KeyHint } from '@/components/ui/kbd'
 import { cn } from '@/lib/cn'
 import { Avatar } from '@/components/ui/avatar'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -207,8 +208,9 @@ function ResearchPage() {
                   menuLabel="Researching agent"
                   options={agents.map((a) => ({ value: a.id, label: a.label, sub: a.role ?? undefined }))}
                 />
+                <KeyHint keys="⏎" label="start" visible={!!question.trim() && !!agent} className="self-end mb-3" />
                 {starting ? (
-                  <span className="grid h-9 w-9 shrink-0 place-items-center"><Loader2 size={15} className="animate-spin text-muted" /></span>
+                  <span className="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><Loader2 size={15} className="animate-spin text-muted" /></span>
                 ) : (
                   <SendButton onClick={() => void start()} disabled={!question.trim() || !agent || agentsLoading} title="Start research — Enter" />
                 )}
