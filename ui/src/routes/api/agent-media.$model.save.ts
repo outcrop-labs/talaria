@@ -5,7 +5,8 @@ import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { canUseAgentModel } from '@/server/users'
 import { isMediaError, readAgentImage } from '@/server/agent-media'
-import { createArtifact, createFolder, listFolders, saveArtifact } from '@/server/artifacts'
+import { agentCategoryFolder, createArtifact, createFolder, listFolders, saveArtifact } from '@/server/artifacts'
+import { describeAgent } from '@/server/gateway'
 import { saveUpload } from '@/server/uploads'
 
 const Body = z.object({
@@ -52,11 +53,13 @@ export const Route = createFileRoute('/api/agent-media/$model/save')({
         if (isMediaError(media)) return json({ error: media.error }, { status: media.status })
 
         // Folder by name: find-or-create (case-insensitive) — "Memes" just works.
+        // With no folder given, media files under the agent's own cabinet.
         let folderId = parsed.data.folderId ?? null
         if (!folderId && parsed.data.folder) {
           const existing = (await listFolders()).find((f) => f.name.toLowerCase() === parsed.data.folder!.toLowerCase())
           folderId = existing?.id ?? (await createFolder({ name: parsed.data.folder, createdBy: actor })).id
         }
+        if (!folderId) folderId = await agentCategoryFolder(describeAgent(params.model).label, 'Media', actor)
 
         const filename = parsed.data.path.split('/').pop() ?? 'image'
         const upload = await saveUpload({ filename, mime: media.mime, bytes: media.bytes, userId: ownerUserId })

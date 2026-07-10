@@ -4,6 +4,7 @@
 // scrollback doesn't. Relays conclude explicitly: summary posted + indexed,
 // then the relay archives. Everything here is fire-and-forget friendly.
 import { db } from './db/pg'
+import { agentCategoryFolder, createArtifact, saveArtifact } from './artifacts'
 import { archiveChannel, insertChannelMessage, listChannelAgents, listChannelMessages } from './channels'
 import { describeAgent } from './gateway'
 import { completeViaGateway } from './llm-gateway'
@@ -46,14 +47,29 @@ async function distillConversation(conv: {
       { temperature: 0.2, caller: `distill:${conv.userId}` },
     )
     if (!text.trim()) return // don't archive on a failed distillation
+    const title = `Distilled: ${conv.title || `chat with ${label}`}`
     await indexActivity({
       sourceType: 'chat-distill',
       sourceId: conv.id,
-      title: `Distilled: ${conv.title || `chat with ${label}`}`,
+      title,
       text,
       payload: { ownerUserId: conv.userId },
       href: '/comms',
     })
+    // The distill is also a browsable artifact — PRIVATE to the chat's owner
+    // (a DM's substance is theirs), filed under the agent's "Chat summaries".
+    try {
+      const artifact = await createArtifact({
+        kind: 'doc',
+        title,
+        createdBy: label,
+        ownerUserId: conv.userId,
+        folderId: await agentCategoryFolder(label, 'Chat summaries', label),
+      })
+      await saveArtifact(artifact.id, { body: text }, label)
+    } catch {
+      /* filing is best-effort — the distillation is already indexed */
+    }
   }
   await sql`update conversations set archived = true where id = ${conv.id}`
 }

@@ -68,14 +68,46 @@ export async function getPublicArtifact(slug: string): Promise<Artifact | null> 
   return rows[0] ?? null
 }
 
-export async function createArtifact(input: { kind?: ArtifactKind; title?: string; createdBy: string; ownerUserId: string | null }): Promise<Artifact> {
+export async function createArtifact(input: {
+  kind?: ArtifactKind
+  title?: string
+  createdBy: string
+  ownerUserId: string | null
+  folderId?: string | null
+}): Promise<Artifact> {
   const sql = await db()
   const rows = (await sql`
-    insert into artifacts (kind, title, created_by, updated_by, owner_user_id)
-    values (${input.kind ?? 'doc'}, ${input.title ?? 'Untitled'}, ${input.createdBy}, ${input.createdBy}, ${input.ownerUserId})
+    insert into artifacts (kind, title, created_by, updated_by, owner_user_id, folder_id)
+    values (${input.kind ?? 'doc'}, ${input.title ?? 'Untitled'}, ${input.createdBy}, ${input.createdBy}, ${input.ownerUserId}, ${input.folderId ?? null})
     returning ${sql.unsafe(COLS)}
   `) as unknown as Artifact[]
   return rows[0]!
+}
+
+/** Find-or-create a folder by name under a parent (case-insensitive). */
+async function findOrCreateFolder(name: string, parentId: string | null, createdBy: string): Promise<string> {
+  const sql = await db()
+  const rows = (await sql`
+    select id from artifact_folders
+    where lower(name) = ${name.toLowerCase()} and parent_id is not distinct from ${parentId}
+    limit 1
+  `) as unknown as Array<{ id: string }>
+  if (rows[0]) return rows[0].id
+  return (await createFolder({ name, parentId, createdBy })).id
+}
+
+/** The agent's filing cabinet: "<Agent label>/<Category>", created on demand.
+ *  Auto-created artifacts (plan docs, research reports, agent documents,
+ *  media saves, chat summaries) file here instead of piling up at the root.
+ *  Never throws — filing must not be able to kill the flow that creates the
+ *  artifact; a null just means "root". */
+export async function agentCategoryFolder(agentLabel: string, category: string, createdBy: string): Promise<string | null> {
+  try {
+    const top = await findOrCreateFolder(agentLabel, null, createdBy)
+    return await findOrCreateFolder(category, top, createdBy)
+  } catch {
+    return null
+  }
 }
 
 export async function saveArtifact(
