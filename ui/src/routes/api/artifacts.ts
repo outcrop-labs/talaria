@@ -3,7 +3,8 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { createArtifact, guarded, listArtifacts, saveArtifact } from '@/server/artifacts'
+import { agentCategoryFolder, createArtifact, guarded, listArtifacts, saveArtifact } from '@/server/artifacts'
+import { describeAgent } from '@/server/gateway'
 import { canRead, grantedItemIds, grantedItemIdsForAgent, setEditors } from '@/server/kb-perms'
 
 const Body = z.object({
@@ -40,7 +41,14 @@ export const Route = createFileRoute('/api/artifacts')({
         if (checkAgentKey(request)) {
           const name = agentName(request)
           if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
-          const artifact = await createArtifact({ kind: parsed.data.kind, title: parsed.data.title, createdBy: name, ownerUserId: null })
+          const artifact = await createArtifact({
+            kind: parsed.data.kind,
+            title: parsed.data.title,
+            createdBy: name,
+            ownerUserId: null,
+            // Agent-authored documents file under the agent's cabinet.
+            folderId: await agentCategoryFolder(describeAgent(name).label, 'Documents', name),
+          })
           // The creating agent can keep editing it; default it org-visible so the
           // workspace can see the agent's output.
           await setEditors('artifact', artifact.id, [{ principalType: 'agent', principalId: name, role: 'editor' }])

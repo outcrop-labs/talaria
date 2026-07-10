@@ -67,6 +67,9 @@ engineering-facing tracker.
   - ✅ **Org build targets** — admin-configurable per org connection: Shared Drive
     (team-owned agent files), calendar ID, and send-as alias for org mail.
     Multi-account / delegation = future setup path.
+  - ✅ **Per-agent filing cabinets (2026-07-10)** — auto-created artifacts file
+    under "<Agent>/<Category>" (Plans / Research / Documents / Media / Chat
+    summaries, find-or-create); chat distills become private artifacts too.
   - ⏳ **Cloud-storage connectors** — S3 behind the `storage_ref` abstraction.
   - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
 

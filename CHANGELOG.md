@@ -23,6 +23,16 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Artifacts file themselves — every agent gets a cabinet.** Auto-created
+  artifacts stop piling up at the root: each agent gets a folder named after
+  it, with category subfolders created on demand — **Plans** (plan documents),
+  **Research** (reports), **Documents** (agent-authored docs via MCP),
+  **Media** (image saves without an explicit folder), and **Chat summaries**.
+  Distilled idle chats now ALSO become browsable artifacts (private to the
+  chat's owner) instead of living only in the activity brain. Filing is
+  best-effort by construction — a folder hiccup can never kill the flow
+  creating the artifact. Humans' hand-created artifacts and explicit folder
+  picks are untouched.
 - **Research view (#56) — Perplexity-grade cited research, run by YOUR agents.**
   Ask a question on `/research`, pick a depth — **Recon** (one fast pass, a
   cited answer), **Brief** (planned angles, a briefing document), **Expedition**

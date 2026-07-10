@@ -18,7 +18,7 @@
 // the run; completion notifies the requester and indexes into the activity
 // brain so future chats/plans can retrieve it.
 import { parseAgentStream } from '@/lib/sse-parse'
-import { attachArtifact, createArtifact, saveArtifact } from './artifacts'
+import { agentCategoryFolder, attachArtifact, createArtifact, saveArtifact } from './artifacts'
 import { db } from './db/pg'
 import { describeAgent, proxyChat } from './gateway'
 import { buildUpstream, fetchUpstream, gatewayModels, recordGatewayUsage, resolveRoute } from './llm-gateway'
@@ -370,7 +370,14 @@ async function runResearch(runId: string): Promise<void> {
     const title = cleaned.match(/^# (.+)$/m)?.[1]?.trim() ?? `Research — ${question.slice(0, 80)}`
 
     // The report is a real artifact: org-visible research is the point.
-    const artifact = await createArtifact({ kind: 'doc', title, createdBy: requestedBy, ownerUserId })
+    // Filed under the researching agent's cabinet.
+    const artifact = await createArtifact({
+      kind: 'doc',
+      title,
+      createdBy: requestedBy,
+      ownerUserId,
+      folderId: await agentCategoryFolder(agentLabel, 'Research', requestedBy),
+    })
     await saveArtifact(artifact.id, { body, visibility: 'org' }, agentLabel)
     await attachArtifact(artifact.id, { targetType: 'research', targetId: runId }, agentLabel)
 

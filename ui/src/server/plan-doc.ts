@@ -5,6 +5,7 @@
 // notifies teammates the plan @mentions (only ones who can read the document).
 import { parseAgentStream } from '@/lib/sse-parse'
 import {
+  agentCategoryFolder,
   artifactsForTarget,
   attachArtifact,
   createArtifact,
@@ -48,6 +49,8 @@ export async function ensurePlanDoc(
     title: `Plan — ${planTitle || 'Untitled'}`,
     createdBy: owner.label,
     ownerUserId: owner.id,
+    // Filed under the plan agent's cabinet, not dumped at the root.
+    folderId: agentModel ? await agentCategoryFolder(describeAgent(agentModel).label, 'Plans', owner.label) : null,
   })
   await attachArtifact(artifact.id, { targetType: 'plan', targetId: conversationId }, owner.label)
   // Collaborators already on the plan get editor grants on the doc the moment
