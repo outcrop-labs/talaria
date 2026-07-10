@@ -191,15 +191,29 @@ function PlanPage() {
                 newChatSignal={newChatSignal}
                 onCreated={onCreated}
                 kind="plan"
+                fill
                 mentionables={mentionables}
               />
             </div>
-            {/* The plan's living document — side by side with the chat. */}
-            {selectedConversationId ? (
-              <div className="hidden min-w-0 basis-[44%] lg:flex">
+            {/* The plan's living document — side by side from the FIRST
+                keystroke, so the surface never re-layouts mid-thought. Before
+                the conversation exists, the pane shows what will grow here. */}
+            <div className="hidden min-w-0 basis-[44%] lg:flex">
+              {selectedConversationId ? (
                 <PlanDoc planId={selectedConversationId} planTitle={selected?.title ?? null} />
-              </div>
-            ) : null}
+              ) : (
+                <div className="flex min-w-0 flex-1 flex-col border-l border-line-subtle">
+                  <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-muted">Plan document</span>
+                  </div>
+                  <div className="grid flex-1 place-items-center p-8 text-center">
+                    <div className="max-w-56 text-xs leading-relaxed text-muted">
+                      The living document builds here as you talk — {current.label} keeps it current, and you can edit it directly.
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <div className="grid h-full place-items-center text-sm text-muted">

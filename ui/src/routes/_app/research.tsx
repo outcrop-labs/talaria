@@ -230,7 +230,7 @@ function RunView({ runId }: { runId: string }) {
   if (!run) return <div className="p-8 text-sm text-muted">Loading</div>
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4 p-8">
+    <div className="mx-auto w-full max-w-[var(--chat-content-max-width)] space-y-4 p-8">
       <div className="flex items-center gap-2 text-xs text-muted">
         <Avatar name={run.agentModel} className="h-6 w-6 text-[10px]" />
         <span>by {run.requestedBy}</span>

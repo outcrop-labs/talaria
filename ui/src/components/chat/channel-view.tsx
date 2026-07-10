@@ -76,7 +76,8 @@ export function ChannelView({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    // One chat width everywhere: the same content token agent DMs use.
+    <div className="mx-auto flex h-full min-h-0 w-full max-w-[var(--chat-content-max-width)] flex-col">
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
         {messages.length === 0 ? (
           <EmptyState
