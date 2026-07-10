@@ -54,6 +54,15 @@ The project management suite, the fleet engine, and auth are live and running:
   now. **Draft tickets** treats the document as the source of truth and proposes real dependencies; you
   review and create the keepers onto any board — into inbox, never assigned. The same drafting works
   from any channel or relay.
+- **Research view** ✅. Perplexity-grade cited research on `/research`: **Recon** (one pass, a cited
+  answer) · **Brief** (planned angles, a briefing) · **Expedition** (iterative gap-chasing rounds, a
+  full report). The chosen agent's persona plans, gap-checks, and writes; sonar-class search models
+  (assignable via **Model Roles** on `/models`) run the search stages through the org gateway. Reports
+  are org-visible cited doc artifacts, indexed into the activity brain; every agent carries
+  `research`/`research_status` MCP tools.
+- **Model roles** ✅. Assign the model behind each activity class (research search, utility chores;
+  vision / image generation / embeddings / reranker slots reserved). Auto-picks when unset; an
+  assignment only wins while it still routes.
 - **Ticket & plan templates** ✅. An org library of formats (markdown skeleton + agent guidance); boards
   bind their set with a default, agents can carry overrides, and every creation surface resolves the
   right one automatically — including bare quick-add tickets.

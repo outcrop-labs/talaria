@@ -58,6 +58,10 @@ your team, and watch the work (and what it costs) move in one place.
   everyone joins the same conversation and document (author names on turns, presence showing who's
   here now). Then draft dependency-aware tickets from the document onto any board, formatted on your
   templates, reviewed by you before anything is created.
+- **Research.** Perplexity-grade cited research run by your own agents: pick a depth — **Recon** (fast
+  cited answer), **Brief** (a briefing), **Expedition** (iterative deep report) — and whose expertise
+  drives it. Every claim carries an inline citation; reports are org-visible documents your agents can
+  retrieve later, and every agent can start research from its own tools mid-task.
 - **Boards.** Plane/Linear-grade project management: kanban + list views, rich tickets (effort,
   multiple assignees, dependencies, watchers, a review gate, per-ticket cost), teams, and a per-board
   agent policy. Fully multiplayer.
@@ -99,6 +103,9 @@ your team, and watch the work (and what it costs) move in one place.
 - **One gateway, one ledger.** Every agent's LLM traffic routes through Talaria's own OpenAI-compatible
   gateway: guarded, metered, priced automatically from live catalogs, split local vs cloud, and
   attributed down to the ticket.
+- **Model roles.** Tailor the stack per activity class: assign which model powers research search,
+  background utility work, and — as those surfaces land — vision, image generation, embeddings, and
+  reranking. Unset stays on sensible auto-picks.
 
 ## Quick start
 
@@ -157,15 +164,16 @@ provider; Talaria maintains no internal model lists.
 
 **Shipped and running today:** the PM suite · Comms (channels/relays/DMs with unread badges, DM
 notifications, and distill-then-archive) · multiplayer Plan (shared living document, presence,
-templates, dependency-aware drafting) · Knowledge + RAG brains · Artifacts (docs/sheets/sites/files,
-incl. Google Workspace) · the full agent harness (Muse design, federation, versioned internals,
-personal assistants with identity proxy + admin elevation, org identity, rolling replacement, crons,
-encrypted secrets) · the LLM gateway · QA judge (template rubric) + confab guard + brain-routability
-health · the priced ledger · ops surfaces (activity/alerts/inference) · auth + admin governance.
+templates, dependency-aware drafting) · Research (Recon/Brief/Expedition, fully cited, agent-driven) ·
+Knowledge + RAG brains · Artifacts (docs/sheets/sites/files, incl. Google Workspace) · the full agent
+harness (Muse design, federation, versioned internals, personal assistants with identity proxy +
+admin elevation, org identity, rolling replacement, crons, encrypted secrets) · the LLM gateway +
+model roles · QA judge (template rubric) + confab guard + brain-routability health · the priced
+ledger · ops surfaces (activity/alerts/inference) · auth + admin governance.
 
-**On the way:** research view · design & creative surfaces · finance · agentic coding in-app ·
-role-ready base agents · marketplace · connectors (Slack/Matrix, MCP-out, accounting/HR) · business
-multitenancy · fine-grained permissions · managed cloud.
+**On the way:** design & creative surfaces · finance · agentic coding in-app · role-ready base
+agents · marketplace · connectors (Slack/Matrix, MCP-out, accounting/HR) · business multitenancy ·
+fine-grained permissions · managed cloud.
 
 Milestones and detail: [`ROADMAP.md`](./ROADMAP.md) · [`docs/TODO.md`](./docs/TODO.md) ·
 [`CHANGELOG.md`](./CHANGELOG.md). New contributors start with [`HANDOFF.md`](./HANDOFF.md) and

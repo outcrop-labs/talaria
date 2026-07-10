@@ -6,6 +6,7 @@
 // preferred model.
 import { gatewayModels, resolveRoute } from './llm-gateway'
 import { memberModelAllowlist, modelAllowedFor } from './model-access'
+import { resolveRoleModel } from './model-roles'
 import { orgLine, orgProfile } from './org'
 import { getPreferredModel, getUserRole } from './users'
 
@@ -92,8 +93,12 @@ export async function museModelFor(userId: string): Promise<string | null> {
   const catalog = await gatewayModels()
   const allow = await memberModelAllowlist()
   const pref = await getPreferredModel(userId)
+  const utility = await resolveRoleModel('utility')
   const candidates = [
     pref && modelAllowedFor(role, pref, allow, catalog) ? pref : null,
+    // The org's assigned Utility role model (Model Roles on /models) — still
+    // subject to the member allowlist for non-admins.
+    utility && modelAllowedFor(role, utility, allow, catalog) ? utility : null,
     process.env.TALARIA_COPILOT_MODEL ?? null,
     'pl-main',
   ]

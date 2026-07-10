@@ -10,7 +10,7 @@ export interface UsageInput {
    *  agent-SELF-REPORTED (MCP log_usage) for work done outside Talaria's
    *  request path — by design they add to the same totals (that spend is just
    *  as real), guarded by the agent key + board policy rather than metering. */
-  source: 'chat' | 'channel' | 'ticket'
+  source: 'chat' | 'channel' | 'ticket' | 'research'
   refId?: string | null
   /** Ticket this spend belongs to (agent-reported via MCP log_usage). */
   taskId?: string | null

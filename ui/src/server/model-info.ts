@@ -11,6 +11,7 @@
 // models arrive speaking the workspace's language automatically.
 import { db } from './db/pg'
 import { completeViaGateway, gatewayModels, resolveRoute } from './llm-gateway'
+import { resolveRoleModel } from './model-roles'
 import { orgProfile } from './org'
 import { NATIVE_BASE } from './provider-catalog'
 
@@ -81,9 +82,12 @@ export async function modelInfo(modelId: string): Promise<ModelInfo | null> {
 
 // ── The org-voice rewrite pass ───────────────────────────────────────────────
 
-/** The model a background system task runs on: env default → pl-main → the
- *  first routable bare model. Null when the gateway serves nothing. */
+/** The model a background system task runs on: the "Utility" MODEL ROLE →
+ *  env default → pl-main → the first routable bare model. Null when the
+ *  gateway serves nothing. */
 async function systemModel(): Promise<string | null> {
+  const assigned = await resolveRoleModel('utility')
+  if (assigned) return assigned
   for (const m of [process.env.TALARIA_COPILOT_MODEL ?? null, 'pl-main']) {
     if (m && (await resolveRoute(m))) return m
   }

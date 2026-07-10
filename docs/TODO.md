@@ -105,8 +105,17 @@ engineering-facing tracker.
   every rendered config; visible + probeable as the "built-in" server on the
   MCP tab. ⏳ Remaining: a "Talaria toolkit" onboarding skill (lands with #78,
   Hermes-side) (overlaps #59).
-- **Research view (#56)** — informs chats / plans / boards; when built, wire its
-  output into the **activity brain** (closes the rest of #63).
+- ✅ **Research view (#56) (2026-07-10)** — `/research` with Recon / Brief /
+  Expedition modes: server-side pipeline (agent persona plans/gap-checks/
+  writes; sonar search stages via the org gateway), inline [n] citations
+  against a deduped source registry, org-visible doc artifacts, activity-brain
+  indexing (the #63 research-indexing piece), completion notifications, and
+  `research`/`research_status` MCP tools for every agent. Reranking remains
+  (#63 tail — a Model Roles slot is reserved).
+- ✅ **Model Roles (2026-07-10)** — /models panel assigning a model per
+  activity class: research-search + utility wired (research engine,
+  systemModel, museModelFor); vision / image-generation / embeddings /
+  reranker slots reserved. Assignments only win while routable.
 - **RAG registry tail (#63)** — reranking over merged multi-collection results;
   research remains to index (plans + plan docs + relay summaries + chat
   distills now feed the activity brain; channels/tickets/comments were already

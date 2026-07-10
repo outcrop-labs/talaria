@@ -23,6 +23,29 @@ secrets encrypted at rest.
   is compose-only (official/published images) + host-run app.
 
 ### Added
+- **Research view (#56) — Perplexity-grade cited research, run by YOUR agents.**
+  Ask a question on `/research`, pick a depth — **Recon** (one fast pass, a
+  cited answer), **Brief** (planned angles, a briefing document), **Expedition**
+  (iterative deep dive with gap-chasing rounds, a full report) — and whose
+  expertise should drive it. The pipeline runs server-side, outside any chat
+  context: the chosen agent's own persona plans the queries, judges the gaps,
+  and writes the document, while Perplexity sonar models (through the org
+  gateway, metered) run the search stages and supply sources. Every factual
+  claim carries an inline [n] citation against a deduped global source
+  registry; unresolvable markers are stripped and a mechanical Sources section
+  is appended. Reports are org-visible doc artifacts (versioned, shareable,
+  exportable), indexed into the activity brain, with a completion notification
+  deep-linking back (`/research?r=`). Every agent gets `research` +
+  `research_status` MCP tools — an agent researches its own field without its
+  conversation window ever swallowing a search dump.
+- **Model Roles — tailor the model stack per activity.** `/models` gains a
+  "Model roles" panel: assign which model handles each class of work —
+  **Research search** (the sonar behind research) and **Utility** (catalog
+  blurbs, chat distills, Muse fallback) are live; **Image understanding**,
+  **Image generation**, **Embeddings**, and **Reranker** slots are reserved
+  for their surfaces. Unset = auto (sensible pick from what's registered);
+  an assignment only wins while it still routes, so a deleted model can never
+  silently break a subsystem. Admin-only, audited.
 - **Multiplayer Plan — several humans, one plan.** Plans are no longer
   owner-private: the owner shares a plan by email (avatars + share control in
   the plan header), and collaborators get the whole surface — the conversation

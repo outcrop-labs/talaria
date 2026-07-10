@@ -18,6 +18,7 @@ import { Route as ApiUploadsRouteImport } from './routes/api/uploads'
 import { Route as ApiTemplatesRouteImport } from './routes/api/templates'
 import { Route as ApiTeamsRouteImport } from './routes/api/teams'
 import { Route as ApiSkillsRouteImport } from './routes/api/skills'
+import { Route as ApiResearchRouteImport } from './routes/api/research'
 import { Route as ApiProfileRouteImport } from './routes/api/profile'
 import { Route as ApiNotificationsRouteImport } from './routes/api/notifications'
 import { Route as ApiMuseRouteImport } from './routes/api/muse'
@@ -41,6 +42,7 @@ import { Route as ApiAgentsRouteImport } from './routes/api/agents'
 import { Route as ApiActivityRouteImport } from './routes/api/activity'
 import { Route as ASlugRouteImport } from './routes/a.$slug'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppResearchRouteImport } from './routes/_app/research'
 import { Route as AppPlanRouteImport } from './routes/_app/plan'
 import { Route as AppModelsRouteImport } from './routes/_app/models'
 import { Route as AppKnowledgeRouteImport } from './routes/_app/knowledge'
@@ -61,6 +63,7 @@ import { Route as KbSpaceSlugRouteImport } from './routes/kb.space.$slug'
 import { Route as ApiUploadsIdRouteImport } from './routes/api/uploads.$id'
 import { Route as ApiTemplatesIdRouteImport } from './routes/api/templates.$id'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
+import { Route as ApiResearchIdRouteImport } from './routes/api/research.$id'
 import { Route as ApiRagSearchRouteImport } from './routes/api/rag.search'
 import { Route as ApiRagCollectionsRouteImport } from './routes/api/rag.collections'
 import { Route as ApiMemoryIdRouteImport } from './routes/api/memory.$id'
@@ -93,6 +96,7 @@ import { Route as ApiAgentsRegisterRouteImport } from './routes/api/agents.regis
 import { Route as ApiAgentMediaModelRouteImport } from './routes/api/agent-media.$model'
 import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminSettingsRouteImport } from './routes/api/admin.settings'
+import { Route as ApiAdminModelRolesRouteImport } from './routes/api/admin.model-roles'
 import { Route as ApiAdminJudgeRouteImport } from './routes/api/admin.judge'
 import { Route as ApiAdminGuardrailsRouteImport } from './routes/api/admin.guardrails'
 import { Route as ApiAdminEncryptionRouteImport } from './routes/api/admin.encryption'
@@ -204,6 +208,11 @@ const ApiTeamsRoute = ApiTeamsRouteImport.update({
 const ApiSkillsRoute = ApiSkillsRouteImport.update({
   id: '/api/skills',
   path: '/api/skills',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiResearchRoute = ApiResearchRouteImport.update({
+  id: '/api/research',
+  path: '/api/research',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiProfileRoute = ApiProfileRouteImport.update({
@@ -321,6 +330,11 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
+const AppResearchRoute = AppResearchRouteImport.update({
+  id: '/research',
+  path: '/research',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppPlanRoute = AppPlanRouteImport.update({
   id: '/plan',
   path: '/plan',
@@ -420,6 +434,11 @@ const ApiTasksIdRoute = ApiTasksIdRouteImport.update({
   id: '/api/tasks/$id',
   path: '/api/tasks/$id',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ApiResearchIdRoute = ApiResearchIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiResearchRoute,
 } as any)
 const ApiRagSearchRoute = ApiRagSearchRouteImport.update({
   id: '/api/rag/search',
@@ -579,6 +598,11 @@ const ApiAdminUsersRoute = ApiAdminUsersRouteImport.update({
 const ApiAdminSettingsRoute = ApiAdminSettingsRouteImport.update({
   id: '/api/admin/settings',
   path: '/api/admin/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAdminModelRolesRoute = ApiAdminModelRolesRouteImport.update({
+  id: '/api/admin/model-roles',
+  path: '/api/admin/model-roles',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAdminJudgeRoute = ApiAdminJudgeRouteImport.update({
@@ -958,6 +982,7 @@ export interface FileRoutesByFullPath {
   '/knowledge': typeof AppKnowledgeRoute
   '/models': typeof AppModelsRoute
   '/plan': typeof AppPlanRoute
+  '/research': typeof AppResearchRoute
   '/settings': typeof AppSettingsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
@@ -981,6 +1006,7 @@ export interface FileRoutesByFullPath {
   '/api/muse': typeof ApiMuseRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
+  '/api/research': typeof ApiResearchRouteWithChildren
   '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
   '/api/templates': typeof ApiTemplatesRouteWithChildren
@@ -991,6 +1017,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
+  '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
@@ -1023,6 +1050,7 @@ export interface FileRoutesByFullPath {
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
+  '/api/research/$id': typeof ApiResearchIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
@@ -1110,6 +1138,7 @@ export interface FileRoutesByTo {
   '/knowledge': typeof AppKnowledgeRoute
   '/models': typeof AppModelsRoute
   '/plan': typeof AppPlanRoute
+  '/research': typeof AppResearchRoute
   '/settings': typeof AppSettingsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
@@ -1133,6 +1162,7 @@ export interface FileRoutesByTo {
   '/api/muse': typeof ApiMuseRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
+  '/api/research': typeof ApiResearchRouteWithChildren
   '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
   '/api/templates': typeof ApiTemplatesRouteWithChildren
@@ -1144,6 +1174,7 @@ export interface FileRoutesByTo {
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
+  '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
@@ -1176,6 +1207,7 @@ export interface FileRoutesByTo {
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
+  '/api/research/$id': typeof ApiResearchIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
@@ -1265,6 +1297,7 @@ export interface FileRoutesById {
   '/_app/knowledge': typeof AppKnowledgeRoute
   '/_app/models': typeof AppModelsRoute
   '/_app/plan': typeof AppPlanRoute
+  '/_app/research': typeof AppResearchRoute
   '/_app/settings': typeof AppSettingsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
@@ -1288,6 +1321,7 @@ export interface FileRoutesById {
   '/api/muse': typeof ApiMuseRoute
   '/api/notifications': typeof ApiNotificationsRoute
   '/api/profile': typeof ApiProfileRoute
+  '/api/research': typeof ApiResearchRouteWithChildren
   '/api/skills': typeof ApiSkillsRouteWithChildren
   '/api/teams': typeof ApiTeamsRouteWithChildren
   '/api/templates': typeof ApiTemplatesRouteWithChildren
@@ -1299,6 +1333,7 @@ export interface FileRoutesById {
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
+  '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
@@ -1331,6 +1366,7 @@ export interface FileRoutesById {
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
+  '/api/research/$id': typeof ApiResearchIdRoute
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
@@ -1421,6 +1457,7 @@ export interface FileRouteTypes {
     | '/knowledge'
     | '/models'
     | '/plan'
+    | '/research'
     | '/settings'
     | '/a/$slug'
     | '/api/activity'
@@ -1444,6 +1481,7 @@ export interface FileRouteTypes {
     | '/api/muse'
     | '/api/notifications'
     | '/api/profile'
+    | '/api/research'
     | '/api/skills'
     | '/api/teams'
     | '/api/templates'
@@ -1454,6 +1492,7 @@ export interface FileRouteTypes {
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/judge'
+    | '/api/admin/model-roles'
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agent-media/$model'
@@ -1486,6 +1525,7 @@ export interface FileRouteTypes {
     | '/api/memory/$id'
     | '/api/rag/collections'
     | '/api/rag/search'
+    | '/api/research/$id'
     | '/api/tasks/$id'
     | '/api/templates/$id'
     | '/api/uploads/$id'
@@ -1573,6 +1613,7 @@ export interface FileRouteTypes {
     | '/knowledge'
     | '/models'
     | '/plan'
+    | '/research'
     | '/settings'
     | '/a/$slug'
     | '/api/activity'
@@ -1596,6 +1637,7 @@ export interface FileRouteTypes {
     | '/api/muse'
     | '/api/notifications'
     | '/api/profile'
+    | '/api/research'
     | '/api/skills'
     | '/api/teams'
     | '/api/templates'
@@ -1607,6 +1649,7 @@ export interface FileRouteTypes {
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/judge'
+    | '/api/admin/model-roles'
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agent-media/$model'
@@ -1639,6 +1682,7 @@ export interface FileRouteTypes {
     | '/api/memory/$id'
     | '/api/rag/collections'
     | '/api/rag/search'
+    | '/api/research/$id'
     | '/api/tasks/$id'
     | '/api/templates/$id'
     | '/api/uploads/$id'
@@ -1727,6 +1771,7 @@ export interface FileRouteTypes {
     | '/_app/knowledge'
     | '/_app/models'
     | '/_app/plan'
+    | '/_app/research'
     | '/_app/settings'
     | '/a/$slug'
     | '/api/activity'
@@ -1750,6 +1795,7 @@ export interface FileRouteTypes {
     | '/api/muse'
     | '/api/notifications'
     | '/api/profile'
+    | '/api/research'
     | '/api/skills'
     | '/api/teams'
     | '/api/templates'
@@ -1761,6 +1807,7 @@ export interface FileRouteTypes {
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/judge'
+    | '/api/admin/model-roles'
     | '/api/admin/settings'
     | '/api/admin/users'
     | '/api/agent-media/$model'
@@ -1793,6 +1840,7 @@ export interface FileRouteTypes {
     | '/api/memory/$id'
     | '/api/rag/collections'
     | '/api/rag/search'
+    | '/api/research/$id'
     | '/api/tasks/$id'
     | '/api/templates/$id'
     | '/api/uploads/$id'
@@ -1889,6 +1937,7 @@ export interface RootRouteChildren {
   ApiMuseRoute: typeof ApiMuseRoute
   ApiNotificationsRoute: typeof ApiNotificationsRoute
   ApiProfileRoute: typeof ApiProfileRoute
+  ApiResearchRoute: typeof ApiResearchRouteWithChildren
   ApiSkillsRoute: typeof ApiSkillsRouteWithChildren
   ApiTeamsRoute: typeof ApiTeamsRouteWithChildren
   ApiTemplatesRoute: typeof ApiTemplatesRouteWithChildren
@@ -1898,6 +1947,7 @@ export interface RootRouteChildren {
   ApiAdminEncryptionRoute: typeof ApiAdminEncryptionRoute
   ApiAdminGuardrailsRoute: typeof ApiAdminGuardrailsRoute
   ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
+  ApiAdminModelRolesRoute: typeof ApiAdminModelRolesRoute
   ApiAdminSettingsRoute: typeof ApiAdminSettingsRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
   ApiAgentMediaModelRoute: typeof ApiAgentMediaModelRouteWithChildren
@@ -1988,6 +2038,13 @@ declare module '@tanstack/react-router' {
       path: '/api/skills'
       fullPath: '/api/skills'
       preLoaderRoute: typeof ApiSkillsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/research': {
+      id: '/api/research'
+      path: '/api/research'
+      fullPath: '/api/research'
+      preLoaderRoute: typeof ApiResearchRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/profile': {
@@ -2151,6 +2208,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/research': {
+      id: '/_app/research'
+      path: '/research'
+      fullPath: '/research'
+      preLoaderRoute: typeof AppResearchRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/plan': {
       id: '/_app/plan'
       path: '/plan'
@@ -2290,6 +2354,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/tasks/$id'
       preLoaderRoute: typeof ApiTasksIdRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api/research/$id': {
+      id: '/api/research/$id'
+      path: '/$id'
+      fullPath: '/api/research/$id'
+      preLoaderRoute: typeof ApiResearchIdRouteImport
+      parentRoute: typeof ApiResearchRoute
     }
     '/api/rag/search': {
       id: '/api/rag/search'
@@ -2513,6 +2584,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/settings'
       fullPath: '/api/admin/settings'
       preLoaderRoute: typeof ApiAdminSettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin/model-roles': {
+      id: '/api/admin/model-roles'
+      path: '/api/admin/model-roles'
+      fullPath: '/api/admin/model-roles'
+      preLoaderRoute: typeof ApiAdminModelRolesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/admin/judge': {
@@ -3021,6 +3099,7 @@ interface AppRouteChildren {
   AppKnowledgeRoute: typeof AppKnowledgeRoute
   AppModelsRoute: typeof AppModelsRoute
   AppPlanRoute: typeof AppPlanRoute
+  AppResearchRoute: typeof AppResearchRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
   AppBoardsBoardIdRoute: typeof AppBoardsBoardIdRouteWithChildren
@@ -3043,6 +3122,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppKnowledgeRoute: AppKnowledgeRoute,
   AppModelsRoute: AppModelsRoute,
   AppPlanRoute: AppPlanRoute,
+  AppResearchRoute: AppResearchRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,
   AppBoardsBoardIdRoute: AppBoardsBoardIdRouteWithChildren,
@@ -3316,6 +3396,18 @@ const ApiMcpRouteChildren: ApiMcpRouteChildren = {
 const ApiMcpRouteWithChildren =
   ApiMcpRoute._addFileChildren(ApiMcpRouteChildren)
 
+interface ApiResearchRouteChildren {
+  ApiResearchIdRoute: typeof ApiResearchIdRoute
+}
+
+const ApiResearchRouteChildren: ApiResearchRouteChildren = {
+  ApiResearchIdRoute: ApiResearchIdRoute,
+}
+
+const ApiResearchRouteWithChildren = ApiResearchRoute._addFileChildren(
+  ApiResearchRouteChildren,
+)
+
 interface ApiSkillsRouteChildren {
   ApiSkillsOwnerNameRoute: typeof ApiSkillsOwnerNameRoute
 }
@@ -3549,6 +3641,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiMuseRoute: ApiMuseRoute,
   ApiNotificationsRoute: ApiNotificationsRoute,
   ApiProfileRoute: ApiProfileRoute,
+  ApiResearchRoute: ApiResearchRouteWithChildren,
   ApiSkillsRoute: ApiSkillsRouteWithChildren,
   ApiTeamsRoute: ApiTeamsRouteWithChildren,
   ApiTemplatesRoute: ApiTemplatesRouteWithChildren,
@@ -3558,6 +3651,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminEncryptionRoute: ApiAdminEncryptionRoute,
   ApiAdminGuardrailsRoute: ApiAdminGuardrailsRoute,
   ApiAdminJudgeRoute: ApiAdminJudgeRoute,
+  ApiAdminModelRolesRoute: ApiAdminModelRolesRoute,
   ApiAdminSettingsRoute: ApiAdminSettingsRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,
   ApiAgentMediaModelRoute: ApiAgentMediaModelRouteWithChildren,

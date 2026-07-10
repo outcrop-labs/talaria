@@ -386,8 +386,9 @@ comms with unread badges + DM notifications, brain-routability health, templates
 org identity, rolling replacement).
 Highest-leverage remaining threads:
 
-1. **Research view (#56)** — a research surface informing chats/plans/boards;
-   wire its output into the activity brain (closes the #63 tail with reranking).
+1. **RAG reranking (#63 tail)** — rerank merged multi-collection retrieval
+   results (a Model Roles slot is reserved; research output already indexes
+   into the activity brain).
 2. **Toolkit onboarding skill** — the toolkit MCP is now ATTACHED to every
    agent (fleet HTTP mode, `server/mcp-service.ts` + render injection); what
    remains is the Hermes-side skill teaching agents to reach for it (#78).
