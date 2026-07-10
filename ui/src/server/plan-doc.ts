@@ -22,6 +22,13 @@ import { resolveTemplate, templatePrompt } from './templates'
 import { estimateTokens, recordUsage } from './usage'
 import { listUsers } from './users'
 
+/** The plan-mode harness, prepended to every plan-conversation turn. Without
+ *  it the agent treats a planning chat like any other request and starts
+ *  CREATING things (tickets, docs) — planning must stay side-effect free. */
+export const PLAN_MODE_PROMPT = `This is a PLANNING conversation on the Plan surface. Your job is to think and decide WITH the teammate: clarify the goal, surface options and risks, and converge on scope, steps, and owners. A living plan document sits beside this chat and is rewritten from the conversation after each of your turns, so put decisions and structure into your words here.
+Planning is side-effect free. Do NOT create or modify anything: no tickets, no documents or artifacts, no knowledge-base entries or spaces, no emails, calendar events, or channel posts. Reading is encouraged (search knowledge, read docs, list boards and tickets) to ground the plan in what actually exists.
+When the plan is settled, the teammate turns it into tickets with the "Draft tickets" control on this surface. If asked to create tickets or other work products here, point to that control instead of doing it yourself.`
+
 const SYNC_PROMPT = `You maintain the living plan document for a planning conversation. Rewrite the document so it reflects the conversation so far: goals, scope, decisions, open questions, and next steps — organized under markdown headings, tight and actionable.
 Start from the current version when one is given: keep what still holds, fold in what changed, never silently drop sections the conversation didn't overturn.
 Return ONLY the complete updated markdown document, starting with its "# " title heading as your very first characters — no commentary, no lead-in sentence, no code fences. Anything before the first heading corrupts the document.`

@@ -19,7 +19,7 @@ import {
 import { continueConversation, persistAssistantStream } from '@/server/chat-persist'
 import { attachmentAsDataUrl, resolveAttachments, isImage } from '@/server/uploads'
 import { refBlocks, resolveRefs } from '@/server/refs'
-import { notifyPlanMentions } from '@/server/plan-doc'
+import { notifyPlanMentions, PLAN_MODE_PROMPT } from '@/server/plan-doc'
 import { indexActivity } from '@/server/retrieval/sources'
 
 const Body = z.object({
@@ -150,7 +150,13 @@ export const Route = createFileRoute('/api/chat')({
                 ...imageUrls.map((url) => ({ type: 'image_url', image_url: { url } })),
               ]
             : spokenContent
-        const messages = [...prior, { role: 'user' as const, content: userContent as unknown as string }]
+        // Plan turns carry the plan-mode harness: think and decide, read
+        // freely, create NOTHING — tickets come from Draft tickets later.
+        const messages = [
+          ...(kind === 'plan' ? [{ role: 'system' as const, content: PLAN_MODE_PROMPT }] : []),
+          ...prior,
+          { role: 'user' as const, content: userContent as unknown as string },
+        ]
         const assistantId = await insertStreamingAssistant(convId, userSeq + 1)
 
         const upstream = await proxyChat({ model: routedModel, messages })

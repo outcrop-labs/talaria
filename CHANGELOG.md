@@ -30,6 +30,14 @@ secrets encrypted at rest.
   standard picker at the top of the rail (like Plan), not a bespoke composer
   pill. The composer keeps only the depth pill.
 ### Fixed
+- **Plan mode plans; it no longer files tickets.** Plan-surface turns went
+  to the agent with its full toolkit and no hint it was in a planning
+  session, so an eager agent would create real tickets mid-conversation.
+  Every plan turn (live and server-chained) now carries a plan-mode
+  harness: think and decide with the teammate, read anything, create
+  NOTHING; tickets come from the Draft tickets control once the plan is
+  settled. Verified live with an explicit "create the tickets" bait: zero
+  mutating tool calls, and the agent pointed to Draft tickets instead.
 - **The plan document now actually builds as you talk.** The side-by-side
   doc only ever updated when someone clicked "Sync from chat", despite the
   empty pane promising otherwise, so new plans looked broken: you talked,
