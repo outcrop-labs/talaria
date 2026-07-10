@@ -29,6 +29,9 @@ Components: `components/app/surface.tsx` (`RailSurface`, `Rail`, `Stage`,
 - **Autosave by default.** Selects, toggles, and pickers apply on change.
   Explicit Save/Apply survives ONLY where the action deploys, restarts
   containers, spends real money, or commits a secret (key entry).
+- **One chat width.** Every conversation surface (agent DMs, channels,
+  research reports and composers) centers on `--chat-content-max-width`
+  (900px). No per-surface widths. The ONE exception: plan mode, where chat sits side by side with the living document and fills its pane.
 - **Send is an icon** (ArrowUp, `title="Send — Enter"`); Enter submits in
   every composer. No "Go", no wide "Send".
 - **No ellipsis in UI copy.** Buttons, placeholders, menu items, and loading

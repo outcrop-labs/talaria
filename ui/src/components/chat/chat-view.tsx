@@ -43,6 +43,7 @@ export function ChatView({
   newChatSignal,
   onCreated,
   kind = 'chat',
+  fill = false,
   mentionables = [],
 }: {
   agentModel: string
@@ -54,6 +55,9 @@ export function ChatView({
   onCreated: (id: string) => void
   /** 'plan' conversations live in the Plan surface and draft tickets. */
   kind?: 'chat' | 'plan'
+  /** Fill the parent pane instead of centering on the chat width token —
+   *  the plan surface's side-by-side split owns its own geometry. */
+  fill?: boolean
   /** Composer @mention options (e.g. the plan surface offers teammates). */
   mentionables?: Mentionable[]
 }) {
@@ -242,7 +246,7 @@ export function ChatView({
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-[var(--chat-content-max-width)] flex-col">
+    <div className={fill ? 'flex h-full w-full flex-col' : 'mx-auto flex h-full w-full max-w-[var(--chat-content-max-width)] flex-col'}>
       <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto px-6 py-6">
         {messages.length === 0 ? (
           <div className="grid h-full place-items-center text-center">
