@@ -5,7 +5,7 @@
 // Talaria was down, a stopped container, a manifest change).
 import { db } from './db/pg'
 import { nextFreePort, renderFleet } from './fleet-render'
-import { containerStatus, fleetRemove, fleetUp, removeContainerByName, slotContainer, waitHealthy, type Slot } from './fleet-docker'
+import { containerStatus, fleetRemove, fleetUp, pruneBundledSkills, removeContainerByName, slotContainer, waitHealthy, type Slot } from './fleet-docker'
 
 export interface ReconcileResult {
   rendered: number
@@ -37,6 +37,10 @@ export async function reconcileFleet(): Promise<ReconcileResult> {
     try {
       await fleetUp(m.department)
       started.push(m.displayName)
+      // New containers get the bundled note-tool skills stripped once healthy
+      // — toolkit-first is the default from first boot. Detached: reconcile
+      // must not block on health.
+      void waitHealthy(m.department).then((ok) => ok && pruneBundledSkills(m.department)).catch(() => {})
     } catch (e) {
       warnings.push(`${m.displayName}: ${(e as Error).message}`)
     }
@@ -74,6 +78,9 @@ export async function rollAgent(department: string): Promise<{ ok: boolean; erro
     await renderFleet() // back to steady state; the old container never blinked
     return { ok: false, error: `${def.displayName}: replacement never became healthy — kept the old container` }
   }
+  // Toolkit-first by default: strip the image's bundled note-tool skills the
+  // moment the newcomer is healthy (Talaria-managed skills are untouched).
+  await pruneBundledSkills(department, newSlot).catch(() => {})
   // 3. Cutover: incoming slot becomes active (new port), manifest re-renders.
   await sql`update agent_defs set active_slot = ${newSlot}, gateway_port = ${newPort} where slug = ${def.slug}`
   await renderFleet()

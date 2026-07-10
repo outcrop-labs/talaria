@@ -195,9 +195,10 @@ server.registerTool(
       title: z.string().min(1).max(200).describe('Document title'),
       markdown: z.string().max(1_000_000).optional().describe('Initial body as markdown (headings, lists, tables, code, links)'),
       visibility: z.enum(['private', 'org', 'public']).optional().describe("Who can see it (default 'org' — the workspace)"),
+      folder: z.string().max(120).optional().describe('File it under this folder name (find-or-create); omitted = your own folder'),
     },
   },
-  async ({ title, markdown, visibility }) => ok(await api('POST', '/api/artifacts', { kind: 'doc', title, body: markdown, visibility })),
+  async ({ title, markdown, visibility, folder }) => ok(await api('POST', '/api/artifacts', { kind: 'doc', title, body: markdown, visibility, folder })),
 )
 
 server.registerTool(
@@ -327,6 +328,22 @@ server.registerTool(
 )
 
 server.registerTool(
+  'create_kb_doc',
+  {
+    description:
+      "Create a NEW knowledgebase doc in a space you can read (get the spaceId from list_kb_spaces) — use this when asked to add something to the knowledge base. Your doc starts as a draft; a human marks it official before it grounds the org brain. Returns the doc id (keep editing with edit_kb_doc).",
+    inputSchema: {
+      spaceId: z.string().describe('Space id (from list_kb_spaces)'),
+      title: z.string().min(1).max(200).describe('Doc title'),
+      markdown: z.string().max(500_000).optional().describe('Initial markdown body'),
+      parentId: z.string().optional().describe('Nest under this doc id (optional)'),
+    },
+  },
+  async ({ spaceId, title, markdown, parentId }) =>
+    ok(await api('POST', `/api/kb/spaces/${encodeURIComponent(spaceId)}/docs`, { title, body: markdown, parentId })),
+)
+
+server.registerTool(
   'edit_kb_doc',
   {
     description:
@@ -427,6 +444,30 @@ server.registerTool(
   async ({ taskId, dependsOnId }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/dependencies`, { dependsOnId })),
 )
 
+server.registerTool(
+  'list_teammates',
+  {
+    description:
+      "The company directory: every teammate's name and email. Use it to resolve a person's name into an email for draft_email, add_board_member, or board/channel questions ('who is Priya?').",
+    inputSchema: {},
+  },
+  async () => ok(await api('GET', '/api/users')),
+)
+
+server.registerTool(
+  'report_problem',
+  {
+    description:
+      "Something on YOUR side is broken (a tool errors, a connection refuses, credentials missing) and a teammate is affected. This alerts the workspace admin and files a Helpdesk ticket with the technical details. Use it INSTEAD of explaining endpoints/ports/errors to non-technical people — then relay the returned plain-language reassurance and offer what you can still do.",
+    inputSchema: {
+      summary: z.string().min(5).max(300).describe('One plain sentence: what is broken, from the user\'s point of view'),
+      details: z.string().max(20_000).optional().describe('The full technical details for the admin (errors, endpoints, what you tried)'),
+      context: z.string().max(500).optional().describe('What you were trying to do for whom'),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/agent/problem', args)),
+)
+
 // ── Research (Recon / Brief / Expedition) ────────────────────────────────────
 // Cited web research, run server-side by YOUR persona + a search model — your
 // chat context stays clean. Results are org-visible report documents.
@@ -441,6 +482,15 @@ server.registerTool(
     },
   },
   async ({ question, mode }) => ok(await api('POST', '/api/research', { question, mode })),
+)
+
+server.registerTool(
+  'list_research',
+  {
+    description: 'Recent research runs across the workspace (yours and others) — question, mode, status, and the report documentId when done.',
+    inputSchema: {},
+  },
+  async () => ok(await api('GET', '/api/research')),
 )
 
 server.registerTool(
@@ -490,6 +540,15 @@ server.registerTool(
     },
   },
   async ({ boardId, teamName }) => ok(await api('PATCH', `/api/boards/${encodeURIComponent(boardId)}`, { teamName })),
+)
+
+server.registerTool(
+  'list_board_members',
+  {
+    description: "Who's on a board (people + roles). Any agent allowed on the board may read this.",
+    inputSchema: { boardId: z.string().describe('Board id (from list_boards)') },
+  },
+  async ({ boardId }) => ok(await api('GET', `/api/boards/${encodeURIComponent(boardId)}/members`)),
 )
 
 server.registerTool(

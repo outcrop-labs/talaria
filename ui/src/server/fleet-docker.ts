@@ -118,6 +118,40 @@ export async function containerStatus(departments: string[]): Promise<AgentConta
   })
 }
 
+/** Prune Hermes's bundled skill packs from an agent (best-effort). The image
+ *  seeds note-tool skills (obsidian, notion, airtable, …) that compete with
+ *  the Talaria toolkit and send agents flailing through vault hunts. The
+ *  `.no-bundled-skills` marker stops re-seeding; --remove clears what's
+ *  already on the volume. Talaria-managed skills (the mounted /opt/skills +
+ *  /opt/dept-skills roots) are untouched — they're the ONLY skills an agent
+ *  should carry. */
+/** Bundled skill packs that CONFLICT with the Talaria toolkit — they pitch a
+ *  parallel system of record (external note vaults, ungoverned email) and
+ *  send agents flailing. Removed explicitly because the seed marks packs
+ *  "user-modified", which opt-out --remove preserves. */
+const CONFLICTING_SKILL_PACKS = [
+  'note-taking', // obsidian — Talaria KB is the knowledgebase
+  'productivity/notion',
+  'productivity/airtable',
+  'productivity/google-workspace', // Talaria's Google integration is confirm-send governed
+  'email', // draft_email/read_recent_email govern mail through Talaria
+]
+
+export async function pruneBundledSkills(department: string, slot?: Slot): Promise<boolean> {
+  const name = slotContainer(department, slot ?? (await activeSlot(department)))
+  try {
+    // Surgical: ONLY the conflict list goes — the rest of the bundled packs
+    // (creative, data-science, software-development, …) are genuinely useful
+    // and stay. Runs on every roll and fresh boot, so a re-seed that restores
+    // a conflicting pack gets cut again on the next lifecycle event.
+    const paths = CONFLICTING_SKILL_PACKS.map((p) => `/opt/data/skills/${p}`).join(' ')
+    await run('docker', ['exec', name, 'sh', '-c', `rm -rf ${paths}`], { timeout: 30_000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Wait for the managed container to report healthy (or give up). */
 export async function waitHealthy(department: string, slot?: Slot, timeoutMs = 120_000): Promise<boolean> {
   const name = slotContainer(department, slot ?? (await activeSlot(department)))

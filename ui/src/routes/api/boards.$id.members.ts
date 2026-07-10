@@ -2,9 +2,10 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { boardRole, canEdit, listMembers, shareBoard, unshareBoard } from '@/server/boards'
+import { boardAllowsAgent, boardRole, canEdit, listMembers, shareBoard, unshareBoard } from '@/server/boards'
 import { db } from '@/server/db/pg'
 import { actingUser } from '@/server/users'
+import { agentName, checkAgentKey } from '@/server/agent-auth'
 
 // GET → members. POST { email, role } → share (owner/editor). DELETE { userId
 // | email } → unshare. Write actions accept a personal assistant acting as its
@@ -13,6 +14,13 @@ export const Route = createFileRoute('/api/boards/$id/members')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
+        // Agents allowed on the board may READ membership (they mutate it
+        // blind otherwise); writes below stay identity-proxied.
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          if (!name || !(await boardAllowsAgent(params.id, name))) return json({ error: 'forbidden' }, { status: 403 })
+          return json({ members: await listMembers(params.id) })
+        }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (!(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })

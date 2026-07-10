@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { agentCategoryFolder, createArtifact, guarded, listArtifacts, saveArtifact } from '@/server/artifacts'
+import { agentCategoryFolder, createArtifact, guarded, listArtifacts, namedRootFolder, saveArtifact } from '@/server/artifacts'
 import { describeAgent } from '@/server/gateway'
 import { canRead, grantedItemIds, grantedItemIdsForAgent, setEditors } from '@/server/kb-perms'
 
@@ -11,6 +11,9 @@ const Body = z.object({
   kind: z.enum(['doc', 'sheet', 'microsite', 'file']).optional(),
   title: z.string().max(200).optional(),
   body: z.string().max(2_000_000).optional(),
+  /** Folder by NAME (find-or-create at root) — agents filing deliberately;
+   *  omitted = the agent's own cabinet. */
+  folder: z.string().trim().max(120).optional(),
   visibility: z.enum(['private', 'org', 'public']).optional(),
 })
 
@@ -41,13 +44,15 @@ export const Route = createFileRoute('/api/artifacts')({
         if (checkAgentKey(request)) {
           const name = agentName(request)
           if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+          const folderId = parsed.data.folder ? await namedRootFolder(parsed.data.folder, name) : null
           const artifact = await createArtifact({
             kind: parsed.data.kind,
             title: parsed.data.title,
             createdBy: name,
             ownerUserId: null,
-            // Agent-authored documents file under the agent's cabinet.
-            folderId: await agentCategoryFolder(describeAgent(name).label, 'Documents', name),
+            // Named folder (find-or-create) when the agent files deliberately;
+            // its own cabinet otherwise.
+            folderId: folderId ?? (await agentCategoryFolder(describeAgent(name).label, 'Documents', name)),
           })
           // The creating agent can keep editing it; default it org-visible so the
           // workspace can see the agent's output.
