@@ -65,8 +65,11 @@ export async function ensurePlanDoc(
   return artifact
 }
 
-/** Keep the activity brain current on a plan document (ACL: the plan's owner). */
+/** Keep the activity brain current on a plan document (ACL: the plan's owner).
+ *  Respects the artifact's routing — 'none'/explicit-brain docs stay out of
+ *  the activity brain (retrieval/artifact-routing owns those placements). */
 export async function indexPlanDoc(doc: Artifact, conversationId: string): Promise<void> {
+  if (doc.ragRouting && doc.ragRouting !== 'auto') return
   await indexActivity({
     sourceType: 'plan-doc',
     sourceId: doc.id,

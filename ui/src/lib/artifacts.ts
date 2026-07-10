@@ -15,6 +15,8 @@ export interface Artifact {
   editPolicy: EditPolicy
   publicSlug: string | null
   official: boolean
+  /** RAG routing: 'auto' | 'none' | a custom brain id. */
+  ragRouting: string
   kbDocId: string | null
   folderId: string | null
   ownerUserId: string | null
@@ -61,7 +63,7 @@ export const createArtifact = (input: { kind?: ArtifactKind; title?: string }) =
 
 export const saveArtifact = (
   id: string,
-  patch: Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'storageRef' | 'contentType' | 'folderId' | 'visibility' | 'editPolicy' | 'official'>> & { editors?: KbEditor[] },
+  patch: Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'storageRef' | 'contentType' | 'folderId' | 'visibility' | 'editPolicy' | 'official' | 'ragRouting'>> & { editors?: KbEditor[] },
 ) => fetch(`/api/artifacts/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
 // ── Folders ──────────────────────────────────────────────────────────────────

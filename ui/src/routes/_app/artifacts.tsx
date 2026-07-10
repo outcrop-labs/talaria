@@ -11,6 +11,7 @@ import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { Markdown } from '@/components/ui/markdown'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
+import { BrainRoutingSelect } from '@/components/kb/brain-select'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
@@ -520,6 +521,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
             <Star size={13} className="mr-1" /> {artifact.official ? 'Official' : 'Make official'}
           </Button>
         )}
+        <BrainRoutingSelect value={artifact.ragRouting} canEdit={isOwner} onChange={(ragRouting) => void save({ ragRouting })} />
         <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
           {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         </Button>
