@@ -113,9 +113,11 @@ engineering-facing tracker.
   `research`/`research_status` MCP tools for every agent. Reranking remains
   (#63 tail — a Model Roles slot is reserved).
 - ✅ **Model Roles (2026-07-10)** — /models panel assigning a model per
-  activity class: research-search + utility wired (research engine,
-  systemModel, museModelFor); vision / image-generation / embeddings /
-  reranker slots reserved. Assignments only win while routable.
+  activity class: per-tier research roles (Recon / Brief / Expedition — the
+  sonar family maps one-to-one; deep-research-class assignments shrink the
+  engine's own loop) + utility wired (research engine, systemModel,
+  museModelFor); vision / image-generation / embeddings / reranker slots
+  reserved. Assignments only win while routable.
 - **RAG registry tail (#63)** — reranking over merged multi-collection results;
   research remains to index (plans + plan docs + relay summaries + chat
   distills now feed the activity brain; channels/tickets/comments were already

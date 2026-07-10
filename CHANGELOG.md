@@ -39,13 +39,15 @@ secrets encrypted at rest.
   `research_status` MCP tools — an agent researches its own field without its
   conversation window ever swallowing a search dump.
 - **Model Roles — tailor the model stack per activity.** `/models` gains a
-  "Model roles" panel: assign which model handles each class of work —
-  **Research search** (the sonar behind research) and **Utility** (catalog
-  blurbs, chat distills, Muse fallback) are live; **Image understanding**,
-  **Image generation**, **Embeddings**, and **Reranker** slots are reserved
-  for their surfaces. Unset = auto (sensible pick from what's registered);
-  an assignment only wins while it still routes, so a deleted model can never
-  silently break a subsystem. Admin-only, audited.
+  "Model roles" panel: assign which model handles each class of work — a
+  **search model per research tier** (Recon / Brief / Expedition — Perplexity's
+  sonar family maps one-to-one; pointing a tier at a deep-research-class model
+  makes the engine run fewer, bigger stages instead of multiplying effort) and
+  **Utility** (catalog blurbs, chat distills, Muse fallback) are live;
+  **Image understanding**, **Image generation**, **Embeddings**, and
+  **Reranker** slots are reserved for their surfaces. Unset = auto (sensible
+  pick from what's registered); an assignment only wins while it still routes,
+  so a deleted model can never silently break a subsystem. Admin-only, audited.
 - **Multiplayer Plan — several humans, one plan.** Plans are no longer
   owner-private: the owner shares a plan by email (avatars + share control in
   the plan header), and collaborators get the whole surface — the conversation
