@@ -29,6 +29,16 @@ secrets encrypted at rest.
 - **Research uses the same agent selector as every other surface** — the
   standard picker at the top of the rail (like Plan), not a bespoke composer
   pill. The composer keeps only the depth pill.
+### Fixed
+- **The plan document now actually builds as you talk.** The side-by-side
+  doc only ever updated when someone clicked "Sync from chat", despite the
+  empty pane promising otherwise, so new plans looked broken: you talked,
+  the doc stayed blank. Every landed agent turn now triggers the sync
+  automatically (unsaved manual edits are flushed first so a rewrite starts
+  from them), with the rewriting overlay as feedback; the manual button
+  stays for on-demand refreshes. Verified live: a fresh plan filled its
+  document from the first exchange with no clicks.
+
 ### Changed
 - **Agents converse like colleagues.** Every rendered soul now carries a
   voice contract: acknowledge in a sentence (or ask ONE clarifying question
