@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+import { DangerLink } from '@/components/ui/chip'
 import { Combobox } from '@/components/ui/combobox'
 import { Modal } from '@/components/ui/modal'
 import { confirm } from '@/components/ui/confirm'
@@ -108,7 +109,7 @@ export function ChannelSettingsModal({
             selected={detail.agents}
             onChange={setAgents}
             multiple
-            placeholder="Select agents…"
+            placeholder="Select agents"
           />
         </section>
 
@@ -119,17 +120,15 @@ export function ChannelSettingsModal({
         )}
 
         {isOwner && (
-          <section className="border-t border-line-subtle pt-3">
-            <Button
-              variant="danger"
-              size="sm"
+          <section className="flex justify-end border-t border-line-subtle pt-3">
+            <DangerLink
               onClick={async () => {
                 if (!(await confirm({ title: 'Delete channel', message: `Delete #${channelName} and all its messages?`, confirmLabel: 'Delete', danger: true }))) return
                 void run(() => deleteChannel(channelId)).then(onDeleted)
               }}
             >
               Delete channel
-            </Button>
+            </DangerLink>
           </section>
         )}
       </div>

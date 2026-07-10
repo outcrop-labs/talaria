@@ -100,7 +100,7 @@ function SaveDialog({ src, onClose }: { src: string; onClose: () => void }) {
               Cancel
             </Button>
             <Button size="sm" onClick={() => void save()} disabled={busy}>
-              {busy ? 'Saving…' : 'Save'}
+              {busy ? 'Saving' : 'Save'}
             </Button>
           </div>
         </div>

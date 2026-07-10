@@ -129,7 +129,7 @@ interface Chassis {
   service: ComposeService
   /** Per-agent additions beyond the uniform chassis, keyed by slug. */
   extras?: Record<string, ChassisExtras>
-  /** Shared named-volume definitions (workspaces, repos, kanban…). */
+  /** Shared named-volume definitions (workspaces, repos, kanban). */
   volumes?: Record<string, unknown>
   /** Secret definitions the extras may reference. */
   secrets?: Record<string, unknown>
@@ -303,7 +303,7 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
 
     svc.networks = ['fleet']
     if (extras?.secrets) {
-      // Entries are either "name" or long-form { source, … }. A reference
+      // Entries are either "name" or long-form { source,  }. A reference
       // without a definition in chassis.secrets is DROPPED (with a warning) —
       // keeping it would make compose reject the whole file.
       svc.secrets = (extras.secrets as Array<string | { source?: string }>).filter((s) => {

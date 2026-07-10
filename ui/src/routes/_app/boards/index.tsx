@@ -17,7 +17,7 @@ function BoardsIndex() {
   }, [boards, navigate])
 
   if (isLoading || boards[0]) {
-    return <div className="grid h-full place-items-center text-sm text-muted">Loading…</div>
+    return <div className="grid h-full place-items-center text-sm text-muted">Loading</div>
   }
   return (
     <EmptyState

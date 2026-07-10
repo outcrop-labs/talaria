@@ -8,7 +8,7 @@ import { useUsers, type DirectoryUser } from '@/lib/users'
 export function UserPicker({
   exclude = [],
   onPick,
-  placeholder = 'Add a person…',
+  placeholder = 'Add a person',
   size,
   className,
 }: {

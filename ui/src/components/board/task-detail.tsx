@@ -104,7 +104,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
           className="mercury-panel relative z-10 flex h-[85vh] w-full max-w-4xl overflow-hidden rounded-2xl"
         >
           {!t ? (
-            <div className="grid h-full w-full place-items-center text-sm text-muted">Loading…</div>
+            <div className="grid h-full w-full place-items-center text-sm text-muted">Loading</div>
           ) : (
             <>
               {/* Content */}
@@ -210,7 +210,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                         editable
                         bare
                         className="shrink-0 border-t border-line-subtle"
-                        placeholder="Write a comment…  (Ctrl+Enter to send)"
+                        placeholder="Write a comment  (Ctrl+Enter to send)"
                         minHeight="5rem"
                         onSubmit={() => {
                           const md = (commentRef.current?.getMarkdown() ?? '').trim()
@@ -317,7 +317,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                         selected={[]}
                         onChange={async (arr) => { if (arr[0]) { await addDependency(taskId, arr[0]); refresh() } }}
                         size="sm"
-                        placeholder="Add dependency…"
+                        placeholder="Add dependency"
                       />
                     )}
                   </div>
@@ -435,7 +435,7 @@ function DescriptionSection({
 
   const body = (keyPrefix: string, minHeight: string, readMax?: string) =>
     mode === 'edit' && canEdit ? (
-      <RichEditor key={`${keyPrefix}-${rev}`} value={draft} editable onSave={save} placeholder="Add detail…" minHeight={minHeight} />
+      <RichEditor key={`${keyPrefix}-${rev}`} value={draft} editable onSave={save} placeholder="Add detail" minHeight={minHeight} />
     ) : draft ? (
       <div className={cn('rounded-xl border border-line-subtle bg-card px-4 py-3 text-sm leading-relaxed', readMax && `${readMax} overflow-y-auto`)}>
         <Markdown>{draft}</Markdown>
@@ -490,7 +490,7 @@ function DescriptionSection({
             </div>
             {mode === 'edit' && canEdit ? (
               <div className="min-h-0 flex-1">
-                <RichEditor key={`exp-${rev}`} value={draft} editable bare fill onSave={save} placeholder="Add detail…" />
+                <RichEditor key={`exp-${rev}`} value={draft} editable bare fill onSave={save} placeholder="Add detail" />
               </div>
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">

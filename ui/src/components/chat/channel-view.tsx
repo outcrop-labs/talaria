@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { Avatar } from '@/components/ui/avatar'
-import { Button } from '@/components/ui/button'
 import { Markdown } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -8,6 +7,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { markChannelRead, sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMember, type ChannelMessage } from '@/lib/channels'
 import { useUsers } from '@/lib/users'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
+import { SendButton } from '@/components/chat/composer-buttons'
 import { resolveAgentMedia } from '@/lib/agent-media'
 import { MentionMenu, useMentions, userMentionInsert, type Mentionable } from '@/components/chat/mentions'
 import type { Attachment } from '@/lib/attachments'
@@ -233,9 +233,7 @@ function Composer({
             placeholder={`Message #${channelName} — @mention an agent to bring it in`}
             className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
           />
-          <Button onClick={send} disabled={!input.trim() && attachments.length === 0}>
-            Send
-          </Button>
+          <SendButton onClick={send} disabled={!input.trim() && attachments.length === 0} />
         </div>
       </div>
     </div>

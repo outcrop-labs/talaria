@@ -260,7 +260,7 @@ function SkillsTab({ slug, isAdmin }: { slug: string; isAdmin: boolean }) {
     await fetch(`/api/skills/${slug}/${name}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content: `# ${name}\n\ndescription: what this skill is for\n\n## Steps\n\n1. …\n` }),
+      body: JSON.stringify({ content: `# ${name}\n\ndescription: what this skill is for\n\n## Steps\n\n1. \n` }),
     })
     setNewName('')
     await qc.invalidateQueries({ queryKey: ['skills'] })
@@ -365,7 +365,7 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
     }
   }
   if (!def.managed) return <EmptyState icon="❖" title="Not managed" hint="Memory reads through the managed container — migrate this agent first." />
-  if (isLoading) return <div className="text-sm text-muted">Reading memory…</div>
+  if (isLoading) return <div className="text-sm text-muted">Reading memory</div>
   if (error) return <EmptyState icon="❖" title="Can't reach the agent" hint={(error as Error).message} />
   return (
     <div className="space-y-3">
@@ -457,7 +457,7 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   return (
     <div className="space-y-3">
       {busy && (
-        <Generating label={`Applying MCP change — rolling ${def.displayName} so the new version takes effect…`} lines={2} />
+        <Generating label={`Applying MCP change — rolling ${def.displayName} so the new version takes effect`} lines={2} />
       )}
       {servers.length === 0 ? (
         <div className="text-sm text-muted">No MCP servers connected.</div>
@@ -552,7 +552,7 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
     <div className="divide-y divide-line-subtle">
       {busy !== null && (
         <div className="pb-2.5">
-          <Generating label={`Reverting to v${busy} — publishing as a new version…`} lines={2} />
+          <Generating label={`Reverting to v${busy} — publishing as a new version`} lines={2} />
         </div>
       )}
       <div className="flex items-center gap-2 pb-2.5">
@@ -581,7 +581,7 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
           <span className="shrink-0 text-xs text-muted">{v.createdBy ?? 'system'} · {relativeTime(v.createdAt)}</span>
           {isAdmin && v.version !== def.currentVersion && (
             <button type="button" disabled={busy !== null} onClick={() => void revert(v.version)} className="flex shrink-0 items-center gap-1 text-xs text-muted hover:text-accent">
-              <RotateCcw size={12} /> {busy === v.version ? 'reverting…' : 'revert'}
+              <RotateCcw size={12} /> {busy === v.version ? 'reverting' : 'revert'}
             </button>
           )}
           {v.version === def.currentVersion && <span className="shrink-0 text-xs" style={{ color: 'var(--theme-success)' }}>current</span>}

@@ -1,5 +1,5 @@
 // Convenience indexers that target the auto collections by kind, so callers
-// (channel posts, KB doc saves, …) don't resolve collection ids themselves.
+// (channel posts, KB doc saves, and so on) don't resolve collection ids themselves.
 // All fire-and-forget friendly — indexing must never block the write it follows.
 import { db } from '../db/pg'
 import { ensureAutoCollections, personalCollectionFor } from './collections'

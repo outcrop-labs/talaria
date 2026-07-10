@@ -93,7 +93,7 @@ export async function fleetRemove(department: string, slot?: Slot): Promise<stri
 
 export interface ContainerState {
   name: string
-  state: string // running | exited | …
+  state: string // running | exited | 
   status: string // human string incl. health, e.g. "Up 2 hours (healthy)"
 }
 

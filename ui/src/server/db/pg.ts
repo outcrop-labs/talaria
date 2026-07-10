@@ -134,7 +134,7 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now()
    )`,
   `create index if not exists task_comments_task_idx on task_comments(task_id, created_at)`,
-  // Activity/audit log for a task (created, status change, assigned, comment, …).
+  // Activity/audit log for a task (created, status change, assigned, comment, ).
   `create table if not exists task_activity (
      id uuid primary key default gen_random_uuid(),
      task_id uuid not null references tasks(id) on delete cascade,
@@ -556,7 +556,7 @@ const MIGRATIONS: string[] = [
    )`,
   `create index if not exists artifacts_owner_idx on artifacts(owner_user_id)`,
   // An artifact can be attached to anything (a KB doc/folder, a ticket, a
-  // channel, …). target_type namespaces the id.
+  // channel, ). target_type namespaces the id.
   `create table if not exists artifact_links (
      artifact_id uuid not null references artifacts(id) on delete cascade,
      target_type text not null,

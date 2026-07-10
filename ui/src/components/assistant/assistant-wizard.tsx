@@ -108,7 +108,7 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
       </Button>
       <Button size="sm" onClick={() => void launch()} disabled={busy}>
         {busy && <Loader2 size={14} className="animate-spin" />}
-        {busy ? 'Creating…' : 'Create assistant'}
+        {busy ? 'Creating' : 'Create assistant'}
       </Button>
     </div>
   )

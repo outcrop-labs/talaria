@@ -5,7 +5,7 @@
 //
 // Resolution contract: an assignment only wins while it still ROUTES on the
 // gateway; otherwise callers fall back to their own heuristics (env default →
-// pl-main → first routable, sonar preference scan, …), so a deleted model can
+// pl-main → first routable, sonar preference scan, ), so a deleted model can
 // never silently break a subsystem. Unset = auto.
 import { getSetting, setSetting } from './audit'
 import { resolveRoute } from './llm-gateway'
@@ -72,7 +72,7 @@ export const MODEL_ROLES: Array<{
   {
     role: 'reranker',
     label: 'Reranker',
-    hint: 'Rerank providers (self-hosted TEI, Voyage, Together, NVIDIA, Pinecone, …) are configured in Admin → Retrieval — provider APIs, not gateway models.',
+    hint: 'Rerank providers (self-hosted TEI, Voyage, Together, NVIDIA, Pinecone, ) are configured in Admin → Retrieval — provider APIs, not gateway models.',
     wired: false,
   },
 ]

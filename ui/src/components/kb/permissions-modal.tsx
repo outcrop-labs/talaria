@@ -131,7 +131,7 @@ export function PermissionsModal({
           </Button>
           {canManage && (
             <Button size="sm" onClick={() => void save()} disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
+              {saving ? 'Saving' : 'Save'}
             </Button>
           )}
         </div>
@@ -161,7 +161,7 @@ export function PermissionsModal({
               options={addOptions}
               selected={[]}
               onChange={(v) => v[0] && addGrant(v[0])}
-              placeholder="Add a person or agent…"
+              placeholder="Add a person or agent"
               size="sm"
               className="mb-2"
             />

@@ -34,7 +34,7 @@ const Put = z.object({
 // Admin → Retrieval. GET → services health + backfill status + reranker
 // providers/config + KB-space brain bindings. PUT → reranker config and/or a
 // space↔brain binding. POST → kick a full backfill (detached).
-// GET ?models=<provider>[&key=…] → live model catalog for the picker.
+// GET ?models=<provider>[&key=] → live model catalog for the picker.
 export const Route = createFileRoute('/api/admin/rag')({
   server: {
     handlers: {

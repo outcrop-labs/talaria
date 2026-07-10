@@ -34,7 +34,7 @@ export function Combobox({
   selected,
   onChange,
   multiple = false,
-  placeholder = 'Select…',
+  placeholder = 'Select',
   disabled,
   className,
   size = 'md',
@@ -53,7 +53,7 @@ export function Combobox({
   allowCreate?: boolean
   /** Show the search field. Off for short option lists (a clean menu). */
   searchable?: boolean
-  /** Override the trigger content (e.g. a constant "Add label…" for tag inputs). */
+  /** Override the trigger content (e.g. a constant "Add label" for tag inputs). */
   triggerLabel?: React.ReactNode
 }) {
   const [open, setOpen] = useState(false)
@@ -186,7 +186,7 @@ export function Combobox({
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 onKeyDown={onSearchKeyDown}
-                placeholder={allowCreate ? 'Search or create…' : 'Search…'}
+                placeholder={allowCreate ? 'Search or create' : 'Search'}
                 className="w-full border-b border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted"
               />
             )}

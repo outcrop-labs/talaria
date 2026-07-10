@@ -63,7 +63,7 @@ export function LoginScreen({ error }: { error?: string }) {
           )}
 
           {isLoading ? (
-            <div className="py-6 text-center text-sm text-muted">Loading sign-in options…</div>
+            <div className="py-6 text-center text-sm text-muted">Loading sign-in options</div>
           ) : providers.length === 0 ? (
             <div className="py-4 text-center text-sm text-muted">No sign-in providers are enabled.</div>
           ) : (
@@ -148,7 +148,7 @@ function PasswordForm() {
       />
       {err && <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
       <Button type="submit" disabled={busy || !username || !password}>
-        {busy ? 'Signing in…' : 'Sign in'}
+        {busy ? 'Signing in' : 'Sign in'}
       </Button>
     </form>
   )

@@ -44,7 +44,7 @@ export function TeamsModal({ open, onClose }: { open: boolean; onClose: () => vo
               </button>
             ))}
           </div>
-          <InlineCreate label="New team" placeholder="New team…" onSubmit={(n) => void create(n)} className="mt-auto pt-3" />
+          <InlineCreate label="New team" placeholder="New team" onSubmit={(n) => void create(n)} className="mt-auto pt-3" />
         </div>
 
         {/* Members of the selected team */}

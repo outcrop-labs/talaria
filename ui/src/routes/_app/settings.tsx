@@ -83,7 +83,7 @@ function SettingsPage() {
   )
 }
 
-// The model that powers AI drafting (souls, skills, memories, crons…) across
+// The model that powers AI drafting (souls, skills, memories, crons) across
 // Talaria. Picks from the models the caller may use (the server filters by the
 // admin's member allowlist), shown with pretty names + what each is good at —
 // normal users shouldn't need to know what "qwen/qwen3-14b" means.
@@ -121,7 +121,7 @@ function PreferredModelPicker() {
         ]}
         selected={[prefs?.preferredModel ?? '']}
         onChange={([v]) => void save(v || null)}
-        placeholder="Pick a model…"
+        placeholder="Pick a model"
       />
       <p className="mt-1 text-xs text-muted">
         Powers AI drafting across Talaria — souls, skills, memories, schedules.
@@ -152,7 +152,7 @@ function IntegrationsSection() {
       return r.json()
     },
   })
-  // Surface the callback outcome (?google=connected|denied|…) once, then clean the URL.
+  // Surface the callback outcome (?google=connected|denied|) once, then clean the URL.
   const [flash, setFlash] = useState<string | null>(null)
   useEffect(() => {
     const p = new URLSearchParams(window.location.search).get('google')
@@ -282,7 +282,7 @@ function ApiKeysSection() {
           {keys.map((k) => (
             <div key={k.id} className="flex items-center gap-3 py-3 text-sm">
               <span className="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
-              <code className="shrink-0 text-xs text-muted">{k.prefix}…</code>
+              <code className="shrink-0 text-xs text-muted">{k.prefix}</code>
               <span className="min-w-0 flex-1 truncate text-xs text-muted">
                 {k.lastUsedAt ? `used ${relativeTime(k.lastUsedAt)}` : 'never used'}
               </span>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
+import { DangerLink } from '@/components/ui/chip'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Avatar } from '@/components/ui/avatar'
@@ -245,9 +246,9 @@ function GeneralTab({
                 </Button>
               </div>
             ) : (
-              <Button variant="danger" size="sm" className="shrink-0" onClick={() => setConfirmDelete(true)}>
-                Delete
-              </Button>
+              <DangerLink className="shrink-0" onClick={() => setConfirmDelete(true)}>
+                Delete board
+              </DangerLink>
             )}
           </div>
         )}
@@ -348,7 +349,7 @@ function AgentsTab({ board }: { board: Board }) {
       <p className="mb-3 text-xs text-muted">
         Restrictive by default — a ticket can only be assigned to agents allowed here.
       </p>
-      {!allowAll && <Combobox options={options} selected={agents} onChange={setAgents} multiple placeholder="Select agents…" />}
+      {!allowAll && <Combobox options={options} selected={agents} onChange={setAgents} multiple placeholder="Select agents" />}
       <div className="mt-4 flex items-center justify-between gap-2">
         <label className="flex cursor-pointer items-center gap-2 text-sm text-fg">
           <input

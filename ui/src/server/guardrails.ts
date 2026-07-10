@@ -38,7 +38,7 @@ export const setGuardConfig = (c: GuardConfig) => setSetting('guardrails_config'
 // ── Message → tool record ────────────────────────────────────────────────────
 
 export interface ToolRecord {
-  /** Backing tools that ran this turn (excludes think/memory/todo/…). */
+  /** Backing tools that ran this turn (excludes think/memory/todo/). */
   backingTools: string[]
   /** Concatenated tool-result text this turn. */
   resultsText: string

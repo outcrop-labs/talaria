@@ -2,7 +2,7 @@
 // transport speaks JSON-RPC over POST; we send an `initialize` and classify the
 // response so the UI can show a real connection status instead of hoping.
 //
-// Dev note: fleet MCP servers live on the docker network (agent-mail:9500…),
+// Dev note: fleet MCP servers live on the docker network (agent-mail:9500),
 // which the host can't resolve — the docker-hostname→localhost fallback lets
 // the probe work in dev when the port is published; otherwise it honestly
 // reports unreachable.
@@ -58,7 +58,7 @@ export async function probeMcp(url: string, headers: Record<string, string> = {}
   }
   if (!res.ok) return { state: 'error', detail: `server answered ${res.status}` }
 
-  // Body may be JSON or an SSE frame ("data: {…}"). Pull the first JSON object.
+  // Body may be JSON or an SSE frame ("data: {}"). Pull the first JSON object.
   const text = await res.text()
   const jsonStart = text.indexOf('{')
   if (jsonStart === -1) return { state: 'ok', detail: 'reachable' }

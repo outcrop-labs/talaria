@@ -230,7 +230,7 @@ export async function importDriveFile(userId: string, fileId: string, nowMs: num
     return { kind: 'sheet', title: meta.name, body: JSON.stringify(csvToGrid(csv)), sourceUrl }
   }
   if (meta.mimeType.startsWith(GOOGLE_NATIVE_PREFIX)) {
-    // Other native types (Slides, Drawings, …) → export a PDF and store as a file.
+    // Other native types (Slides, Drawings, ) → export a PDF and store as a file.
     const bytes = await exportGoogleBytes(fileId, 'application/pdf', auth)
     const up = await saveUpload({ filename: `${meta.name}.pdf`, mime: 'application/pdf', bytes, userId })
     return { kind: 'file', title: meta.name, body: '', storageRef: up.id, contentType: 'application/pdf', sourceUrl }
@@ -244,7 +244,7 @@ export async function importDriveFile(userId: string, fileId: string, nowMs: num
   return { kind: 'file', title: meta.name, body: '', storageRef: up.id, contentType: meta.mimeType, sourceUrl }
 }
 
-/** Export a Google-native file to a text format (markdown, csv, …). */
+/** Export a Google-native file to a text format (markdown, csv, ). */
 async function exportGoogle(fileId: string, mimeType: string, auth: Record<string, string>): Promise<string> {
   const res = await fetch(`${FILES_ENDPOINT}/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent(mimeType)}`, { headers: auth })
   if (!res.ok) throw new Error(`drive export(${mimeType}) failed: ${res.status} ${await res.text()}`)

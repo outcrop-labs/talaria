@@ -148,7 +148,7 @@ export function PlanModal({
             {/* The result replaces these: skeleton proposal cards, sized like the real ones. */}
             <div className="flex items-center gap-2 text-sm text-muted">
               <span className="font-medium text-fg">{picked?.label ?? 'The agent'}</span> is reading the conversation and
-              drafting tickets{templateId || boardId ? ' on your template' : ''}…
+              drafting tickets{templateId || boardId ? ' on your template' : ''}
             </div>
             <div className="space-y-3">
               <Generating lines={2} />
@@ -192,7 +192,7 @@ export function PlanModal({
               <div>
                 <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Board</label>
                 <Select value={boardId} size="sm" onChange={(e) => setBoardId(e.target.value)} className="w-full">
-                  <option value="">Pick a board…</option>
+                  <option value="">Pick a board</option>
                   {editable.map((b) => (
                     <option key={b.id} value={b.id}>
                       {b.name}
@@ -248,7 +248,7 @@ export function PlanModal({
               </Button>
               <Button size="sm" onClick={() => void createAll()} disabled={phase === 'creating' || !boardId || included.length === 0}>
                 {phase === 'creating'
-                  ? `Creating… ${included.length} left`
+                  ? `Creating ${included.length} left`
                   : `Create ${included.length} ticket${included.length === 1 ? '' : 's'}`}
               </Button>
             </div>
@@ -343,7 +343,7 @@ function ProposalCard({
                 }}
                 className="w-40"
               >
-                <option value="">+ add…</option>
+                <option value="">+ add</option>
                 {addable.map(({ x, j }) => (
                   <option key={j} value={j}>
                     #{j + 1} {short(x.title, 28)}

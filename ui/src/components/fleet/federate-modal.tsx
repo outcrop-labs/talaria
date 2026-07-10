@@ -70,7 +70,7 @@ export function FederateModal({ onClose }: { onClose: () => void }) {
         </Button>
         <Button size="sm" onClick={() => void federate()} disabled={busy || !dir.trim()}>
           {busy && <Loader2 size={14} className="animate-spin" />}
-          {busy ? 'Federating…' : 'Federate'}
+          {busy ? 'Federating' : 'Federate'}
         </Button>
       </div>
     ) : step === 1 ? (
@@ -79,7 +79,7 @@ export function FederateModal({ onClose }: { onClose: () => void }) {
           Close
         </Button>
         <Button size="sm" onClick={() => void startAll()} disabled={busy || fresh.length === 0}>
-          {busy ? 'Starting…' : `Start ${fresh.length} agent${fresh.length === 1 ? '' : 's'}`}
+          {busy ? 'Starting' : `Start ${fresh.length} agent${fresh.length === 1 ? '' : 's'}`}
         </Button>
       </div>
     ) : (

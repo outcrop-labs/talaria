@@ -96,7 +96,7 @@ export function SecretsTab({ agentId }: { agentId: string }) {
         />
         <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder="value (write-only)" type="password" />
         <Button className="whitespace-nowrap" onClick={() => void save()} disabled={busy || !nameOk || !value}>
-          {busy ? 'Saving…' : 'Set secret'}
+          {busy ? 'Saving' : 'Set secret'}
         </Button>
       </div>
       {name && !nameOk && <p className="text-xs text-muted">UPPER_SNAKE, 2–64 chars, starts with a letter.</p>}

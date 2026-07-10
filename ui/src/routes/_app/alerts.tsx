@@ -46,7 +46,7 @@ function AlertsPage() {
         <h1 className="mercury-text text-2xl font-semibold">Alerts</h1>
 
         {isLoading ? (
-          <div className="text-sm text-muted">Checking the fleet…</div>
+          <div className="text-sm text-muted">Checking the fleet</div>
         ) : alerts.length === 0 ? (
           <EmptyState
             icon="△"
