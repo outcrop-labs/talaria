@@ -50,35 +50,37 @@ function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-lg p-8">
-      <h1 className="mercury-text mb-4 text-lg font-semibold">Settings</h1>
-      <section className="mercury-panel rounded-2xl p-6">
-        <div className="mb-4 flex items-center gap-3">
-          <Avatar src={user?.picture} name={name || user?.email} className="h-10 w-10" />
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium text-fg">{name || user?.email}</div>
-            <div className="truncate text-xs text-muted">{user?.email}</div>
+    <div className="h-full overflow-y-auto p-8">
+      <div className="mx-auto w-full max-w-lg">
+        <h1 className="mercury-text mb-4 text-lg font-semibold">Settings</h1>
+        <section className="mercury-panel rounded-2xl p-6">
+          <div className="mb-4 flex items-center gap-3">
+            <Avatar src={user?.picture} name={name || user?.email} className="h-10 w-10" />
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium text-fg">{name || user?.email}</div>
+              <div className="truncate text-xs text-muted">{user?.email}</div>
+            </div>
           </div>
-        </div>
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Display name</label>
-        <div className="flex items-center gap-2">
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && void save()}
-            placeholder="How teammates and agents see you"
-          />
-          <Button onClick={() => void save()} disabled={busy || !name.trim() || name.trim() === user?.name}>
-            Save
-          </Button>
-        </div>
-        {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
-        <PreferredModelPicker />
-      </section>
+          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Display name</label>
+          <div className="flex items-center gap-2">
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void save()}
+              placeholder="How teammates and agents see you"
+            />
+            <Button onClick={() => void save()} disabled={busy || !name.trim() || name.trim() === user?.name}>
+              Save
+            </Button>
+          </div>
+          {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
+          <PreferredModelPicker />
+        </section>
 
-      <AssistantSection />
-      <IntegrationsSection />
-      <ApiKeysSection />
+        <AssistantSection />
+        <IntegrationsSection />
+        <ApiKeysSection />
+      </div>
     </div>
   )
 }
