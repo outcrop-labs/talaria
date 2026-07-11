@@ -52,6 +52,10 @@ services:
   # changing models means re-running the backfill (dimensions change).
   embeddings:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    # TEI publishes amd64-only CPU images (no arm64 manifest — see #151), so
+    # pin the platform: on Apple Silicon Docker Desktop runs it via Rosetta,
+    # which handles this small dev workload fine. On amd64 hosts it's a no-op.
+    platform: linux/amd64
     container_name: ${TALARIA_EMBED_CONTAINER:-talaria-embeddings-dev}
     restart: unless-stopped
     command: ['--model-id', '${TALARIA_EMBED_MODEL:-BAAI/bge-small-en-v1.5}']
@@ -69,6 +73,7 @@ services:
   # Admin → Retrieval). Cloud rerank providers need no container.
   # reranker:
   #   image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+  #   platform: linux/amd64  # same amd64-only image as embeddings (see above)
   #   container_name: ${TALARIA_RERANK_CONTAINER:-talaria-reranker-dev}
   #   restart: unless-stopped
   #   command: ['--model-id', '${TALARIA_RERANK_MODEL:-BAAI/bge-reranker-base}']
