@@ -128,6 +128,13 @@ engineering-facing tracker.
   (TEI self-hosted, Voyage/Together/NVIDIA/Pinecone US, Cohere CA, Jina DE;
   live model catalogs, sealed keys, fallback-to-vector-order). Brains curatable
   in Admin → Retrieval: team/user/agent bindings + KB-space→brain feeding.
+- ✅ **Hybrid retrieval + guided reindex (2026-07-15)** — every brain indexes
+  sparse (IDF bag-of-terms, identifiers kept whole) alongside dense; searches
+  fuse both via RRF, so exact names/env vars/error strings rank with meaning.
+  Embedding-model swaps are detected live (TEI /info + actual Qdrant shape,
+  never the registry — it had gone stale once), alerted, and repaired by a
+  one-button rebuild-from-sources in Admin → Retrieval. Verified live on the
+  dev brains (v1 384d → hybrid; identifier + paraphrase queries both rank #1).
 
 - **MCP toolkit gaps (from the 2026-07-10 coverage audit)** — deferred,
   design questions attached: agents starting Relays (whose channel is it?);

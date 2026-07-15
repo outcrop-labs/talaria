@@ -802,6 +802,9 @@ const MIGRATIONS: string[] = [
   // The same control on artifacts: 'auto' (plan/research activity flows +
   // officialize pipeline), 'none', or an explicit brain.
   `alter table artifacts add column if not exists rag_routing text not null default 'auto'`,
+  // Retrieval schema generation: 1 = legacy unnamed dense vector; 2 = hybrid
+  // (named dense + IDF sparse). The guided reindex upgrades collections in place.
+  `alter table rag_collections add column if not exists schema_version integer not null default 1`,
 ]
 
 function ensureMigrated(): Promise<void> {

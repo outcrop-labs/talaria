@@ -10,8 +10,8 @@ import { getArtifact } from '../artifacts'
 import { getSetting, setSetting } from '../audit'
 import { describeAgent } from '../gateway'
 import { applyArtifactRouting } from './artifact-routing'
+import { ensureQdrantFor } from './collections'
 import { embedOne } from './embed'
-import { ensureCollection } from './qdrant'
 import { indexActivity, indexTicket, indexTicketComment, syncKbDoc } from './sources'
 
 const QDRANT_URL = () => (process.env.TALARIA_QDRANT_URL ?? 'http://localhost:6333').replace(/\/$/, '')
@@ -62,11 +62,11 @@ export async function backfillAll(): Promise<void> {
     }
     const sql = await db()
 
-    // Every registered collection gets its Qdrant collection (they may have
-    // been registered while Qdrant was down).
+    // Every registered collection gets its Qdrant collection in its registered
+    // shape (they may have been registered while Qdrant was down).
     const dim = (await embedOne('dim probe')).length
-    const cols = (await sql`select qdrant_name as name from rag_collections`) as unknown as Array<{ name: string }>
-    for (const c of cols) await ensureCollection(c.name, dim).catch(() => {})
+    const cols = (await sql`select qdrant_name as name, schema_version as "schemaVersion" from rag_collections`) as unknown as Array<{ name: string; schemaVersion: number }>
+    for (const c of cols) await ensureQdrantFor(c.name, c.schemaVersion, dim).catch(() => {})
 
     // KB docs — visibility-routed via the same sync every save runs.
     const docs = (await sql`

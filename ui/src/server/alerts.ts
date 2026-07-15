@@ -8,6 +8,7 @@ import { containerStatus } from './fleet-docker'
 import { costOverview } from './usage'
 import { fleetBrainHealth } from './brain-health'
 import { ragHealth } from './retrieval/backfill'
+import { retrievalUpgradeStatus } from './retrieval/migrate'
 import { MCP_PORT } from './mcp-service'
 
 export type AlertSeverity = 'critical' | 'warning' | 'info'
@@ -92,6 +93,20 @@ export async function computeAlerts(userId: string): Promise<Alert[]> {
       detail: `${down} unreachable — nothing new is being indexed and agent knowledge search fails. Start the services (docker/dev-compose.yml), then run the backfill in Admin → Retrieval.`,
       href: '/admin',
     })
+  } else {
+    // Services up, but do the collections still match the live embedding
+    // model? A TALARIA_EMBED_MODEL swap changes dimensions and every index/
+    // search against the old collections fails just as silently as an outage.
+    const upgrade = await retrievalUpgradeStatus().catch(() => null)
+    if (upgrade?.dimMismatch) {
+      const bad = upgrade.collections.filter((c) => c.dimMismatch).map((c) => c.name).join(', ')
+      alerts.push({
+        severity: 'critical',
+        title: 'Embedding model changed — brains need a rebuild',
+        detail: `The embedding service now serves ${upgrade.embed?.modelId} (${upgrade.embed?.dim}d) but ${bad} ${upgrade.collections.filter((c) => c.dimMismatch).length === 1 ? 'is' : 'are'} built at a different dimension — indexing and search against ${upgrade.collections.filter((c) => c.dimMismatch).length === 1 ? 'it' : 'them'} are failing. Run the rebuild in Admin → Retrieval.`,
+        href: '/admin',
+      })
+    }
   }
 
   // ── Brain routability: configured models still on the registry? ────────────

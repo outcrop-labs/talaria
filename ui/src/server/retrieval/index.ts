@@ -6,9 +6,10 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { db } from '../db/pg'
 import { embed, embedOne } from './embed'
-import { upsertPoints, deletePoints, search as qdrantSearch, type QdrantPoint } from './qdrant'
+import { upsertPoints, deletePoints, search as qdrantSearch, hybridQuery, type QdrantPoint } from './qdrant'
 import { collectionsForPrincipal, getCollection, type RagCollection } from './collections'
 import { getRerankConfig, rerank } from './rerank'
+import { sparseEncode } from './sparse'
 
 export interface IndexDoc {
   sourceType: string // 'kb-doc' | 'channel' | 'chat' | 'plan' | 'research' | 'ticket' | 
@@ -68,9 +69,13 @@ export async function indexDocument(collectionId: string, doc: IndexDoc): Promis
   }
 
   const vectors = await embed(chunks)
+  const hybrid = col.schemaVersion >= 2
   const points: QdrantPoint[] = chunks.map((c, i) => ({
     id: randomUUID(),
     vector: vectors[i]!,
+    // Hybrid collections also index the chunk's terms (title included, so an
+    // exact-name query lands even when the body never repeats it).
+    ...(hybrid ? { sparse: sparseEncode(`${doc.title ?? ''}\n${c}`) } : {}),
     payload: {
       ...(doc.payload ?? {}),
       sourceType: doc.sourceType,
@@ -81,7 +86,7 @@ export async function indexDocument(collectionId: string, doc: IndexDoc): Promis
       chunk: i,
     },
   }))
-  await upsertPoints(col.qdrantName, points)
+  await upsertPoints(col.qdrantName, points, hybrid)
   if (prev) await deletePoints(col.qdrantName, prev.pointIds)
 
   const ids = points.map((p) => p.id)
@@ -157,11 +162,13 @@ async function activityScope(principal: { userId?: string; agentModel?: string }
   return { should: [] } // no scope → nothing from activity
 }
 
-/** Search across the principal's accessible collections. Vector recall per
- *  collection → merge + dedupe → (when configured) cross-encoder RERANK over
- *  the merged candidate pool → top `limit`. Raw cosine scores aren't
- *  comparable across collections, so the reranker is what makes the merged
- *  ranking honest; without one we keep the old score order. */
+/** Search across the principal's accessible collections. Recall per collection
+ *  (HYBRID dense+keyword RRF on v2 collections — exact identifiers like env
+ *  vars, ticket numbers, and error strings rank alongside semantic matches;
+ *  dense-only on legacy v1) → merge + dedupe → (when configured) cross-encoder
+ *  RERANK over the merged candidate pool → top `limit`. Neither cosine nor RRF
+ *  scores are comparable across collections, so the reranker is what makes the
+ *  merged ranking honest; without one we keep the per-collection score order. */
 export async function searchForPrincipal(
   principal: { userId?: string; agentModel?: string },
   query: string,
@@ -176,6 +183,7 @@ export async function searchForPrincipal(
   // With a reranker, over-fetch per collection so it has a real pool to work.
   const perColLimit = reranking ? Math.max(limit, Math.ceil((rerankCfg.candidates ?? 30) / cols.length) + 2) : limit
   const vec = await embedOne(query)
+  const sparse = sparseEncode(query)
   const activityFilter = await activityScope(principal)
 
   const perCol = await Promise.all(
@@ -183,7 +191,10 @@ export async function searchForPrincipal(
       // Ambient activity is ACL-filtered per item; curated/custom collections
       // are gated at the collection level (their binding).
       const filter = c.kind === 'activity' ? activityFilter ?? undefined : undefined
-      const hits = await qdrantSearch(c.qdrantName, vec, perColLimit, filter).catch(() => [])
+      const hits =
+        c.schemaVersion >= 2
+          ? await hybridQuery(c.qdrantName, vec, sparse, perColLimit, filter).catch(() => [])
+          : await qdrantSearch(c.qdrantName, vec, perColLimit, filter).catch(() => [])
       return hits.map((h) => ({
         collection: c.name,
         score: h.score,
