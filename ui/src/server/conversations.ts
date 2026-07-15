@@ -2,6 +2,7 @@
 import { db } from './db/pg'
 import { refBlocks } from './refs'
 import type { ToolCall } from '@/lib/sse-parse'
+import type { Finding } from './guardrails'
 
 export interface ConversationRow {
   id: string
@@ -27,6 +28,8 @@ export interface MessageRow {
   /** Who wrote a user turn (multiplayer plans show voices apart). */
   authorUserId?: string | null
   authorLabel?: string | null
+  /** Confab-guard findings on an assistant reply (annotate/strict modes). */
+  guard?: Finding[] | null
 }
 
 /** The user's conversations of a given kind, newest activity first. `working`
@@ -119,7 +122,7 @@ export async function getConversation(
   `
   if (conv.length === 0) return null
   const messages = await sql`
-    select m.role, m.content, m.reasoning, m.tools, m.status, m.seq, m.attachments,
+    select m.role, m.content, m.reasoning, m.tools, m.status, m.seq, m.attachments, m.guard,
            m.author_user_id as "authorUserId", coalesce(u.name, u.email) as "authorLabel"
     from messages m left join users u on u.id = m.author_user_id
     where m.conversation_id = ${conversationId} order by m.seq asc
@@ -272,6 +275,13 @@ export async function updateAssistant(
       status = ${data.status}
     where id = ${messageId}
   `
+}
+
+/** Pin confab-guard findings to a reply (annotate/strict). Metadata only —
+ *  the UI renders a caveat; transcripts never see it. */
+export async function setMessageGuard(messageId: string, findings: Finding[]): Promise<void> {
+  const sql = await db()
+  await sql`update messages set guard = ${sql.json(findings as unknown as Parameters<typeof sql.json>[0])} where id = ${messageId}`
 }
 
 /** Bump the conversation's updated_at (and set a title from the first turn if empty). */

@@ -9,7 +9,11 @@
 //   fabricated_outage — claims an outage, but no tool actually errored
 //
 // Default posture is OBSERVE: detect + record findings out-of-band, never touch
-// the output or the model's context. annotate/strict are opt-in.
+// the output or the model's context. ANNOTATE additionally surfaces findings to
+// the humans reading the reply (a caveat on the chat/channel message, appended
+// to public-API responses). STRICT is annotate + secret redaction in whatever
+// Talaria persists or hasn't yet relayed. No mode ever feeds a finding back
+// into a model's context.
 
 import { getSetting, setSetting } from './audit'
 import { db } from './db/pg'
@@ -161,7 +165,7 @@ function ungroundedRefs(text: string, haystack: string, policedHosts: string[]):
 
 // ── Secret leak ──────────────────────────────────────────────────────────────
 // High-value security check: an agent should never emit a live credential.
-const SECRET_PATTERNS: Array<{ label: string; re: RegExp }> = [
+const SECRET_PATTERNS: Array<{ label: string; re: RegExp; redactRe?: RegExp }> = [
   { label: 'OpenAI key', re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/ },
   { label: 'Anthropic key', re: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/ },
   { label: 'AWS access key', re: /\bAKIA[0-9A-Z]{16}\b/ },
@@ -169,7 +173,13 @@ const SECRET_PATTERNS: Array<{ label: string; re: RegExp }> = [
   { label: 'Slack token', re: /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/ },
   { label: 'GitHub token', re: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/ },
   { label: 'Talaria gateway key', re: /\btlk_[a-f0-9]{40,}\b/ },
-  { label: 'Private key block', re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
+  {
+    label: 'Private key block',
+    re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/,
+    // Redaction must swallow the whole block (or to end-of-text if unterminated),
+    // not just the BEGIN marker line.
+    redactRe: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|$)/,
+  },
 ]
 function detectSecret(text: string): { label: string; snippet: string } | null {
   for (const { label, re } of SECRET_PATTERNS) {
@@ -177,6 +187,19 @@ function detectSecret(text: string): { label: string; snippet: string } | null {
     if (m) return { label, snippet: `${label}: ${m[0].slice(0, 8)}…` }
   }
   return null
+}
+
+/** Strict mode: replace every detected credential with a redaction marker.
+ *  Applied only to what Talaria persists or hasn't yet relayed — a live stream
+ *  already showed the original, but the saved copy (and every transcript built
+ *  from it) stays clean. */
+export function redactSecrets(text: string): { text: string; redacted: boolean } {
+  let out = text
+  for (const { label, re, redactRe } of SECRET_PATTERNS) {
+    const base = redactRe ?? re
+    out = out.replace(new RegExp(base.source, base.flags.includes('g') ? base.flags : `${base.flags}g`), `[redacted ${label}]`)
+  }
+  return { text: out, redacted: out !== text }
 }
 
 // ── Rule registry ────────────────────────────────────────────────────────────
@@ -399,17 +422,18 @@ export async function guardCompletion(input: {
  *  the stream gives us tool NAMES (did a tool run?) but not results or error
  *  detail — so only zero-tool-claim and secret-leak apply here (ungrounded_ref /
  *  fabricated_outage are skipped, not guessed). Fire-and-forget; records
- *  findings out-of-band. Returns the annotate caveat (or '') for callers that
- *  can append it. */
+ *  findings out-of-band. In annotate/strict, callers persist the findings onto
+ *  the message row (metadata the UI renders — never fed back into context);
+ *  strict callers also redact secrets from the saved content. */
 export async function guardChatReply(input: {
   answer: string
   toolNames: string[]
   userMessage: string
   caller: string
   model: string
-}): Promise<{ findings: Finding[]; caveat: string }> {
+}): Promise<{ findings: Finding[]; mode: GuardMode }> {
   const config = await getGuardConfig()
-  if (config.mode === 'off' || !input.answer) return { findings: [], caveat: '' }
+  if (config.mode === 'off' || !input.answer) return { findings: [], mode: config.mode }
   const backingTools = input.toolNames.filter((n) => n && !NONBACKING.has(n))
   const toolRecord: ToolRecord = { backingTools, resultsText: '', anyError: false, overflowed: true }
   const findings = runGuardrails(
@@ -418,6 +442,5 @@ export async function guardChatReply(input: {
     { results: false, errorInfo: false },
   )
   await recordFindings(findings, { caller: input.caller, model: input.model, endpoint: 'fleet', mode: config.mode }).catch(() => {})
-  const caveat = config.mode === 'annotate' || config.mode === 'strict' ? caveatFor(findings) : ''
-  return { findings, caveat }
+  return { findings, mode: config.mode }
 }

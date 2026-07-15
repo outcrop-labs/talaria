@@ -280,9 +280,17 @@ Full project-management suite, all live in `ui/`:
   The turn's tool record is derived from the request messages, so no agent-side
   trace export is needed; findings land in `guard_findings` (Admin → Confab guard)
   and `guardText()` feeds secret-leak hits into the QA judge on ticket outcomes.
-  INVARIANT: the guard is fire-and-forget — never awaited on a completion path.
-  Not yet covered: `/api/chat` + channel replies (they use the fleet gateway
-  directly); the agent-side plugin remains only for that path.
+  INVARIANT: the guard is fire-and-forget — never awaited on a completion path,
+  and findings are NEVER fed back into a model's context. Coverage is complete:
+  `/api/chat` + channel replies run `guardChatReply` (tool-name-only rules, no
+  false positives from missing results), and agents' inner tool loops hit the
+  full guard at the LLM gateway since the Phase-7 rewire; the agent-side
+  confab-guard plugin is gone. Annotate/strict are real (2026-07-15): findings
+  pin to the message row (`messages.guard` / `channel_messages.guard`) and
+  render as a caveat in chat/channels; the public API route appends the caveat
+  (non-streaming) or injects a final SSE delta before `[DONE]` (streaming) —
+  but never for agent-loop keys (`gateway_unmetered_keys`); strict also redacts
+  detected secrets from whatever is persisted or not yet relayed.
 
 - **Product IA + elegance pass (Phase 5, 2026-07-06)** - nav regrouped into
   **Work** (Home · Chat · Channels · Boards · Inbox) and **Manage** (Agents ·
@@ -392,10 +400,12 @@ Highest-leverage remaining threads:
 2. **Toolkit onboarding skill** — the toolkit MCP is now ATTACHED to every
    agent (fleet HTTP mode, `server/mcp-service.ts` + render injection); what
    remains is the Hermes-side skill teaching agents to reach for it (#78).
-3. **Guard coverage for the direct chat path** (`/api/chat` + channel replies),
-   then retire the agent-side confab-guard plugin.
-4. **Artifact tail** — S3 behind `storage_ref`; attachments on tickets/chat.
-5. **Input sweep (#49)**; **explicit plan-template picker**.
+3. **Artifact tail** — S3 behind `storage_ref`; attachments on tickets/chat.
+4. **Input sweep (#49)**; **explicit plan-template picker**.
+
+(Guard coverage for the direct chat path shipped in #90 and the agent-side
+confab-guard plugin is gone; annotate/strict became real on 2026-07-15 — the
+remaining guard thread is feedback-into-agent-memory.)
 
 ## Dev environment
 

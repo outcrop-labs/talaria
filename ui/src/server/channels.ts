@@ -6,6 +6,7 @@
 import { db } from './db/pg'
 import { publishChannel } from './realtime'
 import { isElevatedAssistant } from './users'
+import type { Finding } from './guardrails'
 
 export type ChannelRole = 'owner' | 'member'
 
@@ -42,6 +43,8 @@ export interface ChannelMessage {
   status: 'streaming' | 'complete' | 'error'
   createdAt: string
   attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
+  /** Confab-guard findings on an agent reply (annotate/strict modes). */
+  guard?: Finding[] | null
 }
 
 /** Channels/relays/DMs the user belongs to, newest activity first. DMs carry
@@ -244,7 +247,7 @@ export async function removeChannelAgent(channelId: string, model: string): Prom
 
 // ── Messages ─────────────────────────────────────────────────────────────────
 const MSG_SELECT = `select id, seq, author_type as "authorType", author, content, status,
-  created_at as "createdAt", attachments from channel_messages`
+  created_at as "createdAt", attachments, guard from channel_messages`
 
 /** A channel's messages, oldest first. `sinceSeq` fetches only newer ones. */
 export async function listChannelMessages(channelId: string, sinceSeq = -1, limit = 200): Promise<ChannelMessage[]> {
@@ -291,5 +294,24 @@ export async function updateChannelMessage(
 ): Promise<void> {
   const sql = await db()
   await sql`update channel_messages set content = ${content}, status = ${status} where id = ${messageId}`
+  publishChannel(channelId, { type: 'message', messageId })
+}
+
+/** Pin confab-guard findings to an agent reply (annotate/strict); strict may
+ *  also pass secret-redacted content to overwrite the saved copy. Republishes
+ *  so live viewers pick the caveat up. */
+export async function setChannelMessageGuard(
+  channelId: string,
+  messageId: string,
+  findings: Finding[],
+  redactedContent?: string,
+): Promise<void> {
+  const sql = await db()
+  const guard = sql.json(findings as unknown as Parameters<typeof sql.json>[0])
+  if (redactedContent !== undefined) {
+    await sql`update channel_messages set guard = ${guard}, content = ${redactedContent} where id = ${messageId}`
+  } else {
+    await sql`update channel_messages set guard = ${guard} where id = ${messageId}`
+  }
   publishChannel(channelId, { type: 'message', messageId })
 }

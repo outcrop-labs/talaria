@@ -43,6 +43,8 @@ export interface ChannelMessage {
   status: 'streaming' | 'complete' | 'error'
   createdAt: string
   attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
+  /** Confab-guard findings pinned to an agent reply (annotate/strict modes). */
+  guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
 }
 
 const j = async <T>(r: Response): Promise<T> => {
