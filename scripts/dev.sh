@@ -18,6 +18,13 @@ if [ -f .git ] && ! grep -q '^TALARIA_WORKTREE=' ui/.env; then
   exit 1
 fi
 
+# Built-in object storage creds: compose must match the app, so lift them out
+# of ui/.env for interpolation (both fall back to the same dev defaults).
+for var in TALARIA_S3_ACCESS_KEY TALARIA_S3_SECRET_KEY; do
+  val=$(grep "^${var}=" ui/.env | head -1 | cut -d= -f2- || true)
+  [ -n "$val" ] && export "$var"="$val"
+done
+
 echo "▸ infra (postgres + redis)"
 docker compose -f docker/dev-compose.yml up -d
 

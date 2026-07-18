@@ -4,7 +4,9 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
-import { deleteTask, getTask, getTaskFull, listComments, EFFORTS, PRIORITIES, TASK_STATUSES, updateTask } from '@/server/tasks'
+import { deleteTask, getTask, getTaskFull, listComments, EFFORTS, PRIORITIES, TASK_STATUSES, updateTask, type TaskPatch } from '@/server/tasks'
+import { resolveAttachments } from '@/server/uploads'
+import { resolveRefs } from '@/server/refs'
 import { indexTicket, unindexActivity } from '@/server/retrieval/sources'
 import { runJudgeForTask } from '@/server/judge'
 
@@ -23,6 +25,10 @@ const Patch = z.object({
   errorMessage: z.string().max(50_000).nullish(),
   archived: z.boolean().optional(),
   addTimeSpentSeconds: z.number().min(0).max(86_400 * 30).optional(),
+  // Full replacement list, same contract as chat messages: upload ids +
+  // knowledge/artifact refs. Omit both to leave attachments unchanged.
+  attachmentIds: z.array(z.string().uuid()).max(20).optional(),
+  refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
 })
 
 export const Route = createFileRoute('/api/tasks/$id')({
@@ -48,6 +54,7 @@ export const Route = createFileRoute('/api/tasks/$id')({
 
         const agent = checkAgentKey(request)
         let actor = 'agent'
+        let sessionUser: Awaited<ReturnType<typeof getSessionUser>> = null
         if (agent) {
           // A named agent must pass the board's agent policy; unnamed callers
           // (legacy plugin heartbeat/report) keep the old fleet-wide access.
@@ -62,6 +69,7 @@ export const Route = createFileRoute('/api/tasks/$id')({
           const user = await getSessionUser(request)
           if (!user || !canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
           actor = user.email ?? user.name ?? 'user'
+          sessionUser = user
         }
 
         const parsed = Patch.safeParse(await request.json().catch(() => null))
@@ -79,7 +87,16 @@ export const Route = createFileRoute('/api/tasks/$id')({
             return json({ error: `agent "${a}" is not allowed on this board` }, { status: 400 })
           }
         }
-        const updated = await updateTask(params.id, parsed.data, actor)
+        const { attachmentIds, refs, ...patch } = parsed.data
+        if (attachmentIds !== undefined || refs !== undefined) {
+          // Resolve to canonical chips server-side (never trust client metadata).
+          // Refs are ACL-checked against the attacher, so agent callers (no
+          // session) can attach uploads but not knowledge/artifact refs.
+          const uploads = await resolveAttachments(attachmentIds ?? [])
+          const chips = sessionUser ? await resolveRefs(sessionUser, refs ?? []) : []
+          ;(patch as TaskPatch).attachments = [...uploads, ...chips]
+        }
+        const updated = await updateTask(params.id, patch, actor)
         // Keep the activity brain fresh when the ticket's text changed.
         if (updated && (parsed.data.title !== undefined || parsed.data.description !== undefined)) {
           void indexTicket(updated).catch(() => {})

@@ -224,6 +224,8 @@ export const updateTask = (
     errorMessage?: string | null
     archived?: boolean
     addTimeSpentSeconds?: number
+    attachmentIds?: string[]
+    refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
   },
 ) =>
   fetch(`/api/tasks/${taskId}`, {

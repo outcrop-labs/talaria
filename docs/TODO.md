@@ -76,8 +76,20 @@ engineering-facing tracker.
   - ✅ **Per-agent filing cabinets (2026-07-10)** — auto-created artifacts file
     under "<Agent>/<Category>" (Plans / Research / Documents / Media / Chat
     summaries, find-or-create); chat distills become private artifacts too.
-  - ⏳ **Cloud-storage connectors** — S3 behind the `storage_ref` abstraction.
-  - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
+  - ✅ **Cloud-storage connectors (2026-07-17)** — any S3-compatible bucket
+    (AWS/Backblaze B2/R2/MinIO) behind uploads via hand-rolled SigV4
+    (`server/storage.ts`); Admin → Storage config (secretbox-sealed secret),
+    connection test, background local→bucket migration. Per-row path dispatch:
+    switching modes never strands a file. Plus a **built-in bucket** (bundled
+    MinIO container, `TALARIA_S3_*` env, auto-created) and an optional
+    **replica** to a second provider: mirror-on-upload, "Sync all" backfill,
+    and read fallback when the primary can't serve a blob.
+  - ✅ **Ticket attachments (2026-07-17)** — files + KB/artifact ref chips on
+    tickets (same `attachments` jsonb shape as messages), attach/remove in the
+    ticket detail, activity-logged; agents read metadata via the task API and
+    fetch bytes from `/api/uploads/:id` with the fleet key. Chat already had
+    attachments. Follow-ons: channel replies don't hand images to agents (1:1
+    chat does); toolkit `fetch_attachment` tool for non-image file contents.
 
 ## High-value, ready to pick up
 - ✅ **Elevated admin assistants (2026-07-09)** — admins can promote an admin's

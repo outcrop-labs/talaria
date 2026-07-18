@@ -402,7 +402,18 @@ Highest-leverage remaining threads:
 2. **Toolkit onboarding skill** — the toolkit MCP is now ATTACHED to every
    agent (fleet HTTP mode, `server/mcp-service.ts` + render injection); what
    remains is the Hermes-side skill teaching agents to reach for it (#78).
-3. **Artifact tail** — S3 behind `storage_ref`; attachments on tickets/chat.
+3. ~~**Artifact tail**~~ — shipped 2026-07-17: S3-compatible object storage
+   behind uploads (`server/storage.ts`, Admin → Storage; Backblaze/R2/MinIO/AWS
+   via hand-rolled SigV4) with test-connection + local→bucket migration, a
+   **built-in bucket** (bundled `talaria-minio-dev` container, `TALARIA_S3_*`
+   env, bucket auto-created) and an optional **replica** mirroring every blob
+   to a second provider (mirror-on-upload + full sync + read fallback), and
+   ticket attachments (files + KB/artifact ref chips, same shape as chat).
+   Chat attachments already existed. Known follow-ons: channel replies don't
+   pass image attachments to agents (1:1 chat does, via data URLs); non-image
+   file contents aren't injected into prompts anywhere — agents can now fetch
+   bytes from `/api/uploads/:id` with the fleet key, so a toolkit
+   `fetch_attachment` tool is the natural next step.
 4. **Input sweep (#49)**; **explicit plan-template picker**.
 
 (Guard coverage for the direct chat path shipped in #90 and the agent-side
