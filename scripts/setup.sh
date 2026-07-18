@@ -60,6 +60,11 @@ AUTH_GOOGLE_CLIENT_SECRET=
 
 # Agents authenticate to Talaria's APIs with this key + x-agent-name header
 TALARIA_AGENT_KEY=$(rand 32)
+
+# Built-in object storage (the talaria-minio-dev container). dev.sh exports
+# these so the container and the app agree; Admin → Storage → "Built-in bucket".
+TALARIA_S3_ACCESS_KEY=talaria
+TALARIA_S3_SECRET_KEY=$(rand 24)
 EOF
   ok "ui/.env generated"
 fi
@@ -91,7 +96,7 @@ else
     docker network create talaria >/dev/null && ok "network talaria"
   }
   if docker compose -f docker/dev-compose.yml pull -q; then
-    ok "infra images ready (postgres, redis, qdrant, embeddings)"
+    ok "infra images ready (postgres, redis, qdrant, embeddings, minio)"
   else
     warn "image pull incomplete — dev.sh will retry; see errors above"
   fi

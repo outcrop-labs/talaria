@@ -5,6 +5,7 @@ import { StopButton } from '@/components/chat/composer-buttons'
 import { KeyHint } from '@/components/ui/kbd'
 import { MentionMenu, useMentions, type Mentionable } from '@/components/chat/mentions'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
+import { GuardCaveat, type GuardFinding } from '@/components/chat/guard-caveat'
 import { Markdown } from '@/components/ui/markdown'
 import { Disclosure } from '@/components/ui/disclosure'
 import { resolveAgentMedia } from '@/lib/agent-media'
@@ -22,6 +23,8 @@ interface DisplayMessage {
   attachments?: Attachment[]
   /** Who wrote a user turn — shown in multiplayer plans to tell voices apart. */
   authorLabel?: string | null
+  /** Confab-guard findings pinned to a reply (annotate/strict modes). */
+  guard?: GuardFinding[] | null
 }
 
 const toDisplay = (m: StoredMessage): DisplayMessage => ({
@@ -32,6 +35,7 @@ const toDisplay = (m: StoredMessage): DisplayMessage => ({
   status: m.status,
   attachments: m.attachments,
   authorLabel: m.authorLabel,
+  guard: m.guard,
 })
 
 // A durable chat thread. Server owns history; this loads an existing conversation
@@ -376,7 +380,7 @@ function UserBubble({ content, attachments, author }: { content: string; attachm
 }
 
 function AssistantTurn({ message, agentModel, live }: { message: DisplayMessage; agentModel: string; live: boolean }) {
-  const { content, reasoning, tools, status } = message
+  const { content, reasoning, tools, status, guard } = message
   const hasReasoning = !!reasoning?.trim()
   const hasTools = !!tools?.length
   const empty = !content && !hasReasoning && !hasTools
@@ -416,6 +420,7 @@ function AssistantTurn({ message, agentModel, live }: { message: DisplayMessage;
         )}
 
         {content && <Markdown>{resolveAgentMedia(content, agentModel)}</Markdown>}
+        {!live && <GuardCaveat findings={guard} />}
 
         {empty && live && (
           <span className="inline-flex gap-1 py-1">

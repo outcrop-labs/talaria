@@ -25,6 +25,8 @@ export interface StoredMessage {
   /** Who wrote a user turn (multiplayer plans). */
   authorUserId?: string | null
   authorLabel?: string | null
+  /** Confab-guard findings pinned to a reply (annotate/strict modes). */
+  guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
 }
 
 export interface PlanMember {

@@ -7,6 +7,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { markChannelRead, sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMember, type ChannelMessage } from '@/lib/channels'
 import { useUsers } from '@/lib/users'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
+import { GuardCaveat } from '@/components/chat/guard-caveat'
 import { KeyHint } from '@/components/ui/kbd'
 import { resolveAgentMedia } from '@/lib/agent-media'
 import { MentionMenu, useMentions, userMentionInsert, type Mentionable } from '@/components/chat/mentions'
@@ -158,6 +159,7 @@ function MessageRow({
             </span>
           ) : null}
           {m.attachments && m.attachments.length > 0 && <MessageAttachments items={m.attachments} />}
+          {!live && <GuardCaveat findings={m.guard} />}
           {m.content && live && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-accent align-middle" />}
           {m.status === 'error' && (
             <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>

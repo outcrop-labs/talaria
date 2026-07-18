@@ -1,10 +1,14 @@
-// Attachment storage: files land on disk (a persistent uploads dir), metadata
-// in `uploads`. Messages reference them by id; the served URL is /api/uploads/:id.
-// Kept deliberately simple — a self-hosted app owns its own blob store.
+// Attachment storage: metadata in `uploads`, bytes wherever the storage config
+// says — local disk (default) or any S3-compatible bucket (Admin → Storage).
+// Each row's `path` records where ITS bytes live (`s3://bucket/key` vs a
+// filesystem path), so changing the mode never strands existing files.
+// Messages reference uploads by id; the served URL is /api/uploads/:id.
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve, extname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { db } from './db/pg'
+import { getSetting, setSetting } from './audit'
+import { activeTarget, getStorageConfig, internalTarget, replicaTarget, s3Get, s3Put, targetReady, type BucketTarget } from './storage'
 
 export const UPLOADS_DIR = () => process.env.TALARIA_UPLOADS_DIR ?? resolve(process.cwd(), '.uploads')
 
@@ -30,10 +34,27 @@ export async function saveUpload(input: {
   if (input.bytes.byteLength > MAX_BYTES) throw new Error('file too large (max 25 MB)')
   const id = randomUUID()
   const safeExt = extname(input.filename).replace(/[^.a-z0-9]/gi, '').slice(0, 12)
-  const dir = UPLOADS_DIR()
-  await mkdir(dir, { recursive: true })
-  const path = join(dir, `${id}${safeExt}`)
-  await writeFile(path, input.bytes)
+  let path: string
+  const cfg = await getStorageConfig()
+  const active = await activeTarget(cfg)
+  if (active) {
+    const key = `${active.target.prefix}uploads/${id}${safeExt}`
+    await s3Put(active.target, key, input.bytes, input.mime)
+    path = `${active.internal ? 's3+internal' : 's3'}://${active.target.bucket}/${key}`
+  } else {
+    const dir = UPLOADS_DIR()
+    await mkdir(dir, { recursive: true })
+    path = join(dir, `${id}${safeExt}`)
+    await writeFile(path, input.bytes)
+  }
+  // Mirror to the replica off the request path — a replica outage must never
+  // fail an upload. The full sync catches anything missed here.
+  const replica = replicaTarget(cfg)
+  if (replica) {
+    void s3Put(replica, `${replica.prefix}uploads/${id}${safeExt}`, input.bytes, input.mime).catch((e) =>
+      console.error('[storage] replica write failed:', e instanceof Error ? e.message : e),
+    )
+  }
   const sql = await db()
   await sql`
     insert into uploads (id, filename, mime, size, path, uploaded_by)
@@ -51,10 +72,34 @@ export async function getUpload(id: string): Promise<{ bytes: Buffer; mime: stri
   }>
   const r = rows[0]
   if (!r) return null
-  const bytes = await readFile(r.path).catch(() => null)
+  const bytes = await readBlob(r.path)
   if (!bytes) return null
   return { bytes, mime: r.mime, filename: r.filename }
 }
+
+/** Read a blob from wherever its recorded path says it lives — the scheme
+ *  names the home (`s3+internal://` = bundled container via env creds,
+ *  `s3://` = the saved external target, else a filesystem path), so every blob
+ *  stays readable regardless of the CURRENT mode. If the home fails and a
+ *  replica is configured, fall back to the mirror. */
+async function readBlob(path: string): Promise<Buffer | null> {
+  const cfg = await getStorageConfig()
+  const primary = await (async () => {
+    const m = /^(s3\+internal|s3):\/\/([^/]+)\/(.+)$/.exec(path)
+    if (!m) return readFile(path).catch(() => null)
+    const target: BucketTarget = m[1] === 's3+internal' ? internalTarget() : { ...cfg, bucket: m[2]! }
+    if (!targetReady(target)) return null
+    return s3Get(target, m[3]!).catch(() => null)
+  })()
+  if (primary) return primary
+  const replica = replicaTarget(cfg)
+  if (!replica) return null
+  return s3Get(replica, `${replica.prefix}uploads/${blobBasename(path)}`).catch(() => null)
+}
+
+/** Canonical `<id><ext>` tail — the same for a disk path and a bucket key, so
+ *  replica keys are derivable from any row. */
+const blobBasename = (path: string) => path.slice(path.lastIndexOf('/') + 1)
 
 /** Validate that a set of attachment ids exist (before stamping them on a
  *  message) and return their canonical metadata. */
@@ -67,6 +112,123 @@ export async function resolveAttachments(ids: string[]): Promise<Attachment[]> {
   // Preserve caller order.
   const byId = new Map(rows.map((r) => [r.id, r]))
   return ids.map((id) => byId.get(id)).filter((a): a is Attachment => !!a)
+}
+
+/** Where blobs live right now, for the admin panel. */
+export async function uploadStats(): Promise<{ local: number; s3: number; internal: number; localBytes: number }> {
+  const sql = await db()
+  const rows = (await sql`
+    select count(*) filter (where path like 's3://%') as "s3",
+           count(*) filter (where path like 's3+internal://%') as "internal",
+           count(*) filter (where path not like 's3%') as "local",
+           coalesce(sum(size) filter (where path not like 's3%'), 0) as "localBytes"
+    from uploads
+  `) as unknown as Array<{ s3: number; internal: number; local: number; localBytes: number }>
+  const r = rows[0]!
+  return { local: Number(r.local), s3: Number(r.s3), internal: Number(r.internal), localBytes: Number(r.localBytes) }
+}
+
+export interface MigrateStatus {
+  running: boolean
+  moved: number
+  failed: number
+  total: number
+  error?: string
+  finishedAt?: string
+}
+
+const MIGRATE_KEY = 'storage_migrate_status'
+
+export async function migrateStatus(): Promise<MigrateStatus | null> {
+  return getSetting<MigrateStatus | null>(MIGRATE_KEY, null)
+}
+
+/** Move every local-disk blob into the active bucket (internal or external).
+ *  Runs detached; poll migrateStatus(). Local files are left in place (the
+ *  row's path is the source of truth) — uploads-dir cleanup is the operator's
+ *  call. */
+export async function migrateUploadsToS3(): Promise<MigrateStatus> {
+  const prior = await migrateStatus()
+  if (prior?.running) return prior
+  const cfg = await getStorageConfig()
+  const active = await activeTarget(cfg)
+  if (!active) throw new Error('object storage is not configured')
+  const scheme = active.internal ? 's3+internal' : 's3'
+  const sql = await db()
+  const rows = (await sql`
+    select id, path, mime from uploads where path not like 's3%' order by created_at asc
+  `) as unknown as Array<{ id: string; path: string; mime: string }>
+  const status: MigrateStatus = { running: true, moved: 0, failed: 0, total: rows.length }
+  await setSetting(MIGRATE_KEY, status)
+  void (async () => {
+    try {
+      for (const r of rows) {
+        try {
+          const bytes = await readFile(r.path)
+          const ext = extname(r.path).replace(/[^.a-z0-9]/gi, '').slice(0, 12)
+          const key = `${active.target.prefix}uploads/${r.id}${ext}`
+          await s3Put(active.target, key, bytes, r.mime)
+          await sql`update uploads set path = ${`${scheme}://${active.target.bucket}/${key}`} where id = ${r.id}`
+          status.moved++
+        } catch {
+          status.failed++
+        }
+        if ((status.moved + status.failed) % 10 === 0) await setSetting(MIGRATE_KEY, status)
+      }
+    } catch (e) {
+      status.error = e instanceof Error ? e.message : String(e)
+    }
+    status.running = false
+    status.finishedAt = new Date().toISOString()
+    await setSetting(MIGRATE_KEY, status)
+  })()
+  return status
+}
+
+const SYNC_KEY = 'storage_sync_status'
+
+export async function syncStatus(): Promise<MigrateStatus | null> {
+  return getSetting<MigrateStatus | null>(SYNC_KEY, null)
+}
+
+/** Copy EVERY blob (disk, internal, external — wherever each lives) into the
+ *  replica bucket, keyed canonically so per-upload mirror writes and this full
+ *  sync land on the same objects. Runs detached; poll syncStatus(). */
+export async function syncUploadsToReplica(): Promise<MigrateStatus> {
+  const prior = await syncStatus()
+  if (prior?.running) return prior
+  const cfg = await getStorageConfig()
+  const replica = replicaTarget(cfg)
+  if (!replica) throw new Error('replica is not configured (enable it and fill in every field)')
+  const sql = await db()
+  const rows = (await sql`select id, path, mime from uploads order by created_at asc`) as unknown as Array<{
+    id: string
+    path: string
+    mime: string
+  }>
+  const status: MigrateStatus = { running: true, moved: 0, failed: 0, total: rows.length }
+  await setSetting(SYNC_KEY, status)
+  void (async () => {
+    try {
+      for (const r of rows) {
+        try {
+          const bytes = await readBlob(r.path)
+          if (!bytes) throw new Error('unreadable')
+          await s3Put(replica, `${replica.prefix}uploads/${blobBasename(r.path)}`, bytes, r.mime)
+          status.moved++
+        } catch {
+          status.failed++
+        }
+        if ((status.moved + status.failed) % 10 === 0) await setSetting(SYNC_KEY, status)
+      }
+    } catch (e) {
+      status.error = e instanceof Error ? e.message : String(e)
+    }
+    status.running = false
+    status.finishedAt = new Date().toISOString()
+    await setSetting(SYNC_KEY, status)
+  })()
+  return status
 }
 
 /** As an OpenAI-style image_url data URL — used to give vision models the

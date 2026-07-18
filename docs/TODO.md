@@ -23,9 +23,15 @@ engineering-facing tracker.
     tool record derived from the request messages (no trace export needed), modes
     off/observe(default)/annotate/strict, findings recorded out-of-band (zero
     added model tokens). Admin → Confab guard. Verified live (all 3 checks fired).
-  - ⏳ **Confab guard follow-ups** — streaming-annotate on the public route;
-    confidence scoring; layered structural→judge tiering; pluggable checks
-    (PII/secret-leak); feedback-into-agent-memory.
+  - ✅ **Confab guard follow-ups (2026-07-15)** — annotate/strict are real:
+    findings pin to the flagged message (`messages.guard` /
+    `channel_messages.guard`, caveat rendered in chat + channels), the public
+    route appends the caveat non-streaming and injects a final SSE delta
+    before `[DONE]` streaming (never for agent-loop keys — no context
+    contamination), and strict redacts detected secrets from persisted /
+    not-yet-relayed content. Confidence scoring, structural→judge tiering
+    (`guardText` feeds the QA judge), and the secret-leak check had already
+    shipped. Remaining: feedback-into-agent-memory; PII check.
   - ⏳ **Hermes self-review** (#78) — enable subagent-driven-development /
     requesting-code-review skills fleet-wide as the agent's first line.
 - **Artifact system (#54)** — *active.* Versioned work products with built-in
@@ -70,8 +76,20 @@ engineering-facing tracker.
   - ✅ **Per-agent filing cabinets (2026-07-10)** — auto-created artifacts file
     under "<Agent>/<Category>" (Plans / Research / Documents / Media / Chat
     summaries, find-or-create); chat distills become private artifacts too.
-  - ⏳ **Cloud-storage connectors** — S3 behind the `storage_ref` abstraction.
-  - ⏳ Wire attachments into more surfaces (tickets, chat) beyond KB docs.
+  - ✅ **Cloud-storage connectors (2026-07-17)** — any S3-compatible bucket
+    (AWS/Backblaze B2/R2/MinIO) behind uploads via hand-rolled SigV4
+    (`server/storage.ts`); Admin → Storage config (secretbox-sealed secret),
+    connection test, background local→bucket migration. Per-row path dispatch:
+    switching modes never strands a file. Plus a **built-in bucket** (bundled
+    MinIO container, `TALARIA_S3_*` env, auto-created) and an optional
+    **replica** to a second provider: mirror-on-upload, "Sync all" backfill,
+    and read fallback when the primary can't serve a blob.
+  - ✅ **Ticket attachments (2026-07-17)** — files + KB/artifact ref chips on
+    tickets (same `attachments` jsonb shape as messages), attach/remove in the
+    ticket detail, activity-logged; agents read metadata via the task API and
+    fetch bytes from `/api/uploads/:id` with the fleet key. Chat already had
+    attachments. Follow-ons: channel replies don't hand images to agents (1:1
+    chat does); toolkit `fetch_attachment` tool for non-image file contents.
 
 ## High-value, ready to pick up
 - ✅ **Elevated admin assistants (2026-07-09)** — admins can promote an admin's
@@ -106,8 +124,11 @@ engineering-facing tracker.
   ✅ **Toolkit ATTACHED (2026-07-09)** — talaria-mcp fleet HTTP mode
   (per-request identity, fleet-key auth), self-hosted by the app, injected into
   every rendered config; visible + probeable as the "built-in" server on the
-  MCP tab. ⏳ Remaining: a "Talaria toolkit" onboarding skill (lands with #78,
-  Hermes-side) (overlaps #59).
+  MCP tab. ✅ **Onboarding skill (2026-07-17)** — fleet-wide `talaria-toolkit`
+  skill (canonical in `scripts/skills/`, seeded on render, `/opt/skills`
+  mount now wired) teaching the reflexes; `fetch_attachment` tool (text
+  inline, images as MCP image blocks, binary = metadata); soul header points
+  at both. Running agents need one compose recreate for the new mount.
 - ✅ **Research view (#56) (2026-07-10)** — `/research` with Recon / Brief /
   Expedition modes: server-side pipeline (agent persona plans/gap-checks/
   writes; sonar search stages via the org gateway), inline [n] citations
@@ -128,6 +149,13 @@ engineering-facing tracker.
   (TEI self-hosted, Voyage/Together/NVIDIA/Pinecone US, Cohere CA, Jina DE;
   live model catalogs, sealed keys, fallback-to-vector-order). Brains curatable
   in Admin → Retrieval: team/user/agent bindings + KB-space→brain feeding.
+- ✅ **Hybrid retrieval + guided reindex (2026-07-15)** — every brain indexes
+  sparse (IDF bag-of-terms, identifiers kept whole) alongside dense; searches
+  fuse both via RRF, so exact names/env vars/error strings rank with meaning.
+  Embedding-model swaps are detected live (TEI /info + actual Qdrant shape,
+  never the registry — it had gone stale once), alerted, and repaired by a
+  one-button rebuild-from-sources in Admin → Retrieval. Verified live on the
+  dev brains (v1 384d → hybrid; identifier + paraphrase queries both rank #1).
 
 - **MCP toolkit gaps (from the 2026-07-10 coverage audit)** — deferred,
   design questions attached: agents starting Relays (whose channel is it?);

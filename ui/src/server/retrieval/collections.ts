@@ -6,7 +6,11 @@
 // Others are custom (departmental etc.), bound to users/agents/groups.
 import { db } from '../db/pg'
 import { embedDim } from './embed'
-import { ensureCollection, deleteCollection } from './qdrant'
+import { ensureCollection, ensureHybridCollection, deleteCollection } from './qdrant'
+
+/** Ensure a collection's Qdrant collection exists in its registered shape. */
+export const ensureQdrantFor = (qdrantName: string, schemaVersion: number, dim: number) =>
+  schemaVersion >= 2 ? ensureHybridCollection(qdrantName, dim) : ensureCollection(qdrantName, dim)
 
 export type CollectionKind = 'activity' | 'org-kb' | 'custom' | 'personal'
 
@@ -19,6 +23,8 @@ export interface RagCollection {
   auto: boolean
   createdBy: string | null
   createdAt: string
+  /** 1 = legacy unnamed dense; 2 = hybrid (named dense + IDF sparse). */
+  schemaVersion: number
 }
 
 export interface AccessBinding {
@@ -31,15 +37,19 @@ const AUTO: Array<{ name: string; kind: CollectionKind; qdrantName: string; desc
   { name: 'Organization knowledge', kind: 'org-kb', qdrantName: 'talaria_org_kb', description: 'The curated knowledgebase — official docs and artifacts. Grounds agents by default.' },
 ]
 
-/** Create the two auto collections + their Qdrant collections if missing. */
+/** Create the two auto collections + their Qdrant collections if missing.
+ *  Skips (and retries next call) while the embedding service is down — a
+ *  guessed dimension would poison the registry (it happened: rows stamped
+ *  1024 while the live collections were 384). */
 export async function ensureAutoCollections(): Promise<void> {
+  const dim = await embedDim().catch(() => null)
+  if (!dim) return
   const sql = await db()
-  const dim = await embedDim().catch(() => 1024) // Qwen3-Embedding-0.6B
   for (const a of AUTO) {
-    await ensureCollection(a.qdrantName, dim).catch(() => {})
+    await ensureHybridCollection(a.qdrantName, dim).catch(() => {})
     await sql`
-      insert into rag_collections (name, kind, qdrant_name, description, auto, embed_dim)
-      values (${a.name}, ${a.kind}, ${a.qdrantName}, ${a.description}, true, ${dim})
+      insert into rag_collections (name, kind, qdrant_name, description, auto, embed_dim, schema_version)
+      values (${a.name}, ${a.kind}, ${a.qdrantName}, ${a.description}, true, ${dim}, 2)
       on conflict (qdrant_name) do nothing
     `
   }
@@ -49,7 +59,7 @@ export async function listCollections(): Promise<Array<RagCollection & { binding
   const sql = await db()
   const cols = (await sql`
     select id, name, kind, qdrant_name as "qdrantName", description, auto,
-           created_by as "createdBy", created_at as "createdAt"
+           created_by as "createdBy", created_at as "createdAt", schema_version as "schemaVersion"
     from rag_collections where kind <> 'personal' order by auto desc, name asc
   `) as unknown as RagCollection[]
   const access = (await sql`
@@ -63,7 +73,7 @@ export async function getCollection(id: string): Promise<RagCollection | null> {
   const sql = await db()
   const rows = (await sql`
     select id, name, kind, qdrant_name as "qdrantName", description, auto,
-           created_by as "createdBy", created_at as "createdAt"
+           created_by as "createdBy", created_at as "createdAt", schema_version as "schemaVersion"
     from rag_collections where id = ${id}
   `) as unknown as RagCollection[]
   return rows[0] ?? null
@@ -83,11 +93,11 @@ export async function createCollection(input: {
   // Avoid a name clash with an existing collection.
   const clash = await sql`select 1 from rag_collections where qdrant_name = ${qdrantName}`
   if (clash.length) qdrantName = `${qdrantName}_${Date.now().toString(36)}`
-  await ensureCollection(qdrantName, dim)
+  await ensureHybridCollection(qdrantName, dim)
   const rows = (await sql`
-    insert into rag_collections (name, kind, qdrant_name, description, auto, embed_dim, created_by)
-    values (${input.name}, 'custom', ${qdrantName}, ${input.description ?? null}, false, ${dim}, ${input.createdBy})
-    returning id, name, kind, qdrant_name as "qdrantName", description, auto, created_by as "createdBy", created_at as "createdAt"
+    insert into rag_collections (name, kind, qdrant_name, description, auto, embed_dim, created_by, schema_version)
+    values (${input.name}, 'custom', ${qdrantName}, ${input.description ?? null}, false, ${dim}, ${input.createdBy}, 2)
+    returning id, name, kind, qdrant_name as "qdrantName", description, auto, created_by as "createdBy", created_at as "createdAt", schema_version as "schemaVersion"
   `) as unknown as RagCollection[]
   const col = rows[0]!
   await setBindings(col.id, input.bindings ?? [{ principalType: 'all', principalId: null }])
@@ -99,7 +109,7 @@ export async function personalCollectionFor(userId: string): Promise<RagCollecti
   const sql = await db()
   const rows = (await sql`
     select id, name, kind, qdrant_name as "qdrantName", description, auto,
-           created_by as "createdBy", created_at as "createdAt"
+           created_by as "createdBy", created_at as "createdAt", schema_version as "schemaVersion"
     from rag_collections where kind = 'personal' and owner_user_id = ${userId} limit 1
   `) as unknown as RagCollection[]
   return rows[0] ?? null
@@ -117,11 +127,11 @@ export async function ensurePersonalCollection(userId: string, opts: { name?: st
   const sql = await db()
   const dim = await embedDim()
   const qdrantName = `talaria_personal_${userId.replace(/-/g, '').slice(0, 24)}`
-  await ensureCollection(qdrantName, dim)
+  await ensureHybridCollection(qdrantName, dim)
   const rows = (await sql`
-    insert into rag_collections (name, kind, qdrant_name, description, auto, embed_dim, created_by, owner_user_id)
-    values (${opts.name ?? 'My knowledge'}, 'personal', ${qdrantName}, 'Your private docs — visible only to you and your personal assistant.', false, ${dim}, ${userId}, ${userId})
-    returning id, name, kind, qdrant_name as "qdrantName", description, auto, created_by as "createdBy", created_at as "createdAt"
+    insert into rag_collections (name, kind, qdrant_name, description, auto, embed_dim, created_by, owner_user_id, schema_version)
+    values (${opts.name ?? 'My knowledge'}, 'personal', ${qdrantName}, 'Your private docs — visible only to you and your personal assistant.', false, ${dim}, ${userId}, ${userId}, 2)
+    returning id, name, kind, qdrant_name as "qdrantName", description, auto, created_by as "createdBy", created_at as "createdAt", schema_version as "schemaVersion"
   `) as unknown as RagCollection[]
   const col = rows[0]!
   const bindings: AccessBinding[] = [{ principalType: 'user', principalId: userId }]
@@ -176,7 +186,7 @@ export async function collectionsForPrincipal(principal: {
   const agent = principal.agentModel ?? ''
   const rows = (await sql`
     select distinct c.id, c.name, c.kind, c.qdrant_name as "qdrantName", c.description, c.auto,
-           c.created_by as "createdBy", c.created_at as "createdAt"
+           c.created_by as "createdBy", c.created_at as "createdAt", c.schema_version as "schemaVersion"
     from rag_collections c
     left join rag_collection_access a on a.collection_id = c.id
     where c.auto = true

@@ -280,9 +280,17 @@ Full project-management suite, all live in `ui/`:
   The turn's tool record is derived from the request messages, so no agent-side
   trace export is needed; findings land in `guard_findings` (Admin → Confab guard)
   and `guardText()` feeds secret-leak hits into the QA judge on ticket outcomes.
-  INVARIANT: the guard is fire-and-forget — never awaited on a completion path.
-  Not yet covered: `/api/chat` + channel replies (they use the fleet gateway
-  directly); the agent-side plugin remains only for that path.
+  INVARIANT: the guard is fire-and-forget — never awaited on a completion path,
+  and findings are NEVER fed back into a model's context. Coverage is complete:
+  `/api/chat` + channel replies run `guardChatReply` (tool-name-only rules, no
+  false positives from missing results), and agents' inner tool loops hit the
+  full guard at the LLM gateway since the Phase-7 rewire; the agent-side
+  confab-guard plugin is gone. Annotate/strict are real (2026-07-15): findings
+  pin to the message row (`messages.guard` / `channel_messages.guard`) and
+  render as a caveat in chat/channels; the public API route appends the caveat
+  (non-streaming) or injects a final SSE delta before `[DONE]` (streaming) —
+  but never for agent-loop keys (`gateway_unmetered_keys`); strict also redacts
+  detected secrets from whatever is persisted or not yet relayed.
 
 - **Product IA + elegance pass (Phase 5, 2026-07-06)** - nav regrouped into
   **Work** (Home · Chat · Channels · Boards · Inbox) and **Manage** (Agents ·
@@ -386,16 +394,35 @@ comms with unread badges + DM notifications, brain-routability health, templates
 org identity, rolling replacement).
 Highest-leverage remaining threads:
 
-1. **Retrieval quality follow-ons** — hybrid keyword+dense search; an
-   embedding-model migration flow (swapping `TALARIA_EMBED_MODEL` changes
-   dimensions → needs a guided reindex). Reranking + curation shipped.
-2. **Toolkit onboarding skill** — the toolkit MCP is now ATTACHED to every
-   agent (fleet HTTP mode, `server/mcp-service.ts` + render injection); what
-   remains is the Hermes-side skill teaching agents to reach for it (#78).
-3. **Guard coverage for the direct chat path** (`/api/chat` + channel replies),
-   then retire the agent-side confab-guard plugin.
-4. **Artifact tail** — S3 behind `storage_ref`; attachments on tickets/chat.
-5. **Input sweep (#49)**; **explicit plan-template picker**.
+1. ~~**Retrieval quality follow-ons**~~ — shipped 2026-07-15: hybrid
+   keyword+dense search (sparse IDF vectors + RRF fusion, `retrieval/sparse.ts`)
+   and the guided reindex (`retrieval/migrate.ts` — live TEI-vs-Qdrant probe,
+   critical alert on dim mismatch, Admin → Retrieval rebuild button).
+   Reranking + curation had already shipped.
+2. ~~**Toolkit onboarding skill**~~ — shipped 2026-07-17: fleet-wide
+   `talaria-toolkit` skill (canonical copy in `scripts/skills/`, seeded to
+   `<fleet>/skills` on render, mounted at `/opt/skills` — that shared mount is
+   now actually wired in `fleet-render.ts`), plus a `fetch_attachment` MCP
+   tool (text inline, images as MCP image blocks, binary = honest metadata)
+   and soul-header pointers. NOTE: running agents need a compose recreate to
+   pick up the new `/opt/skills` mount; skill EDITS after that are live.
+3. ~~**Artifact tail**~~ — shipped 2026-07-17: S3-compatible object storage
+   behind uploads (`server/storage.ts`, Admin → Storage; Backblaze/R2/MinIO/AWS
+   via hand-rolled SigV4) with test-connection + local→bucket migration, a
+   **built-in bucket** (bundled `talaria-minio-dev` container, `TALARIA_S3_*`
+   env, bucket auto-created) and an optional **replica** mirroring every blob
+   to a second provider (mirror-on-upload + full sync + read fallback), and
+   ticket attachments (files + KB/artifact ref chips, same shape as chat).
+   Chat attachments already existed. Known follow-ons: channel replies don't
+   pass image attachments to agents (1:1 chat does, via data URLs); non-image
+   file contents aren't injected into prompts anywhere — agents can now fetch
+   bytes from `/api/uploads/:id` with the fleet key, so a toolkit
+   `fetch_attachment` tool is the natural next step.
+4. **Input sweep (#49)**; **explicit plan-template picker**.
+
+(Guard coverage for the direct chat path shipped in #90 and the agent-side
+confab-guard plugin is gone; annotate/strict became real on 2026-07-15 — the
+remaining guard thread is feedback-into-agent-memory.)
 
 ## Dev environment
 

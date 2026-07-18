@@ -90,10 +90,60 @@ server.registerTool(
 server.registerTool(
   'get_ticket',
   {
-    description: 'Get a ticket in full: fields, comments, activity, watchers, reviews, dependencies.',
+    description:
+      'Get a ticket in full: fields, comments, activity, watchers, reviews, dependencies. Tickets may carry an `attachments` array (files + knowledge/artifact refs) — read a file with fetch_attachment.',
     inputSchema: { taskId: z.string().describe('Ticket id') },
   },
   async ({ taskId }) => ok(await api('GET', `/api/tasks/${encodeURIComponent(taskId)}`)),
+)
+
+const TEXTUAL = /^text\/|^application\/(json|xml|javascript|x-yaml|yaml|csv|toml|sql|markdown)|(\+json|\+xml)$/
+const MAX_INLINE = 4 * 1024 * 1024 // keep image payloads model-sized
+const MAX_TEXT = 50_000
+
+server.registerTool(
+  'fetch_attachment',
+  {
+    description:
+      'Read an attached file by upload id (from a ticket or chat attachments array; ref-type entries are knowledge docs/artifacts — use read_kb_doc/get_document for those). Text files come back as text, images as an image you can see; other binary formats report metadata only.',
+    inputSchema: { uploadId: z.string().describe('Attachment upload id') },
+  },
+  async ({ uploadId }) => {
+    // Raw bytes, not JSON — bypass the shared api() helper.
+    const res = await fetch(`${BASE}/api/uploads/${encodeURIComponent(uploadId)}`, {
+      headers: { 'x-api-key': KEY, 'x-agent-name': agent },
+    })
+    if (!res.ok) throw new Error(`Talaria API ${res.status}: ${(await res.text()).slice(0, 300)}`)
+    const mime = res.headers.get('content-type') ?? 'application/octet-stream'
+    const filename = /filename="([^"]*)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? uploadId
+    const bytes = Buffer.from(await res.arrayBuffer())
+    if (TEXTUAL.test(mime)) {
+      const text = bytes.toString('utf8')
+      return ok({
+        filename,
+        mime,
+        size: bytes.byteLength,
+        content: text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}\n[clipped at ${MAX_TEXT} chars]` : text,
+      })
+    }
+    if (mime.startsWith('image/')) {
+      if (bytes.byteLength > MAX_INLINE) {
+        return ok({ filename, mime, size: bytes.byteLength, note: 'image too large to inline (4 MB cap)' })
+      }
+      return {
+        content: [
+          { type: 'text' as const, text: JSON.stringify({ filename, mime, size: bytes.byteLength }) },
+          { type: 'image' as const, data: bytes.toString('base64'), mimeType: mime },
+        ],
+      }
+    }
+    return ok({
+      filename,
+      mime,
+      size: bytes.byteLength,
+      note: 'binary format — contents cannot be inlined. Tell the requester what you can and cannot read, or ask a teammate for a text export.',
+    })
+  },
 )
 
 server.registerTool(

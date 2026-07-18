@@ -14,7 +14,7 @@
 //   • networks → the external ai_default so the bridge/peers resolve the same
 //     DNS name; depends_on/build/ports dropped (deps run in the old project,
 //     the bridge reaches agents over the network, host ports retire)
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
@@ -33,6 +33,27 @@ const CHASSIS_FILE = () => process.env.TALARIA_CHASSIS_FILE ?? join(FLEET_DIR(),
 
 /** fleet/.env must carry TALARIA_AGENT_KEY so compose can interpolate it into
  *  each agent's env (the toolkit MCP header reads it there). Append-once. */
+// Repo-shipped fleet skills (scripts/skills/*) seed into the fleet's shared
+// skills root on render — copy-if-missing, so admin edits via the skills UI
+// are never clobbered. fleet/ itself is gitignored; this is how canonical
+// skills like talaria-toolkit reach every install.
+const SEED_SKILLS_DIR = () => resolve(process.cwd(), '../scripts/skills')
+
+async function seedSharedSkills(): Promise<void> {
+  const dest = join(FLEET_DIR(), 'skills')
+  await mkdir(dest, { recursive: true })
+  const seeds = await readdir(SEED_SKILLS_DIR(), { withFileTypes: true }).catch(() => [])
+  for (const seed of seeds) {
+    if (!seed.isDirectory()) continue
+    const target = join(dest, seed.name)
+    const exists = await stat(target).catch(() => null)
+    if (exists) continue
+    await cp(join(SEED_SKILLS_DIR(), seed.name), target, { recursive: true }).catch((e) =>
+      console.error(`[fleet] seeding skill ${seed.name} failed:`, e instanceof Error ? e.message : e),
+    )
+  }
+}
+
 async function ensureFleetEnvKey(): Promise<void> {
   const key = process.env.TALARIA_AGENT_KEY
   if (!key) return
@@ -195,6 +216,7 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
   // and that the compose env can interpolate the fleet key into the header.
   ensureMcpService()
   await ensureFleetEnvKey()
+  await seedSharedSkills()
 
   // Every agent's LLM specs are rewritten to route through Talaria's gateway —
   // model names the gateway doesn't serve fall back to the default (warned once).
@@ -287,11 +309,14 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       `${join(agentDir, 'config.yaml')}:/opt/data/config.yaml:ro`,
       `${join(agentDir, 'SOUL.md')}:/opt/data/SOUL.md:ro`,
       `${join(agentDir, 'skills')}:/opt/dept-skills:ro`,
+      // Fleet-wide skills (e.g. the talaria-toolkit onboarding skill) — every
+      // agent gets them; Hermes reads skills per invocation, so edits are live.
+      `${join(FLEET_DIR(), 'skills')}:/opt/skills:ro`,
       // Chassis + extras mounts pass through: shared skill/hook/plugin roots
       // (absolute, fleet-owned) and named volumes (defined in chassis.volumes).
       ...((svc.volumes ?? []) as string[]).filter((v) => {
         const dest = String(v).split(':')[1]
-        return !['/opt/data', '/opt/data/config.yaml', '/opt/data/SOUL.md', '/opt/dept-skills'].includes(dest ?? '')
+        return !['/opt/data', '/opt/data/config.yaml', '/opt/data/SOUL.md', '/opt/dept-skills', '/opt/skills'].includes(dest ?? '')
       }),
       ...(extras?.volumes ?? []),
     ]

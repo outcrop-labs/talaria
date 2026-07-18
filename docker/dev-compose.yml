@@ -68,6 +68,29 @@ services:
       interval: 5s
       timeout: 3s
       retries: 60
+  # Built-in object storage — a MinIO container so uploads can live in a real
+  # S3-compatible bucket with no cloud account (Admin → Storage → "Built-in
+  # bucket"). The same panel can replicate every blob to an external provider
+  # (AWS/Backblaze/R2/...). Creds must match the app's TALARIA_S3_* env — both
+  # default to the same dev values; setup.sh generates a random secret.
+  minio:
+    image: minio/minio:latest
+    container_name: ${TALARIA_MINIO_CONTAINER:-talaria-minio-dev}
+    restart: unless-stopped
+    command: ['server', '/data']
+    environment:
+      MINIO_ROOT_USER: ${TALARIA_S3_ACCESS_KEY:-talaria}
+      MINIO_ROOT_PASSWORD: ${TALARIA_S3_SECRET_KEY:-talaria-dev-secret}
+    ports:
+      - '127.0.0.1:${TALARIA_MINIO_PORT:-9010}:9000'
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'mc ready local >/dev/null 2>&1 || curl -sf http://127.0.0.1:9000/minio/health/live']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
   # OPTIONAL native reranker — uncomment to self-host the precision stage
   # (then set provider "Self-hosted (TEI)" + url http://localhost:8056 in
   # Admin → Retrieval). Cloud rerank providers need no container.
@@ -86,3 +109,4 @@ volumes:
   redis-data:
   qdrant-data:
   tei-cache:
+  minio-data:
