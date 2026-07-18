@@ -404,7 +404,10 @@ Highest-leverage remaining threads:
    remains is the Hermes-side skill teaching agents to reach for it (#78).
 3. ~~**Artifact tail**~~ — shipped 2026-07-17: S3-compatible object storage
    behind uploads (`server/storage.ts`, Admin → Storage; Backblaze/R2/MinIO/AWS
-   via hand-rolled SigV4) with test-connection + local→bucket migration, and
+   via hand-rolled SigV4) with test-connection + local→bucket migration, a
+   **built-in bucket** (bundled `talaria-minio-dev` container, `TALARIA_S3_*`
+   env, bucket auto-created) and an optional **replica** mirroring every blob
+   to a second provider (mirror-on-upload + full sync + read fallback), and
    ticket attachments (files + KB/artifact ref chips, same shape as chat).
    Chat attachments already existed. Known follow-ons: channel replies don't
    pass image attachments to agents (1:1 chat does, via data URLs); non-image

@@ -7,19 +7,28 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 
+interface TargetConfig {
+  endpoint: string
+  region: string
+  bucket: string
+  accessKeyId: string
+  pathStyle: boolean
+  prefix: string
+  hasSecret: boolean
+}
+interface JobStatus {
+  running: boolean
+  moved: number
+  failed: number
+  total: number
+  error?: string
+}
 interface StorageAdmin {
-  config: {
-    mode: 'local' | 's3'
-    endpoint: string
-    region: string
-    bucket: string
-    accessKeyId: string
-    pathStyle: boolean
-    prefix: string
-    hasSecret: boolean
-  }
-  stats: { local: number; s3: number; localBytes: number }
-  migrate: { running: boolean; moved: number; failed: number; total: number; error?: string } | null
+  config: TargetConfig & { mode: 'local' | 'internal' | 's3'; replica: TargetConfig & { enabled: boolean } }
+  stats: { local: number; s3: number; internal: number; localBytes: number }
+  migrate: JobStatus | null
+  sync: JobStatus | null
+  internal: { endpoint: string; bucket: string }
 }
 
 const useStorageAdmin = () =>
@@ -30,18 +39,56 @@ const useStorageAdmin = () =>
       if (!r.ok) throw new Error('failed')
       return r.json()
     },
-    refetchInterval: (q) => (q.state.data?.migrate?.running ? 3_000 : false),
+    refetchInterval: (q) => (q.state.data?.migrate?.running || q.state.data?.sync?.running ? 3_000 : false),
   })
 
 const fmtBytes = (n: number) => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`)
 
-// Where upload blobs live: local disk (default) or any S3-compatible bucket —
-// AWS S3, Backblaze B2, Cloudflare R2, MinIO. Endpoint-generic on purpose.
+// Bucket credential fields, shared by the external target and the replica.
+function TargetFields({ t, secret, onChange, onSecret }: { t: TargetConfig; secret: string; onChange: (patch: Partial<TargetConfig>) => void; onSecret: (v: string) => void }) {
+  return (
+    <>
+      <label className="text-xs text-muted">
+        Endpoint
+        <Input value={t.endpoint} onChange={(e) => onChange({ endpoint: e.target.value })} placeholder="https://s3.us-west-004.backblazeb2.com" className="mt-1 w-full" />
+      </label>
+      <label className="text-xs text-muted">
+        Bucket
+        <Input value={t.bucket} onChange={(e) => onChange({ bucket: e.target.value })} placeholder="talaria-uploads" className="mt-1 w-full" />
+      </label>
+      <label className="text-xs text-muted">
+        Region <span className="opacity-70">(blank = derived from endpoint)</span>
+        <Input value={t.region} onChange={(e) => onChange({ region: e.target.value })} placeholder="auto" className="mt-1 w-full" />
+      </label>
+      <label className="text-xs text-muted">
+        Key prefix <span className="opacity-70">(optional, ends with /)</span>
+        <Input value={t.prefix} onChange={(e) => onChange({ prefix: e.target.value })} placeholder="talaria/" className="mt-1 w-full" />
+      </label>
+      <label className="text-xs text-muted">
+        Access key ID
+        <Input value={t.accessKeyId} onChange={(e) => onChange({ accessKeyId: e.target.value })} className="mt-1 w-full" />
+      </label>
+      <label className="text-xs text-muted">
+        Secret access key
+        <Input type="password" value={secret} onChange={(e) => onSecret(e.target.value)} placeholder={t.hasSecret ? '•••••••• (saved)' : ''} className="mt-1 w-full" />
+      </label>
+      <label className="flex items-center gap-2 text-xs text-muted sm:col-span-2">
+        <input type="checkbox" checked={t.pathStyle} onChange={(e) => onChange({ pathStyle: e.target.checked })} />
+        Path-style requests <span className="opacity-70">(works everywhere; uncheck only for virtual-host buckets)</span>
+      </label>
+    </>
+  )
+}
+
+// Where upload blobs live: local disk, the bundled MinIO container ("built-in
+// bucket"), or any external S3-compatible service — plus an optional replica
+// that mirrors every blob to a second provider.
 export function StoragePanel() {
   const qc = useQueryClient()
   const { data } = useStorageAdmin()
   const [form, setForm] = useState<StorageAdmin['config'] | null>(null)
   const [secret, setSecret] = useState('')
+  const [replicaSecret, setReplicaSecret] = useState('')
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -51,6 +98,7 @@ export function StoragePanel() {
   if (!data || !form) return null
 
   const set = (patch: Partial<StorageAdmin['config']>) => setForm({ ...form, ...patch })
+  const setReplica = (patch: Partial<StorageAdmin['config']['replica']>) => setForm({ ...form, replica: { ...form.replica, ...patch } })
 
   const save = async () => {
     setBusy(true)
@@ -59,7 +107,11 @@ export function StoragePanel() {
       const r = await fetch('/api/admin/storage', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...form, secretAccessKey: secret || undefined }),
+        body: JSON.stringify({
+          ...form,
+          secretAccessKey: secret || undefined,
+          replica: { ...form.replica, secretAccessKey: replicaSecret || undefined },
+        }),
       })
       const j = (await r.json()) as { config?: StorageAdmin['config']; error?: string }
       if (!r.ok || !j.config) {
@@ -68,6 +120,7 @@ export function StoragePanel() {
       }
       setForm(j.config)
       setSecret('')
+      setReplicaSecret('')
       setNote({ ok: true, text: 'saved' })
       await qc.invalidateQueries({ queryKey: ['storage-admin'] })
     } finally {
@@ -75,13 +128,15 @@ export function StoragePanel() {
     }
   }
 
-  const test = async () => {
+  const act = async (action: 'test' | 'test-replica' | 'migrate' | 'sync') => {
     setBusy(true)
-    setNote(null)
+    if (action === 'test' || action === 'test-replica') setNote(null)
     try {
-      const r = await fetch('/api/admin/storage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'test' }) })
-      const j = (await r.json()) as { ok: boolean; detail: string }
-      setNote({ ok: j.ok, text: j.detail })
+      const r = await fetch('/api/admin/storage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) })
+      const j = (await r.json()) as { ok?: boolean; detail?: string; error?: string }
+      if (action === 'test' || action === 'test-replica') setNote({ ok: !!j.ok, text: j.detail ?? j.error ?? '' })
+      else if (j.error) setNote({ ok: false, text: j.error })
+      await qc.invalidateQueries({ queryKey: ['storage-admin'] })
     } finally {
       setBusy(false)
     }
@@ -90,36 +145,44 @@ export function StoragePanel() {
   const migrate = async () => {
     const ok = await confirm({
       title: 'Move local files to the bucket?',
-      message: `Copies ${data.stats.local} file${data.stats.local === 1 ? '' : 's'} (${fmtBytes(data.stats.localBytes)}) into the configured bucket and repoints each record. Local copies are left on disk.`,
+      message: `Copies ${data.stats.local} file${data.stats.local === 1 ? '' : 's'} (${fmtBytes(data.stats.localBytes)}) into the active bucket and repoints each record. Local copies are left on disk.`,
       confirmLabel: 'Move files',
     })
-    if (!ok) return
-    await fetch('/api/admin/storage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'migrate' }) })
-    await qc.invalidateQueries({ queryKey: ['storage-admin'] })
+    if (ok) await act('migrate')
   }
 
-  const s3 = form.mode === 's3'
+  const inBucket = form.mode !== 'local'
+  const external = form.mode === 's3'
   const migrating = data.migrate?.running
+  const syncing = data.sync?.running
+  const totalBlobs = data.stats.local + data.stats.s3 + data.stats.internal
 
   return (
     <Panel>
       <div className="mb-2 text-sm font-semibold text-fg">Storage</div>
       <p className="mb-3 text-xs text-muted">
         Where uploaded files live. <span className="text-fg">Local disk</span> keeps everything on this
-        machine; <span className="text-fg">object storage</span> works with any S3-compatible service —
-        AWS S3, Backblaze B2, Cloudflare R2, MinIO. Each file remembers where it was stored, so switching
-        never breaks existing links.
+        machine; the <span className="text-fg">built-in bucket</span> is Talaria's own bundled object
+        store (no cloud account needed); <span className="text-fg">external</span> works with any
+        S3-compatible service — AWS S3, Backblaze B2, Cloudflare R2, MinIO. Each file remembers where it
+        was stored, so switching never breaks existing links. A replica mirrors every file to a second
+        provider for redundancy.
       </p>
 
       <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-line-subtle p-3 text-xs text-muted">
         <span><span className="text-fg">{data.stats.local}</span> on disk ({fmtBytes(data.stats.localBytes)})</span>
-        <span><span className="text-fg">{data.stats.s3}</span> in object storage</span>
+        <span><span className="text-fg">{data.stats.internal}</span> in the built-in bucket</span>
+        <span><span className="text-fg">{data.stats.s3}</span> in external storage</span>
         {migrating && (
           <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> moving {data.migrate!.moved}/{data.migrate!.total}</span>
         )}
+        {syncing && (
+          <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> syncing {data.sync!.moved}/{data.sync!.total} to replica</span>
+        )}
         {!migrating && data.migrate?.failed ? <span className="text-[color:var(--theme-danger)]">{data.migrate.failed} failed to move</span> : null}
-        {s3 && form.hasSecret && data.stats.local > 0 && !migrating && (
-          <Button size="sm" variant="outline" className="ml-auto" onClick={() => void migrate()}>
+        {!syncing && data.sync?.failed ? <span className="text-[color:var(--theme-danger)]">{data.sync.failed} failed to sync</span> : null}
+        {inBucket && data.stats.local > 0 && !migrating && (
+          <Button size="sm" variant="outline" className="ml-auto" onClick={() => void migrate()} disabled={busy}>
             Move local files to bucket
           </Button>
         )}
@@ -128,42 +191,43 @@ export function StoragePanel() {
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="text-xs text-muted">
           Mode
-          <Select value={form.mode} onChange={(e) => set({ mode: e.target.value as 'local' | 's3' })} className="mt-1 w-full">
+          <Select value={form.mode} onChange={(e) => set({ mode: e.target.value as StorageAdmin['config']['mode'] })} className="mt-1 w-full">
             <option value="local">Local disk</option>
-            <option value="s3">Object storage (S3-compatible)</option>
+            <option value="internal">Built-in bucket (bundled MinIO)</option>
+            <option value="s3">External (S3-compatible)</option>
           </Select>
         </label>
-        {s3 && (
-          <>
-            <label className="text-xs text-muted">
-              Endpoint
-              <Input value={form.endpoint} onChange={(e) => set({ endpoint: e.target.value })} placeholder="https://s3.us-west-004.backblazeb2.com" className="mt-1 w-full" />
-            </label>
-            <label className="text-xs text-muted">
-              Bucket
-              <Input value={form.bucket} onChange={(e) => set({ bucket: e.target.value })} placeholder="talaria-uploads" className="mt-1 w-full" />
-            </label>
-            <label className="text-xs text-muted">
-              Region <span className="opacity-70">(blank = derived from endpoint)</span>
-              <Input value={form.region} onChange={(e) => set({ region: e.target.value })} placeholder="auto" className="mt-1 w-full" />
-            </label>
-            <label className="text-xs text-muted">
-              Key prefix <span className="opacity-70">(optional, ends with /)</span>
-              <Input value={form.prefix} onChange={(e) => set({ prefix: e.target.value })} placeholder="talaria/" className="mt-1 w-full" />
-            </label>
-            <label className="text-xs text-muted">
-              Access key ID
-              <Input value={form.accessKeyId} onChange={(e) => set({ accessKeyId: e.target.value })} className="mt-1 w-full" />
-            </label>
-            <label className="text-xs text-muted">
-              Secret access key
-              <Input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={form.hasSecret ? '•••••••• (saved)' : ''} className="mt-1 w-full" />
-            </label>
-            <label className="flex items-center gap-2 text-xs text-muted sm:col-span-2">
-              <input type="checkbox" checked={form.pathStyle} onChange={(e) => set({ pathStyle: e.target.checked })} />
-              Path-style requests <span className="opacity-70">(works everywhere; uncheck only for virtual-host buckets)</span>
-            </label>
-          </>
+        {form.mode === 'internal' && (
+          <div className="self-end pb-1 text-xs text-muted">
+            {data.internal.endpoint} · bucket <span className="text-fg">{data.internal.bucket}</span>
+            <span className="opacity-70"> — creds via TALARIA_S3_* env; bucket auto-created</span>
+          </div>
+        )}
+        {external && <TargetFields t={form} secret={secret} onChange={set} onSecret={setSecret} />}
+      </div>
+
+      {/* Replica — mirror every blob to a second provider */}
+      <div className="mt-4 rounded-xl border border-line-subtle p-3">
+        <label className="flex items-center gap-2 text-xs font-medium text-fg">
+          <input type="checkbox" checked={form.replica.enabled} onChange={(e) => setReplica({ enabled: e.target.checked })} />
+          Replicate to a second provider
+        </label>
+        <p className="mt-1 text-xs text-muted">
+          New uploads are mirrored as they land (an outage never blocks an upload); "Sync all" copies
+          everything already stored — disk, built-in, or external — into the replica bucket.
+        </p>
+        {form.replica.enabled && (
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <TargetFields t={form.replica} secret={replicaSecret} onChange={setReplica} onSecret={setReplicaSecret} />
+            <div className="flex items-center gap-2 sm:col-span-2">
+              <Button size="sm" variant="outline" onClick={() => void act('test-replica')} disabled={busy || !form.replica.hasSecret}>
+                Test replica
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => void act('sync')} disabled={busy || syncing || !form.replica.hasSecret || totalBlobs === 0}>
+                Sync all to replica
+              </Button>
+            </div>
+          </div>
         )}
       </div>
 
@@ -171,8 +235,8 @@ export function StoragePanel() {
         <Button size="sm" onClick={() => void save()} disabled={busy}>
           Save
         </Button>
-        {s3 && (
-          <Button size="sm" variant="outline" onClick={() => void test()} disabled={busy || !form.hasSecret}>
+        {inBucket && (
+          <Button size="sm" variant="outline" onClick={() => void act('test')} disabled={busy || (external && !form.hasSecret)}>
             Test connection
           </Button>
         )}

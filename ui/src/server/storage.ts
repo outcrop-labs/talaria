@@ -9,8 +9,7 @@ import { createHash, createHmac } from 'node:crypto'
 import { getSetting, setSetting } from './audit'
 import { seal, open } from './secretbox'
 
-export interface StorageConfig {
-  mode: 'local' | 's3'
+export interface BucketTarget {
   endpoint: string // e.g. https://s3.us-west-004.backblazeb2.com
   region: string // blank = derived from endpoint, else us-east-1
   bucket: string
@@ -20,8 +19,16 @@ export interface StorageConfig {
   prefix: string // key prefix inside the bucket, e.g. "talaria/"
 }
 
-const DEFAULTS: StorageConfig = {
-  mode: 'local',
+export interface StorageConfig extends BucketTarget {
+  // 'internal' = the bundled talaria-minio container (config from TALARIA_S3_*
+  // env, bucket auto-created) — a real bucket with no cloud account.
+  mode: 'local' | 'internal' | 's3'
+  // Optional mirror: every blob written to the primary is also written to the
+  // replica (fire-and-forget), and reads fall back to it. "Sync" backfills it.
+  replica: BucketTarget & { enabled: boolean }
+}
+
+const EMPTY_TARGET: BucketTarget = {
   endpoint: '',
   region: '',
   bucket: '',
@@ -31,33 +38,83 @@ const DEFAULTS: StorageConfig = {
   prefix: '',
 }
 
+const DEFAULTS: StorageConfig = {
+  mode: 'local',
+  ...EMPTY_TARGET,
+  replica: { enabled: false, ...EMPTY_TARGET },
+}
+
+/** The bundled MinIO container. Defaults match docker/dev-compose.yml; setup.sh
+ *  writes a random secret into ui/.env and dev.sh exports it for both sides. */
+export function internalTarget(): BucketTarget {
+  return {
+    endpoint: process.env.TALARIA_S3_URL ?? `http://127.0.0.1:${process.env.TALARIA_MINIO_PORT ?? '9010'}`,
+    region: 'us-east-1',
+    bucket: process.env.TALARIA_S3_BUCKET ?? 'talaria',
+    accessKeyId: process.env.TALARIA_S3_ACCESS_KEY ?? 'talaria',
+    secretAccessKey: process.env.TALARIA_S3_SECRET_KEY ?? 'talaria-dev-secret',
+    pathStyle: true,
+    prefix: '',
+  }
+}
+
 const KEY = 'storage_config'
+
+const unseal = (token: string) => {
+  try {
+    return open(token)
+  } catch {
+    return ''
+  }
+}
 
 export async function getStorageConfig(): Promise<StorageConfig> {
   const raw = await getSetting<Partial<StorageConfig>>(KEY, {})
-  const cfg = { ...DEFAULTS, ...raw }
-  if (cfg.secretAccessKey) {
-    try {
-      cfg.secretAccessKey = open(cfg.secretAccessKey)
-    } catch {
-      cfg.secretAccessKey = ''
-    }
-  }
+  const cfg = { ...DEFAULTS, ...raw, replica: { ...DEFAULTS.replica, ...raw.replica } }
+  if (cfg.secretAccessKey) cfg.secretAccessKey = unseal(cfg.secretAccessKey)
+  if (cfg.replica.secretAccessKey) cfg.replica.secretAccessKey = unseal(cfg.replica.secretAccessKey)
   return cfg
 }
 
 export async function setStorageConfig(cfg: StorageConfig): Promise<void> {
-  await setSetting(KEY, { ...cfg, secretAccessKey: cfg.secretAccessKey ? seal(cfg.secretAccessKey) : '' })
+  await setSetting(KEY, {
+    ...cfg,
+    secretAccessKey: cfg.secretAccessKey ? seal(cfg.secretAccessKey) : '',
+    replica: { ...cfg.replica, secretAccessKey: cfg.replica.secretAccessKey ? seal(cfg.replica.secretAccessKey) : '' },
+  })
 }
 
-/** For the admin GET: never returns the secret, only whether one is set. */
-export async function publicStorageConfig(): Promise<Omit<StorageConfig, 'secretAccessKey'> & { hasSecret: boolean }> {
-  const { secretAccessKey, ...rest } = await getStorageConfig()
-  return { ...rest, hasSecret: !!secretAccessKey }
+/** For the admin GET: never returns secrets, only whether each is set. */
+export async function publicStorageConfig(): Promise<
+  Omit<StorageConfig, 'secretAccessKey' | 'replica'> & {
+    hasSecret: boolean
+    replica: Omit<StorageConfig['replica'], 'secretAccessKey'> & { hasSecret: boolean }
+  }
+> {
+  const { secretAccessKey, replica, ...rest } = await getStorageConfig()
+  const { secretAccessKey: rSecret, ...rRest } = replica
+  return { ...rest, hasSecret: !!secretAccessKey, replica: { ...rRest, hasSecret: !!rSecret } }
 }
 
-export function s3Ready(cfg: StorageConfig): boolean {
-  return cfg.mode === 's3' && !!cfg.endpoint && !!cfg.bucket && !!cfg.accessKeyId && !!cfg.secretAccessKey
+export function targetReady(t: BucketTarget): boolean {
+  return !!t.endpoint && !!t.bucket && !!t.accessKeyId && !!t.secretAccessKey
+}
+
+/** Where writes go: the internal container, the configured bucket, or null for
+ *  local disk. Internal ensures its bucket exists (idempotent, throttled). */
+export async function activeTarget(cfg: StorageConfig): Promise<{ target: BucketTarget; internal: boolean } | null> {
+  if (cfg.mode === 'internal') {
+    const target = internalTarget()
+    await ensureBucket(target)
+    return { target, internal: true }
+  }
+  if (cfg.mode === 's3' && targetReady(cfg)) return { target: cfg, internal: false }
+  return null
+}
+
+/** The enabled + fully-configured replica, if any. */
+export function replicaTarget(cfg: StorageConfig): BucketTarget | null {
+  return cfg.replica.enabled && targetReady(cfg.replica) ? cfg.replica : null
 }
 
 // ── SigV4 ─────────────────────────────────────────────────────────────────────
@@ -68,7 +125,7 @@ const hmac = (key: Buffer | string, data: string) => createHmac('sha256', key).u
 /** Derive the region when the field is blank: B2 and AWS embed it in the host
  *  (s3.us-west-004.backblazeb2.com, s3.eu-central-1.amazonaws.com); R2 wants
  *  the literal "auto". Fall back to us-east-1, which MinIO also accepts. */
-export function regionFor(cfg: StorageConfig): string {
+export function regionFor(cfg: BucketTarget): string {
   if (cfg.region.trim()) return cfg.region.trim()
   const host = safeHost(cfg.endpoint)
   const m = /^s3\.([a-z0-9-]+)\.(?:backblazeb2\.com|amazonaws\.com)$/.exec(host)
@@ -92,19 +149,19 @@ const encodeKey = (key: string) =>
     .map((s) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`))
     .join('/')
 
-function objectUrl(cfg: StorageConfig, key: string): URL {
+function objectUrl(cfg: BucketTarget, key: string): URL {
   const base = new URL(cfg.endpoint)
   if (cfg.pathStyle) {
-    base.pathname = `${base.pathname.replace(/\/$/, '')}/${cfg.bucket}/${encodeKey(key)}`
+    base.pathname = `${base.pathname.replace(/\/$/, '')}/${cfg.bucket}${key ? `/${encodeKey(key)}` : ''}`
   } else {
     base.host = `${cfg.bucket}.${base.host}`
-    base.pathname = `/${encodeKey(key)}`
+    base.pathname = key ? `/${encodeKey(key)}` : '/'
   }
   return base
 }
 
 async function s3Fetch(
-  cfg: StorageConfig,
+  cfg: BucketTarget,
   method: 'GET' | 'PUT' | 'DELETE' | 'HEAD',
   key: string,
   body?: Uint8Array,
@@ -147,27 +204,44 @@ async function s3Fetch(
 
 // ── Object operations ─────────────────────────────────────────────────────────
 
-export async function s3Put(cfg: StorageConfig, key: string, bytes: Uint8Array, mime: string): Promise<void> {
+export async function s3Put(cfg: BucketTarget, key: string, bytes: Uint8Array, mime: string): Promise<void> {
   const res = await s3Fetch(cfg, 'PUT', key, bytes, mime || 'application/octet-stream')
   if (!res.ok) throw new Error(`storage PUT ${res.status}: ${(await res.text()).slice(0, 300)}`)
 }
 
-export async function s3Get(cfg: StorageConfig, key: string): Promise<Buffer | null> {
+export async function s3Get(cfg: BucketTarget, key: string): Promise<Buffer | null> {
   const res = await s3Fetch(cfg, 'GET', key)
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`storage GET ${res.status}: ${(await res.text()).slice(0, 300)}`)
   return Buffer.from(await res.arrayBuffer())
 }
 
-export async function s3Delete(cfg: StorageConfig, key: string): Promise<void> {
+export async function s3Delete(cfg: BucketTarget, key: string): Promise<void> {
   const res = await s3Fetch(cfg, 'DELETE', key)
   if (!res.ok && res.status !== 404) throw new Error(`storage DELETE ${res.status}: ${(await res.text()).slice(0, 300)}`)
 }
 
+/** CreateBucket, tolerant of "already exists". Cached per process per target so
+ *  the internal mode doesn't re-check on every upload. Survives HMR like
+ *  secretbox does (globalThis). */
+const g = globalThis as unknown as { __talariaBuckets?: Set<string> }
+g.__talariaBuckets ??= new Set()
+
+export async function ensureBucket(cfg: BucketTarget): Promise<void> {
+  const id = `${cfg.endpoint}|${cfg.bucket}`
+  if (g.__talariaBuckets!.has(id)) return
+  const res = await s3Fetch(cfg, 'PUT', '')
+  if (!res.ok) {
+    const body = await res.text()
+    if (!/BucketAlready(OwnedByYou|Exists)/.test(body)) throw new Error(`storage create-bucket ${res.status}: ${body.slice(0, 300)}`)
+  }
+  g.__talariaBuckets!.add(id)
+}
+
 /** Round-trip probe: PUT a tiny object, GET it back, DELETE it. Returns a
  *  human-readable failure reason rather than throwing, for the admin panel. */
-export async function testStorage(cfg: StorageConfig): Promise<{ ok: boolean; detail: string }> {
-  if (!s3Ready({ ...cfg, mode: 's3' })) return { ok: false, detail: 'endpoint, bucket, access key, and secret are all required' }
+export async function testStorage(cfg: BucketTarget): Promise<{ ok: boolean; detail: string }> {
+  if (!targetReady(cfg)) return { ok: false, detail: 'endpoint, bucket, access key, and secret are all required' }
   const key = `${cfg.prefix}talaria-storage-probe`
   const payload = new TextEncoder().encode('talaria storage probe')
   try {

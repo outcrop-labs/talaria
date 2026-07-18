@@ -80,7 +80,10 @@ engineering-facing tracker.
     (AWS/Backblaze B2/R2/MinIO) behind uploads via hand-rolled SigV4
     (`server/storage.ts`); Admin → Storage config (secretbox-sealed secret),
     connection test, background local→bucket migration. Per-row path dispatch:
-    switching modes never strands a file.
+    switching modes never strands a file. Plus a **built-in bucket** (bundled
+    MinIO container, `TALARIA_S3_*` env, auto-created) and an optional
+    **replica** to a second provider: mirror-on-upload, "Sync all" backfill,
+    and read fallback when the primary can't serve a blob.
   - ✅ **Ticket attachments (2026-07-17)** — files + KB/artifact ref chips on
     tickets (same `attachments` jsonb shape as messages), attach/remove in the
     ticket detail, activity-logged; agents read metadata via the task API and
