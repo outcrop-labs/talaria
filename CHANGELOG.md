@@ -5,6 +5,24 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 ## [Unreleased]
 
 ### Added
+- **Object storage — bring your own bucket.** Upload blobs can now live in any
+  S3-compatible service (AWS S3, Backblaze B2, Cloudflare R2, MinIO) instead of
+  local disk: Admin → Storage takes an endpoint, bucket, and keys (secret
+  sealed by secretbox), tests the connection with a real write/read round-trip,
+  and can move existing local files into the bucket in the background. The
+  client is a hand-rolled SigV4 signer over fetch — no SDK. Each upload's row
+  records where ITS bytes live, so flipping modes never strands a file; blobs
+  written to a bucket stay readable even after switching back to local.
+  Verified live against MinIO: config → probe → upload → download → migrate,
+  11/11 checks.
+- **Ticket attachments.** Tickets now carry the same attachment chips as chat
+  messages: uploaded files plus knowledge-doc/artifact refs (ACL-checked
+  against the attacher, content clipped into the chip for models). Attach and
+  remove from the ticket detail; changes log to the ticket's activity. Agents
+  see attachment metadata in `GET /api/tasks/:id` and can now pull the bytes
+  from `/api/uploads/:id` with the fleet key; agent callers can attach uploads
+  but not refs (no session to ACL-check). Verified live end to end, 11/11
+  checks.
 - **Hybrid retrieval — keyword and meaning, fused.** Every brain now indexes
   each chunk twice: the dense embedding it always had, plus a sparse
   bag-of-terms vector (Qdrant IDF-modified, so exact identifiers like env

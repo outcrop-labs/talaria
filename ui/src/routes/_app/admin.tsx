@@ -16,6 +16,7 @@ import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
 import { GATEABLE_VIEWS } from '@/lib/nav'
 import { RetrievalPanel } from '@/components/admin/retrieval-panel'
+import { StoragePanel } from '@/components/admin/storage-panel'
 
 export const Route = createFileRoute('/_app/admin')({
   component: AdminPage,
@@ -88,6 +89,8 @@ function AdminPage() {
         <OrgGooglePanel />
 
         <RetrievalPanel />
+
+        <StoragePanel />
 
         <EncryptionPanel />
 

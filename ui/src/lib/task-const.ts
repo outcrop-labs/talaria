@@ -1,5 +1,7 @@
 // Task/board constants + types — shared by client and server (no server deps).
 
+import type { Attachment } from './attachments'
+
 export const TASK_STATUSES = ['inbox', 'assigned', 'in_progress', 'blocked', 'quality_review', 'done'] as const
 export type TaskStatus = (typeof TASK_STATUSES)[number] | 'failed' | 'cancelled'
 export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const
@@ -24,6 +26,7 @@ export interface Task {
   createdBy: string
   dueDate: string | null
   tags: string[]
+  attachments: Attachment[]
   timeSpentSeconds: number
   outcome: string | null
   resolution: string | null

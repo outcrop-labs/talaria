@@ -810,6 +810,8 @@ const MIGRATIONS: string[] = [
   // Retrieval schema generation: 1 = legacy unnamed dense vector; 2 = hybrid
   // (named dense + IDF sparse). The guided reindex upgrades collections in place.
   `alter table rag_collections add column if not exists schema_version integer not null default 1`,
+  // Ticket attachments: same shape as message attachments (uploads + ref chips).
+  `alter table tasks add column if not exists attachments jsonb not null default '[]'`,
 ]
 
 function ensureMigrated(): Promise<void> {

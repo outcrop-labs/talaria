@@ -43,6 +43,11 @@ import {
 } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
 import { cn } from '@/lib/cn'
+import { Link } from '@tanstack/react-router'
+import { BookOpen, FileText, Gem, X } from 'lucide-react'
+import { AttachButton } from '@/components/chat/attachments'
+import { attachmentUrl, humanSize, isImage, splitAttachments, type Attachment } from '@/lib/attachments'
+import type { Task } from '@/lib/task-const'
 
 const MOVE: TaskStatus[] = [...TASK_STATUSES, 'failed', 'cancelled']
 
@@ -161,6 +166,8 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                       )
                     }}
                   />
+
+                  <AttachmentsSection task={t} canEdit={canEdit} onSaved={() => qc.invalidateQueries({ queryKey: ['task', taskId] })} />
 
                   {/* Agent-reported result */}
                   {(t.outcome || t.resolution || t.errorMessage) && (
@@ -518,6 +525,58 @@ function formatDuration(seconds: number): string {
   if (h) return m ? `${h}h ${m}m` : `${h}h`
   if (m) return `${m}m`
   return `${seconds}s`
+}
+
+// Files + knowledge/artifact refs pinned to the ticket. Same chips as chat;
+// every change saves immediately (the list on the ticket IS the state).
+function AttachmentsSection({ task, canEdit, onSaved }: { task: Task; canEdit: boolean; onSaved: () => void }) {
+  const items = task.attachments ?? []
+  const save = (next: Attachment[]) => {
+    void updateTask(task.id, splitAttachments(next)).then(onSaved)
+  }
+  if (!items.length && !canEdit) return null
+  return (
+    <Section label="Attachments">
+      {items.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-2">
+          {items.map((a) => (
+            <span key={a.id} className="inline-flex items-center gap-2 rounded-lg border border-line-subtle bg-card/50 px-2.5 py-1.5 text-xs">
+              {a.refType ? (
+                <Link
+                  to={a.refType === 'kb-doc' ? '/knowledge' : '/artifacts'}
+                  className="inline-flex max-w-48 items-center gap-2 truncate text-fg transition-colors hover:text-accent"
+                >
+                  {a.refType === 'kb-doc' ? <BookOpen size={14} className="shrink-0 text-muted" /> : <Gem size={14} className="shrink-0 text-muted" />}
+                  <span className="truncate">{a.filename}</span>
+                </Link>
+              ) : (
+                <a href={attachmentUrl(a.id)} target="_blank" rel="noreferrer" className="inline-flex max-w-48 items-center gap-2 truncate text-fg transition-colors hover:text-accent">
+                  {isImage(a.mime) ? (
+                    <img src={attachmentUrl(a.id)} alt="" className="h-5 w-5 rounded object-cover" />
+                  ) : (
+                    <FileText size={14} className="shrink-0 text-muted" />
+                  )}
+                  <span className="truncate">{a.filename}</span>
+                  {a.size > 0 && <span className="text-muted">{humanSize(a.size)}</span>}
+                </a>
+              )}
+              {canEdit && (
+                <button
+                  type="button"
+                  onClick={() => save(items.filter((x) => x.id !== a.id))}
+                  className="text-muted hover:text-[color:var(--theme-danger)]"
+                  title="Remove attachment"
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      {canEdit && <AttachButton disabled={false} onAttach={(a) => save([...items.filter((x) => x.id !== a.id), a])} />}
+    </Section>
+  )
 }
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {

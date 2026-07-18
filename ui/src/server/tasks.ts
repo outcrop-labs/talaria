@@ -21,7 +21,7 @@ export type { Effort, Priority, Task, TaskStatus } from '@/lib/task-const'
 const TASK_SELECT = `select t.id, t.board_id as "boardId",
   case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') || '-' || t.ticket_no end as "ticketRef",
   t.title, t.description, t.status, t.priority, t.effort, t.assignees, t.created_by as "createdBy",
-  t.due_date as "dueDate", t.tags, t.time_spent_seconds as "timeSpentSeconds",
+  t.due_date as "dueDate", t.tags, t.attachments, t.time_spent_seconds as "timeSpentSeconds",
   t.outcome, t.resolution, t.error_message as "errorMessage",
   t.created_at as "createdAt", t.updated_at as "updatedAt", t.completed_at as "completedAt",
   t.archived_at as "archivedAt"
@@ -112,6 +112,9 @@ export interface TaskPatch {
   resolution?: string | null
   errorMessage?: string | null
   archived?: boolean
+  /** Full replacement list of attachment chips (uploads + refs), already
+   *  resolved/ACL-checked by the route — same shape as message attachments. */
+  attachments?: unknown[]
   /** Seconds to add to accumulated time-spent (agents report per iteration). */
   addTimeSpentSeconds?: number
 }
@@ -123,6 +126,7 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
 
   const pick = <T>(v: T | undefined, fallback: T): T => (v === undefined ? fallback : v)
   const assignees = patch.assignees ?? cur.assignees
+  const attachments = patch.attachments ?? cur.attachments
   const next = {
     title: patch.title ?? cur.title,
     description: pick(patch.description, cur.description),
@@ -144,6 +148,7 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
     update tasks set title=${next.title}, description=${next.description}, status=${next.status},
       priority=${next.priority}, effort=${next.effort}, assignees=${sql.json(assignees)}, due_date=${next.dueDate},
       tags=${sql.json(next.tags as unknown as Parameters<typeof sql.json>[0])},
+      attachments=${sql.json(attachments as unknown as Parameters<typeof sql.json>[0])},
       outcome=${next.outcome}, resolution=${next.resolution}, error_message=${next.errorMessage},
       completed_at=${completedAt}, archived_at=${archivedAt},
       time_spent_seconds=time_spent_seconds + ${addSeconds}, updated_at=now()
@@ -159,6 +164,13 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
   if (patch.effort !== undefined && patch.effort !== cur.effort)
     await logActivity(id, actor, 'effort', patch.effort ? `effort → ${patch.effort.toUpperCase()}` : 'effort cleared')
   if (patch.outcome && patch.outcome !== cur.outcome) await logActivity(id, actor, 'outcome', 'reported an outcome')
+  if (patch.attachments !== undefined && attachments.length !== cur.attachments.length)
+    await logActivity(
+      id,
+      actor,
+      'attachments',
+      attachments.length > cur.attachments.length ? `attached ${attachments.length - cur.attachments.length} file(s)` : 'removed an attachment',
+    )
   publishBoard(cur.boardId, { type: 'task', taskId: id })
   return getTask(id)
 }
