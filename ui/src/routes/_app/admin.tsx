@@ -483,8 +483,10 @@ function GuardrailsPanel() {
       <div className="mb-2 text-sm font-semibold text-fg">Confab guard</div>
       <p className="mb-4 text-xs text-muted">
         A cheap structural check on every model’s output at the gateway: catches claims of work no tool did, invented
-        links/ids, fabricated outages, and leaked secrets. No extra model call, no added context. <strong>Observe</strong> records;
-        <strong> annotate</strong> appends a caveat; <strong>strict</strong> can hold/regenerate.
+        links/ids, fabricated outages, and leaked secrets. No extra model call, no added context. <strong>Observe</strong> records
+        findings here; <strong>annotate</strong> also flags the reply where it appears (a caveat in chat/channels, appended on
+        API responses); <strong>strict</strong> also redacts leaked secrets from the saved reply. Findings are never fed back
+        into an agent’s context.
       </p>
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">

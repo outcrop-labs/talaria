@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { authenticateKey } from '@/server/llm-keys'
 import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '@/server/llm-gateway'
 import { estimateTokens } from '@/server/usage'
-import { guardCompletion } from '@/server/guardrails'
+import { getGuardConfig, guardCompletion, redactSecrets } from '@/server/guardrails'
 import { getSetting } from '@/server/audit'
 
 // OpenAI-compatible chat completions over the org's model stack. Streaming and
@@ -38,6 +38,13 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
         // double-count; the guard still runs.
         const unmetered = await getSetting<string[]>('gateway_unmetered_keys', ['fleet-gateway'])
         const skipMeter = unmetered.includes(id.keyName)
+        // The same keys mark agent INNER LOOPS (the fleet routes agents' tool
+        // loops through here). Guard caveats are for humans reading a reply —
+        // injecting one into an agent's own loop would contaminate its context,
+        // so annotate/strict never touch these keys' responses (findings still
+        // record, and the chat/channel layer annotates the human-facing copy).
+        const guardCfg = await getGuardConfig()
+        const mayAnnotate = !skipMeter && (guardCfg.mode === 'annotate' || guardCfg.mode === 'strict')
         const promptChars = (body.messages as Array<{ content?: unknown }>).reduce(
           (n, m) => n + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length),
           0,
@@ -60,7 +67,7 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
 
         // ── Non-streaming: read, meter, relay ─────────────────────────────────
         if (!upstream.body.stream) {
-          const text = await res.text()
+          let text = await res.text()
           if (res.ok) {
             try {
               const j = JSON.parse(text) as {
@@ -69,7 +76,19 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
               }
               const content = j.choices?.[0]?.message?.content ?? ''
               void ledger(j.usage ?? null, content.length)
-              void guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => {})
+              if (mayAnnotate && content) {
+                // Nothing has been relayed yet, so annotate/strict can act on
+                // the body itself: strict redacts leaked secrets, and any
+                // findings append the human-facing caveat.
+                const g = await guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name })
+                if (g.findings.length && j.choices?.[0]?.message) {
+                  const safe = g.mode === 'strict' && g.findings.some((f) => f.check === 'secret_leak') ? redactSecrets(content).text : content
+                  j.choices[0].message.content = `${safe}${g.caveat}`
+                  text = JSON.stringify(j)
+                }
+              } else {
+                void guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => {})
+              }
             } catch {
               /* relay verbatim even if unparseable */
             }
@@ -93,40 +112,76 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
         let content = ''
         let usage: { prompt_tokens?: number; completion_tokens?: number } | null = null
         const decoder = new TextDecoder()
-        const scan = (chunkText: string) => {
+        const encoder = new TextEncoder()
+        const isDone = (line: string) => line.startsWith('data:') && line.slice(5).trim() === '[DONE]'
+        const scanLine = (line: string) => {
+          const data = line.startsWith('data:') ? line.slice(5).trim() : null
+          if (!data || data === '[DONE]') return
+          try {
+            const j = JSON.parse(data) as {
+              usage?: { prompt_tokens?: number; completion_tokens?: number } | null
+              choices?: Array<{ delta?: { content?: string } }>
+            }
+            if (j.usage) usage = j.usage
+            content += j.choices?.[0]?.delta?.content ?? ''
+          } catch {
+            /* partial or non-JSON line — ignore */
+          }
+        }
+        const splitLines = (chunkText: string) => {
           lineBuf += chunkText
           const lines = lineBuf.split('\n')
           lineBuf = lines.pop() ?? ''
-          for (const line of lines) {
-            const data = line.startsWith('data:') ? line.slice(5).trim() : null
-            if (!data || data === '[DONE]') continue
-            try {
-              const j = JSON.parse(data) as {
-                usage?: { prompt_tokens?: number; completion_tokens?: number } | null
-                choices?: Array<{ delta?: { content?: string } }>
-              }
-              if (j.usage) usage = j.usage
-              content += j.choices?.[0]?.delta?.content ?? ''
-            } catch {
-              /* partial or non-JSON line — ignore */
-            }
-          }
+          return lines
         }
 
+        // Passthrough meter: bytes relay untouched; the guard runs on the
+        // assembled text after the stream (observe posture, or an agent-loop
+        // key that must never see a caveat) — never delays streaming.
         const meter = new TransformStream<Uint8Array, Uint8Array>({
           transform(chunk, controller) {
             controller.enqueue(chunk)
-            scan(decoder.decode(chunk, { stream: true }))
+            for (const line of splitLines(decoder.decode(chunk, { stream: true }))) scanLine(line)
           },
           flush() {
+            if (lineBuf) scanLine(lineBuf)
             void ledger(usage, content.length)
-            // Confab guard runs on the assembled text after the stream — never
-            // delays streaming; observe mode records findings out-of-band.
             void guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => {})
           },
         })
 
-        return new Response(res.body.pipeThrough(meter), {
+        // Annotate meter: relay line-wise but withhold [DONE]; once upstream
+        // ends, run the guard and inject any caveat as one final delta chunk
+        // before releasing [DONE]. Streamed bytes are already gone, so strict
+        // can't redact here — the caveat still lands.
+        let sawDone = false
+        const annotateMeter = new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            for (const line of splitLines(decoder.decode(chunk, { stream: true }))) {
+              scanLine(line)
+              if (isDone(line)) sawDone = true
+              else controller.enqueue(encoder.encode(`${line}\n`))
+            }
+          },
+          async flush(controller) {
+            if (lineBuf) {
+              scanLine(lineBuf)
+              if (isDone(lineBuf)) sawDone = true
+              else controller.enqueue(encoder.encode(lineBuf))
+            }
+            void ledger(usage, content.length)
+            const g = content
+              ? await guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name }).catch(() => null)
+              : null
+            if (g?.caveat) {
+              const chunk = { id: 'talaria-guard', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { content: g.caveat }, finish_reason: null }] }
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+            }
+            if (sawDone) controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+          },
+        })
+
+        return new Response(res.body.pipeThrough(mayAnnotate ? annotateMeter : meter), {
           status: 200,
           headers: {
             'content-type': res.headers.get('content-type') ?? 'text/event-stream',

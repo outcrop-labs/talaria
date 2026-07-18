@@ -5,7 +5,7 @@
 // it type in real time. Runs detached from the sender's request.
 import { describeAgent, proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
-import { guardChatReply } from './guardrails'
+import { guardChatReply, redactSecrets } from './guardrails'
 import { notifyMentions } from './mentions'
 import { addNotification } from './notifications'
 import { db } from './db/pg'
@@ -18,6 +18,7 @@ import {
   listChannelAgents,
   listChannelMembers,
   listChannelMessages,
+  setChannelMessageGuard,
   updateChannelMessage,
   type ChannelMessage,
 } from './channels'
@@ -187,8 +188,16 @@ async function streamReply(
     }
     await updateChannelMessage(channelId, messageId, content, 'complete')
     ledger()
+    // Confab guard (fire-and-forget). annotate/strict pin findings onto the
+    // message (republished, so viewers see the caveat live); strict also
+    // redacts leaked secrets from the saved copy.
     if (content) {
-      void guardChatReply({ answer: content, toolNames, userMessage: '', caller: `channel:${model}`, model }).catch(() => {})
+      void (async () => {
+        const { findings, mode } = await guardChatReply({ answer: content, toolNames, userMessage: '', caller: `channel:${model}`, model })
+        if (!findings.length || (mode !== 'annotate' && mode !== 'strict')) return
+        const redact = mode === 'strict' && findings.some((f) => f.check === 'secret_leak')
+        await setChannelMessageGuard(channelId, messageId, findings, redact ? redactSecrets(content).text : undefined)
+      })().catch(() => {})
     }
   } catch {
     await updateChannelMessage(channelId, messageId, content, 'error')
