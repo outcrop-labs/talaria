@@ -9,6 +9,7 @@ cd "$(dirname "$0")/.."
 say()  { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 skip() { printf '  \033[2m– %s (exists, kept)\033[0m\n' "$*"; }
+warn() { printf '  \033[33m! %s\033[0m\n' "$*"; }
 die()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 rand() { openssl rand -hex "$1" 2>/dev/null || head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
@@ -87,11 +88,19 @@ EOF
 fi
 
 say "Docker plumbing"
-docker network inspect talaria >/dev/null 2>&1 && skip "network talaria" || {
-  docker network create talaria >/dev/null && ok "network talaria"
-}
-docker compose -f docker/dev-compose.yml pull -q 2>/dev/null || true
-ok "postgres + redis images ready"
+if ! docker info >/dev/null 2>&1; then
+  # Don't fake success (the old `pull || true` printed ✓ with the daemon down).
+  warn "docker daemon not running — start Docker Desktop, then re-run ./scripts/setup.sh"
+else
+  docker network inspect talaria >/dev/null 2>&1 && skip "network talaria" || {
+    docker network create talaria >/dev/null && ok "network talaria"
+  }
+  if docker compose -f docker/dev-compose.yml pull -q; then
+    ok "infra images ready (postgres, redis, qdrant, embeddings, minio)"
+  else
+    warn "image pull incomplete — dev.sh will retry; see errors above"
+  fi
+fi
 
 say "App dependencies"
 if [ -d ui/node_modules ]; then skip "ui/node_modules"; else

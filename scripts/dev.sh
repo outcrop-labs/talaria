@@ -25,8 +25,18 @@ for var in TALARIA_S3_ACCESS_KEY TALARIA_S3_SECRET_KEY; do
   [ -n "$val" ] && export "$var"="$val"
 done
 
-echo "▸ infra (postgres + redis)"
-docker compose -f docker/dev-compose.yml up -d
+echo "▸ infra (postgres + redis + qdrant + minio)"
+docker compose -f docker/dev-compose.yml up -d postgres redis qdrant minio
+
+# Embeddings started separately: a single `up` resolves every image before
+# creating any container, so one unpullable/broken image (e.g. #151) would
+# abort postgres/redis/qdrant too. The app boots without embeddings —
+# retrieval just degrades — so failure here warns instead of exiting.
+echo "▸ embeddings (TEI)"
+docker compose -f docker/dev-compose.yml up -d embeddings || {
+  echo "⚠ embeddings service failed to start — retrieval will be degraded." >&2
+  echo "  Continuing without it; see docker/dev-compose.yml + issue #151." >&2
+}
 
 echo "▸ waiting for postgres…"
 for i in $(seq 1 40); do
