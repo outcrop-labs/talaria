@@ -124,8 +124,11 @@ engineering-facing tracker.
   ✅ **Toolkit ATTACHED (2026-07-09)** — talaria-mcp fleet HTTP mode
   (per-request identity, fleet-key auth), self-hosted by the app, injected into
   every rendered config; visible + probeable as the "built-in" server on the
-  MCP tab. ⏳ Remaining: a "Talaria toolkit" onboarding skill (lands with #78,
-  Hermes-side) (overlaps #59).
+  MCP tab. ✅ **Onboarding skill (2026-07-17)** — fleet-wide `talaria-toolkit`
+  skill (canonical in `scripts/skills/`, seeded on render, `/opt/skills`
+  mount now wired) teaching the reflexes; `fetch_attachment` tool (text
+  inline, images as MCP image blocks, binary = metadata); soul header points
+  at both. Running agents need one compose recreate for the new mount.
 - ✅ **Research view (#56) (2026-07-10)** — `/research` with Recon / Brief /
   Expedition modes: server-side pipeline (agent persona plans/gap-checks/
   writes; sonar search stages via the org gateway), inline [n] citations

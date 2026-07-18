@@ -5,6 +5,21 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 ## [Unreleased]
 
 ### Added
+- **Toolkit onboarding — agents get the playbook, not just the tools.** The
+  talaria MCP was attached to every agent but nothing taught them when to
+  reach for it. Now a fleet-wide `talaria-toolkit` skill (seeded from
+  `scripts/skills/` on render, admin-editable after, mounted read-only at
+  `/opt/skills` — a mount that was documented but never actually wired) walks
+  the reflexes: search before planning, keep the ticket alive, durable output
+  goes in Talaria, drafts await approval, report_problem on breakage. The
+  rendered SOUL header points at it.
+- **`fetch_attachment` toolkit tool.** Agents can now READ the files attached
+  to tickets and chats: text formats come back inline (clipped at 50k chars),
+  images arrive as real MCP image blocks the model can see, and other binary
+  formats report honest metadata instead of pretending. `get_ticket` now
+  advertises the attachments array. Verified live: fleet render seeds skill +
+  mount, MCP serves the tool, text/image/binary/404 behaviors all correct,
+  11/11 checks.
 - **Object storage — built-in bucket, bring-your-own, or both.** Upload blobs
   can now live in a real S3-compatible bucket instead of local disk, three
   ways: the **built-in bucket** — a bundled MinIO container (dev-compose
