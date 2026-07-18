@@ -413,11 +413,10 @@ Highest-leverage remaining threads:
    env, bucket auto-created) and an optional **replica** mirroring every blob
    to a second provider (mirror-on-upload + full sync + read fallback), and
    ticket attachments (files + KB/artifact ref chips, same shape as chat).
-   Chat attachments already existed. Known follow-ons: channel replies don't
-   pass image attachments to agents (1:1 chat does, via data URLs); non-image
-   file contents aren't injected into prompts anywhere — agents can now fetch
-   bytes from `/api/uploads/:id` with the fleet key, so a toolkit
-   `fetch_attachment` tool is the natural next step.
+   Chat attachments already existed. Follow-ons all shipped 2026-07-17:
+   `fetch_attachment` toolkit tool, channel replies hand images to agents
+   (data-URL blocks, parity with 1:1 chat), and textual file uploads
+   contribute their contents to prompts in both chat and channel paths.
 4. **Input sweep (#49)**; **explicit plan-template picker**.
 
 (Guard coverage for the direct chat path shipped in #90 and the agent-side

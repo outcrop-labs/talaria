@@ -13,6 +13,7 @@ import { estimateTokens, recordUsage } from './usage'
 import { routedModelFor } from './fleet-agents'
 import { listUsers, personalAssistantOwners } from './users'
 import { refBlocks } from './refs'
+import { attachmentAsDataUrl, attachmentTextBlocks, isImage, type Attachment } from './uploads'
 import {
   insertChannelMessage,
   listChannelAgents,
@@ -80,20 +81,46 @@ export function mentionedAgents(content: string, channelAgents: string[]): Array
   return hits
 }
 
+type TurnContent = string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>
+
 /** The channel transcript as OpenAI-style history from one agent's point of
  *  view: its own turns are `assistant`, everyone else speaks as `user` with a
- *  "Name:" prefix so the agent can tell voices apart. */
-function transcriptFor(model: string, messages: ChannelMessage[]): Array<{ role: string; content: string }> {
-  const turns: Array<{ role: string; content: string }> = []
-  for (const m of messages) {
+ *  "Name:" prefix so the agent can tell voices apart. Recent attachments ride
+ *  along like they do in 1:1 chat: textual files contribute their contents,
+ *  images become data-URL blocks a vision model can see (both scoped to the
+ *  transcript tail — file bytes are re-read per reply). */
+async function transcriptFor(model: string, messages: ChannelMessage[]): Promise<Array<{ role: string; content: TurnContent }>> {
+  const TAIL = 8 // messages whose attachments get the expensive treatment
+  const MAX_IMAGES = 4
+  let images = 0
+  const turns: Array<{ role: string; content: TurnContent }> = []
+  for (const [i, m] of messages.entries()) {
+    const recent = i >= messages.length - TAIL
     const refs = refBlocks(m.attachments)
-    if (m.status !== 'complete' || (!m.content && !refs)) continue
+    if (m.status !== 'complete' || (!m.content && !refs && !(Array.isArray(m.attachments) && m.attachments.length))) continue
     if (m.authorType === 'agent' && m.author === model) {
       turns.push({ role: 'assistant', content: m.content })
-    } else {
-      const name = m.authorType === 'agent' ? describeAgent(m.author).label : m.author
-      turns.push({ role: 'user', content: `${name}: ${m.content}${refs}` })
+      continue
     }
+    const name = m.authorType === 'agent' ? describeAgent(m.author).label : m.author
+    const files = recent ? await attachmentTextBlocks(m.attachments) : ''
+    const text = `${name}: ${m.content}${refs}${files}`
+    const imageAtts = recent && Array.isArray(m.attachments) ? (m.attachments as Attachment[]).filter((a) => !a.refType && isImage(a.mime)) : []
+    const urls: string[] = []
+    for (const a of imageAtts) {
+      if (images >= MAX_IMAGES) break
+      const url = await attachmentAsDataUrl(a.id).catch(() => null)
+      if (url) {
+        urls.push(url)
+        images++
+      }
+    }
+    turns.push({
+      role: 'user',
+      content: urls.length
+        ? [...(text.trim() ? [{ type: 'text' as const, text }] : []), ...urls.map((url) => ({ type: 'image_url' as const, image_url: { url } }))]
+        : text,
+    })
   }
   return turns
 }
@@ -139,10 +166,14 @@ export async function triggerAgentReplies(channelId: string, channelName: string
     const routed = (tier ? await routedModelFor(model, tier).catch(() => null) : null) ?? model
     const history = await listChannelMessages(channelId, -1, 60)
     const row = await insertChannelMessage(channelId, 'agent', model, '', 'streaming')
-    void streamReply(channelId, row.id, model, routed, [
-      { role: 'system', content: systemPrompt(model, channelName, agents, owners.has(model) ? (ownerNames.get(model) ?? 'their owner') : null) },
-      ...transcriptFor(model, history),
-    ]).catch(() => updateChannelMessage(channelId, row.id, '', 'error'))
+    void transcriptFor(model, history)
+      .then((transcript) =>
+        streamReply(channelId, row.id, model, routed, [
+          { role: 'system', content: systemPrompt(model, channelName, agents, owners.has(model) ? (ownerNames.get(model) ?? 'their owner') : null) },
+          ...transcript,
+        ]),
+      )
+      .catch(() => updateChannelMessage(channelId, row.id, '', 'error'))
   }
 }
 
@@ -151,7 +182,7 @@ async function streamReply(
   messageId: string,
   model: string,
   routedModel: string,
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<{ role: string; content: TurnContent }>,
 ): Promise<void> {
   const upstream = await proxyChat({ model: routedModel, messages })
   if (!upstream.ok || !upstream.body) {
@@ -163,7 +194,12 @@ async function streamReply(
   let usage: { promptTokens: number; completionTokens: number } | null = null
   let lastFlush = 0
   const ledger = () => {
-    const promptChars = messages.reduce((n, m) => n + m.content.length, 0)
+    // Data-URL image parts are excluded from the char estimate — they'd wildly
+    // inflate it and providers meter images separately anyway.
+    const promptChars = messages.reduce(
+      (n, m) => n + (typeof m.content === 'string' ? m.content.length : m.content.reduce((s, p) => s + (p.type === 'text' ? p.text.length : 0), 0)),
+      0,
+    )
     void recordUsage({
       agentModel: model,
       source: 'channel',

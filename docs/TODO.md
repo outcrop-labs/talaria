@@ -88,8 +88,9 @@ engineering-facing tracker.
     tickets (same `attachments` jsonb shape as messages), attach/remove in the
     ticket detail, activity-logged; agents read metadata via the task API and
     fetch bytes from `/api/uploads/:id` with the fleet key. Chat already had
-    attachments. Follow-ons: channel replies don't hand images to agents (1:1
-    chat does); toolkit `fetch_attachment` tool for non-image file contents.
+    attachments. Follow-ons shipped same day: `fetch_attachment` toolkit tool;
+    channel replies hand images to agents (data-URL blocks, 1:1-chat parity);
+    textual uploads contribute contents to prompts in chat + channel paths.
 
 ## High-value, ready to pick up
 - ✅ **Elevated admin assistants (2026-07-09)** — admins can promote an admin's
