@@ -17,7 +17,7 @@ import {
   touchConversation,
 } from '@/server/conversations'
 import { continueConversation, persistAssistantStream } from '@/server/chat-persist'
-import { attachmentAsDataUrl, resolveAttachments, isImage } from '@/server/uploads'
+import { attachmentAsDataUrl, attachmentTextBlocks, resolveAttachments, isImage } from '@/server/uploads'
 import { refBlocks, resolveRefs } from '@/server/refs'
 import { notifyPlanMentions, PLAN_MODE_PROMPT } from '@/server/plan-doc'
 import { indexActivity } from '@/server/retrieval/sources'
@@ -142,7 +142,7 @@ export const Route = createFileRoute('/api/chat')({
         // Multiplayer plans: prefix this turn with the sender's name (history
         // is already prefixed by priorMessages) so the agent tells voices
         // apart. Attached refs contribute their content blocks.
-        const spokenContent = `${multiVoice && content ? `${senderLabel}: ${content}` : content}${refBlocks(refChips)}`
+        const spokenContent = `${multiVoice && content ? `${senderLabel}: ${content}` : content}${refBlocks(refChips)}${await attachmentTextBlocks(uploads)}`
         const userContent =
           imageUrls.length > 0
             ? [

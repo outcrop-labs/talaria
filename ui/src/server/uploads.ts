@@ -17,6 +17,8 @@ export interface Attachment {
   filename: string
   mime: string
   size: number
+  /** Set on knowledge/artifact reference chips (see refs.ts); uploads omit it. */
+  refType?: 'kb-doc' | 'artifact'
 }
 
 const MAX_BYTES = 25 * 1024 * 1024 // 25 MB
@@ -229,6 +231,30 @@ export async function syncUploadsToReplica(): Promise<MigrateStatus> {
     await setSetting(SYNC_KEY, status)
   })()
   return status
+}
+
+// Mirrors the toolkit's TEXTUAL check: formats whose bytes read as prose.
+const TEXT_MIME = /^text\/|^application\/(json|xml|javascript|x-yaml|yaml|csv|toml|sql|markdown)|(\+json|\+xml)$/
+const FILE_CLIP = 6_000
+
+/** The prompt block a message's TEXTUAL file uploads contribute — the file
+ *  analogue of refBlocks(). Reads bytes on every call (history rebuilds
+ *  included), so callers should scope it to recent messages. */
+export async function attachmentTextBlocks(attachments: unknown, maxFiles = 3): Promise<string> {
+  if (!Array.isArray(attachments)) return ''
+  const files = attachments.filter(
+    (a): a is Attachment =>
+      !!a && typeof a === 'object' && !('refType' in a) && typeof (a as Attachment).mime === 'string' && TEXT_MIME.test((a as Attachment).mime),
+  )
+  const blocks: string[] = []
+  for (const f of files.slice(0, maxFiles)) {
+    const up = await getUpload(f.id).catch(() => null)
+    if (!up) continue
+    const text = up.bytes.toString('utf8')
+    const clipped = text.length > FILE_CLIP ? `${text.slice(0, FILE_CLIP)}\n[clipped]` : text
+    blocks.push(`\n\n--- Attached file: "${up.filename}" ---\n${clipped}`)
+  }
+  return blocks.join('')
 }
 
 /** As an OpenAI-style image_url data URL — used to give vision models the

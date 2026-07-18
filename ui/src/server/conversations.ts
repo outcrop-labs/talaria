@@ -1,6 +1,7 @@
 // Conversations + messages — durable, per-user, in Postgres.
 import { db } from './db/pg'
 import { refBlocks } from './refs'
+import { attachmentTextBlocks } from './uploads'
 import type { ToolCall } from '@/lib/sse-parse'
 import type { Finding } from './guardrails'
 
@@ -199,12 +200,17 @@ export async function priorMessages(conversationId: string): Promise<Array<{ rol
     order by m.seq asc
   `) as unknown as Array<{ role: 'user' | 'assistant'; content: string; attachments: unknown; authorLabel: string | null; members: number }>
   const multiVoice = rows.some((r) => r.members > 0)
-  return rows
-    .map((r) => {
+  // Textual file uploads re-read their bytes on every rebuild — scope that to
+  // the recent tail; ref chips carry their content inline and always ride.
+  const FILE_TAIL = 12
+  const mapped = await Promise.all(
+    rows.map(async (r, i) => {
       const voiced = multiVoice && r.role === 'user' && r.authorLabel ? `${r.authorLabel}: ${r.content}` : r.content
-      return { role: r.role, content: `${voiced}${r.role === 'user' ? refBlocks(r.attachments) : ''}` }
-    })
-    .filter((m) => m.content.trim() !== '')
+      const files = r.role === 'user' && i >= rows.length - FILE_TAIL ? await attachmentTextBlocks(r.attachments) : ''
+      return { role: r.role, content: `${voiced}${r.role === 'user' ? refBlocks(r.attachments) : ''}${files}` }
+    }),
+  )
+  return mapped.filter((m) => m.content.trim() !== '')
 }
 
 /** Next sequence number for a conversation. */

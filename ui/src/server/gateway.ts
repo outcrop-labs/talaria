@@ -58,7 +58,9 @@ export async function listAgents(): Promise<{ agents: AgentModel[]; source: 'gat
 
 interface ChatPayload {
   model: string
-  messages: Array<{ role: string; content: string }>
+  // Content is either a plain string or OpenAI-style content parts (text +
+  // image_url data URLs) — passed through to the persona gateway untouched.
+  messages: Array<{ role: string; content: string | Array<{ type: string; [k: string]: unknown }> }>
   [k: string]: unknown
 }
 
