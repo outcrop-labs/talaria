@@ -5,6 +5,27 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 ## [Unreleased]
 
 ### Added
+- **Hybrid retrieval — keyword and meaning, fused.** Every brain now indexes
+  each chunk twice: the dense embedding it always had, plus a sparse
+  bag-of-terms vector (Qdrant IDF-modified, so exact identifiers like env
+  vars, ticket numbers, model names, and error strings survive whole).
+  Searches fuse both branches with reciprocal-rank fusion, so
+  `TALARIA_EMBED_MODEL` finds the doc that names it AND "how do embeddings
+  get configured" finds it too. Legacy dense-only brains keep working
+  untouched until rebuilt.
+- **Guided reindex — the repair path for a changed embedding model.** Swapping
+  `TALARIA_EMBED_MODEL` changes vector dimensions and silently breaks every
+  index/search against the old collections. Talaria now probes what the
+  embedding service is actually serving (model + dimension, shown in Admin →
+  Retrieval) against the LIVE Qdrant collection shape — never the registry,
+  which had already gone stale once — and raises a critical alert plus an
+  admin banner when they diverge (or when a brain predates hybrid search).
+  One "Rebuild index" button recreates each brain in the current model's
+  shape and refills it from the workspace's own records; index-don't-copy
+  makes the rebuild lossless. Verified live: legacy 384d dense brains
+  rebuilt to hybrid, exact-identifier and paraphrase queries both rank the
+  seeded doc first, and stale points from deleted sources and
+  pre-officialization grounding rules washed out in the process.
 - **Confab guard: annotate and strict modes now act.** They were configurable
   but every path discarded the result — observe was effectively the only mode.
   Annotate pins findings to the flagged reply (`messages.guard` /

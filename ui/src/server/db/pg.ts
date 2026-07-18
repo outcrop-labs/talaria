@@ -807,6 +807,9 @@ const MIGRATIONS: string[] = [
   // content column, so transcripts rebuilt from content stay uncontaminated.
   `alter table messages add column if not exists guard jsonb`,
   `alter table channel_messages add column if not exists guard jsonb`,
+  // Retrieval schema generation: 1 = legacy unnamed dense vector; 2 = hybrid
+  // (named dense + IDF sparse). The guided reindex upgrades collections in place.
+  `alter table rag_collections add column if not exists schema_version integer not null default 1`,
 ]
 
 function ensureMigrated(): Promise<void> {

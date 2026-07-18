@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { backfillAll, backfillStatus, ragHealth } from '@/server/retrieval/backfill'
+import { reindexAll, reindexStatus, retrievalUpgradeStatus } from '@/server/retrieval/migrate'
 import {
   RERANK_PROVIDERS,
   rerankConfigPublic,
@@ -54,6 +55,8 @@ export const Route = createFileRoute('/api/admin/rag')({
         return json({
           health: await ragHealth(),
           backfill: await backfillStatus(),
+          upgrade: await retrievalUpgradeStatus().catch(() => null),
+          reindex: await reindexStatus(),
           rerank: { providers: RERANK_PROVIDERS, config: await rerankConfigPublic() },
           spaces,
         })
@@ -85,9 +88,14 @@ export const Route = createFileRoute('/api/admin/rag')({
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        void backfillAll().catch(() => {})
-        void logAudit({ actor: user.email ?? 'admin', action: 'rag.backfill', targetType: 'rag', targetId: 'backfill' })
-        return json({ started: true })
+        // { action: 'reindex' } rebuilds collections in the current model's
+        // shape then refills; default (or 'backfill') refills in place.
+        const body = (await request.json().catch(() => ({}))) as { action?: string }
+        const action = body.action === 'reindex' ? 'reindex' : 'backfill'
+        if (action === 'reindex') void reindexAll().catch(() => {})
+        else void backfillAll().catch(() => {})
+        void logAudit({ actor: user.email ?? 'admin', action: `rag.${action}`, targetType: 'rag', targetId: action })
+        return json({ started: true, action })
       },
     },
   },
