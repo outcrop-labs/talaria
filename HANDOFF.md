@@ -399,9 +399,13 @@ Highest-leverage remaining threads:
    and the guided reindex (`retrieval/migrate.ts` — live TEI-vs-Qdrant probe,
    critical alert on dim mismatch, Admin → Retrieval rebuild button).
    Reranking + curation had already shipped.
-2. **Toolkit onboarding skill** — the toolkit MCP is now ATTACHED to every
-   agent (fleet HTTP mode, `server/mcp-service.ts` + render injection); what
-   remains is the Hermes-side skill teaching agents to reach for it (#78).
+2. ~~**Toolkit onboarding skill**~~ — shipped 2026-07-17: fleet-wide
+   `talaria-toolkit` skill (canonical copy in `scripts/skills/`, seeded to
+   `<fleet>/skills` on render, mounted at `/opt/skills` — that shared mount is
+   now actually wired in `fleet-render.ts`), plus a `fetch_attachment` MCP
+   tool (text inline, images as MCP image blocks, binary = honest metadata)
+   and soul-header pointers. NOTE: running agents need a compose recreate to
+   pick up the new `/opt/skills` mount; skill EDITS after that are live.
 3. ~~**Artifact tail**~~ — shipped 2026-07-17: S3-compatible object storage
    behind uploads (`server/storage.ts`, Admin → Storage; Backblaze/R2/MinIO/AWS
    via hand-rolled SigV4) with test-connection + local→bucket migration, a
