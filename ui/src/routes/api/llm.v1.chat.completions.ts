@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { authenticateKey } from '@/server/llm-keys'
 import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '@/server/llm-gateway'
 import { estimateTokens } from '@/server/usage'
-import { getGuardConfig, guardCompletion, redactSecrets } from '@/server/guardrails'
+import { getGuardConfig, guardCompletion, needsRedaction, redactSecrets } from '@/server/guardrails'
 import { getSetting } from '@/server/audit'
 
 // OpenAI-compatible chat completions over the org's model stack. Streaming and
@@ -82,7 +82,7 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
                 // findings append the human-facing caveat.
                 const g = await guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name })
                 if (g.findings.length && j.choices?.[0]?.message) {
-                  const safe = g.mode === 'strict' && g.findings.some((f) => f.check === 'secret_leak') ? redactSecrets(content).text : content
+                  const safe = g.mode === 'strict' && needsRedaction(g.findings) ? redactSecrets(content).text : content
                   j.choices[0].message.content = `${safe}${g.caveat}`
                   text = JSON.stringify(j)
                 }

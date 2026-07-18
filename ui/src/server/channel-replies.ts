@@ -5,7 +5,7 @@
 // it type in real time. Runs detached from the sender's request.
 import { describeAgent, proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
-import { guardChatReply, redactSecrets } from './guardrails'
+import { guardChatReply, needsRedaction, redactSecrets } from './guardrails'
 import { notifyMentions } from './mentions'
 import { addNotification } from './notifications'
 import { db } from './db/pg'
@@ -231,7 +231,7 @@ async function streamReply(
       void (async () => {
         const { findings, mode } = await guardChatReply({ answer: content, toolNames, userMessage: '', caller: `channel:${model}`, model })
         if (!findings.length || (mode !== 'annotate' && mode !== 'strict')) return
-        const redact = mode === 'strict' && findings.some((f) => f.check === 'secret_leak')
+        const redact = mode === 'strict' && needsRedaction(findings)
         await setChannelMessageGuard(channelId, messageId, findings, redact ? redactSecrets(content).text : undefined)
       })().catch(() => {})
     }
