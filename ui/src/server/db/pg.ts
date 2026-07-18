@@ -802,6 +802,11 @@ const MIGRATIONS: string[] = [
   // The same control on artifacts: 'auto' (plan/research activity flows +
   // officialize pipeline), 'none', or an explicit brain.
   `alter table artifacts add column if not exists rag_routing text not null default 'auto'`,
+  // Confab-guard findings pinned to the reply they flagged (annotate/strict
+  // modes). Metadata only — rendered as a caveat in the UI, never part of the
+  // content column, so transcripts rebuilt from content stay uncontaminated.
+  `alter table messages add column if not exists guard jsonb`,
+  `alter table channel_messages add column if not exists guard jsonb`,
   // Retrieval schema generation: 1 = legacy unnamed dense vector; 2 = hybrid
   // (named dense + IDF sparse). The guided reindex upgrades collections in place.
   `alter table rag_collections add column if not exists schema_version integer not null default 1`,

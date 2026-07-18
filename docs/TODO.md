@@ -23,9 +23,15 @@ engineering-facing tracker.
     tool record derived from the request messages (no trace export needed), modes
     off/observe(default)/annotate/strict, findings recorded out-of-band (zero
     added model tokens). Admin → Confab guard. Verified live (all 3 checks fired).
-  - ⏳ **Confab guard follow-ups** — streaming-annotate on the public route;
-    confidence scoring; layered structural→judge tiering; pluggable checks
-    (PII/secret-leak); feedback-into-agent-memory.
+  - ✅ **Confab guard follow-ups (2026-07-15)** — annotate/strict are real:
+    findings pin to the flagged message (`messages.guard` /
+    `channel_messages.guard`, caveat rendered in chat + channels), the public
+    route appends the caveat non-streaming and injects a final SSE delta
+    before `[DONE]` streaming (never for agent-loop keys — no context
+    contamination), and strict redacts detected secrets from persisted /
+    not-yet-relayed content. Confidence scoring, structural→judge tiering
+    (`guardText` feeds the QA judge), and the secret-leak check had already
+    shipped. Remaining: feedback-into-agent-memory; PII check.
   - ⏳ **Hermes self-review** (#78) — enable subagent-driven-development /
     requesting-code-review skills fleet-wide as the agent's first line.
 - **Artifact system (#54)** — *active.* Versioned work products with built-in

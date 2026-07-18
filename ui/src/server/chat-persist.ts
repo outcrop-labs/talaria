@@ -9,12 +9,13 @@ import {
   insertStreamingAssistant,
   nextSeq,
   priorMessages,
+  setMessageGuard,
   touchConversation,
   updateAssistant,
 } from './conversations'
 import { routedModelFor } from './fleet-agents'
 import { estimateTokens, recordUsage } from './usage'
-import { guardChatReply } from './guardrails'
+import { guardChatReply, redactSecrets } from './guardrails'
 import { PLAN_MODE_PROMPT } from './plan-doc'
 import { describeAgent, proxyChat } from './gateway'
 import { indexActivity } from './retrieval/sources'
@@ -132,14 +133,26 @@ export async function persistAssistantStream(
     }
     // Confab guard on the final reply (structural; fire-and-forget). The fleet
     // stream gives tool names, so zero-tool-claim + secret-leak apply here.
+    // annotate/strict pin the findings onto the message row (the UI renders a
+    // caveat; transcripts never see it); strict also redacts leaked secrets
+    // from the SAVED copy so future turns can't re-feed them.
     if (usageMeta && content) {
-      void guardChatReply({
-        answer: content,
-        toolNames: tools.map((t) => t.name),
-        userMessage: '',
-        caller: `chat:${usageMeta.agentModel}`,
-        model: usageMeta.agentModel,
-      }).catch(() => {})
+      void (async () => {
+        const { findings, mode } = await guardChatReply({
+          answer: content,
+          toolNames: tools.map((t) => t.name),
+          userMessage: '',
+          caller: `chat:${usageMeta.agentModel}`,
+          model: usageMeta.agentModel,
+        })
+        if (!findings.length || (mode !== 'annotate' && mode !== 'strict')) return
+        if (mode === 'strict' && findings.some((f) => f.check === 'secret_leak')) {
+          content = redactSecrets(content).text
+          reasoning = redactSecrets(reasoning).text
+          await flush('complete')
+        }
+        await setMessageGuard(messageId, findings)
+      })().catch(() => {})
     }
   } catch {
     await flush('error').catch(() => {})
