@@ -11,9 +11,11 @@ import { userMentionInsert } from '@/components/chat/mentions'
 import { UserPicker } from '@/components/app/user-picker'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+import { Select } from '@/components/ui/select'
 import { alert } from '@/components/ui/confirm'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
+import { useTemplates } from '@/lib/templates'
 import { useSession } from '@/lib/session'
 import { useStickyAgent } from '@/lib/sticky-agent'
 import { sharePlan, unsharePlan, usePlanMembers, useConversations, type Conversation } from '@/lib/conversations'
@@ -113,6 +115,11 @@ function PlanPage() {
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [newChatSignal, setNewChatSignal] = useState(0)
   const [planOpen, setPlanOpen] = useState(false)
+  // The template a NEW plan's living doc seeds from ('' = automatic: the plan
+  // agent's bound plan template). Locked in when the first turn creates the plan.
+  const [templateId, setTemplateId] = useState('')
+  const { data: templates = [] } = useTemplates()
+  const planTemplates = useMemo(() => templates.filter((t) => t.kind === 'plan'), [templates])
   // Bumped when an agent turn lands; the doc pane syncs itself on it.
   const [turnSignal, setTurnSignal] = useState(0)
 
@@ -124,6 +131,7 @@ function PlanPage() {
     pickAgent(agentModel)
     setSelectedConversationId(null)
     setNewChatSignal((n) => n + 1)
+    setTemplateId('')
   }
   const newPlan = () => {
     if (selectedAgent) selectAgent(selectedAgent)
@@ -171,7 +179,23 @@ function PlanPage() {
               meta={`with ${current.label}`}
               actions={
                 <div className="flex items-center gap-3">
-                  {selectedConversationId && <PlanMembers planId={selectedConversationId} />}
+                  {selectedConversationId ? (
+                    <PlanMembers planId={selectedConversationId} />
+                  ) : (
+                    planTemplates.length > 0 && (
+                      <label className="flex items-center gap-1.5 text-xs text-muted" title="The structure the living document starts from. Automatic uses the agent's bound plan template.">
+                        Template
+                        <Select size="sm" value={templateId} onChange={(e) => setTemplateId(e.target.value)} className="w-44">
+                          <option value="">Automatic (agent default)</option>
+                          {planTemplates.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name}
+                            </option>
+                          ))}
+                        </Select>
+                      </label>
+                    )
+                  )}
                   <Button size="sm" variant="outline" disabled={!selectedConversationId} onClick={() => setPlanOpen(true)}>
                     Draft tickets
                   </Button>
@@ -193,6 +217,7 @@ function PlanPage() {
                 newChatSignal={newChatSignal}
                 onCreated={onCreated}
                 kind="plan"
+                templateId={templateId || null}
                 fill
                 mentionables={mentionables}
                 onTurnComplete={() => setTurnSignal((n) => n + 1)}

@@ -417,7 +417,9 @@ Highest-leverage remaining threads:
    `fetch_attachment` toolkit tool, channel replies hand images to agents
    (data-URL blocks, parity with 1:1 chat), and textual file uploads
    contribute their contents to prompts in both chat and channel paths.
-4. **Input sweep (#49)**; **explicit plan-template picker**.
+4. **Input sweep (#49)** — key-driven inputs everywhere; audit every form
+   control for consistent affordances. (Plan-template picker shipped 2026-07-20:
+   Plan header picker → `conversations.plan_template_id` → `resolveTemplate`.)
 
 (Guard coverage for the direct chat path shipped in #90 and the agent-side
 confab-guard plugin is gone; annotate/strict became real on 2026-07-15 — the

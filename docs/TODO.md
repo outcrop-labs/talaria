@@ -178,9 +178,10 @@ engineering-facing tracker.
 - **Org profile depth** — tone/values fields on the org profile for fleet-wide
   voice consistency; feed the org line into channel/relay replies and the QA
   judge's context.
-- **Explicit plan-template picker** — plan docs seed from the agent's bound
-  template today; an explicit per-plan pick (like tickets have) is the missing
-  half of the chain.
+- ✅ **Explicit plan-template picker (2026-07-20)** — Plan surface header picker
+  for new plans; the pick persists on `conversations.plan_template_id` and is
+  the top link in `resolveTemplate('plan', …)` (explicit → agent binding →
+  none). Seeds the living doc verbatim + shapes agent rewrites. Verified live.
 - **Talaria identity proxy (#42)** — *first slice shipped:* per-user Google
   connection; agents export artifacts into the owner's Drive as that user. Next:
   extend the same per-user connection to more Google surfaces (Calendar, Gmail)

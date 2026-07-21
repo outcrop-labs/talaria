@@ -34,6 +34,9 @@ const Body = z.object({
   refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
   /** New conversations are 'chat' unless started from the Plan surface. */
   kind: z.enum(['chat', 'plan']).optional(),
+  /** Explicit plan template pick (plan surface, new plan only); server ignores
+   *  it for chats and for turns on an existing conversation. */
+  templateId: z.string().uuid().nullish(),
   /** Sent while a reply streams: queue into history, never interrupt. */
   queue: z.boolean().optional(),
 })
@@ -91,7 +94,7 @@ export const Route = createFileRoute('/api/chat')({
         const attachments = [...uploads, ...refChips]
         const title = titleFrom(content || attachments[0]?.filename || 'chat')
         if (!convId) {
-          convId = await createConversation(user.id, agentModel, title, kind)
+          convId = await createConversation(user.id, agentModel, title, kind, parsed.data.templateId ?? null)
           planTitle = title
         }
 

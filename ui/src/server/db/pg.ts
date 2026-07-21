@@ -812,6 +812,10 @@ const MIGRATIONS: string[] = [
   `alter table rag_collections add column if not exists schema_version integer not null default 1`,
   // Ticket attachments: same shape as message attachments (uploads + ref chips).
   `alter table tasks add column if not exists attachments jsonb not null default '[]'`,
+  // Explicit per-plan template pick (mirrors agent_defs.plan_template_id, which
+  // is the fallback). Set at creation; resolveTemplate treats it as the highest
+  // link. Dead refs degrade to the agent binding via on-delete-set-null.
+  `alter table conversations add column if not exists plan_template_id uuid references templates(id) on delete set null`,
 ]
 
 function ensureMigrated(): Promise<void> {
