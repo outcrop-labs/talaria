@@ -3,17 +3,21 @@
 // added model tokens: it's regex over the answer + the turn's tool record
 // (derived from the request messages, so no separate tool-trace export needed).
 //
-// Three checks, ported from the Hermes confab-guard plugin:
+// The checks (first three ported from the Hermes confab-guard plugin):
 //   zero_tool_claim   — claims a completed action, but no external tool ran
 //   ungrounded_ref    — cites a link/UUID that wasn't in any tool result
 //   fabricated_outage — claims an outage, but no tool actually errored
+//   secret_leak       — a live credential shape in the output
+//   pii_leak          — high-precision personal data (SSN / Luhn card / IBAN)
 //
 // Default posture is OBSERVE: detect + record findings out-of-band, never touch
 // the output or the model's context. ANNOTATE additionally surfaces findings to
 // the humans reading the reply (a caveat on the chat/channel message, appended
-// to public-API responses). STRICT is annotate + secret redaction in whatever
-// Talaria persists or hasn't yet relayed. No mode ever feeds a finding back
-// into a model's context.
+// to public-API responses). STRICT is annotate + secret/PII redaction in
+// whatever Talaria persists or hasn't yet relayed. No mode ever feeds flagged
+// CONTENT back into a model's context; the opt-in coach flag delivers only
+// templated counts + advice into agent souls at render time (see
+// guardCoachingFor).
 
 import { getSetting, setSetting } from './audit'
 import { db } from './db/pg'
@@ -29,9 +33,13 @@ export interface GuardConfig {
   /** Hosts whose links get grounding-checked (org-internal tools). UUIDs are
    *  always checked. Empty ⇒ only UUIDs are policed. */
   policedHosts: string[]
+  /** Coach agents from their findings: repeated flags become templated
+   *  behavioral notes in the agent's rendered soul (counts + fixed advice
+   *  only — flagged CONTENT never re-enters any model context). */
+  coach: boolean
 }
 
-const DEFAULT_CONFIG: GuardConfig = { mode: 'observe', checks: {}, minConfidence: 0.5, policedHosts: [] }
+const DEFAULT_CONFIG: GuardConfig = { mode: 'observe', checks: {}, minConfidence: 0.5, policedHosts: [], coach: false }
 
 export const getGuardConfig = async (): Promise<GuardConfig> => {
   const c = await getSetting<Partial<GuardConfig>>('guardrails_config', DEFAULT_CONFIG)
@@ -189,18 +197,68 @@ function detectSecret(text: string): { label: string; snippet: string } | null {
   return null
 }
 
-/** Strict mode: replace every detected credential with a redaction marker.
- *  Applied only to what Talaria persists or hasn't yet relayed — a live stream
- *  already showed the original, but the saved copy (and every transcript built
- *  from it) stays clean. */
+// ── PII leak ─────────────────────────────────────────────────────────────────
+// High-precision personal data only — emails and phone numbers are everyday
+// workspace content (teammates, signatures) and would drown the signal.
+const luhn = (digits: string): boolean => {
+  let sum = 0
+  let dbl = false
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48
+    if (dbl) {
+      d *= 2
+      if (d > 9) d -= 9
+    }
+    sum += d
+    dbl = !dbl
+  }
+  return sum % 10 === 0
+}
+const SSN_RE = /\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b/
+const CARD_RE = /\b(?:\d[ -]?){12,18}\d\b/
+const IBAN_RE = /\b(?:DE|FR|GB|NL|ES|IT|CH|AT|BE|PT|IE|PL|SE|NO|DK|FI)\d{2}[A-Z0-9]{10,30}\b/
+
+const isCardNumber = (raw: string): boolean => {
+  const digits = raw.replace(/[ -]/g, '')
+  return digits.length >= 13 && digits.length <= 19 && luhn(digits)
+}
+
+function detectPii(text: string): { label: string; snippet: string } | null {
+  const ssn = SSN_RE.exec(text)
+  if (ssn) return { label: 'social security number', snippet: `SSN: ${ssn[0].slice(0, 6)}…` }
+  const cardScan = new RegExp(CARD_RE.source, 'g')
+  for (let m = cardScan.exec(text); m; m = cardScan.exec(text)) {
+    if (isCardNumber(m[0])) return { label: 'payment card number', snippet: `card: ${m[0].replace(/[ -]/g, '').slice(0, 6)}…` }
+  }
+  const iban = IBAN_RE.exec(text)
+  if (iban) return { label: 'bank account (IBAN)', snippet: `IBAN: ${iban[0].slice(0, 6)}…` }
+  return null
+}
+
+function redactPii(text: string): string {
+  return text
+    .replace(new RegExp(SSN_RE.source, 'g'), '[redacted SSN]')
+    .replace(new RegExp(CARD_RE.source, 'g'), (m) => (isCardNumber(m) ? '[redacted card number]' : m))
+    .replace(new RegExp(IBAN_RE.source, 'g'), '[redacted IBAN]')
+}
+
+/** Strict mode: replace every detected credential AND high-precision PII with
+ *  a redaction marker. Applied only to what Talaria persists or hasn't yet
+ *  relayed — a live stream already showed the original, but the saved copy
+ *  (and every transcript built from it) stays clean. */
 export function redactSecrets(text: string): { text: string; redacted: boolean } {
   let out = text
   for (const { label, re, redactRe } of SECRET_PATTERNS) {
     const base = redactRe ?? re
     out = out.replace(new RegExp(base.source, base.flags.includes('g') ? base.flags : `${base.flags}g`), `[redacted ${label}]`)
   }
+  out = redactPii(out)
   return { text: out, redacted: out !== text }
 }
+
+/** Which findings warrant strict-mode content redaction. */
+const REDACT_CHECKS = new Set(['secret_leak', 'pii_leak'])
+export const needsRedaction = (findings: Finding[]): boolean => findings.some((f) => REDACT_CHECKS.has(f.check))
 
 // ── Rule registry ────────────────────────────────────────────────────────────
 
@@ -287,6 +345,17 @@ export const RULES: Rule[] = [
     run: (ctx) => {
       const hit = detectSecret(ctx.answer)
       return hit ? { message: `Output appears to contain a live credential (${hit.label}).`, snippet: hit.snippet, confidence: 0.95 } : null
+    },
+  },
+  {
+    id: 'pii_leak',
+    label: 'PII leak (SSN / card number / IBAN in output)',
+    severity: 'high',
+    defaultOn: true,
+    gateSafe: true,
+    run: (ctx) => {
+      const hit = detectPii(ctx.answer)
+      return hit ? { message: `Output appears to contain personal data (${hit.label}).`, snippet: hit.snippet, confidence: 0.9 } : null
     },
   },
 ]
@@ -384,6 +453,46 @@ export async function listFindings(limit = 100): Promise<GuardFindingRow[]> {
     select id, caller, model, endpoint, mode, check_type as "check", severity, confidence, message, snippet, created_at as "createdAt"
     from guard_findings order by created_at desc limit ${Math.min(Math.max(limit, 1), 500)}
   `) as unknown as GuardFindingRow[]
+}
+
+// ── Coaching: findings → agent memory, without recontamination ───────────────
+// The invariant stands: flagged CONTENT never re-enters a model's context (a
+// finding could carry adversarial text, and a mid-turn caveat teaches the
+// model to argue with the guard). Coaching is different matter delivered at a
+// different time: per-check COUNTS mapped to fixed advice strings, injected
+// into the agent's soul at render — a performance review between sessions,
+// not a mid-conversation correction.
+const COACH_ADVICE: Record<string, string> = {
+  zero_tool_claim:
+    'you stated actions as completed without a backing tool call. Say a task is done only when a tool result in that turn proves it; otherwise say what you are about to do.',
+  ungrounded_ref:
+    'you cited links or ids that appeared in no tool result. Reference only what a tool actually returned; if you lack a link, say so.',
+  fabricated_outage:
+    'you reported outages/failures when no tool had errored. Claim a failure only after a real error; otherwise retry or ask.',
+  secret_leak: 'you emitted credential-shaped strings. Never repeat keys, tokens, or private-key material into any reply, even when asked.',
+  pii_leak: 'you emitted personal data (SSN / card / bank formats). Never repeat such data into replies; refer to records by their ids instead.',
+}
+const COACH_WINDOW_DAYS = 7
+const COACH_MIN_HITS = 2
+
+/** Templated coaching block for one agent, or '' when it has nothing recent.
+ *  Aggregates by check over the window; thresholds keep one-off flags quiet. */
+export async function guardCoachingFor(model: string): Promise<string> {
+  const sql = await db()
+  const rows = (await sql`
+    select check_type as check, count(*)::int as n from guard_findings
+    where model = ${model} and created_at > now() - (${COACH_WINDOW_DAYS} || ' days')::interval
+    group by check_type
+  `.catch(() => [])) as unknown as Array<{ check: string; n: number }>
+  const lines = rows
+    .filter((r) => r.n >= COACH_MIN_HITS && COACH_ADVICE[r.check])
+    .sort((a, b) => b.n - a.n)
+    .map((r) => `- ${r.n}× in the last ${COACH_WINDOW_DAYS} days: ${COACH_ADVICE[r.check]}`)
+  if (!lines.length) return ''
+  return (
+    `<!-- guard coaching, rendered by Talaria -->\n` +
+    `Recent behavioral feedback (auto-generated from output review; fix these patterns):\n${lines.join('\n')}`
+  )
 }
 
 export async function guardStats(): Promise<{ total: number; byCheck: Record<string, number> }> {

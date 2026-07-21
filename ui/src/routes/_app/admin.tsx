@@ -453,7 +453,7 @@ function JudgePanel() {
 }
 
 interface GuardData {
-  config: { mode: string; checks: Record<string, boolean>; minConfidence: number; policedHosts: string[] }
+  config: { mode: string; checks: Record<string, boolean>; minConfidence: number; policedHosts: string[]; coach: boolean }
   stats: { total: number; byCheck: Record<string, number> }
   findings: Array<{ id: string; caller: string; model: string; check: string; severity: string; confidence: number; message: string; snippet: string; createdAt: string }>
   rules: Array<{ id: string; label: string; severity: string; defaultOn: boolean }>
@@ -488,8 +488,9 @@ function GuardrailsPanel() {
         A cheap structural check on every model’s output at the gateway: catches claims of work no tool did, invented
         links/ids, fabricated outages, and leaked secrets. No extra model call, no added context. <strong>Observe</strong> records
         findings here; <strong>annotate</strong> also flags the reply where it appears (a caveat in chat/channels, appended on
-        API responses); <strong>strict</strong> also redacts leaked secrets from the saved reply. Findings are never fed back
-        into an agent’s context.
+        API responses); <strong>strict</strong> also redacts leaked secrets and personal data from the saved reply. Flagged
+        content is never fed back into an agent’s context — coaching (below) delivers only counts and fixed advice, at
+        render time.
       </p>
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
@@ -511,6 +512,18 @@ function GuardrailsPanel() {
             className="w-28"
           />
           <span className="w-8 text-fg">{((cfg?.minConfidence ?? 0.5) * 100).toFixed(0)}%</span>
+        </label>
+        <label
+          className="flex items-center gap-2 text-xs text-muted"
+          title="Repeated findings become templated behavioral notes in the agent's rendered soul (counts + advice only, never the flagged content). Applies on the next fleet render."
+        >
+          <input
+            type="checkbox"
+            checked={cfg?.coach ?? false}
+            disabled={cfg?.mode === 'off'}
+            onChange={(e) => void save({ coach: e.target.checked })}
+          />
+          Coach agents from findings
         </label>
         <div className="text-xs text-muted">{data?.stats.total ?? 0} findings</div>
       </div>

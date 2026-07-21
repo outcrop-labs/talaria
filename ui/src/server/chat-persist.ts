@@ -15,7 +15,7 @@ import {
 } from './conversations'
 import { routedModelFor } from './fleet-agents'
 import { estimateTokens, recordUsage } from './usage'
-import { guardChatReply, redactSecrets } from './guardrails'
+import { guardChatReply, needsRedaction, redactSecrets } from './guardrails'
 import { PLAN_MODE_PROMPT } from './plan-doc'
 import { describeAgent, proxyChat } from './gateway'
 import { indexActivity } from './retrieval/sources'
@@ -146,7 +146,7 @@ export async function persistAssistantStream(
           model: usageMeta.agentModel,
         })
         if (!findings.length || (mode !== 'annotate' && mode !== 'strict')) return
-        if (mode === 'strict' && findings.some((f) => f.check === 'secret_leak')) {
+        if (mode === 'strict' && needsRedaction(findings)) {
           content = redactSecrets(content).text
           reasoning = redactSecrets(reasoning).text
           await flush('complete')
