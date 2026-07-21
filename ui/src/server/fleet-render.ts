@@ -22,6 +22,7 @@ import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
 import { ensureMcpService, MCP_FLEET_URL } from './mcp-service'
 import { orgProfile, orgSoulHeader, toolkitSoulHeader, voiceSoulHeader } from './org'
+import { getGuardConfig, guardCoachingFor } from './guardrails'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
 
 export const FLEET_DIR = () => process.env.TALARIA_FLEET_DIR ?? resolve(process.cwd(), '../fleet')
@@ -211,6 +212,10 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
   // DEFAULT for every agent, not a per-soul nicety.
   const orgHeader = orgSoulHeader(await orgProfile())
   const soulHeader = [orgHeader, voiceSoulHeader(), toolkitSoulHeader()].filter(Boolean).join('\n\n')
+  // Guard coaching (opt-in): repeated findings become per-agent behavioral
+  // notes — templated counts + advice only, never flagged content, delivered
+  // at render rather than mid-conversation (see guardrails.ts).
+  const coachOn = (await getGuardConfig()).coach
 
   // Agents' configs point at the toolkit MCP — make sure it's actually up,
   // and that the compose env can interpolate the fleet key into the header.
@@ -271,7 +276,8 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     // The rendered soul carries the organization header (a projection — the
     // stored soul stays clean; the header tracks the org settings), so every
     // agent knows whose team it's on, including ones authored before org config.
-    await writeFile(join(agentDir, 'SOUL.md'), `${soulHeader}\n\n${version.soul}`)
+    const coaching = coachOn ? await guardCoachingFor(def.model).catch(() => '') : ''
+    await writeFile(join(agentDir, 'SOUL.md'), `${[soulHeader, coaching].filter(Boolean).join('\n\n')}\n\n${version.soul}`)
     result.files.push(join(agentDir, 'config.yaml'), join(agentDir, 'SOUL.md'))
 
     // The service name carries the active slot ('a' = bare, 'b' = "-b") so a

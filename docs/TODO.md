@@ -31,7 +31,12 @@ engineering-facing tracker.
     contamination), and strict redacts detected secrets from persisted /
     not-yet-relayed content. Confidence scoring, structural→judge tiering
     (`guardText` feeds the QA judge), and the secret-leak check had already
-    shipped. Remaining: feedback-into-agent-memory; PII check.
+    shipped.
+  - ✅ **Guard tail (2026-07-18)** — `pii_leak` check (SSN / Luhn card / IBAN;
+    strict also redacts PII) and opt-in coaching: repeated findings (≥2/check
+    per 7 days) become templated notes in the agent's rendered soul — counts +
+    fixed advice only, flagged content never re-enters model context. Admin →
+    Confab guard → "Coach agents from findings".
   - ⏳ **Hermes self-review** (#78) — enable subagent-driven-development /
     requesting-code-review skills fleet-wide as the agent's first line.
 - **Artifact system (#54)** — *active.* Versioned work products with built-in

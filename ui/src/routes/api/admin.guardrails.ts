@@ -10,6 +10,7 @@ const Body = z.object({
   checks: z.record(z.string(), z.boolean()),
   minConfidence: z.number().min(0).max(1),
   policedHosts: z.array(z.string().max(200)).max(100),
+  coach: z.boolean().default(false),
 })
 
 // Confab guardrail config + observability (admin). GET → config + stats + recent
