@@ -4,6 +4,7 @@ import { KeyRound, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
+import { submitOnEnter } from '@/components/ui/control'
 import { EmptyState } from '@/components/ui/empty-state'
 import { relativeTime } from '@/lib/fleet'
 
@@ -92,9 +93,16 @@ export function SecretsTab({ agentId }: { agentId: string }) {
         <Input
           value={name}
           onChange={(e) => setName(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_'))}
+          onKeyDown={submitOnEnter(() => !busy && nameOk && value && void save())}
           placeholder="FIGMA_TOKEN"
         />
-        <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder="value (write-only)" type="password" />
+        <Input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={submitOnEnter(() => !busy && nameOk && value && void save())}
+          placeholder="value (write-only)"
+          type="password"
+        />
         <Button className="whitespace-nowrap" onClick={() => void save()} disabled={busy || !nameOk || !value}>
           {busy ? 'Saving' : 'Set secret'}
         </Button>

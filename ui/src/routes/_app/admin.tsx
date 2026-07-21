@@ -7,6 +7,7 @@ import { Combobox } from '@/components/ui/combobox'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Generating } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
+import { submitOnEnter } from '@/components/ui/control'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
@@ -299,6 +300,7 @@ function SettingsPanel() {
           type="number"
           value={value}
           onChange={(e) => setDays(e.target.value)}
+          onKeyDown={submitOnEnter(() => days !== '' && Number(days) !== data?.auditRetentionDays && void save())}
           className="w-24 shrink-0"
         />
         <span className="shrink-0 text-xs text-muted">days</span>

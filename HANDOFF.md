@@ -417,9 +417,14 @@ Highest-leverage remaining threads:
    `fetch_attachment` toolkit tool, channel replies hand images to agents
    (data-URL blocks, parity with 1:1 chat), and textual file uploads
    contribute their contents to prompts in both chat and channel paths.
-4. **Input sweep (#49)** — key-driven inputs everywhere; audit every form
-   control for consistent affordances. (Plan-template picker shipped 2026-07-20:
-   Plan header picker → `conversations.plan_template_id` → `resolveTemplate`.)
+4. ~~**Input sweep (#49)**~~ — shipped 2026-07-20: shared `submitOnEnter` /
+   `inlineEditKeys` helpers in `ui/control.ts`, 16 gaps fixed (inline renames,
+   Enter-submits, compose dialog on shared Modal, autofocuses). The
+   plan-template picker also shipped 2026-07-20 (Plan header picker →
+   `conversations.plan_template_id` → `resolveTemplate`). **This list is now
+   fully struck through** — the next threads live in docs/TODO.md
+   ("High-value, ready to pick up": proactive outreach #59, inference
+   monitoring #48, WYSIWYG everywhere #46, universal @mentions #60).
 
 (Guard coverage for the direct chat path shipped in #90 and the agent-side
 confab-guard plugin is gone; annotate/strict became real on 2026-07-15 — the

@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { IconButton } from '@/components/ui/icon-button'
 import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
+import { inlineEditKeys } from '@/components/ui/control'
 import { Modal } from '@/components/ui/modal'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -584,6 +585,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
             value={name}
             onChange={(e) => setName(e.target.value)}
             onBlur={() => name.trim() && name !== space.name && void save({ name: name.trim() })}
+            onKeyDown={inlineEditKeys(() => setName(space.name))}
             className="min-w-0 flex-1 border-0 bg-transparent text-xl font-semibold focus:border-0"
             placeholder="Space name"
           />
@@ -868,6 +870,7 @@ function DocEditor({
               setDirty(true)
             }}
             onBlur={() => dirty && void saveBody()}
+            onKeyDown={inlineEditKeys(() => doc && setTitle(doc.title))}
             className="min-w-0 flex-1 border-0 bg-transparent text-lg font-semibold focus:border-0"
             placeholder="Untitled"
           />

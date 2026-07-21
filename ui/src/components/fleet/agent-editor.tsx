@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Generating } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
+import { submitOnEnter } from '@/components/ui/control'
 import { ModelPicker } from '@/components/fleet/model-picker'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
@@ -176,7 +177,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
           />
         )}
         <div className="flex items-center gap-2 border-t border-line-subtle pt-3">
-          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="version note (optional)" size="sm" className="min-w-0 flex-1" />
+          <Input value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={submitOnEnter(() => !busy && void save(false))} placeholder="version note (optional)" size="sm" className="min-w-0 flex-1" />
           <Button variant="outline" size="sm" onClick={() => void save(false)} disabled={!!busy}>
             Save version
           </Button>

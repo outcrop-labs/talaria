@@ -190,8 +190,11 @@ engineering-facing tracker.
   dashboard, restart/reboot containers, warm-up state.
 - **WYSIWYG everywhere + modal editors (#46)** — finish converting remaining
   plain-text areas to the shared rich editor.
-- **Input consistency sweep (#49)** — key-driven inputs everywhere; audit every
-  form control for the same affordances.
+- ✅ **Input consistency sweep (#49) (2026-07-20)** — shared `submitOnEnter` +
+  `inlineEditKeys` helpers (`ui/control.ts`); 16 gaps fixed across inline
+  renames (Enter commit / Escape revert, shielded from modal close),
+  field+button Enter-submits, the home compose dialog reparented onto the
+  shared Modal, and missing modal autofocuses. ~80 controls / 33 files audited.
 - **Proactive agent outreach (#59)** — agents start conversations, comment on
   tickets unprompted, surface things they notice.
 - **Universal @mentions (#60)** — core is in; finish coverage across plan /

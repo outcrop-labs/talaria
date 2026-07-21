@@ -5,6 +5,7 @@ import { Loader2, Check, Lock, X, RotateCcw, Plug } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
+import { submitOnEnter } from '@/components/ui/control'
 import { Modal } from '@/components/ui/modal'
 import { Generating } from '@/components/ui/generating'
 import { Select } from '@/components/ui/select'
@@ -504,8 +505,8 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       )}
       {isAdmin && (
         <div className="flex items-center gap-2 pt-1">
-          <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder="name" className="w-28" />
-          <Input size="sm" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://host:port/mcp" className="flex-1" />
+          <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={submitOnEnter(() => !busy && name.trim() && /^https?:\/\//.test(url.trim()) && void edit({ add: [{ name: name.trim(), url: url.trim() }] }))} placeholder="name" className="w-28" />
+          <Input size="sm" value={url} onChange={(e) => setUrl(e.target.value)} onKeyDown={submitOnEnter(() => !busy && name.trim() && /^https?:\/\//.test(url.trim()) && void edit({ add: [{ name: name.trim(), url: url.trim() }] }))} placeholder="http://host:port/mcp" className="flex-1" />
           <Button size="sm" disabled={busy || !name.trim() || !/^https?:\/\//.test(url.trim())} onClick={() => void edit({ add: [{ name: name.trim(), url: url.trim() }] })}>
             <Plug size={14} className="mr-1.5" /> Add
           </Button>

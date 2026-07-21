@@ -77,7 +77,7 @@ function SaveDialog({ src, onClose }: { src: string; onClose: () => void }) {
         <div className="space-y-3">
           <div>
             <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Title</label>
-            <Input size="sm" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <Input size="sm" autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
           </div>
           <div>
             <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Folder</label>
