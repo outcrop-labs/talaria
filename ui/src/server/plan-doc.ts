@@ -39,18 +39,19 @@ export async function planDocFor(conversationId: string): Promise<Artifact | nul
   return linked.find((a) => a.kind === 'doc') ?? null
 }
 
-/** Find-or-create the plan's document, seeded from the agent's plan template
- *  when one is bound (the skeleton is the starting structure). Owned by the
- *  plan's owner. */
+/** Find-or-create the plan's document, seeded from the plan's template (the
+ *  explicit per-plan pick if set, else the agent's bound plan template) — the
+ *  skeleton is the starting structure. Owned by the plan's owner. */
 export async function ensurePlanDoc(
   conversationId: string,
   owner: { id: string; label: string },
   planTitle: string | null,
   agentModel?: string,
+  templateId?: string | null,
 ): Promise<Artifact> {
   const existing = await planDocFor(conversationId)
   if (existing) return existing
-  const template = agentModel ? await resolveTemplate('plan', { agentModel }) : null
+  const template = agentModel || templateId ? await resolveTemplate('plan', { explicitId: templateId, agentModel }) : null
   const artifact = await createArtifact({
     kind: 'doc',
     title: `Plan — ${planTitle || 'Untitled'}`,
@@ -107,8 +108,9 @@ export async function syncPlanDoc(
   planTitle: string | null,
   agentModel: string,
   routedModel: string,
+  templateId?: string | null,
 ): Promise<Artifact> {
-  const doc = await ensurePlanDoc(conversationId, owner, planTitle, agentModel)
+  const doc = await ensurePlanDoc(conversationId, owner, planTitle, agentModel, templateId)
   const label = describeAgent(agentModel).label
   const msgs = await priorMessages(conversationId)
   const transcript = msgs
@@ -117,7 +119,7 @@ export async function syncPlanDoc(
     .join('\n\n')
   if (!transcript.trim()) return doc
 
-  const template = await resolveTemplate('plan', { agentModel })
+  const template = await resolveTemplate('plan', { explicitId: templateId, agentModel })
   const system = template ? `${SYNC_PROMPT}\n\n${templatePrompt(template, 'the plan document')}` : SYNC_PROMPT
   const current = doc.body.trim()
   const messages = [

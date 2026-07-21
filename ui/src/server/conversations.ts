@@ -131,17 +131,20 @@ export async function getConversation(
   return { conversation: conv[0] as unknown as ConversationRow, messages: messages as unknown as MessageRow[] }
 }
 
-/** Create a conversation for a user + agent (kind 'chat' or 'plan'). */
+/** Create a conversation for a user + agent (kind 'chat' or 'plan'). An
+ *  explicit plan template (plan surface only) is the highest link in the
+ *  template resolution chain; null falls through to the agent's binding. */
 export async function createConversation(
   userId: string,
   agentModel: string,
   title: string,
   kind: 'chat' | 'plan' = 'chat',
+  planTemplateId: string | null = null,
 ): Promise<string> {
   const sql = await db()
   const rows = await sql`
-    insert into conversations (user_id, agent_model, title, kind)
-    values (${userId}, ${agentModel}, ${title}, ${kind})
+    insert into conversations (user_id, agent_model, title, kind, plan_template_id)
+    values (${userId}, ${agentModel}, ${title}, ${kind}, ${kind === 'plan' ? planTemplateId : null})
     returning id
   `
   return (rows[0] as { id: string }).id
@@ -170,10 +173,11 @@ export async function ownedConversation(
 export async function accessibleConversation(
   userId: string,
   conversationId: string,
-): Promise<{ agentModel: string; kind: 'chat' | 'plan'; title: string | null; ownerUserId: string; role: 'owner' | 'collaborator' } | null> {
+): Promise<{ agentModel: string; kind: 'chat' | 'plan'; title: string | null; ownerUserId: string; role: 'owner' | 'collaborator'; planTemplateId: string | null } | null> {
   const sql = await db()
   const rows = await sql`
     select agent_model as "agentModel", kind, title, user_id as "ownerUserId",
+           plan_template_id as "planTemplateId",
            case when user_id = ${userId} then 'owner' else 'collaborator' end as role
     from conversations c
     where id = ${conversationId} and (user_id = ${userId} or (kind = 'plan' and exists(
@@ -181,7 +185,7 @@ export async function accessibleConversation(
     )))
   `
   return rows.length
-    ? (rows[0] as { agentModel: string; kind: 'chat' | 'plan'; title: string | null; ownerUserId: string; role: 'owner' | 'collaborator' })
+    ? (rows[0] as { agentModel: string; kind: 'chat' | 'plan'; title: string | null; ownerUserId: string; role: 'owner' | 'collaborator'; planTemplateId: string | null })
     : null
 }
 

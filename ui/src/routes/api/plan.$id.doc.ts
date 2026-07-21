@@ -27,6 +27,7 @@ export const Route = createFileRoute('/api/plan/$id/doc')({
           { id: conv.ownerUserId, label: user.name ?? user.email ?? 'someone' },
           conv.title,
           conv.agentModel,
+          conv.planTemplateId,
         )
         return json({ artifact })
       },
@@ -50,6 +51,7 @@ export const Route = createFileRoute('/api/plan/$id/doc')({
             conv.title,
             conv.agentModel,
             routed,
+            conv.planTemplateId,
           )
           return json({ artifactId: artifact.id })
         } catch (e) {

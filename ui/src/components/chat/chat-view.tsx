@@ -48,6 +48,7 @@ export function ChatView({
   newChatSignal,
   onCreated,
   kind = 'chat',
+  templateId,
   fill = false,
   mentionables = [],
   onTurnComplete,
@@ -61,6 +62,9 @@ export function ChatView({
   onCreated: (id: string) => void
   /** 'plan' conversations live in the Plan surface and draft tickets. */
   kind?: 'chat' | 'plan'
+  /** Plan surface: the template the living doc seeds from, chosen before the
+   *  first turn (which creates the conversation). Ignored once it exists. */
+  templateId?: string | null
   /** Fill the parent pane instead of centering on the chat width token —
    *  the plan surface's side-by-side split owns its own geometry. */
   fill?: boolean
@@ -216,7 +220,7 @@ export function ChatView({
     abortRef.current = ctrl
     try {
       for await (const ev of streamChat(
-        { model: agentModel, conversationId: convIdRef.current ?? undefined, content: text, tier: tier || undefined, ...splitAttachments(atts), kind },
+        { model: agentModel, conversationId: convIdRef.current ?? undefined, content: text, tier: tier || undefined, ...splitAttachments(atts), kind, templateId },
         (meta) => {
           if (!convIdRef.current) {
             convIdRef.current = meta.conversationId
