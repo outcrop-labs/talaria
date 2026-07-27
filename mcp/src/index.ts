@@ -519,6 +519,19 @@ server.registerTool(
 )
 
 server.registerTool(
+  'message_user',
+  {
+    description:
+      "Start (or continue) a direct conversation with a human teammate — your message lands in their chat with you plus an inbox notification. Reach for it when something genuinely needs THEIR attention now: work of theirs is blocked on you, you found something they should decide on, a deadline is about to slip. Not for status updates (comment on the ticket) or things the whole room should see (post_to_channel). Rate-limited per person per day — if it declines, respect the returned reason.",
+    inputSchema: {
+      to: z.string().min(1).max(200).describe("The teammate's email (preferred) or exact display name"),
+      message: z.string().min(1).max(4000).describe('Your message — lead with why this needs them'),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/agent/message-user', args)),
+)
+
+server.registerTool(
   'report_problem',
   {
     description:

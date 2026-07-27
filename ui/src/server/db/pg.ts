@@ -816,6 +816,20 @@ const MIGRATIONS: string[] = [
   // is the fallback). Set at creation; resolveTemplate treats it as the highest
   // link. Dead refs degrade to the agent binding via on-delete-set-null.
   `alter table conversations add column if not exists plan_template_id uuid references templates(id) on delete set null`,
+  // Proactive outreach (#59): per-agent opt-in, plus one log of agent-initiated
+  // contact (sweep check-ins + DMs) powering rate caps, repeat-avoidance
+  // context, and admin visibility.
+  `alter table agent_defs add column if not exists proactive boolean not null default false`,
+  `create table if not exists outreach_events (
+     id uuid primary key default gen_random_uuid(),
+     agent_model text not null,
+     kind text not null,
+     user_id uuid references users(id) on delete cascade,
+     conversation_id uuid references conversations(id) on delete set null,
+     note text,
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists outreach_events_agent_idx on outreach_events (agent_model, kind, created_at desc)`,
 ]
 
 function ensureMigrated(): Promise<void> {

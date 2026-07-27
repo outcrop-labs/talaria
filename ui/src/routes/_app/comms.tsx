@@ -31,9 +31,13 @@ import {
 
 export const Route = createFileRoute('/_app/comms')({
   component: CommsPage,
-  // ?c=<channelId> deep-links a channel/DM (notifications land here).
-  validateSearch: (search: Record<string, unknown>): { c?: string } =>
-    typeof search.c === 'string' && search.c ? { c: search.c } : {},
+  // ?c=<channelId> deep-links a channel/DM; ?a=<agentModel>&x=<convId>
+  // deep-links an agent conversation (agent-outreach notifications land here).
+  validateSearch: (search: Record<string, unknown>): { c?: string; a?: string; x?: string } => ({
+    ...(typeof search.c === 'string' && search.c ? { c: search.c } : {}),
+    ...(typeof search.a === 'string' && search.a ? { a: search.a } : {}),
+    ...(typeof search.x === 'string' && search.x ? { x: search.x } : {}),
+  }),
 })
 
 // Comms — every conversation in one place, Slack-shaped but agent-native:
@@ -93,10 +97,16 @@ function CommsPage() {
       void navigate({ search: {}, replace: true })
     }
   }, [search.c, channels, navigate])
+  useEffect(() => {
+    if (search.a) {
+      setSel({ t: 'agent', model: search.a, conversationId: search.x ?? null })
+      void navigate({ search: {}, replace: true })
+    }
+  }, [search.a, search.x, navigate])
 
   // Default to the first channel; heal a selection that vanished (archived).
   useEffect(() => {
-    if (search.c) return // deep link resolving — don't race it
+    if (search.c || search.a) return // deep link resolving — don't race it
     if (!sel && channels[0]) setSel({ t: 'channel', id: channels[0].id })
     if (sel?.t === 'channel' && !channels.some((c) => c.id === sel.id)) {
       setSel(channels[0] ? { t: 'channel', id: channels[0].id } : null)
