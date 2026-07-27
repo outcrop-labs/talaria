@@ -94,11 +94,13 @@ import { Route as ApiArtifactsIdRouteImport } from './routes/api/artifacts.$id'
 import { Route as ApiArtifactFoldersIdRouteImport } from './routes/api/artifact-folders.$id'
 import { Route as ApiAgentsRegisterRouteImport } from './routes/api/agents.register'
 import { Route as ApiAgentProblemRouteImport } from './routes/api/agent.problem'
+import { Route as ApiAgentMessageUserRouteImport } from './routes/api/agent.message-user'
 import { Route as ApiAgentMediaModelRouteImport } from './routes/api/agent-media.$model'
 import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminStorageRouteImport } from './routes/api/admin.storage'
 import { Route as ApiAdminSettingsRouteImport } from './routes/api/admin.settings'
 import { Route as ApiAdminRagRouteImport } from './routes/api/admin.rag'
+import { Route as ApiAdminOutreachRouteImport } from './routes/api/admin.outreach'
 import { Route as ApiAdminModelRolesRouteImport } from './routes/api/admin.model-roles'
 import { Route as ApiAdminJudgeRouteImport } from './routes/api/admin.judge'
 import { Route as ApiAdminGuardrailsRouteImport } from './routes/api/admin.guardrails'
@@ -593,6 +595,11 @@ const ApiAgentProblemRoute = ApiAgentProblemRouteImport.update({
   path: '/api/agent/problem',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAgentMessageUserRoute = ApiAgentMessageUserRouteImport.update({
+  id: '/api/agent/message-user',
+  path: '/api/agent/message-user',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAgentMediaModelRoute = ApiAgentMediaModelRouteImport.update({
   id: '/api/agent-media/$model',
   path: '/api/agent-media/$model',
@@ -616,6 +623,11 @@ const ApiAdminSettingsRoute = ApiAdminSettingsRouteImport.update({
 const ApiAdminRagRoute = ApiAdminRagRouteImport.update({
   id: '/api/admin/rag',
   path: '/api/admin/rag',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAdminOutreachRoute = ApiAdminOutreachRouteImport.update({
+  id: '/api/admin/outreach',
+  path: '/api/admin/outreach',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAdminModelRolesRoute = ApiAdminModelRolesRouteImport.update({
@@ -1036,11 +1048,13 @@ export interface FileRoutesByFullPath {
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
+  '/api/admin/outreach': typeof ApiAdminOutreachRoute
   '/api/admin/rag': typeof ApiAdminRagRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/storage': typeof ApiAdminStorageRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
+  '/api/agent/message-user': typeof ApiAgentMessageUserRoute
   '/api/agent/problem': typeof ApiAgentProblemRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
@@ -1196,11 +1210,13 @@ export interface FileRoutesByTo {
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
+  '/api/admin/outreach': typeof ApiAdminOutreachRoute
   '/api/admin/rag': typeof ApiAdminRagRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/storage': typeof ApiAdminStorageRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
+  '/api/agent/message-user': typeof ApiAgentMessageUserRoute
   '/api/agent/problem': typeof ApiAgentProblemRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
@@ -1358,11 +1374,13 @@ export interface FileRoutesById {
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
+  '/api/admin/outreach': typeof ApiAdminOutreachRoute
   '/api/admin/rag': typeof ApiAdminRagRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/storage': typeof ApiAdminStorageRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
+  '/api/agent/message-user': typeof ApiAgentMessageUserRoute
   '/api/agent/problem': typeof ApiAgentProblemRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
   '/api/artifact-folders/$id': typeof ApiArtifactFoldersIdRoute
@@ -1520,11 +1538,13 @@ export interface FileRouteTypes {
     | '/api/admin/guardrails'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
+    | '/api/admin/outreach'
     | '/api/admin/rag'
     | '/api/admin/settings'
     | '/api/admin/storage'
     | '/api/admin/users'
     | '/api/agent-media/$model'
+    | '/api/agent/message-user'
     | '/api/agent/problem'
     | '/api/agents/register'
     | '/api/artifact-folders/$id'
@@ -1680,11 +1700,13 @@ export interface FileRouteTypes {
     | '/api/admin/guardrails'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
+    | '/api/admin/outreach'
     | '/api/admin/rag'
     | '/api/admin/settings'
     | '/api/admin/storage'
     | '/api/admin/users'
     | '/api/agent-media/$model'
+    | '/api/agent/message-user'
     | '/api/agent/problem'
     | '/api/agents/register'
     | '/api/artifact-folders/$id'
@@ -1841,11 +1863,13 @@ export interface FileRouteTypes {
     | '/api/admin/guardrails'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
+    | '/api/admin/outreach'
     | '/api/admin/rag'
     | '/api/admin/settings'
     | '/api/admin/storage'
     | '/api/admin/users'
     | '/api/agent-media/$model'
+    | '/api/agent/message-user'
     | '/api/agent/problem'
     | '/api/agents/register'
     | '/api/artifact-folders/$id'
@@ -1984,11 +2008,13 @@ export interface RootRouteChildren {
   ApiAdminGuardrailsRoute: typeof ApiAdminGuardrailsRoute
   ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
   ApiAdminModelRolesRoute: typeof ApiAdminModelRolesRoute
+  ApiAdminOutreachRoute: typeof ApiAdminOutreachRoute
   ApiAdminRagRoute: typeof ApiAdminRagRoute
   ApiAdminSettingsRoute: typeof ApiAdminSettingsRoute
   ApiAdminStorageRoute: typeof ApiAdminStorageRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
   ApiAgentMediaModelRoute: typeof ApiAgentMediaModelRouteWithChildren
+  ApiAgentMessageUserRoute: typeof ApiAgentMessageUserRoute
   ApiAgentProblemRoute: typeof ApiAgentProblemRoute
   ApiAuthGoogleRoute: typeof ApiAuthGoogleRouteWithChildren
   ApiAuthLogoutRoute: typeof ApiAuthLogoutRoute
@@ -2611,6 +2637,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAgentProblemRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/agent/message-user': {
+      id: '/api/agent/message-user'
+      path: '/api/agent/message-user'
+      fullPath: '/api/agent/message-user'
+      preLoaderRoute: typeof ApiAgentMessageUserRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/agent-media/$model': {
       id: '/api/agent-media/$model'
       path: '/api/agent-media/$model'
@@ -2644,6 +2677,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/rag'
       fullPath: '/api/admin/rag'
       preLoaderRoute: typeof ApiAdminRagRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin/outreach': {
+      id: '/api/admin/outreach'
+      path: '/api/admin/outreach'
+      fullPath: '/api/admin/outreach'
+      preLoaderRoute: typeof ApiAdminOutreachRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/admin/model-roles': {
@@ -3712,11 +3752,13 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminGuardrailsRoute: ApiAdminGuardrailsRoute,
   ApiAdminJudgeRoute: ApiAdminJudgeRoute,
   ApiAdminModelRolesRoute: ApiAdminModelRolesRoute,
+  ApiAdminOutreachRoute: ApiAdminOutreachRoute,
   ApiAdminRagRoute: ApiAdminRagRoute,
   ApiAdminSettingsRoute: ApiAdminSettingsRoute,
   ApiAdminStorageRoute: ApiAdminStorageRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,
   ApiAgentMediaModelRoute: ApiAgentMediaModelRouteWithChildren,
+  ApiAgentMessageUserRoute: ApiAgentMessageUserRoute,
   ApiAgentProblemRoute: ApiAgentProblemRoute,
   ApiAuthGoogleRoute: ApiAuthGoogleRouteWithChildren,
   ApiAuthLogoutRoute: ApiAuthLogoutRoute,

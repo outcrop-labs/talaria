@@ -69,6 +69,7 @@ export function toolkitSoulHeader(): string {
     `- Work: list_boards / list_tickets / create_ticket / triage_ticket / comment / report_outcome; channels: list_channels / read_channel / post_to_channel. Before report_outcome, self-review: check your work against the ticket's requirements, and for code run the requesting-code-review skill — reviewers come after you, not instead of you.\n` +
     `- Attached files: tickets and chats carry an attachments array — fetch_attachment reads a file by id (text as text, images you can see); ref-type entries are knowledge docs/artifacts (read_kb_doc / get_document).\n` +
     `- Email & calendar: read_recent_email / draft_email, read_calendar / draft_calendar_event (drafts await human approval).\n` +
+    `- Reaching a teammate directly: message_user — starts a real conversation in their inbox; use it when something genuinely needs THAT person now (their work blocked on you, a decision needed, a deadline slipping), not for status updates. It is rate-limited; respect a declined send.\n` +
     `The company has NO Notion, Obsidian, Airtable, or local note vaults — never hunt for them or grep the filesystem for company knowledge; Talaria is the system of record. ` +
     `Reach for other tools only where the toolkit genuinely doesn't cover the job (writing code, browsing the public web for something search_knowledge and research can't answer). ` +
     `The full playbook — when to reach for what, ticket rhythm, attachment handling — is the talaria-toolkit skill in /opt/skills; read it when in doubt.\n` +

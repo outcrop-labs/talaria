@@ -87,6 +87,8 @@ function AdminPage() {
 
         <GuardrailsPanel />
 
+        <OutreachPanel />
+
         <OrgGooglePanel />
 
         <RetrievalPanel />
@@ -552,6 +554,112 @@ function GuardrailsPanel() {
                 <span className="shrink-0 rounded px-1 text-[10px] uppercase" style={{ color: f.severity === 'high' ? 'var(--theme-danger)' : 'var(--theme-warning)' }}>{f.check.replace(/_/g, ' ')}</span>
                 <span className="min-w-0 flex-1 truncate text-muted" title={f.snippet}>{f.snippet || f.message}</span>
                 <span className="shrink-0 text-[10px] text-muted">{f.model}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+interface OutreachData {
+  config: { enabled: boolean; intervalMinutes: number; dailyDmCap: number }
+  agents: Array<{ model: string; displayName: string; proactive: boolean; personal: boolean }>
+  events: Array<{ agentModel: string; kind: string; note: string | null; createdAt: string }>
+}
+
+// Proactive outreach (#59): opt-in periodic check-ins where agents surface
+// things through their own governed tools, plus agent-initiated DM caps.
+function OutreachPanel() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['admin-outreach'],
+    queryFn: async (): Promise<OutreachData> => {
+      const r = await fetch('/api/admin/outreach')
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+    refetchInterval: 30_000,
+  })
+  const cfg = data?.config
+  const agents = data?.agents ?? []
+  const save = async (patch: Partial<OutreachData['config']>, proactiveAgents?: string[]) => {
+    if (!cfg) return
+    const body = {
+      ...cfg,
+      ...patch,
+      proactiveAgents: proactiveAgents ?? agents.filter((a) => a.proactive).map((a) => a.model),
+    }
+    await fetch('/api/admin/outreach', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    await qc.invalidateQueries({ queryKey: ['admin-outreach'] })
+  }
+
+  return (
+    <Panel>
+      <div className="mb-2 text-sm font-semibold text-fg">Proactive outreach</div>
+      <p className="mb-4 text-xs text-muted">
+        Opted-in agents get a periodic check-in: a look at their own stale or blocked work, and the chance to act
+        through their normal tools — a ticket comment, a channel post, or a direct message that lands in your chat
+        and inbox. Everything stays attributed and board-policy-gated; direct messages are capped per person per
+        day. Off by default.
+      </p>
+      <div className="flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-xs text-muted">
+          <input type="checkbox" checked={cfg?.enabled ?? false} onChange={(e) => void save({ enabled: e.target.checked })} />
+          Enable periodic check-ins
+        </label>
+        <label className="flex items-center gap-2 text-xs text-muted" title="Minimum minutes between one agent's check-ins">
+          <span className="uppercase tracking-wide">Every</span>
+          <Input
+            size="sm" type="number" min={15} max={1440} className="w-20"
+            value={cfg?.intervalMinutes ?? 240}
+            disabled={!cfg?.enabled}
+            onChange={(e) => void save({ intervalMinutes: Math.max(15, Math.min(1440, Number(e.target.value) || 240)) })}
+          />
+          <span>min</span>
+        </label>
+        <label className="flex items-center gap-2 text-xs text-muted" title="Agent-initiated direct messages allowed per person per day">
+          <span className="uppercase tracking-wide">DM cap</span>
+          <Input
+            size="sm" type="number" min={1} max={20} className="w-16"
+            value={cfg?.dailyDmCap ?? 3}
+            onChange={(e) => void save({ dailyDmCap: Math.max(1, Math.min(20, Number(e.target.value) || 3)) })}
+          />
+          <span>/day</span>
+        </label>
+      </div>
+      {agents.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Proactive agents</div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+            {agents.map((a) => (
+              <label key={a.model} className="flex items-center gap-2 text-sm text-fg">
+                <input
+                  type="checkbox"
+                  checked={a.proactive}
+                  onChange={(e) => {
+                    const next = agents.filter((x) => (x.model === a.model ? e.target.checked : x.proactive)).map((x) => x.model)
+                    void save({}, next)
+                  }}
+                />
+                {a.displayName}
+                {a.personal && <span className="text-[10px] uppercase text-muted">personal</span>}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      {data?.events && data.events.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Recent outreach</div>
+          <div className="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-lg border border-line-subtle">
+            {data.events.map((ev, i) => (
+              <div key={i} className="flex items-start gap-2 px-2 py-1.5 text-xs">
+                <span className="shrink-0 rounded px-1 text-[10px] uppercase text-muted">{ev.kind}</span>
+                <span className="min-w-0 flex-1 truncate text-muted" title={ev.note ?? ''}>{ev.note ?? '—'}</span>
+                <span className="shrink-0 text-[10px] text-muted">{ev.agentModel}</span>
+                <span className="shrink-0 text-[10px] text-muted">{relativeTime(ev.createdAt)}</span>
               </div>
             ))}
           </div>

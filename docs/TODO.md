@@ -201,8 +201,14 @@ engineering-facing tracker.
   renames (Enter commit / Escape revert, shielded from modal close),
   field+button Enter-submits, the home compose dialog reparented onto the
   shared Modal, and missing modal autofocuses. ~80 controls / 33 files audited.
-- **Proactive agent outreach (#59)** — agents start conversations, comment on
-  tickets unprompted, surface things they notice.
+- ✅ **Proactive agent outreach (#59) (2026-07-27)** — `message_user` MCP tool
+  (agent→human chat conversation + inbox notification; owner-only for
+  personal assistants, per-pair daily caps) and the opt-in check-in sweep
+  (`server/outreach.ts`, throttled-kick pattern): each proactive agent
+  periodically reviews its stale/blocked work through its own persona
+  gateway and acts via its normal governed tools. Admin → Proactive
+  outreach (master switch off by default, per-agent flags, caps, event
+  log). Verified live end-to-end.
 - **Universal @mentions (#60)** — core is in; finish coverage across plan /
   research / design surfaces as they land.
 - **Design view (#57)** — future, broad scope.
