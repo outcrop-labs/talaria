@@ -404,8 +404,11 @@ Highest-leverage remaining threads:
    `<fleet>/skills` on render, mounted at `/opt/skills` — that shared mount is
    now actually wired in `fleet-render.ts`), plus a `fetch_attachment` MCP
    tool (text inline, images as MCP image blocks, binary = honest metadata)
-   and soul-header pointers. NOTE: running agents need a compose recreate to
-   pick up the new `/opt/skills` mount; skill EDITS after that are live.
+   and soul-header pointers. Follow-through 2026-07-27 (#78): rendered
+   configs now set `skills.external_dirs` — before that Hermes never scanned
+   the mounts natively; seeding is pristine-tracked (`.seeds.json` — un-edited
+   copies follow canonical updates, admin edits win); the dev fleet is
+   recreated, so the mount NOTE below is history. Skill edits are live.
 3. ~~**Artifact tail**~~ — shipped 2026-07-17: S3-compatible object storage
    behind uploads (`server/storage.ts`, Admin → Storage; Backblaze/R2/MinIO/AWS
    via hand-rolled SigV4) with test-connection + local→bucket migration, a

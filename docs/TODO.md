@@ -37,8 +37,14 @@ engineering-facing tracker.
     per 7 days) become templated notes in the agent's rendered soul — counts +
     fixed advice only, flagged content never re-enters model context. Admin →
     Confab guard → "Coach agents from findings".
-  - ⏳ **Hermes self-review** (#78) — enable subagent-driven-development /
-    requesting-code-review skills fleet-wide as the agent's first line.
+  - ✅ **Hermes self-review (#78) (2026-07-27)** — the skills plumbing bug
+    fixed (rendered configs now carry `skills.external_dirs` — before this,
+    Hermes never scanned the `/opt/skills` / `/opt/dept-skills` mounts at
+    all); `subagent-driven-development` vendored into `scripts/skills/`
+    (bundled `requesting-code-review` was already enabled); toolkit skill +
+    soul header teach self-review-before-`report_outcome`. Seeding upgraded
+    to pristine tracking (`.seeds.json`): un-edited copies follow canonical
+    updates, admin edits never clobbered.
 - **Artifact system (#54)** — *active.* Versioned work products with built-in
   hosting, viewing, and sharing.
   - ✅ Foundation: `artifacts` table, doc kind, sharing (reuses KB visibility +
