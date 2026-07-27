@@ -192,8 +192,14 @@ engineering-facing tracker.
   connection; agents export artifacts into the owner's Drive as that user. Next:
   extend the same per-user connection to more Google surfaces (Calendar, Gmail)
   and other connected tools.
-- **Inference: full-stack monitoring + container controls (#48)** — live inference
-  dashboard, restart/reboot containers, warm-up state.
+- ✅ **Inference: monitoring + agent-container controls (#48) (2026-07-27)** —
+  /inference is a live dashboard (generating-now from streaming rows,
+  in-memory gateway pulse with TTFB percentiles, fleet temperature, active
+  hour; 5s lean-in poll); warm-up (`starting`) health parsed + shown as a
+  pulsing "warming" dot; `up`/`unretire` non-blocking; Restart (bounce,
+  confirm) + Roll (zero-downtime, admin) buttons on the roster, audited.
+  Remaining half of the ROADMAP framing — managing inference BACKEND
+  containers (Ollama/vLLM lifecycle from Talaria) — is its own future thread.
 - **WYSIWYG everywhere + modal editors (#46)** — finish converting remaining
   plain-text areas to the shared rich editor.
 - ✅ **Input consistency sweep (#49) (2026-07-20)** — shared `submitOnEnter` +

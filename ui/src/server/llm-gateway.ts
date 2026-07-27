@@ -151,6 +151,19 @@ const rejectedParam = (errText: string): string | null => {
  *  and parameter-rejection recovery (a 400 naming a parameter we sent strips
  *  it and retries, remembering per endpoint:model). */
 export async function fetchUpstream(call: UpstreamCall, route?: ResolvedRoute): Promise<Response> {
+  const started = Date.now()
+  try {
+    const res = await fetchUpstreamInner(call, route)
+    // Time-to-first-byte for streams (headers received), full time otherwise.
+    recordGatewayStat({ ms: Date.now() - started, ok: res.ok, model: String(call.body.model ?? route?.upstreamModel ?? '?') })
+    return res
+  } catch (err) {
+    recordGatewayStat({ ms: Date.now() - started, ok: false, model: String(call.body.model ?? route?.upstreamModel ?? '?') })
+    throw err
+  }
+}
+
+async function fetchUpstreamInner(call: UpstreamCall, route?: ResolvedRoute): Promise<Response> {
   const send = async (): Promise<Response> => {
     const init = () => ({
       method: 'POST' as const,
@@ -194,6 +207,40 @@ export async function fetchUpstream(call: UpstreamCall, route?: ResolvedRoute): 
     }
   }
   return send()
+}
+
+// ── Live gateway stats (in-memory, per app process) ─────────────────────────
+// A small ring of recent upstream calls: enough for a live dashboard's
+// request rate, error count, and TTFB percentiles. Deliberately not a table —
+// this is a pulse, not a ledger (usage_events is the durable record).
+interface GatewayStat {
+  ts: number
+  ms: number
+  ok: boolean
+  model: string
+}
+const STATS_MAX = 500
+const gatewayStatRing: GatewayStat[] = []
+function recordGatewayStat(s: Omit<GatewayStat, 'ts'>): void {
+  gatewayStatRing.push({ ts: Date.now(), ...s })
+  if (gatewayStatRing.length > STATS_MAX) gatewayStatRing.splice(0, gatewayStatRing.length - STATS_MAX)
+}
+
+export interface GatewayPulse {
+  /** Upstream calls in the last 15 minutes (this app process). */
+  requests: number
+  errors: number
+  /** Time-to-first-byte percentiles over those calls, ms. */
+  p50: number | null
+  p95: number | null
+}
+
+export function gatewayPulse(): GatewayPulse {
+  const cutoff = Date.now() - 15 * 60_000
+  const recent = gatewayStatRing.filter((s) => s.ts > cutoff)
+  const times = recent.map((s) => s.ms).sort((a, b) => a - b)
+  const pct = (p: number) => (times.length ? times[Math.min(times.length - 1, Math.floor((p / 100) * times.length))]! : null)
+  return { requests: recent.length, errors: recent.filter((s) => !s.ok).length, p50: pct(50), p95: pct(95) }
 }
 
 /** Server-side non-streaming completion through the org gateway (routing +
