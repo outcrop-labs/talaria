@@ -135,6 +135,7 @@ function PasswordForm() {
     <form onSubmit={submit} className="flex flex-col gap-3">
       <Input
         placeholder="Username"
+        autoFocus
         autoComplete="username"
         value={username}
         onChange={(e) => setUsername(e.target.value)}

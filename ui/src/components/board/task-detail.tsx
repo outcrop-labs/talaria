@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { inlineEditKeys } from '@/components/ui/control'
 import { Maximize2, ChevronLeft, Archive, ArchiveRestore, Trash2 } from 'lucide-react'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { CloseButton } from '@/components/ui/close-button'
@@ -138,6 +139,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     disabled={!canEdit}
                     onChange={(e) => setTitle(e.target.value)}
                     onBlur={() => title.trim() && title !== t.title && save({ title: title.trim() })}
+                    onKeyDown={inlineEditKeys(() => setTitle(t.title))}
                     className="border-0 bg-transparent px-0 text-lg font-semibold focus:border-0"
                   />
 

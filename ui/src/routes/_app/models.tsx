@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { confirm } from '@/components/ui/confirm'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
+import { submitOnEnter } from '@/components/ui/control'
 import { Modal } from '@/components/ui/modal'
 import { Generating } from '@/components/ui/generating'
 import { Panel } from '@/components/ui/panel'
@@ -229,6 +230,7 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
               type="password"
               value={key}
               onChange={(e) => setKey(e.target.value)}
+              onKeyDown={submitOnEnter(() => key.trim() && !savingKey && void saveKey(key.trim()))}
               placeholder={ep.hasKey ? 'paste a new key to rotate' : 'paste the provider key'}
               autoComplete="off"
             />
@@ -640,7 +642,7 @@ function AddProviderModal({ open, onClose, onAdded }: { open: boolean; onClose: 
         </div>
         <div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={preset.key} />
+          <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder={preset.key} />
         </div>
         {preset.configurableUrl && (
           <div>

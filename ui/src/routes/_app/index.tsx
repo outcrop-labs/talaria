@@ -1,10 +1,13 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles, CalendarDays, Plus, ExternalLink, Mail, Send, X, ShieldCheck, Check } from 'lucide-react'
+import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles, CalendarDays, Plus, ExternalLink, Mail, Send, ShieldCheck, Check } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { alert } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from '@/components/assistant/assistant-wizard'
 import { NotificationsPanel } from '@/components/app/notifications-panel'
@@ -555,27 +558,22 @@ function ComposeModal({ onClose }: { onClose: () => void }) {
     }
   }
 
+  // The shared Modal (Escape + backdrop close) with the shared field
+  // primitives — this was the one dialog still hand-rolling both.
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 pt-[8vh]" onClick={onClose}>
-      <div className="w-full max-w-lg rounded-2xl border border-line bg-card shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-2 border-b border-line-subtle px-4 py-3">
-          <Send size={15} className="text-muted" />
-          <span className="text-sm font-semibold text-fg">New message</span>
-          <button type="button" onClick={onClose} className="ml-auto rounded p-1 text-muted hover:text-fg"><X size={15} /></button>
-        </div>
-        <div className="space-y-2 p-4">
-          <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="To" className="w-full rounded-lg border border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted" />
-          <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" className="w-full rounded-lg border border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted" />
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your message" rows={8} className="w-full resize-y rounded-lg border border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted" />
-          <div className="flex items-center gap-3">
-            <Button size="sm" onClick={() => void send()} disabled={busy || !to.trim()}>
-              <Send size={13} className="mr-1" /> {busy ? 'Sending' : 'Send'}
-            </Button>
-            {status && <span className="text-xs" style={{ color: 'var(--theme-danger)' }}>{status}</span>}
-          </div>
+    <Modal open onClose={onClose} title={<span className="flex items-center gap-2"><Send size={15} className="text-muted" /> New message</span>} width="max-w-lg">
+      <div className="space-y-2">
+        <Input autoFocus value={to} onChange={(e) => setTo(e.target.value)} placeholder="To" />
+        <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" />
+        <Textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your message" rows={8} className="w-full resize-y" />
+        <div className="flex items-center gap-3">
+          <Button size="sm" onClick={() => void send()} disabled={busy || !to.trim()}>
+            <Send size={13} className="mr-1" /> {busy ? 'Sending' : 'Send'}
+          </Button>
+          {status && <span className="text-xs" style={{ color: 'var(--theme-danger)' }}>{status}</span>}
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 

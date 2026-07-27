@@ -5,6 +5,7 @@ import { Panel } from '@/components/ui/panel'
 import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { submitOnEnter } from '@/components/ui/control'
 import { Select } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
 import { useAgents } from '@/lib/agents'
@@ -358,7 +359,7 @@ function RerankSection({ rag }: { rag: RagAdmin }) {
         )}
         {meta?.needsKey && (
           <>
-            <Input size="sm" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={cfg.hasKey ? 'replace saved key' : 'API key'} className="w-52" />
+            <Input size="sm" type="password" value={key} onChange={(e) => setKey(e.target.value)} onKeyDown={submitOnEnter(() => key && !savingKey && void saveKey())} placeholder={cfg.hasKey ? 'replace saved key' : 'API key'} className="w-52" />
             {key && (
               <Button size="sm" onClick={() => void saveKey()} disabled={savingKey}>
                 Save key

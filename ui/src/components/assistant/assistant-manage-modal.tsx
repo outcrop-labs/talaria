@@ -5,6 +5,7 @@ import { Modal } from '@/components/ui/modal'
 import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { submitOnEnter } from '@/components/ui/control'
 import { EmptyState } from '@/components/ui/empty-state'
 import { CronsPanel } from '@/components/fleet/agent-crons'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
@@ -85,7 +86,12 @@ function GeneralTab({ assistant }: { assistant: Assistant }) {
         <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Handle</label>
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted">@</span>
-          <Input value={handle} onChange={(e) => setHandle(e.target.value.toLowerCase())} maxLength={30} />
+          <Input
+            value={handle}
+            onChange={(e) => setHandle(e.target.value.toLowerCase())}
+            onKeyDown={submitOnEnter(() => handleOk && handle !== assistant.slug && !busy && void run('handle', () => updateAssistant({ handle })))}
+            maxLength={30}
+          />
           <Button
             size="sm"
             disabled={!handleOk || handle === assistant.slug || !!busy}

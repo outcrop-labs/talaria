@@ -4,6 +4,7 @@ import { Loader2 } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { submitOnEnter } from '@/components/ui/control'
 import { Steps } from '@/components/ui/steps'
 import { reconcileFleet } from '@/lib/fleet-defs'
 import { cn } from '@/lib/cn'
@@ -106,7 +107,7 @@ export function FederateModal({ onClose }: { onClose: () => void }) {
             </p>
             <div>
               <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Directory on server</label>
-              <Input value={dir} onChange={(e) => setDir(e.target.value)} placeholder="/path/to/stack" autoFocus />
+              <Input value={dir} onChange={(e) => setDir(e.target.value)} onKeyDown={submitOnEnter(() => !busy && dir.trim() && void federate())} placeholder="/path/to/stack" autoFocus />
             </div>
             {err && <p className="text-xs text-[color:var(--theme-danger)]">{err}</p>}
           </div>

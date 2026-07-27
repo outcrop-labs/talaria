@@ -5,6 +5,7 @@ import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimiz
 import { Button, buttonClasses } from '@/components/ui/button'
 import { confirm, alert } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
+import { inlineEditKeys } from '@/components/ui/control'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { EmojiPicker } from '@/components/ui/emoji-picker'
@@ -494,6 +495,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
             value={title}
             onChange={(e) => { setTitle(e.target.value); setDirty(true) }}
             onBlur={() => dirty && void saveBody()}
+            onKeyDown={inlineEditKeys(() => artifact && setTitle(artifact.title))}
             className="min-w-0 flex-1 border-0 bg-transparent text-lg font-semibold focus:border-0"
             placeholder="Untitled"
           />
