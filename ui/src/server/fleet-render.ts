@@ -14,6 +14,7 @@
 //   • networks → the external ai_default so the bridge/peers resolve the same
 //     DNS name; depends_on/build/ports dropped (deps run in the old project,
 //     the bridge reaches agents over the network, host ports retire)
+import { createHash } from 'node:crypto'
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
@@ -35,24 +36,75 @@ const CHASSIS_FILE = () => process.env.TALARIA_CHASSIS_FILE ?? join(FLEET_DIR(),
 /** fleet/.env must carry TALARIA_AGENT_KEY so compose can interpolate it into
  *  each agent's env (the toolkit MCP header reads it there). Append-once. */
 // Repo-shipped fleet skills (scripts/skills/*) seed into the fleet's shared
-// skills root on render — copy-if-missing, so admin edits via the skills UI
-// are never clobbered. fleet/ itself is gitignored; this is how canonical
-// skills like talaria-toolkit reach every install.
+// skills root on render. Pristine copies (byte-identical to what was seeded,
+// tracked in .seeds.json) follow canonical updates; a copy the admin edited
+// via the skills UI is never clobbered. fleet/ itself is gitignored; this is
+// how canonical skills like talaria-toolkit reach every install.
 const SEED_SKILLS_DIR = () => resolve(process.cwd(), '../scripts/skills')
+
+/** Content hash of a skill dir: sorted relative paths + file bytes. */
+async function skillDirHash(root: string): Promise<string> {
+  const h = createHash('sha256')
+  const walk = async (dir: string, rel: string): Promise<void> => {
+    const entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue
+      const p = join(dir, e.name)
+      const r = rel ? `${rel}/${e.name}` : e.name
+      if (e.isDirectory()) await walk(p, r)
+      else if (e.isFile()) {
+        h.update(r)
+        h.update('\0')
+        h.update(await readFile(p))
+      }
+    }
+  }
+  await walk(root, '')
+  return h.digest('hex')
+}
 
 async function seedSharedSkills(): Promise<void> {
   const dest = join(FLEET_DIR(), 'skills')
   await mkdir(dest, { recursive: true })
+  const manifestPath = join(dest, '.seeds.json')
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8').catch(() => '{}')) as Record<string, string>
+  let dirty = false
   const seeds = await readdir(SEED_SKILLS_DIR(), { withFileTypes: true }).catch(() => [])
   for (const seed of seeds) {
     if (!seed.isDirectory()) continue
+    const src = join(SEED_SKILLS_DIR(), seed.name)
     const target = join(dest, seed.name)
-    const exists = await stat(target).catch(() => null)
-    if (exists) continue
-    await cp(join(SEED_SKILLS_DIR(), seed.name), target, { recursive: true }).catch((e) =>
-      console.error(`[fleet] seeding skill ${seed.name} failed:`, e instanceof Error ? e.message : e),
-    )
+    try {
+      const srcHash = await skillDirHash(src)
+      if (!(await stat(target).catch(() => null))) {
+        await cp(src, target, { recursive: true })
+        manifest[seed.name] = srcHash
+        dirty = true
+        continue
+      }
+      if (manifest[seed.name] === srcHash) continue // already carrying this seed
+      const targetHash = await skillDirHash(target)
+      if (targetHash === srcHash) {
+        // In sync (e.g. pre-manifest install that never diverged) — adopt.
+        manifest[seed.name] = srcHash
+        dirty = true
+      } else if (manifest[seed.name] === targetHash) {
+        // Pristine copy of an older seed — carry the canonical update forward.
+        await rm(target, { recursive: true, force: true })
+        await cp(src, target, { recursive: true })
+        manifest[seed.name] = srcHash
+        dirty = true
+      } else if (!manifest[seed.name]) {
+        // Pre-manifest install that differs from today's seed: admin edit or
+        // stale canonical — can't tell, so never clobber. Update via skills UI.
+        console.warn(`[fleet] skill ${seed.name} predates seed tracking and differs from canonical — left as-is`)
+      }
+      // else: admin-edited — theirs wins, silently.
+    } catch (e) {
+      console.error(`[fleet] seeding skill ${seed.name} failed:`, e instanceof Error ? e.message : e)
+    }
   }
+  if (dirty) await writeFile(manifestPath, JSON.stringify(manifest, null, 2))
 }
 
 async function ensureFleetEnvKey(): Promise<void> {
@@ -265,6 +317,17 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
         url: MCP_FLEET_URL(),
         headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '${TALARIA_AGENT_KEY}' },
       },
+    }
+    // Hermes only discovers skills outside ~/.hermes/skills via
+    // skills.external_dirs — without this the /opt/skills + /opt/dept-skills
+    // mounts exist in the container but the skill registry never scans them.
+    // config.yaml is a bind-mounted file and Hermes caches on its mtime, so
+    // this lands in running agents on the next invocation, no restart.
+    const skillsCfg = (routed.skills as Record<string, unknown> | undefined) ?? {}
+    const extDirs = Array.isArray(skillsCfg.external_dirs) ? (skillsCfg.external_dirs as unknown[]).map(String) : []
+    routed.skills = {
+      ...skillsCfg,
+      external_dirs: [...new Set([...extDirs, '/opt/skills', '/opt/dept-skills'])],
     }
     await writeFile(
       join(agentDir, 'config.yaml'),
