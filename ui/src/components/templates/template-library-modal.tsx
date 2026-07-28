@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { RichEditor } from '@/components/ui/rich-editor'
+import { SkeletonRows } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { confirm } from '@/components/ui/confirm'
 import {
@@ -20,7 +21,7 @@ import {
 // may carry overrides. Managed here; consumed everywhere tickets/plans form.
 export function TemplateLibraryModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const qc = useQueryClient()
-  const { data: templates = [] } = useTemplates()
+  const { data: templates = [], isLoading } = useTemplates()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const selected = templates.find((t) => t.id === selectedId) ?? null
 
@@ -57,7 +58,8 @@ export function TemplateLibraryModal({ open, onClose }: { open: boolean; onClose
                   + new
                 </button>
               </div>
-              {byKind(kind).length === 0 && <div className="text-xs text-muted">None yet.</div>}
+              {isLoading && <SkeletonRows rows={3} className="px-2 py-1.5" />}
+              {!isLoading && byKind(kind).length === 0 && <div className="text-xs text-muted">None yet.</div>}
               {byKind(kind).map((t) => (
                 <button
                   key={t.id}

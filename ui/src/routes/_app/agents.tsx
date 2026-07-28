@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { SkeletonCard } from '@/components/ui/skeleton'
+import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Loader2, Copy, RotateCw, Repeat, Trash2, UserPlus, Plus } from 'lucide-react'
@@ -76,9 +76,9 @@ function healthOf(d: AgentDef, c: AgentContainers | null): { health: Health; run
 function AgentsPage() {
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
-  const { data: fleet } = useFleet()
+  const { data: fleet, isLoading: fleetLoading } = useFleet()
   const { data: defsData, isLoading: defsLoading } = useFleetDefs(isAdmin)
-  const { data: containers = [] } = useFleetContainers(isAdmin)
+  const { data: containers = [], isLoading: containersLoading } = useFleetContainers(isAdmin)
   const byDept = new Map(containers.map((c) => [c.department, c]))
   const defs = defsData?.defs ?? []
   const endpoints = defsData?.endpoints ?? []
@@ -96,7 +96,12 @@ function AgentsPage() {
       <div className="mx-auto max-w-5xl space-y-6">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="mercury-text text-2xl font-semibold">Agents</h1>
-          {t && <span className="text-sm text-muted">{t.online}/{t.agents} online · {t.activeToday} active today</span>}
+          {t ? (
+            <span className="text-sm text-muted">{t.online}/{t.agents} online · {t.activeToday} active today</span>
+          ) : fleetLoading ? (
+            // Hold the slot so the toolbar doesn't jog when the totals land.
+            <Skeleton className="h-3 w-40" />
+          ) : null}
           <div className="ml-auto flex items-center gap-2">
             {/* Grid / list toggle */}
             <div className="flex rounded-lg border border-line-subtle p-0.5">
@@ -137,7 +142,9 @@ function AgentsPage() {
           </div>
         </div>
 
-        {defsLoading ? (
+        {/* Defs AND containers gate the grid together: tiles built from
+            `containers: null` read every agent as stopped, then flip. */}
+        {defsLoading || containersLoading ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {[0, 1, 2, 3, 4, 5].map((i) => (
               <SkeletonCard key={i} delay={i * 0.1} />

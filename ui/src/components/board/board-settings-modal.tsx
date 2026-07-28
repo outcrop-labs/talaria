@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { UserPicker } from '@/components/app/user-picker'
 import { TemplateLibraryModal } from '@/components/templates/template-library-modal'
 import { cn } from '@/lib/cn'
@@ -75,8 +76,8 @@ export function BoardSettingsModal({
 // the default (it seeds bare tickets and shapes agent drafting on this board).
 function TemplatesSection({ board }: { board: Board }) {
   const qc = useQueryClient()
-  const { data: templates = [] } = useTemplates()
-  const { data: bindings = [] } = useBoardTemplates(board.id)
+  const { data: templates = [], isLoading: templatesLoading } = useTemplates()
+  const { data: bindings = [], isLoading: bindingsLoading } = useBoardTemplates(board.id)
   const [managing, setManaging] = useState(false)
   const ticketTemplates = templates.filter((t) => t.kind === 'ticket')
   const bound = new Set(bindings.map((b) => b.templateId))
@@ -99,7 +100,9 @@ function TemplatesSection({ board }: { board: Board }) {
           Manage library
         </button>
       </div>
-      {ticketTemplates.length === 0 ? (
+      {templatesLoading || bindingsLoading ? (
+        <SkeletonRows rows={3} className="rounded-xl border border-line-subtle p-2" />
+      ) : ticketTemplates.length === 0 ? (
         <div className="text-xs text-muted">No ticket templates in the library yet. Create one to templatize this board's tickets.</div>
       ) : (
         <div className="space-y-1 rounded-xl border border-line-subtle p-2">
@@ -259,7 +262,7 @@ function GeneralTab({
 
 function PeopleTab({ board }: { board: Board }) {
   const qc = useQueryClient()
-  const { data: members = [] } = useBoardMembers(board.id)
+  const { data: members = [], isLoading: membersLoading } = useBoardMembers(board.id)
   const [role, setRole] = useState<'editor' | 'viewer'>('editor')
   const [err, setErr] = useState<string | null>(null)
   const refresh = () => qc.invalidateQueries({ queryKey: ['board-members', board.id] })
@@ -292,6 +295,7 @@ function PeopleTab({ board }: { board: Board }) {
 
       <div className="mt-4 space-y-1">
         <div className="mb-1 text-xs uppercase tracking-wide text-muted">People with access</div>
+        {membersLoading && <SkeletonRows rows={3} avatar className="px-1 py-1.5" />}
         {members.map((m) => (
           <div key={m.userId} className="flex items-center gap-2 rounded-lg px-1 py-1.5">
             <Avatar name={m.name ?? m.email} className="h-7 w-7" />
@@ -317,9 +321,9 @@ function PeopleTab({ board }: { board: Board }) {
 
 function AgentsTab({ board }: { board: Board }) {
   const qc = useQueryClient()
-  const { data: fleet } = useAgents()
+  const { data: fleet, isLoading: fleetLoading } = useAgents()
   const options = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
-  const { data: config } = useBoardAgents(board.id)
+  const { data: config, isLoading: configLoading } = useBoardAgents(board.id)
   const [allowAll, setAllowAll] = useState(false)
   const [agents, setAgents] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
@@ -349,24 +353,38 @@ function AgentsTab({ board }: { board: Board }) {
       <p className="mb-3 text-xs text-muted">
         Restrictive by default: a ticket can only be assigned to agents allowed here.
       </p>
-      {!allowAll && <Combobox options={options} selected={agents} onChange={setAgents} multiple placeholder="Select agents" />}
-      <div className="mt-4 flex items-center justify-between gap-2">
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-fg">
-          <input
-            type="checkbox"
-            checked={allowAll}
-            onChange={(e) => setAllowAll(e.target.checked)}
-            className="accent-[color:var(--theme-accent)]"
-          />
-          Allow all agents
-        </label>
-        <div className="flex items-center gap-2">
-          {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
-          <Button size="sm" onClick={() => void save()} disabled={busy}>
-            Save
-          </Button>
+      {configLoading || fleetLoading ? (
+        // The checkbox is seeded from the fetched config — showing it unchecked
+        // now would render a false policy that flips after load.
+        <div>
+          <Skeleton className="h-11 w-full" />
+          <div className="mt-4 flex items-center justify-between gap-2">
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="h-8 w-16" delay={0.12} />
+          </div>
         </div>
-      </div>
+      ) : (
+        <>
+          {!allowAll && <Combobox options={options} selected={agents} onChange={setAgents} multiple placeholder="Select agents" />}
+          <div className="mt-4 flex items-center justify-between gap-2">
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-fg">
+              <input
+                type="checkbox"
+                checked={allowAll}
+                onChange={(e) => setAllowAll(e.target.checked)}
+                className="accent-[color:var(--theme-accent)]"
+              />
+              Allow all agents
+            </label>
+            <div className="flex items-center gap-2">
+              {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
+              <Button size="sm" onClick={() => void save()} disabled={busy}>
+                Save
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

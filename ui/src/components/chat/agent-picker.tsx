@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/cn'
 import { Avatar } from '@/components/ui/avatar'
+import { Skeleton } from '@/components/ui/skeleton'
 import type { AgentModel } from '@/lib/agents'
 
 // The agent switcher — pick which fleet agent you're talking to.
@@ -42,13 +43,24 @@ export function AgentPicker({
           fullWidth ? 'w-full rounded-xl px-2 py-1.5' : 'rounded-full py-1 pl-1 pr-3',
         )}
       >
-        <Avatar name={current?.label} />
-        <span className="min-w-0 flex-1 text-left">
-          <span className="block truncate text-fg">
-            {loading ? 'Loading fleet' : current ? current.label : 'Select an agent'}
-          </span>
-          {current?.role && <span className="block truncate text-xs text-muted">{current.role}</span>}
-        </span>
+        {loading ? (
+          // Picker-shaped shimmer while the fleet loads (button stays disabled).
+          <>
+            <Skeleton className="h-7 w-7 shrink-0 rounded-full" />
+            <span className="min-w-0 flex-1 space-y-1.5 text-left">
+              <Skeleton className="h-2.5 w-24 rounded-full" delay={0.12} />
+              <Skeleton className="h-2 w-16 rounded-full" delay={0.24} />
+            </span>
+          </>
+        ) : (
+          <>
+            <Avatar name={current?.label} />
+            <span className="min-w-0 flex-1 text-left">
+              <span className="block truncate text-fg">{current ? current.label : 'Select an agent'}</span>
+              {current?.role && <span className="block truncate text-xs text-muted">{current.role}</span>}
+            </span>
+          </>
+        )}
         <span className="text-muted">▾</span>
       </button>
 

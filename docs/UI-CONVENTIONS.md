@@ -109,6 +109,20 @@ Two deliberate registers — don't mix them:
 - New content-bearing text → `font-sans`. New chrome → nothing (mono is the
   default). When unsure: would a user READ or TYPE a sentence here? Sans.
 
+## Deep links — the URL is the selection
+
+- Any selection a user could want to share, revisit, or step back through
+  lives in the URL, not in component state: route paths for entities
+  (`/boards/:id/:taskId`), search params for view state (`/?tab=boards`,
+  `/knowledge?space=…&doc=…`, `/artifacts?a=…`, `/research?r=…`,
+  `/comms?c=…` / `?a=…&x=…`, `/plan?p=…`, `/admin?tab=…`, `/settings?tab=…`).
+- Pattern: derive the selection FROM `Route.useSearch()` and shadow the old
+  setter as a navigate wrapper — call sites don't change. User picks are
+  PUSH navigations (back/forward walks them); defaults and healing are
+  REPLACE (housekeeping never pollutes history).
+- Never the one-shot apply-then-clear pattern — it breaks copy-link.
+- New surface or new selection state → wire the param first, then build.
+
 ## Loading
 
 - Never render a blank pane or a "Loading" string while a query is in flight —

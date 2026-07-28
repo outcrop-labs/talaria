@@ -834,6 +834,19 @@ const MIGRATIONS: string[] = [
   // streaming rows — tiny partial indexes keep that O(in-flight).
   `create index if not exists messages_streaming_idx on messages (created_at) where status = 'streaming'`,
   `create index if not exists channel_messages_streaming_idx on channel_messages (created_at) where status = 'streaming'`,
+  // Inbox briefing: the assistant's attention summary, regenerated only when
+  // the attention fingerprint actually changes.
+  `create table if not exists briefings (
+     user_id uuid not null references users(id) on delete cascade,
+     scope text not null default 'inbox',
+     fingerprint text not null,
+     conversation_id uuid references conversations(id) on delete set null,
+     message_id uuid,
+     summary text not null default '',
+     generating boolean not null default false,
+     generated_at timestamptz not null default now(),
+     primary key (user_id, scope)
+   )`,
 ]
 
 function ensureMigrated(): Promise<void> {

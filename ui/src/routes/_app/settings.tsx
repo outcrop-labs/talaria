@@ -6,6 +6,7 @@ import { confirm } from '@/components/ui/confirm'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Combobox } from '@/components/ui/combobox'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
 import { savePreferredModel, useModels, usePreferredModel } from '@/lib/muse'
@@ -15,6 +16,11 @@ import { cn } from '@/lib/cn'
 
 export const Route = createFileRoute('/_app/settings')({
   component: SettingsPage,
+  // /settings?tab=assistant deep-links a tab.
+  validateSearch: (search: Record<string, unknown>): { tab?: SettingsTab } => {
+    const t = SETTINGS_TABS.find((v) => v.id === search.tab)
+    return t ? { tab: t.id } : {}
+  },
 })
 
 // Personal settings, tabbed by concern: Profile (identity + drafting model),
@@ -29,11 +35,14 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
 ]
 function SettingsPage() {
   const qc = useQueryClient()
-  const { data: user } = useSession()
+  const { data: user, isLoading: sessionLoading } = useSession()
   const [name, setName] = useState('')
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [tab, setTab] = useState<SettingsTab>('profile')
+  const search = Route.useSearch()
+  const nav = Route.useNavigate()
+  const tab: SettingsTab = search.tab ?? 'profile'
+  const setTab = (t: SettingsTab) => void nav({ search: t === 'profile' ? {} : { tab: t } })
 
   useEffect(() => {
     if (user) setName(user.name ?? '')
@@ -81,24 +90,45 @@ function SettingsPage() {
         {tab === 'profile' && (
         <section className="mercury-panel rounded-2xl p-6">
           <div className="mb-4 flex items-center gap-3">
-            <Avatar src={user?.picture} name={name || user?.email} className="h-10 w-10" />
-            <div className="min-w-0">
-              <div className="truncate text-sm font-medium text-fg">{name || user?.email}</div>
-              <div className="truncate text-xs text-muted">{user?.email}</div>
-            </div>
+            {sessionLoading ? (
+              // Hold the identity header until the session lands — an empty
+              // avatar/name/email that fills in later reads as a glitch.
+              <>
+                <Skeleton className="h-10 w-10 shrink-0 rounded-full" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-3 w-36 rounded-full" delay={0.12} />
+                  <Skeleton className="h-2.5 w-48 rounded-full" delay={0.24} />
+                </div>
+              </>
+            ) : (
+              <>
+                <Avatar src={user?.picture} name={name || user?.email} className="h-10 w-10" />
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-fg">{name || user?.email}</div>
+                  <div className="truncate text-xs text-muted">{user?.email}</div>
+                </div>
+              </>
+            )}
           </div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Display name</label>
-          <div className="flex items-center gap-2">
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && void save()}
-              placeholder="How teammates and agents see you"
-            />
-            <Button onClick={() => void save()} disabled={busy || !name.trim() || name.trim() === user?.name}>
-              Save
-            </Button>
-          </div>
+          {sessionLoading ? (
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-11 flex-1" />
+              <Skeleton className="h-11 w-20" delay={0.12} />
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && void save()}
+                placeholder="How teammates and agents see you"
+              />
+              <Button onClick={() => void save()} disabled={busy || !name.trim() || name.trim() === user?.name}>
+                Save
+              </Button>
+            </div>
+          )}
           {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
           <PreferredModelPicker />
         </section>
@@ -118,8 +148,8 @@ function SettingsPage() {
 // normal users shouldn't need to know what "qwen/qwen3-14b" means.
 function PreferredModelPicker() {
   const qc = useQueryClient()
-  const { data: catalog } = useModels()
-  const { data: prefs } = usePreferredModel()
+  const { data: catalog, isLoading: catalogLoading } = useModels()
+  const { data: prefs, isLoading: prefsLoading } = usePreferredModel()
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Bare model names only — endpoint-qualified ids stay available as raw ids
@@ -139,6 +169,11 @@ function PreferredModelPicker() {
   return (
     <div className="mt-5 border-t border-line-subtle pt-4">
       <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Preferred model</label>
+      {catalogLoading || prefsLoading ? (
+        // Mounting the combobox before both queries land makes its value flip
+        // from Default to the saved pick — hold with a select-shaped shimmer.
+        <Skeleton className="h-11 w-full" />
+      ) : (
       <Combobox
         options={[
           {
@@ -152,6 +187,7 @@ function PreferredModelPicker() {
         onChange={([v]) => void save(v || null)}
         placeholder="Pick a model"
       />
+      )}
       <p className="mt-1 text-xs text-muted">
         Powers AI drafting across Talaria: souls, skills, memories, schedules.
         {saved && !error && <span className="ml-2 text-[color:var(--theme-success)]">Saved</span>}
@@ -173,7 +209,7 @@ interface GoogleStatus {
 // working for you) offline access to build Google Docs/Sheets in YOUR Drive.
 function IntegrationsSection() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ['integration-google'],
     queryFn: async (): Promise<GoogleStatus> => {
       const r = await fetch('/api/integrations/google')
@@ -214,7 +250,18 @@ function IntegrationsSection() {
         <InfoTip text="Connect Google to export docs and sheets into your Drive, and let the agents working for you build Google Docs on your behalf." />
       </div>
 
-      {data && !data.available ? (
+      {isLoading ? (
+        // Never show "Not connected" + Connect while the status is unknown —
+        // that's a false state. Hold the row's shape until the query resolves.
+        <div aria-hidden className="flex items-center gap-3 rounded-xl border border-line-subtle p-4">
+          <Skeleton className="h-9 w-9 shrink-0 rounded-lg" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-3 w-40 rounded-full" delay={0.12} />
+            <Skeleton className="h-2.5 w-56 rounded-full" delay={0.24} />
+          </div>
+          <Skeleton className="h-9 w-24 rounded-lg" delay={0.12} />
+        </div>
+      ) : data && !data.available ? (
         <div className="text-xs text-muted">Google integration isn’t configured on this server yet.</div>
       ) : (
         <div className="flex items-center gap-3 rounded-xl border border-line-subtle p-4">
@@ -263,7 +310,7 @@ interface ApiKey {
 // model stack. The secret shows exactly once at mint time.
 function ApiKeysSection() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ['api-keys'],
     queryFn: async (): Promise<{ keys: ApiKey[]; canMint: boolean }> => {
       const r = await fetch('/api/keys')
@@ -304,38 +351,52 @@ function ApiKeysSection() {
         <InfoTip text={`Connect external tools to the org's model stack: base URL ${baseUrl}, any model from /models (or endpoint/model to pin a backend).`} />
       </div>
 
-      {keys.length > 0 && (
-        <div className="mb-4 divide-y divide-line-subtle">
-          {keys.map((k) => (
-            <div key={k.id} className="flex items-center gap-3 py-3 text-sm">
-              <span className="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
-              <code className="shrink-0 text-xs text-muted">{k.prefix}</code>
-              <span className="min-w-0 flex-1 truncate text-xs text-muted">
-                {k.lastUsedAt ? `used ${relativeTime(k.lastUsedAt)}` : 'never used'}
-              </span>
-              <Button variant="ghost" size="sm" className="shrink-0" onClick={() => void revoke(k.id)}>
-                Revoke
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {data?.canMint ? (
-        <div className="flex items-center gap-2">
-          <Input
-            size="sm"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="key name (e.g. opencode)"
-            onKeyDown={(e) => e.key === 'Enter' && void mint()}
-          />
-          <Button size="sm" onClick={() => void mint()}>
-            Create key
-          </Button>
+      {isLoading ? (
+        // Hold BOTH the key list and the canMint branch — flashing "API keys
+        // are not enabled for your account" mid-load is actively wrong.
+        <div aria-hidden>
+          <SkeletonRows rows={2} className="mb-4" />
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-9 flex-1" />
+            <Skeleton className="h-9 w-24" delay={0.12} />
+          </div>
         </div>
       ) : (
-        <div className="text-xs text-muted">API keys are not enabled for your account. Ask an admin.</div>
+        <>
+          {keys.length > 0 && (
+            <div className="mb-4 divide-y divide-line-subtle">
+              {keys.map((k) => (
+                <div key={k.id} className="flex items-center gap-3 py-3 text-sm">
+                  <span className="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
+                  <code className="shrink-0 text-xs text-muted">{k.prefix}</code>
+                  <span className="min-w-0 flex-1 truncate text-xs text-muted">
+                    {k.lastUsedAt ? `used ${relativeTime(k.lastUsedAt)}` : 'never used'}
+                  </span>
+                  <Button variant="ghost" size="sm" className="shrink-0" onClick={() => void revoke(k.id)}>
+                    Revoke
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {data?.canMint ? (
+            <div className="flex items-center gap-2">
+              <Input
+                size="sm"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="key name (e.g. opencode)"
+                onKeyDown={(e) => e.key === 'Enter' && void mint()}
+              />
+              <Button size="sm" onClick={() => void mint()}>
+                Create key
+              </Button>
+            </div>
+          ) : (
+            <div className="text-xs text-muted">API keys are not enabled for your account. Ask an admin.</div>
+          )}
+        </>
       )}
       {minted && (
         <div className="mt-3 rounded-lg border border-line-subtle p-3">

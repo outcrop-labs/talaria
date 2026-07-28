@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { Markdown } from '@/components/ui/markdown'
+import { Skeleton } from '@/components/ui/skeleton'
 import { relativeTime } from '@/lib/fleet'
 import { PublicShell, PublicNotFound } from '@/components/kb/public-shell'
 
@@ -28,7 +29,23 @@ function PublicArtifactPage() {
   }, [slug])
 
   if (state.error) return <PublicNotFound />
-  if (!state.a) return <PublicShell>{null}</PublicShell>
+  if (!state.a) {
+    // First paint for link recipients — doc-page shape regardless of kind.
+    return (
+      <PublicShell>
+        <div aria-hidden>
+          <Skeleton className="mb-8 h-8 w-2/3" />
+          <div className="space-y-3.5">
+            {['100%', '94%', '98%', '88%', '96%', '73%', '100%', '91%', '97%', '85%', '95%', '60%'].map((w, i) => (
+              <div key={i} style={{ width: w }}>
+                <Skeleton className="h-3.5 w-full rounded-full" delay={i * 0.08} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </PublicShell>
+    )
+  }
 
   // A public microsite is hosted full-bleed in a sandboxed iframe (no app chrome).
   if (state.a.kind === 'microsite') {

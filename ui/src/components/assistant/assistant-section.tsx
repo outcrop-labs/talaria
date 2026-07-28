@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { RichEditor } from '@/components/ui/rich-editor'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import { AssistantWizard } from './assistant-wizard'
 import { AssistantPanels } from './assistant-manage-modal'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
@@ -40,7 +41,43 @@ export function AssistantSection() {
     }
   }, [assistant])
 
-  if (isLoading) return null
+  // The card's shape while we find out whether an assistant exists: header
+  // (avatar + name/status), the two identity inputs, model chips, the
+  // personality editor block, and the tab strip below the divider.
+  if (isLoading)
+    return (
+      <section aria-hidden className="mercury-panel rounded-2xl p-6">
+        <div className="mb-4 flex items-center gap-3">
+          <Skeleton className="h-10 w-10 shrink-0 rounded-full" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-3 w-32 rounded-full" delay={0.12} />
+            <Skeleton className="h-2.5 w-48 rounded-full" delay={0.24} />
+          </div>
+          <Skeleton className="h-9 w-16 rounded-lg" delay={0.12} />
+        </div>
+        <div className="mb-4 grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Skeleton className="h-2.5 w-12 rounded-full" />
+            <Skeleton className="h-11 w-full" delay={0.12} />
+          </div>
+          <div className="space-y-2">
+            <Skeleton className="h-2.5 w-14 rounded-full" delay={0.12} />
+            <Skeleton className="h-11 w-full" delay={0.24} />
+          </div>
+        </div>
+        <div className="mb-4 flex flex-wrap gap-1.5">
+          <Skeleton className="h-6 w-16 rounded-full" />
+          <Skeleton className="h-6 w-16 rounded-full" delay={0.12} />
+          <Skeleton className="h-6 w-16 rounded-full" delay={0.24} />
+        </div>
+        <Skeleton className="mb-6 h-20 w-full rounded-xl" delay={0.12} />
+        <div className="flex gap-2 border-t border-line-subtle pt-5">
+          <Skeleton className="h-8 w-24 rounded-lg" />
+          <Skeleton className="h-8 w-16 rounded-lg" delay={0.12} />
+          <Skeleton className="h-8 w-16 rounded-lg" delay={0.24} />
+        </div>
+      </section>
+    )
 
   if (!assistant) {
     return (

@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { submitOnEnter } from '@/components/ui/control'
 import { Select } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
+import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
 import { useAgents } from '@/lib/agents'
 import { useUsers } from '@/lib/users'
 import { useTeams } from '@/lib/teams'
@@ -76,8 +77,8 @@ const useRagAdmin = () =>
 // feed which brain, and the reranker provider.
 export function RetrievalPanel() {
   const qc = useQueryClient()
-  const { data: collections = [] } = useCollections()
-  const { data: rag } = useRagAdmin()
+  const { data: collections = [], isPending: collectionsPending } = useCollections()
+  const { data: rag, isPending: ragPending } = useRagAdmin()
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -106,6 +107,7 @@ export function RetrievalPanel() {
       </div>
 
       {/* Services + backfill */}
+      {ragPending && <Skeleton className="mb-4 h-10 w-full rounded-xl" />}
       {rag && (
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-line-subtle p-3">
           <HealthDot ok={rag.health.qdrant} label="Vector store" />
@@ -159,9 +161,11 @@ export function RetrievalPanel() {
       )}
 
       <div className="space-y-3">
-        {collections.map((c) => (
-          <CollectionRow key={c.id} col={c} spaces={rag?.spaces ?? []} />
-        ))}
+        {collectionsPending
+          ? [0, 1, 2].map((i) => <SkeletonCard key={i} delay={i * 0.15} />)
+          : collections.map((c) => (
+              <CollectionRow key={c.id} col={c} spaces={rag?.spaces ?? []} />
+            ))}
       </div>
       <div className="mt-4 flex items-center gap-2 border-t border-line-subtle pt-3">
         <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder="New brain (e.g. Sales playbook)" className="flex-1" onKeyDown={(e) => e.key === 'Enter' && void create()} />
@@ -170,6 +174,16 @@ export function RetrievalPanel() {
         </Button>
       </div>
 
+      {ragPending && (
+        // Reranker placeholder: label bar + control row, same footprint.
+        <div className="mt-5 border-t border-line-subtle pt-4">
+          <Skeleton className="mb-3 h-3 w-24 rounded-full" />
+          <div className="flex flex-wrap items-center gap-2">
+            <Skeleton className="h-8 w-52" delay={0.12} />
+            <Skeleton className="h-8 w-64" delay={0.24} />
+          </div>
+        </div>
+      )}
       {rag && <RerankSection rag={rag} />}
     </Panel>
   )
@@ -184,9 +198,12 @@ const HealthDot = ({ ok, label }: { ok: boolean; label: string }) => (
 
 function CollectionRow({ col, spaces }: { col: RagCollection; spaces: Array<{ id: string; name: string; collectionId: string | null }> }) {
   const qc = useQueryClient()
-  const { data: fleet } = useAgents()
-  const { data: users = [] } = useUsers()
-  const { data: teams = [] } = useTeams()
+  const { data: fleet, isPending: agentsPending } = useAgents()
+  const { data: users = [], isPending: usersPending } = useUsers()
+  const { data: teams = [], isPending: teamsPending } = useTeams()
+  // Until the directories land the comboboxes would misrepresent the bindings
+  // (zero options, nothing selected) — hold their slots with bars instead.
+  const pickersPending = agentsPending || usersPending || teamsPending
   const bindingsAll = col.bindings.some((b) => b.principalType === 'all')
   const boundUsers = col.bindings.filter((b) => b.principalType === 'user').map((b) => b.principalId!).filter(Boolean)
   const boundAgents = col.bindings.filter((b) => b.principalType === 'agent').map((b) => b.principalId!).filter(Boolean)
@@ -247,7 +264,14 @@ function CollectionRow({ col, spaces }: { col: RagCollection; spaces: Array<{ id
             <input type="checkbox" checked={bindingsAll} onChange={(e) => applyBindings({ all: e.target.checked })} className="accent-[var(--theme-accent)]" />
             Everyone
           </label>
-          {!bindingsAll && (
+          {!bindingsAll && pickersPending && (
+            <div className="flex flex-col gap-2 sm:flex-row">
+              {[0, 1, 2].map((i) => (
+                <Skeleton key={i} className="h-8 min-w-0 flex-1" delay={i * 0.12} />
+              ))}
+            </div>
+          )}
+          {!bindingsAll && !pickersPending && (
             <div className="flex flex-col gap-2 sm:flex-row">
               <Combobox
                 options={teams.map((t) => ({ value: t.id, label: t.name }))}

@@ -67,6 +67,7 @@ import { Route as ApiResearchIdRouteImport } from './routes/api/research.$id'
 import { Route as ApiRagSearchRouteImport } from './routes/api/rag.search'
 import { Route as ApiRagCollectionsRouteImport } from './routes/api/rag.collections'
 import { Route as ApiMemoryIdRouteImport } from './routes/api/memory.$id'
+import { Route as ApiMeBriefingRouteImport } from './routes/api/me.briefing'
 import { Route as ApiMeAssistantRouteImport } from './routes/api/me.assistant'
 import { Route as ApiMcpTestRouteImport } from './routes/api/mcp.test'
 import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
@@ -117,6 +118,7 @@ import { Route as ApiRagCollectionsIdRouteImport } from './routes/api/rag.collec
 import { Route as ApiPlansIdMembersRouteImport } from './routes/api/plans.$id.members'
 import { Route as ApiPlanIdDraftRouteImport } from './routes/api/plan.$id.draft'
 import { Route as ApiPlanIdDocRouteImport } from './routes/api/plan.$id.doc'
+import { Route as ApiMeBriefingChatRouteImport } from './routes/api/me.briefing.chat'
 import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
 import { Route as ApiKbPublicSlugRouteImport } from './routes/api/kb.public.$slug'
@@ -460,6 +462,11 @@ const ApiMemoryIdRoute = ApiMemoryIdRouteImport.update({
   path: '/api/memory/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiMeBriefingRoute = ApiMeBriefingRouteImport.update({
+  id: '/api/me/briefing',
+  path: '/api/me/briefing',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiMeAssistantRoute = ApiMeAssistantRouteImport.update({
   id: '/api/me/assistant',
   path: '/api/me/assistant',
@@ -709,6 +716,11 @@ const ApiPlanIdDocRoute = ApiPlanIdDocRouteImport.update({
   id: '/api/plan/$id/doc',
   path: '/api/plan/$id/doc',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMeBriefingChatRoute = ApiMeBriefingChatRouteImport.update({
+  id: '/chat',
+  path: '/chat',
+  getParentRoute: () => ApiMeBriefingRoute,
 } as any)
 const ApiLlmV1ModelsRoute = ApiLlmV1ModelsRouteImport.update({
   id: '/api/llm/v1/models',
@@ -1082,6 +1094,7 @@ export interface FileRoutesByFullPath {
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/me/assistant': typeof ApiMeAssistantRoute
+  '/api/me/briefing': typeof ApiMeBriefingRouteWithChildren
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
@@ -1119,6 +1132,7 @@ export interface FileRoutesByFullPath {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/me/briefing/chat': typeof ApiMeBriefingChatRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/plans/$id/members': typeof ApiPlansIdMembersRoute
@@ -1244,6 +1258,7 @@ export interface FileRoutesByTo {
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/me/assistant': typeof ApiMeAssistantRoute
+  '/api/me/briefing': typeof ApiMeBriefingRouteWithChildren
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
@@ -1281,6 +1296,7 @@ export interface FileRoutesByTo {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/me/briefing/chat': typeof ApiMeBriefingChatRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/plans/$id/members': typeof ApiPlansIdMembersRoute
@@ -1408,6 +1424,7 @@ export interface FileRoutesById {
   '/api/keys/$id': typeof ApiKeysIdRoute
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/me/assistant': typeof ApiMeAssistantRoute
+  '/api/me/briefing': typeof ApiMeBriefingRouteWithChildren
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
@@ -1445,6 +1462,7 @@ export interface FileRoutesById {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/me/briefing/chat': typeof ApiMeBriefingChatRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/plans/$id/members': typeof ApiPlansIdMembersRoute
@@ -1572,6 +1590,7 @@ export interface FileRouteTypes {
     | '/api/keys/$id'
     | '/api/mcp/test'
     | '/api/me/assistant'
+    | '/api/me/briefing'
     | '/api/memory/$id'
     | '/api/rag/collections'
     | '/api/rag/search'
@@ -1609,6 +1628,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/me/briefing/chat'
     | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
     | '/api/plans/$id/members'
@@ -1734,6 +1754,7 @@ export interface FileRouteTypes {
     | '/api/keys/$id'
     | '/api/mcp/test'
     | '/api/me/assistant'
+    | '/api/me/briefing'
     | '/api/memory/$id'
     | '/api/rag/collections'
     | '/api/rag/search'
@@ -1771,6 +1792,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/me/briefing/chat'
     | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
     | '/api/plans/$id/members'
@@ -1897,6 +1919,7 @@ export interface FileRouteTypes {
     | '/api/keys/$id'
     | '/api/mcp/test'
     | '/api/me/assistant'
+    | '/api/me/briefing'
     | '/api/memory/$id'
     | '/api/rag/collections'
     | '/api/rag/search'
@@ -1934,6 +1957,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/me/briefing/chat'
     | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
     | '/api/plans/$id/members'
@@ -2025,6 +2049,7 @@ export interface RootRouteChildren {
   ApiKbSearchRoute: typeof ApiKbSearchRoute
   ApiKbSpacesRoute: typeof ApiKbSpacesRouteWithChildren
   ApiMeAssistantRoute: typeof ApiMeAssistantRoute
+  ApiMeBriefingRoute: typeof ApiMeBriefingRouteWithChildren
   ApiMemoryIdRoute: typeof ApiMemoryIdRoute
   ApiRagCollectionsRoute: typeof ApiRagCollectionsRouteWithChildren
   ApiRagSearchRoute: typeof ApiRagSearchRoute
@@ -2448,6 +2473,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMemoryIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/me/briefing': {
+      id: '/api/me/briefing'
+      path: '/api/me/briefing'
+      fullPath: '/api/me/briefing'
+      preLoaderRoute: typeof ApiMeBriefingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/me/assistant': {
       id: '/api/me/assistant'
       path: '/api/me/assistant'
@@ -2797,6 +2829,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/plan/$id/doc'
       preLoaderRoute: typeof ApiPlanIdDocRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api/me/briefing/chat': {
+      id: '/api/me/briefing/chat'
+      path: '/chat'
+      fullPath: '/api/me/briefing/chat'
+      preLoaderRoute: typeof ApiMeBriefingChatRouteImport
+      parentRoute: typeof ApiMeBriefingRoute
     }
     '/api/llm/v1/models': {
       id: '/api/llm/v1/models'
@@ -3671,6 +3710,18 @@ const ApiKbSpacesRouteWithChildren = ApiKbSpacesRoute._addFileChildren(
   ApiKbSpacesRouteChildren,
 )
 
+interface ApiMeBriefingRouteChildren {
+  ApiMeBriefingChatRoute: typeof ApiMeBriefingChatRoute
+}
+
+const ApiMeBriefingRouteChildren: ApiMeBriefingRouteChildren = {
+  ApiMeBriefingChatRoute: ApiMeBriefingChatRoute,
+}
+
+const ApiMeBriefingRouteWithChildren = ApiMeBriefingRoute._addFileChildren(
+  ApiMeBriefingRouteChildren,
+)
+
 interface ApiRagCollectionsRouteChildren {
   ApiRagCollectionsIdRoute: typeof ApiRagCollectionsIdRoute
 }
@@ -3769,6 +3820,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKbSearchRoute: ApiKbSearchRoute,
   ApiKbSpacesRoute: ApiKbSpacesRouteWithChildren,
   ApiMeAssistantRoute: ApiMeAssistantRoute,
+  ApiMeBriefingRoute: ApiMeBriefingRouteWithChildren,
   ApiMemoryIdRoute: ApiMemoryIdRoute,
   ApiRagCollectionsRoute: ApiRagCollectionsRouteWithChildren,
   ApiRagSearchRoute: ApiRagSearchRoute,

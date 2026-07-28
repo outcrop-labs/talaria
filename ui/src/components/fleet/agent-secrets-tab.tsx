@@ -6,6 +6,7 @@ import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { submitOnEnter } from '@/components/ui/control'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import { relativeTime } from '@/lib/fleet'
 
 interface SecretMeta {
@@ -66,7 +67,17 @@ export function SecretsTab({ agentId }: { agentId: string }) {
         Environment variables just for this agent: a vendor token, a service key. Encrypted at rest, write-only here,
         and injected into the container when it starts from Talaria (Start recreates it with the latest values).
       </p>
-      {isLoading ? null : secrets.length === 0 ? (
+      {isLoading ? (
+        <ul aria-hidden className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+          {[0, 1].map((i) => (
+            <li key={i} className="flex items-center gap-3 px-3.5 py-3.5">
+              <Skeleton className="h-3 w-32 rounded-full" delay={i * 0.12} />
+              <Skeleton className="h-2.5 w-14 rounded-full" delay={i * 0.12 + 0.12} />
+              <Skeleton className="ml-auto h-2.5 w-24 rounded-full" delay={i * 0.12 + 0.24} />
+            </li>
+          ))}
+        </ul>
+      ) : secrets.length === 0 ? (
         <EmptyState icon={<KeyRound size={22} />} title="No secrets" hint="Everything it needs comes from the shared platform env." />
       ) : (
         <ul className="divide-y divide-line-subtle rounded-lg border border-line-subtle">

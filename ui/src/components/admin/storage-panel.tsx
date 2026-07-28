@@ -7,6 +7,7 @@ import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 
 interface TargetConfig {
   endpoint: string
@@ -96,7 +97,31 @@ export function StoragePanel() {
   useEffect(() => {
     if (data && !form) setForm(data.config)
   }, [data, form])
-  if (!data || !form) return null
+  if (!data || !form)
+    // Panel-shaped skeleton (title, stat strip, config grid, button row) so
+    // the Storage tab never renders blank and then materializes.
+    return (
+      <Panel>
+        <Skeleton className="mb-4 h-4 w-20 rounded-full" />
+        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-line-subtle p-3">
+          <Skeleton className="h-3 w-32 rounded-full" />
+          <Skeleton className="h-3 w-36 rounded-full" delay={0.12} />
+          <Skeleton className="h-3 w-32 rounded-full" delay={0.24} />
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i}>
+              <Skeleton className="mb-1.5 h-2.5 w-24 rounded-full" delay={i * 0.08} />
+              <Skeleton className="h-9 w-full" delay={i * 0.08} />
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex items-center gap-2">
+          <Skeleton className="h-7 w-16" />
+          <Skeleton className="h-7 w-32" delay={0.12} />
+        </div>
+      </Panel>
+    )
 
   const set = (patch: Partial<StorageAdmin['config']>) => setForm({ ...form, ...patch })
   const setReplica = (patch: Partial<StorageAdmin['config']['replica']>) => setForm({ ...form, replica: { ...form.replica, ...patch } })

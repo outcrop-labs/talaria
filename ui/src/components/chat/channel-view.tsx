@@ -3,8 +3,9 @@ import { Avatar } from '@/components/ui/avatar'
 import { Markdown } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useQueryClient } from '@tanstack/react-query'
-import { markChannelRead, sendChannelMessage, useChannelEvents, useChannelMessages, type ChannelMember, type ChannelMessage } from '@/lib/channels'
+import { markChannelRead, sendChannelMessage, useChannelDetail, useChannelEvents, useChannelMessages, type ChannelMessage } from '@/lib/channels'
 import { useUsers } from '@/lib/users'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { GuardCaveat } from '@/components/chat/guard-caveat'
@@ -20,17 +21,18 @@ import type { AgentModel } from '@/lib/agents'
 export function ChannelView({
   channelId,
   channelName,
-  channelAgents,
-  members,
   fleet,
 }: {
   channelId: string
   channelName: string
-  channelAgents: string[]
-  members: ChannelMember[]
   fleet: AgentModel[]
 }) {
-  const { data: messages = [] } = useChannelMessages(channelId)
+  const { data: messages = [], isLoading: messagesLoading } = useChannelMessages(channelId)
+  // Fetched here (not passed down) so the message pane never waits on the
+  // parent header's detail fetch — react-query dedupes the shared key.
+  const { data: detail } = useChannelDetail(channelId)
+  const channelAgents = detail?.agents ?? []
+  const members = detail?.members ?? []
   const { data: users = [] } = useUsers()
   useChannelEvents(channelId)
   const [error, setError] = useState<string | null>(null)
@@ -81,7 +83,26 @@ export function ChannelView({
     // One chat width everywhere: the same content token agent DMs use.
     <div className="mx-auto flex h-full min-h-0 w-full max-w-[var(--chat-content-max-width)] flex-col">
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
-        {messages.length === 0 ? (
+        {messagesLoading ? (
+          // Transcript-shaped shimmer while the history loads — never the
+          // "Welcome" hero, which reads as an empty channel it isn't.
+          <div aria-hidden className="space-y-5">
+            {Array.from({ length: 5 }, (_, i) => (
+              <div key={i} className="flex gap-2.5">
+                <Skeleton className="mt-0.5 h-7 w-7 shrink-0 rounded-full" delay={i * 0.12} />
+                <div className="min-w-0 flex-1 space-y-2 pt-1">
+                  <Skeleton className="h-2.5 w-24 rounded-full" delay={i * 0.12} />
+                  <div style={{ width: ['82%', '64%', '90%', '71%', '58%'][i] }}>
+                    <Skeleton className="h-2.5 w-full rounded-full" delay={i * 0.12 + 0.06} />
+                  </div>
+                  <div style={{ width: ['55%', '78%', '40%', '62%', '84%'][i] }}>
+                    <Skeleton className="h-2.5 w-full rounded-full" delay={i * 0.12 + 0.12} />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : messages.length === 0 ? (
           <EmptyState
             icon="#"
             title={`Welcome to #${channelName}`}

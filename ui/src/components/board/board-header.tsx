@@ -2,13 +2,14 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Settings2, Archive } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
+import { Skeleton } from '@/components/ui/skeleton'
 import { renameBoard, useBoardMembers, type Board } from '@/lib/boards'
 
 // Board page header: editable name, stacked member avatars, and a single settings
 // gear (everything else lives in the board settings modal).
 export function BoardHeader({ board, onSettings }: { board: Board; onSettings: () => void }) {
   const qc = useQueryClient()
-  const { data: members = [] } = useBoardMembers(board.id)
+  const { data: members = [], isLoading: membersLoading } = useBoardMembers(board.id)
   const canEdit = board.role === 'owner' || board.role === 'editor'
   const [name, setName] = useState(board.name)
   const [editing, setEditing] = useState(false)
@@ -49,6 +50,10 @@ export function BoardHeader({ board, onSettings }: { board: Board; onSettings: (
       )}
 
       <div className="flex -space-x-2">
+        {membersLoading &&
+          [0, 1].map((i) => (
+            <Skeleton key={i} className="h-7 w-7 rounded-full ring-2 ring-[color:var(--theme-panel)]" delay={i * 0.12} />
+          ))}
         {members.slice(0, 5).map((m) => (
           <Avatar key={m.userId} name={m.email ?? m.name} className="h-7 w-7 ring-2 ring-[color:var(--theme-panel)]" />
         ))}

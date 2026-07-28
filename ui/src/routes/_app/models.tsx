@@ -10,6 +10,7 @@ import { Modal } from '@/components/ui/modal'
 import { Generating } from '@/components/ui/generating'
 import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
+import { Skeleton, SkeletonCard, SkeletonRows } from '@/components/ui/skeleton'
 import { Combobox } from '@/components/ui/combobox'
 import { ProviderMark } from '@/components/fleet/provider-mark'
 import { useSession } from '@/lib/session'
@@ -36,7 +37,7 @@ export const Route = createFileRoute('/_app/models')({
 function ModelsPage() {
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
-  const { data: endpoints = [] } = useEndpoints(isAdmin)
+  const { data: endpoints = [], isPending: endpointsPending } = useEndpoints(isAdmin)
   const [adding, setAdding] = useState(false)
   // A just-added provider: jump straight into its manage modal so models get
   // picked from the provider's live catalog (endpoints start with none).
@@ -58,7 +59,14 @@ function ModelsPage() {
           </Button>
         </div>
 
-        {endpoints.length === 0 ? (
+        {endpointsPending ? (
+          // Provider-card skeletons while the registry loads; the EmptyState
+          // only renders once the query has RESOLVED empty.
+          <div className="space-y-3">
+            <SkeletonCard />
+            <SkeletonCard delay={0.15} />
+          </div>
+        ) : endpoints.length === 0 ? (
           <EmptyState
             icon="▤"
             title="No model backends yet"
@@ -69,10 +77,13 @@ function ModelsPage() {
           <>
             <Section title="Self-hosted: your hardware & on-prem" endpoints={local} />
             <Section title="Cloud" endpoints={cloud} />
-            <ModelRolesPanel />
-            <MemberAccessPanel />
           </>
         )}
+
+        {/* These panels load their own data — the endpoint registry must not
+            gate them, so they mount and fill in independently. */}
+        <ModelRolesPanel />
+        <MemberAccessPanel />
 
         {adding && <AddProviderModal open={adding} onClose={() => setAdding(false)} onAdded={setManageId} />}
         {managing && <EndpointModal ep={managing} onClose={() => setManageId(null)} />}
@@ -404,7 +415,24 @@ function ModelRolesPanel() {
     })
     await qc.invalidateQueries({ queryKey: ['model-roles'] })
   }
-  if (!data) return null
+  if (!data)
+    // Card skeleton matching the resolved layout: title bar + label/select rows.
+    return (
+      <Panel>
+        <Skeleton className="mb-4 h-4 w-24 rounded-full" />
+        <div className="space-y-4">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="flex items-center gap-3">
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <Skeleton className="h-3 w-40 rounded-full" delay={i * 0.1} />
+                <Skeleton className="h-2.5 w-64 rounded-full" delay={i * 0.1 + 0.06} />
+              </div>
+              <Skeleton className="h-8 w-56 shrink-0" delay={i * 0.1} />
+            </div>
+          ))}
+        </div>
+      </Panel>
+    )
 
   return (
     <Panel>
@@ -449,8 +477,8 @@ function ModelRolesPanel() {
 
 function MemberAccessPanel() {
   const qc = useQueryClient()
-  const { data: catalog } = useModels()
-  const { data: settings } = useQuery({
+  const { data: catalog, isPending: catalogPending } = useModels()
+  const { data: settings, isPending: settingsPending } = useQuery({
     queryKey: ['admin-settings'],
     queryFn: async (): Promise<{ memberModels: string[] }> => {
       const r = await fetch('/api/admin/settings', { credentials: 'same-origin' })
@@ -498,6 +526,18 @@ function MemberAccessPanel() {
         Which models non-admins may pick for AI drafting and as their preferred model. Keep the expensive or
         powerful ones for deliberate, admin-configured use. Agents' own brains are set per agent and unaffected.
       </p>
+      {catalogPending || settingsPending ? (
+        // The restrict toggle and the list both seed from these queries — hold
+        // them with skeletons so the checkbox never flips after load.
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-4 w-4" />
+            <Skeleton className="h-3 w-56 rounded-full" delay={0.12} />
+          </div>
+          <SkeletonRows rows={3} />
+        </div>
+      ) : (
+      <>
       <label className="mb-3 flex cursor-pointer items-center gap-2 text-sm text-fg">
         <input
           type="checkbox"
@@ -540,6 +580,8 @@ function MemberAccessPanel() {
           Save
         </Button>
       </div>
+      </>
+      )}
     </Panel>
   )
 }

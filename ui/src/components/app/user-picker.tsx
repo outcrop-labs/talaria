@@ -1,5 +1,7 @@
 import { Combobox } from '@/components/ui/combobox'
 import type { ControlSize } from '@/components/ui/control'
+import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/cn'
 import { useUsers, type DirectoryUser } from '@/lib/users'
 
 // The one way to bring a person in — a searchable picker over everyone who has
@@ -19,11 +21,15 @@ export function UserPicker({
   size?: ControlSize
   className?: string
 }) {
-  const { data: users = [] } = useUsers()
+  const { data: users = [], isLoading } = useUsers()
   const excluded = new Set(exclude)
   const options = users
     .filter((u) => !excluded.has(u.id))
     .map((u) => ({ value: u.id, label: u.name ?? u.email ?? u.id, sub: u.name ? (u.email ?? undefined) : undefined }))
+
+  // While the directory loads, a disabled empty picker would read as "no one to
+  // add" (and swallow the click) — hold the slot with a combobox-shaped shimmer.
+  if (isLoading) return <Skeleton className={cn(size === 'sm' ? 'h-9' : 'h-11', 'w-full', className)} />
 
   return (
     <Combobox

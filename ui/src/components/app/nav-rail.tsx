@@ -6,6 +6,7 @@ import { WingMark } from '@/components/brand'
 import { TeamsModal } from '@/components/board/teams-modal'
 import { CreateBoardModal } from '@/components/board/create-board-modal'
 import { alert } from '@/components/ui/confirm'
+import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 import { NAV } from '@/lib/nav'
 import { useBoards, useArchivedBoards, moveBoardToTeam, type Board } from '@/lib/boards'
@@ -71,9 +72,9 @@ export function NavRail({ user }: { user: SessionUser }) {
 
 function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onNew: () => void; onTeams: () => void }) {
   const qc = useQueryClient()
-  const { data: boards = [] } = useBoards()
+  const { data: boards = [], isLoading: boardsLoading } = useBoards()
   const { data: archived = [] } = useArchivedBoards()
-  const { data: teams = [] } = useTeams()
+  const { data: teams = [], isLoading: teamsLoading } = useTeams()
   const [showArchived, setShowArchived] = useState(false)
   // Drag a board you own onto a team header to move it (Personal = no team).
   const [dragging, setDragging] = useState<Board | null>(null)
@@ -122,6 +123,24 @@ function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onN
     </Link>
   )
 
+  // While boards/teams load, hold the sublist's shape (group headers + rows) so
+  // the footer buttons don't render alone and get pushed down when data lands.
+  if (boardsLoading || teamsLoading)
+    return (
+      <div className="ml-3 mt-0.5 space-y-2 border-l border-line-subtle pl-2">
+        <div className="space-y-1.5 px-2 py-0.5">
+          <Skeleton className="h-2 w-12 rounded-full" />
+          <Skeleton className="h-2.5 w-24 rounded-full" delay={0.12} />
+          <Skeleton className="h-2.5 w-20 rounded-full" delay={0.24} />
+        </div>
+        <div className="space-y-1.5 px-2 py-0.5">
+          <Skeleton className="h-2 w-14 rounded-full" delay={0.36} />
+          <Skeleton className="h-2.5 w-24 rounded-full" delay={0.48} />
+        </div>
+        <SublistFooter onNew={onNew} onTeams={onTeams} />
+      </div>
+    )
+
   return (
     <div className="ml-3 mt-0.5 space-y-2 border-l border-line-subtle pl-2">
       {ordered.map(([group, g]) => (
@@ -169,14 +188,20 @@ function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onN
         </div>
       )}
 
-      <div className="flex flex-col gap-0.5">
-        <button onClick={onNew} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:text-accent">
-          <Plus size={13} /> New board
-        </button>
-        <button onClick={onTeams} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:text-accent">
-          <Users size={13} /> Manage teams
-        </button>
-      </div>
+      <SublistFooter onNew={onNew} onTeams={onTeams} />
+    </div>
+  )
+}
+
+function SublistFooter({ onNew, onTeams }: { onNew: () => void; onTeams: () => void }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <button onClick={onNew} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:text-accent">
+        <Plus size={13} /> New board
+      </button>
+      <button onClick={onTeams} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:text-accent">
+        <Users size={13} /> Manage teams
+      </button>
     </div>
   )
 }

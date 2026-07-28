@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { SlidersHorizontal, ChevronUp, ChevronDown, GripVertical } from 'lucide-react'
 import { useAgents } from '@/lib/agents'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
@@ -97,7 +98,7 @@ function fmtTime(s: number): string {
 
 // List view of a board's tasks with configurable columns (persisted per board).
 export function BoardList({ tasks, onOpen, boardId }: { tasks: Task[]; onOpen: (id: string) => void; boardId: string }) {
-  const { data: fleet } = useAgents()
+  const { data: fleet, isLoading: agentsLoading } = useAgents()
   const label = (id: string) => fleet?.agents.find((a) => a.id === id)?.label ?? id
   const assigneeText = (ids: string[]) => (ids.length ? ids.map(label).join(', ') : '—')
 
@@ -199,6 +200,9 @@ export function BoardList({ tasks, onOpen, boardId }: { tasks: Task[]; onOpen: (
       case 'effort':
         return <span className="text-muted">{t.effort ? EFFORT_LABEL[t.effort] : '—'}</span>
       case 'assignees':
+        // Raw model ids would flash then swap to labels (jumping the column
+        // width) — hold the cell with a short bar until the fleet resolves.
+        if (agentsLoading && t.assignees.length > 0) return <Skeleton className="h-2.5 w-16 rounded-full" />
         return <span className="text-muted">{assigneeText(t.assignees)}</span>
       case 'due':
         return <span className="text-muted">{t.dueDate ? t.dueDate.slice(0, 10) : '—'}</span>

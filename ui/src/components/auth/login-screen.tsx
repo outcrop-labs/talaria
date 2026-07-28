@@ -6,6 +6,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Panel } from '@/components/ui/panel'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useProviders } from '@/lib/session'
 
 const ERROR_COPY: Record<string, string> = {
@@ -63,7 +64,19 @@ export function LoginScreen({ error }: { error?: string }) {
           )}
 
           {isLoading ? (
-            <div className="py-6 text-center text-sm text-muted">Loading sign-in options</div>
+            // The shape of the widest sign-in form (OAuth button, divider,
+            // username/password, submit) so the swap doesn't jump.
+            <div aria-hidden className="flex flex-col gap-3">
+              <Skeleton className="h-11 w-full" />
+              <div className="flex items-center gap-3 py-1">
+                <Skeleton className="h-px flex-1" />
+                <Skeleton className="h-2.5 w-6 rounded-full" delay={0.12} />
+                <Skeleton className="h-px flex-1" />
+              </div>
+              <Skeleton className="h-11 w-full" delay={0.12} />
+              <Skeleton className="h-11 w-full" delay={0.24} />
+              <Skeleton className="h-11 w-full" delay={0.36} />
+            </div>
           ) : providers.length === 0 ? (
             <div className="py-4 text-center text-sm text-muted">No sign-in providers are enabled.</div>
           ) : (

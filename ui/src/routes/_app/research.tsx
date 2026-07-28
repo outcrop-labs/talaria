@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
-import { useEffect, useMemo, useState } from 'react'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Gauge, Loader2, Trash2 } from 'lucide-react'
 import { RailSurface, Rail, Stage, StageHeader } from '@/components/app/surface'
@@ -54,24 +54,19 @@ function ResearchPage() {
   const { data: session } = useSession()
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   const agents = useMemo(() => fleet?.agents ?? [], [fleet])
-  const { data: runs = [] } = useResearchRuns()
+  const { data: runs = [], isLoading: runsLoading } = useResearchRuns()
 
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  // URL is the selection: /research?r=<runId> IS the selected run.
+  const selectedId = search.r ?? null
+  const setSelectedId = (id: string | null) => void navigate({ search: id ? { r: id } : {} })
   const [question, setQuestion] = useState('')
   const [mode, setMode] = useState<ResearchMode>('brief')
   const [agent, pickAgent] = useStickyAgent('research', agents)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Deep link (?r=) from a completion notification.
-  const search = Route.useSearch()
-  const navigate = Route.useNavigate()
-  useEffect(() => {
-    if (search.r) {
-      setSelectedId(search.r)
-      void navigate({ search: {}, replace: true })
-    }
-  }, [search.r, navigate])
 
   const start = async () => {
     if (!question.trim() || !agent) return
@@ -106,7 +101,22 @@ function ResearchPage() {
         <div className="mb-3">
           <AgentPicker agents={agents} value={agent} onChange={pickAgent} loading={agentsLoading} fullWidth />
         </div>
-        {runs.length === 0 ? (
+        {runsLoading ? (
+          // Rail-row-shaped placeholders while the run list loads; the empty
+          // state only appears once the query has RESOLVED empty.
+          <div aria-hidden className="space-y-0.5">
+            {['88%', '72%', '95%', '60%', '80%'].map((w, i) => (
+              <div key={i} className="px-2 py-1.5">
+                <div style={{ width: w }}>
+                  <Skeleton className="h-3 w-full rounded-full" delay={i * 0.12} />
+                </div>
+                <div className="mt-1.5 w-2/5 pl-3.5">
+                  <Skeleton className="h-2.5 w-full rounded-full" delay={i * 0.12 + 0.06} />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : runs.length === 0 ? (
           <div className="px-2 py-6 text-center text-xs text-muted">No research yet. Ask something worth knowing.</div>
         ) : (
           <ul className="space-y-0.5">
@@ -218,16 +228,45 @@ function ResearchPage() {
   )
 }
 
+/** Report-document placeholder: a panel of prose bars, shaped like the
+ *  Markdown report it stands in for. */
+function ReportSkeleton() {
+  const widths = ['66%', '100%', '94%', '88%', '97%', '82%', '91%', '100%', '86%', '95%', '78%', '58%']
+  return (
+    <Panel aria-hidden>
+      <div className="space-y-3">
+        {widths.map((w, i) => (
+          <div key={i} style={{ width: w }}>
+            <Skeleton className={i === 0 ? 'h-4 w-full rounded-full' : 'h-2.5 w-full rounded-full'} delay={i * 0.12} />
+          </div>
+        ))}
+      </div>
+    </Panel>
+  )
+}
+
 function RunView({ runId }: { runId: string }) {
   const { data } = useResearchRun(runId)
   const run = data?.run
-  const { data: artifact } = useArtifact(run?.artifactId ?? null)
+  const { data: artifact, isLoading: artifactLoading } = useArtifact(run?.artifactId ?? null)
 
   if (!run)
     return (
-      <div className="space-y-4 p-8">
-        <Skeleton className="h-4 w-1/2 rounded-full" />
-        <SkeletonRows rows={6} />
+      // The shape of the run view to come: meta row, status panel, report panel.
+      <div aria-hidden className="mx-auto w-full max-w-[var(--chat-content-max-width)] space-y-4 p-8">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-6 w-6 shrink-0 rounded-full" />
+          <Skeleton className="h-2.5 w-32 rounded-full" delay={0.12} />
+          <Skeleton className="h-2.5 w-24 rounded-full" delay={0.24} />
+        </div>
+        <Panel className="flex items-center gap-3">
+          <Skeleton className="h-4 w-4 shrink-0 rounded-full" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-3 w-28 rounded-full" delay={0.12} />
+            <Skeleton className="h-2.5 w-48 rounded-full" delay={0.24} />
+          </div>
+        </Panel>
+        <ReportSkeleton />
       </div>
     )
 
@@ -262,6 +301,9 @@ function RunView({ runId }: { runId: string }) {
         </Panel>
       )}
 
+      {/* The report body holds its shape while the artifact fetch is in
+          flight — no null-then-pop when the document lands. */}
+      {run.artifactId && !artifact && artifactLoading && <ReportSkeleton />}
       {artifact && (
         <Panel>
           <Markdown className="prose-sm">{artifact.body}</Markdown>

@@ -12,6 +12,8 @@ export interface ConversationRow {
   updatedAt: string
   /** An assistant reply is streaming right now (the agent is working). */
   working: boolean
+  /** The LATEST assistant turn errored — the thread needs a re-run. */
+  failed: boolean
   /** Multiplayer plans: your standing on it. Absent/owner for your own. */
   role?: 'owner' | 'collaborator'
   /** For plans shared WITH you: who owns it (display label). */
@@ -47,6 +49,11 @@ export async function listConversations(userId: string, kind: 'chat' | 'plan' = 
              where m.conversation_id = c.id and m.role = 'assistant' and m.status = 'streaming'
                and m.created_at > now() - interval '10 minutes'
            ) as working,
+           coalesce((
+             select m.status = 'error' from messages m
+             where m.conversation_id = c.id and m.role = 'assistant'
+             order by m.seq desc limit 1
+           ), false) as failed,
            case when c.user_id = ${userId} then 'owner' else 'collaborator' end as role,
            case when c.user_id = ${userId} then null else coalesce(o.name, o.email) end as "ownerLabel"
     from conversations c

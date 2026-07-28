@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
+import { Skeleton } from '@/components/ui/skeleton'
 import { UserPicker } from '@/components/app/user-picker'
 import { useAgents } from '@/lib/agents'
 import { useTeams } from '@/lib/teams'
@@ -19,8 +20,8 @@ type Invite = { email: string; role: 'editor' | 'viewer' }
 export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const { data: fleet } = useAgents()
-  const { data: teams = [] } = useTeams()
+  const { data: fleet, isLoading: fleetLoading } = useAgents()
+  const { data: teams = [], isLoading: teamsLoading } = useTeams()
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
 
   const [name, setName] = useState('')
@@ -84,12 +85,16 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
         </Field>
 
         <Field label="Owner">
-          <Select value={teamId} onChange={(e) => setTeamId(e.target.value)} className="w-full">
-            <option value="">Personal</option>
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </Select>
+          {teamsLoading ? (
+            <Skeleton className="h-11 w-full" />
+          ) : (
+            <Select value={teamId} onChange={(e) => setTeamId(e.target.value)} className="w-full">
+              <option value="">Personal</option>
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </Select>
+          )}
         </Field>
 
         <Field label="Agents">
@@ -97,9 +102,12 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
             <input type="checkbox" checked={allowAll} onChange={(e) => setAllowAll(e.target.checked)} className="accent-[color:var(--theme-accent)]" />
             Allow all agents
           </label>
-          {!allowAll && (
-            <Combobox options={agentOptions} selected={agents} onChange={setAgents} multiple placeholder="Select agents" />
-          )}
+          {!allowAll &&
+            (fleetLoading ? (
+              <Skeleton className="h-11 w-full" />
+            ) : (
+              <Combobox options={agentOptions} selected={agents} onChange={setAgents} multiple placeholder="Select agents" />
+            ))}
         </Field>
 
         <Field label="Invite (optional)">

@@ -6,12 +6,13 @@ import { ChatView } from '@/components/chat/chat-view'
 import { ConversationSidebar } from '@/components/chat/conversation-sidebar'
 import { RailSurface, Stage, StageHeader } from '@/components/app/surface'
 import { PlanModal } from '@/components/chat/plan-modal'
-import { PlanDoc } from '@/components/chat/plan-doc'
+import { PlanDoc, PlanDocSkeleton } from '@/components/chat/plan-doc'
 import { userMentionInsert } from '@/components/chat/mentions'
 import { UserPicker } from '@/components/app/user-picker'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { alert } from '@/components/ui/confirm'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
@@ -34,7 +35,7 @@ export const Route = createFileRoute('/_app/plan')({
 /** Members + presence + share, in the plan chat header. Owner shares/removes;
  *  a collaborator can leave. Green ring = viewing right now. */
 function PlanMembers({ planId }: { planId: string }) {
-  const { data } = usePlanMembers(planId)
+  const { data, isLoading } = usePlanMembers(planId)
   const { data: session } = useSession()
   const qc = useQueryClient()
   const [adding, setAdding] = useState(false)
@@ -42,6 +43,18 @@ function PlanMembers({ planId }: { planId: string }) {
   const active = new Set(data?.active ?? [])
   const isOwner = !!session?.id && session.id === members.find((m) => m.role === 'owner')?.userId
   const refresh = () => qc.invalidateQueries({ queryKey: ['plan-members', planId] })
+
+  // Hold the avatar-stack footprint while members load, so the header row
+  // (and the Draft-tickets button next to it) doesn't shift on resolve.
+  if (isLoading)
+    return (
+      <div className="flex items-center gap-1.5">
+        <div className="flex -space-x-1.5">
+          <Skeleton className="h-6 w-6 rounded-full ring-2 ring-surface" />
+          <Skeleton className="h-6 w-6 rounded-full ring-2 ring-surface" delay={0.12} />
+        </div>
+      </div>
+    )
 
   return (
     <div className="flex items-center gap-1.5">
@@ -98,9 +111,14 @@ function PlanPage() {
   const qc = useQueryClient()
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   const agents = useMemo(() => fleet?.agents ?? [], [fleet])
-  const { data: conversations = [] } = useConversations('plan')
+  const { data: conversations = [], isLoading: conversationsLoading } = useConversations('plan')
   const [selectedAgent, pickAgent] = useStickyAgent('plan', agents)
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
+  // The URL IS the plan selection (/plan?p=<id>) — linkable, back/forward-able.
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const selectedConversationId = search.p ?? null
+  const setSelectedConversationId = (id: string | null, opts: { replace?: boolean } = {}) =>
+    void navigate({ search: id ? { p: id } : {}, replace: opts.replace })
   // @mention the plan's MEMBERS — the people a mention will actually reach.
   // (Offering the whole org invited mentions that silently notified nobody.)
   // Tokens mirror the server's; a brand-new plan has only you, so it's inert.
@@ -117,7 +135,7 @@ function PlanPage() {
   // The template a NEW plan's living doc seeds from ('' = automatic: the plan
   // agent's bound plan template). Locked in when the first turn creates the plan.
   const [templateId, setTemplateId] = useState('')
-  const { data: templates = [] } = useTemplates()
+  const { data: templates = [], isLoading: templatesLoading } = useTemplates()
   const planTemplates = useMemo(() => templates.filter((t) => t.kind === 'plan'), [templates])
   // Bumped when an agent turn lands; the doc pane syncs itself on it.
   const [turnSignal, setTurnSignal] = useState(0)
@@ -140,16 +158,12 @@ function PlanPage() {
     void qc.invalidateQueries({ queryKey: ['conversations'] })
   }
 
-  // A ?p= deep link (share notification) selects that plan once it's loaded.
-  const search = Route.useSearch()
-  const navigate = Route.useNavigate()
+  // An inbound ?p= may reference a plan whose AGENT isn't the sticky pick —
+  // align the agent once the plan list resolves (URL itself stays put).
   useEffect(() => {
     if (!search.p) return
     const target = conversations.find((c) => c.id === search.p)
-    if (target) {
-      selectConversation(target)
-      void navigate({ search: {}, replace: true })
-    }
+    if (target && target.agentModel !== selectedAgent) pickAgent(target.agentModel)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search.p, conversations])
 
@@ -165,6 +179,7 @@ function PlanPage() {
         selectedAgent={selectedAgent}
         selectedConversationId={selectedConversationId}
         agentsLoading={agentsLoading}
+        conversationsLoading={conversationsLoading}
         onSelectAgent={selectAgent}
         onSelectConversation={selectConversation}
         onNewChat={newPlan}
@@ -180,6 +195,10 @@ function PlanPage() {
                 <div className="flex items-center gap-3">
                   {selectedConversationId ? (
                     <PlanMembers planId={selectedConversationId} />
+                  ) : templatesLoading ? (
+                    // Hold the template picker's spot so the header doesn't
+                    // re-layout when templates land.
+                    <Skeleton className="h-9 w-40 rounded-xl" />
                   ) : (
                     planTemplates.length > 0 && (
                       <label className="flex items-center gap-1.5 text-xs text-muted" title="The structure the living document starts from. Automatic uses the agent's bound plan template.">
@@ -242,10 +261,25 @@ function PlanPage() {
               )}
             </div>
           </div>
-        ) : (
-          <div className="grid h-full place-items-center text-sm text-muted">
-            {agentsLoading ? 'Loading the fleet' : 'No agents available.'}
+        ) : agentsLoading ? (
+          // The stage frame renders immediately while the fleet loads: the
+          // same two-pane layout (chat column + 44% doc column) it stands in
+          // for, so nothing pops or re-layouts when agents land.
+          <div aria-hidden className="flex h-full min-h-0">
+            <div className="min-w-0 flex-1 overflow-hidden p-6">
+              <div className="mx-auto flex w-full max-w-[var(--chat-content-max-width)] flex-col gap-4">
+                <Skeleton className="h-14 w-3/5 self-end rounded-2xl" />
+                <Skeleton className="h-24 w-4/5 rounded-2xl" delay={0.12} />
+                <Skeleton className="h-12 w-1/2 self-end rounded-2xl" delay={0.24} />
+                <Skeleton className="h-20 w-3/4 rounded-2xl" delay={0.36} />
+              </div>
+            </div>
+            <div className="hidden min-w-0 basis-[44%] border-l border-line-subtle lg:flex">
+              <PlanDocSkeleton />
+            </div>
           </div>
+        ) : (
+          <div className="grid h-full place-items-center text-sm text-muted">No agents available.</div>
         )}
       </Stage>
 

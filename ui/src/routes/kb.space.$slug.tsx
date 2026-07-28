@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { Markdown } from '@/components/ui/markdown'
+import { Skeleton } from '@/components/ui/skeleton'
 import { PublicShell, PublicNotFound } from '@/components/kb/public-shell'
 
 export const Route = createFileRoute('/kb/space/$slug')({
@@ -25,7 +26,23 @@ function PublicSpacePage() {
   }, [slug])
 
   if (state.error) return <PublicNotFound />
-  if (!state.space) return <PublicShell>{null}</PublicShell>
+  if (!state.space) {
+    // First paint for link recipients — hold the overview's shape.
+    return (
+      <PublicShell>
+        <div aria-hidden>
+          <Skeleton className="mb-8 h-8 w-2/3" />
+          <div className="space-y-3.5">
+            {['100%', '94%', '98%', '88%', '96%', '73%', '100%', '91%', '97%', '60%'].map((w, i) => (
+              <div key={i} style={{ width: w }}>
+                <Skeleton className="h-3.5 w-full rounded-full" delay={i * 0.08} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </PublicShell>
+    )
+  }
 
   return (
     <PublicShell>

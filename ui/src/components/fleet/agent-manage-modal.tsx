@@ -11,6 +11,7 @@ import { Generating } from '@/components/ui/generating'
 import { Select } from '@/components/ui/select'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { InfoTip } from '@/components/ui/info-tip'
 import { cn } from '@/lib/cn'
 import { relativeTime, useFleet } from '@/lib/fleet'
@@ -108,7 +109,7 @@ function TargetChip({ t, name }: { t: ModelTarget; name?: string }) {
 function SummaryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   const qc = useQueryClient()
   const cfg = def.latest?.config
-  const { data: fleet } = useFleet()
+  const { data: fleet, isLoading: fleetLoading } = useFleet()
   const stat = fleet?.agents.find((a) => a.id === def.model)
   const [role, setRole] = useState(def.role ?? '')
   const saveRole = async () => {
@@ -132,9 +133,20 @@ function SummaryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
         <Stat label="Department" value={def.department} />
         <Stat label="Management" value="Talaria-managed" />
         <Stat label="Version" value={`v${def.currentVersion}`} />
-        {stat && <Stat label="Conversations" value={String(stat.conversations)} />}
-        {stat && <Stat label="Messages" value={String(stat.messages)} />}
-        {stat?.lastUsed && <Stat label="Last used" value={relativeTime(stat.lastUsed)} />}
+        {fleetLoading ? (
+          // The usage cells land late and grow the grid — hold their spots.
+          <>
+            <StatSkeleton />
+            <StatSkeleton delay={0.12} />
+            <StatSkeleton delay={0.24} />
+          </>
+        ) : (
+          <>
+            {stat && <Stat label="Conversations" value={String(stat.conversations)} />}
+            {stat && <Stat label="Messages" value={String(stat.messages)} />}
+            {stat?.lastUsed && <Stat label="Last used" value={relativeTime(stat.lastUsed)} />}
+          </>
+        )}
       </div>
       <div>
         <div className="mb-1.5 text-xs uppercase tracking-wide text-muted">Models</div>
@@ -159,7 +171,7 @@ function SummaryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
 // agent drafts or creates tickets, and shape its plan documents.
 function TemplateBindings({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data: templates = [] } = useTemplates()
+  const { data: templates = [], isLoading } = useTemplates()
   const nameOf = (id: string | null) => templates.find((t) => t.id === id)?.name ?? '—'
   const bind = async (patch: { ticketTemplateId?: string | null; planTemplateId?: string | null }) => {
     await patchAgentMeta(def.id, patch)
@@ -183,7 +195,20 @@ function TemplateBindings({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
         Templates
         <InfoTip text="A bound template wins over the board's default wherever this agent writes tickets or plans." />
       </div>
-      {isAdmin ? (
+      {isLoading ? (
+        // Until templates land the selects would show the fallback option and
+        // then flip — hold both with select-shaped shimmer instead.
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <div className="mb-1 text-[11px] text-muted">Tickets</div>
+            <Skeleton className="h-9 w-full" />
+          </div>
+          <div>
+            <div className="mb-1 text-[11px] text-muted">Plan documents</div>
+            <Skeleton className="h-9 w-full" delay={0.12} />
+          </div>
+        </div>
+      ) : isAdmin ? (
         <div className="grid grid-cols-2 gap-3">
           <div>
             <div className="mb-1 text-[11px] text-muted">Tickets</div>
@@ -207,6 +232,13 @@ const Stat = ({ label, value }: { label: string; value: string }) => (
   <div>
     <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
     <div className="truncate text-fg" title={value}>{value}</div>
+  </div>
+)
+/** A Stat cell's shape while its query is in flight: label bar + value bar. */
+const StatSkeleton = ({ delay = 0 }: { delay?: number }) => (
+  <div className="space-y-1.5">
+    <Skeleton className="h-2.5 w-20 rounded-full" delay={delay} />
+    <Skeleton className="h-3.5 w-24 rounded-full" delay={delay + 0.12} />
   </div>
 )
 
@@ -243,7 +275,7 @@ interface SkillSummary {
 }
 function SkillsTab({ slug, isAdmin }: { slug: string; isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ['skills'],
     queryFn: async () => {
       const r = await fetch('/api/skills')
@@ -270,7 +302,9 @@ function SkillsTab({ slug, isAdmin }: { slug: string; isAdmin: boolean }) {
 
   return (
     <div className="space-y-3">
-      {skills.length === 0 ? (
+      {isLoading ? (
+        <SkeletonRows rows={3} className="py-2" />
+      ) : skills.length === 0 ? (
         <EmptyState icon="✦" title="No skills yet" hint={isAdmin ? 'Add one below.' : undefined} />
       ) : (
         <div className="divide-y divide-line-subtle">
@@ -325,7 +359,24 @@ function SkillEditorModal({ slug, name, isAdmin, onClose }: { slug: string; name
   }
   // Don't mount the editor until the content is here — it seeds ONCE from
   // `value`; mounting during the fetch would show an empty skill forever.
-  if (!data) return null
+  // But the CLICK must land instantly: slide in the editor-shaped shell
+  // (same surface InternalEditorModal uses in nested mode) with a skeleton
+  // body, then swap to the real editor when the content arrives.
+  if (!data)
+    return (
+      <div className="absolute inset-0 z-30 flex flex-col bg-[var(--theme-panel)]">
+        <div className="flex shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-3.5">
+          <div className="text-sm font-semibold text-fg">{name} · SKILL.md</div>
+        </div>
+        <div className="space-y-3 p-6" aria-hidden>
+          <Skeleton className="h-2.5 w-2/3 rounded-full" />
+          <Skeleton className="h-2.5 w-full rounded-full" delay={0.12} />
+          <Skeleton className="h-2.5 w-5/6 rounded-full" delay={0.24} />
+          <Skeleton className="h-2.5 w-3/4 rounded-full" delay={0.36} />
+          <Skeleton className="h-2.5 w-1/2 rounded-full" delay={0.48} />
+        </div>
+      </div>
+    )
   return (
     <InternalEditorModal
       open
@@ -373,14 +424,13 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   // Quick-add: append a dated note without opening the full editor.
   const addNote = async () => {
     const n = note.trim()
-    if (!n) return
+    if (!n || isLoading) return // appending before the fetch lands would clobber the doc
     const stamp = new Date().toISOString().slice(0, 10)
     const base = (data?.content ?? '').replace(/\s+$/, '')
     await save(`${base ? `${base}\n` : ''}- ${n} _(added by hand, ${stamp})_\n`)
     setNote('')
   }
   if (!def.managed) return <EmptyState icon="❖" title="Not managed" hint="Memory reads through the managed container. Migrate this agent first." />
-  if (isLoading) return <div className="text-sm text-muted">Reading memory</div>
   if (error) return <EmptyState icon="❖" title="Can't reach the agent" hint={(error as Error).message} />
   return (
     <div className="space-y-3">
@@ -388,7 +438,7 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
         <span className="text-xs uppercase tracking-wide text-muted">Memory</span>
         <InfoTip text={`Lives in the agent's own container (${data?.container ?? ''}) — the agent curates it too, so a concurrent agent write can win over a manual edit. Every save is snapshotted and revertible.`} />
         {isAdmin && (
-          <Button size="sm" className="ml-auto shrink-0" onClick={() => setEditing(true)}>
+          <Button size="sm" className="ml-auto shrink-0" disabled={isLoading} onClick={() => setEditing(true)}>
             Edit
           </Button>
         )}
@@ -403,12 +453,22 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
             placeholder="Add a memory — one fact the agent should keep"
             className="flex-1"
           />
-          <Button size="sm" variant="outline" disabled={busy || !note.trim()} onClick={() => void addNote()}>
+          <Button size="sm" variant="outline" disabled={busy || isLoading || !note.trim()} onClick={() => void addNote()}>
             Add
           </Button>
         </div>
       )}
-      {data?.content ? (
+      {isLoading ? (
+        // The document is coming — prose-bar shimmer where it will render.
+        <div className="space-y-3 pt-1" aria-hidden>
+          <Skeleton className="h-2.5 w-3/4 rounded-full" />
+          <Skeleton className="h-2.5 w-full rounded-full" delay={0.12} />
+          <Skeleton className="h-2.5 w-5/6 rounded-full" delay={0.24} />
+          <Skeleton className="h-2.5 w-2/3 rounded-full" delay={0.36} />
+          <Skeleton className="h-2.5 w-full rounded-full" delay={0.48} />
+          <Skeleton className="h-2.5 w-1/2 rounded-full" delay={0.6} />
+        </div>
+      ) : data?.content ? (
         <div className="text-sm">
           <Markdown>{data.content}</Markdown>
         </div>
@@ -454,7 +514,7 @@ interface McpServer {
 }
 function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ['mcp-agents'],
     queryFn: async () => {
       const r = await fetch('/api/mcp')
@@ -491,7 +551,9 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       {busy && (
         <Generating label={`Applying MCP change: rolling ${def.displayName} so the new version takes effect`} lines={2} />
       )}
-      {servers.length === 0 ? (
+      {isLoading ? (
+        <SkeletonRows rows={2} className="py-2" />
+      ) : servers.length === 0 ? (
         <div className="text-sm text-muted">No MCP servers connected.</div>
       ) : (
         <div className="divide-y divide-line-subtle">
@@ -556,7 +618,7 @@ interface Version {
 }
 function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ['agent-versions', def.id],
     queryFn: async () => {
       const r = await fetch(`/api/fleet/defs/${def.id}/versions`)
@@ -578,9 +640,9 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
     }
   }
   const versions = data ?? []
-  return versions.length === 0 ? (
-    <div className="text-sm text-muted">No version history.</div>
-  ) : (
+  // The header row (History + Config history) renders in every state — only
+  // the list below it swaps between skeleton, empty, and rows.
+  return (
     <div className="divide-y divide-line-subtle">
       {busy !== null && (
         <div className="pb-2.5">
@@ -608,6 +670,8 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
           mode="plain"
         />
       )}
+      {isLoading && <SkeletonRows rows={4} className="py-3" />}
+      {!isLoading && versions.length === 0 && <div className="py-2.5 text-sm text-muted">No version history.</div>}
       {versions.map((v) => (
         <div key={v.version} className="flex items-center gap-3 py-2.5 text-sm">
           <span className={cn('w-12 shrink-0 font-[var(--font-mono)]', v.version === def.currentVersion ? 'text-accent' : 'text-muted')}>v{v.version}</span>
