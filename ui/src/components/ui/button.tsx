@@ -6,7 +6,9 @@ type Variant = 'primary' | 'outline' | 'ghost' | 'danger'
 type Size = ControlSize
 
 const base =
-  'inline-flex items-center justify-center gap-2 rounded-xl font-medium transition-all disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2'
+  // whitespace-nowrap: a button label NEVER line-breaks — if space is tight the
+  // layout should shrink something else, not fold the label.
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl font-medium transition-all disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2'
 
 const variants: Record<Variant, string> = {
   // Mercury bronze — solid metal, near-black label, matte (no glow).

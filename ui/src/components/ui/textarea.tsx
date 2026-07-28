@@ -28,7 +28,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(({ classN
         else if (ref) ref.current = el
       }}
       className={cn(
-        'w-full resize-none rounded-xl border border-line bg-[var(--theme-input)] px-3 py-2.5 text-fg outline-none transition-colors',
+        'w-full resize-none rounded-xl border border-line bg-[var(--theme-input)] px-3 py-2.5 font-sans text-fg outline-none transition-colors',
         'placeholder:text-muted placeholder:opacity-70 focus:border-accent',
         autoGrow && 'overflow-y-auto',
         className,

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
+import { InfoTip } from '@/components/ui/info-tip'
 import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -159,15 +160,10 @@ export function StoragePanel() {
 
   return (
     <Panel>
-      <div className="mb-2 text-sm font-semibold text-fg">Storage</div>
-      <p className="mb-3 text-xs text-muted">
-        Where uploaded files live. <span className="text-fg">Local disk</span> keeps everything on this
-        machine; the <span className="text-fg">built-in bucket</span> is Talaria's own bundled object
-        store (no cloud account needed); <span className="text-fg">external</span> works with any
-        S3-compatible service — AWS S3, Backblaze B2, Cloudflare R2, MinIO. Each file remembers where it
-        was stored, so switching never breaks existing links. A replica mirrors every file to a second
-        provider for redundancy.
-      </p>
+      <div className="mb-4 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Storage</span>
+        <InfoTip text="Where uploaded files live. Local disk keeps everything on this machine; the built-in bucket is Talaria's own bundled object store (no cloud account needed); external works with any S3-compatible service — AWS S3, Backblaze B2, Cloudflare R2, MinIO. Each file remembers where it was stored, so switching never breaks existing links. A replica mirrors every file to a second provider for redundancy." />
+      </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-line-subtle p-3 text-xs text-muted">
         <span><span className="text-fg">{data.stats.local}</span> on disk ({fmtBytes(data.stats.localBytes)})</span>

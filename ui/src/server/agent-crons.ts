@@ -116,6 +116,31 @@ export async function createCronJob(
 
 const JOB_ID = /^[a-f0-9]{6,32}$/
 
+/** In-place edit via `hermes cron edit` — name/schedule/prompt, any subset. */
+export async function editCronJob(
+  defId: string,
+  jobId: string,
+  input: { name?: string; schedule?: string; prompt?: string },
+): Promise<void> {
+  if (!JOB_ID.test(jobId)) throw new Error('bad job id')
+  const { department } = await agentFor(defId)
+  const args = ['exec', await container(department), 'hermes', 'cron', 'edit', jobId]
+  if (input.name !== undefined) {
+    assertSafe(input.name, 'name')
+    args.push('--name', input.name.trim())
+  }
+  if (input.schedule !== undefined) {
+    assertSafe(input.schedule, 'schedule')
+    args.push('--schedule', input.schedule.trim())
+  }
+  if (input.prompt !== undefined) {
+    if (input.prompt.startsWith('-')) throw new Error('prompt cannot start with "-"')
+    args.push('--prompt', input.prompt.trim())
+  }
+  if (args.length === 6) throw new Error('nothing to edit')
+  await exec(args)
+}
+
 async function jobAction(defId: string, jobId: string, action: 'remove' | 'pause' | 'resume' | 'run'): Promise<void> {
   if (!JOB_ID.test(jobId)) throw new Error('bad job id')
   const { department } = await agentFor(defId)

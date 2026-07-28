@@ -12,7 +12,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(({ className, size
     ref={ref}
     className={cn(
       controlSizes[size],
-      'w-full rounded-xl border border-line bg-[var(--theme-input)] px-3 text-fg outline-none transition-colors',
+      // What users TYPE is content, not chrome — sans. Callers needing mono
+      // (keys, slugs, config) pass font-[var(--font-mono)]; cn() resolves it.
+      'w-full rounded-xl border border-line bg-[var(--theme-input)] px-3 font-sans text-fg outline-none transition-colors',
       'placeholder:text-muted placeholder:opacity-70 focus:border-accent',
       className,
     )}

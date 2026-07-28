@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
+import { SkeletonCard } from '@/components/ui/skeleton'
 import { useQuery } from '@tanstack/react-query'
 import { EmptyState } from '@/components/ui/empty-state'
 import { GeneratingDots } from '@/components/ui/generating'
@@ -127,12 +128,20 @@ function InferencePage() {
           )}
         </div>
 
-        {live && <LiveSection live={live} />}
+        {live ? (
+          <LiveSection live={live} />
+        ) : (
+          <div className="grid grid-cols-4 gap-4">
+            {[0, 1, 2, 3].map((i) => (
+              <SkeletonCard key={i} delay={i * 0.1} />
+            ))}
+          </div>
+        )}
 
         <div className="mercury-text text-lg font-semibold">Self-hosted compute</div>
 
         {isLoading ? (
-          <div className="text-sm text-muted">Probing backends</div>
+          <SkeletonCard />
         ) : backends.length === 0 ? (
           <EmptyState
             icon="▦"

@@ -186,7 +186,7 @@ export function BoardList({ tasks, onOpen, boardId }: { tasks: Task[]; onOpen: (
       case 'ticket':
         return <span className="font-[var(--font-mono)] text-xs text-muted">{t.ticketRef ?? ''}</span>
       case 'title':
-        return <span className="text-fg">{t.title}</span>
+        return <span className="font-sans text-fg">{t.title}</span>
       case 'status':
         return <span className="text-muted">{STATUS_LABEL[t.status]}</span>
       case 'priority':

@@ -128,7 +128,7 @@ export function PlanModal({
     setProposals((prev) => prev?.map((x, j) => (j === i ? { ...x, ...p } : x)) ?? null)
 
   return (
-    <Modal open={open} onClose={onClose} title="Plan from this conversation" width={proposals ? 'max-w-4xl' : 'max-w-lg'}>
+    <Modal open={open} onClose={onClose} title="Plan from this conversation" takeover={!!proposals} width="max-w-lg">
       <div className="space-y-4">
         {phase === 'done' ? (
           <>

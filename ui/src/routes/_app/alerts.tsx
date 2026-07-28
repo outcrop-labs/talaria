@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { SkeletonRows } from '@/components/ui/skeleton'
 import { useQuery } from '@tanstack/react-query'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
@@ -46,7 +47,7 @@ function AlertsPage() {
         <h1 className="mercury-text text-2xl font-semibold">Alerts</h1>
 
         {isLoading ? (
-          <div className="text-sm text-muted">Checking the fleet</div>
+          <SkeletonRows rows={4} avatar />
         ) : alerts.length === 0 ? (
           <EmptyState
             icon="△"

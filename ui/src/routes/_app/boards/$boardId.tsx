@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate, Outlet } from '@tanstack/react-router'
+import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
 import { useMemo, useState } from 'react'
 import { LayoutGrid, List } from 'lucide-react'
 import { BoardHeader } from '@/components/board/board-header'
@@ -50,7 +51,19 @@ function BoardPage() {
     )
   }, [allTasks, q, assignee, priority])
 
-  if (isLoading) return <div className="grid h-full place-items-center text-sm text-muted">Loading</div>
+  if (isLoading)
+    return (
+      <div className="grid h-full grid-cols-2 gap-3 overflow-hidden p-6 sm:grid-cols-4">
+        {[0, 1, 2, 3].map((c) => (
+          <div key={c} className="space-y-3">
+            <Skeleton className="h-3 w-20 rounded-full" delay={c * 0.1} />
+            {[0, 1, 2].map((r) => (
+              <SkeletonCard key={r} delay={c * 0.1 + r * 0.15} />
+            ))}
+          </div>
+        ))}
+      </div>
+    )
   if (!board) return <EmptyState icon="⧉" title="Board not found" hint="It may have been deleted, or you don’t have access." />
 
   const toggleCls = (active: boolean) =>

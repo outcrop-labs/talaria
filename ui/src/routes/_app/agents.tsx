@@ -1,7 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { SkeletonCard } from '@/components/ui/skeleton'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Loader2, Copy, RotateCw, Repeat, UserPlus, Plus } from 'lucide-react'
+import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Loader2, Copy, RotateCw, Repeat, Trash2, UserPlus, Plus } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { confirm } from '@/components/ui/confirm'
 import { Avatar } from '@/components/ui/avatar'
@@ -76,7 +77,7 @@ function AgentsPage() {
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
   const { data: fleet } = useFleet()
-  const { data: defsData } = useFleetDefs(isAdmin)
+  const { data: defsData, isLoading: defsLoading } = useFleetDefs(isAdmin)
   const { data: containers = [] } = useFleetContainers(isAdmin)
   const byDept = new Map(containers.map((c) => [c.department, c]))
   const defs = defsData?.defs ?? []
@@ -136,7 +137,13 @@ function AgentsPage() {
           </div>
         </div>
 
-        {defs.length === 0 ? (
+        {defsLoading ? (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <SkeletonCard key={i} delay={i * 0.1} />
+            ))}
+          </div>
+        ) : defs.length === 0 ? (
           <Panel>
             <EmptyState
               title="No agents yet"
@@ -219,12 +226,27 @@ function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; r
   const { pending, act } = useAgentControls(d)
   const [retiring, setRetiring] = useState(false)
   if (pending) return <Loader2 size={15} className="animate-spin text-muted" />
-  // Retired agents: re-hire (re-enable + start) or duplicate as a template.
+  // Retired agents: re-hire (re-enable + start), duplicate as a template, or
+  // delete forever (admin) — the only truly destructive lifecycle action.
   if (!d.enabled)
     return (
       <div className="flex items-center">
         <IconBtn icon={<Copy size={15} />} title="Duplicate to a new agent" onClick={onDuplicate} />
         <IconBtn icon={<UserPlus size={15} />} title="Re-hire" onClick={() => void act('unretire', 're-hiring')} />
+        {isAdmin && (
+          <IconBtn
+            icon={<Trash2 size={15} />}
+            title="Delete forever"
+            danger
+            onClick={() =>
+              void act(
+                'delete',
+                'Delete forever',
+                `Permanently delete ${d.displayName}? This removes its definition, version history, secrets, and (for Talaria-created agents) its memory volume. Chats, tickets, and ledger history it produced are kept. This cannot be undone.`,
+              )
+            }
+          />
+        )}
       </div>
     )
   return (

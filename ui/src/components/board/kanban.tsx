@@ -132,8 +132,8 @@ function Card({
               {task.effort && <span className="rounded border border-line-subtle px-1 text-[9px] font-semibold text-muted">{EFFORT_LABEL[task.effort]}</span>}
               {task.archivedAt && <span className="rounded border border-line-subtle px-1 text-[9px] uppercase tracking-wide text-muted">archived</span>}
             </div>
-            <div className="text-[15px] font-medium leading-snug text-fg">{task.title}</div>
-            {task.description && <div className="mt-1 line-clamp-3 text-xs leading-relaxed text-muted">{plainText(task.description)}</div>}
+            <div className="font-sans text-[15px] font-medium leading-snug text-fg">{task.title}</div>
+            {task.description && <div className="mt-1 line-clamp-3 font-sans text-xs leading-relaxed text-muted">{plainText(task.description)}</div>}
           </div>
         </div>
         {(assignees.length > 0 || task.dueDate || task.tags.length > 0) && (

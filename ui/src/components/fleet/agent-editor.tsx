@@ -136,6 +136,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
           {soulOpen && (
             <InternalEditorModal
               open
+              nested
               onClose={() => setSoulOpen(false)}
               title={`${def.displayName} · SOUL.md`}
               subtitle="Who the agent is. Saving publishes a soul-only version on top of the last saved config."

@@ -46,7 +46,7 @@ export function TemplateLibraryModal({ open, onClose }: { open: boolean; onClose
   const byKind = (kind: TemplateKind) => templates.filter((t) => t.kind === kind)
 
   return (
-    <Modal open={open} onClose={onClose} title="Template library" width="max-w-4xl">
+    <Modal open={open} onClose={onClose} title="Template library" takeover>
       <div className="flex min-h-[26rem] gap-4">
         <div className="w-56 shrink-0 space-y-4 overflow-y-auto border-r border-line-subtle pr-3">
           {(['ticket', 'plan'] as const).map((kind) => (

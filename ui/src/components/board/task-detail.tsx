@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
@@ -118,7 +119,15 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
           className="mercury-panel relative z-10 flex h-[85vh] w-full max-w-4xl overflow-hidden rounded-2xl"
         >
           {!t ? (
-            <div className="grid h-full w-full place-items-center text-sm text-muted">Loading</div>
+            <div className="flex h-full w-full gap-6 p-6">
+              <div className="min-w-0 flex-1 space-y-4">
+                <Skeleton className="h-5 w-2/3 rounded-full" />
+                <SkeletonRows rows={5} />
+              </div>
+              <div className="w-56 shrink-0 space-y-3">
+                <SkeletonRows rows={6} />
+              </div>
+            </div>
           ) : (
             <>
               {/* Content */}

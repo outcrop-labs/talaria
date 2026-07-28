@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { SkeletonRows } from '@/components/ui/skeleton'
 import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { CheckCheck, ClipboardList, Plus, Settings, SquarePen } from 'lucide-react'
@@ -165,7 +166,7 @@ function CommsPage() {
               <CountPill count={c.unreadCount} />
             </RailRow>
           ))}
-          {rooms.length === 0 && <Hint>{isLoading ? 'Loading' : 'Ambient, persistent talk.'}</Hint>}
+          {rooms.length === 0 && (isLoading ? <SkeletonRows rows={4} className="px-2 py-1.5" /> : <Hint>Ambient, persistent talk.</Hint>)}
         </Section>
 
         <Section label="Relays" createPlaceholder="what's it about?" onCreate={(v) => void create(v, 'group')}>

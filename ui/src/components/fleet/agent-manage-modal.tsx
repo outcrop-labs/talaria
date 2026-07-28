@@ -11,6 +11,7 @@ import { Generating } from '@/components/ui/generating'
 import { Select } from '@/components/ui/select'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
+import { InfoTip } from '@/components/ui/info-tip'
 import { cn } from '@/lib/cn'
 import { relativeTime, useFleet } from '@/lib/fleet'
 import { AgentConfigForm } from '@/components/fleet/agent-editor'
@@ -51,43 +52,42 @@ export function AgentManageModal({
   const [tab, setTab] = useState<Tab>('summary')
 
   return (
-    <Modal open={open} onClose={onClose} title={`${def.displayName} · v${def.currentVersion}`} width="max-w-3xl">
-      <div className="flex gap-1 border-b border-line-subtle">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={cn(
-              'relative px-3 py-2 text-sm transition-colors',
-              tab === t.id ? 'text-fg' : 'text-muted hover:text-fg',
-            )}
-          >
-            {t.label}
-            {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
-          </button>
-        ))}
-      </div>
-
-      <div className="max-h-[65vh] overflow-y-auto pt-4">
-        {tab === 'summary' && <SummaryTab def={def} isAdmin={isAdmin} />}
-        {tab === 'config' &&
-          (isAdmin ? (
-            <AgentConfigForm def={def} endpoints={endpoints} onSaved={onClose} />
-          ) : (
-            <ReadOnlyConfig def={def} />
+    <Modal open={open} onClose={onClose} title={`${def.displayName} · v${def.currentVersion}`} takeover>
+      {/* Takeover modal: the frame owns the height, so every tab renders at
+          the SAME size and scrolls internally — no height jank between tabs. */}
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex shrink-0 gap-1 border-b border-line-subtle">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={cn(
+                'relative px-3 py-2 text-sm transition-colors',
+                tab === t.id ? 'text-fg' : 'text-muted hover:text-fg',
+              )}
+            >
+              {t.label}
+              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
+            </button>
           ))}
-        {tab === 'skills' && <SkillsTab slug={def.slug} isAdmin={isAdmin} />}
-        {tab === 'memory' && <MemoryTab def={def} isAdmin={isAdmin} />}
-        {tab === 'crons' && (
-          <CronsPanel
-            agentId={def.id}
-            intro="Recurring jobs the agent runs on its own native scheduler. They keep firing even when Talaria is down."
-          />
-        )}
-        {tab === 'secrets' && (isAdmin ? <SecretsTab agentId={def.id} /> : <div className="text-sm text-muted">Admins only.</div>)}
-        {tab === 'mcp' && <McpTab def={def} isAdmin={isAdmin} />}
-        {tab === 'versions' && <VersionsTab def={def} isAdmin={isAdmin} />}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto pt-4">
+          {tab === 'summary' && <SummaryTab def={def} isAdmin={isAdmin} />}
+          {tab === 'config' &&
+            (isAdmin ? (
+              <AgentConfigForm def={def} endpoints={endpoints} onSaved={onClose} />
+            ) : (
+              <ReadOnlyConfig def={def} />
+            ))}
+          {tab === 'skills' && <SkillsTab slug={def.slug} isAdmin={isAdmin} />}
+          {tab === 'memory' && <MemoryTab def={def} isAdmin={isAdmin} />}
+          {tab === 'crons' && <CronsPanel agentId={def.id} />}
+          {tab === 'secrets' && (isAdmin ? <SecretsTab agentId={def.id} /> : <div className="text-sm text-muted">Admins only.</div>)}
+          {tab === 'mcp' && <McpTab def={def} isAdmin={isAdmin} />}
+          {tab === 'versions' && <VersionsTab def={def} isAdmin={isAdmin} />}
+        </div>
       </div>
     </Modal>
   )
@@ -179,7 +179,10 @@ function TemplateBindings({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
   )
   return (
     <div>
-      <div className="mb-1.5 text-xs uppercase tracking-wide text-muted">Templates</div>
+      <div className="mb-1.5 flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted">
+        Templates
+        <InfoTip text="A bound template wins over the board's default wherever this agent writes tickets or plans." />
+      </div>
       {isAdmin ? (
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -197,9 +200,6 @@ function TemplateBindings({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
           <Stat label="Plan documents" value={nameOf(def.planTemplateId)} />
         </div>
       )}
-      <div className="mt-1 text-[11px] text-muted">
-        A bound template wins over the board's default wherever this agent writes tickets or plans.
-      </div>
     </div>
   )
 }
@@ -323,13 +323,17 @@ function SkillEditorModal({ slug, name, isAdmin, onClose }: { slug: string; name
     await qc.invalidateQueries({ queryKey: ['skills'] })
     onClose()
   }
+  // Don't mount the editor until the content is here — it seeds ONCE from
+  // `value`; mounting during the fetch would show an empty skill forever.
+  if (!data) return null
   return (
     <InternalEditorModal
       open
+      nested
       onClose={onClose}
       title={`${name} · SKILL.md`}
       subtitle="Read live. The agent picks up edits on its next run."
-      value={data?.content ?? ''}
+      value={data.content}
       editable={isAdmin}
       saving={busy}
       onSave={save}
@@ -355,6 +359,7 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   })
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState('')
   const save = async (content: string) => {
     setBusy(true)
     try {
@@ -365,21 +370,46 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       setBusy(false)
     }
   }
+  // Quick-add: append a dated note without opening the full editor.
+  const addNote = async () => {
+    const n = note.trim()
+    if (!n) return
+    const stamp = new Date().toISOString().slice(0, 10)
+    const base = (data?.content ?? '').replace(/\s+$/, '')
+    await save(`${base ? `${base}\n` : ''}- ${n} _(added by hand, ${stamp})_\n`)
+    setNote('')
+  }
   if (!def.managed) return <EmptyState icon="❖" title="Not managed" hint="Memory reads through the managed container. Migrate this agent first." />
   if (isLoading) return <div className="text-sm text-muted">Reading memory</div>
   if (error) return <EmptyState icon="❖" title="Can't reach the agent" hint={(error as Error).message} />
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-3">
-        {data?.container && <span className="min-w-0 truncate text-xs text-muted">{data.container} · the agent edits this too; last writer wins</span>}
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs uppercase tracking-wide text-muted">Memory</span>
+        <InfoTip text={`Lives in the agent's own container (${data?.container ?? ''}) — the agent curates it too, so a concurrent agent write can win over a manual edit. Every save is snapshotted and revertible.`} />
         {isAdmin && (
           <Button size="sm" className="ml-auto shrink-0" onClick={() => setEditing(true)}>
             Edit
           </Button>
         )}
       </div>
+      {isAdmin && (
+        <div className="flex items-center gap-2">
+          <Input
+            size="sm"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            onKeyDown={submitOnEnter(() => void addNote())}
+            placeholder="Add a memory — one fact the agent should keep"
+            className="flex-1"
+          />
+          <Button size="sm" variant="outline" disabled={busy || !note.trim()} onClick={() => void addNote()}>
+            Add
+          </Button>
+        </div>
+      )}
       {data?.content ? (
-        <div className="max-h-[52vh] overflow-y-auto text-sm">
+        <div className="text-sm">
           <Markdown>{data.content}</Markdown>
         </div>
       ) : (
@@ -388,6 +418,7 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       {editing && (
         <InternalEditorModal
           open
+          nested
           onClose={() => setEditing(false)}
           title={`${def.displayName} · MEMORY.md`}
           subtitle="The agent maintains this itself; your edits are snapshotted and revertible."
@@ -556,8 +587,9 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
           <Generating label={`Reverting to v${busy}, publishing as a new version`} lines={2} />
         </div>
       )}
-      <div className="flex items-center gap-2 pb-2.5">
-        <span className="text-xs text-muted">Reverting publishes the old content as a new version.</span>
+      <div className="flex items-center gap-1.5 pb-2.5">
+        <span className="text-xs uppercase tracking-wide text-muted">History</span>
+        <InfoTip text="Reverting never destroys anything — the old content is published as a NEW version on top." />
         <Button variant="outline" size="sm" className="ml-auto" onClick={() => setConfigOpen(true)}>
           Config history
         </Button>
@@ -565,6 +597,7 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       {configOpen && (
         <InternalEditorModal
           open
+          nested
           onClose={() => setConfigOpen(false)}
           title={`${def.displayName} · config`}
           subtitle="The rendered model/tool config per version. Click a revision to see what changed."
