@@ -373,10 +373,12 @@ function UserBubble({ content, attachments, author }: { content: string; attachm
     <div className="flex flex-col items-end">
       {author && <div className="mb-0.5 pr-1 text-[10px] font-medium text-muted">{author}</div>}
       <div
-        className="max-w-[85%] whitespace-pre-wrap rounded-2xl border px-4 py-2.5 text-sm text-[color:var(--chat-user-foreground)]"
+        className="max-w-[85%] rounded-2xl border px-4 py-2.5 text-sm text-[color:var(--chat-user-foreground)]"
         style={{ background: 'var(--chat-user-bg)', borderColor: 'var(--chat-user-border)' }}
       >
-        {content}
+        {/* Markdown, like every other message surface — a user turn was the
+            one bubble still rendering raw text. */}
+        <Markdown>{content}</Markdown>
         {attachments && attachments.length > 0 && <MessageAttachments items={attachments} />}
       </div>
     </div>

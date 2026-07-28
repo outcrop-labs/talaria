@@ -6,6 +6,7 @@ import { Generating } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
+import { RichEditor } from '@/components/ui/rich-editor'
 import { Select } from '@/components/ui/select'
 import { createFleetAgent, type AgentDef } from '@/lib/fleet-defs'
 import { parseAgentDraft, streamMuse, type AgentDraft } from '@/lib/muse'
@@ -44,6 +45,7 @@ export function CreateAgentModal({
   const [department, setDepartment] = useState('')
   const [role, setRole] = useState('')
   const [soul, setSoul] = useState('')
+  const [soulRev, setSoulRev] = useState(0)
   const [skills, setSkills] = useState<AgentDraft['skills']>([])
   const [templateId, setTemplateId] = useState(preselect ?? templates[0]?.id ?? '')  // '' = platform defaults
   const [start, setStart] = useState(true)
@@ -56,6 +58,7 @@ export function CreateAgentModal({
     setDepartment(d.department)
     setRole(d.role)
     setSoul(d.soul)
+    setSoulRev((r) => r + 1) // reseed the editor with the new draft
     setSkills(d.skills)
   }
 
@@ -213,7 +216,11 @@ export function CreateAgentModal({
         <div>
           <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Soul</label>
           {soul.trim() ? (
-            <Textarea autoGrow rows={6} value={soul} onChange={(e) => setSoul(e.target.value)} className="max-h-72 font-[var(--font-mono)] text-xs" />
+            // Rich like the post-creation soul editor; autosave keeps `soul`
+            // fresh for create + refine, reseeded whenever muse redrafts.
+            <div className="max-h-72 overflow-y-auto">
+              <RichEditor key={soulRev} value={soul} onSave={setSoul} autosave minHeight="9rem" />
+            </div>
           ) : (
             <p className="text-xs text-muted">Starts from a scaffold you edit after creation, or go back and describe the agent to have one designed.</p>
           )}

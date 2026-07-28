@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { Maximize2, Minimize2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { GeneratingOverlay } from '@/components/ui/generating'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { saveArtifact, useArtifact } from '@/lib/artifacts'
+import { cn } from '@/lib/cn'
 
 // The plan's living document — a real `doc` artifact, side-by-side with the chat.
 // One per plan (linked via artifact_links target_type='plan'); found-or-created
@@ -45,6 +47,14 @@ function DocEditor({ id, planId, syncSignal = 0 }: { id: string; planId: string;
   const [syncErr, setSyncErr] = useState<string | null>(null)
   // The editor is uncontrolled after mount — bump to remount on an agent sync.
   const [syncNonce, setSyncNonce] = useState(0)
+  // Fullscreen (Esc exits) — same affordance as the artifact/KB editors.
+  const [fullscreen, setFullscreen] = useState(false)
+  useEffect(() => {
+    if (!fullscreen) return
+    const h = (e: KeyboardEvent) => e.key === 'Escape' && setFullscreen(false)
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [fullscreen])
 
   const save = async () => {
     const body = editorRef.current?.getMarkdown() ?? artifact?.body ?? ''
@@ -87,7 +97,7 @@ function DocEditor({ id, planId, syncSignal = 0 }: { id: string; planId: string;
   if (!artifact) return <div className="grid flex-1 place-items-center text-sm text-muted">Loading</div>
 
   return (
-    <>
+    <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'flex-1')}>
       <div className="flex items-center gap-2 border-b border-line-subtle px-4 py-2">
         <span className="text-[11px] uppercase tracking-wide text-muted">Plan document</span>
         <span className="min-w-0 flex-1 truncate text-sm text-fg">{artifact.title}</span>
@@ -98,6 +108,9 @@ function DocEditor({ id, planId, syncSignal = 0 }: { id: string; planId: string;
         <Link to="/artifacts" className="shrink-0 text-[11px] text-accent hover:underline" title="Open in Artifacts">
           Open ↗
         </Link>
+        <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
+          {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </Button>
       </div>
       {syncErr && <div className="border-b border-line-subtle px-4 py-1.5 text-xs" style={{ color: 'var(--theme-danger)' }}>{syncErr}</div>}
       <div className="relative min-h-0 flex-1 overflow-y-auto">
@@ -115,6 +128,6 @@ function DocEditor({ id, planId, syncSignal = 0 }: { id: string; planId: string;
           className="min-w-0 flex-1"
         />
       </div>
-    </>
+    </div>
   )
 }

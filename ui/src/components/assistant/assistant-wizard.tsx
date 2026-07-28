@@ -5,7 +5,7 @@ import { Loader2, Sparkles } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
+import { RichEditor } from '@/components/ui/rich-editor'
 import { Steps } from '@/components/ui/steps'
 import { cn } from '@/lib/cn'
 import { useSession } from '@/lib/session'
@@ -42,6 +42,7 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
   const [handle, setHandle] = useState(suggestHandle(`${first}'s assistant`))
   const [handleTouched, setHandleTouched] = useState(false)
   const [personality, setPersonality] = useState('')
+  const [personaRev, setPersonaRev] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [created, setCreated] = useState<Assistant | null>(null)
@@ -170,7 +171,10 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
                 <button
                   key={p.label}
                   type="button"
-                  onClick={() => setPersonality(p.text)}
+                  onClick={() => {
+                  setPersonality(p.text)
+                  setPersonaRev((r) => r + 1) // reseed the editor with the preset
+                }}
                   className={cn(
                     'rounded-full border px-3 py-1 text-xs transition-colors',
                     personality === p.text
@@ -182,15 +186,16 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
                 </button>
               ))}
             </div>
-            <Textarea
-              autoGrow
-              rows={3}
-              className="max-h-60"
-              value={personality}
-              onChange={(e) => setPersonality(e.target.value)}
-              placeholder="Optional, e.g. “Be direct and keep things short. Remind me about loose ends.”"
-              maxLength={4000}
-            />
+            <div className="max-h-60 overflow-y-auto">
+              <RichEditor
+                key={personaRev}
+                value={personality}
+                onSave={setPersonality}
+                autosave
+                minHeight="5rem"
+                placeholder="Optional, e.g. “Be direct and keep things short. Remind me about loose ends.”"
+              />
+            </div>
           </div>
         ) : (
           <div className="space-y-3">

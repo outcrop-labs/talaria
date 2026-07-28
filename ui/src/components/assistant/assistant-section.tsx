@@ -5,7 +5,7 @@ import { Sparkles } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
+import { RichEditor } from '@/components/ui/rich-editor'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from './assistant-wizard'
 import { AssistantManageModal } from './assistant-manage-modal'
@@ -24,6 +24,7 @@ export function AssistantSection() {
   const [personaEditor, setPersonaEditor] = useState(false)
   const [name, setName] = useState('')
   const [personality, setPersonality] = useState('')
+  const [personaRev, setPersonaRev] = useState(0)
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -32,6 +33,7 @@ export function AssistantSection() {
     if (assistant) {
       setName(assistant.displayName)
       setPersonality(assistant.personality ?? '')
+      setPersonaRev((r) => r + 1) // reseed the editor with the fetched value
     }
   }, [assistant])
 
@@ -107,15 +109,19 @@ export function AssistantSection() {
           Open editor
         </button>
       </div>
-      <Textarea
-        autoGrow
-        rows={3}
-        value={personality}
-        onChange={(e) => setPersonality(e.target.value)}
-        placeholder="How it should come across: tone, priorities, pet peeves."
-        className="max-h-64"
-        maxLength={4000}
-      />
+      {/* Inline rich edit (autosave keeps `personality`/dirty fresh); the
+          "Open editor" modal adds muse drafting + version history. Reseeds
+          when a modal save lands. */}
+      <div className="max-h-64 overflow-y-auto">
+        <RichEditor
+          key={personaRev}
+          value={personality}
+          onSave={setPersonality}
+          autosave
+          minHeight="5rem"
+          placeholder="How it should come across: tone, priorities, pet peeves."
+        />
+      </div>
       {personaEditor && (
         <InternalEditorModal
           open
@@ -131,7 +137,7 @@ export function AssistantSection() {
             try {
               const r = await updateAssistant({ personality: md })
               if (!r.assistant) throw new Error(r.error ?? 'could not save')
-              setPersonality(md)
+              setPersonality(md) // the invalidation below reseeds the inline editor
               await qc.invalidateQueries({ queryKey: ['my-assistant'] })
             } finally {
               setBusy(false)

@@ -426,11 +426,10 @@ Highest-leverage remaining threads:
    plan-template picker also shipped 2026-07-20 (Plan header picker →
    `conversations.plan_template_id` → `resolveTemplate`). **This list is now
    fully struck through** — the next threads live in docs/TODO.md
-   ("High-value, ready to pick up": WYSIWYG everywhere #46, universal
-   @mentions #60; proactive outreach #59 and inference monitoring +
-   agent-container controls #48 both shipped 2026-07-27 —
-   `server/outreach.ts` + `message_user` / live `/inference` dashboard,
-   warm-up state, restart + roll buttons).
+   ("High-value, ready to pick up": universal @mentions #60; proactive
+   outreach #59, inference monitoring + agent-container controls #48, and
+   WYSIWYG everywhere #46 all shipped 2026-07-27 — see docs/TODO.md; the
+   editor register rule now lives in docs/UI-CONVENTIONS.md → Editors).
 
 (Guard coverage for the direct chat path shipped in #90 and the agent-side
 confab-guard plugin is gone; annotate/strict became real on 2026-07-15 — the
