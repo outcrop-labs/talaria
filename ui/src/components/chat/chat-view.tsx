@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useContextMenu } from '@/components/ui/context-menu'
 import { Textarea } from '@/components/ui/textarea'
 import { TierPicker } from '@/components/chat/tier-picker'
 import { StopButton } from '@/components/chat/composer-buttons'
@@ -85,6 +86,9 @@ export function ChatView({
   // shows transcript-shaped skeletons, never the "Talk to X" hero.
   const [loadingConversation, setLoadingConversation] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Right-click a bubble → copy its text (the content is already markdown,
+  // so one copy action covers both plain and markdown wants).
+  const { openMenu, menu } = useContextMenu()
   const [caret, setCaret] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
   const convIdRef = useRef<string | null>(null)
@@ -336,8 +340,12 @@ export function ChatView({
             </div>
           </div>
         ) : (
-          messages.map((m, i) =>
-            m.role === 'user' ? (
+          messages.map((m, i) => {
+            const copyMenu = (e: React.MouseEvent) =>
+              openMenu(e, [
+                { label: 'Copy text', disabled: !m.content, onSelect: () => void navigator.clipboard.writeText(m.content) },
+              ])
+            return m.role === 'user' ? (
               // In multiplayer plans, label user turns whenever more than one
               // human voice appears in the thread.
               <UserBubble
@@ -349,11 +357,18 @@ export function ChatView({
                     ? m.authorLabel
                     : null
                 }
+                onContextMenu={copyMenu}
               />
             ) : (
-              <AssistantTurn key={i} message={m} agentModel={agentModel} live={(streaming || resuming) && i === messages.length - 1} />
-            ),
-          )
+              <AssistantTurn
+                key={i}
+                message={m}
+                agentModel={agentModel}
+                live={(streaming || resuming) && i === messages.length - 1}
+                onContextMenu={copyMenu}
+              />
+            )
+          })
         )}
         {error && <div className="text-center text-sm" style={{ color: 'var(--theme-danger)' }}>{error}</div>}
       </div>
@@ -390,17 +405,29 @@ export function ChatView({
           </div>
         </div>
       </div>
+      {menu}
     </div>
   )
 }
 
-function UserBubble({ content, attachments, author }: { content: string; attachments?: Attachment[]; author?: string | null }) {
+function UserBubble({
+  content,
+  attachments,
+  author,
+  onContextMenu,
+}: {
+  content: string
+  attachments?: Attachment[]
+  author?: string | null
+  onContextMenu?: (e: React.MouseEvent) => void
+}) {
   return (
     <div className="flex flex-col items-end">
       {author && <div className="mb-0.5 pr-1 text-[10px] font-medium text-muted">{author}</div>}
       <div
         className="max-w-[85%] rounded-2xl border px-4 py-2.5 text-sm text-[color:var(--chat-user-foreground)]"
         style={{ background: 'var(--chat-user-bg)', borderColor: 'var(--chat-user-border)' }}
+        onContextMenu={onContextMenu}
       >
         {/* Markdown, like every other message surface — a user turn was the
             one bubble still rendering raw text. */}
@@ -411,7 +438,17 @@ function UserBubble({ content, attachments, author }: { content: string; attachm
   )
 }
 
-function AssistantTurn({ message, agentModel, live }: { message: DisplayMessage; agentModel: string; live: boolean }) {
+function AssistantTurn({
+  message,
+  agentModel,
+  live,
+  onContextMenu,
+}: {
+  message: DisplayMessage
+  agentModel: string
+  live: boolean
+  onContextMenu?: (e: React.MouseEvent) => void
+}) {
   const { content, reasoning, tools, status, guard } = message
   const hasReasoning = !!reasoning?.trim()
   const hasTools = !!tools?.length
@@ -422,6 +459,7 @@ function AssistantTurn({ message, agentModel, live }: { message: DisplayMessage;
       <div
         className="max-w-[85%] space-y-2 rounded-2xl border px-4 py-2.5 text-sm text-[color:var(--chat-assistant-foreground)]"
         style={{ background: 'var(--chat-assistant-bg)', borderColor: 'var(--chat-assistant-border)' }}
+        onContextMenu={onContextMenu}
       >
         {hasReasoning && (
           <Disclosure title="Thinking" icon={<span>✦</span>}>

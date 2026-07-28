@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { Archive, ExternalLink, Hash, Link as LinkIcon } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Avatar } from '@/components/ui/avatar'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
+import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
-import { createTask, updateTask, type Board } from '@/lib/boards'
+import { archiveTask, createTask, updateTask, type Board } from '@/lib/boards'
 import { plainText } from '@/lib/plain-text'
 import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task, type TaskStatus } from '@/lib/task-const'
 
@@ -29,6 +31,30 @@ export function Kanban({ board, tasks, onOpen }: { board: Board; tasks: Task[]; 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
   const [dragOver, setDragOver] = useState<string | null>(null)
   const [dragging, setDragging] = useState<string | null>(null)
+  const { openMenu, menu } = useContextMenu()
+
+  // Right-click a card — shortcuts to actions the card/board already offers.
+  const cardMenu = (e: React.MouseEvent, t: Task) => {
+    const items: ContextMenuEntry[] = [
+      { label: 'Open', icon: <ExternalLink size={14} />, onSelect: () => onOpen(t.id) },
+      { label: 'Copy link', icon: <LinkIcon size={14} />, onSelect: () => copyAppLink(`/boards/${t.boardId}/${t.id}`) },
+    ]
+    if (t.ticketRef) {
+      const ref = t.ticketRef
+      items.push({ label: 'Copy ticket ref', icon: <Hash size={14} />, onSelect: () => void navigator.clipboard.writeText(ref) })
+    }
+    if (canEdit) {
+      items.push('sep', {
+        label: t.archivedAt ? 'Unarchive' : 'Archive',
+        icon: <Archive size={14} />,
+        danger: !t.archivedAt,
+        onSelect: () => {
+          void archiveTask(t.id, !t.archivedAt).then(invalidate)
+        },
+      })
+    }
+    openMenu(e, items)
+  }
 
   const addTo = async (status: TaskStatus, title: string) => {
     const { task } = await createTask(board.id, { title })
@@ -84,6 +110,7 @@ export function Kanban({ board, tasks, onOpen }: { board: Board; tasks: Task[]; 
                   }}
                   onDragEnd={() => setDragging(null)}
                   onOpen={() => onOpen(t.id)}
+                  onContextMenu={(e) => cardMenu(e, t)}
                 />
               ))}
               {canEdit && <AddCard onAdd={(title) => addTo(col, title)} />}
@@ -91,6 +118,7 @@ export function Kanban({ board, tasks, onOpen }: { board: Board; tasks: Task[]; 
           </div>
         )
       })}
+      {menu}
     </div>
   )
 }
@@ -103,6 +131,7 @@ function Card({
   onDragStart,
   onDragEnd,
   onOpen,
+  onContextMenu,
 }: {
   task: Task
   assignees: string[]
@@ -111,12 +140,14 @@ function Card({
   onDragStart: (e: React.DragEvent) => void
   onDragEnd: () => void
   onOpen: () => void
+  onContextMenu: (e: React.MouseEvent) => void
 }) {
   return (
     <div
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
+      onContextMenu={onContextMenu}
       className={cn('group relative cursor-grab active:cursor-grabbing', dim && 'opacity-40')}
     >
       <CopyLinkButton

@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Link, useRouterState } from '@tanstack/react-router'
-import { Plus, Users, Archive } from 'lucide-react'
+import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
+import { Plus, Users, Archive, ExternalLink, Link as LinkIcon } from 'lucide-react'
+import { useContextMenu, copyAppLink } from '@/components/ui/context-menu'
 import { TeamsModal } from '@/components/board/teams-modal'
 import { CreateBoardModal } from '@/components/board/create-board-modal'
 import { alert } from '@/components/ui/confirm'
@@ -66,6 +67,8 @@ export function NavRail({ user }: { user: SessionUser }) {
 
 function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onNew: () => void; onTeams: () => void }) {
   const qc = useQueryClient()
+  const navigate = useNavigate()
+  const { openMenu, menu } = useContextMenu()
   const { data: boards = [], isLoading: boardsLoading } = useBoards()
   const { data: archived = [] } = useArchivedBoards()
   const { data: teams = [], isLoading: teamsLoading } = useTeams()
@@ -102,6 +105,12 @@ function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onN
       to="/boards/$boardId"
       params={{ boardId: b.id }}
       draggable={b.role === 'owner'}
+      onContextMenu={(e) =>
+        openMenu(e, [
+          { label: 'Open', icon: <ExternalLink size={14} />, onSelect: () => void navigate({ to: '/boards/$boardId', params: { boardId: b.id } }) },
+          { label: 'Copy link', icon: <LinkIcon size={14} />, onSelect: () => copyAppLink(`/boards/${b.id}`) },
+        ])
+      }
       onDragStart={() => setDragging(b)}
       onDragEnd={() => {
         setDragging(null)
@@ -183,6 +192,7 @@ function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onN
       )}
 
       <SublistFooter onNew={onNew} onTeams={onTeams} />
+      {menu}
     </div>
   )
 }

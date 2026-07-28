@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { Markdown } from '@/components/ui/markdown'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
+import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { BrainRoutingSelect } from '@/components/kb/brain-select'
 import { IconButton } from '@/components/ui/icon-button'
@@ -81,10 +82,39 @@ function ArtifactsPage() {
     await qc.invalidateQueries({ queryKey: ['artifacts'] })
     if (artifact) setActiveId(artifact.id)
   }
-  const newFolder = async () => {
-    const { folder } = await createFolder('New folder')
+  const newFolder = async (parentId: string | null = null) => {
+    const { folder } = await createFolder('New folder', parentId)
     await qc.invalidateQueries({ queryKey: ['artifact-folders'] })
-    if (folder) setExpanded((s) => new Set(s).add(folder.id))
+    if (folder) {
+      setExpanded((s) => {
+        const n = new Set(s).add(folder.id)
+        if (parentId) n.add(parentId) // reveal the new subfolder
+        return n
+      })
+    }
+  }
+
+  // Right-click menus — shortcuts to actions the tree and editor already offer.
+  const { openMenu, menu } = useContextMenu()
+  const artifactMenu = (a: Artifact): ContextMenuEntry[] => {
+    const items: ContextMenuEntry[] = [
+      { label: 'Open', onSelect: () => setActiveId(a.id) },
+      { label: 'Copy link', onSelect: () => copyAppLink(`/artifacts?a=${a.id}`) },
+    ]
+    const slug = a.publicSlug
+    if (slug) items.push({ label: 'Copy public link', onSelect: () => copyAppLink(`/a/${slug}`) })
+    items.push('sep', {
+      label: 'Delete artifact',
+      danger: true,
+      onSelect: async () => {
+        // Same confirm + deleteArtifact flow as the editor's kebab menu.
+        if (!(await confirm({ title: 'Delete artifact', message: `Delete "${a.title}"?`, confirmLabel: 'Delete', danger: true }))) return
+        await deleteArtifact(a.id)
+        await qc.invalidateQueries({ queryKey: ['artifacts'] })
+        if (activeId === a.id) setActiveId(null)
+      },
+    })
+    return items
   }
   // Drop the dragged item into a folder (or root when folderId is null).
   const drop = async (folderId: string | null) => {
@@ -151,10 +181,13 @@ function ArtifactsPage() {
                   setDrag={setDrag}
                   onDrop={drop}
                   onRefresh={refresh}
+                  openMenu={openMenu}
+                  onArtifactMenu={(e, a) => openMenu(e, artifactMenu(a))}
+                  onNewFolder={(parentId) => void newFolder(parentId)}
                 />
               ))}
               {rootArtifacts.map((a) => (
-                <ArtifactRow key={a.id} artifact={a} depth={0} activeId={activeId} onSelect={setActiveId} setDrag={setDrag} />
+                <ArtifactRow key={a.id} artifact={a} depth={0} activeId={activeId} onSelect={setActiveId} setDrag={setDrag} onContextMenu={(e) => openMenu(e, artifactMenu(a))} />
               ))}
             </>
           )}
@@ -177,6 +210,7 @@ function ArtifactsPage() {
           }}
         />
       )}
+      {menu}
     </div>
   )
 }
@@ -313,7 +347,7 @@ function DriveImportModal({ onClose, onImported }: { onClose: () => void; onImpo
   )
 }
 
-function ArtifactRow({ artifact: a, depth, activeId, onSelect, setDrag }: { artifact: Artifact; depth: number; activeId: string | null; onSelect: (id: string) => void; setDrag: (d: Drag) => void }) {
+function ArtifactRow({ artifact: a, depth, activeId, onSelect, setDrag, onContextMenu }: { artifact: Artifact; depth: number; activeId: string | null; onSelect: (id: string) => void; setDrag: (d: Drag) => void; onContextMenu?: (e: React.MouseEvent) => void }) {
   const Icon = KIND_ICON[a.kind]
   return (
     <button
@@ -322,6 +356,7 @@ function ArtifactRow({ artifact: a, depth, activeId, onSelect, setDrag }: { arti
       onDragStart={(e) => { e.stopPropagation(); setDrag({ kind: 'artifact', id: a.id }) }}
       onDragEnd={() => setDrag(null)}
       onClick={() => onSelect(a.id)}
+      onContextMenu={onContextMenu}
       className={cn('flex w-full items-center gap-2 rounded-lg py-1.5 pr-2 text-left text-sm', activeId === a.id ? 'bg-card text-fg' : 'text-muted hover:text-fg')}
       style={{ paddingLeft: depth * 14 + 8 }}
     >
@@ -333,7 +368,7 @@ function ArtifactRow({ artifact: a, depth, activeId, onSelect, setDrag }: { arti
 }
 
 function FolderNode({
-  folder, depth, foldersByParent, byFolder, expanded, setExpanded, activeId, onSelect, drag, setDrag, onDrop, onRefresh,
+  folder, depth, foldersByParent, byFolder, expanded, setExpanded, activeId, onSelect, drag, setDrag, onDrop, onRefresh, openMenu, onArtifactMenu, onNewFolder,
 }: {
   folder: ArtifactFolder
   depth: number
@@ -347,6 +382,9 @@ function FolderNode({
   setDrag: (d: Drag) => void
   onDrop: (folderId: string | null) => void
   onRefresh: () => Promise<unknown>
+  openMenu: (e: React.MouseEvent, items: ContextMenuEntry[]) => void
+  onArtifactMenu: (e: React.MouseEvent, a: Artifact) => void
+  onNewFolder: (parentId: string) => void
 }) {
   const [over, setOver] = useState(false)
   const [renaming, setRenaming] = useState(false)
@@ -356,6 +394,19 @@ function FolderNode({
   const childFolders = foldersByParent.get(folder.id) ?? []
   const childArtifacts = byFolder.get(folder.id) ?? []
   const toggle = () => setExpanded((s) => { const n = new Set(s); n.has(folder.id) ? n.delete(folder.id) : n.add(folder.id); return n })
+  // Same confirm + deleteFolder flow as the row's ✕ button.
+  const remove = async () => {
+    if (await confirm({ title: 'Delete folder', message: `Delete folder "${folder.name}"? Its artifacts move to the top level.`, confirmLabel: 'Delete', danger: true })) {
+      await deleteFolder(folder.id)
+      await onRefresh()
+    }
+  }
+  const folderMenu = (): ContextMenuEntry[] => [
+    { label: 'Rename', onSelect: () => setRenaming(true) },
+    { label: 'New folder inside', onSelect: () => onNewFolder(folder.id) },
+    'sep',
+    { label: 'Delete folder', danger: true, onSelect: () => void remove() },
+  ]
 
   return (
     <div>
@@ -366,6 +417,7 @@ function FolderNode({
         onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (drag && !(drag.kind === 'folder' && drag.id === folder.id)) setOver(true) }}
         onDragLeave={() => setOver(false)}
         onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); onDrop(folder.id) }}
+        onContextMenu={renaming ? undefined : (e) => openMenu(e, folderMenu())}
         className={cn('group flex items-center gap-1 rounded-md py-1 pr-1 text-sm text-muted hover:text-fg', over && 'ring-1 ring-accent/60')}
         style={{ paddingLeft: depth * 14 + 2 }}
       >
@@ -391,7 +443,7 @@ function FolderNode({
         <button
           type="button"
           title="Delete folder"
-          onClick={async () => { if (await confirm({ title: 'Delete folder', message: `Delete folder "${folder.name}"? Its artifacts move to the top level.`, confirmLabel: 'Delete', danger: true })) { await deleteFolder(folder.id); await onRefresh() } }}
+          onClick={() => void remove()}
           className="shrink-0 rounded p-0.5 opacity-0 hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
         >
           <X size={12} />
@@ -400,10 +452,10 @@ function FolderNode({
       {isOpen && (
         <div>
           {childFolders.map((f) => (
-            <FolderNode key={f.id} folder={f} depth={depth + 1} foldersByParent={foldersByParent} byFolder={byFolder} expanded={expanded} setExpanded={setExpanded} activeId={activeId} onSelect={onSelect} drag={drag} setDrag={setDrag} onDrop={onDrop} onRefresh={onRefresh} />
+            <FolderNode key={f.id} folder={f} depth={depth + 1} foldersByParent={foldersByParent} byFolder={byFolder} expanded={expanded} setExpanded={setExpanded} activeId={activeId} onSelect={onSelect} drag={drag} setDrag={setDrag} onDrop={onDrop} onRefresh={onRefresh} openMenu={openMenu} onArtifactMenu={onArtifactMenu} onNewFolder={onNewFolder} />
           ))}
           {childArtifacts.map((a) => (
-            <ArtifactRow key={a.id} artifact={a} depth={depth + 1} activeId={activeId} onSelect={onSelect} setDrag={setDrag} />
+            <ArtifactRow key={a.id} artifact={a} depth={depth + 1} activeId={activeId} onSelect={onSelect} setDrag={setDrag} onContextMenu={(e) => onArtifactMenu(e, a)} />
           ))}
         </div>
       )}

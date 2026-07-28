@@ -7,6 +7,7 @@ import { RailSurface, Rail, Stage, StageHeader } from '@/components/app/surface'
 import { Chip, DangerLink, StatusDot, type DotStatus } from '@/components/ui/chip'
 import { ComposerPicker } from '@/components/chat/composer-picker'
 import { AgentPicker } from '@/components/chat/agent-picker'
+import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { KeyHint } from '@/components/ui/kbd'
 import { cn } from '@/lib/cn'
 import { Avatar } from '@/components/ui/avatar'
@@ -66,6 +67,7 @@ function ResearchPage() {
   const [agent, pickAgent] = useStickyAgent('research', agents)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { openMenu, menu } = useContextMenu()
 
 
   const start = async () => {
@@ -125,6 +127,15 @@ function ResearchPage() {
                 <button
                   type="button"
                   onClick={() => setSelectedId(r.id)}
+                  onContextMenu={(e) =>
+                    openMenu(e, [
+                      { label: 'Open', onSelect: () => setSelectedId(r.id) },
+                      { label: 'Copy link', onSelect: () => copyAppLink(`/research?r=${r.id}`) },
+                      ...(canDelete(r)
+                        ? (['sep', { label: 'Remove', danger: true, onSelect: () => void remove(r) }] as ContextMenuEntry[])
+                        : []),
+                    ])
+                  }
                   className={cn(
                     'group w-full rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-card',
                     selectedId === r.id ? 'bg-card' : '',
@@ -224,6 +235,7 @@ function ResearchPage() {
           </div>
         </div>
       </Stage>
+      {menu}
     </RailSurface>
   )
 }
