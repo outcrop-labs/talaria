@@ -17,7 +17,7 @@ import { ownsAgent, personalityOf } from '@/server/personal-agent'
 // ownerKey is derived server-side (skill: "<owner>/<name>", the rest: an id) so
 // the caller never constructs the storage key. Version-backed kinds are
 // admin-or-owner: souls and configs are the agent's internals, not public.
-const SNAPSHOT_KINDS = ['skill', 'memory', 'kb-doc', 'kb-space', 'artifact'] as const
+const SNAPSHOT_KINDS = ['skill', 'memory', 'kb-doc', 'kb-space', 'artifact', 'template'] as const
 const VERSION_KINDS = ['soul', 'config', 'personality'] as const
 type VersionKind = (typeof VERSION_KINDS)[number]
 

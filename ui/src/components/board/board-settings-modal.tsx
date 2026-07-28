@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
@@ -9,7 +10,6 @@ import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { UserPicker } from '@/components/app/user-picker'
-import { TemplateLibraryModal } from '@/components/templates/template-library-modal'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
 import { setBoardTemplates, useBoardTemplates, useTemplates } from '@/lib/templates'
@@ -78,7 +78,6 @@ function TemplatesSection({ board }: { board: Board }) {
   const qc = useQueryClient()
   const { data: templates = [], isLoading: templatesLoading } = useTemplates()
   const { data: bindings = [], isLoading: bindingsLoading } = useBoardTemplates(board.id)
-  const [managing, setManaging] = useState(false)
   const ticketTemplates = templates.filter((t) => t.kind === 'ticket')
   const bound = new Set(bindings.map((b) => b.templateId))
   const defaultId = bindings.find((b) => b.isDefault)?.templateId ?? null
@@ -96,9 +95,9 @@ function TemplatesSection({ board }: { board: Board }) {
     <div>
       <div className="mb-1 flex items-center">
         <label className="text-[11px] uppercase tracking-wide text-muted">Ticket templates</label>
-        <button type="button" className="ml-auto text-xs text-accent hover:underline" onClick={() => setManaging(true)}>
-          Manage library
-        </button>
+        <Link to="/templates" className="ml-auto text-xs text-accent hover:underline">
+          Manage library →
+        </Link>
       </div>
       {templatesLoading || bindingsLoading ? (
         <SkeletonRows rows={3} className="rounded-xl border border-line-subtle p-2" />
@@ -134,7 +133,6 @@ function TemplatesSection({ board }: { board: Board }) {
       <div className="mt-1 text-[11px] text-muted">
         The default seeds new tickets and formats agent-drafted ones on this board (an agent's own template binding wins).
       </div>
-      {managing && <TemplateLibraryModal open={managing} onClose={() => setManaging(false)} />}
     </div>
   )
 }

@@ -20,7 +20,7 @@ export const Route = createFileRoute('/api/templates/$id')({
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         const parsed = Patch.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        const template = await updateTemplate(params.id, parsed.data)
+        const template = await updateTemplate(params.id, parsed.data, user.email ?? user.name)
         if (!template) return json({ error: 'not found' }, { status: 404 })
         return json({ template })
       },

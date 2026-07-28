@@ -48,6 +48,7 @@ export const NAV: NavSection[] = [
     items: [
       { to: '/agents', label: 'Agents', icon: '◍' },
       { to: '/models', label: 'Models', icon: '▤' },
+      { to: '/templates', label: 'Templates', icon: '▣' },
       { to: '/observability', label: 'Observability', icon: '◉' },
     ],
   },
