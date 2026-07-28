@@ -150,6 +150,15 @@ function UserMenu({ user, onLogout }: { user: SessionUser; onLogout: () => void 
             >
               Settings
             </Link>
+            {user.role === 'admin' && (
+              <Link
+                to="/admin"
+                onClick={() => setOpen(false)}
+                className="block rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-card hover:text-fg"
+              >
+                Admin
+              </Link>
+            )}
             <div className="flex items-center justify-between rounded-lg px-3 py-1.5 text-sm text-muted">
               <span>Theme</span>
               <ThemeToggle />

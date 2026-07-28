@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -8,9 +8,6 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
 import { relativeTime } from '@/lib/fleet'
 
-export const Route = createFileRoute('/_app/activity')({
-  component: ActivityPage,
-})
 
 type Kind = 'ticket' | 'channel' | 'fleet'
 
@@ -44,7 +41,7 @@ function useActivity(kinds: Kind[]) {
 
 // Everything that happened across the workspace — tickets, channels, agent
 // config changes — merged into one stream, scoped to what this user can see.
-function ActivityPage() {
+export function AuditPanel() {
   const [kinds, setKinds] = useState<Kind[]>([])
   const { data: events = [], isLoading } = useActivity(kinds)
   const navigate = useNavigate()
@@ -53,10 +50,9 @@ function ActivityPage() {
     setKinds((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]))
 
   return (
-    <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto max-w-4xl space-y-8">
+    <div>
+      <div className="space-y-8">
         <div className="flex items-center gap-3">
-          <h1 className="mercury-text text-2xl font-semibold">Activity</h1>
           <div className="ml-auto flex gap-1.5">
             {(Object.keys(KIND_META) as Kind[]).map((k) => {
               const on = kinds.length === 0 || kinds.includes(k)

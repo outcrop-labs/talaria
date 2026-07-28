@@ -183,7 +183,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
         severity: 'warning',
         title: 'Token counts are mostly estimates',
         detail: `${Math.round(cost.totals.estimatedShare * 100)}% of the last 30 days' generations lack real usage from the gateway.`,
-        href: '/cost',
+        href: '/observability?tab=cost',
       })
     }
   }

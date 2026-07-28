@@ -108,7 +108,7 @@ export async function activityFeed(
       actor: r.actor as string,
       context: `${r.action}`,
       detail: `${(r.targetLabel as string) ?? (r.targetType as string)}${r.after ? ` → ${JSON.stringify(r.after)}` : ''}`.slice(0, 200),
-      href: '/activity',
+      href: '/observability?tab=audit',
     })),
   ]
 

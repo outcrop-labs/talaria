@@ -506,7 +506,7 @@ function FleetTab({ data }: { data: HomeSummary | undefined }) {
           </div>
         </Panel>
         <div className="grid grid-cols-2 gap-3">
-          <Link to="/alerts" className="block">
+          <Link to="/observability" search={{ tab: 'alerts' }} className="block">
             <Panel className="p-4">
               <div className="text-xs uppercase tracking-wide text-muted">Alerts</div>
               <div
@@ -517,7 +517,7 @@ function FleetTab({ data }: { data: HomeSummary | undefined }) {
               </div>
             </Panel>
           </Link>
-          <Link to="/cost" className="block">
+          <Link to="/observability" search={{ tab: 'cost' }} className="block">
             <Panel className="p-4">
               <div className="text-xs uppercase tracking-wide text-muted">Spend today</div>
               <div className="mt-1 truncate text-xl font-semibold text-fg">

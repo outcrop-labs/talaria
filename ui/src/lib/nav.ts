@@ -1,7 +1,8 @@
 // The application menu — two mental modes. WORK is where everyone gets things
 // done (chat, channels, boards, inbox); MANAGE is the control plane for the
-// people running the platform (fleet, models, compute, cost, audit, admin) and
-// is admin-only: average users get their own surfaces (Home, Settings) instead.
+// people running the platform (fleet, models, compute, cost, audit) and is
+// admin-only. Settings and Admin live under the USER MENU, not the sidebar —
+// the rail is for work surfaces only.
 
 export interface NavItem {
   to: string
@@ -47,24 +48,15 @@ export const NAV: NavSection[] = [
     items: [
       { to: '/agents', label: 'Agents', icon: '◍' },
       { to: '/models', label: 'Models', icon: '▤' },
-      { to: '/inference', label: 'Compute', icon: '▦' },
-      { to: '/cost', label: 'Cost', icon: '⌗' },
-      { to: '/activity', label: 'Audit', icon: '☰' },
-      { to: '/alerts', label: 'Alerts', icon: '△' },
-    ],
-  },
-  {
-    title: 'System',
-    items: [
-      { to: '/settings', label: 'Settings', icon: '⚙' },
-      { to: '/admin', label: 'Admin', icon: '⛨', adminOnly: true },
+      { to: '/observability', label: 'Observability', icon: '◉' },
     ],
   },
 ]
 
 /** Routes members can never reach — every item of an admin-only section plus
- *  individually gated items. The nav config is the single source of truth; the
- *  route gate in _app.tsx enforces it beyond just hiding menu entries. */
-export const ADMIN_VIEWS: string[] = NAV.flatMap((s) =>
-  s.items.filter((i) => s.adminOnly || i.adminOnly).map((i) => i.to),
-)
+ *  views that live OFF the sidebar (Admin sits under the user menu now) but
+ *  must still be route-gated. */
+export const ADMIN_VIEWS: string[] = [
+  ...NAV.flatMap((s) => s.items.filter((i) => s.adminOnly || i.adminOnly).map((i) => i.to)),
+  '/admin',
+]

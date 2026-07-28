@@ -49,7 +49,7 @@ export const Route = createFileRoute('/api/agent/problem')({
 
         // Ticket first (it carries the technical substance).
         let ticketNote = 'a Helpdesk ticket could not be filed'
-        let href = '/alerts'
+        let href = '/observability?tab=alerts'
         const board = await helpdeskBoard().catch(() => null)
         if (board) {
           const task = await createTask({
@@ -79,7 +79,7 @@ export const Route = createFileRoute('/api/agent/problem')({
 
         return json({
           ok: true,
-          ticket: href !== '/alerts' ? href : null,
+          ticket: href !== '/observability?tab=alerts' ? href : null,
           // The exact reassurance the agent should relay, so the wording stays
           // consistent and plain.
           relay: `The workspace admin has been notified and a ${ticketNote.toLowerCase().includes('filed') ? 'helpdesk ticket was filed' : 'report was sent'} — no action needed on your side.`,
