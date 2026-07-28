@@ -25,12 +25,14 @@ import {
   unwatchTask,
   updateTask,
   useBoardAgents,
+  useBoardMembers,
   useBoardTasks,
   useTask,
   watchTask,
   type Board,
   type JudgeReview,
 } from '@/lib/boards'
+import { userMentionInsert, type Mentionable } from '@/components/chat/mentions'
 import {
   EFFORTS,
   EFFORT_LABEL,
@@ -67,6 +69,12 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
   const me = user?.email ?? user?.name ?? ''
   // Board tickets for the dependency picker (exclude self + already-linked).
   const { data: boardTasks = [] } = useBoardTasks(board.id)
+  // @mention board members in comments + description — the people the server
+  // notifies (tasks comment/description paths). Tokens mirror the server's.
+  const { data: boardMembers = [] } = useBoardMembers(board.id)
+  const mentionables = boardMembers
+    .map((m) => ({ insert: userMentionInsert(m), label: m.name ?? m.email ?? m.userId, sub: m.email ?? undefined }))
+    .filter((m) => m.insert)
 
   const [title, setTitle] = useState('')
   const [tab, setTab] = useState<'comments' | 'activity'>('comments')
@@ -160,6 +168,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     title={t.ticketRef ? `${t.ticketRef} · ${t.title}` : t.title}
                     value={t.description ?? ''}
                     canEdit={canEdit}
+                    mentions={mentionables}
                     onSave={(md) => {
                       // RichEditor only fires this on a real change. Refresh just
                       // the board's cards — never refetch the open ticket.
@@ -218,6 +227,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                         value=""
                         editable
                         bare
+                        mentions={mentionables}
                         className="shrink-0 border-t border-line-subtle"
                         placeholder="Write a comment  (Ctrl+Enter to send)"
                         minHeight="5rem"
@@ -404,11 +414,13 @@ function DescriptionSection({
   title,
   value,
   canEdit,
+  mentions,
   onSave,
 }: {
   title: string
   value: string
   canEdit: boolean
+  mentions?: Mentionable[]
   onSave: (md: string) => void
 }) {
   const [draft, setDraft] = useState(value)
@@ -444,7 +456,7 @@ function DescriptionSection({
 
   const body = (keyPrefix: string, minHeight: string, readMax?: string) =>
     mode === 'edit' && canEdit ? (
-      <RichEditor key={`${keyPrefix}-${rev}`} value={draft} editable onSave={save} placeholder="Add detail" minHeight={minHeight} />
+      <RichEditor key={`${keyPrefix}-${rev}`} value={draft} editable mentions={mentions} onSave={save} placeholder="Add detail" minHeight={minHeight} />
     ) : draft ? (
       <div className={cn('rounded-xl border border-line-subtle bg-card px-4 py-3 text-sm leading-relaxed', readMax && `${readMax} overflow-y-auto`)}>
         <Markdown>{draft}</Markdown>
@@ -499,7 +511,7 @@ function DescriptionSection({
             </div>
             {mode === 'edit' && canEdit ? (
               <div className="min-h-0 flex-1">
-                <RichEditor key={`exp-${rev}`} value={draft} editable bare fill onSave={save} placeholder="Add detail" />
+                <RichEditor key={`exp-${rev}`} value={draft} editable bare fill mentions={mentions} onSave={save} placeholder="Add detail" />
               </div>
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">

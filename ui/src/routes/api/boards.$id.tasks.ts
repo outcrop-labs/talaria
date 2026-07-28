@@ -3,8 +3,10 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
+import { boardAllowsAgent, boardRole, canEdit, listMembers } from '@/server/boards'
 import { createTask, listBoardTasks, EFFORTS, PRIORITIES } from '@/server/tasks'
+import { notifyMentions } from '@/server/mentions'
+import { describeAgent } from '@/server/gateway'
 import { indexTicket } from '@/server/retrieval/sources'
 import { resolveTemplate } from '@/server/templates'
 
@@ -87,6 +89,20 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
         })
         // Index into the ambient activity brain (board-scoped; retrieval on demand).
         void indexTicket(task).catch(() => {})
+        // A description born with an @mention notifies board members — same
+        // contract as editing one in (tasks.$id PUT). Template seeds carry no
+        // mentions, so only author-written descriptions can fire this.
+        if (parsed.data.description?.includes('@')) {
+          const sessionUser = who.agent ? null : await getSessionUser(request)
+          void notifyMentions(
+            await listMembers(params.id),
+            sessionUser?.id ?? '',
+            who.agent ? describeAgent(who.actor).label : (sessionUser?.name ?? who.actor),
+            parsed.data.description,
+            task.ticketRef ?? 'a ticket',
+            `/boards/${params.id}/${task.id}`,
+          ).catch(() => {})
+        }
         return json({ task })
       },
     },

@@ -225,10 +225,13 @@ engineering-facing tracker.
   notify (channel posts, streamed replies, plan turns); ticket descriptions
   notify like comments; plan composer suggests actual members, deep-links
   `/plan?p=`, and falls back to plan membership pre-doc; shared remark pass
-  highlights @tokens on every Markdown surface. Still future: TipTap
-  @-suggestion (rich composers + KB/artifact bodies), research/KB mention
-  eligibility (needs a membership decision), mention notifications for the
-  Design view when it exists (#57).
+  highlights @tokens on every Markdown surface. Follow-through same day:
+  **TipTap @-suggestion** — `RichEditor mentions` prop (Suggestion popup,
+  plain `@token ` inserts) wired on ticket comments + descriptions with
+  board members; create-with-mention notifies too. Still future:
+  research/KB mention eligibility (needs a membership decision — blocks
+  wiring autocomplete into KB/artifact bodies), mention notifications for
+  the Design view when it exists (#57).
 - **Design view (#57)** — future, broad scope.
 
 ## Done recently (context)

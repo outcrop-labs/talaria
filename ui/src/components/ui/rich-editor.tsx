@@ -14,7 +14,9 @@ import Image from '@tiptap/extension-image'
 import { createLowlight, common } from 'lowlight'
 import { Markdown } from 'tiptap-markdown'
 import { SlashCommands } from '@/components/ui/slash-commands'
+import { MentionSuggest } from '@/components/ui/mention-suggest'
 import { BlockEscape } from '@/components/ui/editor-behavior'
+import type { Mentionable } from '@/components/chat/mentions'
 
 const lowlight = createLowlight(common)
 
@@ -78,13 +80,16 @@ export const RichEditor = forwardRef<RichEditorHandle, {
   docSearch?: DocSearchFn
   /** Enable the "/" slash-command block menu (document editors). */
   slash?: boolean
+  /** Enable "@" people-mention autocomplete with these candidates — pass the
+   *  people a mention will actually notify (board/plan members, not the org). */
+  mentions?: Mentionable[]
   /** Flush, page-like surface: no box/border, text wrapped to a comfortable
    *  centered measure. For full-panel document editors. */
   prose?: boolean
   /** Save as you type (debounced) instead of only on blur — no Save button. */
   autosave?: boolean
   className?: string
-}>(function RichEditor({ value, onSave, onSubmit, editable = true, placeholder, minHeight = '5rem', bare = false, fill = false, docSearch, slash = false, prose = false, autosave = false, className }, ref) {
+}>(function RichEditor({ value, onSave, onSubmit, editable = true, placeholder, minHeight = '5rem', bare = false, fill = false, docSearch, slash = false, mentions, prose = false, autosave = false, className }, ref) {
   const lastSaved = useRef<string>(value)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -110,6 +115,7 @@ export const RichEditor = forwardRef<RichEditorHandle, {
       Markdown.configure({ html: false, breaks: true, transformPastedText: true }),
       BlockEscape,
       ...(slash ? [SlashCommands] : []),
+      ...(mentions?.length ? [MentionSuggest.configure({ items: mentions })] : []),
     ],
     content: value,
     // min-height goes on the contenteditable itself (not a wrapper) so clicking
