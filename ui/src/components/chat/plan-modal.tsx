@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
+import { RichEditor } from '@/components/ui/rich-editor'
 import { Generating } from '@/components/ui/generating'
 import { addDependency, createTask, useBoards } from '@/lib/boards'
 import { useTemplates } from '@/lib/templates'
@@ -312,12 +312,11 @@ function ProposalCard({
       </div>
       {p.include && (
         <>
-          <Textarea
-            value={p.description}
-            onChange={(e) => onPatch({ description: e.target.value })}
-            rows={6}
-            className="mt-3 font-[var(--font-mono)] text-xs leading-relaxed"
-          />
+          {/* Draft descriptions are ticket markdown — edit them the way the
+              ticket will show them. Seeded per draft; autosave patches up. */}
+          <div className="mt-3 max-h-64 overflow-y-auto">
+            <RichEditor value={p.description} onSave={(md) => onPatch({ description: md })} autosave minHeight="8rem" />
+          </div>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <span className="text-[11px] uppercase tracking-wide text-muted">Blocked by</span>
             {p.dependsOn.map((d) => (

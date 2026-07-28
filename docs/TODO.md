@@ -200,8 +200,14 @@ engineering-facing tracker.
   confirm) + Roll (zero-downtime, admin) buttons on the roster, audited.
   Remaining half of the ROADMAP framing — managing inference BACKEND
   containers (Ollama/vLLM lifecycle from Talaria) — is its own future thread.
-- **WYSIWYG everywhere + modal editors (#46)** — finish converting remaining
-  plain-text areas to the shared rich editor.
+- ✅ **WYSIWYG everywhere + modal editors (#46) (2026-07-27)** — remaining
+  prose fields converted to `RichEditor` (template bodies, create-agent
+  soul, assistant personality ×2, plan-modal ticket drafts); user chat
+  bubbles render markdown (parity); plan doc gains fullscreen. The rule is
+  written down (docs/UI-CONVENTIONS.md → Editors): prose = rich; YAML /
+  raw HTML / AI prompts = mono Textarea; chat composers stay plain
+  (Enter-to-send + caret mentions) — porting mentions to a TipTap
+  suggestion so composers could go rich is its own future thread.
 - ✅ **Input consistency sweep (#49) (2026-07-20)** — shared `submitOnEnter` +
   `inlineEditKeys` helpers (`ui/control.ts`); 16 gaps fixed across inline
   renames (Enter commit / Escape revert, shielded from modal close),

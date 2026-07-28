@@ -91,3 +91,20 @@ Two deliberate registers — don't mix them:
   defines the values once.
 - Prefer the class spelling `text-[color:var(--theme-danger)]` over inline
   `style` when static.
+
+## Editors
+
+One rule decides which input a field gets:
+- **Prose someone reads later** (descriptions, doc/skeleton bodies, souls,
+  personalities, comments) → `RichEditor`. Markdown under the hood
+  (`onSave` fires on blur, or debounced with `autosave`); reseed by
+  remounting with a `key`, never by mutating `value`.
+- **Machine or prompt text** (YAML/config, raw HTML source, AI instructions,
+  agent guidance) → `Textarea`, usually mono. Rich formatting in a prompt is
+  noise the model has to see past.
+- Chat/channel composers stay `Textarea` deliberately: Enter-to-send +
+  caret-based @mention autocomplete beat a toolbar there. Rendering is
+  always `<Markdown>` on the way out — both directions of a conversation.
+- Long-form editing gets an escape hatch: fullscreen toggle (artifacts, KB,
+  plan doc) or the slide-in editor (tickets); `InternalEditorModal` when
+  version history + muse drafting belong next to the text.

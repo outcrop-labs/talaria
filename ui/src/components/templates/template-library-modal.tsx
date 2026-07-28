@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
+import { RichEditor } from '@/components/ui/rich-editor'
 import { Textarea } from '@/components/ui/textarea'
 import { confirm } from '@/components/ui/confirm'
 import {
@@ -118,8 +119,12 @@ function TemplateEditor({ template, onDelete, onSaved }: { template: Template; o
         </span>
       </div>
       <div className="min-h-0 flex-1">
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Skeleton (markdown: the sections every {template.kind} keeps)</label>
-        <Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={12} className="h-[16rem] w-full font-[var(--font-mono)] text-xs leading-relaxed" />
+        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Skeleton (the sections every {template.kind} keeps)</label>
+        {/* autosave keeps `body` (and the dirty flag) fresh while typing;
+            key remounts when switching templates. */}
+        <div className="h-[16rem] overflow-y-auto">
+          <RichEditor key={template.id} value={body} onSave={setBody} autosave minHeight="15rem" placeholder="## Sections every one of these keeps…" />
+        </div>
       </div>
       <div>
         <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Agent guidance (prompt-only, never shown on the {template.kind})</label>
