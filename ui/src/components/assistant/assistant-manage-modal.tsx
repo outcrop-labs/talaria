@@ -1,169 +1,46 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Plus, Trash2 } from 'lucide-react'
-import { Modal } from '@/components/ui/modal'
+import { Plus, Trash2 } from 'lucide-react'
 import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { submitOnEnter } from '@/components/ui/control'
 import { EmptyState } from '@/components/ui/empty-state'
+import { InfoTip } from '@/components/ui/info-tip'
+import { Markdown } from '@/components/ui/markdown'
 import { CronsPanel } from '@/components/fleet/agent-crons'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { cn } from '@/lib/cn'
-import { HANDLE_RE, updateAssistant, type Assistant } from '@/lib/assistant'
+import { type Assistant } from '@/lib/assistant'
 
-// Deeper controls for the personal assistant — the member-friendly cut of the
-// admin manage modal. General (handle, model tier, on/off), Skills (live
-// SKILL.md edits), Memory (what it remembers). All server calls are
-// owner-scoped; nothing here needs the admin role.
-const TABS = ['General', 'Schedules', 'Skills', 'Memory'] as const
+// The assistant's working parts — Schedules, Skills, Memory — rendered inline
+// on the Settings › Assistant tab (identity/model/power live in
+// assistant-section above). All server calls are owner-scoped; nothing here
+// needs the admin role.
+const TABS = ['Schedules', 'Skills', 'Memory'] as const
 type Tab = (typeof TABS)[number]
 
-export function AssistantManageModal({ assistant, onClose }: { assistant: Assistant; onClose: () => void }) {
-  const [tab, setTab] = useState<Tab>('General')
-  return (
-    <Modal open onClose={onClose} title={`Manage ${assistant.displayName}`} width="max-w-xl">
-      <div className="space-y-5">
-        <div className="flex gap-1 border-b border-line-subtle pb-2">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTab(t)}
-              className={cn(
-                'rounded-lg px-3 py-1 text-sm transition-colors',
-                tab === t ? 'bg-card font-medium text-fg' : 'text-muted hover:text-fg',
-              )}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-        {tab === 'General' && <GeneralTab assistant={assistant} />}
-        {tab === 'Schedules' && (
-          <CronsPanel
-            agentId={assistant.id}
-            intro="Recurring jobs your assistant runs on its own: a morning brief, a Friday recap, a reminder sweep. Write each one as a self-contained instruction."
-          />
-        )}
-        {tab === 'Skills' && <SkillsTab assistant={assistant} />}
-        {tab === 'Memory' && <MemoryTab assistant={assistant} />}
-      </div>
-    </Modal>
-  )
-}
-
-function GeneralTab({ assistant }: { assistant: Assistant }) {
-  const qc = useQueryClient()
-  const [handle, setHandle] = useState(assistant.slug)
-  const [busy, setBusy] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [note, setNote] = useState<string | null>(null)
-  const handleOk = HANDLE_RE.test(handle)
-
-  const refresh = async () => qc.invalidateQueries({ queryKey: ['my-assistant'] })
-
-  const run = async (label: string, fn: () => Promise<{ error?: string } | Response>) => {
-    setBusy(label)
-    setError(null)
-    setNote(null)
-    try {
-      const r = await fn()
-      const err = r instanceof Response ? ((await r.json().catch(() => ({}))) as { error?: string }).error : r.error
-      if (err) setError(err)
-      else {
-        await refresh()
-        setNote('Done. Changes are live.')
-      }
-    } finally {
-      setBusy(null)
-    }
-  }
-
+export function AssistantPanels({ assistant }: { assistant: Assistant }) {
+  const [tab, setTab] = useState<Tab>('Schedules')
   return (
     <div className="space-y-5">
-      <div>
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Handle</label>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted">@</span>
-          <Input
-            value={handle}
-            onChange={(e) => setHandle(e.target.value.toLowerCase())}
-            onKeyDown={submitOnEnter(() => handleOk && handle !== assistant.slug && !busy && void run('handle', () => updateAssistant({ handle })))}
-            maxLength={30}
-          />
-          <Button
-            size="sm"
-            disabled={!handleOk || handle === assistant.slug || !!busy}
-            onClick={() => void run('handle', () => updateAssistant({ handle }))}
+      <div className="flex gap-1 border-b border-line-subtle pb-2">
+        {TABS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className={cn(
+              'rounded-lg px-3 py-1 text-sm transition-colors',
+              tab === t ? 'bg-card font-medium text-fg' : 'text-muted hover:text-fg',
+            )}
           >
-            {busy === 'handle' ? 'Renaming' : 'Rename'}
-          </Button>
-        </div>
-        <p className={cn('mt-1 text-xs', handle && !handleOk ? 'text-[color:var(--theme-danger)]' : 'text-muted')}>
-          {handle && !handleOk
-            ? 'Lowercase letters and numbers only, starting with a letter (2–30 characters).'
-            : 'Chats, memory, and access move with it. Mentions and integrations pick up the new handle.'}
-        </p>
+            {t}
+          </button>
+        ))}
       </div>
-
-      {assistant.tiers.length > 0 && (
-        <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Model</label>
-          <div className="space-y-1.5">
-            {assistant.tiers.map((t) => (
-              <label
-                key={t.name}
-                className={cn(
-                  'flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2 text-sm transition-colors',
-                  t.active ? 'border-[var(--theme-accent)]' : 'border-line-subtle hover:border-line',
-                )}
-              >
-                <input
-                  type="radio"
-                  name="tier"
-                  className="accent-[var(--theme-accent)]"
-                  checked={t.active}
-                  disabled={!!busy}
-                  onChange={() => void run('model', () => updateAssistant({ model: t.name }))}
-                />
-                <span className="capitalize text-fg">{t.name}</span>
-                <span className="ml-auto truncate text-xs text-muted">{t.model}</span>
-              </label>
-            ))}
-          </div>
-          <p className="mt-1 text-xs text-muted">Which model powers it by default. Switching applies right away.</p>
-        </div>
-      )}
-
-      <div className="flex items-center gap-3 border-t border-line-subtle pt-4">
-        <span
-          className="h-2 w-2 rounded-full"
-          style={{ background: assistant.running ? 'var(--theme-success)' : 'var(--theme-line)' }}
-        />
-        <span className="text-sm text-muted">{assistant.running ? 'Running' : 'Stopped'}</span>
-        <Button
-          variant="outline"
-          size="sm"
-          className="ml-auto"
-          disabled={!!busy}
-          onClick={() =>
-            void run('power', () =>
-              fetch(`/api/fleet/agents/${assistant.id}/control`, {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ action: assistant.running ? 'stop' : 'up' }),
-              }),
-            )
-          }
-        >
-          {busy === 'power' ? <Loader2 size={14} className="animate-spin" /> : assistant.running ? 'Stop' : 'Start'}
-        </Button>
-      </div>
-
-      {note && <p className="text-xs text-[color:var(--theme-success)]">{note}</p>}
-      {error && <p className="text-xs text-[color:var(--theme-danger)]">{error}</p>}
+      {tab === 'Schedules' && <CronsPanel agentId={assistant.id} />}
+      {tab === 'Skills' && <SkillsTab assistant={assistant} />}
+      {tab === 'Memory' && <MemoryTab assistant={assistant} />}
     </div>
   )
 }
@@ -219,10 +96,10 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-xs leading-relaxed text-muted">
-        Skills are step-by-step playbooks your assistant follows for recurring jobs: weekly summaries, travel
-        planning, whatever you teach it.
-      </p>
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs uppercase tracking-wide text-muted">Skills</span>
+        <InfoTip text="Step-by-step playbooks your assistant follows for recurring jobs: weekly summaries, travel planning, whatever you teach it." />
+      </div>
       {isLoading ? null : skills.length === 0 ? (
         <EmptyState icon="✦" title="No skills yet" hint="Teach it its first playbook below." />
       ) : (
@@ -366,14 +243,14 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-xs leading-relaxed text-muted">
-        What it remembers about you and your work. It updates this itself as you go, and you can edit or prune it any
-        time. Every save is snapshotted, so nothing is ever lost.
-      </p>
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs uppercase tracking-wide text-muted">Memory</span>
+        <InfoTip text="What it remembers about you and your work. It updates this itself as you go, and you can edit or prune it any time. Every save is snapshotted, so nothing is ever lost." />
+      </div>
       {data?.content ? (
-        <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line-subtle p-3 font-[var(--font-mono)] text-xs text-muted">
-          {data.content}
-        </pre>
+        <div className="max-h-72 overflow-y-auto rounded-lg border border-line-subtle p-3 text-sm">
+          <Markdown>{data.content}</Markdown>
+        </div>
       ) : (
         <EmptyState icon="◌" title="Nothing remembered yet" hint="It writes things down as you work together." />
       )}

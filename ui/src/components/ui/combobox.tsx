@@ -160,7 +160,7 @@ export function Combobox({
         onClick={() => setOpen((o) => !o)}
         className={cn(
           controlSizes[size],
-          'flex w-full items-center gap-2 rounded-xl border border-line bg-[var(--theme-input)] px-2.5 text-sm outline-none transition-colors hover:border-[var(--theme-accent-border)] disabled:opacity-50',
+          'flex w-full items-center gap-2 rounded-xl border border-line bg-[var(--theme-input)] px-2.5 font-sans text-sm outline-none transition-colors hover:border-[var(--theme-accent-border)] disabled:opacity-50',
         )}
       >
         <span className="min-w-0 flex-1 text-left">{triggerLabel ?? defaultTriggerLabel()}</span>
@@ -209,7 +209,7 @@ export function Combobox({
                     type="button"
                     onClick={() => toggle(o.value)}
                     className={cn(
-                      'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-card2',
+                      'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left font-sans text-sm transition-colors hover:bg-card2',
                       selectedSet.has(o.value) && 'bg-card2',
                     )}
                   >

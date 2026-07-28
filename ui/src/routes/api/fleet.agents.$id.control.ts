@@ -7,11 +7,12 @@ import { ownsAgent } from '@/server/personal-agent'
 import { fleetRemove, fleetRestart, fleetStop, fleetUp, pruneBundledSkills, waitHealthy } from '@/server/fleet-docker'
 import { renderFleet } from '@/server/fleet-render'
 import { rollAgent } from '@/server/fleet-reconcile'
+import { deleteAgentForever } from '@/server/fleet-create'
 import { logAudit } from '@/server/audit'
 import { db } from '@/server/db/pg'
 
 const Body = z.object({
-  action: z.enum(['up', 'stop', 'restart', 'roll', 'retire', 'unretire']),
+  action: z.enum(['up', 'stop', 'restart', 'roll', 'retire', 'unretire', 'delete']),
 })
 
 // POST { action } → lifecycle control for one agent (admin; owners of a
@@ -37,7 +38,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
         const sql = await db()
         const actor = user.email ?? user.name ?? 'admin'
         // Lifecycle actions are governance-relevant — record them.
-        if (['restart', 'roll', 'retire', 'unretire'].includes(parsed.data.action)) {
+        if (['restart', 'roll', 'retire', 'unretire', 'delete'].includes(parsed.data.action)) {
           void logAudit({ actor, action: `agent.${parsed.data.action}`, targetType: 'agent', targetId: def.id, targetLabel: def.displayName })
         }
         try {
@@ -76,6 +77,13 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
               await fleetRemove(def.department)
               const render = await renderFleet() // manifest drops it; bridge hot-reloads
               return json({ ok: true, render: render.agents })
+            }
+            case 'delete': {
+              // Permanent: def + versions + secrets + rendered files + (for
+              // created agents) the state volume. Admin only, retired only.
+              if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+              const result = await deleteAgentForever(def.id)
+              return json({ ok: true, ...result })
             }
             case 'unretire': {
               // Re-hire: re-enable, re-render (manifest + compose pick it back

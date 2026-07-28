@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { SkeletonRows } from '@/components/ui/skeleton'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, X, Upload, ExternalLink, DownloadCloud, Search, type LucideIcon } from 'lucide-react'
@@ -39,7 +40,7 @@ type Drag = { kind: 'artifact' | 'folder'; id: string } | null
 
 function ArtifactsPage() {
   const qc = useQueryClient()
-  const { data: artifacts = [] } = useArtifacts()
+  const { data: artifacts = [], isLoading: artifactsLoading } = useArtifacts()
   const { data: folders = [] } = useFolders()
   const [activeId, setActiveId] = useState<string | null>(null)
   const [newOpen, setNewOpen] = useState(false)
@@ -93,7 +94,7 @@ function ArtifactsPage() {
 
   return (
     <div className="flex h-full min-h-0">
-      <aside className="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar">
+      <aside className="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar font-sans">
         <div className="relative flex h-12 shrink-0 items-center gap-1.5 border-b border-line-subtle px-4">
           <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg">Artifacts</span>
           <div className="flex items-center gap-0.5">
@@ -122,7 +123,9 @@ function ArtifactsPage() {
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => { e.preventDefault(); void drop(null) }}
         >
-          {folders.length === 0 && artifacts.length === 0 ? (
+          {artifactsLoading ? (
+            <SkeletonRows rows={6} className="px-2 py-3" />
+          ) : folders.length === 0 && artifacts.length === 0 ? (
             <div className="px-2 py-6 text-center text-xs text-muted">No artifacts yet.</div>
           ) : (
             <>
@@ -500,7 +503,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
             placeholder="Untitled"
           />
         ) : (
-          <h1 className="min-w-0 flex-1 truncate text-lg font-semibold text-fg">{artifact.title}</h1>
+          <h1 className="min-w-0 flex-1 truncate font-sans text-lg font-semibold text-fg">{artifact.title}</h1>
         )}
         <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">{artifact.kind}</span>
         <div className="flex shrink-0 rounded-md border border-line p-0.5">
@@ -610,7 +613,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
                   <div className="mb-4 flex items-center gap-3 rounded-xl border border-line-subtle p-4">
                     <Paperclip size={20} className="shrink-0 text-muted" />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm text-fg">{artifact.title}</div>
+                      <div className="truncate font-sans text-sm text-fg">{artifact.title}</div>
                       <div className="text-xs text-muted">{artifact.contentType ?? 'file'}</div>
                     </div>
                   </div>

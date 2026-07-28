@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles, CalendarDays, Plus, ExternalLink, Mail, Send, ShieldCheck, Check } from 'lucide-react'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { Panel } from '@/components/ui/panel'
 import { alert } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
@@ -97,7 +98,14 @@ function HomePage() {
             <ApprovalsPanel />
 
             {isLoading ? (
-              <div className="text-sm text-muted">Loading your day</div>
+              <div className="grid gap-4 xl:grid-cols-3">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="mercury-panel rounded-2xl p-6">
+                    <Skeleton className="mb-4 h-3 w-24 rounded-full" delay={i * 0.1} />
+                    <SkeletonRows rows={4} />
+                  </div>
+                ))}
+              </div>
             ) : (
               <div className="grid gap-4 xl:grid-cols-3">
                 <QueuePanel
@@ -151,7 +159,17 @@ function HomePage() {
 // "what needs me"; this is "how are we doing."
 function OrgRail({ data, isAdmin }: { data: HomeSummary | undefined; isAdmin: boolean }) {
   const navigate = useNavigate()
-  if (!data) return <div className="hidden lg:block" />
+  if (!data)
+    return (
+      <aside className="hidden space-y-4 lg:block">
+        <Skeleton className="h-3 w-24 rounded-full" />
+        {[0, 1].map((i) => (
+          <Panel key={i}>
+            <SkeletonRows rows={3} />
+          </Panel>
+        ))}
+      </aside>
+    )
   const { org, fleet } = data
   return (
     <aside className="space-y-4">
@@ -240,7 +258,16 @@ function AssistantCard() {
   const [wizard, setWizard] = useState(false)
   const { data, isLoading } = useAssistant()
 
-  if (isLoading) return null
+  if (isLoading)
+    return (
+      <Panel className="flex items-center gap-4">
+        <Skeleton className="h-11 w-11 shrink-0 rounded-2xl" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <Skeleton className="h-3 w-40 rounded-full" />
+          <Skeleton className="h-2.5 w-64 rounded-full" />
+        </div>
+      </Panel>
+    )
   return (
     <Panel className="flex items-center gap-4">
       <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-accent/15 text-accent">
@@ -326,7 +353,7 @@ function QueuePanel({
               className="flex w-full items-baseline gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card"
             >
               {w.ticketRef && <span className="shrink-0 font-[var(--font-mono)] text-[11px] text-muted">{w.ticketRef}</span>}
-              <span className="min-w-0 flex-1 truncate text-sm text-fg">{w.title}</span>
+              <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{w.title}</span>
               <span className="shrink-0 text-[11px] text-muted">{relativeTime(w.updatedAt)}</span>
             </button>
           ))}
@@ -366,6 +393,13 @@ function AgendaPanel() {
   })
   const [adding, setAdding] = useState(false)
 
+  if (!data && !isError)
+    return (
+      <Panel>
+        <Skeleton className="mb-4 h-3 w-20 rounded-full" />
+        <SkeletonRows rows={3} />
+      </Panel>
+    )
   // Not connected (or unreachable) → render nothing.
   if (isError || data?.error || !data) return null
   const events = data.events ?? []
@@ -396,7 +430,7 @@ function AgendaPanel() {
               className="group flex items-center gap-3 py-2"
             >
               <span className="w-32 shrink-0 text-[11px] text-muted">{formatWhen(e)}</span>
-              <span className="min-w-0 flex-1 truncate text-sm text-fg">{e.summary}</span>
+              <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{e.summary}</span>
               {e.location && <span className="hidden shrink-0 truncate text-[11px] text-muted sm:block sm:max-w-[8rem]">{e.location}</span>}
               <ExternalLink size={12} className="shrink-0 text-muted opacity-0 group-hover:opacity-100" />
             </a>
@@ -489,6 +523,15 @@ function MailPanel() {
   })
   const [composing, setComposing] = useState(false)
 
+  // In flight → hold the space with a skeleton; only a RESOLVED
+  // not-connected state may remove the panel (no pop-in, no dead panel).
+  if (!data && !isError)
+    return (
+      <Panel>
+        <Skeleton className="mb-4 h-3 w-16 rounded-full" />
+        <SkeletonRows rows={4} />
+      </Panel>
+    )
   if (isError || data?.error || !data) return null
   const messages = data.messages ?? []
 
@@ -517,8 +560,8 @@ function MailPanel() {
               rel="noreferrer"
               className="group flex items-center gap-3 py-2"
             >
-              <span className={cn('w-32 shrink-0 truncate text-[12px]', m.unread ? 'font-semibold text-fg' : 'text-muted')}>{fromName(m.from)}</span>
-              <span className="min-w-0 flex-1 truncate text-sm">
+              <span className={cn('w-32 shrink-0 truncate font-sans text-[12px]', m.unread ? 'font-semibold text-fg' : 'text-muted')}>{fromName(m.from)}</span>
+              <span className="min-w-0 flex-1 truncate font-sans text-sm">
                 <span className={m.unread ? 'font-medium text-fg' : 'text-fg'}>{m.subject}</span>
                 <span className="text-muted"> — {m.snippet}</span>
               </span>
@@ -637,7 +680,7 @@ function ApprovalsPanel() {
           <div key={a.id} className="flex items-center gap-3 py-2.5">
             <span className="shrink-0 rounded border border-line-subtle px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">{kindLabel(a.kind)}</span>
             {a.isOrg && <span className="shrink-0 rounded bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted" title="Shared org account">org</span>}
-            <span className="min-w-0 flex-1 truncate text-sm text-fg">{a.summary ?? '(action)'}</span>
+            <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{a.summary ?? '(action)'}</span>
             {a.agentModel && <span className="hidden shrink-0 text-[11px] text-muted sm:block">{a.agentModel}</span>}
             <div className="flex shrink-0 items-center gap-1">
               <Button size="sm" disabled={busy === a.id} onClick={() => void decide(a.id, 'approve')}>

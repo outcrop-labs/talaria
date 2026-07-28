@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
+import { InfoTip } from '@/components/ui/info-tip'
 import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -99,12 +100,10 @@ export function RetrievalPanel() {
 
   return (
     <Panel>
-      <div className="mb-2 text-sm font-semibold text-fg">Retrieval</div>
-      <p className="mb-3 text-xs text-muted">
-        The org's RAG brains. <span className="text-fg">Workspace activity</span> and{' '}
-        <span className="text-fg">Organization knowledge</span> are automatic. Spin up more for a domain or
-        team, bind who can search each, and point KB spaces at them to curate what they contain.
-      </p>
+      <div className="mb-4 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Retrieval</span>
+        <InfoTip text="The org's RAG brains. Workspace activity and Organization knowledge are automatic. Spin up more for a domain or team, bind who can search each, and point KB spaces at them to curate what they contain." />
+      </div>
 
       {/* Services + backfill */}
       {rag && (

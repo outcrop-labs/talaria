@@ -18,6 +18,19 @@ import { relativeTime } from '@/lib/fleet'
 import { GATEABLE_VIEWS } from '@/lib/nav'
 import { RetrievalPanel } from '@/components/admin/retrieval-panel'
 import { StoragePanel } from '@/components/admin/storage-panel'
+import { InfoTip } from '@/components/ui/info-tip'
+import { cn } from '@/lib/cn'
+
+
+type AdminTab = 'org' | 'people' | 'agents' | 'retrieval' | 'storage' | 'security'
+const ADMIN_TABS: { id: AdminTab; label: string }[] = [
+  { id: 'org', label: 'Organization' },
+  { id: 'people', label: 'People' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'retrieval', label: 'Retrieval' },
+  { id: 'storage', label: 'Storage' },
+  { id: 'security', label: 'Security' },
+]
 
 export const Route = createFileRoute('/_app/admin')({
   component: AdminPage,
@@ -70,39 +83,59 @@ function AdminPage() {
     await qc.invalidateQueries({ queryKey: ['admin-users'] })
   }
 
+  const [tab, setTab] = useState<AdminTab>('org')
+
   if (me && me.role !== 'admin') {
     return <EmptyState icon="⛨" title="Admins only" hint="Ask an admin if you need access here." />
   }
 
   return (
     <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto max-w-4xl space-y-8">
+      <div className="mx-auto max-w-4xl space-y-6">
         <h1 className="mercury-text text-2xl font-semibold">Admin</h1>
 
-        <OrgPanel />
+        {/* One concern per tab; every panel keeps its own component. */}
+        <div className="flex gap-1 border-b border-line-subtle">
+          {ADMIN_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={cn('relative px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
+            >
+              {t.label}
+              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
+            </button>
+          ))}
+        </div>
 
-        <SettingsPanel />
-
-        <JudgePanel />
-
-        <GuardrailsPanel />
-
-        <OutreachPanel />
-
-        <OrgGooglePanel />
-
-        <RetrievalPanel />
-
-        <StoragePanel />
-
-        <EncryptionPanel />
-
+        {tab === 'org' && (
+          <>
+            <OrgPanel />
+            <OrgGooglePanel />
+          </>
+        )}
+        {tab === 'agents' && (
+          <>
+            <JudgePanel />
+            <GuardrailsPanel />
+            <OutreachPanel />
+          </>
+        )}
+        {tab === 'retrieval' && <RetrievalPanel />}
+        {tab === 'storage' && <StoragePanel />}
+        {tab === 'security' && (
+          <>
+            <EncryptionPanel />
+            <SettingsPanel />
+          </>
+        )}
+        {tab === 'people' && (
         <Panel>
-          <div className="mb-2 text-sm font-semibold text-fg">People</div>
-          <p className="mb-4 text-xs text-muted">
-            Roles, per-person agent access, and which views each member can reach. Empty = all (open by
-            default); pick any to restrict. Admins always have full access.
-          </p>
+          <div className="mb-4 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">People</span>
+        <InfoTip text="Roles, per-person agent access, and which views each member can reach. Empty = all (open by default); pick any to restrict. Admins always have full access." />
+      </div>
           {error && (
             <div className="mb-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
               {error}
@@ -192,6 +225,7 @@ function AdminPage() {
             })}
           </ul>
         </Panel>
+        )}
       </div>
     </div>
   )
@@ -358,13 +392,10 @@ function EncryptionPanel() {
 
   return (
     <Panel>
-      <div className="mb-2 text-sm font-semibold text-fg">Encryption</div>
-      <p className="mb-4 text-xs text-muted">
-        Every stored secret — provider API keys, agent secrets, Google tokens — is encrypted at rest with{' '}
-        <strong>{data?.algorithm ?? 'AES-256-GCM'}</strong>. A random data key encrypts the secrets; that key is itself
-        stored wrapped by the root secret, so the key that unlocks everything is never in a config file. Rotating
-        re-encrypts <strong>every</strong> secret under a fresh key in one pass, no per-secret steps.
-      </p>
+      <div className="mb-4 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Encryption</span>
+        <InfoTip text="Every stored secret is encrypted at rest (AES-256-GCM). A random data key encrypts the secrets; that key is stored wrapped by the root secret, so the key that unlocks everything is never in a config file. Rotating re-encrypts every secret under a fresh key in one pass." />
+      </div>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted">
         <span>Key version: <strong className="text-fg">v{data?.keyVersion ?? '—'}</strong></span>
         <span>Secrets protected: <strong className="text-fg">{data?.secretCount ?? '—'}</strong></span>
@@ -430,12 +461,10 @@ function JudgePanel() {
 
   return (
     <Panel>
-      <div className="mb-2 text-sm font-semibold text-fg">QA judge</div>
-      <p className="mb-4 text-xs text-muted">
-        A reliability gate: when an agent hands a ticket to <strong>quality review</strong>, a judge model reviews the
-        reported work and posts a verdict (pass / revise / escalate) with specific issues. <strong>Advisory</strong>:
-        the human reviewer still decides. Pick a strong model for the sharpest review.
-      </p>
+      <div className="mb-4 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">QA judge</span>
+        <InfoTip text="When an agent hands a ticket to quality review, a judge model reviews the reported work and posts a verdict (pass / revise / escalate) with specific issues. Advisory: the human reviewer still decides. Pick a strong model for the sharpest review." />
+      </div>
       <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm text-fg">
           <input type="checkbox" checked={enabled} onChange={(e) => void save({ enabled: e.target.checked })} />
@@ -487,15 +516,10 @@ function GuardrailsPanel() {
 
   return (
     <Panel>
-      <div className="mb-2 text-sm font-semibold text-fg">Confab guard</div>
-      <p className="mb-4 text-xs text-muted">
-        A cheap structural check on every model’s output at the gateway: catches claims of work no tool did, invented
-        links/ids, fabricated outages, and leaked secrets. No extra model call, no added context. <strong>Observe</strong> records
-        findings here; <strong>annotate</strong> also flags the reply where it appears (a caveat in chat/channels, appended on
-        API responses); <strong>strict</strong> also redacts leaked secrets and personal data from the saved reply. Flagged
-        content is never fed back into an agent’s context — coaching (below) delivers only counts and fixed advice, at
-        render time.
-      </p>
+      <div className="mb-4 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Confab guard</span>
+        <InfoTip text="A structural check on every model output at the gateway: fabricated tool claims, invented links, outage stories, leaked secrets and PII. Observe records findings; annotate flags the reply; strict also redacts. Flagged content never re-enters an agent\u2019s context." />
+      </div>
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
           <span className="text-[11px] uppercase tracking-wide text-muted">Mode</span>
@@ -597,13 +621,10 @@ function OutreachPanel() {
 
   return (
     <Panel>
-      <div className="mb-2 text-sm font-semibold text-fg">Proactive outreach</div>
-      <p className="mb-4 text-xs text-muted">
-        Opted-in agents get a periodic check-in: a look at their own stale or blocked work, and the chance to act
-        through their normal tools — a ticket comment, a channel post, or a direct message that lands in your chat
-        and inbox. Everything stays attributed and board-policy-gated; direct messages are capped per person per
-        day. Off by default.
-      </p>
+      <div className="mb-4 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Proactive outreach</span>
+        <InfoTip text="Opted-in agents get a periodic check-in: a look at their stale or blocked work, and the chance to act through their normal tools — a ticket comment, a channel post, or a direct message to your inbox. Everything stays attributed and board-policy-gated; DMs are capped per person per day. Off by default." />
+      </div>
       <div className="flex flex-wrap items-center gap-4">
         <label className="flex items-center gap-2 text-xs text-muted">
           <input type="checkbox" checked={cfg?.enabled ?? false} onChange={(e) => void save({ enabled: e.target.checked })} />
@@ -716,12 +737,10 @@ function OrgGooglePanel() {
 
   return (
     <Panel>
-      <div className="mb-2 text-sm font-semibold text-fg">Organization Google account</div>
-      <p className="mb-4 text-xs text-muted">
-        A single shared Google account the fleet builds in. <strong>General agents</strong> (no personal owner)
-        create Docs, Sheets, and Drive files here; a user's <strong>personal assistant</strong> instead acts as
-        that user’s own connected Google.
-      </p>
+      <div className="mb-4 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Organization Google account</span>
+        <InfoTip text="A single shared Google account the fleet builds in. General agents (no personal owner) create Docs, Sheets, and Drive files here; a personal assistant instead acts as its owner\u2019s own connected Google." />
+      </div>
       {data && !data.available ? (
         <div className="text-xs text-muted">Google integration isn’t configured on this server.</div>
       ) : (

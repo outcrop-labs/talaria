@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { SkeletonRows } from '@/components/ui/skeleton'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { cn } from '@/lib/cn'
@@ -77,7 +78,7 @@ function ActivityPage() {
         </div>
 
         {isLoading ? (
-          <div className="text-sm text-muted">Loading activity</div>
+          <SkeletonRows rows={8} avatar />
         ) : events.length === 0 ? (
           <EmptyState
             icon="☰"

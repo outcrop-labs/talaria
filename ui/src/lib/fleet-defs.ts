@@ -154,7 +154,7 @@ export async function saveAgentEdit(
   return (await r.json().catch(() => ({ error: `save failed (${r.status})` }))) as { error?: string }
 }
 
-export type FleetAction = 'up' | 'stop' | 'restart' | 'roll' | 'retire' | 'unretire'
+export type FleetAction = 'up' | 'stop' | 'restart' | 'roll' | 'retire' | 'unretire' | 'delete'
 
 export async function createFleetAgent(input: {
   slug: string

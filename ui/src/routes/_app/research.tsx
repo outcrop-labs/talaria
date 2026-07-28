@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Gauge, Loader2, Trash2 } from 'lucide-react'
@@ -222,7 +223,13 @@ function RunView({ runId }: { runId: string }) {
   const run = data?.run
   const { data: artifact } = useArtifact(run?.artifactId ?? null)
 
-  if (!run) return <div className="p-8 text-sm text-muted">Loading</div>
+  if (!run)
+    return (
+      <div className="space-y-4 p-8">
+        <Skeleton className="h-4 w-1/2 rounded-full" />
+        <SkeletonRows rows={6} />
+      </div>
+    )
 
   return (
     <div className="mx-auto w-full max-w-[var(--chat-content-max-width)] space-y-4 p-8">

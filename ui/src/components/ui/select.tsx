@@ -13,7 +13,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
       ref={ref}
       className={cn(
         controlSizes[size],
-        'rounded-xl border border-line bg-[var(--theme-input)] px-2.5 text-fg outline-none transition-colors focus:border-accent',
+        'rounded-xl border border-line bg-[var(--theme-input)] px-2.5 font-sans text-fg outline-none transition-colors focus:border-accent',
         className,
       )}
       {...props}

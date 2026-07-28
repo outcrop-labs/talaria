@@ -8,20 +8,22 @@ import { Input } from '@/components/ui/input'
 import { RichEditor } from '@/components/ui/rich-editor'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from './assistant-wizard'
-import { AssistantManageModal } from './assistant-manage-modal'
+import { AssistantPanels } from './assistant-manage-modal'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
-import { updateAssistant, useAssistant } from '@/lib/assistant'
+import { cn } from '@/lib/cn'
+import { HANDLE_RE, updateAssistant, useAssistant } from '@/lib/assistant'
 
-// Settings › Your assistant — the member-facing controls for their personal
-// agent: rename it, rewrite its personality (applies live), or create one via
-// the onboarding wizard. Admin internals (models, skills, versions) stay in
-// the fleet dashboard.
+// Settings › Assistant — the WHOLE of a member's personal agent in one place:
+// identity (name, @handle), personality, which model powers it, on/off, and
+// the working parts (schedules, skills, memory) inline below. Owner-scoped
+// APIs throughout — no admin role anywhere.
 export function AssistantSection() {
   const qc = useQueryClient()
   const { data: assistant, isLoading } = useAssistant()
   const [wizard, setWizard] = useState(false)
-  const [manage, setManage] = useState(false)
   const [personaEditor, setPersonaEditor] = useState(false)
+  const [handle, setHandle] = useState('')
+  const [power, setPower] = useState(false)
   const [name, setName] = useState('')
   const [personality, setPersonality] = useState('')
   const [personaRev, setPersonaRev] = useState(0)
@@ -32,6 +34,7 @@ export function AssistantSection() {
   useEffect(() => {
     if (assistant) {
       setName(assistant.displayName)
+      setHandle(assistant.slug)
       setPersonality(assistant.personality ?? '')
       setPersonaRev((r) => r + 1) // reseed the editor with the fetched value
     }
@@ -41,7 +44,7 @@ export function AssistantSection() {
 
   if (!assistant) {
     return (
-      <section className="mercury-panel mt-6 rounded-2xl p-6">
+      <section className="mercury-panel rounded-2xl p-6">
         <EmptyState
           icon={<Sparkles size={24} />}
           title="No assistant yet"
@@ -57,7 +60,8 @@ export function AssistantSection() {
     )
   }
 
-  const dirty = name.trim() !== assistant.displayName || personality.trim() !== (assistant.personality ?? '')
+  const handleDirty = handle.trim() !== assistant.slug && HANDLE_RE.test(handle.trim())
+  const dirty = name.trim() !== assistant.displayName || handleDirty || personality.trim() !== (assistant.personality ?? '')
 
   const save = async () => {
     if (!dirty || !name.trim()) return
@@ -66,6 +70,7 @@ export function AssistantSection() {
     try {
       const r = await updateAssistant({
         ...(name.trim() !== assistant.displayName ? { name: name.trim() } : {}),
+        ...(handleDirty ? { handle: handle.trim() } : {}),
         ...(personality.trim() !== (assistant.personality ?? '') ? { personality: personality.trim() } : {}),
       })
       if (!r.assistant) return setError(r.error ?? 'could not save')
@@ -78,7 +83,7 @@ export function AssistantSection() {
   }
 
   return (
-    <section className="mercury-panel mt-6 rounded-2xl p-6">
+    <section className="mercury-panel rounded-2xl p-6">
       <div className="mb-4 flex items-center gap-3">
         <Avatar name={assistant.displayName} className="h-10 w-10" />
         <div className="min-w-0 flex-1">
@@ -92,16 +97,80 @@ export function AssistantSection() {
             {assistant.currentModel && <span className="truncate"> · {assistant.currentModel}</span>}
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={() => setManage(true)}>
-          Manage
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() =>
+            void (async () => {
+              setPower(true)
+              try {
+                await fetch(`/api/fleet/agents/${assistant.id}/control`, {
+                  method: 'POST',
+                  credentials: 'same-origin',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ action: assistant.running ? 'stop' : 'up' }),
+                })
+                await qc.invalidateQueries({ queryKey: ['my-assistant'] })
+              } finally {
+                setPower(false)
+              }
+            })()
+          }
+        >
+          {power ? '…' : assistant.running ? 'Stop' : 'Start'}
         </Button>
         <Link to="/chat" className="text-xs text-accent hover:underline">
           Open chat →
         </Link>
       </div>
 
-      <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
-      <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} className="mb-4" />
+      <div className="mb-4 grid gap-4 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
+          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
+        </div>
+        <div>
+          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Handle</label>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted">@</span>
+            <Input
+              value={handle}
+              onChange={(e) => setHandle(e.target.value.toLowerCase())}
+              maxLength={30}
+              title="Chats, memory, and access move with it; mentions pick up the new handle"
+            />
+          </div>
+          {handle !== '' && !HANDLE_RE.test(handle) && (
+            <p className="mt-1 text-xs text-[color:var(--theme-danger)]">2–30 lowercase letters/numbers, starting with a letter.</p>
+          )}
+        </div>
+      </div>
+
+      {assistant.tiers.length > 0 && (
+        <div className="mb-4">
+          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Model</label>
+          <div className="flex flex-wrap gap-1.5">
+            {assistant.tiers.map((t) => (
+              <button
+                key={t.name}
+                type="button"
+                title={t.model}
+                disabled={busy}
+                onClick={() =>
+                  void updateAssistant({ model: t.name }).then(() => qc.invalidateQueries({ queryKey: ['my-assistant'] }))
+                }
+                className={cn(
+                  'rounded-full border px-3 py-1 text-xs capitalize transition-colors',
+                  t.active ? 'border-[var(--theme-accent)] text-accent' : 'border-line-subtle text-muted hover:border-line hover:text-fg',
+                )}
+              >
+                {t.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="mb-1 flex items-center">
         <label className="text-[11px] uppercase tracking-wide text-muted">Personality</label>
@@ -154,7 +223,9 @@ export function AssistantSection() {
       </div>
       {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
       {error && <div className="mt-2 text-xs text-[color:var(--theme-danger)]">{error}</div>}
-      {manage && <AssistantManageModal assistant={assistant} onClose={() => setManage(false)} />}
+      <div className="mt-6 border-t border-line-subtle pt-5">
+        <AssistantPanels assistant={assistant} />
+      </div>
     </section>
   )
 }

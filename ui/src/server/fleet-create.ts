@@ -107,3 +107,58 @@ export async function createAgent(input: {
   })
   return { def: { ...def, managed: true }, keyCreated }
 }
+
+/** Permanently delete a RETIRED agent: the def row (versions + secrets
+ *  cascade), any leftover containers, the rendered agent dir, its fleet key,
+ *  and — for Talaria-created agents — the state volume. Imported agents keep
+ *  their pre-Talaria volume (it predates us; deleting it isn't ours to do).
+ *  History that references the agent by model string (ledger, messages,
+ *  tickets) is deliberately kept. */
+export async function deleteAgentForever(defId: string): Promise<{ removedVolume: boolean }> {
+  const sql = await db()
+  const rows = (await sql`
+    select slug, department, source, enabled from agent_defs where id = ${defId}
+  `) as unknown as Array<{ slug: string; department: string; source: string; enabled: boolean }>
+  const def = rows[0]
+  if (!def) throw new Error('not found')
+  if (def.enabled) throw new Error('retire the agent first — delete is for retired agents only')
+
+  const { removeContainerByName, slotContainer } = await import('./fleet-docker')
+  const { renderFleet, FLEET_DIR } = await import('./fleet-render')
+  const { rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { execFile } = await import('node:child_process')
+
+  // Containers first (should already be gone after retire; both slots, best-effort).
+  await removeContainerByName(slotContainer(def.department, 'a')).catch(() => {})
+  await removeContainerByName(slotContainer(def.department, 'b')).catch(() => {})
+
+  // The def row — versions + secrets cascade with it.
+  await sql`delete from agent_defs where id = ${defId}`
+
+  // Rendered dir + fleet key line (best-effort cleanup).
+  await rm(join(FLEET_DIR(), 'agents', def.slug), { recursive: true, force: true }).catch(() => {})
+  try {
+    const envPath = FLEET_ENV()
+    const content = await readFile(envPath, 'utf8')
+    const keyLine = new RegExp(`^(# added by Talaria \\(agent create\\)\\n)?HERMES_KEY_${def.slug.toUpperCase()}=.*\\n?`, 'm')
+    const next = content.replace(keyLine, '')
+    if (next !== content) {
+      const { writeFile } = await import('node:fs/promises')
+      await writeFile(envPath, next)
+    }
+  } catch {
+    /* keep going — a stale key line is harmless */
+  }
+
+  // State volume: only for created agents (imported volumes are external legacy).
+  let removedVolume = false
+  if (def.source === 'created') {
+    removedVolume = await new Promise<boolean>((res) => {
+      execFile('docker', ['volume', 'rm', `talaria-fleet_hermes-${def.department}`], { timeout: 20_000 }, (err) => res(!err))
+    })
+  }
+
+  await renderFleet() // compose + manifest drop the agent
+  return { removedVolume }
+}

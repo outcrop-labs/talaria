@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { SkeletonCard, SkeletonRows } from '@/components/ui/skeleton'
 import { Avatar } from '@/components/ui/avatar'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
@@ -27,7 +28,14 @@ function CostPage() {
         <h1 className="mercury-text text-2xl font-semibold">Cost</h1>
 
         {isLoading ? (
-          <div className="text-sm text-muted">Loading ledger</div>
+          <>
+            <div className="grid grid-cols-3 gap-4">
+              {[0, 1, 2].map((i) => (
+                <SkeletonCard key={i} delay={i * 0.1} />
+              ))}
+            </div>
+            <SkeletonRows rows={5} className="mt-2" />
+          </>
         ) : !data || total(t?.month) === 0 ? (
           <EmptyState
             icon="⌗"

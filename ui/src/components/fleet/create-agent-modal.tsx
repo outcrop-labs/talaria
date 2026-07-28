@@ -172,7 +172,7 @@ export function CreateAgentModal({
   // ── Step 2: review + create ──────────────────────────────────────────────
   const generated = chat.length > 0
   return (
-    <Modal open={open} onClose={onClose} title="New agent" width="max-w-2xl">
+    <Modal open={open} onClose={onClose} title="New agent" takeover>
       <div className="max-h-[75vh] space-y-5 overflow-y-auto pr-1">
         <div className="grid grid-cols-2 gap-4">
           <div>

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Check, History, RotateCcw, Sparkles, Square, X } from 'lucide-react'
+import { motion } from 'framer-motion'
+import { Check, ChevronLeft, History, RotateCcw, Sparkles, Square, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { CloseButton } from '@/components/ui/close-button'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
@@ -128,6 +130,7 @@ export function InternalEditorModal({
   footerExtra,
   mode = 'rich',
   muse,
+  nested = false,
 }: {
   open: boolean
   onClose: () => void
@@ -144,6 +147,10 @@ export function InternalEditorModal({
   /** 'rich' (default) renders WYSIWYG markdown; 'plain' a mono text surface —
    *  for structured text like config YAML where prose rendering would lie. */
   mode?: 'rich' | 'plain'
+  /** Render as a slide-in panel over the CURRENT dialog (the ticket-editor
+   *  pattern) instead of stacking a second modal. Requires a positioned
+   *  ancestor — the takeover Modal's panel provides one. */
+  nested?: boolean
   /** Enable AI drafting for this document: prompt → streamed proposal →
    *  review diff → accept, iterating with the conversation retained. */
   muse?: { kind: MuseKind; context?: string }
@@ -253,10 +260,23 @@ export function InternalEditorModal({
     setDiffing({ rev, content, diff: diffLines(content, now) })
   }
 
-  return (
-    <Modal open={open} onClose={onClose} title={title} width="max-w-6xl">
+  // Nested mode: Esc closes THIS panel only — a capture-phase listener runs
+  // before (and suppresses) the parent modal's document-level Esc handler.
+  useEffect(() => {
+    if (!nested || !open) return
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    document.addEventListener('keydown', h, true)
+    return () => document.removeEventListener('keydown', h, true)
+  }, [nested, open, onClose])
+
+  const body = (
       <div
-        className="flex h-[76vh] flex-col gap-3"
+        className={cn('flex flex-col gap-3', nested ? 'h-full min-h-0' : 'h-[76vh]')}
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === 's') {
             e.preventDefault()
@@ -468,6 +488,37 @@ export function InternalEditorModal({
           )}
         </div>
       </div>
+  )
+
+  if (nested) {
+    if (!open) return null
+    return (
+      <motion.div
+        initial={{ x: '100%' }}
+        animate={{ x: 0 }}
+        transition={{ type: 'tween', duration: 0.18, ease: 'easeOut' }}
+        className="absolute inset-0 z-30 flex flex-col bg-[var(--theme-panel)]"
+      >
+        <div className="flex shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-3.5">
+          <button
+            type="button"
+            onClick={onClose}
+            title="Back"
+            className="grid h-7 w-7 place-items-center rounded-lg text-muted transition-colors hover:bg-card hover:text-fg"
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <div className="text-sm font-semibold text-fg">{title}</div>
+          <CloseButton onClick={onClose} className="ml-auto" />
+        </div>
+        <div className="min-h-0 flex-1 p-6">{body}</div>
+      </motion.div>
+    )
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title={title} width="max-w-6xl">
+      {body}
     </Modal>
   )
 }

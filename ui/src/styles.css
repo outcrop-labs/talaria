@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
 @import 'tailwindcss';
 
 /* Tailwind v4 — enable the dark: variant on the .dark class (set by __root.tsx). */
@@ -19,7 +19,11 @@
 
 :root {
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
-  --font-sans: var(--font-mono);
+  /* Two registers: mono is the CHROME voice (nav, labels, chips, buttons,
+     identifiers, config); sans is the READING/BUSINESS voice — anywhere
+     someone reads paragraphs or types real content (markdown surfaces,
+     editors, inputs, board card/list text). Apply via `font-sans`. */
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif;
   --font-display: var(--font-mono);
 
   /* A subtle metallic-bronze gradient (brand mark only — not a glow). */
@@ -152,7 +156,7 @@
    automatically. (Tailwind v4 @theme; var() references resolve per-element.)
    ════════════════════════════════════════════════════════════════════════ */
 @theme inline {
-  --font-sans: var(--font-mono);
+  --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
 
   --color-surface: var(--theme-bg);
@@ -274,6 +278,8 @@ body {
   outline: none;
   color: var(--theme-text);
   line-height: 1.55;
+  /* Reading/writing surface — sans. Code spans/blocks re-assert mono below. */
+  font-family: var(--font-sans);
 }
 .tiptap > * + * { margin-top: 0.5rem; }
 .tiptap h1 { font-size: 1.25rem; font-weight: 600; }

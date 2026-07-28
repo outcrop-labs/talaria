@@ -92,6 +92,33 @@ Two deliberate registers — don't mix them:
 - Prefer the class spelling `text-[color:var(--theme-danger)]` over inline
   `style` when static.
 
+## Typography — two voices
+
+- **Mono (`--font-mono`, the default via body)** is the CHROME voice: nav,
+  buttons, tabs, tiny uppercase labels, chips, stats, timestamps, and every
+  IDENTIFIER (ticket refs, model ids, slugs, keys, config, code).
+- **Sans (`--font-sans`, IBM Plex Sans — apply via `font-sans`)** is the
+  READING/BUSINESS voice: anywhere someone reads paragraphs or types real
+  content. Already wired: all rendered markdown (`<Markdown>`), all TipTap
+  content (`.tiptap`), Input/Textarea/Select/Combobox, board card + list
+  titles/descriptions, home queue/mail/agenda rows, notification titles,
+  KB/artifact content titles.
+- Inside a sans surface, identifiers re-assert mono with
+  `font-[var(--font-mono)]` (ticket refs on cards do this); `cn()` resolves
+  the conflict in the caller's favor on shared controls.
+- New content-bearing text → `font-sans`. New chrome → nothing (mono is the
+  default). When unsure: would a user READ or TYPE a sentence here? Sans.
+
+## Loading
+
+- Never render a blank pane or a "Loading" string while a query is in flight —
+  use `Skeleton` / `SkeletonRows` / `SkeletonCard` (`ui/skeleton.tsx`), shaped
+  like the content they stand in for so the swap doesn't jump.
+- `Generating` is for MODEL output being written; `Skeleton` is for FETCHES.
+  Same shimmer language, different meaning — don't mix them.
+- Empty states (`EmptyState`) only render once the query has RESOLVED empty;
+  loading must never flash "No X yet".
+
 ## Editors
 
 One rule decides which input a field gets:

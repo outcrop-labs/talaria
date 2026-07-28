@@ -10,18 +10,30 @@ import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
 import { savePreferredModel, useModels, usePreferredModel } from '@/lib/muse'
 import { AssistantSection } from '@/components/assistant/assistant-section'
+import { InfoTip } from '@/components/ui/info-tip'
+import { cn } from '@/lib/cn'
 
 export const Route = createFileRoute('/_app/settings')({
   component: SettingsPage,
 })
 
-// Personal settings. Just the profile for now; more sections land here later.
+// Personal settings, tabbed by concern: Profile (identity + drafting model),
+// Assistant (the member's whole personal agent), Connections, API keys.
+
+type SettingsTab = 'profile' | 'assistant' | 'connections' | 'keys'
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: 'profile', label: 'Profile' },
+  { id: 'assistant', label: 'Assistant' },
+  { id: 'connections', label: 'Connections' },
+  { id: 'keys', label: 'API keys' },
+]
 function SettingsPage() {
   const qc = useQueryClient()
   const { data: user } = useSession()
   const [name, setName] = useState('')
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [tab, setTab] = useState<SettingsTab>('profile')
 
   useEffect(() => {
     if (user) setName(user.name ?? '')
@@ -51,8 +63,22 @@ function SettingsPage() {
 
   return (
     <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto w-full max-w-lg">
+      <div className="mx-auto w-full max-w-2xl">
         <h1 className="mercury-text mb-4 text-lg font-semibold">Settings</h1>
+        <div className="mb-6 flex gap-1 border-b border-line-subtle">
+          {SETTINGS_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={cn('relative px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
+            >
+              {t.label}
+              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
+            </button>
+          ))}
+        </div>
+        {tab === 'profile' && (
         <section className="mercury-panel rounded-2xl p-6">
           <div className="mb-4 flex items-center gap-3">
             <Avatar src={user?.picture} name={name || user?.email} className="h-10 w-10" />
@@ -76,10 +102,11 @@ function SettingsPage() {
           {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
           <PreferredModelPicker />
         </section>
+        )}
 
-        <AssistantSection />
-        <IntegrationsSection />
-        <ApiKeysSection />
+        {tab === 'assistant' && <AssistantSection />}
+        {tab === 'connections' && <IntegrationsSection />}
+        {tab === 'keys' && <ApiKeysSection />}
       </div>
     </div>
   )
@@ -181,12 +208,11 @@ function IntegrationsSection() {
   }
 
   return (
-    <section className="mercury-panel mt-6 rounded-2xl p-6">
-      <div className="mb-2 text-sm font-semibold text-fg">Connected accounts</div>
-      <p className="mb-4 text-xs text-muted">
-        Connect Google to export docs and sheets into your Drive, and let the agents working for you build Google
-        Docs on your behalf.
-      </p>
+    <section className="mercury-panel rounded-2xl p-6">
+      <div className="mb-4 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Connected accounts</span>
+        <InfoTip text="Connect Google to export docs and sheets into your Drive, and let the agents working for you build Google Docs on your behalf." />
+      </div>
 
       {data && !data.available ? (
         <div className="text-xs text-muted">Google integration isn’t configured on this server yet.</div>
@@ -272,12 +298,11 @@ function ApiKeysSection() {
   }
 
   return (
-    <section className="mercury-panel mt-6 rounded-2xl p-6">
-      <div className="mb-2 text-sm font-semibold text-fg">API keys · Talaria LLM gateway</div>
-      <p className="mb-4 text-xs text-muted">
-        Connect external tools to the org's model stack: base URL <code className="text-[11px]">{baseUrl}</code>,
-        any model from <code className="text-[11px]">/models</code> (or <code className="text-[11px]">endpoint/model</code> to pin a backend).
-      </p>
+    <section className="mercury-panel rounded-2xl p-6">
+      <div className="mb-4 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">API keys</span>
+        <InfoTip text={`Connect external tools to the org's model stack: base URL ${baseUrl}, any model from /models (or endpoint/model to pin a backend).`} />
+      </div>
 
       {keys.length > 0 && (
         <div className="mb-4 divide-y divide-line-subtle">

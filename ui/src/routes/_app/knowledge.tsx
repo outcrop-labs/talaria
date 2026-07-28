@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { SkeletonRows } from '@/components/ui/skeleton'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -54,7 +55,7 @@ export const Route = createFileRoute('/_app/knowledge')({
 // agent-kind docs start from an OKF scaffold.
 function KnowledgePage() {
   const qc = useQueryClient()
-  const { data: spaces = [] } = useSpaces()
+  const { data: spaces = [], isLoading: spacesLoading } = useSpaces()
   const [spaceId, setSpaceId] = useState<string | null>(null)
   const [docId, setDocId] = useState<string | null>(null)
   const [creatingSpace, setCreatingSpace] = useState(false)
@@ -102,7 +103,7 @@ function KnowledgePage() {
 
   return (
     <div className="flex h-full min-h-0">
-      <aside className="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar">
+      <aside className="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar font-sans">
         <div className="flex h-12 shrink-0 items-center gap-1.5 border-b border-line-subtle px-4">
           <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg">Knowledge</span>
           <IconButton size="sm" title="New space" onClick={() => setCreatingSpace((v) => !v)}>
@@ -130,7 +131,9 @@ function KnowledgePage() {
           </div>
         )}
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {spaces.length === 0 ? (
+          {spacesLoading ? (
+            <SkeletonRows rows={6} className="px-2 py-3" />
+          ) : spaces.length === 0 ? (
             <div className="px-2 py-6 text-center text-xs text-muted">No spaces yet.</div>
           ) : (
             spaces.map((s) => (
@@ -590,7 +593,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
             placeholder="Space name"
           />
         ) : (
-          <h1 className="min-w-0 flex-1 truncate text-xl font-semibold text-fg">{space.name}</h1>
+          <h1 className="min-w-0 flex-1 truncate font-sans text-xl font-semibold text-fg">{space.name}</h1>
         )}
         <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">Folder</span>
         <div className="flex shrink-0 rounded-md border border-line p-0.5">
@@ -675,7 +678,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
             ) : (
               <div className="space-y-0.5">
                 {headings.map((h, i) => (
-                  <button key={i} type="button" onClick={() => scrollToHeading(i)} className="block w-full truncate text-left text-xs text-muted hover:text-fg" style={{ paddingLeft: (h.level - 1) * 10 }}>
+                  <button key={i} type="button" onClick={() => scrollToHeading(i)} className="block w-full truncate text-left font-sans text-xs text-muted hover:text-fg" style={{ paddingLeft: (h.level - 1) * 10 }}>
                     {h.text || 'Untitled'}
                   </button>
                 ))}
@@ -829,7 +832,7 @@ function DocEditor({
             <button
               type="button"
               onClick={() => d.id !== docId && onSelect(d.id)}
-              className={cn('max-w-[12rem] truncate', d.id === docId ? 'text-fg' : 'hover:text-fg')}
+              className={cn('max-w-[12rem] truncate font-sans', d.id === docId ? 'text-fg' : 'hover:text-fg')}
             >
               {d.icon ? `${d.icon} ` : ''}
               {d.title}
@@ -875,7 +878,7 @@ function DocEditor({
             placeholder="Untitled"
           />
         ) : (
-          <h1 className="min-w-0 flex-1 truncate text-lg font-semibold text-fg">{doc.title}</h1>
+          <h1 className="min-w-0 flex-1 truncate font-sans text-lg font-semibold text-fg">{doc.title}</h1>
         )}
         {doc.kind === 'agent' && <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">OKF</span>}
         {/* Read / Edit toggle — authored docs open in read mode. */}
@@ -1014,7 +1017,7 @@ function DocEditor({
                     key={i}
                     type="button"
                     onClick={() => scrollToHeading(i)}
-                    className="block w-full truncate text-left text-xs text-muted hover:text-fg"
+                    className="block w-full truncate text-left font-sans text-xs text-muted hover:text-fg"
                     style={{ paddingLeft: (h.level - 1) * 10 }}
                   >
                     {h.text || 'Untitled'}

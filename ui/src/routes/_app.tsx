@@ -4,6 +4,7 @@ import { Brand } from '@/components/brand'
 import { MercuryBackdrop } from '@/components/mercury-backdrop'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { NavRail } from '@/components/app/nav-rail'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { Avatar } from '@/components/ui/avatar'
 import { useDeniedViews, useLogout, useSession, type SessionUser } from '@/lib/session'
 import { ADMIN_VIEWS } from '@/lib/nav'
@@ -35,10 +36,41 @@ function AppLayout() {
   }, [user, denied, pathname, navigate])
 
   if (isLoading || !user) {
+    // The session gate used to blank the WHOLE app ("no content, then BAM").
+    // Render the real chrome immediately — brand, header, a skeleton nav and
+    // page — so the frame is stable and only content fills in.
     return (
       <>
         <MercuryBackdrop />
-        <div className="grid min-h-screen place-items-center text-sm text-muted">Loading</div>
+        <div className="flex h-screen flex-col">
+          <header className="relative z-40 flex items-center justify-between gap-3 border-b border-line-subtle px-6 py-3 backdrop-blur">
+            <Brand />
+            <Skeleton className="h-8 w-8 rounded-full" />
+          </header>
+          <div className="flex min-h-0 flex-1">
+            <nav className="flex h-full w-56 shrink-0 flex-col gap-6 overflow-y-auto border-r border-line-subtle bg-sidebar px-3 py-5">
+              {[0, 1, 2].map((g) => (
+                <div key={g} className="space-y-2 px-2">
+                  <Skeleton className="h-2 w-14 rounded-full" delay={g * 0.1} />
+                  <SkeletonRows rows={4} />
+                </div>
+              ))}
+            </nav>
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden p-8">
+              <div className="mx-auto max-w-6xl space-y-6">
+                <Skeleton className="h-6 w-64 rounded-full" />
+                <div className="grid gap-4 xl:grid-cols-3">
+                  {[0, 1, 2].map((i) => (
+                    <div key={i} className="mercury-panel rounded-2xl p-6">
+                      <Skeleton className="mb-4 h-3 w-24 rounded-full" delay={i * 0.1} />
+                      <SkeletonRows rows={4} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </>
     )
   }

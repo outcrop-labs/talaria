@@ -1,6 +1,7 @@
 import { useNavigate } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
 import { Panel } from '@/components/ui/panel'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useMarkNotificationsRead, useNotifications, type Notification } from '@/lib/notifications'
@@ -20,7 +21,17 @@ export function NotificationsPanel() {
     if (n.href) void navigate({ to: n.href })
   }
 
-  if (items.length === 0) return null // a quiet inbox takes no space
+  // In flight → hold a modest space at the top of the page (this panel leads
+  // the column, so popping in late shoves EVERYTHING down). Resolved empty →
+  // null: a quiet inbox takes no space.
+  if (!data)
+    return (
+      <Panel>
+        <Skeleton className="mb-3 h-3 w-28 rounded-full" />
+        <SkeletonRows rows={2} />
+      </Panel>
+    )
+  if (items.length === 0) return null
 
   return (
     <Panel>
@@ -46,7 +57,7 @@ export function NotificationsPanel() {
             >
               <div className="flex items-baseline gap-2">
                 {!n.readAt && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
-                <span className={cn('min-w-0 flex-1 truncate text-sm', n.readAt ? 'text-muted' : 'font-medium text-fg')}>
+                <span className={cn('min-w-0 flex-1 truncate font-sans text-sm', n.readAt ? 'text-muted' : 'font-medium text-fg')}>
                   {n.title}
                 </span>
                 <span className="shrink-0 text-xs text-muted">{relativeTime(n.createdAt)}</span>
