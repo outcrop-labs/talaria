@@ -12,6 +12,53 @@ import { CodeBlock } from '@/components/ui/code-block'
 // (react-markdown's safe default), so no sanitization plumbing is needed.
 // Mercury-styled via semantic utilities. Reuse — do not re-render markdown inline.
 
+// ── @mention highlighting ────────────────────────────────────────────────────
+// Same token shape the server notifies on (mentions.ts) plus the channel
+// `:tier` suffix; requires a boundary before the @ so emails don't match.
+// Matched tokens become `mention:` links, which the `a` component renders as
+// a styled span — one plugin, every markdown surface at once. Text nodes
+// never occur inside code/inlineCode in mdast, so code is inherently safe.
+const MENTION_RE = /(^|[\s(])@([a-z0-9][a-z0-9-]*(?::[a-z0-9-]+)?)/gi
+
+interface MdNode {
+  type: string
+  value?: string
+  url?: string
+  children?: MdNode[]
+}
+
+function remarkMentions() {
+  return (tree: MdNode) => {
+    const walk = (node: MdNode): void => {
+      if (!node.children) return
+      const next: MdNode[] = []
+      for (const child of node.children) {
+        if (child.type === 'text' && child.value?.includes('@')) {
+          const parts: MdNode[] = []
+          let last = 0
+          MENTION_RE.lastIndex = 0
+          for (let m = MENTION_RE.exec(child.value); m; m = MENTION_RE.exec(child.value)) {
+            const start = m.index + m[1]!.length
+            if (start > last) parts.push({ type: 'text', value: child.value.slice(last, start) })
+            parts.push({ type: 'link', url: `mention:${m[2]}`, children: [{ type: 'text', value: `@${m[2]}` }] })
+            last = start + m[2]!.length + 1
+          }
+          if (parts.length) {
+            if (last < child.value.length) parts.push({ type: 'text', value: child.value.slice(last) })
+            next.push(...parts)
+            continue
+          }
+        }
+        // Don't descend into links — a nested link is invalid mdast.
+        if (child.type !== 'link') walk(child)
+        next.push(child)
+      }
+      node.children = next
+    }
+    walk(tree)
+  }
+}
+
 function nodeText(node: ReactNode): string {
   if (typeof node === 'string' || typeof node === 'number') return String(node)
   if (Array.isArray(node)) return node.map(nodeText).join('')
@@ -47,11 +94,14 @@ const components: Partial<Components> = {
   h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-base font-semibold text-fg first:mt-0">{children}</h3>,
   h4: ({ children }) => <h4 className="mb-1.5 mt-3 text-sm font-semibold text-fg first:mt-0">{children}</h4>,
   p: ({ children }) => <p className="leading-relaxed text-fg">{children}</p>,
-  a: ({ children, href }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent underline decoration-[var(--theme-accent-border)] underline-offset-2 hover:decoration-accent">
-      {children}
-    </a>
-  ),
+  a: ({ children, href }) =>
+    href?.startsWith('mention:') ? (
+      <span className="rounded bg-[color:var(--theme-accent)]/10 px-1 font-medium text-accent">{children}</span>
+    ) : (
+      <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent underline decoration-[var(--theme-accent-border)] underline-offset-2 hover:decoration-accent">
+        {children}
+      </a>
+    ),
   ul: ({ children }) => <ul className="my-1 ml-5 list-disc space-y-1 marker:text-muted">{children}</ul>,
   ol: ({ children }) => <ol className="my-1 ml-5 list-decimal space-y-1 marker:text-muted">{children}</ol>,
   li: ({ children }) => <li className="leading-relaxed text-fg">{children}</li>,
@@ -85,7 +135,7 @@ export const Markdown = memo(function Markdown({ children, className }: { childr
   return (
     <div className={cn('space-y-2 break-words', className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={[remarkGfm, remarkBreaks, remarkMentions]}
         rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
         components={components}
       >

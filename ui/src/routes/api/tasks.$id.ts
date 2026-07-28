@@ -3,7 +3,9 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
+import { boardAllowsAgent, boardRole, canEdit, listMembers } from '@/server/boards'
+import { notifyMentions } from '@/server/mentions'
+import { describeAgent } from '@/server/gateway'
 import { deleteTask, getTask, getTaskFull, listComments, EFFORTS, PRIORITIES, TASK_STATUSES, updateTask, type TaskPatch } from '@/server/tasks'
 import { resolveAttachments } from '@/server/uploads'
 import { resolveRefs } from '@/server/refs'
@@ -100,6 +102,21 @@ export const Route = createFileRoute('/api/tasks/$id')({
         // Keep the activity brain fresh when the ticket's text changed.
         if (updated && (parsed.data.title !== undefined || parsed.data.description !== undefined)) {
           void indexTicket(updated).catch(() => {})
+        }
+        // A description that gains an @mention notifies board members — same
+        // contract as comments. Only on actual change, never on other patches.
+        if (updated && parsed.data.description !== undefined && parsed.data.description !== task.description) {
+          void (async () => {
+            const members = await listMembers(task.boardId)
+            await notifyMentions(
+              members,
+              sessionUser?.id ?? '',
+              sessionUser ? (sessionUser.name ?? actor) : describeAgent(actor).label,
+              parsed.data.description ?? '',
+              updated.ticketRef ?? 'a ticket',
+              `/boards/${task.boardId}/${task.id}`,
+            )
+          })().catch(() => {})
         }
         // Reliability gate: when work lands in quality_review, run the QA judge
         // (advisory) in the background so the human reviewer gets a verdict.

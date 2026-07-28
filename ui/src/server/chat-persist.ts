@@ -16,7 +16,7 @@ import {
 import { routedModelFor } from './fleet-agents'
 import { estimateTokens, recordUsage } from './usage'
 import { guardChatReply, needsRedaction, redactSecrets } from './guardrails'
-import { PLAN_MODE_PROMPT } from './plan-doc'
+import { notifyPlanMentions, PLAN_MODE_PROMPT } from './plan-doc'
 import { describeAgent, proxyChat } from './gateway'
 import { indexActivity } from './retrieval/sources'
 
@@ -122,6 +122,13 @@ export async function persistAssistantStream(
         payload: { planId: conversationId, planOwnerId: usageMeta.plan.ownerUserId },
         href: '/plan',
       }).catch(() => {})
+      // An agent turn @mentioning a collaborator notifies like a human one.
+      void notifyPlanMentions(
+        conversationId,
+        { id: '', label: describeAgent(usageMeta.agentModel).label },
+        content,
+        usageMeta.plan.title,
+      ).catch(() => {})
     }
     // Messages queued while this reply streamed become the next turn.
     if (usageMeta) {
