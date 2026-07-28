@@ -8,7 +8,9 @@ import { Input } from '@/components/ui/input'
 import { submitOnEnter } from '@/components/ui/control'
 import { Modal } from '@/components/ui/modal'
 import { Generating } from '@/components/ui/generating'
+import { cn } from '@/lib/cn'
 import { Panel } from '@/components/ui/panel'
+import { InfoTip } from '@/components/ui/info-tip'
 import { Select } from '@/components/ui/select'
 import { Skeleton, SkeletonCard, SkeletonRows } from '@/components/ui/skeleton'
 import { Combobox } from '@/components/ui/combobox'
@@ -30,14 +32,30 @@ import type { LlmEndpoint } from '@/lib/fleet-defs'
 
 export const Route = createFileRoute('/_app/models')({
   component: ModelsPage,
+  // /models?tab=roles deep-links a tab.
+  validateSearch: (search: Record<string, unknown>): { tab?: ModelsTab } => {
+    const t = MODEL_TABS.find((v) => v.id === search.tab)
+    return t && t.id !== 'models' ? { tab: t.id } : {}
+  },
 })
 
 // The model-backend registry: providers + the models each offers. Agents'
 // tiers pick from these catalogs; the class (local/cloud) drives the cost split.
+const MODEL_TABS = [
+  { id: 'models', label: 'Models' },
+  { id: 'roles', label: 'Roles' },
+  { id: 'access', label: 'Access' },
+] as const
+type ModelsTab = (typeof MODEL_TABS)[number]['id']
+
 function ModelsPage() {
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
   const { data: endpoints = [], isPending: endpointsPending } = useEndpoints(isAdmin)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const tab: ModelsTab = search.tab ?? 'models'
+  const setTab = (t: ModelsTab) => void navigate({ search: t === 'models' ? {} : { tab: t } })
   const [adding, setAdding] = useState(false)
   // A just-added provider: jump straight into its manage modal so models get
   // picked from the provider's live catalog (endpoints start with none).
@@ -51,39 +69,51 @@ function ModelsPage() {
 
   return (
     <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto max-w-4xl space-y-8">
+      <div className="mx-auto max-w-4xl space-y-6">
         <div className="flex items-center gap-3">
           <h1 className="mercury-text text-2xl font-semibold">Models</h1>
-          <Button size="sm" className="ml-auto" onClick={() => setAdding(true)}>
-            Add provider
-          </Button>
+          {tab === 'models' && (
+            <Button size="sm" className="ml-auto" onClick={() => setAdding(true)}>
+              Add provider
+            </Button>
+          )}
         </div>
 
-        {endpointsPending ? (
-          // Provider-card skeletons while the registry loads; the EmptyState
-          // only renders once the query has RESOLVED empty.
-          <div className="space-y-3">
-            <SkeletonCard />
-            <SkeletonCard delay={0.15} />
-          </div>
-        ) : endpoints.length === 0 ? (
-          <EmptyState
-            icon="▤"
-            title="No model backends yet"
-            hint="Add a provider, or import your stack on the Agents page to seed them."
-            action={<Button size="sm" onClick={() => setAdding(true)}>Add provider</Button>}
-          />
-        ) : (
-          <>
-            <Section title="Self-hosted: your hardware & on-prem" endpoints={local} />
-            <Section title="Cloud" endpoints={cloud} />
-          </>
-        )}
+        <div className="flex gap-1 border-b border-line-subtle">
+          {MODEL_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={cn('relative px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
+            >
+              {t.label}
+              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
+            </button>
+          ))}
+        </div>
 
-        {/* These panels load their own data — the endpoint registry must not
-            gate them, so they mount and fill in independently. */}
-        <ModelRolesPanel />
-        <MemberAccessPanel />
+        {tab === 'models' &&
+          (endpointsPending ? (
+            <div className="space-y-3">
+              <SkeletonCard />
+              <SkeletonCard delay={0.15} />
+            </div>
+          ) : endpoints.length === 0 ? (
+            <EmptyState
+              icon="▤"
+              title="No model backends yet"
+              hint="Add a provider, or import your stack on the Agents page to seed them."
+              action={<Button size="sm" onClick={() => setAdding(true)}>Add provider</Button>}
+            />
+          ) : (
+            <>
+              <Section title="Self-hosted: your hardware & on-prem" endpoints={local} />
+              <Section title="Cloud" endpoints={cloud} />
+            </>
+          ))}
+        {tab === 'roles' && <ModelRolesPanel />}
+        {tab === 'access' && <MemberAccessPanel />}
 
         {adding && <AddProviderModal open={adding} onClose={() => setAdding(false)} onAdded={setManageId} />}
         {managing && <EndpointModal ep={managing} onClose={() => setManageId(null)} />}
@@ -254,7 +284,7 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
               </Button>
             )}
           </div>
-          <p className="mt-1 text-xs text-muted">Encrypted with the Talaria secret (AES-256-GCM). Stored in the database, never in a config file.</p>
+          <InfoTip className="mt-1" text="Encrypted with the Talaria secret (AES-256-GCM). Stored in the database, never in a config file." />
         </section>
 
         {/* Models the org can use from this provider */}
@@ -436,11 +466,10 @@ function ModelRolesPanel() {
 
   return (
     <Panel>
-      <div className="mb-1 text-sm font-semibold text-fg">Model roles</div>
-      <p className="mb-3 text-xs text-muted">
-        Which model handles each class of activity. Tailor the stack in depth. Unset = auto (a sensible
-        pick from what's registered). Agents' own brains are configured per agent and unaffected.
-      </p>
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Model roles</span>
+        <InfoTip text="Which model handles each class of activity. Unset = auto (a sensible pick from what's registered). Agents' own brains are configured per agent and unaffected." />
+      </div>
       <ul className="divide-y divide-line-subtle">
         {data.roles.map((r) => (
           <li key={r.role} className="flex items-center gap-3 py-2.5">
@@ -521,11 +550,10 @@ function MemberAccessPanel() {
 
   return (
     <Panel>
-      <div className="mb-1 text-sm font-semibold text-fg">Member access</div>
-      <p className="mb-3 text-xs text-muted">
-        Which models non-admins may pick for AI drafting and as their preferred model. Keep the expensive or
-        powerful ones for deliberate, admin-configured use. Agents' own brains are set per agent and unaffected.
-      </p>
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Member access</span>
+        <InfoTip text="Which models non-admins may pick for AI drafting and as their preferred model. Keep the expensive ones for deliberate, admin-configured use. Agents' own brains are set per agent and unaffected." />
+      </div>
       {catalogPending || settingsPending ? (
         // The restrict toggle and the list both seed from these queries — hold
         // them with skeletons so the checkbox never flips after load.
@@ -688,23 +716,23 @@ function AddProviderModal({ open, onClose, onAdded }: { open: boolean; onClose: 
         </div>
         {preset.configurableUrl && (
           <div>
-            <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Base URL</label>
+            <label className="mb-1 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+              Base URL
+              <InfoTip text="LAN and loopback hosts count as self-hosted in the cost split, inferred automatically." />
+            </label>
             <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={preset.baseUrl ?? 'https://host/v1'} />
-            <p className="mt-1 text-xs text-muted">
-              LAN and loopback hosts count as <span style={{ color: 'var(--theme-success)' }}>self-hosted</span> in the cost split, inferred automatically.
-            </p>
           </div>
         )}
         <div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">API key</label>
           <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste the provider key" autoComplete="off" />
-          <p className="mt-1 text-xs text-muted">Stored encrypted at rest (AES-256-GCM), never written to a config file or shown again.</p>
+          <InfoTip className="mt-1" text="Stored encrypted at rest (AES-256-GCM), never written to a config file or shown again." />
         </div>
         <details>
           <summary className="cursor-pointer text-[11px] uppercase tracking-wide text-muted">Advanced: env-var fallback</summary>
           <div className="mt-2">
             <Input value={apiKeyEnv} onChange={(e) => setApiKeyEnv(e.target.value)} placeholder={preset.apiKeyEnv ?? 'MY_PROVIDER_KEY'} />
-            <p className="mt-1 text-xs text-muted">Optional: an env-var name to read the key from if none is stored above (ops override).</p>
+            <InfoTip className="mt-1" text="Optional: an env-var name to read the key from if none is stored above (ops override)." />
           </div>
         </details>
         {err && (

@@ -1,12 +1,9 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { useQuery } from '@tanstack/react-query'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
 
-export const Route = createFileRoute('/_app/alerts')({
-  component: AlertsPage,
-})
 
 type Severity = 'critical' | 'warning' | 'info'
 
@@ -37,14 +34,13 @@ function useAlerts() {
 
 // Derived health signals — computed live from container state, the gateway,
 // the token ledger, and stuck tickets. Nothing to configure, nothing stored.
-function AlertsPage() {
+export function AlertsPanel() {
   const { data: alerts = [], isLoading } = useAlerts()
   const navigate = useNavigate()
 
   return (
-    <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto max-w-4xl space-y-8">
-        <h1 className="mercury-text text-2xl font-semibold">Alerts</h1>
+    <div>
+      <div className="space-y-8">
 
         {isLoading ? (
           <SkeletonRows rows={4} avatar />

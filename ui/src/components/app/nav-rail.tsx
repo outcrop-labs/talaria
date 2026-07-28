@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { Plus, Users, Archive } from 'lucide-react'
-import { WingMark } from '@/components/brand'
 import { TeamsModal } from '@/components/board/teams-modal'
 import { CreateBoardModal } from '@/components/board/create-board-modal'
 import { alert } from '@/components/ui/confirm'
@@ -58,11 +57,6 @@ export function NavRail({ user }: { user: SessionUser }) {
           </div>
         )
       })}
-
-      <div className="mt-auto flex items-center gap-2 px-2 pt-2 text-[10px] text-muted">
-        <WingMark className="h-4 w-4" />
-        <span>Talaria</span>
-      </div>
 
       <CreateBoardModal open={creating} onClose={() => setCreating(false)} />
       <TeamsModal open={teamsOpen} onClose={() => setTeamsOpen(false)} />

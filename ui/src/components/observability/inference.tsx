@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { Link } from '@tanstack/react-router'
 import { SkeletonCard } from '@/components/ui/skeleton'
 import { useQuery } from '@tanstack/react-query'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -9,9 +9,6 @@ import { formatTokens } from '@/lib/cost'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
 
-export const Route = createFileRoute('/_app/inference')({
-  component: InferencePage,
-})
 
 interface LocalBackend {
   id: string
@@ -110,17 +107,16 @@ function LiveSection({ live }: { live: InferenceLive }) {
 
 // The inference plane, live: what's generating right now, the gateway's pulse,
 // fleet container temperature — then the self-hosted backends underneath.
-function InferencePage() {
+export function ComputePanel() {
   const { data: session } = useSession()
   const { data, isLoading } = useInference()
   const backends = data?.backends ?? []
   const live = data?.live
 
   return (
-    <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto max-w-4xl space-y-8">
+    <div>
+      <div className="space-y-8">
         <div className="flex items-center gap-3">
-          <h1 className="mercury-text text-2xl font-semibold">Inference</h1>
           {session?.role === 'admin' && (
             <Link to="/models" className="ml-auto text-sm text-accent hover:underline">
               Configure on Models →

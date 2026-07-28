@@ -1,4 +1,3 @@
-import { createFileRoute } from '@tanstack/react-router'
 import { SkeletonCard, SkeletonRows } from '@/components/ui/skeleton'
 import { Avatar } from '@/components/ui/avatar'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -7,13 +6,10 @@ import { StatCard } from '@/components/ui/stat-card'
 import { relativeTime } from '@/lib/fleet'
 import { agentLabel, formatCost, formatTokens, useCost, type CostOverview, type CostTotals } from '@/lib/cost'
 
-export const Route = createFileRoute('/_app/cost')({
-  component: CostPage,
-})
 
 // The token ledger: every agent generation (1:1 chat + channel replies) lands in
 // usage_events — real gateway-reported counts, or char-based estimates (~).
-function CostPage() {
+export function CostPanel() {
   const { data, isLoading } = useCost()
   const t = data?.totals
   const perAgent = data?.perAgent ?? []
@@ -23,9 +19,8 @@ function CostPage() {
   const total = (x?: CostTotals) => (x ? x.prompt + x.completion : 0)
 
   return (
-    <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto max-w-5xl space-y-8">
-        <h1 className="mercury-text text-2xl font-semibold">Cost</h1>
+    <div>
+      <div className="space-y-8">
 
         {isLoading ? (
           <>

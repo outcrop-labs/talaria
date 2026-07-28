@@ -44,20 +44,17 @@ import { Route as ASlugRouteImport } from './routes/a.$slug'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppResearchRouteImport } from './routes/_app/research'
 import { Route as AppPlanRouteImport } from './routes/_app/plan'
+import { Route as AppObservabilityRouteImport } from './routes/_app/observability'
 import { Route as AppModelsRouteImport } from './routes/_app/models'
 import { Route as AppKnowledgeRouteImport } from './routes/_app/knowledge'
-import { Route as AppInferenceRouteImport } from './routes/_app/inference'
 import { Route as AppInboxRouteImport } from './routes/_app/inbox'
 import { Route as AppFleetRouteImport } from './routes/_app/fleet'
-import { Route as AppCostRouteImport } from './routes/_app/cost'
 import { Route as AppCommsRouteImport } from './routes/_app/comms'
 import { Route as AppChatRouteImport } from './routes/_app/chat'
 import { Route as AppChannelsRouteImport } from './routes/_app/channels'
 import { Route as AppArtifactsRouteImport } from './routes/_app/artifacts'
-import { Route as AppAlertsRouteImport } from './routes/_app/alerts'
 import { Route as AppAgentsRouteImport } from './routes/_app/agents'
 import { Route as AppAdminRouteImport } from './routes/_app/admin'
-import { Route as AppActivityRouteImport } from './routes/_app/activity'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as KbSpaceSlugRouteImport } from './routes/kb.space.$slug'
 import { Route as ApiUploadsIdRouteImport } from './routes/api/uploads.$id'
@@ -347,6 +344,11 @@ const AppPlanRoute = AppPlanRouteImport.update({
   path: '/plan',
   getParentRoute: () => AppRoute,
 } as any)
+const AppObservabilityRoute = AppObservabilityRouteImport.update({
+  id: '/observability',
+  path: '/observability',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppModelsRoute = AppModelsRouteImport.update({
   id: '/models',
   path: '/models',
@@ -357,11 +359,6 @@ const AppKnowledgeRoute = AppKnowledgeRouteImport.update({
   path: '/knowledge',
   getParentRoute: () => AppRoute,
 } as any)
-const AppInferenceRoute = AppInferenceRouteImport.update({
-  id: '/inference',
-  path: '/inference',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppInboxRoute = AppInboxRouteImport.update({
   id: '/inbox',
   path: '/inbox',
@@ -370,11 +367,6 @@ const AppInboxRoute = AppInboxRouteImport.update({
 const AppFleetRoute = AppFleetRouteImport.update({
   id: '/fleet',
   path: '/fleet',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppCostRoute = AppCostRouteImport.update({
-  id: '/cost',
-  path: '/cost',
   getParentRoute: () => AppRoute,
 } as any)
 const AppCommsRoute = AppCommsRouteImport.update({
@@ -397,11 +389,6 @@ const AppArtifactsRoute = AppArtifactsRouteImport.update({
   path: '/artifacts',
   getParentRoute: () => AppRoute,
 } as any)
-const AppAlertsRoute = AppAlertsRouteImport.update({
-  id: '/alerts',
-  path: '/alerts',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppAgentsRoute = AppAgentsRouteImport.update({
   id: '/agents',
   path: '/agents',
@@ -410,11 +397,6 @@ const AppAgentsRoute = AppAgentsRouteImport.update({
 const AppAdminRoute = AppAdminRouteImport.update({
   id: '/admin',
   path: '/admin',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppActivityRoute = AppActivityRouteImport.update({
-  id: '/activity',
-  path: '/activity',
   getParentRoute: () => AppRoute,
 } as any)
 const AppBoardsIndexRoute = AppBoardsIndexRouteImport.update({
@@ -1009,20 +991,17 @@ const ApiFleetAgentsIdCronsJobIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
-  '/activity': typeof AppActivityRoute
   '/admin': typeof AppAdminRoute
   '/agents': typeof AppAgentsRoute
-  '/alerts': typeof AppAlertsRoute
   '/artifacts': typeof AppArtifactsRoute
   '/channels': typeof AppChannelsRoute
   '/chat': typeof AppChatRoute
   '/comms': typeof AppCommsRoute
-  '/cost': typeof AppCostRoute
   '/fleet': typeof AppFleetRoute
   '/inbox': typeof AppInboxRoute
-  '/inference': typeof AppInferenceRoute
   '/knowledge': typeof AppKnowledgeRoute
   '/models': typeof AppModelsRoute
+  '/observability': typeof AppObservabilityRoute
   '/plan': typeof AppPlanRoute
   '/research': typeof AppResearchRoute
   '/settings': typeof AppSettingsRoute
@@ -1172,20 +1151,17 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
-  '/activity': typeof AppActivityRoute
   '/admin': typeof AppAdminRoute
   '/agents': typeof AppAgentsRoute
-  '/alerts': typeof AppAlertsRoute
   '/artifacts': typeof AppArtifactsRoute
   '/channels': typeof AppChannelsRoute
   '/chat': typeof AppChatRoute
   '/comms': typeof AppCommsRoute
-  '/cost': typeof AppCostRoute
   '/fleet': typeof AppFleetRoute
   '/inbox': typeof AppInboxRoute
-  '/inference': typeof AppInferenceRoute
   '/knowledge': typeof AppKnowledgeRoute
   '/models': typeof AppModelsRoute
+  '/observability': typeof AppObservabilityRoute
   '/plan': typeof AppPlanRoute
   '/research': typeof AppResearchRoute
   '/settings': typeof AppSettingsRoute
@@ -1338,20 +1314,17 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
-  '/_app/activity': typeof AppActivityRoute
   '/_app/admin': typeof AppAdminRoute
   '/_app/agents': typeof AppAgentsRoute
-  '/_app/alerts': typeof AppAlertsRoute
   '/_app/artifacts': typeof AppArtifactsRoute
   '/_app/channels': typeof AppChannelsRoute
   '/_app/chat': typeof AppChatRoute
   '/_app/comms': typeof AppCommsRoute
-  '/_app/cost': typeof AppCostRoute
   '/_app/fleet': typeof AppFleetRoute
   '/_app/inbox': typeof AppInboxRoute
-  '/_app/inference': typeof AppInferenceRoute
   '/_app/knowledge': typeof AppKnowledgeRoute
   '/_app/models': typeof AppModelsRoute
+  '/_app/observability': typeof AppObservabilityRoute
   '/_app/plan': typeof AppPlanRoute
   '/_app/research': typeof AppResearchRoute
   '/_app/settings': typeof AppSettingsRoute
@@ -1505,20 +1478,17 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
-    | '/activity'
     | '/admin'
     | '/agents'
-    | '/alerts'
     | '/artifacts'
     | '/channels'
     | '/chat'
     | '/comms'
-    | '/cost'
     | '/fleet'
     | '/inbox'
-    | '/inference'
     | '/knowledge'
     | '/models'
+    | '/observability'
     | '/plan'
     | '/research'
     | '/settings'
@@ -1668,20 +1638,17 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
-    | '/activity'
     | '/admin'
     | '/agents'
-    | '/alerts'
     | '/artifacts'
     | '/channels'
     | '/chat'
     | '/comms'
-    | '/cost'
     | '/fleet'
     | '/inbox'
-    | '/inference'
     | '/knowledge'
     | '/models'
+    | '/observability'
     | '/plan'
     | '/research'
     | '/settings'
@@ -1833,20 +1800,17 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_app'
     | '/login'
-    | '/_app/activity'
     | '/_app/admin'
     | '/_app/agents'
-    | '/_app/alerts'
     | '/_app/artifacts'
     | '/_app/channels'
     | '/_app/chat'
     | '/_app/comms'
-    | '/_app/cost'
     | '/_app/fleet'
     | '/_app/inbox'
-    | '/_app/inference'
     | '/_app/knowledge'
     | '/_app/models'
+    | '/_app/observability'
     | '/_app/plan'
     | '/_app/research'
     | '/_app/settings'
@@ -2312,6 +2276,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppPlanRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/observability': {
+      id: '/_app/observability'
+      path: '/observability'
+      fullPath: '/observability'
+      preLoaderRoute: typeof AppObservabilityRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/models': {
       id: '/_app/models'
       path: '/models'
@@ -2326,13 +2297,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppKnowledgeRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/inference': {
-      id: '/_app/inference'
-      path: '/inference'
-      fullPath: '/inference'
-      preLoaderRoute: typeof AppInferenceRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/inbox': {
       id: '/_app/inbox'
       path: '/inbox'
@@ -2345,13 +2309,6 @@ declare module '@tanstack/react-router' {
       path: '/fleet'
       fullPath: '/fleet'
       preLoaderRoute: typeof AppFleetRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/cost': {
-      id: '/_app/cost'
-      path: '/cost'
-      fullPath: '/cost'
-      preLoaderRoute: typeof AppCostRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/comms': {
@@ -2382,13 +2339,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppArtifactsRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/alerts': {
-      id: '/_app/alerts'
-      path: '/alerts'
-      fullPath: '/alerts'
-      preLoaderRoute: typeof AppAlertsRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/agents': {
       id: '/_app/agents'
       path: '/agents'
@@ -2401,13 +2351,6 @@ declare module '@tanstack/react-router' {
       path: '/admin'
       fullPath: '/admin'
       preLoaderRoute: typeof AppAdminRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/activity': {
-      id: '/_app/activity'
-      path: '/activity'
-      fullPath: '/activity'
-      preLoaderRoute: typeof AppActivityRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/boards/': {
@@ -3223,20 +3166,17 @@ const AppBoardsBoardIdRouteWithChildren =
   AppBoardsBoardIdRoute._addFileChildren(AppBoardsBoardIdRouteChildren)
 
 interface AppRouteChildren {
-  AppActivityRoute: typeof AppActivityRoute
   AppAdminRoute: typeof AppAdminRoute
   AppAgentsRoute: typeof AppAgentsRoute
-  AppAlertsRoute: typeof AppAlertsRoute
   AppArtifactsRoute: typeof AppArtifactsRoute
   AppChannelsRoute: typeof AppChannelsRoute
   AppChatRoute: typeof AppChatRoute
   AppCommsRoute: typeof AppCommsRoute
-  AppCostRoute: typeof AppCostRoute
   AppFleetRoute: typeof AppFleetRoute
   AppInboxRoute: typeof AppInboxRoute
-  AppInferenceRoute: typeof AppInferenceRoute
   AppKnowledgeRoute: typeof AppKnowledgeRoute
   AppModelsRoute: typeof AppModelsRoute
+  AppObservabilityRoute: typeof AppObservabilityRoute
   AppPlanRoute: typeof AppPlanRoute
   AppResearchRoute: typeof AppResearchRoute
   AppSettingsRoute: typeof AppSettingsRoute
@@ -3246,20 +3186,17 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
-  AppActivityRoute: AppActivityRoute,
   AppAdminRoute: AppAdminRoute,
   AppAgentsRoute: AppAgentsRoute,
-  AppAlertsRoute: AppAlertsRoute,
   AppArtifactsRoute: AppArtifactsRoute,
   AppChannelsRoute: AppChannelsRoute,
   AppChatRoute: AppChatRoute,
   AppCommsRoute: AppCommsRoute,
-  AppCostRoute: AppCostRoute,
   AppFleetRoute: AppFleetRoute,
   AppInboxRoute: AppInboxRoute,
-  AppInferenceRoute: AppInferenceRoute,
   AppKnowledgeRoute: AppKnowledgeRoute,
   AppModelsRoute: AppModelsRoute,
+  AppObservabilityRoute: AppObservabilityRoute,
   AppPlanRoute: AppPlanRoute,
   AppResearchRoute: AppResearchRoute,
   AppSettingsRoute: AppSettingsRoute,
