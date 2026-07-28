@@ -834,6 +834,13 @@ const MIGRATIONS: string[] = [
   // streaming rows — tiny partial indexes keep that O(in-flight).
   `create index if not exists messages_streaming_idx on messages (created_at) where status = 'streaming'`,
   `create index if not exists channel_messages_streaming_idx on channel_messages (created_at) where status = 'streaming'`,
+  // Research is multiplayer like plans: members see the run + report.
+  `create table if not exists research_members (
+     run_id uuid not null references research_runs(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (run_id, user_id)
+   )`,
   // Inbox briefing: the assistant's attention summary, regenerated only when
   // the attention fingerprint actually changes.
   `create table if not exists briefings (

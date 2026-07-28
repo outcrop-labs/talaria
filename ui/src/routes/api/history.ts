@@ -5,6 +5,9 @@ import { getSessionUser } from '@/server/auth/session'
 import { getRevision, listHistory, type InternalKind } from '@/server/internal-history'
 import { listVersions } from '@/server/agent-defs'
 import { ownsAgent, personalityOf } from '@/server/personal-agent'
+import { getArtifact, guarded } from '@/server/artifacts'
+import { getDoc, getSpace, effectiveDocPerms } from '@/server/kb'
+import { canRead, listEditors } from '@/server/kb-perms'
 
 // Version history for agent internals, one API over two stores:
 //   snapshot store (internal_versions): skill, memory, kb-doc, kb-space, artifact
@@ -18,6 +21,49 @@ import { ownsAgent, personalityOf } from '@/server/personal-agent'
 // the caller never constructs the storage key. Version-backed kinds are
 // admin-or-owner: souls and configs are the agent's internals, not public.
 const SNAPSHOT_KINDS = ['skill', 'memory', 'kb-doc', 'kb-space', 'artifact', 'template'] as const
+
+/** The live item's read model, applied to its history. Fail closed. */
+async function canReadSnapshotHistory(
+  kind: InternalKind,
+  ownerKey: string,
+  user: { id: string; role: string; email: string | null; name: string | null },
+): Promise<boolean> {
+  const who = user.email ?? user.name
+  try {
+    switch (kind) {
+      case 'artifact': {
+        const a = await getArtifact(ownerKey)
+        if (!a) return false
+        return canRead(guarded(a), user.id, who, await listEditors('artifact', a.id))
+      }
+      case 'kb-doc': {
+        const d = await getDoc(ownerKey)
+        if (!d) return false
+        const { perms, grants } = await effectiveDocPerms(d)
+        return canRead(perms, user.id, who, grants)
+      }
+      case 'kb-space': {
+        const sp = await getSpace(ownerKey)
+        if (!sp) return false
+        return canRead(sp, user.id, who, await listEditors('space', sp.id))
+      }
+      case 'memory':
+        return user.role === 'admin' || (await ownsAgent(user.id, { defId: ownerKey }))
+      case 'skill': {
+        // ownerKey is "<slug>/<name>" — shared skills + org agents are
+        // admin-editable surfaces; a personal assistant's skills are its
+        // owner's business.
+        const slug = ownerKey.split('/')[0] ?? ''
+        return user.role === 'admin' || (await ownsAgent(user.id, { slug }))
+      }
+      case 'template':
+        return user.role === 'admin'
+    }
+  } catch {
+    return false
+  }
+  return false
+}
 const VERSION_KINDS = ['soul', 'config', 'personality'] as const
 type VersionKind = (typeof VERSION_KINDS)[number]
 
@@ -66,6 +112,11 @@ export const Route = createFileRoute('/api/history')({
               : null
             : q.get('id')
         if (!ownerKey) return json({ error: 'missing owner' }, { status: 400 })
+
+        // History serves FULL content — it must honor the same read model as
+        // the live item, or it's a bypass of the entire permission system.
+        const allowed = await canReadSnapshotHistory(kind as InternalKind, ownerKey, user)
+        if (!allowed) return json({ error: 'forbidden' }, { status: 403 })
 
         if (rev) {
           const content = await getRevision(kind as InternalKind, ownerKey, rev)

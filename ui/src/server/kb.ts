@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto'
 import { db } from './db/pg'
 import { snapshot } from './internal-history'
 import { syncKbDoc, unindexKbDoc } from './retrieval/sources'
-import { listEditors, type EditorGrant, type Guarded } from './kb-perms'
+import { canRead, listEditors, type EditorGrant, type Guarded } from './kb-perms'
 
 /** Resolve a doc's effective audience: when it inherits, visibility / edit
  *  policy / grants come from its folder, but ownership always stays with the
@@ -322,11 +322,15 @@ export interface KbSearchHit {
 
 /** Full-text search across everything the caller may read: docs AND the
  *  top-level space overviews (a space is itself a document). */
-export async function searchDocs(query: string, viewer: string): Promise<KbSearchHit[]> {
+/** Full-text search honoring the EFFECTIVE permission model: a doc inside a
+ *  private space is private even when its own row says 'org' (inheritance),
+ *  and explicit kb_editors grants admit their grantees. Over-fetch, then
+ *  filter with the same canRead the read routes use. */
+export async function searchDocs(query: string, viewer: { userId: string; who: string | null }): Promise<KbSearchHit[]> {
   const sql = await db()
   const q = query.trim()
   if (!q) return []
-  return (await sql`
+  const hits = (await sql`
     select * from (
       select d.id, d.space_id as "spaceId", s.name as "spaceName", d.title, d.icon, d.visibility, 'doc' as kind,
              ts_headline('english', coalesce(d.body,''), plainto_tsquery('english', ${q}),
@@ -336,8 +340,7 @@ export async function searchDocs(query: string, viewer: string): Promise<KbSearc
                plainto_tsquery('english', ${q})) as rank
       from kb_docs d
       join kb_spaces s on s.id = d.space_id
-      where (d.visibility <> 'private' or d.created_by = ${viewer})
-        and to_tsvector('english', coalesce(d.title,'') || ' ' || coalesce(d.body,''))
+      where to_tsvector('english', coalesce(d.title,'') || ' ' || coalesce(d.body,''))
             @@ plainto_tsquery('english', ${q})
       union all
       select s.id, s.id as "spaceId", s.name as "spaceName", s.name as title, s.icon, s.visibility, 'space' as kind,
@@ -347,13 +350,31 @@ export async function searchDocs(query: string, viewer: string): Promise<KbSearc
                to_tsvector('english', coalesce(s.name,'') || ' ' || coalesce(s.body,'')),
                plainto_tsquery('english', ${q})) as rank
       from kb_spaces s
-      where (s.visibility <> 'private' or s.created_by = ${viewer})
-        and to_tsvector('english', coalesce(s.name,'') || ' ' || coalesce(s.body,''))
+      where to_tsvector('english', coalesce(s.name,'') || ' ' || coalesce(s.body,''))
             @@ plainto_tsquery('english', ${q})
     ) hits
     order by rank desc
-    limit 20
+    limit 60
   `) as unknown as KbSearchHit[]
+
+  const out: KbSearchHit[] = []
+  for (const h of hits) {
+    if (out.length >= 20) break
+    try {
+      if (h.kind === 'space') {
+        const sp = await getSpace(h.id)
+        if (sp && canRead(sp, viewer.userId, viewer.who, await listEditors('space', sp.id))) out.push(h)
+      } else {
+        const d = await getDoc(h.id)
+        if (!d) continue
+        const { perms, grants } = await effectiveDocPerms(d)
+        if (canRead(perms, viewer.userId, viewer.who, grants)) out.push(h)
+      }
+    } catch {
+      /* fail closed: an unreadable hit is dropped */
+    }
+  }
+  return out
 }
 
 export interface KbBacklink {

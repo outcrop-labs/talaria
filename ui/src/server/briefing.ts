@@ -71,8 +71,10 @@ async function attentionState(userId: string, isAdmin: boolean, scope: BriefingS
 
   const runs = scope !== 'research' ? [] : ((await sql`
     select id, question, status from research_runs
-    where status in ('queued', 'running')
-       or (status = 'error' and created_at > now() - interval '7 days')
+    where (owner_user_id = ${userId}
+        or exists(select 1 from research_members rm where rm.run_id = research_runs.id and rm.user_id = ${userId}))
+      and (status in ('queued', 'running')
+        or (status = 'error' and created_at > now() - interval '7 days'))
     order by created_at desc limit 10
   `) as unknown as Array<{ id: string; question: string; status: string }>)
 

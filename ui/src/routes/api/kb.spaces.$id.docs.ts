@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { personalAssistantOwners } from '@/server/users'
 import { createDoc, getSpace, listDocs, saveDoc } from '@/server/kb'
 import { canRead, canReadAgent, grantedItemIds, grantedItemIdsForAgent, listEditors } from '@/server/kb-perms'
 
@@ -63,7 +64,9 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
             title: parsed.data.title,
             kind: 'agent',
             createdBy: name,
-            ownerUserId: null,
+            // A personal assistant's doc belongs to its owner — otherwise the
+            // human could never re-share what their assistant wrote for them.
+            ownerUserId: (await personalAssistantOwners()).get(name) ?? null,
           })
           const saved = parsed.data.body ? await saveDoc(doc.id, { body: parsed.data.body }, name) : doc
           return json({ doc: saved ?? doc })

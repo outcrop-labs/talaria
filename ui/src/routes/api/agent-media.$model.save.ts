@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { canUseAgentModel } from '@/server/users'
+import { canUseAgentModel, personalAssistantOwners } from '@/server/users'
 import { isMediaError, readAgentImage } from '@/server/agent-media'
 import { agentCategoryFolder, createArtifact, createFolder, listFolders, saveArtifact } from '@/server/artifacts'
 import { describeAgent } from '@/server/gateway'
@@ -37,6 +37,8 @@ export const Route = createFileRoute('/api/agent-media/$model/save')({
             return json({ error: 'agents can only save from their own workspace' }, { status: 403 })
           }
           actor = name
+          // A personal assistant saves media FOR ITS OWNER — owned + private.
+          ownerUserId = (await personalAssistantOwners()).get(name) ?? null
         } else {
           const user = await getSessionUser(request)
           if (!user) return json({ error: 'unauthorized' }, { status: 401 })
@@ -75,10 +77,10 @@ export const Route = createFileRoute('/api/agent-media/$model/save')({
             storageRef: upload.id,
             contentType: media.mime,
             folderId,
-            // Agent-saved media is for the TEAM (a private no-owner artifact
-            // would be invisible to humans); people keep the private default
-            // and share deliberately.
-            ...(agentActor ? { visibility: 'org' as const } : {}),
+            // ORG-agent media is for the TEAM (a private no-owner artifact
+            // would be invisible to humans). A personal assistant's media
+            // belongs to its owner — private, shareable by the human.
+            ...(agentActor && !ownerUserId ? { visibility: 'org' as const } : {}),
           },
           actor,
         )

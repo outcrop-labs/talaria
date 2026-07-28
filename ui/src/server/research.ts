@@ -19,6 +19,7 @@
 // brain so future chats/plans can retrieve it.
 import { parseAgentStream } from '@/lib/sse-parse'
 import { agentCategoryFolder, attachArtifact, createArtifact, saveArtifact } from './artifacts'
+import { setEditors } from './kb-perms'
 import { db } from './db/pg'
 import { describeAgent, proxyChat } from './gateway'
 import { buildUpstream, fetchUpstream, gatewayModels, recordGatewayUsage, resolveRoute } from './llm-gateway'
@@ -233,10 +234,74 @@ const ROW = `id, owner_user_id as "ownerUserId", requested_by as "requestedBy", 
   mode, question, status, phase, artifact_id as "artifactId", error, stats,
   created_at as "createdAt", updated_at as "updatedAt", completed_at as "completedAt"`
 
-export async function listResearchRuns(limit = 60): Promise<ResearchRun[]> {
+/** Runs a viewer may see: their own, ones shared with them, and org runs
+ *  (no owner — general agents researching for the org). null viewer (a
+ *  general agent) sees org runs only. */
+export async function listResearchRuns(viewerUserId: string | null, limit = 60): Promise<ResearchRun[]> {
   const sql = await db()
   await sweepStale()
-  return (await sql.unsafe(`select ${ROW} from research_runs order by created_at desc limit $1`, [limit])) as unknown as ResearchRun[]
+  if (viewerUserId === null) {
+    return (await sql.unsafe(`select ${ROW} from research_runs where owner_user_id is null order by created_at desc limit $1`, [limit])) as unknown as ResearchRun[]
+  }
+  return (await sql.unsafe(
+    `select ${ROW} from research_runs
+     where owner_user_id is null or owner_user_id = $1
+        or exists(select 1 from research_members rm where rm.run_id = research_runs.id and rm.user_id = $1)
+     order by created_at desc limit $2`,
+    [viewerUserId, limit],
+  )) as unknown as ResearchRun[]
+}
+
+/** The viewer's standing on a run: owner, member (incl. org runs), or none. */
+export async function researchRole(viewerUserId: string | null, runId: string): Promise<'owner' | 'member' | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select owner_user_id as "ownerUserId",
+           exists(select 1 from research_members rm where rm.run_id = research_runs.id and rm.user_id = ${viewerUserId}) as member
+    from research_runs where id = ${runId}
+  `) as unknown as Array<{ ownerUserId: string | null; member: boolean }>
+  const r = rows[0]
+  if (!r) return null
+  if (r.ownerUserId === null) return 'member' // org run — anyone signed in
+  if (viewerUserId && r.ownerUserId === viewerUserId) return 'owner'
+  return r.member ? 'member' : null
+}
+
+export interface ResearchMember {
+  userId: string
+  name: string | null
+  email: string | null
+  role: 'owner' | 'collaborator'
+}
+
+export async function listResearchMembers(runId: string): Promise<ResearchMember[]> {
+  const sql = await db()
+  return (await sql`
+    select u.id as "userId", u.name, u.email, 'owner' as role
+    from research_runs r join users u on u.id = r.owner_user_id where r.id = ${runId}
+    union all
+    select u.id as "userId", u.name, u.email, 'collaborator' as role
+    from research_members rm join users u on u.id = rm.user_id where rm.run_id = ${runId}
+  `) as unknown as ResearchMember[]
+}
+
+export async function addResearchMember(runId: string, userId: string): Promise<void> {
+  const sql = await db()
+  await sql`insert into research_members (run_id, user_id) values (${runId}, ${userId}) on conflict do nothing`
+}
+
+export async function removeResearchMember(runId: string, userId: string): Promise<void> {
+  const sql = await db()
+  await sql`delete from research_members where run_id = ${runId} and user_id = ${userId}`
+}
+
+/** The run's report artifact (via artifact_links), if it exists yet. */
+export async function researchArtifactFor(runId: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select artifact_id as id from artifact_links where target_type = 'research' and target_id = ${runId} limit 1
+  `) as unknown as Array<{ id: string }>
+  return rows[0]?.id ?? null
 }
 
 export async function getResearchRun(id: string): Promise<{ run: ResearchRun; sources: ResearchSource[] } | null> {
@@ -369,8 +434,10 @@ async function runResearch(runId: string): Promise<void> {
     const body = `${cleaned}\n\n## Sources\n\n${sourcesMd}\n`
     const title = cleaned.match(/^# (.+)$/m)?.[1]?.trim() ?? `Research — ${question.slice(0, 80)}`
 
-    // The report is a real artifact: org-visible research is the point.
-    // Filed under the researching agent's cabinet.
+    // The report is a real artifact, filed under the researching agent's
+    // cabinet. Ownership decides reach: an ORG run (no owner) publishes
+    // org-visible; a user's run stays PRIVATE to them, with members granted
+    // editor on the doc — sharing the run is the only way anyone else sees it.
     const artifact = await createArtifact({
       kind: 'doc',
       title,
@@ -378,7 +445,13 @@ async function runResearch(runId: string): Promise<void> {
       ownerUserId,
       folderId: await agentCategoryFolder(agentLabel, 'Research', requestedBy),
     })
-    await saveArtifact(artifact.id, { body, visibility: 'org' }, agentLabel)
+    await saveArtifact(artifact.id, { body, visibility: ownerUserId ? 'private' : 'org' }, agentLabel)
+    if (ownerUserId) {
+      const members = (await sql`select user_id as id from research_members where run_id = ${runId}`) as unknown as Array<{ id: string }>
+      if (members.length) {
+        await setEditors('artifact', artifact.id, members.map((m) => ({ principalType: 'user' as const, principalId: m.id, role: 'editor' as const }))).catch(() => {})
+      }
+    }
     await attachArtifact(artifact.id, { targetType: 'research', targetId: runId }, agentLabel)
 
     for (const s of registry.list()) {

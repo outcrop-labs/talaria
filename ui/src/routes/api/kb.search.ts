@@ -11,8 +11,7 @@ export const Route = createFileRoute('/api/kb/search')({
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         const q = new URL(request.url).searchParams.get('q') ?? ''
-        const viewer = user.email ?? user.name ?? ''
-        return json({ hits: await searchDocs(q, viewer) })
+        return json({ hits: await searchDocs(q, { userId: user.id, who: user.email ?? user.name }) })
       },
     },
   },

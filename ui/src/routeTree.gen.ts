@@ -112,6 +112,7 @@ import { Route as ApiTasksIdReviewRouteImport } from './routes/api/tasks.$id.rev
 import { Route as ApiTasksIdDependenciesRouteImport } from './routes/api/tasks.$id.dependencies'
 import { Route as ApiTasksIdCommentsRouteImport } from './routes/api/tasks.$id.comments'
 import { Route as ApiSkillsOwnerNameRouteImport } from './routes/api/skills.$owner.$name'
+import { Route as ApiResearchIdMembersRouteImport } from './routes/api/research.$id.members'
 import { Route as ApiRagCollectionsIdRouteImport } from './routes/api/rag.collections.$id'
 import { Route as ApiPlansIdMembersRouteImport } from './routes/api/plans.$id.members'
 import { Route as ApiPlanIdDraftRouteImport } from './routes/api/plan.$id.draft'
@@ -685,6 +686,11 @@ const ApiSkillsOwnerNameRoute = ApiSkillsOwnerNameRouteImport.update({
   path: '/$owner/$name',
   getParentRoute: () => ApiSkillsRoute,
 } as any)
+const ApiResearchIdMembersRoute = ApiResearchIdMembersRouteImport.update({
+  id: '/members',
+  path: '/members',
+  getParentRoute: () => ApiResearchIdRoute,
+} as any)
 const ApiRagCollectionsIdRoute = ApiRagCollectionsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -1084,7 +1090,7 @@ export interface FileRoutesByFullPath {
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
-  '/api/research/$id': typeof ApiResearchIdRoute
+  '/api/research/$id': typeof ApiResearchIdRouteWithChildren
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
@@ -1123,6 +1129,7 @@ export interface FileRoutesByFullPath {
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/plans/$id/members': typeof ApiPlansIdMembersRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
+  '/api/research/$id/members': typeof ApiResearchIdMembersRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
@@ -1246,7 +1253,7 @@ export interface FileRoutesByTo {
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
-  '/api/research/$id': typeof ApiResearchIdRoute
+  '/api/research/$id': typeof ApiResearchIdRouteWithChildren
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
@@ -1285,6 +1292,7 @@ export interface FileRoutesByTo {
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/plans/$id/members': typeof ApiPlansIdMembersRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
+  '/api/research/$id/members': typeof ApiResearchIdMembersRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
@@ -1410,7 +1418,7 @@ export interface FileRoutesById {
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
-  '/api/research/$id': typeof ApiResearchIdRoute
+  '/api/research/$id': typeof ApiResearchIdRouteWithChildren
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
@@ -1449,6 +1457,7 @@ export interface FileRoutesById {
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
   '/api/plans/$id/members': typeof ApiPlansIdMembersRoute
   '/api/rag/collections/$id': typeof ApiRagCollectionsIdRoute
+  '/api/research/$id/members': typeof ApiResearchIdMembersRoute
   '/api/skills/$owner/$name': typeof ApiSkillsOwnerNameRoute
   '/api/tasks/$id/comments': typeof ApiTasksIdCommentsRoute
   '/api/tasks/$id/dependencies': typeof ApiTasksIdDependenciesRoute
@@ -1613,6 +1622,7 @@ export interface FileRouteTypes {
     | '/api/plan/$id/draft'
     | '/api/plans/$id/members'
     | '/api/rag/collections/$id'
+    | '/api/research/$id/members'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
@@ -1775,6 +1785,7 @@ export interface FileRouteTypes {
     | '/api/plan/$id/draft'
     | '/api/plans/$id/members'
     | '/api/rag/collections/$id'
+    | '/api/research/$id/members'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
@@ -1938,6 +1949,7 @@ export interface FileRouteTypes {
     | '/api/plan/$id/draft'
     | '/api/plans/$id/members'
     | '/api/rag/collections/$id'
+    | '/api/research/$id/members'
     | '/api/skills/$owner/$name'
     | '/api/tasks/$id/comments'
     | '/api/tasks/$id/dependencies'
@@ -2764,6 +2776,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiSkillsOwnerNameRouteImport
       parentRoute: typeof ApiSkillsRoute
     }
+    '/api/research/$id/members': {
+      id: '/api/research/$id/members'
+      path: '/members'
+      fullPath: '/api/research/$id/members'
+      preLoaderRoute: typeof ApiResearchIdMembersRouteImport
+      parentRoute: typeof ApiResearchIdRoute
+    }
     '/api/rag/collections/$id': {
       id: '/api/rag/collections/$id'
       path: '/$id'
@@ -3493,12 +3512,24 @@ const ApiMcpRouteChildren: ApiMcpRouteChildren = {
 const ApiMcpRouteWithChildren =
   ApiMcpRoute._addFileChildren(ApiMcpRouteChildren)
 
+interface ApiResearchIdRouteChildren {
+  ApiResearchIdMembersRoute: typeof ApiResearchIdMembersRoute
+}
+
+const ApiResearchIdRouteChildren: ApiResearchIdRouteChildren = {
+  ApiResearchIdMembersRoute: ApiResearchIdMembersRoute,
+}
+
+const ApiResearchIdRouteWithChildren = ApiResearchIdRoute._addFileChildren(
+  ApiResearchIdRouteChildren,
+)
+
 interface ApiResearchRouteChildren {
-  ApiResearchIdRoute: typeof ApiResearchIdRoute
+  ApiResearchIdRoute: typeof ApiResearchIdRouteWithChildren
 }
 
 const ApiResearchRouteChildren: ApiResearchRouteChildren = {
-  ApiResearchIdRoute: ApiResearchIdRoute,
+  ApiResearchIdRoute: ApiResearchIdRouteWithChildren,
 }
 
 const ApiResearchRouteWithChildren = ApiResearchRoute._addFileChildren(

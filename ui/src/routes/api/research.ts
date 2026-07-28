@@ -23,9 +23,16 @@ export const Route = createFileRoute('/api/research')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const isAgent = checkAgentKey(request)
-        if (!isAgent && !(await getSessionUser(request))) return json({ error: 'unauthorized' }, { status: 401 })
-        return json({ runs: await listResearchRuns(), modes: RESEARCH_MODES })
+        // Scope to the viewer: a user sees their own + shared + org runs; an
+        // agent sees through its owner's eyes (general agents: org runs only).
+        if (checkAgentKey(request)) {
+          const name = agentName(request)
+          const owner = name ? ((await personalAssistantOwners()).get(name) ?? null) : null
+          return json({ runs: await listResearchRuns(owner), modes: RESEARCH_MODES })
+        }
+        const user = await getSessionUser(request)
+        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        return json({ runs: await listResearchRuns(user.id), modes: RESEARCH_MODES })
       },
       POST: async ({ request }) => {
         const parsed = Body.safeParse(await request.json().catch(() => null))

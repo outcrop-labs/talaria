@@ -244,7 +244,7 @@ server.registerTool(
     inputSchema: {
       title: z.string().min(1).max(200).describe('Document title'),
       markdown: z.string().max(1_000_000).optional().describe('Initial body as markdown (headings, lists, tables, code, links)'),
-      visibility: z.enum(['private', 'org', 'public']).optional().describe("Who can see it (default 'org' — the workspace)"),
+      visibility: z.enum(['private', 'org', 'public']).optional().describe("Who can see it. Personal assistants always create private-to-owner docs (this field is ignored); org agents default to 'org' — the workspace"),
       folder: z.string().max(120).optional().describe('File it under this folder name (find-or-create); omitted = your own folder'),
     },
   },

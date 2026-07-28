@@ -15,6 +15,10 @@ export const Route = createFileRoute('/api/memory/$id')({
       GET: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        // Same gate as PUT: an agent's memory is its owner's (or admin's)
+        // business — a personal assistant's memory is dense private context.
+        if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: params.id })))
+          return json({ error: 'forbidden' }, { status: 403 })
         try {
           return json(await readMemory(params.id))
         } catch (e) {
