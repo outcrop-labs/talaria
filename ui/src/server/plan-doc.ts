@@ -159,7 +159,8 @@ export async function syncPlanDoc(
 
 /** Notify teammates a plan message @mentions — only members who can actually
  *  read the plan's document (owner-private plans mention silently until the
- *  doc is shared). Fire-and-forget friendly. */
+ *  doc is shared). Before the doc exists, the plan's own membership is the
+ *  read boundary. Fire-and-forget friendly. */
 export async function notifyPlanMentions(
   conversationId: string,
   sender: { id: string; label: string },
@@ -168,15 +169,21 @@ export async function notifyPlanMentions(
 ): Promise<void> {
   if (!content.includes('@')) return
   const doc = await planDocFor(conversationId)
-  if (!doc) return
-  const grants = await listEditors('artifact', doc.id)
-  const readers = (await listUsers()).filter((u) => canRead(guarded(doc), u.id, u.email ?? u.name, grants))
+  let eligible: Array<{ userId: string; name: string | null; email: string | null }>
+  if (doc) {
+    const grants = await listEditors('artifact', doc.id)
+    eligible = (await listUsers())
+      .filter((u) => canRead(guarded(doc), u.id, u.email ?? u.name, grants))
+      .map((u) => ({ userId: u.id, name: u.name, email: u.email }))
+  } else {
+    eligible = await listPlanMembers(conversationId)
+  }
   await notifyMentions(
-    readers.map((u) => ({ userId: u.id, name: u.name, email: u.email })),
+    eligible,
     sender.id,
     sender.label,
     content,
     `a plan (${planTitle || 'Untitled'})`,
-    '/artifacts',
+    `/plan?p=${conversationId}`,
   )
 }

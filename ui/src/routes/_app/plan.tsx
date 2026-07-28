@@ -19,7 +19,6 @@ import { useTemplates } from '@/lib/templates'
 import { useSession } from '@/lib/session'
 import { useStickyAgent } from '@/lib/sticky-agent'
 import { sharePlan, unsharePlan, usePlanMembers, useConversations, type Conversation } from '@/lib/conversations'
-import { useUsers } from '@/lib/users'
 
 // Plan surface: think through the work with an agent, then draft tickets and
 // send them to a board. A plan is a durable MULTIPLAYER conversation
@@ -100,19 +99,19 @@ function PlanPage() {
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   const agents = useMemo(() => fleet?.agents ?? [], [fleet])
   const { data: conversations = [] } = useConversations('plan')
-  // @mention teammates while planning — they're notified once they can read
-  // the plan's document (i.e. after it's shared). Tokens mirror the server's.
-  const { data: users = [] } = useUsers()
-  const mentionables = useMemo(
-    () =>
-      users
-        .map((u) => ({ insert: userMentionInsert(u), label: u.name ?? u.email ?? u.id, sub: u.email ?? undefined }))
-        .filter((m) => m.insert),
-    [users],
-  )
-
   const [selectedAgent, pickAgent] = useStickyAgent('plan', agents)
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
+  // @mention the plan's MEMBERS — the people a mention will actually reach.
+  // (Offering the whole org invited mentions that silently notified nobody.)
+  // Tokens mirror the server's; a brand-new plan has only you, so it's inert.
+  const { data: memberData } = usePlanMembers(selectedConversationId)
+  const mentionables = useMemo(
+    () =>
+      (memberData?.members ?? [])
+        .map((u) => ({ insert: userMentionInsert({ name: u.name, email: u.email }), label: u.name ?? u.email ?? u.userId, sub: u.email ?? undefined }))
+        .filter((m) => m.insert),
+    [memberData],
+  )
   const [newChatSignal, setNewChatSignal] = useState(0)
   const [planOpen, setPlanOpen] = useState(false)
   // The template a NEW plan's living doc seeds from ('' = automatic: the plan

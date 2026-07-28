@@ -168,7 +168,7 @@ export async function triggerAgentReplies(channelId: string, channelName: string
     const row = await insertChannelMessage(channelId, 'agent', model, '', 'streaming')
     void transcriptFor(model, history)
       .then((transcript) =>
-        streamReply(channelId, row.id, model, routed, [
+        streamReply(channelId, channelName, row.id, model, routed, [
           { role: 'system', content: systemPrompt(model, channelName, agents, owners.has(model) ? (ownerNames.get(model) ?? 'their owner') : null) },
           ...transcript,
         ]),
@@ -179,6 +179,7 @@ export async function triggerAgentReplies(channelId: string, channelName: string
 
 async function streamReply(
   channelId: string,
+  channelName: string,
   messageId: string,
   model: string,
   routedModel: string,
@@ -224,6 +225,8 @@ async function streamReply(
     }
     await updateChannelMessage(channelId, messageId, content, 'complete')
     ledger()
+    // An agent reply @mentioning a human notifies like a human message would.
+    if (content) void notifyMentions(await listChannelMembers(channelId), '', describeAgent(model).label, content, `#${channelName}`, '/channels').catch(() => {})
     // Confab guard (fire-and-forget). annotate/strict pin findings onto the
     // message (republished, so viewers see the caveat live); strict also
     // redacts leaked secrets from the saved copy.

@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { agentMayAccessChannel, channelRole, insertChannelMessage, listChannelMessages } from '@/server/channels'
 import { notifyDmMessage, notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
+import { describeAgent } from '@/server/gateway'
 import { resolveAttachments } from '@/server/uploads'
 import { resolveRefs } from '@/server/refs'
 import { indexActivity } from '@/server/retrieval/sources'
@@ -50,6 +51,8 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
           const sql0 = await db()
           const nm = ((await sql0`select name from channels where id = ${params.id}`)[0] as { name: string } | undefined)?.name ?? 'channel'
           void indexActivity({ sourceType: 'channel', sourceId: msg.id, title: `#${nm} · ${name}`, text: parsed.data.content, payload: { channelId: params.id }, href: '/channels' }).catch(() => {})
+          // An agent @mentioning a human notifies exactly like a human would.
+          void notifyUserMentions(params.id, nm, '', describeAgent(name).label, parsed.data.content).catch(() => {})
           return json({ message: msg })
         }
 
