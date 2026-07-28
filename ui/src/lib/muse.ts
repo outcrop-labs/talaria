@@ -1,7 +1,7 @@
 // Client for the drafting muse + model preferences.
 import { useQuery } from '@tanstack/react-query'
 
-export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document'
+export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template'
 
 export interface MuseRequest {
   kind: MuseKind

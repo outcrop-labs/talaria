@@ -41,6 +41,7 @@ import { Route as ApiAlertsRouteImport } from './routes/api/alerts'
 import { Route as ApiAgentsRouteImport } from './routes/api/agents'
 import { Route as ApiActivityRouteImport } from './routes/api/activity'
 import { Route as ASlugRouteImport } from './routes/a.$slug'
+import { Route as AppTemplatesRouteImport } from './routes/_app/templates'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppResearchRouteImport } from './routes/_app/research'
 import { Route as AppPlanRouteImport } from './routes/_app/plan'
@@ -328,6 +329,11 @@ const ASlugRoute = ASlugRouteImport.update({
   id: '/a/$slug',
   path: '/a/$slug',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AppTemplatesRoute = AppTemplatesRouteImport.update({
+  id: '/templates',
+  path: '/templates',
+  getParentRoute: () => AppRoute,
 } as any)
 const AppSettingsRoute = AppSettingsRouteImport.update({
   id: '/settings',
@@ -1005,6 +1011,7 @@ export interface FileRoutesByFullPath {
   '/plan': typeof AppPlanRoute
   '/research': typeof AppResearchRoute
   '/settings': typeof AppSettingsRoute
+  '/templates': typeof AppTemplatesRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1165,6 +1172,7 @@ export interface FileRoutesByTo {
   '/plan': typeof AppPlanRoute
   '/research': typeof AppResearchRoute
   '/settings': typeof AppSettingsRoute
+  '/templates': typeof AppTemplatesRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1328,6 +1336,7 @@ export interface FileRoutesById {
   '/_app/plan': typeof AppPlanRoute
   '/_app/research': typeof AppResearchRoute
   '/_app/settings': typeof AppSettingsRoute
+  '/_app/templates': typeof AppTemplatesRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1492,6 +1501,7 @@ export interface FileRouteTypes {
     | '/plan'
     | '/research'
     | '/settings'
+    | '/templates'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -1652,6 +1662,7 @@ export interface FileRouteTypes {
     | '/plan'
     | '/research'
     | '/settings'
+    | '/templates'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -1814,6 +1825,7 @@ export interface FileRouteTypes {
     | '/_app/plan'
     | '/_app/research'
     | '/_app/settings'
+    | '/_app/templates'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -2254,6 +2266,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/a/$slug'
       preLoaderRoute: typeof ASlugRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_app/templates': {
+      id: '/_app/templates'
+      path: '/templates'
+      fullPath: '/templates'
+      preLoaderRoute: typeof AppTemplatesRouteImport
+      parentRoute: typeof AppRoute
     }
     '/_app/settings': {
       id: '/_app/settings'
@@ -3180,6 +3199,7 @@ interface AppRouteChildren {
   AppPlanRoute: typeof AppPlanRoute
   AppResearchRoute: typeof AppResearchRoute
   AppSettingsRoute: typeof AppSettingsRoute
+  AppTemplatesRoute: typeof AppTemplatesRoute
   AppIndexRoute: typeof AppIndexRoute
   AppBoardsBoardIdRoute: typeof AppBoardsBoardIdRouteWithChildren
   AppBoardsIndexRoute: typeof AppBoardsIndexRoute
@@ -3200,6 +3220,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppPlanRoute: AppPlanRoute,
   AppResearchRoute: AppResearchRoute,
   AppSettingsRoute: AppSettingsRoute,
+  AppTemplatesRoute: AppTemplatesRoute,
   AppIndexRoute: AppIndexRoute,
   AppBoardsBoardIdRoute: AppBoardsBoardIdRouteWithChildren,
   AppBoardsIndexRoute: AppBoardsIndexRoute,

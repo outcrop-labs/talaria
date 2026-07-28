@@ -10,7 +10,7 @@ import { resolveRoleModel } from './model-roles'
 import { orgLine, orgProfile } from './org'
 import { getPreferredModel, getUserRole } from './users'
 
-export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document'
+export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template'
 
 const DOC_RULES =
   'Return ONLY the complete revised document — no commentary, no preamble, no code fences. ' +
@@ -48,6 +48,16 @@ const SYSTEM: Record<MuseKind, string> = {
     'Include 0–3 skills, only ones clearly implied by the purpose (each a # title, a when-to-use line, concrete numbered steps). ' +
     'When a current draft is given, revise it per the request instead of starting over — keep everything not asked about.',
   document: 'You help edit a markdown document. ' + DOC_RULES,
+  template:
+    'You write TEMPLATES for Talaria — the markdown skeleton a ticket description or plan document STARTS from. A template is scaffolding, never a finished document.\n' +
+    'Hard rules:\n' +
+    '- ## section headings only (no #, no ###). 3–6 sections; more than 6 means you are overbuilding.\n' +
+    '- Under each heading: NOTHING, or a single italic placeholder hint (_one line describing what goes here_), or 2–4 empty bullet stubs ("- "). Never real content, never example prose, never filled-in details.\n' +
+    '- Whole template under 25 lines. If the request describes a big process, capture it as section NAMES, not content.\n' +
+    '- If the request asks for a complete document, an essay, or filled-in content, still return only the skeleton such a document would start from.\n' +
+    'Shape example (do not copy the topic):\n## Summary\n_What and why, in two sentences._\n## Steps\n- \n- \n## Out of scope\n_What this deliberately does not cover._\n' +
+    'When revising an existing template: prune verbosity first — tighten hints, merge overlapping sections; never grow it past the rules above. ' +
+    DOC_RULES,
 }
 
 export interface MuseInput {

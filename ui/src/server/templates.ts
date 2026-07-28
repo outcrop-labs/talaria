@@ -4,6 +4,7 @@
 // everywhere a template applies:
 //   explicit pick → agent binding → board default → none (freeform).
 import { db } from './db/pg'
+import { snapshot } from './internal-history'
 
 export type TemplateKind = 'ticket' | 'plan'
 
@@ -54,10 +55,15 @@ export async function createTemplate(t: {
 export async function updateTemplate(
   id: string,
   patch: { name?: string; body?: string; guidance?: string },
+  author?: string | null,
 ): Promise<Template | null> {
   const sql = await db()
   if (patch.name !== undefined) await sql`update templates set name = ${patch.name}, updated_at = now() where id = ${id}`
-  if (patch.body !== undefined) await sql`update templates set body = ${patch.body}, updated_at = now() where id = ${id}`
+  if (patch.body !== undefined) {
+    await sql`update templates set body = ${patch.body}, updated_at = now() where id = ${id}`
+    // Skeleton edits are versioned — the template editor shows the history.
+    await snapshot('template', id, patch.body, author ?? null).catch(() => {})
+  }
   if (patch.guidance !== undefined)
     await sql`update templates set guidance = ${patch.guidance}, updated_at = now() where id = ${id}`
   return getTemplate(id)
