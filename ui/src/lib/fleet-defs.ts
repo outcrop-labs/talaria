@@ -110,6 +110,8 @@ export interface ContainerState {
   name: string
   state: string
   status: string
+  /** Healthcheck phase — 'starting' is the warm-up window after an up/roll. */
+  health: 'starting' | 'healthy' | 'unhealthy' | null
 }
 
 export interface AgentContainers {
@@ -152,7 +154,7 @@ export async function saveAgentEdit(
   return (await r.json().catch(() => ({ error: `save failed (${r.status})` }))) as { error?: string }
 }
 
-export type FleetAction = 'up' | 'stop' | 'retire' | 'unretire'
+export type FleetAction = 'up' | 'stop' | 'restart' | 'roll' | 'retire' | 'unretire'
 
 export async function createFleetAgent(input: {
   slug: string

@@ -4,18 +4,22 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { getAgentDef } from '@/server/agent-defs'
 import { ownsAgent } from '@/server/personal-agent'
-import { fleetRemove, fleetStop, fleetUp, waitHealthy } from '@/server/fleet-docker'
+import { fleetRemove, fleetRestart, fleetStop, fleetUp, pruneBundledSkills, waitHealthy } from '@/server/fleet-docker'
 import { renderFleet } from '@/server/fleet-render'
+import { rollAgent } from '@/server/fleet-reconcile'
 import { logAudit } from '@/server/audit'
 import { db } from '@/server/db/pg'
 
 const Body = z.object({
-  action: z.enum(['up', 'stop', 'retire', 'unretire']),
+  action: z.enum(['up', 'stop', 'restart', 'roll', 'retire', 'unretire']),
 })
 
 // POST { action } → lifecycle control for one agent (admin; owners of a
-// personal assistant may up/stop their own).
-//   up | stop     the managed service (renders first on `up`)
+// personal assistant may up/stop/restart their own).
+//   up | stop | restart   the managed service (renders first on `up`)
+//   roll                  zero-downtime replacement (admin) — detached
+// `up`/`unretire`/`roll` return IMMEDIATELY; the roster's polled container
+// health shows the warm-up ('starting') phase instead of blocking the call.
 export const Route = createFileRoute('/api/fleet/agents/$id/control')({
   server: {
     handlers: {
@@ -25,7 +29,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const ownerAllowed =
-          ['up', 'stop'].includes(parsed.data.action) && (await ownsAgent(user.id, { defId: params.id }))
+          ['up', 'stop', 'restart'].includes(parsed.data.action) && (await ownsAgent(user.id, { defId: params.id }))
         if (user.role !== 'admin' && !ownerAllowed) return json({ error: 'forbidden' }, { status: 403 })
         const def = await getAgentDef(params.id)
         if (!def) return json({ error: 'not found' }, { status: 404 })
@@ -33,7 +37,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
         const sql = await db()
         const actor = user.email ?? user.name ?? 'admin'
         // Lifecycle actions are governance-relevant — record them.
-        if (['retire', 'unretire'].includes(parsed.data.action)) {
+        if (['restart', 'roll', 'retire', 'unretire'].includes(parsed.data.action)) {
           void logAudit({ actor, action: `agent.${parsed.data.action}`, targetType: 'agent', targetId: def.id, targetLabel: def.displayName })
         }
         try {
@@ -42,12 +46,29 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
               if (!def.managed) return json({ error: 'not a managed agent' }, { status: 400 })
               await renderFleet()
               await fleetUp(def.department)
-              const healthy = await waitHealthy(def.department)
-              return json({ ok: true, healthy })
+              // Don't block on health — the roster shows the warm-up phase.
+              void waitHealthy(def.department).then((ok) => ok && pruneBundledSkills(def.department)).catch(() => {})
+              return json({ ok: true, warming: true })
             }
             case 'stop':
               await fleetStop(def.department)
               return json({ ok: true })
+            case 'restart': {
+              // Quick bounce (brief downtime; in-flight replies drop). For a
+              // no-downtime reboot use 'roll'.
+              if (!def.managed) return json({ error: 'not a managed agent' }, { status: 400 })
+              await fleetRestart(def.department)
+              return json({ ok: true, warming: true })
+            }
+            case 'roll': {
+              // Zero-downtime replacement — fresh container, old one drains.
+              // Long (health wait + drain), so it runs detached; the roster's
+              // health polling tells the story.
+              if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+              if (!def.managed) return json({ error: 'not a managed agent' }, { status: 400 })
+              void rollAgent(def.department).catch(() => {})
+              return json({ ok: true, rolling: true })
+            }
             case 'retire': {
               // Spin down + drop from the fleet. Container removed; the state
               // volume and the version history stay (re-hire with 'unretire').
@@ -63,8 +84,8 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
               await renderFleet()
               if (def.managed) {
                 await fleetUp(def.department)
-                const healthy = await waitHealthy(def.department)
-                return json({ ok: true, healthy })
+                void waitHealthy(def.department).then((ok) => ok && pruneBundledSkills(def.department)).catch(() => {})
+                return json({ ok: true, warming: true })
               }
               return json({ ok: true })
             }

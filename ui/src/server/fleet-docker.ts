@@ -93,8 +93,20 @@ export async function fleetRemove(department: string, slot?: Slot): Promise<stri
 
 export interface ContainerState {
   name: string
-  state: string // running | exited | 
+  state: string // running | exited |
   status: string // human string incl. health, e.g. "Up 2 hours (healthy)"
+  /** Parsed healthcheck phase — 'starting' is the warm-up window
+   *  (start_period 60s on the compose healthcheck). null = no health info. */
+  health: 'starting' | 'healthy' | 'unhealthy' | null
+}
+
+/** docker ps folds health into the Status string — "(health: starting)" /
+ *  "(healthy)" / "(unhealthy)". Parse it out so callers get a real state. */
+function parseHealth(status: string): ContainerState['health'] {
+  if (/health: starting/i.test(status)) return 'starting'
+  if (/\(healthy\)/i.test(status)) return 'healthy'
+  if (/unhealthy/i.test(status)) return 'unhealthy'
+  return null
 }
 
 export interface AgentContainers {
@@ -110,7 +122,7 @@ export async function containerStatus(departments: string[]): Promise<AgentConta
     .split('\n')
     .filter(Boolean)
     .map((l) => JSON.parse(l) as { Names: string; State: string; Status: string })
-  const byName = new Map(all.map((c) => [c.Names, { name: c.Names, state: c.State, status: c.Status }]))
+  const byName = new Map(all.map((c) => [c.Names, { name: c.Names, state: c.State, status: c.Status, health: parseHealth(c.Status) }]))
   return departments.map((department) => {
     const a = byName.get(slotContainer(department, 'a'))
     const b = byName.get(slotContainer(department, 'b'))

@@ -830,6 +830,10 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now()
    )`,
   `create index if not exists outreach_events_agent_idx on outreach_events (agent_model, kind, created_at desc)`,
+  // Live inference dashboard (#48): "generating right now" scans for
+  // streaming rows — tiny partial indexes keep that O(in-flight).
+  `create index if not exists messages_streaming_idx on messages (created_at) where status = 'streaming'`,
+  `create index if not exists channel_messages_streaming_idx on channel_messages (created_at) where status = 'streaming'`,
 ]
 
 function ensureMigrated(): Promise<void> {

@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Loader2, Copy, UserPlus, Plus } from 'lucide-react'
+import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Loader2, Copy, RotateCw, Repeat, UserPlus, Plus } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { confirm } from '@/components/ui/confirm'
 import { Avatar } from '@/components/ui/avatar'
@@ -31,10 +31,12 @@ export const Route = createFileRoute('/_app/agents')({
   component: AgentsPage,
 })
 
-// ── Health: one word (up / degraded / down / retired) from container reality ──
-type Health = 'up' | 'degraded' | 'down' | 'retired'
+// ── Health: one word from container reality. 'warming' = the healthcheck's
+// start_period — the container is up but its gateway isn't serving yet. ──
+type Health = 'up' | 'warming' | 'degraded' | 'down' | 'retired'
 const HEALTH_COLOR: Record<Health, string> = {
   up: 'var(--theme-success)',
+  warming: 'var(--theme-warning)',
   degraded: 'var(--theme-warning)',
   down: 'var(--theme-danger)',
   retired: 'var(--theme-line)',
@@ -66,7 +68,8 @@ function healthOf(d: AgentDef, c: AgentContainers | null): { health: Health; run
   const state = c?.managed ?? null
   const running = state?.state === 'running'
   if (!running) return { health: 'down', running: false }
-  return { health: /unhealthy/i.test(state?.status ?? '') ? 'degraded' : 'up', running: true }
+  if (state?.health === 'starting') return { health: 'warming', running: true }
+  return { health: state?.health === 'unhealthy' ? 'degraded' : 'up', running: true }
 }
 
 function AgentsPage() {
@@ -209,8 +212,10 @@ function useAgentControls(d: AgentDef) {
   return { pending, act }
 }
 
-/** The control-icon cluster (start/stop · manage · retire · re-hire). */
+/** The control-icon cluster (start/stop/restart/roll · manage · retire · re-hire). */
 function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; running: boolean; onManage: () => void; onDuplicate: () => void }) {
+  const { data: session } = useSession()
+  const isAdmin = session?.role === 'admin'
   const { pending, act } = useAgentControls(d)
   const [retiring, setRetiring] = useState(false)
   if (pending) return <Loader2 size={15} className="animate-spin text-muted" />
@@ -232,7 +237,21 @@ function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; r
           not another management action. Filled glyphs so they read at 14px. */}
       <span aria-hidden className="mx-1.5 h-4 w-px bg-line-subtle" />
       {running ? (
-        <IconBtn icon={<Square size={14} fill="currentColor" />} title="Stop" onClick={() => void act('stop', 'stopping')} />
+        <>
+          <IconBtn icon={<Square size={14} fill="currentColor" />} title="Stop" onClick={() => void act('stop', 'stopping')} />
+          <IconBtn
+            icon={<RotateCw size={14} />}
+            title="Restart (quick bounce — drops any in-flight reply)"
+            onClick={() => void act('restart', 'restarting', 'Restart this agent now? Any reply it is mid-way through will be dropped.')}
+          />
+          {isAdmin && (
+            <IconBtn
+              icon={<Repeat size={14} />}
+              title="Roll (zero-downtime replacement — fresh container, old one finishes its replies)"
+              onClick={() => void act('roll', 'rolling')}
+            />
+          )}
+        </>
       ) : (
         <IconBtn icon={<Play size={14} fill="currentColor" />} title="Start" onClick={() => void act('up', 'starting')} />
       )}
@@ -281,7 +300,13 @@ function RetireModal({ def: d, onClose, onConfirm }: { def: AgentDef; onClose: (
 
 function StatusDot({ def: d, containers }: { def: AgentDef; containers: AgentContainers | null }) {
   const { health } = healthOf(d, containers)
-  return <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: HEALTH_COLOR[health] }} title={health} />
+  return (
+    <span
+      className={cn('h-2.5 w-2.5 shrink-0 rounded-full', health === 'warming' && 'animate-pulse')}
+      style={{ background: HEALTH_COLOR[health] }}
+      title={health === 'warming' ? 'warming up' : health}
+    />
+  )
 }
 
 function AgentTile({ def: d, containers, endpoints, brain, onDuplicate }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[]; brain?: AgentBrainHealth; onDuplicate: () => void }) {
