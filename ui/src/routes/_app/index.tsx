@@ -13,6 +13,7 @@ import { AssistantWizard } from '@/components/assistant/assistant-wizard'
 import { NotificationsPanel } from '@/components/app/notifications-panel'
 import { relativeTime } from '@/lib/fleet'
 import { cn } from '@/lib/cn'
+import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { useAssistant } from '@/lib/assistant'
 import { useSession } from '@/lib/session'
 import { useChannels } from '@/lib/channels'
@@ -238,6 +239,7 @@ const QUEUE_META: Record<QueueKey, { label: string; hint: string; accent: string
 function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoading: boolean }) {
   const navigate = useNavigate()
   const [queue, setQueue] = useState<QueueKey>('triage')
+  const { openMenu, menu } = useContextMenu()
   const meta = QUEUE_META[queue]
   const items = data?.queues[queue].items ?? []
   return (
@@ -279,6 +281,17 @@ function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoadi
                   <button
                     type="button"
                     onClick={() => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
+                    onContextMenu={(e) =>
+                      openMenu(e, [
+                        { label: 'Open', onSelect: () => void navigate({ to: `/boards/${w.boardId}/${w.id}` }) },
+                        { label: 'Copy link', onSelect: () => copyAppLink(`/boards/${w.boardId}/${w.id}`) },
+                        ...(w.ticketRef
+                          ? ([
+                              { label: 'Copy ticket ref', onSelect: () => void navigator.clipboard.writeText(w.ticketRef!) },
+                            ] as ContextMenuEntry[])
+                          : []),
+                      ])
+                    }
                     className="flex w-full items-center gap-3 py-2.5 text-left"
                   >
                     {w.ticketRef && <span className="shrink-0 font-[var(--font-mono)] text-[11px] text-muted">{w.ticketRef}</span>}
@@ -293,6 +306,7 @@ function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoadi
         </Panel>
       </div>
       <ActivityList kinds={['ticket']} title="Board activity" collapsible />
+      {menu}
     </div>
   )
 }
@@ -300,6 +314,7 @@ function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoadi
 // ── Comms: what's unread, then the room's pulse ─────────────────────────────
 function CommsTab() {
   const navigate = useNavigate()
+  const { openMenu, menu } = useContextMenu()
   const { data: channels = [], isLoading } = useChannels()
   const unread = channels.filter((c) => (c.unreadCount ?? 0) > 0)
   const label = (c: (typeof channels)[number]) =>
@@ -320,6 +335,12 @@ function CommsTab() {
                 <button
                   type="button"
                   onClick={() => void navigate({ to: `/comms?c=${c.id}` })}
+                  onContextMenu={(e) =>
+                    openMenu(e, [
+                      { label: 'Open', onSelect: () => void navigate({ to: `/comms?c=${c.id}` }) },
+                      { label: 'Copy link', onSelect: () => copyAppLink(`/comms?c=${c.id}`) },
+                    ])
+                  }
                   className="flex w-full items-center gap-3 py-2.5 text-left"
                 >
                   <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{label(c)}</span>
@@ -332,6 +353,7 @@ function CommsTab() {
         )}
       </Panel>
       <ActivityList kinds={['channel']} title="Channel activity" collapsible />
+      {menu}
     </div>
   )
 }
@@ -339,6 +361,7 @@ function CommsTab() {
 // ── Plans: your live plans (and ones shared with you) ───────────────────────
 function PlansTab() {
   const navigate = useNavigate()
+  const { openMenu, menu } = useContextMenu()
   const { data: plans = [], isLoading } = useConversations('plan')
   const { data: fleet } = useAgents()
   const agentLabel = (id: string) => fleet?.agents.find((a) => a.id === id)?.label ?? id
@@ -358,6 +381,12 @@ function PlansTab() {
                 <button
                   type="button"
                   onClick={() => void navigate({ to: `/plan?p=${c.id}` })}
+                  onContextMenu={(e) =>
+                    openMenu(e, [
+                      { label: 'Open', onSelect: () => void navigate({ to: `/plan?p=${c.id}` }) },
+                      { label: 'Copy link', onSelect: () => copyAppLink(`/plan?p=${c.id}`) },
+                    ])
+                  }
                   className="flex w-full items-center gap-3 py-2.5 text-left"
                 >
                   {c.working && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />}
@@ -374,6 +403,7 @@ function PlansTab() {
           </ul>
         )}
       </Panel>
+      {menu}
     </div>
   )
 }
@@ -388,6 +418,7 @@ const RUN_DOT: Record<string, string> = {
 
 function ResearchTab() {
   const navigate = useNavigate()
+  const { openMenu, menu } = useContextMenu()
   const { data: runs = [], isLoading } = useResearchRuns()
   return (
     <div className="space-y-6">
@@ -405,6 +436,12 @@ function ResearchTab() {
                 <button
                   type="button"
                   onClick={() => void navigate({ to: '/research', search: { r: r.id } })}
+                  onContextMenu={(e) =>
+                    openMenu(e, [
+                      { label: 'Open', onSelect: () => void navigate({ to: '/research', search: { r: r.id } }) },
+                      { label: 'Copy link', onSelect: () => copyAppLink(`/research?r=${r.id}`) },
+                    ])
+                  }
                   className="flex w-full items-center gap-3 py-2.5 text-left"
                 >
                   <span className={cn('h-2 w-2 shrink-0 rounded-full', r.status === 'running' && 'animate-pulse')} style={{ background: RUN_DOT[r.status] ?? 'var(--theme-line)' }} />
@@ -421,6 +458,7 @@ function ResearchTab() {
           </ul>
         )}
       </Panel>
+      {menu}
     </div>
   )
 }
@@ -428,6 +466,7 @@ function ResearchTab() {
 // ── Docs: the latest durable output (artifacts incl. official KB mirrors) ───
 function DocsTab() {
   const navigate = useNavigate()
+  const { openMenu, menu } = useContextMenu()
   const { data: artifacts = [], isLoading } = useArtifacts()
   const recent = [...artifacts].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, 12)
   return (
@@ -445,6 +484,12 @@ function DocsTab() {
                 <button
                   type="button"
                   onClick={() => void navigate({ to: '/artifacts', search: { a: a.id } })}
+                  onContextMenu={(e) =>
+                    openMenu(e, [
+                      { label: 'Open', onSelect: () => void navigate({ to: '/artifacts', search: { a: a.id } }) },
+                      { label: 'Copy link', onSelect: () => copyAppLink(`/artifacts?a=${a.id}`) },
+                    ])
+                  }
                   className="flex w-full items-center gap-3 py-2.5 text-left"
                 >
                   <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{a.title}</span>
@@ -456,6 +501,7 @@ function DocsTab() {
           </ul>
         )}
       </Panel>
+      {menu}
     </div>
   )
 }

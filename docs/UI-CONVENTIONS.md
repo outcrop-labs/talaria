@@ -109,6 +109,20 @@ Two deliberate registers — don't mix them:
 - New content-bearing text → `font-sans`. New chrome → nothing (mono is the
   default). When unsure: would a user READ or TYPE a sentence here? Sans.
 
+## Context menus
+
+- Every row, card, and tile a user can act on gets a right-click menu:
+  `useContextMenu()` from `ui/context-menu.tsx`, items at the cursor,
+  keyboard-navigable, same shell as dropdowns.
+- A context menu is a SHORTCUT: items mirror actions the surface already
+  offers (same functions, same confirms, same role guards) — never the only
+  home of an action, never a new capability.
+- Order: primary action first, Copy link second (`copyAppLink` + the deep
+  link), destructive items last behind a `'sep'`, styled danger.
+- Native context menus are suppressed app-wide in `_app.tsx`; editable
+  fields (input/textarea/contenteditable) keep the browser menu — paste and
+  spellcheck are real workflows.
+
 ## Deep links — the URL is the selection
 
 - Any selection a user could want to share, revisit, or step back through

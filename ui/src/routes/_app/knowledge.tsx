@@ -17,6 +17,7 @@ import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
 import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { RichEditor, type RichEditorHandle, type DocSearchFn } from '@/components/ui/rich-editor'
+import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { Combobox } from '@/components/ui/combobox'
 import { useArtifacts, useTargetArtifacts, attachArtifact, detachArtifact } from '@/lib/artifacts'
@@ -109,6 +110,45 @@ function KnowledgePage() {
     setLoc(hit.spaceId, hit.kind === 'space' ? null : hit.id)
   }
 
+  // Right-click menus — shortcuts to actions the sidebar/editors already offer.
+  const { openMenu, menu } = useContextMenu()
+  // Same createDoc flow as newDoc, but scoped to any space (not just the active one).
+  const newDocIn = async (sid: string) => {
+    const { doc } = await createDoc(sid, { kind: 'human', title: 'Untitled' })
+    await qc.invalidateQueries({ queryKey: ['kb-docs', sid] })
+    setLoc(sid, doc ? doc.id : null)
+  }
+  const spaceMenu = (s: KbSpace): ContextMenuEntry[] => [
+    { label: 'Open', onSelect: () => setLoc(s.id, null) },
+    { label: 'Copy link', onSelect: () => copyAppLink(`/knowledge?space=${s.id}`) },
+    { label: 'New doc', onSelect: () => void newDocIn(s.id) },
+    'sep',
+    {
+      label: 'Delete space',
+      danger: true,
+      onSelect: async () => {
+        // Mirrors the space editor's delete confirm.
+        if (await confirm({ title: 'Delete folder', message: `Delete "${s.name}" and all its docs?`, confirmLabel: 'Delete', danger: true })) await removeSpace(s.id)
+      },
+    },
+  ]
+  const docMenu = (d: KbDocMeta): ContextMenuEntry[] => [
+    { label: 'Open', onSelect: () => setLoc(d.spaceId, d.id) },
+    { label: 'Copy link', onSelect: () => copyAppLink(`/knowledge?space=${d.spaceId}&doc=${d.id}`) },
+    'sep',
+    {
+      label: 'Delete document',
+      danger: true,
+      onSelect: async () => {
+        // Same confirm + deleteDoc flow as the doc editor's kebab menu.
+        if (!(await confirm({ title: 'Delete document', message: `Delete "${d.title}"?`, confirmLabel: 'Delete', danger: true }))) return
+        await deleteDoc(d.id)
+        await qc.invalidateQueries({ queryKey: ['kb-docs', d.spaceId] })
+        if (docId === d.id) setDocId(null)
+      },
+    },
+  ]
+
   return (
     <div className="flex h-full min-h-0">
       <aside className="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar font-sans">
@@ -153,13 +193,14 @@ function KnowledgePage() {
                     setLoc(s.id, null) // open the space's own overview
                   }}
                   onRename={(name) => void renameSpace(s.id, name)}
+                  onContextMenu={(e) => openMenu(e, spaceMenu(s))}
                 />
                 {activeSpace?.id === s.id && (
                   docsLoading ? (
                     // Switching spaces refetches the doc tree — keep its shape.
                     <SkeletonRows rows={6} className="ml-4 mt-1 border-l border-line-subtle py-1 pl-4" />
                   ) : (
-                    <DocTree docs={docs} activeId={docId} onSelect={setDocId} onNew={newDoc} onMove={move} />
+                    <DocTree docs={docs} activeId={docId} onSelect={setDocId} onNew={newDoc} onMove={move} onDocMenu={(e, d) => openMenu(e, docMenu(d))} />
                   )
                 )}
               </div>
@@ -178,6 +219,7 @@ function KnowledgePage() {
           <EmptyState icon="❖" title="Knowledge" hint="Create a space to start writing." />
         )}
       </main>
+      {menu}
     </div>
   )
 }
@@ -232,12 +274,13 @@ function SettingsMenu({ items }: { items: MenuItem[] }) {
 }
 
 function SpaceRow({
-  space, active, onSelect, onRename,
+  space, active, onSelect, onRename, onContextMenu,
 }: {
   space: KbSpace
   active: boolean
   onSelect: () => void
   onRename: (name: string) => void
+  onContextMenu?: (e: React.MouseEvent) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(space.name)
@@ -267,6 +310,7 @@ function SpaceRow({
   return (
     <div
       className={cn('group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm', active ? 'text-fg' : 'text-muted hover:text-fg')}
+      onContextMenu={onContextMenu}
     >
       <button type="button" onClick={onSelect} onDoubleClick={() => setEditing(true)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
         <span>{space.icon ?? '📚'}</span>
@@ -343,13 +387,14 @@ function KbSearch({ onOpen }: { onOpen: (hit: KbSearchHit) => void }) {
 type DropPos = 'before' | 'after' | 'inside'
 
 function DocTree({
-  docs, activeId, onSelect, onNew, onMove,
+  docs, activeId, onSelect, onNew, onMove, onDocMenu,
 }: {
   docs: KbDocMeta[]
   activeId: string | null
   onSelect: (id: string) => void
   onNew: (k: 'human' | 'agent', parentId?: string | null) => void
   onMove: (id: string, parentId: string | null, sort: number) => void
+  onDocMenu: (e: React.MouseEvent, d: KbDocMeta) => void
 }) {
   const byParent = useMemo(() => {
     const m = new Map<string | null, KbDocMeta[]>()
@@ -410,6 +455,7 @@ function DocTree({
           dragId={dragId}
           setDragId={setDragId}
           onDropRel={drop}
+          onDocMenu={onDocMenu}
         />
       ))}
       <div className="flex gap-1 pt-1">
@@ -425,7 +471,7 @@ function DocTree({
 }
 
 function DocRow({
-  doc, depth, byParent, activeId, onSelect, onNew, dragId, setDragId, onDropRel,
+  doc, depth, byParent, activeId, onSelect, onNew, dragId, setDragId, onDropRel, onDocMenu,
 }: {
   doc: KbDocMeta
   depth: number
@@ -436,6 +482,7 @@ function DocRow({
   dragId: string | null
   setDragId: (id: string | null) => void
   onDropRel: (targetId: string, pos: DropPos) => void
+  onDocMenu: (e: React.MouseEvent, d: KbDocMeta) => void
 }) {
   const kids = byParent.get(doc.id) ?? []
   const [expanded, setExpanded] = useState(true)
@@ -469,6 +516,7 @@ function DocRow({
           setPos(null)
           setDragId(null)
         }}
+        onContextMenu={(e) => onDocMenu(e, doc)}
         className={cn(
           'group relative flex items-center gap-1 rounded-md py-1 pr-1 text-xs',
           activeId === doc.id ? 'bg-card text-fg' : 'text-muted hover:text-fg',
@@ -517,6 +565,7 @@ function DocRow({
               dragId={dragId}
               setDragId={setDragId}
               onDropRel={onDropRel}
+              onDocMenu={onDocMenu}
             />
           ))}
         </div>

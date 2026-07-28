@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Avatar } from '@/components/ui/avatar'
+import { copyAppLink, useContextMenu } from '@/components/ui/context-menu'
 import { Markdown } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -36,6 +37,9 @@ export function ChannelView({
   const { data: users = [] } = useUsers()
   useChannelEvents(channelId)
   const [error, setError] = useState<string | null>(null)
+  // Right-click a message: copy its text, or copy a link to the channel
+  // (messages have no per-message anchor — the channel link is honest).
+  const { openMenu, menu } = useContextMenu()
   const scrollRef = useRef<HTMLDivElement>(null)
   const prevCount = useRef(0)
   const qc = useQueryClient()
@@ -113,7 +117,20 @@ export function ChannelView({
             }
           />
         ) : (
-          messages.map((m) => <MessageRow key={m.id} message={m} labelFor={labelFor} userLabel={userLabel} />)
+          messages.map((m) => (
+            <MessageRow
+              key={m.id}
+              message={m}
+              labelFor={labelFor}
+              userLabel={userLabel}
+              onContextMenu={(e) =>
+                openMenu(e, [
+                  { label: 'Copy text', disabled: !m.content, onSelect: () => void navigator.clipboard.writeText(m.content) },
+                  { label: 'Copy link', onSelect: () => copyAppLink(`/comms?c=${channelId}`) },
+                ])
+              }
+            />
+          ))
         )}
         {error && (
           <div className="text-center text-sm" style={{ color: 'var(--theme-danger)' }}>
@@ -142,6 +159,7 @@ export function ChannelView({
         ].filter((m) => m.insert)}
         onSend={send}
       />
+      {menu}
     </div>
   )
 }
@@ -150,16 +168,18 @@ function MessageRow({
   message: m,
   labelFor,
   userLabel,
+  onContextMenu,
 }: {
   message: ChannelMessage
   labelFor: (model: string) => string
   userLabel: (author: string) => string
+  onContextMenu?: (e: React.MouseEvent) => void
 }) {
   const name = m.authorType === 'agent' ? labelFor(m.author) : userLabel(m.author)
   const time = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const live = m.status === 'streaming'
   return (
-    <div className="flex gap-2.5">
+    <div className="flex gap-2.5" onContextMenu={onContextMenu}>
       <Avatar name={name} className="mt-0.5 shrink-0" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">

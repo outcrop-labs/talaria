@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { SlidersHorizontal, ChevronUp, ChevronDown, GripVertical } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { SlidersHorizontal, ChevronUp, ChevronDown, GripVertical, Archive, ExternalLink, Hash, Link as LinkIcon } from 'lucide-react'
 import { useAgents } from '@/lib/agents'
+import { archiveTask } from '@/lib/boards'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
+import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task } from '@/lib/task-const'
@@ -98,7 +101,30 @@ function fmtTime(s: number): string {
 
 // List view of a board's tasks with configurable columns (persisted per board).
 export function BoardList({ tasks, onOpen, boardId }: { tasks: Task[]; onOpen: (id: string) => void; boardId: string }) {
+  const qc = useQueryClient()
+  const { openMenu, menu } = useContextMenu()
   const { data: fleet, isLoading: agentsLoading } = useAgents()
+
+  // Right-click a row — shortcuts to actions the board already offers.
+  const rowMenu = (e: React.MouseEvent, t: Task) => {
+    const items: ContextMenuEntry[] = [
+      { label: 'Open', icon: <ExternalLink size={14} />, onSelect: () => onOpen(t.id) },
+      { label: 'Copy link', icon: <LinkIcon size={14} />, onSelect: () => copyAppLink(`/boards/${t.boardId}/${t.id}`) },
+    ]
+    if (t.ticketRef) {
+      const ref = t.ticketRef
+      items.push({ label: 'Copy ticket ref', icon: <Hash size={14} />, onSelect: () => void navigator.clipboard.writeText(ref) })
+    }
+    items.push('sep', {
+      label: t.archivedAt ? 'Unarchive' : 'Archive',
+      icon: <Archive size={14} />,
+      danger: !t.archivedAt,
+      onSelect: () => {
+        void archiveTask(t.id, !t.archivedAt).then(() => qc.invalidateQueries({ queryKey: ['board-tasks', boardId] }))
+      },
+    })
+    openMenu(e, items)
+  }
   const label = (id: string) => fleet?.agents.find((a) => a.id === id)?.label ?? id
   const assigneeText = (ids: string[]) => (ids.length ? ids.map(label).join(', ') : '—')
 
@@ -250,7 +276,12 @@ export function BoardList({ tasks, onOpen, boardId }: { tasks: Task[]; onOpen: (
             </thead>
             <tbody className="divide-y divide-line-subtle">
               {sorted.map((t) => (
-                <tr key={t.id} onClick={() => onOpen(t.id)} className="group cursor-pointer transition-colors hover:bg-card">
+                <tr
+                  key={t.id}
+                  onClick={() => onOpen(t.id)}
+                  onContextMenu={(e) => rowMenu(e, t)}
+                  className="group cursor-pointer transition-colors hover:bg-card"
+                >
                   <td className="pl-2">
                     <CopyLinkButton path={`/boards/${t.boardId}/${t.id}`} className="opacity-0 group-hover:opacity-100" />
                   </td>
@@ -265,6 +296,7 @@ export function BoardList({ tasks, onOpen, boardId }: { tasks: Task[]; onOpen: (
           </table>
         )}
       </div>
+      {menu}
     </div>
   )
 }

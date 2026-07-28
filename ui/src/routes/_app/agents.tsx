@@ -13,6 +13,7 @@ import { Modal } from '@/components/ui/modal'
 import { useFleet } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
 import { cn } from '@/lib/cn'
+import { useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { AgentManageModal } from '@/components/fleet/agent-manage-modal'
 import { CreateAgentModal } from '@/components/fleet/create-agent-modal'
 import { FleetCronsModal } from '@/components/fleet/agent-crons'
@@ -208,6 +209,12 @@ function IconBtn({ icon, title, onClick, danger, disabled }: { icon: React.React
   )
 }
 
+// Confirm copy shared by the Controls buttons and the right-click menu, so the
+// two paths can never drift apart.
+const RESTART_CONFIRM = 'Restart this agent now? Any reply it is mid-way through will be dropped.'
+const deleteForeverConfirm = (d: AgentDef) =>
+  `Permanently delete ${d.displayName}? This removes its definition, version history, secrets, and (for Talaria-created agents) its memory volume. Chats, tickets, and ledger history it produced are kept. This cannot be undone.`
+
 // Shared control logic for one agent def.
 function useAgentControls(d: AgentDef) {
   const qc = useQueryClient()
@@ -245,13 +252,7 @@ function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; r
             icon={<Trash2 size={15} />}
             title="Delete forever"
             danger
-            onClick={() =>
-              void act(
-                'delete',
-                'Delete forever',
-                `Permanently delete ${d.displayName}? This removes its definition, version history, secrets, and (for Talaria-created agents) its memory volume. Chats, tickets, and ledger history it produced are kept. This cannot be undone.`,
-              )
-            }
+            onClick={() => void act('delete', 'Delete forever', deleteForeverConfirm(d))}
           />
         )}
       </div>
@@ -271,7 +272,7 @@ function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; r
           <IconBtn
             icon={<RotateCw size={14} />}
             title="Restart (quick bounce — drops any in-flight reply)"
-            onClick={() => void act('restart', 'restarting', 'Restart this agent now? Any reply it is mid-way through will be dropped.')}
+            onClick={() => void act('restart', 'restarting', RESTART_CONFIRM)}
           />
           {isAdmin && (
             <IconBtn
@@ -327,6 +328,64 @@ function RetireModal({ def: d, onClose, onConfirm }: { def: AgentDef; onClose: (
   )
 }
 
+// Right-click menu for a tile / list row — the same actions as the Controls
+// cluster (same admin guards, same confirms), reachable from anywhere on the
+// row. Its own useAgentControls instance drives the acts; RetireModal keeps
+// its double opt-in.
+function useAgentMenu(d: AgentDef, running: boolean, onManage: () => void, onDuplicate: () => void) {
+  const { data: session } = useSession()
+  const isAdmin = session?.role === 'admin'
+  const { act } = useAgentControls(d)
+  const [retiring, setRetiring] = useState(false)
+  const { openMenu, menu } = useContextMenu()
+
+  const onContextMenu = (e: React.MouseEvent) => {
+    if (!d.enabled) {
+      // Retired: re-hire, duplicate as a template, delete forever (admin).
+      openMenu(e, [
+        { label: 'Duplicate to a new agent', icon: <Copy size={14} />, onSelect: onDuplicate },
+        { label: 'Re-hire', icon: <UserPlus size={14} />, onSelect: () => void act('unretire', 're-hiring') },
+        ...(isAdmin
+          ? ([
+              'sep',
+              {
+                label: 'Delete forever',
+                icon: <Trash2 size={14} />,
+                danger: true,
+                onSelect: () => void act('delete', 'Delete forever', deleteForeverConfirm(d)),
+              },
+            ] as ContextMenuEntry[])
+          : []),
+      ])
+      return
+    }
+    openMenu(e, [
+      { label: 'Manage', icon: <SlidersHorizontal size={14} />, onSelect: onManage },
+      { label: 'Duplicate to a new agent', icon: <Copy size={14} />, onSelect: onDuplicate },
+      'sep',
+      ...(running
+        ? ([
+            { label: 'Stop', icon: <Square size={13} fill="currentColor" />, onSelect: () => void act('stop', 'stopping') },
+            { label: 'Restart', icon: <RotateCw size={13} />, onSelect: () => void act('restart', 'restarting', RESTART_CONFIRM) },
+            ...(isAdmin ? [{ label: 'Roll', icon: <Repeat size={13} />, onSelect: () => void act('roll', 'rolling') }] : []),
+          ] as ContextMenuEntry[])
+        : ([
+            { label: 'Start', icon: <Play size={13} fill="currentColor" />, onSelect: () => void act('up', 'starting') },
+          ] as ContextMenuEntry[])),
+      'sep',
+      { label: 'Retire', icon: <Archive size={14} />, danger: true, onSelect: () => setRetiring(true) },
+    ])
+  }
+
+  const overlays = (
+    <>
+      {menu}
+      {retiring && <RetireModal def={d} onClose={() => setRetiring(false)} onConfirm={() => void act('retire', 'retiring')} />}
+    </>
+  )
+  return { onContextMenu, overlays }
+}
+
 function StatusDot({ def: d, containers }: { def: AgentDef; containers: AgentContainers | null }) {
   const { health } = healthOf(d, containers)
   return (
@@ -341,9 +400,10 @@ function StatusDot({ def: d, containers }: { def: AgentDef; containers: AgentCon
 function AgentTile({ def: d, containers, endpoints, brain, onDuplicate }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[]; brain?: AgentBrainHealth; onDuplicate: () => void }) {
   const [manage, setManage] = useState(false)
   const { running } = healthOf(d, containers)
+  const { onContextMenu, overlays } = useAgentMenu(d, running, () => setManage(true), onDuplicate)
   return (
     <>
-      <Panel className={cn('flex flex-col gap-3', !d.enabled && 'opacity-60')}>
+      <Panel onContextMenu={onContextMenu} className={cn('flex flex-col gap-3', !d.enabled && 'opacity-60')}>
         <div className="flex items-center gap-2.5">
           <Avatar name={d.displayName} className="h-9 w-9" />
           <button type="button" onClick={() => setManage(true)} className="min-w-0 flex-1 text-left">
@@ -357,6 +417,7 @@ function AgentTile({ def: d, containers, endpoints, brain, onDuplicate }: { def:
           <Controls def={d} running={running} onManage={() => setManage(true)} onDuplicate={onDuplicate} />
         </div>
       </Panel>
+      {overlays}
       {manage && <AgentManageModal open={manage} onClose={() => setManage(false)} def={d} endpoints={endpoints} isAdmin />}
     </>
   )
@@ -365,9 +426,10 @@ function AgentTile({ def: d, containers, endpoints, brain, onDuplicate }: { def:
 function AgentListRow({ def: d, containers, endpoints, brain, onDuplicate }: { def: AgentDef; containers: AgentContainers | null; endpoints: LlmEndpoint[]; brain?: AgentBrainHealth; onDuplicate: () => void }) {
   const [manage, setManage] = useState(false)
   const { running } = healthOf(d, containers)
+  const { onContextMenu, overlays } = useAgentMenu(d, running, () => setManage(true), onDuplicate)
   return (
     <>
-      <li className={cn('flex items-center gap-3 px-4 py-3', !d.enabled && 'opacity-60')}>
+      <li onContextMenu={onContextMenu} className={cn('flex items-center gap-3 px-4 py-3', !d.enabled && 'opacity-60')}>
         <StatusDot def={d} containers={containers} />
         <Avatar name={d.displayName} className="h-7 w-7" />
         <button type="button" onClick={() => setManage(true)} className="min-w-0 flex-1 text-left">
@@ -377,6 +439,7 @@ function AgentListRow({ def: d, containers, endpoints, brain, onDuplicate }: { d
         <BrainChip brain={brain} />
         <Controls def={d} running={running} onManage={() => setManage(true)} onDuplicate={onDuplicate} />
       </li>
+      {overlays}
       {manage && <AgentManageModal open={manage} onClose={() => setManage(false)} def={d} endpoints={endpoints} isAdmin />}
     </>
   )

@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { GeneratingOverlay } from '@/components/ui/generating'
 import { alert, confirm } from '@/components/ui/confirm'
 import { ChatView } from '@/components/chat/chat-view'
+import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { CountPill, Rail, RailRow, RailSurface } from '@/components/app/surface'
 import { ChannelView } from '@/components/chat/channel-view'
 import { ChannelSettingsModal } from '@/components/chat/channel-settings'
@@ -22,6 +23,7 @@ import {
   addChannelAgent,
   addChannelMember,
   createChannel,
+  markChannelRead,
   openDm,
   removeChannelAgent,
   removeChannelMember,
@@ -138,6 +140,32 @@ function CommsPage() {
   const { data: detail, isLoading: detailLoading } = useChannelDetail(selected?.id ?? null)
   const refresh = () => qc.invalidateQueries({ queryKey: ['channels'] })
 
+  // Right-click menus on sidebar rows — shortcuts to actions the rows already
+  // perform (open/copy the URL-driven selection, advance the read cursor).
+  const { openMenu, menu } = useContextMenu()
+
+  // Sidebar "Mark read": the cursor advances to the channel's latest seq, and
+  // only the messages list knows it — fetch it, post the cursor (the same call
+  // ChannelView makes on open), then refresh the badges. Best-effort.
+  const markRead = async (id: string) => {
+    try {
+      const r = await fetch(`/api/channels/${id}/messages`, { credentials: 'same-origin' })
+      const { messages = [] } = ((await r.json()) ?? {}) as { messages?: { seq: number }[] }
+      const latest = messages[messages.length - 1]?.seq ?? 0
+      if (!latest) return
+      await markChannelRead(id, latest)
+      await qc.invalidateQueries({ queryKey: ['channels'] })
+    } catch {
+      // badges are advisory; a failed mark-read fixes itself on open
+    }
+  }
+
+  const channelRowMenu = (c: Channel): ContextMenuEntry[] => [
+    { label: 'Open', onSelect: () => setSel({ t: 'channel', id: c.id }) },
+    { label: 'Copy link', onSelect: () => copyAppLink(`/comms?c=${c.id}`) },
+    { label: 'Mark read', disabled: !c.unreadCount, onSelect: () => void markRead(c.id) },
+  ]
+
   const create = async (name: string, kind: 'channel' | 'group') => {
     const c = await createChannel(name, kind)
     await refresh()
@@ -181,9 +209,12 @@ function CommsPage() {
         <Section label="Channels" createPlaceholder="channel name" onCreate={(v) => void create(v, 'channel')}>
           {rooms.map((c) => (
             <RailRow key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
-              <span className="shrink-0 opacity-60">#</span>
-              <span className="min-w-0 flex-1 truncate">{c.name}</span>
-              <CountPill count={c.unreadCount} />
+              {/* display:contents wrapper — carries the context menu without touching row layout */}
+              <span className="contents" onContextMenu={(e) => openMenu(e, channelRowMenu(c))}>
+                <span className="shrink-0 opacity-60">#</span>
+                <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                <CountPill count={c.unreadCount} />
+              </span>
             </RailRow>
           ))}
           {rooms.length === 0 && (isLoading ? <SkeletonRows rows={4} className="px-2 py-1.5" /> : <Hint>Ambient, persistent talk.</Hint>)}
@@ -192,9 +223,11 @@ function CommsPage() {
         <Section label="Relays" createPlaceholder="what's it about?" onCreate={(v) => void create(v, 'group')}>
           {relays.map((c) => (
             <RailRow key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
-              <span className="shrink-0 opacity-60">⇄</span>
-              <span className="min-w-0 flex-1 truncate">{c.name}</span>
-              <CountPill count={c.unreadCount} />
+              <span className="contents" onContextMenu={(e) => openMenu(e, channelRowMenu(c))}>
+                <span className="shrink-0 opacity-60">⇄</span>
+                <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                <CountPill count={c.unreadCount} />
+              </span>
             </RailRow>
           ))}
           {relays.length === 0 &&
@@ -214,9 +247,16 @@ function CommsPage() {
                 active={sel?.t === 'channel' && sel.id === dm?.id}
                 onClick={() => (dm ? setSel({ t: 'channel', id: dm.id }) : void startDm(u.id))}
               >
-                <Avatar name={u.name ?? u.email ?? '?'} className="h-5 w-5 shrink-0 text-[10px]" />
-                <span className="min-w-0 flex-1 truncate">{u.name ?? u.email}</span>
-                <CountPill count={dm?.unreadCount} />
+                <span
+                  className="contents"
+                  onContextMenu={(e) =>
+                    openMenu(e, dm ? channelRowMenu(dm) : [{ label: 'Open', onSelect: () => void startDm(u.id) }])
+                  }
+                >
+                  <Avatar name={u.name ?? u.email ?? '?'} className="h-5 w-5 shrink-0 text-[10px]" />
+                  <span className="min-w-0 flex-1 truncate">{u.name ?? u.email}</span>
+                  <CountPill count={dm?.unreadCount} />
+                </span>
               </RailRow>
             )
           })}
@@ -237,32 +277,37 @@ function CommsPage() {
                 <ul className="space-y-0.5">
                   {/* Clicking the agent = its working thread if one is live, else fresh. */}
                   <RailRow active={activeAgent && sel.conversationId === null} onClick={() => openAgent(a.id)}>
-                    <span className="shrink-0 opacity-60">◍</span>
-                    <span className="min-w-0 flex-1 truncate">{a.label}</span>
-                    {conversations.some((c) => c.agentModel === a.id && c.working) && (
-                      <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" title="working on a reply" />
-                    )}
-                    {activeAgent && sel.conversationId === null && (
-                      <span className="shrink-0 text-[10px] text-muted">new</span>
-                    )}
-                    {agentThreads.length > 0 && !activeAgent && (
-                      <span
-                        role="button"
-                        title={expanded ? 'Hide threads' : `Show threads (${agentThreads.length})`}
-                        className="shrink-0 rounded px-0.5 text-[10px] text-muted hover:text-fg"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setExpandedAgents((prev) => {
-                            const next = new Set(prev)
-                            if (next.has(a.id)) next.delete(a.id)
-                            else next.add(a.id)
-                            return next
-                          })
-                        }}
-                      >
-                        {expanded ? '▾' : '▸'}
-                      </span>
-                    )}
+                    <span
+                      className="contents"
+                      onContextMenu={(e) => openMenu(e, [{ label: 'New thread', onSelect: () => newThread(a.id) }])}
+                    >
+                      <span className="shrink-0 opacity-60">◍</span>
+                      <span className="min-w-0 flex-1 truncate">{a.label}</span>
+                      {conversations.some((c) => c.agentModel === a.id && c.working) && (
+                        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" title="working on a reply" />
+                      )}
+                      {activeAgent && sel.conversationId === null && (
+                        <span className="shrink-0 text-[10px] text-muted">new</span>
+                      )}
+                      {agentThreads.length > 0 && !activeAgent && (
+                        <span
+                          role="button"
+                          title={expanded ? 'Hide threads' : `Show threads (${agentThreads.length})`}
+                          className="shrink-0 rounded px-0.5 text-[10px] text-muted hover:text-fg"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setExpandedAgents((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(a.id)) next.delete(a.id)
+                              else next.add(a.id)
+                              return next
+                            })
+                          }}
+                        >
+                          {expanded ? '▾' : '▸'}
+                        </span>
+                      )}
+                    </span>
                   </RailRow>
                   {threads.map((c) => (
                     <RailRow
@@ -271,8 +316,18 @@ function CommsPage() {
                       onClick={() => setSel({ t: 'agent', model: a.id, conversationId: c.id })}
                       className="pl-7 text-xs"
                     >
-                      <span className="min-w-0 flex-1 truncate">{c.title || 'Untitled'}</span>
-                      {c.working && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />}
+                      <span
+                        className="contents"
+                        onContextMenu={(e) =>
+                          openMenu(e, [
+                            { label: 'Open', onSelect: () => setSel({ t: 'agent', model: a.id, conversationId: c.id }) },
+                            { label: 'Copy link', onSelect: () => copyAppLink(`/comms?a=${a.id}&x=${c.id}`) },
+                          ])
+                        }
+                      >
+                        <span className="min-w-0 flex-1 truncate">{c.title || 'Untitled'}</span>
+                        {c.working && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />}
+                      </span>
                     </RailRow>
                   ))}
                 </ul>
@@ -402,6 +457,7 @@ function CommsPage() {
           }}
         />
       )}
+      {menu}
     </RailSurface>
   )
 }

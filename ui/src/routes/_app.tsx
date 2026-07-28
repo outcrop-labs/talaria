@@ -25,6 +25,19 @@ function AppLayout() {
     if (isSuccess && !user) void navigate({ to: '/login' })
   }, [isSuccess, user, navigate])
 
+  // Native context menus are suppressed app-wide — Talaria surfaces provide
+  // their own. Editable fields keep the native menu (paste, spellcheck,
+  // dictionary) — taking that away breaks real workflows.
+  useEffect(() => {
+    const onCtx = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t?.closest('input, textarea, [contenteditable="true"], [contenteditable=""]')) return
+      e.preventDefault()
+    }
+    document.addEventListener('contextmenu', onCtx)
+    return () => document.removeEventListener('contextmenu', onCtx)
+  }, [])
+
   // Route gate: a denied or role-gated view isn't just hidden from the nav —
   // reaching it by URL bounces to Home. (Match prefixes, e.g. /boards/x.)
   useEffect(() => {
