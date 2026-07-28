@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { SkeletonRows } from '@/components/ui/skeleton'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, X, Upload, ExternalLink, DownloadCloud, Search, type LucideIcon } from 'lucide-react'
@@ -21,6 +21,9 @@ import { useSession } from '@/lib/session'
 import { createArtifact, createFolder, deleteArtifact, deleteFolder, saveArtifact, updateFolder, uploadFile, useArtifact, useArtifacts, useFolders, type Artifact, type ArtifactFolder, type ArtifactKind } from '@/lib/artifacts'
 
 export const Route = createFileRoute('/_app/artifacts')({
+  // ?a=<artifactId> deep-links an artifact — the URL IS the selection.
+  validateSearch: (search: Record<string, unknown>): { a?: string } =>
+    typeof search.a === 'string' && search.a ? { a: search.a } : {},
   component: ArtifactsPage,
 })
 
@@ -41,8 +44,11 @@ type Drag = { kind: 'artifact' | 'folder'; id: string } | null
 function ArtifactsPage() {
   const qc = useQueryClient()
   const { data: artifacts = [], isLoading: artifactsLoading } = useArtifacts()
-  const { data: folders = [] } = useFolders()
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const { data: folders = [], isLoading: foldersLoading } = useFolders()
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const activeId = search.a ?? null
+  const setActiveId = (id: string | null) => void navigate({ search: id ? { a: id } : {} })
   const [newOpen, setNewOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -123,7 +129,8 @@ function ArtifactsPage() {
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => { e.preventDefault(); void drop(null) }}
         >
-          {artifactsLoading ? (
+          {artifactsLoading || foldersLoading ? (
+            // Both queries feed the same tree — reveal it once, fully formed.
             <SkeletonRows rows={6} className="px-2 py-3" />
           ) : folders.length === 0 && artifacts.length === 0 ? (
             <div className="px-2 py-6 text-center text-xs text-muted">No artifacts yet.</div>
@@ -265,7 +272,22 @@ function DriveImportModal({ onClose, onImported }: { onClose: () => void; onImpo
               />
             </div>
             <div className="max-h-[50vh] min-h-[12rem] overflow-y-auto p-2">
-              {state === 'loading' && <div className="p-6 text-center text-xs text-muted">Loading</div>}
+              {state === 'loading' && (
+                // File-row shaped: kind chip + name + time, like the results.
+                <div aria-hidden>
+                  {['70%', '85%', '55%', '78%', '62%', '88%'].map((w, i) => (
+                    <div key={i} className="flex items-center gap-3 px-2 py-2">
+                      <Skeleton className="h-3 w-14 shrink-0 rounded-full" delay={i * 0.1} />
+                      <div className="min-w-0 flex-1">
+                        <div style={{ width: w }}>
+                          <Skeleton className="h-3 w-full rounded-full" delay={i * 0.1} />
+                        </div>
+                      </div>
+                      <Skeleton className="h-3 w-10 shrink-0 rounded-full" delay={i * 0.1} />
+                    </div>
+                  ))}
+                </div>
+              )}
               {state === 'error' && <div className="p-6 text-center text-xs text-[color:var(--theme-danger)]">Couldn’t reach Google Drive.</div>}
               {state === 'ready' && files && files.length === 0 && <div className="p-6 text-center text-xs text-muted">No files found.</div>}
               {state === 'ready' && files?.map((f) => (
@@ -480,7 +502,9 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
   }
   const googleLabel = artifact?.kind === 'sheet' ? 'Export to Google Sheets' : artifact?.kind === 'file' ? 'Export to Google Drive' : 'Export to Google Docs'
 
-  if (!artifact) return <div className="p-8 text-sm text-muted">Loading</div>
+  // Kind is unknown until the fetch lands, so use the doc-page shape (toolbar
+  // + centered prose bars) as the default stand-in for every kind.
+  if (!artifact) return <ArtifactPageSkeleton />
 
   return (
     <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
@@ -683,14 +707,42 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
   )
 }
 
+// Loading stand-in matching the artifact editor layout: toolbar (icon + title
+// + buttons) over a centered prose column, so the swap to content doesn't jump.
+const PROSE_WIDTHS = ['100%', '92%', '97%', '86%', '95%', '73%', '100%', '90%', '96%', '58%']
+function ArtifactPageSkeleton() {
+  return (
+    <div aria-hidden className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center gap-3 border-b border-line-subtle px-6 py-4">
+        <Skeleton className="h-7 w-7 shrink-0" />
+        <Skeleton className="h-5 w-64 max-w-[40%] rounded-full" delay={0.08} />
+        <span className="ml-auto flex shrink-0 gap-2">
+          <Skeleton className="h-7 w-20" delay={0.16} />
+          <Skeleton className="h-7 w-28" delay={0.24} />
+        </span>
+      </div>
+      <div className="mx-auto w-full max-w-[46rem] flex-1 space-y-3.5 px-6 py-8">
+        {PROSE_WIDTHS.map((w, i) => (
+          <div key={i} style={{ width: w }}>
+            <Skeleton className="h-3 w-full rounded-full" delay={i * 0.08} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 interface Rev { id: string; createdBy: string | null; createdAt: string; size: number }
 function ArtifactHistory({ id, onRestore }: { id: string; onRestore: (content: string) => Promise<void> }) {
   const [revs, setRevs] = useState<Rev[]>([])
+  const [loading, setLoading] = useState(true)
   useEffect(() => {
+    setLoading(true)
     fetch(`/api/history?kind=artifact&id=${id}`)
       .then((r) => (r.ok ? r.json() : { revisions: [] }))
       .then((d) => setRevs((d as { revisions: Rev[] }).revisions))
       .catch(() => setRevs([]))
+      .finally(() => setLoading(false))
   }, [id])
   const restore = async (rev: Rev) => {
     const r = await fetch(`/api/history?kind=artifact&id=${id}&rev=${rev.id}`)
@@ -701,7 +753,9 @@ function ArtifactHistory({ id, onRestore }: { id: string; onRestore: (content: s
   return (
     <div>
       <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">History</div>
-      {revs.length === 0 ? (
+      {loading ? (
+        <SkeletonRows rows={4} className="px-2 py-1" />
+      ) : revs.length === 0 ? (
         <div className="text-xs text-muted">No saved revisions yet.</div>
       ) : (
         revs.map((r, i) => (

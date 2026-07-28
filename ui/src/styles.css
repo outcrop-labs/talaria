@@ -26,6 +26,12 @@
   --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif;
   --font-display: var(--font-mono);
 
+  /* Raw-CSS alias for the border token: Tailwind's `border-line` maps to
+     --theme-border via @theme, but inline styles and plain CSS reference
+     var(--theme-line) — without this alias those paint TRANSPARENT (invisible
+     skeletons, borderless tiptap tables, blank status dots). */
+  --theme-line: var(--theme-border);
+
   /* A subtle metallic-bronze gradient (brand mark only — not a glow). */
   --mercury-grad: linear-gradient(135deg, #b98f5a 0%, #d0aa76 100%);
   --chat-content-max-width: 900px;

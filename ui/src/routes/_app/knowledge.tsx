@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { SkeletonRows } from '@/components/ui/skeleton'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -46,6 +46,11 @@ const docSearch: DocSearchFn = async (q) => {
 }
 
 export const Route = createFileRoute('/_app/knowledge')({
+  // ?space=<id>&doc=<id> deep-link the tree selection — the URL IS the state.
+  validateSearch: (search: Record<string, unknown>): { space?: string; doc?: string } => ({
+    ...(typeof search.space === 'string' && search.space ? { space: search.space } : {}),
+    ...(typeof search.doc === 'string' && search.doc ? { doc: search.doc } : {}),
+  }),
   component: KnowledgePage,
 })
 
@@ -56,15 +61,22 @@ export const Route = createFileRoute('/_app/knowledge')({
 function KnowledgePage() {
   const qc = useQueryClient()
   const { data: spaces = [], isLoading: spacesLoading } = useSpaces()
-  const [spaceId, setSpaceId] = useState<string | null>(null)
-  const [docId, setDocId] = useState<string | null>(null)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const spaceId = search.space ?? null
+  const docId = search.doc ?? null
+  // One navigation per selection change — space + doc move together.
+  const setLoc = (space: string | null, doc: string | null) =>
+    void navigate({ search: { ...(space ? { space } : {}), ...(doc ? { doc } : {}) } })
+  const setSpaceId = (id: string | null) => setLoc(id, null)
+  const setDocId = (id: string | null) => setLoc(spaceId, id)
   const [creatingSpace, setCreatingSpace] = useState(false)
   const activeSpace = spaces.find((s) => s.id === spaceId) ?? spaces[0]
-  const { data: docs = [] } = useDocs(activeSpace?.id ?? null)
+  const { data: docs = [], isLoading: docsLoading } = useDocs(activeSpace?.id ?? null)
 
   useEffect(() => {
-    if (!spaceId && spaces[0]) setSpaceId(spaces[0].id)
-  }, [spaces, spaceId])
+    if (!spaceId && spaces[0]) void navigate({ search: { space: spaces[0].id }, replace: true })
+  }, [spaces, spaceId, navigate])
 
   const newSpace = async (name: string) => {
     const { space } = await createSpace(name)
@@ -88,17 +100,13 @@ function KnowledgePage() {
   const removeSpace = async (id: string) => {
     await deleteSpace(id)
     await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
-    if (spaceId === id) {
-      setSpaceId(null)
-      setDocId(null)
-    }
+    if (spaceId === id) setLoc(null, null)
   }
 
   // Jump to a doc from search — switch to its space if needed.
+  // Jump to a doc from search — one navigation carries space + doc together.
   const openDoc = (hit: { id: string; spaceId: string; kind?: 'doc' | 'space' }) => {
-    if (hit.spaceId !== activeSpace?.id) setSpaceId(hit.spaceId)
-    // A space hit opens the space's own overview document.
-    setDocId(hit.kind === 'space' ? null : hit.id)
+    setLoc(hit.spaceId, hit.kind === 'space' ? null : hit.id)
   }
 
   return (
@@ -142,13 +150,17 @@ function KnowledgePage() {
                   space={s}
                   active={activeSpace?.id === s.id}
                   onSelect={() => {
-                    setSpaceId(s.id)
-                    setDocId(null) // open the space's own overview
+                    setLoc(s.id, null) // open the space's own overview
                   }}
                   onRename={(name) => void renameSpace(s.id, name)}
                 />
                 {activeSpace?.id === s.id && (
-                  <DocTree docs={docs} activeId={docId} onSelect={setDocId} onNew={newDoc} onMove={move} />
+                  docsLoading ? (
+                    // Switching spaces refetches the doc tree — keep its shape.
+                    <SkeletonRows rows={6} className="ml-4 mt-1 border-l border-line-subtle py-1 pl-4" />
+                  ) : (
+                    <DocTree docs={docs} activeId={docId} onSelect={setDocId} onNew={newDoc} onMove={move} />
+                  )
                 )}
               </div>
             ))
@@ -513,6 +525,37 @@ function DocRow({
   )
 }
 
+// ── Page skeleton ───────────────────────────────────────────────────────────
+// Matches the doc/space editor layout (breadcrumb, toolbar with icon + title +
+// buttons, centered prose column) so the swap to real content doesn't jump.
+const PROSE_WIDTHS = ['100%', '92%', '97%', '86%', '95%', '73%', '100%', '90%', '96%', '88%', '94%', '58%']
+function DocPageSkeleton({ breadcrumb = false, bars = 10 }: { breadcrumb?: boolean; bars?: number }) {
+  return (
+    <div aria-hidden className="flex h-full min-h-0 flex-col">
+      {breadcrumb && (
+        <div className="border-b border-line-subtle px-6 pb-2 pt-3">
+          <Skeleton className="h-2.5 w-44 rounded-full" />
+        </div>
+      )}
+      <div className="flex items-center gap-3 border-b border-line-subtle px-6 py-4">
+        <Skeleton className="h-7 w-7 shrink-0" />
+        <Skeleton className="h-5 w-64 max-w-[40%] rounded-full" delay={0.08} />
+        <span className="ml-auto flex shrink-0 gap-2">
+          <Skeleton className="h-7 w-20" delay={0.16} />
+          <Skeleton className="h-7 w-28" delay={0.24} />
+        </span>
+      </div>
+      <div className="mx-auto w-full max-w-[46rem] flex-1 space-y-3.5 px-6 py-8">
+        {PROSE_WIDTHS.slice(0, bars).map((w, i) => (
+          <div key={i} style={{ width: w }}>
+            <Skeleton className="h-3 w-full rounded-full" delay={i * 0.08} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Space overview (top-level folder = document) ────────────────────────────
 function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewDoc: () => void; onDeleted: () => void }) {
   const qc = useQueryClient()
@@ -560,7 +603,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
   }
   const saveBody = () => save({ name: name.trim() || 'Untitled', body: editorRef.current?.getMarkdown() ?? space?.body ?? '' })
 
-  if (!space) return <div className="p-8 text-sm text-muted">Loading</div>
+  if (!space) return <DocPageSkeleton bars={9} />
 
   return (
     <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
@@ -754,7 +797,7 @@ function DocEditor({
   const qc = useQueryClient()
   const { data: doc } = useDoc(docId)
   const { data: me } = useSession()
-  const { data: backlinks = [] } = useBacklinks(docId)
+  const { data: backlinks = [], isLoading: backlinksLoading } = useBacklinks(docId)
   const editorRef = useRef<RichEditorHandle>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [title, setTitle] = useState('')
@@ -820,7 +863,7 @@ function DocEditor({
     nodes?.[index]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
-  if (!doc) return <div className="p-8 text-sm text-muted">Loading</div>
+  if (!doc) return <DocPageSkeleton breadcrumb bars={12} />
 
   return (
     <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
@@ -973,7 +1016,15 @@ function DocEditor({
             )}
 
             {/* Backlinks — docs that reference this one. */}
-            {backlinks.length > 0 && (
+            {backlinksLoading && (
+              <div aria-hidden className="mx-auto max-w-[46rem] px-6 pb-10">
+                <div className="border-t border-line-subtle pt-4">
+                  <Skeleton className="mb-3 h-2.5 w-24 rounded-full" />
+                  <SkeletonRows rows={2} />
+                </div>
+              </div>
+            )}
+            {!backlinksLoading && backlinks.length > 0 && (
               <div className="mx-auto max-w-[46rem] px-6 pb-10">
                 <div className="border-t border-line-subtle pt-4">
                   <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
@@ -1077,11 +1128,27 @@ const VisibilityIcon = ({ v }: { v: 'private' | 'org' | 'public' }) =>
 // Attach any artifact to a KB doc (the "attach an artifact to anything" spec).
 function ArtifactAttachments({ docId }: { docId: string }) {
   const qc = useQueryClient()
-  const { data: attached = [] } = useTargetArtifacts('kb-doc', docId)
-  const { data: all = [] } = useArtifacts()
+  const { data: attached = [], isLoading: attachedLoading } = useTargetArtifacts('kb-doc', docId)
+  const { data: all = [], isLoading: allLoading } = useArtifacts()
+  const loading = attachedLoading || allLoading
   const attachedIds = new Set(attached.map((a) => a.id))
   const options = all.filter((a) => !attachedIds.has(a.id)).map((a) => ({ value: a.id, label: a.title, sub: a.kind }))
   const refresh = () => qc.invalidateQueries({ queryKey: ['artifacts-for', 'kb-doc', docId] })
+  if (loading) {
+    return (
+      <div aria-hidden className="mx-auto max-w-[46rem] px-6 pb-10">
+        <div className="border-t border-line-subtle pt-4">
+          <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+            <Paperclip size={12} /> Attachments
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Skeleton className="h-7 w-36" />
+            <Skeleton className="h-7 w-28" delay={0.12} />
+          </div>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="mx-auto max-w-[46rem] px-6 pb-10">
       <div className="border-t border-line-subtle pt-4">
@@ -1123,14 +1190,17 @@ interface Rev {
 }
 function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb-space'; id: string; onRestore: (content: string) => Promise<void> }) {
   const [revs, setRevs] = useState<Rev[]>([])
+  const [loading, setLoading] = useState(true)
   const [preview, setPreview] = useState<{ rev: Rev; content: string } | null>(null)
   const [restoring, setRestoring] = useState(false)
   useEffect(() => {
     // Both kb-doc and kb-space history key on the item id (like memory).
+    setLoading(true)
     fetch(`/api/history?kind=${kind}&id=${id}`)
       .then((r) => (r.ok ? r.json() : { revisions: [] }))
       .then((d) => setRevs((d as { revisions: Rev[] }).revisions))
       .catch(() => setRevs([]))
+      .finally(() => setLoading(false))
   }, [kind, id])
 
   const open = async (rev: Rev) => {
@@ -1143,7 +1213,9 @@ function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb
   return (
     <div>
       <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">History</div>
-      {revs.length === 0 ? (
+      {loading ? (
+        <SkeletonRows rows={4} className="px-2 py-1" />
+      ) : revs.length === 0 ? (
         <div className="text-xs text-muted">No saved revisions yet.</div>
       ) : (
         revs.map((r, i) => (

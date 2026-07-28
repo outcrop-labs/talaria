@@ -26,9 +26,9 @@ function BoardPage() {
   const board = boards.find((b) => b.id === boardId) ?? archivedBoards.find((b) => b.id === boardId)
 
   const [showArchived, setShowArchived] = useState(false)
-  const { data: allTasks = [] } = useBoardTasks(board ? boardId : null, showArchived)
-  const { data: fleet } = useAgents()
-  const { data: boardCfg } = useBoardAgents(board ? boardId : null)
+  const { data: allTasks = [], isLoading: tasksLoading } = useBoardTasks(board ? boardId : null, showArchived)
+  const { data: fleet, isLoading: fleetLoading } = useAgents()
+  const { data: boardCfg, isLoading: cfgLoading } = useBoardAgents(board ? boardId : null)
   // Only agents allowed on this board are assignable/filterable here.
   const boardAgents = boardCfg?.allowAll
     ? fleet?.agents ?? []
@@ -51,7 +51,11 @@ function BoardPage() {
     )
   }, [allTasks, q, assignee, priority])
 
-  if (isLoading)
+  // One continuous skeleton across the serial fetch (boards → tasks): the board
+  // must not paint with empty columns while its tasks are still in flight.
+  // `!showArchived` keeps the gate to the cold-load path — flipping the archived
+  // toggle refetches under the toolbar, not under a full-page skeleton.
+  if (isLoading || (board && !showArchived && tasksLoading))
     return (
       <div className="grid h-full grid-cols-2 gap-3 overflow-hidden p-6 sm:grid-cols-4">
         {[0, 1, 2, 3].map((c) => (
@@ -85,12 +89,16 @@ function BoardPage() {
           </button>
         </div>
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" size="sm" className="w-44" />
-        <Select value={assignee} onChange={(e) => setAssignee(e.target.value)} size="sm">
-          <option value="">Any assignee</option>
-          {boardAgents.map((a) => (
-            <option key={a.id} value={a.id}>{a.label}</option>
-          ))}
-        </Select>
+        {fleetLoading || cfgLoading ? (
+          <Skeleton className="h-9 w-32" />
+        ) : (
+          <Select value={assignee} onChange={(e) => setAssignee(e.target.value)} size="sm">
+            <option value="">Any assignee</option>
+            {boardAgents.map((a) => (
+              <option key={a.id} value={a.id}>{a.label}</option>
+            ))}
+          </Select>
+        )}
         <Select value={priority} onChange={(e) => setPriority(e.target.value)} size="sm">
           <option value="">Any priority</option>
           {PRIORITIES.map((p) => (

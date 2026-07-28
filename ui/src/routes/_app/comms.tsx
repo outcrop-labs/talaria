@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { SkeletonRows } from '@/components/ui/skeleton'
-import { useEffect, useMemo, useState } from 'react'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { CheckCheck, ClipboardList, Plus, Settings, SquarePen } from 'lucide-react'
 import { cn } from '@/lib/cn'
@@ -55,13 +55,32 @@ type Sel = { t: 'channel'; id: string } | { t: 'agent'; model: string; conversat
 function CommsPage() {
   const qc = useQueryClient()
   const { data: session } = useSession()
-  const { data: fleetData } = useAgents()
+  const { data: fleetData, isLoading: fleetLoading } = useAgents()
   const fleet = fleetData?.agents ?? []
   const { data: channels = [], isLoading } = useChannels()
-  const { data: users = [] } = useUsers()
-  const { data: conversations = [] } = useConversations('chat')
+  const { data: users = [], isLoading: usersLoading } = useUsers()
+  const { data: conversations = [], isLoading: conversationsLoading } = useConversations('chat')
 
-  const [sel, setSel] = useState<Sel>(null)
+  // The URL IS the selection: ?c=<channel> or ?a=<agent>&x=<thread>. Every
+  // pick navigates (push), so back/forward walks your reading order and any
+  // view is copy-linkable.
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const sel: Sel = search.c
+    ? { t: 'channel', id: search.c }
+    : search.a
+      ? { t: 'agent', model: search.a, conversationId: search.x ?? null }
+      : null
+  const setSel = (next: Sel, opts: { replace?: boolean } = {}) =>
+    void navigate({
+      search:
+        next?.t === 'channel'
+          ? { c: next.id }
+          : next?.t === 'agent'
+            ? { a: next.model, ...(next.conversationId ? { x: next.conversationId } : {}) }
+            : {},
+      replace: opts.replace,
+    })
   // Agents whose thread list is pinned open (chevron) without being selected.
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set())
   // Bumped on every deliberate fresh-thread start; drives ChatView's reset.
@@ -83,39 +102,40 @@ function CommsPage() {
     else newThread(model)
   }
 
+  // Clicking an agent BEFORE the conversations query resolves can't see its
+  // working thread — when the data first lands, upgrade a still-fresh agent
+  // selection to that thread so in-flight work is resumed, not shadowed.
+  // Once only (on the load transition): deliberate new threads afterwards
+  // must never be yanked into the working thread.
+  const upgradedOnLoad = useRef(false)
+  useEffect(() => {
+    if (conversationsLoading || upgradedOnLoad.current) return
+    upgradedOnLoad.current = true
+    if (sel?.t !== 'agent' || sel.conversationId !== null) return
+    const working = conversations.find((c) => c.agentModel === sel.model && c.working)
+    if (working) setSel({ t: 'agent', model: sel.model, conversationId: working.id }, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationsLoading, conversations])
+
   const rooms = channels.filter((c) => c.kind === 'channel')
   const relays = channels.filter((c) => c.kind === 'group')
   const dms = channels.filter((c) => c.kind === 'dm')
   const people = users.filter((u) => u.id !== session?.id)
   const dmByPeer = useMemo(() => new Map(dms.map((c) => [c.peer?.userId, c])), [dms])
 
-  // A ?c= deep link (from a DM notification) wins once, then normal selection.
-  const search = Route.useSearch()
-  const navigate = Route.useNavigate()
-  useEffect(() => {
-    if (search.c && channels.some((ch) => ch.id === search.c)) {
-      setSel({ t: 'channel', id: search.c })
-      void navigate({ search: {}, replace: true })
-    }
-  }, [search.c, channels, navigate])
-  useEffect(() => {
-    if (search.a) {
-      setSel({ t: 'agent', model: search.a, conversationId: search.x ?? null })
-      void navigate({ search: {}, replace: true })
-    }
-  }, [search.a, search.x, navigate])
-
   // Default to the first channel; heal a selection that vanished (archived).
+  // Both are replace-navigations — housekeeping shouldn't pollute history.
   useEffect(() => {
-    if (search.c || search.a) return // deep link resolving — don't race it
-    if (!sel && channels[0]) setSel({ t: 'channel', id: channels[0].id })
-    if (sel?.t === 'channel' && !channels.some((c) => c.id === sel.id)) {
-      setSel(channels[0] ? { t: 'channel', id: channels[0].id } : null)
+    if (channels.length === 0 && isLoading) return
+    if (!sel && channels[0]) setSel({ t: 'channel', id: channels[0].id }, { replace: true })
+    if (sel?.t === 'channel' && channels.length > 0 && !channels.some((c) => c.id === sel.id)) {
+      setSel(channels[0] ? { t: 'channel', id: channels[0].id } : null, { replace: true })
     }
-  }, [channels, sel, search.c])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channels, sel, isLoading])
 
   const selected: Channel | null = sel?.t === 'channel' ? (channels.find((c) => c.id === sel.id) ?? null) : null
-  const { data: detail } = useChannelDetail(selected?.id ?? null)
+  const { data: detail, isLoading: detailLoading } = useChannelDetail(selected?.id ?? null)
   const refresh = () => qc.invalidateQueries({ queryKey: ['channels'] })
 
   const create = async (name: string, kind: 'channel' | 'group') => {
@@ -177,7 +197,12 @@ function CommsPage() {
               <CountPill count={c.unreadCount} />
             </RailRow>
           ))}
-          {relays.length === 0 && <Hint>Gather people + agents around a purpose; conclude when done.</Hint>}
+          {relays.length === 0 &&
+            (isLoading ? (
+              <SkeletonRows rows={3} className="px-2 py-1.5" />
+            ) : (
+              <Hint>Gather people + agents around a purpose; conclude when done.</Hint>
+            ))}
         </Section>
 
         <Section label="Teammates">
@@ -195,7 +220,8 @@ function CommsPage() {
               </RailRow>
             )
           })}
-          {people.length === 0 && <Hint>Just you so far.</Hint>}
+          {people.length === 0 &&
+            (usersLoading ? <SkeletonRows rows={4} avatar className="px-2 py-1.5" /> : <Hint>Just you so far.</Hint>)}
         </Section>
 
         <Section label="Agents">
@@ -253,7 +279,8 @@ function CommsPage() {
               </li>
             )
           })}
-          {fleet.length === 0 && <Hint>No agents yet. Hire on /agents.</Hint>}
+          {fleet.length === 0 &&
+            (fleetLoading ? <SkeletonRows rows={3} avatar className="px-2 py-1.5" /> : <Hint>No agents yet. Hire on /agents.</Hint>)}
         </Section>
       </Rail>
 
@@ -279,6 +306,14 @@ function CommsPage() {
               </span>
               {selected.topic && <span className="truncate text-xs text-muted">{selected.topic}</span>}
               <span className="ml-auto" />
+              {/* Pill-shaped placeholders while membership loads — the header
+                  holds its shape instead of the pickers popping in. */}
+              {!detail && detailLoading && selected.kind !== 'dm' && (
+                <>
+                  <Skeleton className="h-6 w-20 rounded-full" />
+                  <Skeleton className="h-6 w-20 rounded-full" delay={0.12} />
+                </>
+              )}
               {detail && selected.kind !== 'dm' && (
                 <>
                   {/* Membership managed right here — the settings modal is for renames/danger. */}
@@ -329,14 +364,10 @@ function CommsPage() {
             </header>
             <div className="relative min-h-0 flex-1">
               {concluding && <GeneratingOverlay label="Concluding: summarizing what was decided, then archiving" />}
-              <ChannelView
-                key={selected.id}
-                channelId={selected.id}
-                channelName={title}
-                channelAgents={detail?.agents ?? []}
-                members={detail?.members ?? []}
-                fleet={fleet}
-              />
+              {/* ChannelView fetches its own channel detail (react-query
+                  dedupes with the header's call) so the message pane renders
+                  independently of this fetch. */}
+              <ChannelView key={selected.id} channelId={selected.id} channelName={title} fleet={fleet} />
             </div>
           </div>
         ) : (

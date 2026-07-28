@@ -19,6 +19,7 @@ import { GATEABLE_VIEWS } from '@/lib/nav'
 import { RetrievalPanel } from '@/components/admin/retrieval-panel'
 import { StoragePanel } from '@/components/admin/storage-panel'
 import { InfoTip } from '@/components/ui/info-tip'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 
 
@@ -34,6 +35,11 @@ const ADMIN_TABS: { id: AdminTab; label: string }[] = [
 
 export const Route = createFileRoute('/_app/admin')({
   component: AdminPage,
+  // /admin?tab=security deep-links a concern.
+  validateSearch: (search: Record<string, unknown>): { tab?: AdminTab } => {
+    const t = ADMIN_TABS.find((v) => v.id === search.tab)
+    return t ? { tab: t.id } : {}
+  },
 })
 
 interface AdminUser {
@@ -66,7 +72,7 @@ function useAdminUsers() {
 function AdminPage() {
   const qc = useQueryClient()
   const { data: me } = useSession()
-  const { data: users } = useAdminUsers()
+  const { data: users, isPending: usersPending } = useAdminUsers()
   const { data: fleet } = useAgents()
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
   const [error, setError] = useState<string | null>(null)
@@ -83,7 +89,10 @@ function AdminPage() {
     await qc.invalidateQueries({ queryKey: ['admin-users'] })
   }
 
-  const [tab, setTab] = useState<AdminTab>('org')
+  const search = Route.useSearch()
+  const nav = Route.useNavigate()
+  const tab: AdminTab = search.tab ?? 'org'
+  const setTab = (t: AdminTab) => void nav({ search: t === 'org' ? {} : { tab: t } })
 
   if (me && me.role !== 'admin') {
     return <EmptyState icon="⛨" title="Admins only" hint="Ask an admin if you need access here." />
@@ -141,6 +150,24 @@ function AdminPage() {
               {error}
             </div>
           )}
+          {usersPending ? (
+            // Person-row skeletons: avatar + name/email bars + the role/keys
+            // controls, so the resolved list lands without a jump.
+            <div className="divide-y divide-line-subtle">
+              {Array.from({ length: 4 }, (_, i) => (
+                <div key={i} className="flex items-center gap-3 py-3">
+                  <Skeleton className="h-7 w-7 shrink-0 rounded-full" delay={i * 0.12} />
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <Skeleton className="h-2.5 w-36 rounded-full" delay={i * 0.12} />
+                    <Skeleton className="h-2 w-48 rounded-full" delay={i * 0.12 + 0.06} />
+                  </div>
+                  <Skeleton className="h-7 w-28 shrink-0" delay={i * 0.12} />
+                  <Skeleton className="h-4 w-12 shrink-0" delay={i * 0.12} />
+                  <Skeleton className="h-2.5 w-16 shrink-0 rounded-full" delay={i * 0.12} />
+                </div>
+              ))}
+            </div>
+          ) : (
           <ul className="divide-y divide-line-subtle">
             {(users ?? []).map((u) => {
               // Views shown as an ALLOW list (all selected by default); denying =
@@ -224,6 +251,7 @@ function AdminPage() {
               )
             })}
           </ul>
+          )}
         </Panel>
         )}
       </div>
@@ -237,7 +265,7 @@ function AdminPage() {
 // no agent introduces itself as belonging to the underlying platform.
 function OrgPanel() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: ['admin-settings'],
     queryFn: async (): Promise<{ auditRetentionDays: number; org: { name: string; about: string } }> => {
       const r = await fetch('/api/admin/settings')
@@ -273,6 +301,20 @@ function OrgPanel() {
         this team, and saving here rolls running agents (a fresh container comes up and traffic cuts over only once
         it's healthy), so the fleet speaks the new identity without interrupting anyone's conversation.
       </p>
+      {isPending ? (
+        // Hold the form's footprint until settings land, so the fields never
+        // render blank and then fill in.
+        <div className="space-y-3">
+          <div>
+            <Skeleton className="mb-1.5 h-2.5 w-24 rounded-full" />
+            <Skeleton className="h-9 w-full max-w-xs" />
+          </div>
+          <div>
+            <Skeleton className="mb-1.5 h-2.5 w-40 rounded-full" delay={0.12} />
+            <Skeleton className="h-14 w-full" delay={0.12} />
+          </div>
+        </div>
+      ) : (
       <div className="space-y-3">
         <div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Business name</label>
@@ -296,13 +338,14 @@ function OrgPanel() {
           </Button>
         </div>
       </div>
+      )}
     </Panel>
   )
 }
 
 function SettingsPanel() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: ['admin-settings'],
     queryFn: async (): Promise<{ auditRetentionDays: number }> => {
       const r = await fetch('/api/admin/settings')
@@ -326,6 +369,17 @@ function SettingsPanel() {
   return (
     <Panel>
       <div className="mb-2 text-sm font-semibold text-fg">Settings</div>
+      {isPending ? (
+        // Hold the retention row so the input never renders blank, then fills.
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Skeleton className="h-3 w-28 rounded-full" />
+            <Skeleton className="h-2.5 w-64 rounded-full" delay={0.12} />
+          </div>
+          <Skeleton className="h-8 w-24 shrink-0" />
+          <Skeleton className="h-7 w-16 shrink-0" delay={0.12} />
+        </div>
+      ) : (
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-sm text-fg">Audit retention</div>
@@ -344,6 +398,7 @@ function SettingsPanel() {
           Save
         </Button>
       </div>
+      )}
     </Panel>
   )
 }
@@ -352,7 +407,7 @@ function SettingsPanel() {
 // quality_review, a judge model reviews the agent's work and posts a verdict.
 function EncryptionPanel() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: ['admin-encryption'],
     queryFn: async (): Promise<{
       keyVersion: number | null
@@ -396,12 +451,21 @@ function EncryptionPanel() {
         <span className="text-sm font-semibold text-fg">Encryption</span>
         <InfoTip text="Every stored secret is encrypted at rest (AES-256-GCM). A random data key encrypts the secrets; that key is stored wrapped by the root secret, so the key that unlocks everything is never in a config file. Rotating re-encrypts every secret under a fresh key in one pass." />
       </div>
+      {isPending ? (
+        // Stat pills shimmer instead of rendering "v—/—" and reflowing.
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+          {Array.from({ length: 4 }, (_, i) => (
+            <Skeleton key={i} className="h-3 w-24 rounded-full" delay={i * 0.12} />
+          ))}
+        </div>
+      ) : (
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted">
         <span>Key version: <strong className="text-fg">v{data?.keyVersion ?? '—'}</strong></span>
         <span>Secrets protected: <strong className="text-fg">{data?.secretCount ?? '—'}</strong></span>
         <span>Root of trust: <strong className="text-fg">{data?.rootSource ?? '—'}</strong></span>
         {data?.rotatedAt && <span>Rotated: {new Date(data.rotatedAt).toLocaleString()}</span>}
       </div>
+      )}
       <div className="mt-4 flex flex-wrap items-end gap-3">
         <div className="flex-1 min-w-[16rem]">
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">New root secret (optional)</label>
@@ -437,7 +501,7 @@ function EncryptionPanel() {
 
 function JudgePanel() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: ['judge-config'],
     queryFn: async (): Promise<{ config: { enabled: boolean; model: string | null }; models: string[] }> => {
       const r = await fetch('/api/admin/judge')
@@ -465,6 +529,15 @@ function JudgePanel() {
         <span className="text-sm font-semibold text-fg">QA judge</span>
         <InfoTip text="When an agent hands a ticket to quality review, a judge model reviews the reported work and posts a verdict (pass / revise / escalate) with specific issues. Advisory: the human reviewer still decides. Pick a strong model for the sharpest review." />
       </div>
+      {isPending ? (
+        // The checkbox and model select seed from the query — hold the whole
+        // control row so nothing renders unchecked and then flips.
+        <div className="flex flex-wrap items-center gap-3">
+          <Skeleton className="h-4 w-4" />
+          <Skeleton className="h-3 w-52 rounded-full" delay={0.12} />
+          <Skeleton className="h-8 w-64" delay={0.24} />
+        </div>
+      ) : (
       <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm text-fg">
           <input type="checkbox" checked={enabled} onChange={(e) => void save({ enabled: e.target.checked })} />
@@ -480,6 +553,7 @@ function JudgePanel() {
         </div>
         {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
       </div>
+      )}
       <p className="mt-3 text-[11px] text-muted">Per-board override lives on each board (advisory / off); default follows this toggle.</p>
     </Panel>
   )
@@ -496,7 +570,7 @@ interface GuardData {
 // mode records findings out-of-band; annotate/strict act on them.
 function GuardrailsPanel() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: ['guardrails'],
     queryFn: async (): Promise<GuardData> => {
       const r = await fetch('/api/admin/guardrails')
@@ -520,6 +594,29 @@ function GuardrailsPanel() {
         <span className="text-sm font-semibold text-fg">Confab guard</span>
         <InfoTip text="A structural check on every model output at the gateway: fabricated tool claims, invented links, outage stories, leaked secrets and PII. Observe records findings; annotate flags the reply; strict also redacts. Flagged content never re-enters an agent\u2019s context." />
       </div>
+      {isPending ? (
+        // Everything here seeds from the query (mode, slider, coach toggle,
+        // rules) — hold the full control area so no false defaults flash.
+        <>
+          <div className="flex flex-wrap items-center gap-4">
+            <Skeleton className="h-8 w-40" />
+            <Skeleton className="h-4 w-40 rounded-full" delay={0.12} />
+            <Skeleton className="h-4 w-44 rounded-full" delay={0.24} />
+          </div>
+          <div className="mt-3 space-y-1.5">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="flex items-center gap-2 py-0.5">
+                <Skeleton className="h-4 w-4" delay={i * 0.1} />
+                <Skeleton className="h-3 w-48 rounded-full" delay={i * 0.1} />
+              </div>
+            ))}
+          </div>
+          <div className="mt-4">
+            <SkeletonRows rows={3} />
+          </div>
+        </>
+      ) : (
+      <>
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
           <span className="text-[11px] uppercase tracking-wide text-muted">Mode</span>
@@ -583,6 +680,8 @@ function GuardrailsPanel() {
           </div>
         </div>
       )}
+      </>
+      )}
     </Panel>
   )
 }
@@ -597,7 +696,7 @@ interface OutreachData {
 // things through their own governed tools, plus agent-initiated DM caps.
 function OutreachPanel() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: ['admin-outreach'],
     queryFn: async (): Promise<OutreachData> => {
       const r = await fetch('/api/admin/outreach')
@@ -625,6 +724,29 @@ function OutreachPanel() {
         <span className="text-sm font-semibold text-fg">Proactive outreach</span>
         <InfoTip text="Opted-in agents get a periodic check-in: a look at their stale or blocked work, and the chance to act through their normal tools — a ticket comment, a channel post, or a direct message to your inbox. Everything stays attributed and board-policy-gated; DMs are capped per person per day. Off by default." />
       </div>
+      {isPending ? (
+        // Controls, agent chips, and the recent list all seed from the query —
+        // hold their footprint so the toggle never flashes unchecked.
+        <>
+          <div className="flex flex-wrap items-center gap-4">
+            <Skeleton className="h-4 w-44 rounded-full" />
+            <Skeleton className="h-8 w-32" delay={0.12} />
+            <Skeleton className="h-8 w-28" delay={0.24} />
+          </div>
+          <div className="mt-3">
+            <Skeleton className="mb-2 h-2.5 w-28 rounded-full" />
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {Array.from({ length: 4 }, (_, i) => (
+                <Skeleton key={i} className="h-4 w-28 rounded-full" delay={i * 0.1} />
+              ))}
+            </div>
+          </div>
+          <div className="mt-4">
+            <SkeletonRows rows={3} />
+          </div>
+        </>
+      ) : (
+      <>
       <div className="flex flex-wrap items-center gap-4">
         <label className="flex items-center gap-2 text-xs text-muted">
           <input type="checkbox" checked={cfg?.enabled ?? false} onChange={(e) => void save({ enabled: e.target.checked })} />
@@ -686,6 +808,8 @@ function OutreachPanel() {
           </div>
         </div>
       )}
+      </>
+      )}
     </Panel>
   )
 }
@@ -701,7 +825,7 @@ interface OrgGoogle {
 // The shared org Google account general fleet agents act as for Drive/Docs.
 function OrgGooglePanel() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: ['org-google'],
     queryFn: async (): Promise<OrgGoogle> => {
       const r = await fetch('/api/integrations/google/org')
@@ -741,7 +865,18 @@ function OrgGooglePanel() {
         <span className="text-sm font-semibold text-fg">Organization Google account</span>
         <InfoTip text="A single shared Google account the fleet builds in. General agents (no personal owner) create Docs, Sheets, and Drive files here; a personal assistant instead acts as its owner\u2019s own connected Google." />
       </div>
-      {data && !data.available ? (
+      {isPending ? (
+        // Never show "Not connected" + Connect while the status is in flight —
+        // hold the connection row's shape until it resolves.
+        <div className="flex items-center gap-3 rounded-xl border border-line-subtle p-4">
+          <Skeleton className="h-9 w-9 shrink-0" />
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Skeleton className="h-3 w-36 rounded-full" />
+            <Skeleton className="h-2.5 w-52 rounded-full" delay={0.12} />
+          </div>
+          <Skeleton className="h-7 w-24 shrink-0" delay={0.24} />
+        </div>
+      ) : data && !data.available ? (
         <div className="text-xs text-muted">Google integration isn’t configured on this server.</div>
       ) : (
         <div className="flex items-center gap-3 rounded-xl border border-line-subtle p-4">

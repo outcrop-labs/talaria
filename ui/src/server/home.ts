@@ -42,7 +42,8 @@ export interface HomeSummary {
   fleet: { online: number; total: number; down: string[] }
 }
 
-const WINDOW = 5
+// Full lists — the Boards console shows everything per queue (capped sanely).
+const WINDOW = 100
 
 export async function homeSummary(userId: string, role: 'admin' | 'member' = 'member'): Promise<HomeSummary> {
   const sql = await db()

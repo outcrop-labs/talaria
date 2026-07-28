@@ -10,6 +10,7 @@ import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import { relativeTime } from '@/lib/fleet'
 import { parseCronDraft, streamMuse } from '@/lib/muse'
 import { cn } from '@/lib/cn'
@@ -298,13 +299,37 @@ function CronRow({
   )
 }
 
+/** The shape of the jobs list while it loads: dot + name + schedule + actions. */
+function CronListSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <ul aria-hidden className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+      {Array.from({ length: rows }, (_, i) => (
+        <li key={i} className="flex items-center gap-2.5 px-3.5 py-3">
+          <Skeleton className="h-2 w-2 shrink-0 rounded-full" delay={i * 0.12} />
+          <Skeleton className="h-3 w-36 rounded-full" delay={i * 0.12} />
+          <Skeleton className="h-2.5 w-28 rounded-full" delay={i * 0.12 + 0.12} />
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            <Skeleton className="h-7 w-7 rounded-lg" delay={i * 0.12} />
+            <Skeleton className="h-7 w-7 rounded-lg" delay={i * 0.12 + 0.06} />
+            <Skeleton className="h-7 w-7 rounded-lg" delay={i * 0.12 + 0.12} />
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 function CronForm({
   onCreate,
   busy,
+  disabled = false,
   children,
 }: {
   onCreate: (input: { name: string; schedule: string; prompt: string }) => Promise<boolean>
   busy: boolean
+  /** Hold the create button (e.g. while the fleet agent list is still loading,
+   *  when the target set would silently be empty). */
+  disabled?: boolean
   /** Extra fields (e.g. the fleet agent picker) rendered above the buttons. */
   children?: React.ReactNode
 }) {
@@ -388,7 +413,7 @@ function CronForm({
       <div className="flex items-center gap-3">
         <Button
           className="shrink-0 whitespace-nowrap"
-          disabled={!ok || busy}
+          disabled={!ok || busy || disabled}
           onClick={() =>
             void onCreate({ name: name.trim(), schedule: schedToString(sched), prompt: prompt.trim() }).then((created) => {
               if (created) {
@@ -496,7 +521,9 @@ export function CronsPanel({ agentId }: { agentId: string }) {
         <span className="text-xs uppercase tracking-wide text-muted">Schedules</span>
         <InfoTip text="Recurring jobs the agent runs on its own native scheduler — they keep firing even when Talaria is down." />
       </div>
-      {isLoading ? null : error ? (
+      {isLoading ? (
+        <CronListSkeleton />
+      ) : error ? (
         <EmptyState icon="◌" title="Schedules unavailable" hint={(error as Error).message} />
       ) : (data ?? []).length === 0 ? (
         <EmptyState icon={<CalendarClock size={22} />} title="Nothing scheduled" hint="Give it a recurring job below." />
@@ -609,7 +636,7 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
     >
       <div className="space-y-5">
         {isLoading ? (
-          <div className="text-sm text-muted">Reading the fleet</div>
+          <CronListSkeleton />
         ) : withJobs.length === 0 ? (
           <EmptyState icon={<CalendarClock size={22} />} title="Nothing scheduled anywhere" hint="Create the first job below." />
         ) : (
@@ -633,8 +660,13 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
 
         <div>
           <div className="mb-1.5 text-[11px] uppercase tracking-wide text-muted">New job across agents</div>
-          <CronForm onCreate={create} busy={busy}>
+          {/* While agents load, `chosen` would be an empty set — a job created
+              now would target NOBODY. Hold the create button and show the
+              chip row's shape until the roster resolves. */}
+          <CronForm onCreate={create} busy={busy} disabled={isLoading}>
             <div className="flex flex-wrap gap-1.5">
+              {isLoading &&
+                Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-6 w-20 rounded-full" delay={i * 0.12} />)}
               {agents.map((a) => (
                 <button
                   key={a.id}

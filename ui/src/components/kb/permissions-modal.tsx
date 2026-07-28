@@ -4,6 +4,7 @@ import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
+import { SkeletonRows } from '@/components/ui/skeleton'
 import { useUsers } from '@/lib/users'
 import { useAgents } from '@/lib/agents'
 import { fetchEditors, type EditPolicy, type GrantRole, type KbEditor, type Visibility } from '@/lib/kb'
@@ -53,8 +54,11 @@ export function PermissionsModal({
   folderName?: string
   onSave: (patch: { visibility: Visibility; editPolicy: EditPolicy; editors: KbEditor[]; permsInherited?: boolean }) => Promise<void>
 }) {
-  const { data: users = [] } = useUsers()
-  const { data: fleet } = useAgents()
+  const { data: users = [], isLoading: usersLoading } = useUsers()
+  const { data: fleet, isLoading: agentsLoading } = useAgents()
+  // Until both principal lists resolve, grants would render as raw ids and the
+  // add picker would be empty — hold the list's shape instead.
+  const principalsLoading = usersLoading || agentsLoading
   const [vis, setVis] = useState<Visibility>(visibility)
   const [grants, setGrants] = useState<KbEditor[]>([])
   const [inh, setInh] = useState(inherited)
@@ -166,6 +170,9 @@ export function PermissionsModal({
               className="mb-2"
             />
           )}
+          {principalsLoading ? (
+            <SkeletonRows rows={3} avatar className="px-1 py-2" />
+          ) : (
           <div className="space-y-1">
             {/* Owner row (implicit editor) */}
             <div className="flex items-center gap-2.5 rounded-lg px-1 py-1.5">
@@ -202,6 +209,7 @@ export function PermissionsModal({
             ))}
             {grants.length === 0 && <div className="px-1 py-1 text-xs text-muted">No one else has been added.</div>}
           </div>
+          )}
         </div>
 
         {/* General access */}

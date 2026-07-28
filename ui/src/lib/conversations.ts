@@ -9,6 +9,8 @@ export interface Conversation {
   updatedAt: string
   /** An assistant reply is streaming right now (the agent is working). */
   working?: boolean
+  /** The latest assistant turn errored — needs a re-run. */
+  failed?: boolean
   /** Multiplayer plans: your standing; ownerLabel set on plans shared with you. */
   role?: 'owner' | 'collaborator'
   ownerLabel?: string | null

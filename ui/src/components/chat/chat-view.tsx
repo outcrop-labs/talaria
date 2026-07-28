@@ -8,6 +8,7 @@ import { AttachButton, PendingAttachments, MessageAttachments } from '@/componen
 import { GuardCaveat, type GuardFinding } from '@/components/chat/guard-caveat'
 import { Markdown } from '@/components/ui/markdown'
 import { Disclosure } from '@/components/ui/disclosure'
+import { Skeleton } from '@/components/ui/skeleton'
 import { resolveAgentMedia } from '@/lib/agent-media'
 import { queueChatMessage, streamChat } from '@/lib/chat'
 import { mergeTool, type ToolCall } from '@/lib/sse-parse'
@@ -80,6 +81,9 @@ export function ChatView({
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [tier, setTier] = useState('') // '' = the agent's main model
   const [streaming, setStreaming] = useState(false)
+  // True while an EXISTING conversation's history is being fetched — the pane
+  // shows transcript-shaped skeletons, never the "Talk to X" hero.
+  const [loadingConversation, setLoadingConversation] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [caret, setCaret] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
@@ -107,6 +111,7 @@ export function ChatView({
     abortRef.current?.abort()
     convIdRef.current = null
     setMessages([])
+    setLoadingConversation(false)
     setError(null)
   }, [newChatSignal])
 
@@ -116,9 +121,14 @@ export function ChatView({
     abortRef.current?.abort()
     convIdRef.current = conversationId
     let cancelled = false
-    loadConversation(conversationId).then((res) => {
-      if (!cancelled) setMessages((res?.messages ?? []).map(toDisplay))
-    })
+    setLoadingConversation(true)
+    loadConversation(conversationId)
+      .then((res) => {
+        if (!cancelled) setMessages((res?.messages ?? []).map(toDisplay))
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingConversation(false)
+      })
     return () => {
       cancelled = true
     }
@@ -296,7 +306,23 @@ export function ChatView({
   return (
     <div className={fill ? 'flex h-full w-full flex-col' : 'mx-auto flex h-full w-full max-w-[var(--chat-content-max-width)] flex-col'}>
       <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto px-6 py-6">
-        {messages.length === 0 ? (
+        {loadingConversation ? (
+          // Conversation-shaped shimmer while the thread's history loads —
+          // alternating user/assistant bubbles, never the "Talk to X" hero.
+          <div aria-hidden className="space-y-5">
+            {Array.from({ length: 5 }, (_, i) =>
+              i % 2 === 0 ? (
+                <div key={i} className="flex justify-end">
+                  <Skeleton className="h-10 w-[60%] rounded-2xl" delay={i * 0.12} />
+                </div>
+              ) : (
+                <div key={i} className="flex justify-start">
+                  <Skeleton className={i === 1 ? 'h-24 w-[75%] rounded-2xl' : 'h-16 w-[70%] rounded-2xl'} delay={i * 0.12} />
+                </div>
+              ),
+            )}
+          </div>
+        ) : messages.length === 0 ? (
           <div className="grid h-full place-items-center text-center">
             <div>
               <div className="mercury-text mb-1 text-lg font-semibold">

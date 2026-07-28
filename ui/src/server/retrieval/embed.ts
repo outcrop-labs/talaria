@@ -2,25 +2,44 @@
 // service. Configurable URL; the docker-hostname → localhost fallback lets it
 // work whether Talaria runs on the host (dev) or on ai_default (prod).
 const EMBED_URL = () => (process.env.TALARIA_EMBED_URL ?? 'http://embeddings:80').replace(/\/$/, '')
+const EMBED_FALLBACK = 'http://127.0.0.1:8055'
 
-async function post(url: string, body: unknown): Promise<Response> {
-  const init = {
-    method: 'POST' as const,
+// The configured URL may be a docker-internal hostname that doesn't resolve
+// from the host (dev). Resolving it FAILS SLOWLY — multi-second DNS timeouts —
+// so remember which base actually answered and go straight there afterwards.
+// Without this, every single embed call (search, indexing, health probes)
+// paid the stall before falling back.
+let stickyBase: string | null = null
+
+/** Fetch against TEI with the hostname fallback, remembering the winner. */
+export async function embedFetch(path: string, init: RequestInit): Promise<Response> {
+  const primary = EMBED_URL()
+  const base = stickyBase ?? primary
+  try {
+    const r = await fetch(`${base}${path}`, init)
+    stickyBase = base
+    return r
+  } catch (err) {
+    // Bare docker hostnames don't resolve from the host; TEI is published on
+    // 127.0.0.1:8055 there. Only fall back when the primary looks docker-bare.
+    const m = /^(https?):\/\/([^/:]+)(:\d+)?$/.exec(base)
+    if (m && m[2] && !m[2].includes('.') && m[2] !== 'localhost' && base !== EMBED_FALLBACK) {
+      const r = await fetch(`${EMBED_FALLBACK}${path}`, init)
+      stickyBase = EMBED_FALLBACK
+      return r
+    }
+    stickyBase = null // forget a base that stopped answering
+    throw err
+  }
+}
+
+async function post(_url: string, body: unknown): Promise<Response> {
+  return embedFetch('/embed', {
+    method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
-  }
-  try {
-    return await fetch(`${url}/embed`, init)
-  } catch (err) {
-    // Dev fallback: bare docker hostnames don't resolve from the host; TEI is
-    // published on 127.0.0.1:8055 there.
-    const m = /^(https?):\/\/([^/:]+)(:\d+)?$/.exec(url)
-    if (m && m[2] && !m[2].includes('.') && m[2] !== 'localhost') {
-      return await fetch(`http://127.0.0.1:8055/embed`, init)
-    }
-    throw err
-  }
+  })
 }
 
 /** Embed one or many texts. TEI returns a vector per input. */
@@ -52,20 +71,8 @@ export interface EmbedInfo {
 /** What the embedding service is serving RIGHT NOW (TEI /info + a live dim
  *  probe — never the process cache, since migration decisions hang on it). */
 export async function embedInfo(): Promise<EmbedInfo | null> {
-  const get = async (url: string) => {
-    const init = { signal: AbortSignal.timeout(5_000) }
-    try {
-      return await fetch(`${url}/info`, init)
-    } catch (err) {
-      const m = /^(https?):\/\/([^/:]+)(:\d+)?$/.exec(url)
-      if (m && m[2] && !m[2].includes('.') && m[2] !== 'localhost') {
-        return await fetch(`http://127.0.0.1:8055/info`, init)
-      }
-      throw err
-    }
-  }
   try {
-    const r = await get(EMBED_URL())
+    const r = await embedFetch('/info', { signal: AbortSignal.timeout(5_000) })
     const j = r.ok ? ((await r.json()) as { model_id?: string }) : {}
     const dim = (await embed('dimension probe'))[0]!.length
     return { modelId: j.model_id ?? 'unknown', dim }

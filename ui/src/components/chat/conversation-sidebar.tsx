@@ -4,6 +4,7 @@ import { Plus } from 'lucide-react'
 import { AgentPicker } from '@/components/chat/agent-picker'
 import { IconButton } from '@/components/ui/icon-button'
 import { Rail, RailRow, RailSection } from '@/components/app/surface'
+import { SkeletonRows } from '@/components/ui/skeleton'
 import type { AgentModel } from '@/lib/agents'
 import type { Conversation } from '@/lib/conversations'
 
@@ -13,6 +14,7 @@ export function ConversationSidebar({
   selectedAgent,
   selectedConversationId,
   agentsLoading,
+  conversationsLoading,
   onSelectAgent,
   onSelectConversation,
   onNewChat,
@@ -22,6 +24,7 @@ export function ConversationSidebar({
   selectedAgent: string | null
   selectedConversationId: string | null
   agentsLoading?: boolean
+  conversationsLoading?: boolean
   onSelectAgent: (agentModel: string) => void
   onSelectConversation: (conv: Conversation) => void
   onNewChat: () => void
@@ -38,7 +41,9 @@ export function ConversationSidebar({
         <AgentPicker agents={agents} value={selectedAgent} onChange={onSelectAgent} loading={agentsLoading} fullWidth />
       </div>
 
-      {agentConvs.length === 0 ? (
+      {conversationsLoading ? (
+        <SkeletonRows rows={5} className="px-2 pt-1.5" />
+      ) : agentConvs.length === 0 ? (
         <div className="px-2 py-6 text-center text-xs text-muted">No plans yet with this agent.</div>
       ) : (
         <ul className="space-y-0.5">

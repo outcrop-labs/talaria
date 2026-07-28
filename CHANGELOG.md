@@ -4,7 +4,64 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 
 ## [Unreleased]
 
+### Added
+- **The Inbox is a console.** Home rebuilt as one tab per work area — Inbox ·
+  Boards · Comms · Plans · Research · Docs · Fleet (admin-only) — each
+  pairing the area's live state with its recent activity, badges marking
+  where attention is needed, quick-action cards gone. Boards gets a queue
+  SIDEBAR (triage / review / blocked) with the FULL list per queue; audit
+  trails (board/channel activity) and the notifications feed are collapsed
+  by default. Failed work is a first-class signal: a plan whose last turn
+  errored and an errored research run both show "failed — open to
+  re-run/retry →" in their tabs and deep-link straight to the spot.
+- **Assistant briefings, per view.** Your personal assistant opens each
+  console tab with a short read on what needs you — at most five bullets,
+  each SCOPE with its own prompt (delivery-lead framing on Boards,
+  "who's waiting on a reply" on Comms, "what moved" on Plans,
+  "ready-and-unread reports first" on Research). Briefings cover ONLY
+  unreviewed things (unread, pending, in-flight, failed) and regenerate
+  only when that set actually changes — fingerprinted on ids and counts,
+  never on a timer. Deliberately EPHEMERAL: the summary lives in one
+  replaceable row, and chatting back (right in the panel) streams through
+  the assistant with the briefing as context, persisting nothing — no
+  conversation rows, nothing indexed, nothing for comms-decay to distill.
+- **Deep links everywhere.** The URL is now the selection across the
+  platform: `/?tab=…`, `/knowledge?space=…&doc=…`, `/artifacts?a=…`,
+  `/research?r=…`, `/comms?c=…`/`?a=…&x=…`, `/plan?p=…`, `/admin?tab=…`,
+  `/settings?tab=…`. The old one-shot apply-then-clear pattern (which made
+  nothing copy-linkable) is gone: picks are push navigations so
+  back/forward walks your trail, defaults/healing are replace. Rule
+  recorded in UI-CONVENTIONS → Deep links.
+
+### Fixed
+- **Skeletons were invisible.** The entire skeleton system (and tiptap
+  table borders, and the grey status dots) painted with `var(--theme-line)`
+  — a variable that never existed as raw CSS. One root alias fixes every
+  shimmer at once.
+- **The inbox took ~5 seconds; every RAG call stalled 3.6s.** The embedding
+  client's configured docker-internal hostname fails DNS slowly before
+  falling back — and the fallback was never remembered, so EVERY embed
+  (search, indexing, health probes) paid the stall. The resolved base is
+  now sticky. On top: `computeAlerts` ran its eight probes serially (now
+  one Promise.all + a 15s cache; 4.3s → 7ms) and three surfaces shelled
+  out to `docker ps` in the same breath (now a 5s cache). Home: 4.8s →
+  ~40ms warm; KB search: 36ms.
+- **Loading-state audit, platform-wide (~70 gaps, 35 files).** Every
+  fetch-backed component now holds a layout-matched skeleton while in
+  flight; EmptyStates render only after a query RESOLVES empty. Parent
+  queries no longer block unrelated siblings (plan stage, models panels,
+  boards' serial fetch, comms message pane). Real bugs flushed out along
+  the way: clicking an agent before conversations resolved silently
+  started a NEW thread instead of resuming the working one; the memory
+  quick-add could clobber the file if used mid-load; a fleet-wide cron
+  created while the roster loaded would target nobody; false states
+  ("Not connected", "API keys are not enabled", unchecked policy
+  checkboxes) flashed during every load.
+
 ### Changed
+- **Dynamic greeting** (time-of-day pools, stable per hour), subtitle
+  removed; notifications collapsed behind an unread badge so the
+  assistant briefing is the working surface.
 - **UI detail pass (live walkthrough, 2026-07-28).** A guided sweep of the
   whole surface, in nine moves. **Typography, two voices**: IBM Plex Sans
   for everything a person reads or types (markdown surfaces, editors, all

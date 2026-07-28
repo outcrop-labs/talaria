@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Paperclip, X, FileText, Loader2, BookOpen, Gem, Upload, Search } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 import { Input } from '@/components/ui/input'
+import { SkeletonRows } from '@/components/ui/skeleton'
 import { searchKb } from '@/lib/kb'
 import { attachmentUrl, humanSize, isImage, uploadFile, type Attachment } from '@/lib/attachments'
 
@@ -147,7 +148,7 @@ function RefPicker({ kind, onPick }: { kind: 'kb-doc' | 'artifact'; onPick: (a: 
         />
       </div>
       <div className="max-h-48 overflow-y-auto">
-        {loading && <div className="px-2 py-1.5 text-xs text-muted">Searching</div>}
+        {loading && <SkeletonRows rows={3} className="px-2 py-2" />}
         {!loading && results.length === 0 && (
           <div className="px-2 py-1.5 text-xs text-muted">{kind === 'kb-doc' && !q.trim() ? 'Type to search docs' : 'No matches'}</div>
         )}

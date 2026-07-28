@@ -6,6 +6,7 @@ import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { RichEditor } from '@/components/ui/rich-editor'
 import { Generating } from '@/components/ui/generating'
+import { Skeleton } from '@/components/ui/skeleton'
 import { addDependency, createTask, useBoards } from '@/lib/boards'
 import { useTemplates } from '@/lib/templates'
 import type { AgentModel } from '@/lib/agents'
@@ -37,8 +38,8 @@ export function PlanModal({
   agents: AgentModel[]
 }) {
   const qc = useQueryClient()
-  const { data: boards = [] } = useBoards()
-  const { data: templates = [] } = useTemplates()
+  const { data: boards = [], isLoading: boardsLoading } = useBoards()
+  const { data: templates = [], isLoading: templatesLoading } = useTemplates()
   const [agentModel, setAgentModel] = useState(agents[0]?.id ?? '')
   const [tier, setTier] = useState('')
   const [boardId, setBoardId] = useState('')
@@ -191,25 +192,35 @@ export function PlanModal({
               </div>
               <div>
                 <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Board</label>
-                <Select value={boardId} size="sm" onChange={(e) => setBoardId(e.target.value)} className="w-full">
-                  <option value="">Pick a board</option>
-                  {editable.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </Select>
+                {boardsLoading ? (
+                  // Select-shaped stand-in (sm control = h-9) so the field —
+                  // and why Draft is still disabled — is visible on open.
+                  <Skeleton className="h-9 w-full rounded-xl" />
+                ) : (
+                  <Select value={boardId} size="sm" onChange={(e) => setBoardId(e.target.value)} className="w-full">
+                    <option value="">Pick a board</option>
+                    {editable.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </Select>
+                )}
               </div>
               <div>
                 <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Ticket template</label>
-                <Select value={templateId} size="sm" onChange={(e) => setTemplateId(e.target.value)} className="w-full">
-                  <option value="">Automatic (agent → board default)</option>
-                  {ticketTemplates.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </Select>
+                {templatesLoading ? (
+                  <Skeleton className="h-9 w-full rounded-xl" delay={0.12} />
+                ) : (
+                  <Select value={templateId} size="sm" onChange={(e) => setTemplateId(e.target.value)} className="w-full">
+                    <option value="">Automatic (agent → board default)</option>
+                    {ticketTemplates.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </Select>
+                )}
               </div>
             </div>
             {note && (

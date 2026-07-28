@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Panel } from '@/components/ui/panel'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
@@ -15,6 +17,9 @@ export function NotificationsPanel() {
   const markRead = useMarkNotificationsRead()
   const items = data?.notifications ?? []
   const unread = data?.unread ?? 0
+  // Collapsed by default: the briefing above is the working surface — this is
+  // the raw feed, one click away, with the unread count doing the talking.
+  const [expanded, setExpanded] = useState(false)
 
   const open = (n: Notification) => {
     void markRead([n.id])
@@ -35,15 +40,22 @@ export function NotificationsPanel() {
 
   return (
     <Panel>
-      <div className="mb-2 flex items-center gap-3">
-        <span className="text-sm font-semibold text-fg">Notifications</span>
-        {unread > 0 && <span className="text-xs text-muted">{unread} unread</span>}
-        {unread > 0 && (
+      <div className={expanded ? 'mb-2 flex items-center gap-3' : 'flex items-center gap-3'}>
+        <button type="button" onClick={() => setExpanded((v) => !v)} className="flex min-w-0 items-center gap-2 text-left">
+          {expanded ? <ChevronDown size={14} className="shrink-0 text-muted" /> : <ChevronRight size={14} className="shrink-0 text-muted" />}
+          <span className="text-sm font-semibold text-fg">Notifications</span>
+          {unread > 0 && (
+            <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">{unread}</span>
+          )}
+          {unread === 0 && <span className="text-xs text-muted">all read</span>}
+        </button>
+        {expanded && unread > 0 && (
           <Button variant="outline" size="sm" className="ml-auto" onClick={() => void markRead()}>
             Mark all read
           </Button>
         )}
       </div>
+      {expanded && (
       <ul className="max-h-80 space-y-1 overflow-y-auto">
         {items.map((n) => (
           <li key={n.id}>
@@ -67,6 +79,7 @@ export function NotificationsPanel() {
           </li>
         ))}
       </ul>
+      )}
     </Panel>
   )
 }

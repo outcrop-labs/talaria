@@ -7,6 +7,7 @@ import { CloseButton } from '@/components/ui/close-button'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
+import { SkeletonRows } from '@/components/ui/skeleton'
 import { relativeTime } from '@/lib/fleet'
 import { streamMuse, type MuseKind } from '@/lib/muse'
 import { cn } from '@/lib/cn'
@@ -216,7 +217,7 @@ export function InternalEditorModal({
     setProposal(null)
   }
 
-  const { data: revisions = [], refetch } = useQuery({
+  const { data: revisions = [], isLoading: revisionsLoading, refetch } = useQuery({
     queryKey: ['history', history],
     enabled: open && !!history,
     queryFn: async (): Promise<Revision[]> => {
@@ -389,7 +390,9 @@ export function InternalEditorModal({
           {showHistory && history && (
             <div className="w-64 shrink-0 overflow-y-auto rounded-xl border border-line-subtle p-1">
               <div className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted">History</div>
-              {revisions.length === 0 ? (
+              {revisionsLoading ? (
+                <SkeletonRows rows={4} className="px-2 py-2" />
+              ) : revisions.length === 0 ? (
                 <div className="px-2 py-2 text-xs text-muted">No saved revisions yet.</div>
               ) : (
                 revisions.map((rev, i) => (

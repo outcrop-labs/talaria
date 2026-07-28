@@ -7,6 +7,8 @@ import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/empty-state'
 import { InfoTip } from '@/components/ui/info-tip'
 import { Markdown } from '@/components/ui/markdown'
+import { Modal } from '@/components/ui/modal'
+import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { CronsPanel } from '@/components/fleet/agent-crons'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { cn } from '@/lib/cn'
@@ -100,7 +102,16 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
         <span className="text-xs uppercase tracking-wide text-muted">Skills</span>
         <InfoTip text="Step-by-step playbooks your assistant follows for recurring jobs: weekly summaries, travel planning, whatever you teach it." />
       </div>
-      {isLoading ? null : skills.length === 0 ? (
+      {isLoading ? (
+        <ul aria-hidden className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+          {[0, 1, 2].map((i) => (
+            <li key={i} className="flex items-center gap-2 px-3 py-3">
+              <Skeleton className="h-3 w-28 rounded-full" delay={i * 0.12} />
+              <Skeleton className="h-2.5 w-44 rounded-full" delay={i * 0.12 + 0.12} />
+            </li>
+          ))}
+        </ul>
+      ) : skills.length === 0 ? (
         <EmptyState icon="✦" title="No skills yet" hint="Teach it its first playbook below." />
       ) : (
         <ul className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
@@ -188,7 +199,17 @@ function SkillEditor({
     onClose()
   }
 
-  if (data === undefined) return null
+  // The editor seeds once from `value`, so it can't mount before the content
+  // arrives — but the click must land NOW: show the same modal shell with a
+  // prose-bar body, then swap in the real editor.
+  if (data === undefined)
+    return (
+      <Modal open onClose={onClose} title={`${name} · SKILL.md`} width="max-w-6xl">
+        <div className="h-[76vh] pt-2">
+          <SkeletonRows rows={8} />
+        </div>
+      </Modal>
+    )
   return (
     <InternalEditorModal
       open
@@ -237,7 +258,18 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
     }
   }
 
-  if (isLoading) return <div className="text-sm text-muted">Loading</div>
+  if (isLoading)
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs uppercase tracking-wide text-muted">Memory</span>
+          <InfoTip text="What it remembers about you and your work. It updates this itself as you go, and you can edit or prune it any time. Every save is snapshotted, so nothing is ever lost." />
+        </div>
+        <div aria-hidden className="max-h-72 rounded-lg border border-line-subtle p-3">
+          <SkeletonRows rows={8} />
+        </div>
+      </div>
+    )
   if (data?.error)
     return <EmptyState icon="◌" title="Memory unavailable" hint={assistant.running ? data.error : 'Start your assistant to read its memory.'} />
 

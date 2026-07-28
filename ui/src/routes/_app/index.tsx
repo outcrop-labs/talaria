@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { MessageSquare, Hash, LayoutGrid, Inbox as InboxIcon, Sparkles, CalendarDays, Plus, ExternalLink, Mail, Send, ShieldCheck, Check } from 'lucide-react'
+import { Sparkles, CalendarDays, ChevronDown, ChevronRight, Plus, ExternalLink, Mail, Send, ShieldCheck, Check } from 'lucide-react'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { Panel } from '@/components/ui/panel'
 import { alert } from '@/components/ui/confirm'
@@ -9,16 +9,30 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
-import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from '@/components/assistant/assistant-wizard'
 import { NotificationsPanel } from '@/components/app/notifications-panel'
 import { relativeTime } from '@/lib/fleet'
 import { cn } from '@/lib/cn'
 import { useAssistant } from '@/lib/assistant'
 import { useSession } from '@/lib/session'
+import { useChannels } from '@/lib/channels'
+import { useConversations } from '@/lib/conversations'
+import { useResearchRuns } from '@/lib/research'
+import { useArtifacts } from '@/lib/artifacts'
+import { useAgents } from '@/lib/agents'
+import { parseAgentStream } from '@/lib/sse-parse'
+import { Markdown } from '@/components/ui/markdown'
+
+const HOME_TABS = ['inbox', 'boards', 'comms', 'plans', 'research', 'docs', 'fleet'] as const
+type HomeTab = (typeof HOME_TABS)[number]
 
 export const Route = createFileRoute('/_app/')({
   component: HomePage,
+  // /?tab=boards deep-links a console tab.
+  validateSearch: (search: Record<string, unknown>): { tab?: HomeTab } => {
+    const t = HOME_TABS.find((v) => v === search.tab)
+    return t ? { tab: t } : {}
+  },
 })
 
 interface WorkItem {
@@ -67,9 +81,23 @@ const useHome = () =>
     refetchInterval: 30_000,
   })
 
+// Time-aware and lightly varied: the pool is keyed by hour + day-of-year so
+// the pick is stable across re-renders (no flicker) but changes through the
+// day and from day to day.
 const greeting = (name?: string | null) => {
   const who = name?.split(' ')[0] ?? name ?? 'there'
-  return `Welcome back, ${who}`
+  const now = new Date()
+  const h = now.getHours()
+  const pools: Array<[boolean, string[]]> = [
+    [h < 5, [`Up late, ${who}?`, `Quiet hours, ${who}`, `Night shift, ${who}?`]],
+    [h < 12, [`Morning, ${who}`, `Good morning, ${who}`, `Fresh start, ${who}`]],
+    [h < 17, [`Afternoon, ${who}`, `Good afternoon, ${who}`, `Back at it, ${who}`]],
+    [h < 22, [`Evening, ${who}`, `Good evening, ${who}`, `Winding down, ${who}?`]],
+    [true, [`Late one, ${who}?`, `Still here, ${who}?`]],
+  ]
+  const pool = pools.find(([match]) => match)![1]
+  const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86_400_000)
+  return pool[(dayOfYear + h) % pool.length]!
 }
 
 // Home/Today — the seamless landing. Surfaces the human's real job in Talaria's
@@ -77,124 +105,406 @@ const greeting = (name?: string | null) => {
 // and one-tap entries into the work surfaces.
 function HomePage() {
   const { data: session } = useSession()
+  const isAdmin = session?.role === 'admin'
   const { data, isLoading } = useHome()
-  const navigate = useNavigate()
+  const { data: channels = [] } = useChannels()
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const tab: HomeTab = search.tab ?? 'inbox'
+  const setTab = (t: HomeTab) => void navigate({ search: t === 'inbox' ? {} : { tab: t } })
+
+  // Console posture: one tab per work area, badge = where attention is needed.
+  const unreadComms = channels.reduce((n, c) => n + (c.unreadCount ?? 0), 0)
+  const tabs: { id: HomeTab; label: string; badge?: number }[] = [
+    { id: 'inbox', label: 'Inbox', badge: data?.unread || undefined },
+    { id: 'boards', label: 'Boards', badge: data?.queues.triage.count || undefined },
+    { id: 'comms', label: 'Comms', badge: unreadComms || undefined },
+    { id: 'plans', label: 'Plans' },
+    { id: 'research', label: 'Research' },
+    { id: 'docs', label: 'Docs' },
+    ...(isAdmin ? [{ id: 'fleet' as const, label: 'Fleet' }] : []),
+  ]
 
   return (
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-6xl space-y-6">
-        <div>
-          <h1 className="mercury-text text-2xl font-semibold">{greeting(session?.name ?? session?.email)}</h1>
-          <p className="mt-1 text-sm text-muted">Your inbox: what needs you, and how the org is doing.</p>
+        <h1 className="mercury-text text-2xl font-semibold">{greeting(session?.name ?? session?.email)}</h1>
+
+        <div className="flex gap-1 border-b border-line-subtle">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={cn('relative flex items-center gap-1.5 px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
+            >
+              {t.label}
+              {t.badge !== undefined && (
+                <span className="rounded-full bg-accent/15 px-1.5 text-[10px] font-semibold text-accent">{t.badge}</span>
+              )}
+              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
+            </button>
+          ))}
         </div>
 
-        {/* Two zones: YOURS (left) — everything waiting on you — and THE ORG
-            (right rail) — the shared at-a-glance. */}
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem]">
-          <div className="min-w-0 space-y-6">
-            {/* Notifications first — this IS the inbox now. */}
+        {tab === 'inbox' && (
+          <div className="space-y-6">
+            <AssistantBriefing />
             <NotificationsPanel />
-
             <ApprovalsPanel />
-
-            {isLoading ? (
-              <div className="grid gap-4 xl:grid-cols-3">
-                {[0, 1, 2].map((i) => (
-                  <div key={i} className="mercury-panel rounded-2xl p-6">
-                    <Skeleton className="mb-4 h-3 w-24 rounded-full" delay={i * 0.1} />
-                    <SkeletonRows rows={4} />
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="grid gap-4 xl:grid-cols-3">
-                <QueuePanel
-                  title="To triage"
-                  hint="New tickets waiting to be assigned"
-                  queue={data!.queues.triage}
-                  accent="var(--theme-accent)"
-                  onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
-                />
-                <QueuePanel
-                  title="To review"
-                  hint="Agent work awaiting your sign-off"
-                  queue={data!.queues.review}
-                  accent="var(--theme-success)"
-                  onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
-                />
-                <QueuePanel
-                  title="Blocked"
-                  hint="Stalled, needs you to unblock"
-                  queue={data!.queues.blocked}
-                  accent="var(--theme-warning)"
-                  onOpen={(w) => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
-                />
-              </div>
-            )}
-
             <AgendaPanel />
-
             <MailPanel />
-
-            {/* Quick entries into the work surfaces */}
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <QuickCard to="/comms" icon={<MessageSquare size={18} />} label="Comms" sub="Channels · relays · DMs" />
-              <QuickCard to="/plan" icon={<Hash size={18} />} label="Plan" sub="Think, then ticket" />
-              <QuickCard to="/boards" icon={<LayoutGrid size={18} />} label="Boards" sub="Move work" />
-              <QuickCard to="/artifacts" icon={<InboxIcon size={18} />} label="Artifacts" sub="Docs · files · memes" />
-            </div>
-
-            <AssistantCard />
           </div>
-
-          <OrgRail data={data} isAdmin={session?.role === 'admin'} />
-        </div>
+        )}
+        {tab === 'boards' && <BoardsTab data={data} isLoading={isLoading} />}
+        {tab === 'comms' && <CommsTab />}
+        {tab === 'plans' && <PlansTab />}
+        {tab === 'research' && <ResearchTab />}
+        {tab === 'docs' && <DocsTab />}
+        {tab === 'fleet' && isAdmin && <FleetTab data={data} />}
       </div>
     </div>
   )
 }
 
-// The org's at-a-glance rail: fleet health, a live activity pulse everyone
-// sees, and — for admins — alerts and today's spend. The personal column is
-// "what needs me"; this is "how are we doing."
-function OrgRail({ data, isAdmin }: { data: HomeSummary | undefined; isAdmin: boolean }) {
+// ── Shared: an area-scoped slice of the workspace activity feed ─────────────
+interface FeedEvent {
+  at: string
+  actor: string
+  context: string
+  detail: string
+  href: string
+}
+
+function ActivityList({ kinds, title = 'Recent activity', collapsible = false }: { kinds: string[]; title?: string; collapsible?: boolean }) {
   const navigate = useNavigate()
+  const [expanded, setExpanded] = useState(!collapsible)
+  const { data, isLoading } = useQuery({
+    queryKey: ['home-activity', kinds.join(',')],
+    queryFn: async (): Promise<FeedEvent[]> => {
+      const r = await fetch(`/api/activity?kinds=${kinds.join(',')}`, { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { events: FeedEvent[] }).events
+    },
+    refetchInterval: 30_000,
+  })
+  return (
+    <Panel>
+      {collapsible ? (
+        <button type="button" onClick={() => setExpanded((v) => !v)} className={cn('flex items-center gap-2 text-left', expanded && 'mb-3')}>
+          {expanded ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted" />}
+          <span className="text-sm font-semibold text-fg">{title}</span>
+        </button>
+      ) : (
+        <div className="mb-3 text-sm font-semibold text-fg">{title}</div>
+      )}
+      {!expanded ? null : isLoading ? (
+        <SkeletonRows rows={6} />
+      ) : (data ?? []).length === 0 ? (
+        <div className="text-xs text-muted">Quiet so far.</div>
+      ) : (
+        <ul className="space-y-1">
+          {data!.slice(0, 12).map((a, i) => (
+            <li key={i}>
+              <button
+                type="button"
+                onClick={() => a.href && void navigate({ to: a.href })}
+                className="w-full rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-card"
+              >
+                <div className="flex items-baseline gap-2">
+                  <span className="min-w-0 flex-1 truncate font-sans text-xs text-fg">
+                    <span className="font-medium">{a.actor}</span> · {a.detail}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-muted">{relativeTime(a.at)}</span>
+                </div>
+                <div className="truncate text-[11px] text-muted">{a.context}</div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+  )
+}
+
+// ── Boards: board-scoped briefing, full queues behind a sidebar, audit trail ─
+type QueueKey = 'triage' | 'review' | 'blocked'
+const QUEUE_META: Record<QueueKey, { label: string; hint: string; accent: string }> = {
+  triage: { label: 'To triage', hint: 'New tickets waiting to be assigned', accent: 'var(--theme-accent)' },
+  review: { label: 'To review', hint: 'Agent work awaiting your sign-off', accent: 'var(--theme-success)' },
+  blocked: { label: 'Blocked', hint: 'Stalled, needs you to unblock', accent: 'var(--theme-warning)' },
+}
+
+function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoading: boolean }) {
+  const navigate = useNavigate()
+  const [queue, setQueue] = useState<QueueKey>('triage')
+  const meta = QUEUE_META[queue]
+  const items = data?.queues[queue].items ?? []
+  return (
+    <div className="space-y-6">
+      <AssistantBriefing scope="boards" />
+      <div className="grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)]">
+        <aside className="space-y-1">
+          {(Object.keys(QUEUE_META) as QueueKey[]).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setQueue(k)}
+              className={cn(
+                'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors',
+                queue === k ? 'bg-card text-fg' : 'text-muted hover:bg-card hover:text-fg',
+              )}
+            >
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: QUEUE_META[k].accent }} />
+              <span className="min-w-0 flex-1 truncate">{QUEUE_META[k].label}</span>
+              {isLoading ? (
+                <Skeleton className="h-3 w-6 rounded-full" />
+              ) : (
+                <span className="shrink-0 text-xs text-muted">{data?.queues[k].count ?? 0}</span>
+              )}
+            </button>
+          ))}
+        </aside>
+        <Panel>
+          <div className="mb-1 text-sm font-semibold text-fg">{meta.label}</div>
+          <div className="mb-3 text-xs text-muted">{meta.hint}</div>
+          {isLoading ? (
+            <SkeletonRows rows={8} />
+          ) : items.length === 0 ? (
+            <div className="py-6 text-center text-xs text-muted">All clear.</div>
+          ) : (
+            <ul className="divide-y divide-line-subtle">
+              {items.map((w) => (
+                <li key={w.id}>
+                  <button
+                    type="button"
+                    onClick={() => void navigate({ to: `/boards/${w.boardId}/${w.id}` })}
+                    className="flex w-full items-center gap-3 py-2.5 text-left"
+                  >
+                    {w.ticketRef && <span className="shrink-0 font-[var(--font-mono)] text-[11px] text-muted">{w.ticketRef}</span>}
+                    <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{w.title}</span>
+                    <span className="shrink-0 text-xs text-muted">{w.board}</span>
+                    <span className="shrink-0 text-xs text-muted">{relativeTime(w.updatedAt)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </div>
+      <ActivityList kinds={['ticket']} title="Board activity" collapsible />
+    </div>
+  )
+}
+
+// ── Comms: what's unread, then the room's pulse ─────────────────────────────
+function CommsTab() {
+  const navigate = useNavigate()
+  const { data: channels = [], isLoading } = useChannels()
+  const unread = channels.filter((c) => (c.unreadCount ?? 0) > 0)
+  const label = (c: (typeof channels)[number]) =>
+    c.kind === 'dm' ? (c.peer?.name ?? c.peer?.email ?? 'DM') : `#${c.name}`
+  return (
+    <div className="space-y-6">
+      <AssistantBriefing scope="comms" />
+      <Panel>
+        <div className="mb-3 text-sm font-semibold text-fg">Unread</div>
+        {isLoading ? (
+          <SkeletonRows rows={4} />
+        ) : unread.length === 0 ? (
+          <div className="text-xs text-muted">All caught up.</div>
+        ) : (
+          <ul className="divide-y divide-line-subtle">
+            {unread.map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => void navigate({ to: `/comms?c=${c.id}` })}
+                  className="flex w-full items-center gap-3 py-2.5 text-left"
+                >
+                  <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{label(c)}</span>
+                  <span className="shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-semibold text-accent">{c.unreadCount}</span>
+                  <span className="shrink-0 text-xs text-muted">{relativeTime(c.updatedAt)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+      <ActivityList kinds={['channel']} title="Channel activity" collapsible />
+    </div>
+  )
+}
+
+// ── Plans: your live plans (and ones shared with you) ───────────────────────
+function PlansTab() {
+  const navigate = useNavigate()
+  const { data: plans = [], isLoading } = useConversations('plan')
+  const { data: fleet } = useAgents()
+  const agentLabel = (id: string) => fleet?.agents.find((a) => a.id === id)?.label ?? id
+  return (
+    <div className="space-y-6">
+      <AssistantBriefing scope="plans" />
+      <Panel>
+        <div className="mb-3 text-sm font-semibold text-fg">Plans</div>
+        {isLoading ? (
+          <SkeletonRows rows={5} />
+        ) : plans.length === 0 ? (
+          <div className="text-xs text-muted">No plans yet. Start one on /plan.</div>
+        ) : (
+          <ul className="divide-y divide-line-subtle">
+            {plans.slice(0, 10).map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => void navigate({ to: `/plan?p=${c.id}` })}
+                  className="flex w-full items-center gap-3 py-2.5 text-left"
+                >
+                  {c.working && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />}
+                  <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{c.title || 'Untitled plan'}</span>
+                  {c.failed && <span className="shrink-0 text-xs text-[color:var(--theme-danger)]">failed — open to retry →</span>}
+                  {c.role === 'collaborator' && c.ownerLabel && (
+                    <span className="shrink-0 text-[11px] text-muted">shared by {c.ownerLabel}</span>
+                  )}
+                  <span className="shrink-0 text-xs text-muted">{agentLabel(c.agentModel)}</span>
+                  <span className="shrink-0 text-xs text-muted">{relativeTime(c.updatedAt)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+    </div>
+  )
+}
+
+// ── Research: runs in flight and fresh reports ──────────────────────────────
+const RUN_DOT: Record<string, string> = {
+  queued: 'var(--theme-warning)',
+  running: 'var(--theme-accent)',
+  done: 'var(--theme-success)',
+  error: 'var(--theme-danger)',
+}
+
+function ResearchTab() {
+  const navigate = useNavigate()
+  const { data: runs = [], isLoading } = useResearchRuns()
+  return (
+    <div className="space-y-6">
+      <AssistantBriefing scope="research" />
+      <Panel>
+        <div className="mb-3 text-sm font-semibold text-fg">Research</div>
+        {isLoading ? (
+          <SkeletonRows rows={5} />
+        ) : runs.length === 0 ? (
+          <div className="text-xs text-muted">Nothing researched yet. Ask something on /research.</div>
+        ) : (
+          <ul className="divide-y divide-line-subtle">
+            {runs.slice(0, 10).map((r) => (
+              <li key={r.id}>
+                <button
+                  type="button"
+                  onClick={() => void navigate({ to: '/research', search: { r: r.id } })}
+                  className="flex w-full items-center gap-3 py-2.5 text-left"
+                >
+                  <span className={cn('h-2 w-2 shrink-0 rounded-full', r.status === 'running' && 'animate-pulse')} style={{ background: RUN_DOT[r.status] ?? 'var(--theme-line)' }} />
+                  <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{r.question}</span>
+                  <span className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted">{r.mode}</span>
+                  {r.status === 'error' ? (
+                    <span className="shrink-0 text-xs text-[color:var(--theme-danger)]">failed — open to re-run →</span>
+                  ) : (
+                    <span className="shrink-0 text-xs text-muted">{r.status}</span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+    </div>
+  )
+}
+
+// ── Docs: the latest durable output (artifacts incl. official KB mirrors) ───
+function DocsTab() {
+  const navigate = useNavigate()
+  const { data: artifacts = [], isLoading } = useArtifacts()
+  const recent = [...artifacts].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, 12)
+  return (
+    <div className="space-y-6">
+      <Panel>
+        <div className="mb-3 text-sm font-semibold text-fg">Recently updated</div>
+        {isLoading ? (
+          <SkeletonRows rows={6} />
+        ) : recent.length === 0 ? (
+          <div className="text-xs text-muted">No documents yet.</div>
+        ) : (
+          <ul className="divide-y divide-line-subtle">
+            {recent.map((a) => (
+              <li key={a.id}>
+                <button
+                  type="button"
+                  onClick={() => void navigate({ to: '/artifacts', search: { a: a.id } })}
+                  className="flex w-full items-center gap-3 py-2.5 text-left"
+                >
+                  <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{a.title}</span>
+                  <span className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted">{a.kind}</span>
+                  <span className="shrink-0 text-xs text-muted">{relativeTime(a.updatedAt)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+    </div>
+  )
+}
+
+// ── Fleet (admin): status, alerts, spend, and the org pulse ─────────────────
+function FleetTab({ data }: { data: HomeSummary | undefined }) {
   if (!data)
     return (
-      <aside className="hidden space-y-4 lg:block">
-        <Skeleton className="h-3 w-24 rounded-full" />
-        {[0, 1].map((i) => (
-          <Panel key={i}>
-            <SkeletonRows rows={3} />
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div className="space-y-4">
+          <Panel>
+            <SkeletonRows rows={2} />
           </Panel>
-        ))}
-      </aside>
+          <div className="grid grid-cols-2 gap-4">
+            {[0, 1].map((i) => (
+              <Panel key={i}>
+                <Skeleton className="mb-3 h-2.5 w-14 rounded-full" delay={i * 0.1} />
+                <Skeleton className="h-5 w-16 rounded-full" delay={i * 0.1 + 0.08} />
+              </Panel>
+            ))}
+          </div>
+        </div>
+        <Panel>
+          <Skeleton className="mb-4 h-3 w-12 rounded-full" />
+          <SkeletonRows rows={8} />
+        </Panel>
+      </div>
     )
   const { org, fleet } = data
   return (
-    <aside className="space-y-4">
-      <div className="px-1 text-[11px] uppercase tracking-wide text-muted">{org.name || 'Your org'}</div>
-
-      <Panel>
-        <div className="flex items-center gap-3">
-          <span
-            className="h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ background: fleet.down.length ? 'var(--theme-warning)' : 'var(--theme-success)' }}
-          />
-          <span className="text-sm font-semibold text-fg">Fleet</span>
-          <span className="min-w-0 flex-1 truncate text-sm text-muted">
-            {fleet.online}/{fleet.total} online
-            {fleet.down.length > 0 && ` · ${fleet.down.slice(0, 2).join(', ')} down`}
-          </span>
-          {isAdmin && (
+    <div className="grid gap-6 lg:grid-cols-2">
+      <div className="space-y-4">
+        <div className="px-1 text-[11px] uppercase tracking-wide text-muted">{org.name || 'Your org'}</div>
+        <Panel>
+          <div className="flex items-center gap-3">
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: fleet.down.length ? 'var(--theme-warning)' : 'var(--theme-success)' }}
+            />
+            <span className="text-sm font-semibold text-fg">Fleet</span>
+            <span className="min-w-0 flex-1 truncate text-sm text-muted">
+              {fleet.online}/{fleet.total} online
+              {fleet.down.length > 0 && ` · ${fleet.down.slice(0, 2).join(', ')} down`}
+            </span>
             <Link to="/agents" className="shrink-0 text-xs text-accent hover:underline">
               Manage →
             </Link>
-          )}
-        </div>
-      </Panel>
-
-      {isAdmin && (
+          </div>
+        </Panel>
         <div className="grid grid-cols-2 gap-3">
           <Link to="/alerts" className="block">
             <Panel className="p-4">
@@ -219,35 +529,181 @@ function OrgRail({ data, isAdmin }: { data: HomeSummary | undefined; isAdmin: bo
             </Panel>
           </Link>
         </div>
-      )}
+        <ActivityList kinds={['fleet']} title="Fleet activity" />
+      </div>
+      <FleetPulse activity={org.activity} />
+    </div>
+  )
+}
 
+function FleetPulse({ activity }: { activity: OrgActivity[] }) {
+  const navigate = useNavigate()
+  return (
+    <Panel>
+      <div className="mb-2 text-sm font-semibold text-fg">Pulse</div>
+      {activity.length === 0 ? (
+        <div className="text-xs text-muted">Quiet so far. Activity across boards, comms, and the fleet shows here.</div>
+      ) : (
+        <ul className="space-y-2">
+          {activity.map((a, i) => (
+            <li key={i}>
+              <button
+                type="button"
+                onClick={() => a.href && void navigate({ to: a.href })}
+                className="w-full rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-card"
+              >
+                <div className="flex items-baseline gap-2">
+                  <span className="min-w-0 flex-1 truncate font-sans text-xs text-fg">
+                    <span className="font-medium">{a.actor}</span> · {a.detail}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-muted">{relativeTime(a.at)}</span>
+                </div>
+                <div className="truncate text-[11px] text-muted">{a.context}</div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+  )
+}
+
+// ── The assistant briefing: what needs you, in your assistant's voice ───────
+// Regenerates only when the attention fingerprint changes; chatting back
+// continues the same conversation through the normal chat pipeline.
+interface BriefingData {
+  none?: boolean
+  summary: string
+  agentModel: string | null
+  agentName: string | null
+  generating: boolean
+  generatedAt: string | null
+}
+
+type BriefScope = 'inbox' | 'boards' | 'comms' | 'plans' | 'research'
+const BRIEF_ASK: Record<BriefScope, string> = {
+  inbox: 'about any of this',
+  boards: 'about board work',
+  comms: 'about your comms',
+  plans: 'about your plans',
+  research: 'about the research',
+}
+
+function AssistantBriefing({ scope = 'inbox' }: { scope?: BriefScope }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['briefing', scope],
+    queryFn: async (): Promise<BriefingData> => {
+      const r = await fetch(`/api/me/briefing?scope=${scope}`, { credentials: 'same-origin' })
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+    refetchInterval: (q) => (q.state.data?.generating ? 2_500 : 60_000),
+  })
+  const [thread, setThread] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+  const [draft, setDraft] = useState('')
+  const [replying, setReplying] = useState(false)
+
+  const send = async () => {
+    const content = draft.trim()
+    if (!content || replying || !data?.agentModel) return
+    const history = thread
+    setDraft('')
+    setThread((t) => [...t, { role: 'user', content }, { role: 'assistant', content: '' }])
+    setReplying(true)
+    try {
+      // Ephemeral by design: streams through the assistant with the briefing
+      // as context; nothing is persisted, the thread lives in this panel only.
+      const res = await fetch('/api/me/briefing/chat', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scope, content, history }),
+      })
+      if (!res.ok || !res.body) throw new Error(`chat failed: ${res.status}`)
+      for await (const ev of parseAgentStream(res.body)) {
+        if (ev.type === 'content') {
+          setThread((t) => {
+            const next = [...t]
+            const last = next[next.length - 1]!
+            next[next.length - 1] = { ...last, content: last.content + ev.text }
+            return next
+          })
+        }
+      }
+    } catch {
+      setThread((t) => [...t.slice(0, -1), { role: 'assistant', content: '(could not reply — try again)' }])
+    } finally {
+      setReplying(false)
+    }
+  }
+
+  if (isLoading)
+    return (
       <Panel>
-        <div className="mb-2 text-sm font-semibold text-fg">Pulse</div>
-        {org.activity.length === 0 ? (
-          <div className="text-xs text-muted">Quiet so far. Activity across boards, comms, and the fleet shows here.</div>
-        ) : (
-          <ul className="space-y-2">
-            {org.activity.map((a, i) => (
-              <li key={i}>
-                <button
-                  type="button"
-                  onClick={() => a.href && void navigate({ to: a.href })}
-                  className="w-full rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-card"
-                >
-                  <div className="flex items-baseline gap-2">
-                    <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                      <span className="font-medium">{a.actor}</span> · {a.detail}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-muted">{relativeTime(a.at)}</span>
-                  </div>
-                  <div className="truncate pl-0 text-[11px] text-muted">{a.context}</div>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+        <div className="mb-3 flex items-center gap-2">
+          <Skeleton className="h-5 w-5 rounded-full" />
+          <Skeleton className="h-3 w-32 rounded-full" />
+        </div>
+        <SkeletonRows rows={3} />
       </Panel>
-    </aside>
+    )
+  if (!data) return null
+  if (data.none) return <AssistantCard />
+
+  return (
+    <Panel>
+      <div className="mb-3 flex items-center gap-2">
+        <Sparkles size={15} className="text-accent" />
+        <span className="text-sm font-semibold text-fg">{data.agentName}</span>
+        {data.generating ? (
+          <span className="flex items-center gap-1.5 text-[11px] text-muted">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" /> updating
+          </span>
+        ) : (
+          data.generatedAt && <span className="text-[11px] text-muted">{relativeTime(data.generatedAt)}</span>
+        )}
+      </div>
+      {data.summary ? (
+        <div className="text-sm">
+          <Markdown>{data.summary}</Markdown>
+        </div>
+      ) : (
+        <SkeletonRows rows={3} />
+      )}
+      {thread.length > 0 && (
+        <div className="mt-4 space-y-3 border-t border-line-subtle pt-4">
+          {thread.map((m, i) =>
+            m.role === 'user' ? (
+              <div key={i} className="flex justify-end">
+                <div className="max-w-[85%] rounded-2xl border px-3.5 py-2 font-sans text-sm text-[color:var(--chat-user-foreground)]" style={{ background: 'var(--chat-user-bg)', borderColor: 'var(--chat-user-border)' }}>
+                  {m.content}
+                </div>
+              </div>
+            ) : (
+              <div key={i} className="text-sm">
+                {m.content ? <Markdown>{m.content}</Markdown> : <SkeletonRows rows={1} />}
+              </div>
+            ),
+          )}
+        </div>
+      )}
+      <div className="mt-4 flex items-end gap-2">
+        <Textarea
+          autoGrow
+          rows={1}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              void send()
+            }
+          }}
+          placeholder={`Ask ${data.agentName} ${BRIEF_ASK[scope]}`}
+          className="max-h-32 text-sm"
+        />
+      </div>
+    </Panel>
   )
 }
 
@@ -299,72 +755,7 @@ function AssistantCard() {
   )
 }
 
-function QuickCard({ to, icon, label, sub, badge }: { to: string; icon: React.ReactNode; label: string; sub: string; badge?: number }) {
-  return (
-    <Link
-      to={to}
-      className="group relative flex flex-col gap-2 rounded-2xl border border-line-subtle bg-card/40 p-4 transition-colors hover:border-accent hover:bg-card"
-    >
-      <span className="text-accent">{icon}</span>
-      <div>
-        <div className="text-sm font-medium text-fg">{label}</div>
-        <div className="truncate text-xs text-muted">{sub}</div>
-      </div>
-      {badge ? (
-        <span className="absolute right-3 top-3 rounded-full bg-accent px-1.5 text-[10px] font-semibold text-surface">{badge}</span>
-      ) : null}
-    </Link>
-  )
-}
 
-function QueuePanel({
-  title,
-  hint,
-  queue,
-  accent,
-  onOpen,
-}: {
-  title: string
-  hint: string
-  queue: Queue
-  accent: string
-  onOpen: (w: WorkItem) => void
-}) {
-  return (
-    <Panel className="flex min-h-[12rem] flex-col">
-      <div className="mb-1 flex items-baseline gap-2">
-        <span className="text-sm font-semibold text-fg">{title}</span>
-        <span className="rounded-full px-1.5 text-xs font-semibold" style={{ background: `color-mix(in srgb, ${accent} 18%, transparent)`, color: accent }}>
-          {queue.count}
-        </span>
-      </div>
-      <p className="mb-3 text-xs text-muted">{hint}</p>
-      {queue.items.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center">
-          <EmptyState icon="✓" title="All clear" />
-        </div>
-      ) : (
-        <div className="-mx-2 divide-y divide-line-subtle">
-          {queue.items.map((w) => (
-            <button
-              key={w.id}
-              type="button"
-              onClick={() => onOpen(w)}
-              className="flex w-full items-baseline gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-card"
-            >
-              {w.ticketRef && <span className="shrink-0 font-[var(--font-mono)] text-[11px] text-muted">{w.ticketRef}</span>}
-              <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{w.title}</span>
-              <span className="shrink-0 text-[11px] text-muted">{relativeTime(w.updatedAt)}</span>
-            </button>
-          ))}
-          {queue.count > queue.items.length && (
-            <div className="px-2 pt-2 text-[11px] text-muted">+{queue.count - queue.items.length} more</div>
-          )}
-        </div>
-      )}
-    </Panel>
-  )
-}
 
 interface AgendaEvent {
   id: string
@@ -633,7 +1024,7 @@ interface PendingAction {
 // approval — confirm-sends. Hidden when there's nothing to approve.
 function ApprovalsPanel() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isError } = useQuery({
     queryKey: ['google-pending'],
     queryFn: async (): Promise<{ pending: PendingAction[] }> => {
       const r = await fetch('/api/integrations/google/pending')
@@ -643,6 +1034,16 @@ function ApprovalsPanel() {
     refetchInterval: 60_000,
   })
   const [busy, setBusy] = useState<string | null>(null)
+  // In flight → hold the space (same pattern as Agenda/Mail below); only a
+  // RESOLVED empty queue may remove the panel, so it never drops in above the
+  // queues and shifts the page.
+  if (!data && !isError)
+    return (
+      <Panel>
+        <Skeleton className="mb-4 h-3 w-36 rounded-full" />
+        <SkeletonRows rows={2} />
+      </Panel>
+    )
   const pending = data?.pending ?? []
   if (pending.length === 0) return null
 

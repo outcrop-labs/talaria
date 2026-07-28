@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useFolders } from '@/lib/artifacts'
 
 // An agent-produced image in chat, with a hover affordance to keep it: "Save
@@ -27,7 +28,7 @@ export function AgentMediaImage({ src, alt }: { src: string; alt: string }) {
 }
 
 function SaveDialog({ src, onClose }: { src: string; onClose: () => void }) {
-  const { data: folders = [] } = useFolders()
+  const { data: folders = [], isLoading: foldersLoading } = useFolders()
   const url = new URL(src, window.location.origin)
   const path = url.searchParams.get('path') ?? ''
   const model = decodeURIComponent(url.pathname.split('/').pop() ?? '')
@@ -81,14 +82,18 @@ function SaveDialog({ src, onClose }: { src: string; onClose: () => void }) {
           </div>
           <div>
             <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Folder</label>
-            <Select size="sm" value={folderId} onChange={(e) => setFolderId(e.target.value)} className="w-full">
-              <option value="">No folder (root)</option>
-              {folders.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-            </Select>
+            {foldersLoading ? (
+              <Skeleton className="h-9 w-full" />
+            ) : (
+              <Select size="sm" value={folderId} onChange={(e) => setFolderId(e.target.value)} className="w-full">
+                <option value="">No folder (root)</option>
+                {folders.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </Select>
+            )}
           </div>
           {error && (
             <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>

@@ -115,8 +115,21 @@ export interface AgentContainers {
 }
 
 /** Container reality per department: the talaria-managed service, by name —
- *  either slot counts, preferring the one that's running (mid-roll both exist). */
+ *  either slot counts, preferring the one that's running (mid-roll both exist).
+ *  Docker CLI costs ~0.5s per shell-out and Home + alerts + the roster all
+ *  ask within the same breath — a 5s cache dedupes them without going stale
+ *  for the 10s roster poll. */
+let statusCache: { at: number; key: string; value: AgentContainers[] } | null = null
+
 export async function containerStatus(departments: string[]): Promise<AgentContainers[]> {
+  const key = [...departments].sort().join(',')
+  if (statusCache && statusCache.key === key && Date.now() - statusCache.at < 5_000) return statusCache.value
+  const value = await containerStatusFresh(departments)
+  statusCache = { at: Date.now(), key, value }
+  return value
+}
+
+async function containerStatusFresh(departments: string[]): Promise<AgentContainers[]> {
   const { stdout } = await run('docker', ['ps', '-a', '--format', '{{json .}}'], { timeout: 20_000 })
   const all = stdout
     .split('\n')
