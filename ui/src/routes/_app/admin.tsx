@@ -15,7 +15,7 @@ import { Select } from '@/components/ui/select'
 import { useAgents } from '@/lib/agents'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
-import { GATEABLE_VIEWS } from '@/lib/nav'
+import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
 import { RetrievalPanel } from '@/components/admin/retrieval-panel'
 import { StoragePanel } from '@/components/admin/storage-panel'
 import { InfoTip } from '@/components/ui/info-tip'
@@ -52,6 +52,7 @@ interface AdminUser {
   agentModels: string[]
   canMintKeys: boolean
   deniedViews: string[]
+  allowedManageViews: string[]
   pinnedAdmin: boolean
   assistantModel: string | null
   assistantElevated: boolean
@@ -102,7 +103,7 @@ function AdminPage() {
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
   const [error, setError] = useState<string | null>(null)
 
-  const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[]; assistantElevated?: boolean }) => {
+  const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[]; allowedManageViews?: string[]; assistantElevated?: boolean }) => {
     setError(null)
     const r = await fetch('/api/admin/users', {
       method: 'PUT',
@@ -196,9 +197,12 @@ function AdminPage() {
           ) : (
           <ul className="divide-y divide-line-subtle">
             {(users ?? []).map((u) => {
-              // Views shown as an ALLOW list (all selected by default); denying =
-              // stored as gateable-minus-allowed.
-              const allowedViews = GATEABLE_VIEWS.filter((v) => !u.deniedViews.includes(v.to)).map((v) => v.to)
+              // One ALLOW list spanning both worlds: work views default in
+              // (denials stored), Manage views default out (allows stored).
+              const allowedViews = [
+                ...GATEABLE_VIEWS.filter((v) => !u.deniedViews.includes(v.to)).map((v) => v.to),
+                ...MANAGE_VIEWS.filter((v) => u.allowedManageViews.includes(v.to)).map((v) => v.to),
+              ]
               return (
                 <li key={u.id} className="space-y-2 py-3">
                   <div className="flex items-center gap-3">
@@ -249,14 +253,20 @@ function AdminPage() {
                           className="min-w-0 flex-1"
                         />
                         <Combobox
-                          options={GATEABLE_VIEWS.map((v) => ({ value: v.to, label: v.label }))}
+                          options={[
+                            ...GATEABLE_VIEWS.map((v) => ({ value: v.to, label: v.label })),
+                            ...MANAGE_VIEWS.map((v) => ({ value: v.to, label: v.label, sub: 'manage' })),
+                          ]}
                           selected={allowedViews}
                           onChange={(views) =>
-                            void update(u.id, { deniedViews: GATEABLE_VIEWS.filter((v) => !views.includes(v.to)).map((v) => v.to) })
+                            void update(u.id, {
+                              deniedViews: GATEABLE_VIEWS.filter((v) => !views.includes(v.to)).map((v) => v.to),
+                              allowedManageViews: MANAGE_VIEWS.filter((v) => views.includes(v.to)).map((v) => v.to),
+                            })
                           }
                           multiple
                           size="sm"
-                          placeholder="All views"
+                          placeholder="Work views"
                           className="min-w-0 flex-1"
                         />
                       </div>

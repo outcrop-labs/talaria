@@ -171,6 +171,8 @@ export interface AdminUser {
   canMintKeys: boolean
   /** Nav routes this member may NOT reach (empty = all views). */
   deniedViews: string[]
+  /** Manage-section views this member HAS been granted (default: none). */
+  allowedManageViews: string[]
   /** Email is in AUTH_ADMIN_EMAILS — role is pinned to admin at every login. */
   pinnedAdmin: boolean
   /** The user's personal assistant model, if they have one. */
@@ -184,6 +186,7 @@ export async function listUsersAdmin(): Promise<AdminUser[]> {
   const sql = await db()
   const rows = await sql`
     select u.id, u.email, u.name, u.role, u.can_mint_keys as "canMintKeys", u.denied_views as "deniedViews",
+           coalesce(u.allowed_manage_views, '{}') as "allowedManageViews",
            u.last_seen_at as "lastSeenAt", u.created_at as "createdAt",
            coalesce(array_agg(a.agent_model) filter (where a.agent_model is not null), '{}') as "agentModels",
            min(d.model) as "assistantModel", coalesce(bool_or(d.elevated), false) as "assistantElevated"
@@ -264,14 +267,27 @@ export async function canUseAgentModel(userId: string, role: Role, model: string
   return (await usableAgentGate(userId, role))(model)
 }
 
-/** Views a member may NOT reach. Admins are never restricted (always []). */
+// Manage-section routes: default DENIED for members, granted explicitly via
+// allowed_manage_views. Kept here (not imported from lib/nav) so the server
+// module stays client-import-free.
+const MANAGE_VIEW_ROUTES = ['/agents', '/models', '/templates', '/observability']
+
+/** Views a member may NOT reach: their explicit work-view denials PLUS every
+ *  Manage view they haven't been granted. Admins are never restricted. */
 export async function deniedViews(userId: string, role: Role): Promise<string[]> {
   if (role === 'admin') return []
   const sql = await db()
-  const rows = (await sql`select denied_views as "deniedViews" from users where id = ${userId}`) as unknown as Array<{
-    deniedViews: string[]
-  }>
-  return rows[0]?.deniedViews ?? []
+  const rows = (await sql`
+    select denied_views as "deniedViews", allowed_manage_views as "allowedManageViews" from users where id = ${userId}
+  `) as unknown as Array<{ deniedViews: string[]; allowedManageViews: string[] | null }>
+  const allowed = new Set(rows[0]?.allowedManageViews ?? [])
+  return [...(rows[0]?.deniedViews ?? []), ...MANAGE_VIEW_ROUTES.filter((v) => !allowed.has(v))]
+}
+
+/** Replace a member's granted Manage views. */
+export async function setAllowedManageViews(userId: string, views: string[]): Promise<void> {
+  const sql = await db()
+  await sql`update users set allowed_manage_views = ${views.filter((v) => MANAGE_VIEW_ROUTES.includes(v))} where id = ${userId}`
 }
 
 export async function setDeniedViews(userId: string, views: string[]): Promise<void> {
