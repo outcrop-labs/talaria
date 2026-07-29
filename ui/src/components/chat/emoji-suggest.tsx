@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useState } from 'react'
 import { Extension, type Editor, type Range } from '@tiptap/core'
 import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
+import { PluginKey } from '@tiptap/pm/state'
 import { ReactRenderer } from '@tiptap/react'
 import { cn } from '@/lib/cn'
 import { searchEmoji, type EmojiEntry } from '@/lib/emoji'
@@ -127,6 +128,6 @@ const suggestion: Omit<SuggestionOptions<EmojiEntry>, 'editor'> = {
 export const EmojiSuggest = Extension.create({
   name: 'emojiSuggest',
   addProseMirrorPlugins() {
-    return [Suggestion({ editor: this.editor, ...suggestion })]
+    return [Suggestion({ editor: this.editor, pluginKey: new PluginKey('emojiSuggest'), ...suggestion })]
   },
 })

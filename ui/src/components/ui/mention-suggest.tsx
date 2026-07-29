@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import { Extension, type Editor, type Range } from '@tiptap/core'
 import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
+import { PluginKey } from '@tiptap/pm/state'
 import { ReactRenderer } from '@tiptap/react'
 import { cn } from '@/lib/cn'
 import type { Mentionable } from '@/components/chat/mentions'
@@ -148,6 +149,6 @@ export const MentionSuggest = Extension.create<MentionSuggestOptions>({
     return { items: [] }
   },
   addProseMirrorPlugins() {
-    return [Suggestion({ editor: this.editor, ...buildSuggestion(() => this.options.items) })]
+    return [Suggestion({ editor: this.editor, pluginKey: new PluginKey('mentionSuggest'), ...buildSuggestion(() => this.options.items) })]
   },
 })

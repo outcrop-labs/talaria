@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import { Extension, type Editor, type Range } from '@tiptap/core'
 import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
+import { PluginKey } from '@tiptap/pm/state'
 import { ReactRenderer } from '@tiptap/react'
 import {
   Heading1, Heading2, Heading3, List, ListOrdered, ListChecks, Quote,
@@ -174,6 +175,6 @@ const suggestion: Omit<SuggestionOptions<SlashItem>, 'editor'> = {
 export const SlashCommands = Extension.create({
   name: 'slashCommands',
   addProseMirrorPlugins() {
-    return [Suggestion({ editor: this.editor, ...suggestion })]
+    return [Suggestion({ editor: this.editor, pluginKey: new PluginKey('slashCommands'), ...suggestion })]
   },
 })
