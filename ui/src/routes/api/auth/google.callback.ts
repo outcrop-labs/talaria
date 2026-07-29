@@ -10,6 +10,7 @@ import {
 } from '@/server/auth/session'
 import { upsertUser } from '@/server/users'
 import { selfJoinAllowed } from '@/server/org-domains'
+import { inviteAllowed, markInviteAccepted } from '@/server/invites'
 
 // Bounce back to the login screen with a machine-readable reason.
 function loginError(reason: string): Response {
@@ -46,13 +47,15 @@ export const Route = createFileRoute('/api/auth/google/callback')({
           return loginError('exchange_failed')
         }
 
-        // Two doors in: the env allow-list, or SELF-JOIN — Google has
-        // verified the email, and its domain is a DNS-verified org domain.
-        if (!isEmailAllowed(identity.email, cfg) && !(await selfJoinAllowed(identity.email))) {
+        // Three doors in: the env allow-list, SELF-JOIN (verified email on a
+        // DNS-verified org domain), or a live INVITE for this address.
+        const invited = await inviteAllowed(identity.email)
+        if (!isEmailAllowed(identity.email, cfg) && !(await selfJoinAllowed(identity.email)) && !invited) {
           return loginError('not_allowed')
         }
 
         const user = await upsertUser(identity)
+        if (invited && identity.email) void markInviteAccepted(identity.email, user.id)
         const sid = await createSession({ ...user, provider: identity.provider })
         const headers = new Headers({ Location: '/' })
         // Set the session and drop the one-shot state cookie.
