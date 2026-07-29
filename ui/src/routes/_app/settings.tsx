@@ -135,7 +135,12 @@ function SettingsPage() {
         )}
 
         {tab === 'assistant' && <AssistantSection />}
-        {tab === 'connections' && <IntegrationsSection />}
+        {tab === 'connections' && (
+          <>
+            <IntegrationsSection />
+            <McpConnectionsSection />
+          </>
+        )}
         {tab === 'keys' && <ApiKeysSection />}
       </div>
     </div>
@@ -207,6 +212,89 @@ interface GoogleStatus {
 
 // Connected accounts. Per-user OAuth: connecting grants Talaria (and the agents
 // working for you) offline access to build Google Docs/Sheets in YOUR Drive.
+/** Per-user MCP connected accounts: servers the org registered in per-user
+ *  auth mode. Connect yours (a token header, sealed at rest) and your
+ *  assistant starts carrying the server — acting as YOU there. */
+function McpConnectionsSection() {
+  const qc = useQueryClient()
+  const { data, isPending } = useQuery({
+    queryKey: ['me-mcp'],
+    queryFn: async (): Promise<Array<{ id: string; name: string; label: string; description: string | null; connected: boolean }>> => {
+      const r = await fetch('/api/me/mcp', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { servers: Array<{ id: string; name: string; label: string; description: string | null; connected: boolean }> }).servers
+    },
+  })
+  const [connecting, setConnecting] = useState<string | null>(null)
+  const [headerKey, setHeaderKey] = useState('Authorization')
+  const [headerVal, setHeaderVal] = useState('')
+
+  const put = async (serverId: string, headers: Record<string, string> | null) => {
+    await fetch('/api/me/mcp', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ serverId, headers }),
+    })
+    setConnecting(null)
+    setHeaderVal('')
+    await qc.invalidateQueries({ queryKey: ['me-mcp'] })
+  }
+
+  if (!isPending && (data ?? []).length === 0) return null
+  return (
+    <section className="mercury-panel mt-4 rounded-2xl p-6">
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Tool accounts</span>
+        <InfoTip text="MCP servers your org runs in per-user mode. Connect your own account (stored encrypted) and your assistant can use the server as you. Disconnect any time — the server drops off your assistant on the next config render." />
+      </div>
+      {isPending ? (
+        <SkeletonRows rows={2} />
+      ) : (
+        <ul className="divide-y divide-line-subtle">
+          {(data ?? []).map((s) => (
+            <li key={s.id} className="space-y-2 py-2.5">
+              <div className="flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-fg">{s.label}</div>
+                  {s.description && <div className="truncate font-sans text-xs text-muted">{s.description}</div>}
+                </div>
+                {s.connected ? (
+                  <>
+                    <span className="text-xs" style={{ color: 'var(--theme-success)' }}>connected</span>
+                    <Button size="sm" variant="ghost" onClick={() => void put(s.id, null)}>
+                      Disconnect
+                    </Button>
+                  </>
+                ) : (
+                  <Button size="sm" onClick={() => setConnecting(connecting === s.id ? null : s.id)}>
+                    Connect
+                  </Button>
+                )}
+              </div>
+              {connecting === s.id && (
+                <div className="flex items-end gap-2 pl-1">
+                  <label className="w-40 space-y-1 text-xs text-muted">
+                    header
+                    <Input size="sm" value={headerKey} onChange={(e) => setHeaderKey(e.target.value)} />
+                  </label>
+                  <label className="min-w-0 flex-1 space-y-1 text-xs text-muted">
+                    value (e.g. Bearer …)
+                    <Input size="sm" type="password" value={headerVal} onChange={(e) => setHeaderVal(e.target.value)} />
+                  </label>
+                  <Button size="sm" disabled={!headerKey.trim() || !headerVal.trim()} onClick={() => void put(s.id, { [headerKey.trim()]: headerVal })}>
+                    Save
+                  </Button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 function IntegrationsSection() {
   const qc = useQueryClient()
   const { data, isLoading } = useQuery({

@@ -29,6 +29,7 @@ export const GATEABLE_VIEWS: { to: string; label: string }[] = [
 export const MANAGE_VIEWS: { to: string; label: string }[] = [
   { to: '/agents', label: 'Agents' },
   { to: '/models', label: 'Models' },
+  { to: '/mcp', label: 'MCP' },
   { to: '/templates', label: 'Templates' },
   { to: '/observability', label: 'Observability' },
 ]
@@ -60,6 +61,7 @@ export const NAV: NavSection[] = [
     items: [
       { to: '/agents', label: 'Agents', icon: '◍' },
       { to: '/models', label: 'Models', icon: '▤' },
+      { to: '/mcp', label: 'MCP', icon: '⌁' },
       { to: '/templates', label: 'Templates', icon: '▣' },
       { to: '/observability', label: 'Observability', icon: '◉' },
     ],

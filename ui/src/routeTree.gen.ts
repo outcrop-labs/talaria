@@ -47,6 +47,7 @@ import { Route as AppResearchRouteImport } from './routes/_app/research'
 import { Route as AppPlanRouteImport } from './routes/_app/plan'
 import { Route as AppObservabilityRouteImport } from './routes/_app/observability'
 import { Route as AppModelsRouteImport } from './routes/_app/models'
+import { Route as AppMcpRouteImport } from './routes/_app/mcp'
 import { Route as AppKnowledgeRouteImport } from './routes/_app/knowledge'
 import { Route as AppInboxRouteImport } from './routes/_app/inbox'
 import { Route as AppFleetRouteImport } from './routes/_app/fleet'
@@ -65,9 +66,12 @@ import { Route as ApiResearchIdRouteImport } from './routes/api/research.$id'
 import { Route as ApiRagSearchRouteImport } from './routes/api/rag.search'
 import { Route as ApiRagCollectionsRouteImport } from './routes/api/rag.collections'
 import { Route as ApiMemoryIdRouteImport } from './routes/api/memory.$id'
+import { Route as ApiMeMcpRouteImport } from './routes/api/me.mcp'
 import { Route as ApiMeBriefingRouteImport } from './routes/api/me.briefing'
 import { Route as ApiMeAssistantRouteImport } from './routes/api/me.assistant'
 import { Route as ApiMcpTestRouteImport } from './routes/api/mcp.test'
+import { Route as ApiMcpServersRouteImport } from './routes/api/mcp.servers'
+import { Route as ApiMcpLibraryRouteImport } from './routes/api/mcp.library'
 import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
 import { Route as ApiKbSpacesRouteImport } from './routes/api/kb.spaces'
 import { Route as ApiKbSearchRouteImport } from './routes/api/kb.search'
@@ -120,6 +124,8 @@ import { Route as ApiPlansIdMembersRouteImport } from './routes/api/plans.$id.me
 import { Route as ApiPlanIdDraftRouteImport } from './routes/api/plan.$id.draft'
 import { Route as ApiPlanIdDocRouteImport } from './routes/api/plan.$id.doc'
 import { Route as ApiMeBriefingChatRouteImport } from './routes/api/me.briefing.chat'
+import { Route as ApiMcpServersIdRouteImport } from './routes/api/mcp.servers.$id'
+import { Route as ApiMcpGwServerRouteImport } from './routes/api/mcp.gw.$server'
 import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
 import { Route as ApiKbPublicSlugRouteImport } from './routes/api/kb.public.$slug'
@@ -365,6 +371,11 @@ const AppModelsRoute = AppModelsRouteImport.update({
   path: '/models',
   getParentRoute: () => AppRoute,
 } as any)
+const AppMcpRoute = AppMcpRouteImport.update({
+  id: '/mcp',
+  path: '/mcp',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppKnowledgeRoute = AppKnowledgeRouteImport.update({
   id: '/knowledge',
   path: '/knowledge',
@@ -455,6 +466,11 @@ const ApiMemoryIdRoute = ApiMemoryIdRouteImport.update({
   path: '/api/memory/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiMeMcpRoute = ApiMeMcpRouteImport.update({
+  id: '/api/me/mcp',
+  path: '/api/me/mcp',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiMeBriefingRoute = ApiMeBriefingRouteImport.update({
   id: '/api/me/briefing',
   path: '/api/me/briefing',
@@ -468,6 +484,16 @@ const ApiMeAssistantRoute = ApiMeAssistantRouteImport.update({
 const ApiMcpTestRoute = ApiMcpTestRouteImport.update({
   id: '/test',
   path: '/test',
+  getParentRoute: () => ApiMcpRoute,
+} as any)
+const ApiMcpServersRoute = ApiMcpServersRouteImport.update({
+  id: '/servers',
+  path: '/servers',
+  getParentRoute: () => ApiMcpRoute,
+} as any)
+const ApiMcpLibraryRoute = ApiMcpLibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
   getParentRoute: () => ApiMcpRoute,
 } as any)
 const ApiKeysIdRoute = ApiKeysIdRouteImport.update({
@@ -729,6 +755,16 @@ const ApiMeBriefingChatRoute = ApiMeBriefingChatRouteImport.update({
   id: '/chat',
   path: '/chat',
   getParentRoute: () => ApiMeBriefingRoute,
+} as any)
+const ApiMcpServersIdRoute = ApiMcpServersIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiMcpServersRoute,
+} as any)
+const ApiMcpGwServerRoute = ApiMcpGwServerRouteImport.update({
+  id: '/gw/$server',
+  path: '/gw/$server',
+  getParentRoute: () => ApiMcpRoute,
 } as any)
 const ApiLlmV1ModelsRoute = ApiLlmV1ModelsRouteImport.update({
   id: '/api/llm/v1/models',
@@ -1038,6 +1074,7 @@ export interface FileRoutesByFullPath {
   '/fleet': typeof AppFleetRoute
   '/inbox': typeof AppInboxRoute
   '/knowledge': typeof AppKnowledgeRoute
+  '/mcp': typeof AppMcpRoute
   '/models': typeof AppModelsRoute
   '/observability': typeof AppObservabilityRoute
   '/plan': typeof AppPlanRoute
@@ -1112,9 +1149,12 @@ export interface FileRoutesByFullPath {
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
+  '/api/mcp/library': typeof ApiMcpLibraryRoute
+  '/api/mcp/servers': typeof ApiMcpServersRouteWithChildren
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/me/assistant': typeof ApiMeAssistantRoute
   '/api/me/briefing': typeof ApiMeBriefingRouteWithChildren
+  '/api/me/mcp': typeof ApiMeMcpRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
@@ -1152,6 +1192,8 @@ export interface FileRoutesByFullPath {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/mcp/gw/$server': typeof ApiMcpGwServerRoute
+  '/api/mcp/servers/$id': typeof ApiMcpServersIdRoute
   '/api/me/briefing/chat': typeof ApiMeBriefingChatRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
@@ -1204,6 +1246,7 @@ export interface FileRoutesByTo {
   '/fleet': typeof AppFleetRoute
   '/inbox': typeof AppInboxRoute
   '/knowledge': typeof AppKnowledgeRoute
+  '/mcp': typeof AppMcpRoute
   '/models': typeof AppModelsRoute
   '/observability': typeof AppObservabilityRoute
   '/plan': typeof AppPlanRoute
@@ -1279,9 +1322,12 @@ export interface FileRoutesByTo {
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
+  '/api/mcp/library': typeof ApiMcpLibraryRoute
+  '/api/mcp/servers': typeof ApiMcpServersRouteWithChildren
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/me/assistant': typeof ApiMeAssistantRoute
   '/api/me/briefing': typeof ApiMeBriefingRouteWithChildren
+  '/api/me/mcp': typeof ApiMeMcpRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
@@ -1319,6 +1365,8 @@ export interface FileRoutesByTo {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/mcp/gw/$server': typeof ApiMcpGwServerRoute
+  '/api/mcp/servers/$id': typeof ApiMcpServersIdRoute
   '/api/me/briefing/chat': typeof ApiMeBriefingChatRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
@@ -1373,6 +1421,7 @@ export interface FileRoutesById {
   '/_app/fleet': typeof AppFleetRoute
   '/_app/inbox': typeof AppInboxRoute
   '/_app/knowledge': typeof AppKnowledgeRoute
+  '/_app/mcp': typeof AppMcpRoute
   '/_app/models': typeof AppModelsRoute
   '/_app/observability': typeof AppObservabilityRoute
   '/_app/plan': typeof AppPlanRoute
@@ -1448,9 +1497,12 @@ export interface FileRoutesById {
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
+  '/api/mcp/library': typeof ApiMcpLibraryRoute
+  '/api/mcp/servers': typeof ApiMcpServersRouteWithChildren
   '/api/mcp/test': typeof ApiMcpTestRoute
   '/api/me/assistant': typeof ApiMeAssistantRoute
   '/api/me/briefing': typeof ApiMeBriefingRouteWithChildren
+  '/api/me/mcp': typeof ApiMeMcpRoute
   '/api/memory/$id': typeof ApiMemoryIdRoute
   '/api/rag/collections': typeof ApiRagCollectionsRouteWithChildren
   '/api/rag/search': typeof ApiRagSearchRoute
@@ -1488,6 +1540,8 @@ export interface FileRoutesById {
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
+  '/api/mcp/gw/$server': typeof ApiMcpGwServerRoute
+  '/api/mcp/servers/$id': typeof ApiMcpServersIdRoute
   '/api/me/briefing/chat': typeof ApiMeBriefingChatRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
   '/api/plan/$id/draft': typeof ApiPlanIdDraftRoute
@@ -1543,6 +1597,7 @@ export interface FileRouteTypes {
     | '/fleet'
     | '/inbox'
     | '/knowledge'
+    | '/mcp'
     | '/models'
     | '/observability'
     | '/plan'
@@ -1617,9 +1672,12 @@ export interface FileRouteTypes {
     | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
+    | '/api/mcp/library'
+    | '/api/mcp/servers'
     | '/api/mcp/test'
     | '/api/me/assistant'
     | '/api/me/briefing'
+    | '/api/me/mcp'
     | '/api/memory/$id'
     | '/api/rag/collections'
     | '/api/rag/search'
@@ -1657,6 +1715,8 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/mcp/gw/$server'
+    | '/api/mcp/servers/$id'
     | '/api/me/briefing/chat'
     | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
@@ -1709,6 +1769,7 @@ export interface FileRouteTypes {
     | '/fleet'
     | '/inbox'
     | '/knowledge'
+    | '/mcp'
     | '/models'
     | '/observability'
     | '/plan'
@@ -1784,9 +1845,12 @@ export interface FileRouteTypes {
     | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
+    | '/api/mcp/library'
+    | '/api/mcp/servers'
     | '/api/mcp/test'
     | '/api/me/assistant'
     | '/api/me/briefing'
+    | '/api/me/mcp'
     | '/api/memory/$id'
     | '/api/rag/collections'
     | '/api/rag/search'
@@ -1824,6 +1888,8 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/mcp/gw/$server'
+    | '/api/mcp/servers/$id'
     | '/api/me/briefing/chat'
     | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
@@ -1877,6 +1943,7 @@ export interface FileRouteTypes {
     | '/_app/fleet'
     | '/_app/inbox'
     | '/_app/knowledge'
+    | '/_app/mcp'
     | '/_app/models'
     | '/_app/observability'
     | '/_app/plan'
@@ -1952,9 +2019,12 @@ export interface FileRouteTypes {
     | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
+    | '/api/mcp/library'
+    | '/api/mcp/servers'
     | '/api/mcp/test'
     | '/api/me/assistant'
     | '/api/me/briefing'
+    | '/api/me/mcp'
     | '/api/memory/$id'
     | '/api/rag/collections'
     | '/api/rag/search'
@@ -1992,6 +2062,8 @@ export interface FileRouteTypes {
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
+    | '/api/mcp/gw/$server'
+    | '/api/mcp/servers/$id'
     | '/api/me/briefing/chat'
     | '/api/plan/$id/doc'
     | '/api/plan/$id/draft'
@@ -2090,6 +2162,7 @@ export interface RootRouteChildren {
   ApiKbSpacesRoute: typeof ApiKbSpacesRouteWithChildren
   ApiMeAssistantRoute: typeof ApiMeAssistantRoute
   ApiMeBriefingRoute: typeof ApiMeBriefingRouteWithChildren
+  ApiMeMcpRoute: typeof ApiMeMcpRoute
   ApiMemoryIdRoute: typeof ApiMemoryIdRoute
   ApiRagCollectionsRoute: typeof ApiRagCollectionsRouteWithChildren
   ApiRagSearchRoute: typeof ApiRagSearchRoute
@@ -2373,6 +2446,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppModelsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/mcp': {
+      id: '/_app/mcp'
+      path: '/mcp'
+      fullPath: '/mcp'
+      preLoaderRoute: typeof AppMcpRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/knowledge': {
       id: '/_app/knowledge'
       path: '/knowledge'
@@ -2499,6 +2579,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMemoryIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/me/mcp': {
+      id: '/api/me/mcp'
+      path: '/api/me/mcp'
+      fullPath: '/api/me/mcp'
+      preLoaderRoute: typeof ApiMeMcpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/me/briefing': {
       id: '/api/me/briefing'
       path: '/api/me/briefing'
@@ -2518,6 +2605,20 @@ declare module '@tanstack/react-router' {
       path: '/test'
       fullPath: '/api/mcp/test'
       preLoaderRoute: typeof ApiMcpTestRouteImport
+      parentRoute: typeof ApiMcpRoute
+    }
+    '/api/mcp/servers': {
+      id: '/api/mcp/servers'
+      path: '/servers'
+      fullPath: '/api/mcp/servers'
+      preLoaderRoute: typeof ApiMcpServersRouteImport
+      parentRoute: typeof ApiMcpRoute
+    }
+    '/api/mcp/library': {
+      id: '/api/mcp/library'
+      path: '/library'
+      fullPath: '/api/mcp/library'
+      preLoaderRoute: typeof ApiMcpLibraryRouteImport
       parentRoute: typeof ApiMcpRoute
     }
     '/api/keys/$id': {
@@ -2883,6 +2984,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/me/briefing/chat'
       preLoaderRoute: typeof ApiMeBriefingChatRouteImport
       parentRoute: typeof ApiMeBriefingRoute
+    }
+    '/api/mcp/servers/$id': {
+      id: '/api/mcp/servers/$id'
+      path: '/$id'
+      fullPath: '/api/mcp/servers/$id'
+      preLoaderRoute: typeof ApiMcpServersIdRouteImport
+      parentRoute: typeof ApiMcpServersRoute
+    }
+    '/api/mcp/gw/$server': {
+      id: '/api/mcp/gw/$server'
+      path: '/gw/$server'
+      fullPath: '/api/mcp/gw/$server'
+      preLoaderRoute: typeof ApiMcpGwServerRouteImport
+      parentRoute: typeof ApiMcpRoute
     }
     '/api/llm/v1/models': {
       id: '/api/llm/v1/models'
@@ -3293,6 +3408,7 @@ interface AppRouteChildren {
   AppFleetRoute: typeof AppFleetRoute
   AppInboxRoute: typeof AppInboxRoute
   AppKnowledgeRoute: typeof AppKnowledgeRoute
+  AppMcpRoute: typeof AppMcpRoute
   AppModelsRoute: typeof AppModelsRoute
   AppObservabilityRoute: typeof AppObservabilityRoute
   AppPlanRoute: typeof AppPlanRoute
@@ -3314,6 +3430,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppFleetRoute: AppFleetRoute,
   AppInboxRoute: AppInboxRoute,
   AppKnowledgeRoute: AppKnowledgeRoute,
+  AppMcpRoute: AppMcpRoute,
   AppModelsRoute: AppModelsRoute,
   AppObservabilityRoute: AppObservabilityRoute,
   AppPlanRoute: AppPlanRoute,
@@ -3609,12 +3726,30 @@ const ApiKeysRouteChildren: ApiKeysRouteChildren = {
 const ApiKeysRouteWithChildren =
   ApiKeysRoute._addFileChildren(ApiKeysRouteChildren)
 
+interface ApiMcpServersRouteChildren {
+  ApiMcpServersIdRoute: typeof ApiMcpServersIdRoute
+}
+
+const ApiMcpServersRouteChildren: ApiMcpServersRouteChildren = {
+  ApiMcpServersIdRoute: ApiMcpServersIdRoute,
+}
+
+const ApiMcpServersRouteWithChildren = ApiMcpServersRoute._addFileChildren(
+  ApiMcpServersRouteChildren,
+)
+
 interface ApiMcpRouteChildren {
+  ApiMcpLibraryRoute: typeof ApiMcpLibraryRoute
+  ApiMcpServersRoute: typeof ApiMcpServersRouteWithChildren
   ApiMcpTestRoute: typeof ApiMcpTestRoute
+  ApiMcpGwServerRoute: typeof ApiMcpGwServerRoute
 }
 
 const ApiMcpRouteChildren: ApiMcpRouteChildren = {
+  ApiMcpLibraryRoute: ApiMcpLibraryRoute,
+  ApiMcpServersRoute: ApiMcpServersRouteWithChildren,
   ApiMcpTestRoute: ApiMcpTestRoute,
+  ApiMcpGwServerRoute: ApiMcpGwServerRoute,
 }
 
 const ApiMcpRouteWithChildren =
@@ -3920,6 +4055,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKbSpacesRoute: ApiKbSpacesRouteWithChildren,
   ApiMeAssistantRoute: ApiMeAssistantRoute,
   ApiMeBriefingRoute: ApiMeBriefingRouteWithChildren,
+  ApiMeMcpRoute: ApiMeMcpRoute,
   ApiMemoryIdRoute: ApiMemoryIdRoute,
   ApiRagCollectionsRoute: ApiRagCollectionsRouteWithChildren,
   ApiRagSearchRoute: ApiRagSearchRoute,

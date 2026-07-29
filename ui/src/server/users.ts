@@ -270,7 +270,7 @@ export async function canUseAgentModel(userId: string, role: Role, model: string
 // Manage-section routes: default DENIED for members, granted explicitly via
 // allowed_manage_views. Kept here (not imported from lib/nav) so the server
 // module stays client-import-free.
-const MANAGE_VIEW_ROUTES = ['/agents', '/models', '/templates', '/observability']
+const MANAGE_VIEW_ROUTES = ['/agents', '/models', '/mcp', '/templates', '/observability']
 
 /** Views a member may NOT reach: their explicit work-view denials PLUS every
  *  Manage view they haven't been granted. Admins are never restricted. */

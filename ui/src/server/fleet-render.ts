@@ -22,6 +22,12 @@ import { db } from './db/pg'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
 import { ensureMcpService, MCP_FLEET_URL } from './mcp-service'
+import { serversForAgent } from './mcp-registry'
+
+/** The MCP gateway base as fleet containers reach it — the UI server over the
+ *  docker host bridge (same pattern as the talaria-mcp fleet URL). */
+const MCP_GW_BASE = () =>
+  process.env.TALARIA_MCP_GW_URL ?? `http://host.docker.internal:${process.env.PORT ?? 5273}/api/mcp/gw`
 import { orgProfile, orgSoulHeader, toolkitSoulHeader, voiceSoulHeader } from './org'
 import { getGuardConfig, guardCoachingFor } from './guardrails'
 import type { AgentConfig, AgentDef, AgentVersion } from './agent-defs'
@@ -317,6 +323,18 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
         url: MCP_FLEET_URL(),
         headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '${TALARIA_AGENT_KEY}' },
       },
+    }
+    // Org-registry MCP servers (Manage → MCP) ride in as GATEWAY URLs — the
+    // agent never sees an upstream address or credential, and the gateway
+    // enforces its tool allowlist server-side. Config re-renders on registry
+    // changes; Hermes re-reads on mtime, so no restart needed.
+    for (const srv of await serversForAgent(def.model)) {
+      const entry: Record<string, unknown> = {
+        url: `${MCP_GW_BASE()}/${srv.name}`,
+        headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '${TALARIA_AGENT_KEY}' },
+      }
+      if (srv.timeoutSecs) entry.timeout = srv.timeoutSecs
+      ;(routed.mcp_servers as Record<string, unknown>)[srv.name] = entry
     }
     // Hermes only discovers skills outside ~/.hermes/skills via
     // skills.external_dirs — without this the /opt/skills + /opt/dept-skills
