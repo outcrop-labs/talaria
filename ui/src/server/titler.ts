@@ -90,3 +90,71 @@ export async function maybeRetitleConversation(conversationId: string): Promise<
   const title = await generateTitle(conv.kind === 'plan' ? 'plan' : 'chat', transcript)
   if (title) await sql`update conversations set title = ${title} where id = ${conversationId}`
 }
+
+// ── The sweep: retroactive + ongoing naming ─────────────────────────────────
+// Anything that predates the Titler (or whose naming call failed) gets picked
+// up here: research runs with no title, and live conversations still wearing
+// the mechanical truncation. Batched per pass so one sweep never burns much;
+// failures simply wait for the next pass. Mirrors maybeSweepIdleChats.
+const SWEEP_LLM_BUDGET = 12
+
+export async function sweepTitles(): Promise<number> {
+  const sql = await db()
+  let spent = 0
+
+  const runs = (await sql`
+    select id, question from research_runs where title is null
+    order by created_at desc limit ${SWEEP_LLM_BUDGET}
+  `) as unknown as Array<{ id: string; question: string }>
+  for (const r of runs) {
+    if (spent >= SWEEP_LLM_BUDGET) break
+    spent++
+    const t = await generateTitle('research', r.question)
+    if (!t) return spent // model down/rate-limited — stop burning the batch, next pass retries
+    await sql`update research_runs set title = ${t} where id = ${r.id}`
+  }
+
+  // Live conversations whose title still equals the truncated first user
+  // message (or the bare 'chat' fallback) — i.e., nobody named them yet.
+  const convs = (await sql`
+    select c.id, c.title, c.kind,
+           (select m.content from messages m
+            where m.conversation_id = c.id and m.role = 'user' and m.content <> ''
+            order by m.seq asc limit 1) as first
+    from conversations c
+    where c.archived = false
+      and exists (select 1 from messages m2 where m2.conversation_id = c.id and m2.role = 'assistant' and m2.content <> '')
+    order by c.updated_at desc limit 100
+  `) as unknown as Array<{ id: string; title: string | null; kind: 'chat' | 'plan'; first: string | null }>
+  for (const c of convs) {
+    if (spent >= SWEEP_LLM_BUDGET) break
+    const mechanical = !c.title || c.title === 'chat' || (c.first != null && c.title === mechanicalFrom(c.first))
+    if (!mechanical) continue
+    spent++
+    if (!(await maybeRetitleConversationAnyLength(c.id, c.kind))) return spent // ditto
+  }
+  return spent
+}
+
+/** Sweep-side retitle: same gate, but without the first-messages-only limit —
+ *  a pre-Titler conversation can be long and still mechanically titled. */
+async function maybeRetitleConversationAnyLength(conversationId: string, kind: 'chat' | 'plan'): Promise<boolean> {
+  const sql = await db()
+  const msgs = (await sql`
+    select role, content from messages
+    where conversation_id = ${conversationId} and content <> '' order by seq asc limit 6
+  `) as unknown as Array<{ role: string; content: string }>
+  const transcript = msgs.map((m) => `${m.role}: ${m.content.slice(0, 1200)}`).join('\n\n')
+  const title = await generateTitle(kind === 'plan' ? 'plan' : 'chat', transcript)
+  if (title) await sql`update conversations set title = ${title} where id = ${conversationId}`
+  return title != null
+}
+
+// Opportunistic scheduling: any comms read may kick a sweep, hourly, detached.
+let lastTitleSweep = 0
+export function maybeSweepTitles(): void {
+  const now = Date.now()
+  if (now - lastTitleSweep < 60 * 60_000) return
+  lastTitleSweep = now
+  void sweepTitles().catch(() => {})
+}

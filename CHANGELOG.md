@@ -24,7 +24,13 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   runs get a concise title from their question the moment they start
   (shown across the run list, header, and briefings; the raw question
   remains underneath). Naming is fire-and-forget: a rate-limited or dead
-  model keeps the current title, never blocks the work.
+  model keeps the current title, never blocks the work. A RETROACTIVE
+  hourly sweep (kicked from comms reads, mirroring the distill sweep)
+  names everything that predates the Titler or whose call failed —
+  batched per pass, fail-fast when the model is down — so old chats,
+  plans, and research runs pick up titles too. Chats can also be renamed
+  by hand from the thread context menu (owner or plan collaborator);
+  a hand-picked name is never overwritten.
 - **Personal agents get a private RAG brain.** Every user's personal
   collection ("My knowledge") is now the assistant's long-term memory of
   that user, created lazily and bound to the owner + their assistant only:
