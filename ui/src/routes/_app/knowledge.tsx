@@ -695,6 +695,8 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
   const [showHistory, setShowHistory] = useState(false)
   const [seed, setSeed] = useState(0)
   const [mode, setMode] = useState<'read' | 'edit'>('read')
+  const [museSel, setMuseSel] = useState<{ text: string; source: 'read' | 'editor' } | null>(null)
+  const { openMenu: openSpaceMenu, menu: spaceMenu } = useContextMenu()
   const isOwner = useIsOwner(space)
   const initMode = useRef(false)
   const headings = useMemo(() => parseHeadings(space?.body ?? ''), [space?.body])
@@ -755,7 +757,10 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
             placeholder="Space name"
           />
         ) : (
-          <h1 className="min-w-0 flex-1 truncate font-sans text-xl font-semibold text-fg">{space.name}</h1>
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate font-sans text-lg font-semibold text-fg">{space.name}</h1>
+            <div className="truncate text-[11px] text-muted">space overview</div>
+          </div>
         )}
         <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">Folder</span>
         <div className="flex shrink-0 rounded-md border border-line p-0.5">
@@ -773,9 +778,10 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
             </button>
           ))}
         </div>
-        <Button variant="outline" size="sm" className="shrink-0" title="Share &amp; permissions" onClick={() => setShareOpen(true)}>
+        <Button variant="ghost" size="sm" className="shrink-0" title="Share & permissions" onClick={() => setShareOpen(true)}>
           <VisibilityIcon v={space.visibility} /> <span className="ml-1.5 capitalize">{space.visibility}</span>
         </Button>
+        <span className="mx-0.5 h-4 shrink-0 border-l border-line-subtle" />
         <Button variant={showToc ? 'outline' : 'ghost'} size="sm" className="shrink-0" title="Table of contents" onClick={() => setShowToc((v) => !v)}>
           <ListTree size={14} />
         </Button>
@@ -801,21 +807,85 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
       </div>
       <div ref={bodyRef} className="flex min-h-0 flex-1">
         {mode === 'edit' ? (
-          <RichEditor
-            key={`${spaceId}-${seed}`}
-            ref={editorRef}
-            value={space.body}
-            docSearch={docSearch}
-            slash
-            prose
-            autosave
-            onSave={() => void saveBody()}
-            placeholder="Write an overview for this space: what lives here, how it's organized"
-            fill
-            className="min-w-0 flex-1"
-          />
+          <div
+            className="flex min-w-0 flex-1 flex-col"
+            onContextMenu={(e) => {
+              const sel = editorRef.current?.getSelectionText() ?? ''
+              const inTable = editorRef.current?.isInTable() ?? false
+              openSpaceMenu(e, [
+                { label: 'Bold', disabled: !sel, onSelect: () => editorRef.current?.toggleMark('bold') },
+                { label: 'Italic', disabled: !sel, onSelect: () => editorRef.current?.toggleMark('italic') },
+                { label: 'Strikethrough', disabled: !sel, onSelect: () => editorRef.current?.toggleMark('strike') },
+                { label: 'Inline code', disabled: !sel, onSelect: () => editorRef.current?.toggleMark('code') },
+                'sep',
+                ...(inTable
+                  ? ([
+                      { label: 'Add row below', onSelect: () => editorRef.current?.tableCommand('addRowAfter') },
+                      { label: 'Add row above', onSelect: () => editorRef.current?.tableCommand('addRowBefore') },
+                      { label: 'Add column right', onSelect: () => editorRef.current?.tableCommand('addColumnAfter') },
+                      { label: 'Add column left', onSelect: () => editorRef.current?.tableCommand('addColumnBefore') },
+                      { label: 'Delete row', onSelect: () => editorRef.current?.tableCommand('deleteRow') },
+                      { label: 'Delete column', onSelect: () => editorRef.current?.tableCommand('deleteColumn') },
+                      { label: 'Delete table', danger: true, onSelect: () => editorRef.current?.tableCommand('deleteTable') },
+                      'sep',
+                    ] as const)
+                  : ([{ label: 'Insert table', onSelect: () => editorRef.current?.tableCommand('insertTable') }, 'sep'] as const)),
+                { label: 'Ask Muse about selection', disabled: !sel, onSelect: () => setMuseSel({ text: sel, source: 'editor' }) },
+                { label: 'Copy selection', disabled: !sel, onSelect: () => void navigator.clipboard.writeText(sel) },
+              ])
+            }}
+          >
+            <RichEditor
+              key={`${spaceId}-${seed}`}
+              ref={editorRef}
+              value={space.body}
+              docSearch={docSearch}
+              slash
+              prose
+              autosave
+              onSave={() => void saveBody()}
+              placeholder="Write an overview for this space: what lives here, how it's organized"
+              fill
+              className="min-w-0 flex-1"
+            />
+            <MuseBar
+              context={`Overview document for the knowledge space “${name || space.name}”.`}
+              currentText={() => editorRef.current?.getMarkdown() ?? space.body}
+              selection={museSel?.text ?? null}
+              onClearSelection={() => setMuseSel(null)}
+              surgical={!!museSel}
+              onAccept={async (md) => {
+                await save({ body: md })
+                setSeed((v) => v + 1)
+                setMuseSel(null)
+              }}
+              onAcceptSelection={async (replacement) => {
+                if (!museSel) return
+                if (museSel.source === 'editor') {
+                  editorRef.current?.replaceSelection(replacement)
+                  void saveBody()
+                } else {
+                  const body = editorRef.current?.getMarkdown() ?? space.body
+                  await save({ body: body.replace(museSel.text, replacement) })
+                  setSeed((v) => v + 1)
+                }
+                setMuseSel(null)
+              }}
+            />
+          </div>
         ) : (
-          <div className="re-prose min-w-0 flex-1 overflow-y-auto">
+          <div className="flex min-w-0 flex-1 flex-col">
+          <div
+            className="re-prose min-w-0 flex-1 overflow-y-auto"
+            onContextMenu={(e) => {
+              const sel = window.getSelection()?.toString().trim() ?? ''
+              openSpaceMenu(e, [
+                { label: 'Copy text', disabled: !sel && !space.body, onSelect: () => void navigator.clipboard.writeText(sel || space.body) },
+                { label: 'Copy link', onSelect: () => copyAppLink(`/knowledge?space=${spaceId}`) },
+                ...(sel ? [{ label: 'Ask Muse about selection', onSelect: () => setMuseSel({ text: sel, source: 'read' }) }] : []),
+              ])
+            }}
+          >
             {space.body.trim() ? (
               <Markdown className="tiptap">{space.body}</Markdown>
             ) : (
@@ -825,6 +895,23 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
                 </button>
               </div>
             )}
+          </div>
+          <MuseBar
+            context={`Overview document for the knowledge space “${space.name}”.`}
+            currentText={() => space.body}
+            selection={museSel?.text ?? null}
+            onClearSelection={() => setMuseSel(null)}
+            surgical={!!museSel && space.body.includes(museSel.text)}
+            onAccept={async (md) => {
+              await save({ body: md })
+              setMuseSel(null)
+            }}
+            onAcceptSelection={async (replacement) => {
+              if (!museSel) return
+              await save({ body: space.body.replace(museSel.text, replacement) })
+              setMuseSel(null)
+            }}
+          />
           </div>
         )}
         {showToc && (
@@ -865,6 +952,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
           </div>
         )}
       </div>
+      {spaceMenu}
       <PermissionsModal
         open={shareOpen}
         onClose={() => setShareOpen(false)}

@@ -137,7 +137,7 @@ export async function deleteSpace(id: string): Promise<void> {
 
 // ── Docs ──────────────────────────────────────────────────────────────────────
 const DOC_META = `select id, space_id as "spaceId", parent_id as "parentId", title, icon, kind, official,
-  visibility, public_slug as "publicSlug", okf_doc_id as "okfDocId", edit_policy as "editPolicy", perms_inherited as "permsInherited",
+  visibility, public_slug as "publicSlug", edit_policy as "editPolicy", perms_inherited as "permsInherited",
   owner_user_id as "ownerUserId", sort, rag_routing as "ragRouting",
   created_by as "createdBy", updated_by as "updatedBy", updated_at as "updatedAt" from kb_docs`
 
@@ -150,7 +150,7 @@ export async function getDoc(id: string): Promise<KbDoc | null> {
   const sql = await db()
   const rows = (await sql.unsafe(
     `select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
-            visibility, public_slug as "publicSlug", okf_doc_id as "okfDocId", edit_policy as "editPolicy", perms_inherited as "permsInherited",
+            visibility, public_slug as "publicSlug", edit_policy as "editPolicy", perms_inherited as "permsInherited",
             sort, owner_user_id as "ownerUserId", rag_routing as "ragRouting",
             created_by as "createdBy", updated_by as "updatedBy",
             updated_at as "updatedAt" from kb_docs where id = $1`,
@@ -163,7 +163,7 @@ export async function getPublicDoc(slug: string): Promise<KbDoc | null> {
   const sql = await db()
   const rows = (await sql`
     select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
-           visibility, public_slug as "publicSlug", okf_doc_id as "okfDocId", edit_policy as "editPolicy", perms_inherited as "permsInherited",
+           visibility, public_slug as "publicSlug", edit_policy as "editPolicy", perms_inherited as "permsInherited",
            sort, owner_user_id as "ownerUserId",
            created_by as "createdBy", updated_by as "updatedBy", updated_at as "updatedAt"
     from kb_docs where public_slug = ${slug} and visibility = 'public'
