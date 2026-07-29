@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Check, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -56,7 +56,7 @@ function useMcpServers() {
 
 function McpPage() {
   const { data: servers, isPending } = useMcpServers()
-  const [adding, setAdding] = useState(false)
+  const [adding, setAdding] = useState<null | 'marketplace' | 'custom'>(null)
 
   return (
     <div className="h-full overflow-y-auto p-8">
@@ -65,8 +65,11 @@ function McpPage() {
           <h1 className="mercury-text text-2xl font-semibold">MCP</h1>
           <InfoTip text="Model Context Protocol servers, managed org-wide. Register once; choose which agents carry each server and which people may use it — down to individual tools. Agents reach servers only through Talaria's gateway, so the limits here are enforced, not advisory." />
           <span className="flex-1" />
-          <Button size="sm" onClick={() => setAdding(true)}>
-            <Plus size={14} /> Add server
+          <Button size="sm" variant="ghost" onClick={() => setAdding('custom')}>
+            Custom server
+          </Button>
+          <Button size="sm" onClick={() => setAdding('marketplace')}>
+            <Plus size={14} /> Browse marketplace
           </Button>
         </div>
 
@@ -79,14 +82,15 @@ function McpPage() {
           <EmptyState
             icon="⌁"
             title="No MCP servers yet"
-            hint="Register your first server — any MCP endpoint your agents should be able to reach."
-            action={<Button size="sm" onClick={() => setAdding(true)}>Add server</Button>}
+            hint="Browse the marketplace, or register a custom endpoint your agents should reach."
+            action={<Button size="sm" onClick={() => setAdding('marketplace')}>Browse marketplace</Button>}
           />
         ) : (
           (servers ?? []).map((s) => <ServerCard key={s.id} server={s} />)
         )}
 
-        {adding && <AddServerModal onClose={() => setAdding(false)} />}
+        {adding === 'marketplace' && <MarketplaceModal onClose={() => setAdding(null)} onCustom={() => setAdding('custom')} />}
+        {adding === 'custom' && <AddServerModal onClose={() => setAdding(null)} />}
       </div>
     </div>
   )
@@ -128,6 +132,7 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
   return (
     <Panel className={cn(!s.enabled && 'opacity-60')}>
       <div className="flex items-center gap-3">
+        <ServerMark title={s.label} domain={(() => { try { return new URL(s.url).hostname.replace(/^mcp\./, '') } catch { return null } })()} size={34} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-fg">{s.label}</span>
@@ -314,6 +319,212 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
   )
 }
 
+interface LibraryServerRow {
+  registryName: string
+  title: string
+  description: string | null
+  url: string
+  domain: string | null
+  icon: string | null
+  tier: 'first-party' | 'verified' | 'community'
+}
+
+/** Publisher mark: declared icon → proxied favicon → monogram tile. */
+function ServerMark({ title, domain, icon, size = 32 }: { title: string; domain?: string | null; icon?: string | null; size?: number }) {
+  const [failed, setFailed] = useState(false)
+  const src = icon ? `/api/mcp/icon?src=${encodeURIComponent(icon)}` : domain ? `/api/mcp/icon?domain=${encodeURIComponent(domain)}` : null
+  if (!src || failed) {
+    return (
+      <span
+        className="grid shrink-0 place-items-center rounded-lg bg-card font-semibold text-muted"
+        style={{ width: size, height: size, fontSize: size * 0.45 }}
+      >
+        {(title[0] ?? '?').toUpperCase()}
+      </span>
+    )
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      width={size}
+      height={size}
+      onError={() => setFailed(true)}
+      className="shrink-0 rounded-lg bg-card object-contain"
+      style={{ width: size, height: size }}
+    />
+  )
+}
+
+const TIER_BADGE: Record<LibraryServerRow['tier'], { label: string; cls: string; hint: string }> = {
+  'first-party': {
+    label: 'official',
+    cls: 'bg-accent/10 text-accent',
+    hint: 'Published by the company itself, hosted on its own verified domain',
+  },
+  verified: { label: 'verified', cls: 'bg-card text-muted', hint: 'Domain-verified publisher, hosted elsewhere' },
+  community: { label: 'community', cls: 'bg-card text-muted/70', hint: 'Community-built (io.github namespace)' },
+}
+
+/** The marketplace: browse the official MCP registry like a store — featured
+ *  first-party servers up front, full search across 20k+ entries, one-click
+ *  install. Custom/self-hosted endpoints live in the separate form. */
+function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom: () => void }) {
+  const qc = useQueryClient()
+  const { data: existing } = useMcpServers()
+  const [q, setQ] = useState('')
+  const [busyAdd, setBusyAdd] = useState<string | null>(null)
+  const [added, setAdded] = useState<Set<string>>(new Set())
+  const [error, setError] = useState<string | null>(null)
+
+  const { data: results, isFetching } = useQuery({
+    queryKey: ['mcp-marketplace', q],
+    queryFn: async (): Promise<{ servers: LibraryServerRow[] }> => {
+      const url = q.trim()
+        ? `/api/mcp/library?q=${encodeURIComponent(q.trim())}`
+        : '/api/mcp/library?featured=1'
+      const r = await fetch(url, { credentials: 'same-origin' })
+      if (!r.ok) throw new Error('library unavailable')
+      return r.json()
+    },
+    placeholderData: (prev) => prev,
+    staleTime: 60_000,
+  })
+
+  const installedUrls = new Set((existing ?? []).map((s) => s.url))
+  const slugify = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+
+  const install = async (l: LibraryServerRow) => {
+    setBusyAdd(l.registryName)
+    setError(null)
+    const r = await fetch('/api/mcp/servers', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: slugify(l.title), label: l.title, url: l.url, description: l.description }),
+    })
+    setBusyAdd(null)
+    if (!r.ok) {
+      setError(((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed')
+      return
+    }
+    const { server } = (await r.json()) as { server: { id: string } }
+    setAdded((prev) => new Set(prev).add(l.registryName))
+    await qc.invalidateQueries({ queryKey: ['mcp-servers'] })
+    void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
+  }
+
+  return (
+    <Modal open onClose={onClose} title="MCP marketplace" takeover>
+      <div className="flex h-full min-h-0 flex-col gap-4">
+        <div className="flex items-center gap-3">
+          <Input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search the official MCP registry — GitHub, Linear, Notion, Stripe, Vercel…"
+            className="max-w-xl"
+          />
+          {isFetching && <RefreshCw size={14} className="animate-spin text-muted" />}
+          <span className="flex-1" />
+          <button type="button" onClick={onCustom} className="text-xs text-accent hover:underline">
+            Custom / self-hosted server →
+          </button>
+        </div>
+        {!q.trim() && (
+          <div className="flex items-center gap-1.5 text-xs text-muted">
+            <span className="font-semibold uppercase tracking-wide">Featured</span>
+            <InfoTip text="Companies publishing their own MCP server on their own verified domain — the official integrations. Search reaches the whole registry, community servers included." />
+          </div>
+        )}
+        {error && (
+          <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>
+            {error}
+          </div>
+        )}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {!results && (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {Array.from({ length: 9 }, (_, i) => (
+                <div key={i} className="rounded-2xl border border-line-subtle p-4">
+                  <Skeleton className="h-3.5 w-32 rounded-full" delay={i * 0.08} />
+                  <Skeleton className="mt-2 h-2.5 w-24 rounded-full" delay={i * 0.08 + 0.06} />
+                  <Skeleton className="mt-3 h-2.5 w-full rounded-full" delay={i * 0.08 + 0.12} />
+                  <Skeleton className="mt-1.5 h-2.5 w-4/5 rounded-full" delay={i * 0.08 + 0.18} />
+                </div>
+              ))}
+            </div>
+          )}
+          {results && results.servers.length === 0 && (
+            <EmptyState
+              icon="⌁"
+              title="No hosted servers match"
+              hint="Only servers with a hosted endpoint appear — packages that need a local process can't be one-click added. Try the custom form for self-hosted servers."
+            />
+          )}
+          {results && results.servers.length > 0 && (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {results.servers.map((l) => {
+                const installed = installedUrls.has(l.url) || added.has(l.registryName)
+                const busy = busyAdd === l.registryName
+                const badge = TIER_BADGE[l.tier]
+                return (
+                  <div
+                    key={l.registryName}
+                    className="group relative flex flex-col rounded-2xl border border-line-subtle bg-card/30 p-4 transition-all hover:border-line hover:bg-card/60"
+                  >
+                    <div className="flex items-center gap-3">
+                      <ServerMark title={l.title} domain={l.domain} icon={l.icon} size={34} />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold text-fg">{l.title}</div>
+                        <div className="flex items-center gap-1.5">
+                          {l.domain && <span className="truncate text-[11px] text-muted">{l.domain}</span>}
+                          <span title={badge.hint} className={cn('shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium', badge.cls)}>
+                            {badge.label}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <p className="mt-2.5 line-clamp-3 min-h-12 font-sans text-xs leading-relaxed text-muted">
+                      {l.description ?? 'No description.'}
+                    </p>
+                    {/* The install control: quiet until the card is engaged. */}
+                    <div className="absolute right-3 top-3">
+                      {installed ? (
+                        <span
+                          className="grid h-7 w-7 place-items-center rounded-full bg-[color:var(--theme-success)]/10 text-[color:var(--theme-success)]"
+                          title="In your org registry"
+                        >
+                          <Check size={14} />
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          title="Add to your org"
+                          disabled={busy}
+                          onClick={() => void install(l)}
+                          className={cn(
+                            'grid h-7 w-7 place-items-center rounded-full border transition-all',
+                            busy
+                              ? 'border-line bg-card text-muted opacity-100'
+                              : 'border-line bg-card text-muted opacity-0 hover:border-accent hover:text-accent group-hover:opacity-100',
+                          )}
+                        >
+                          {busy ? <RefreshCw size={13} className="animate-spin" /> : <Plus size={14} />}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 function AddServerModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
   const [label, setLabel] = useState('')
@@ -327,26 +538,6 @@ function AddServerModal({ onClose }: { onClose: () => void }) {
   const [timeoutSecs, setTimeoutSecs] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [libQ, setLibQ] = useState('')
-  const [libOpen, setLibOpen] = useState(true)
-  const { data: library = [], isFetching: libLoading } = useQuery({
-    queryKey: ['mcp-library', libQ],
-    queryFn: async (): Promise<Array<{ registryName: string; title: string; description: string | null; url: string }>> => {
-      const r = await fetch(`/api/mcp/library?q=${encodeURIComponent(libQ)}`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { servers: Array<{ registryName: string; title: string; description: string | null; url: string }> }).servers
-    },
-    placeholderData: (prev) => prev,
-  })
-
-  const pickFromLibrary = (l: { title: string; description: string | null; url: string }) => {
-    setLabel(l.title)
-    if (!slugEdited) setName(l.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40))
-    setUrl(l.url)
-    setDescription(l.description ?? '')
-    setLibOpen(false)
-  }
-
   const slugify = (v: string) =>
     v.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
   const setLabelAndSlug = (v: string) => {
@@ -392,40 +583,8 @@ function AddServerModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <Modal open onClose={onClose} title="Add MCP server">
+    <Modal open onClose={onClose} title="Custom MCP server">
       <div className="space-y-4">
-        {/* The library: the official MCP registry, live. Pick to prefill —
-            everything below stays editable, custom servers just type over it. */}
-        <div>
-          <label className="mb-1 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
-            Library
-            <InfoTip text="The official MCP registry, searched live — servers with a hosted (streamable-HTTP) endpoint. Picking one prefills the form; anything can be edited, and fully custom servers just fill the fields below." />
-          </label>
-          <Input
-            value={libQ}
-            onChange={(e) => {
-              setLibQ(e.target.value)
-              setLibOpen(true)
-            }}
-            placeholder="Search common services — GitHub, Linear, Notion, Stripe…"
-          />
-          {libOpen && (libLoading || library.length > 0) && (
-            <div className="mt-1 max-h-44 overflow-y-auto rounded-xl border border-line-subtle bg-card/50 p-1">
-              {libLoading && library.length === 0 && <SkeletonRows rows={3} className="px-2 py-1.5" />}
-              {library.map((l) => (
-                <button
-                  key={l.registryName}
-                  type="button"
-                  onClick={() => pickFromLibrary(l)}
-                  className="flex w-full items-baseline gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-sidebar"
-                >
-                  <span className="shrink-0 text-sm text-fg">{l.title}</span>
-                  <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted">{l.description}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
         <div>
           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
           <Input autoFocus value={label} onChange={(e) => setLabelAndSlug(e.target.value)} onKeyDown={onEnter} placeholder="GitHub" />

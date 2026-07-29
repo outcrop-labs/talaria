@@ -72,6 +72,7 @@ import { Route as ApiMeAssistantRouteImport } from './routes/api/me.assistant'
 import { Route as ApiMcpTestRouteImport } from './routes/api/mcp.test'
 import { Route as ApiMcpServersRouteImport } from './routes/api/mcp.servers'
 import { Route as ApiMcpLibraryRouteImport } from './routes/api/mcp.library'
+import { Route as ApiMcpIconRouteImport } from './routes/api/mcp.icon'
 import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
 import { Route as ApiKbSpacesRouteImport } from './routes/api/kb.spaces'
 import { Route as ApiKbSearchRouteImport } from './routes/api/kb.search'
@@ -494,6 +495,11 @@ const ApiMcpServersRoute = ApiMcpServersRouteImport.update({
 const ApiMcpLibraryRoute = ApiMcpLibraryRouteImport.update({
   id: '/library',
   path: '/library',
+  getParentRoute: () => ApiMcpRoute,
+} as any)
+const ApiMcpIconRoute = ApiMcpIconRouteImport.update({
+  id: '/icon',
+  path: '/icon',
   getParentRoute: () => ApiMcpRoute,
 } as any)
 const ApiKeysIdRoute = ApiKeysIdRouteImport.update({
@@ -1149,6 +1155,7 @@ export interface FileRoutesByFullPath {
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
+  '/api/mcp/icon': typeof ApiMcpIconRoute
   '/api/mcp/library': typeof ApiMcpLibraryRoute
   '/api/mcp/servers': typeof ApiMcpServersRouteWithChildren
   '/api/mcp/test': typeof ApiMcpTestRoute
@@ -1322,6 +1329,7 @@ export interface FileRoutesByTo {
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
+  '/api/mcp/icon': typeof ApiMcpIconRoute
   '/api/mcp/library': typeof ApiMcpLibraryRoute
   '/api/mcp/servers': typeof ApiMcpServersRouteWithChildren
   '/api/mcp/test': typeof ApiMcpTestRoute
@@ -1497,6 +1505,7 @@ export interface FileRoutesById {
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
   '/api/keys/$id': typeof ApiKeysIdRoute
+  '/api/mcp/icon': typeof ApiMcpIconRoute
   '/api/mcp/library': typeof ApiMcpLibraryRoute
   '/api/mcp/servers': typeof ApiMcpServersRouteWithChildren
   '/api/mcp/test': typeof ApiMcpTestRoute
@@ -1672,6 +1681,7 @@ export interface FileRouteTypes {
     | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
+    | '/api/mcp/icon'
     | '/api/mcp/library'
     | '/api/mcp/servers'
     | '/api/mcp/test'
@@ -1845,6 +1855,7 @@ export interface FileRouteTypes {
     | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
+    | '/api/mcp/icon'
     | '/api/mcp/library'
     | '/api/mcp/servers'
     | '/api/mcp/test'
@@ -2019,6 +2030,7 @@ export interface FileRouteTypes {
     | '/api/kb/search'
     | '/api/kb/spaces'
     | '/api/keys/$id'
+    | '/api/mcp/icon'
     | '/api/mcp/library'
     | '/api/mcp/servers'
     | '/api/mcp/test'
@@ -2619,6 +2631,13 @@ declare module '@tanstack/react-router' {
       path: '/library'
       fullPath: '/api/mcp/library'
       preLoaderRoute: typeof ApiMcpLibraryRouteImport
+      parentRoute: typeof ApiMcpRoute
+    }
+    '/api/mcp/icon': {
+      id: '/api/mcp/icon'
+      path: '/icon'
+      fullPath: '/api/mcp/icon'
+      preLoaderRoute: typeof ApiMcpIconRouteImport
       parentRoute: typeof ApiMcpRoute
     }
     '/api/keys/$id': {
@@ -3739,6 +3758,7 @@ const ApiMcpServersRouteWithChildren = ApiMcpServersRoute._addFileChildren(
 )
 
 interface ApiMcpRouteChildren {
+  ApiMcpIconRoute: typeof ApiMcpIconRoute
   ApiMcpLibraryRoute: typeof ApiMcpLibraryRoute
   ApiMcpServersRoute: typeof ApiMcpServersRouteWithChildren
   ApiMcpTestRoute: typeof ApiMcpTestRoute
@@ -3746,6 +3766,7 @@ interface ApiMcpRouteChildren {
 }
 
 const ApiMcpRouteChildren: ApiMcpRouteChildren = {
+  ApiMcpIconRoute: ApiMcpIconRoute,
   ApiMcpLibraryRoute: ApiMcpLibraryRoute,
   ApiMcpServersRoute: ApiMcpServersRouteWithChildren,
   ApiMcpTestRoute: ApiMcpTestRoute,
