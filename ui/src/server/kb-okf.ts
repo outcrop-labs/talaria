@@ -1,15 +1,17 @@
-// OKF digests — each knowledge space's agent-facing summary, maintained by
-// the LIBRARIAN platform agent. An OKF is DERIVED knowledge: the summation of
-// a space's PROMOTED (official) documents — a summary and link per doc —
-// regenerated autonomously whenever promotions change. It is itself official,
-// so it grounds agents through the org brain; nobody writes it by hand.
+// Per-document OKF — each promoted doc carries a hidden agent-facing summary
+// in the Open Knowledge Format (YAML frontmatter + markdown concept body, per
+// the OKF spec): type/title/description/resource/tags, a `generated` trust
+// stamp, and lifecycle status. The LIBRARIAN platform agent writes it when a
+// doc is promoted, refreshes it when promoted content changes, and it clears
+// on demotion. Agents read it through the doc API; humans peek via the OKF
+// chip in the doc header.
 import { db } from './db/pg'
 import { completeViaGateway, gatewayModels, resolveRoute } from './llm-gateway'
 import { resolveRoleModel } from './model-roles'
 import { platformAgentModel } from './platform-agents'
-import { createDoc, getSpace, saveDoc, setOfficial, type KbDoc } from './kb'
+import { getDoc } from './kb'
 
-const clip = (s: string, max = 2400) => (s.length > max ? `${s.slice(0, max)}\n…(truncated)` : s)
+const clip = (s: string, max = 12_000) => (s.length > max ? `${s.slice(0, max)}\n…(truncated)` : s)
 
 async function librarianModel(): Promise<string | null> {
   const pinned = await platformAgentModel('librarian')
@@ -23,69 +25,75 @@ async function librarianModel(): Promise<string | null> {
 }
 
 const PROMPT =
-  'You are the librarian maintaining an ORGANIZATION KNOWLEDGE DIGEST for AI agents. ' +
-  'From the documents provided, write a digest: a one-paragraph overview of what this space covers, then one "## <title>" section per document ' +
-  'containing a crisp 2-4 sentence summary of its substance followed by the provided link line verbatim. ' +
-  'Factual, terse, no invention, no commentary about the digest itself. Reply with ONLY the digest markdown.'
+  'You are the librarian writing the agent-facing summary BODY for a knowledge document (OKF concept body). ' +
+  'Write: a 2-4 sentence summary of the document’s substance, then a "## Key facts" bullet list of the concrete facts, names, numbers, and decisions an agent would need without reading the full document. ' +
+  'Also propose up to 5 lowercase topic tags on a final line formatted exactly as: TAGS: tag1, tag2. ' +
+  'Factual, terse, no invention. Reply with ONLY the body and the TAGS line.'
 
-/** Regenerate one space's OKF digest from its promoted docs. */
-export async function regenerateOkf(spaceId: string): Promise<void> {
+/** (Re)generate one doc's OKF. No-op for unpromoted docs (demote clears). */
+export async function generateDocOkf(docId: string): Promise<void> {
   const sql = await db()
-  const space = await getSpace(spaceId)
-  if (!space) return
+  const doc = await getDoc(docId)
+  if (!doc) return
+  if (!doc.official) {
+    await sql`update kb_docs set okf = null where id = ${docId}`
+    return
+  }
   const model = await librarianModel()
-  if (!model) return
+  if (!model || !doc.body.trim()) return
+  const { text } = await completeViaGateway(
+    model,
+    [
+      { role: 'system', content: PROMPT },
+      { role: 'user', content: `Document "${doc.title}":\n\n${clip(doc.body)}` },
+    ],
+    { temperature: 0.2, caller: 'platform:librarian' },
+  )
+  if (!text.trim()) return // model hiccup — keep the previous OKF
 
-  const docs = (await sql`
-    select id, title, body from kb_docs
-    where space_id = ${spaceId} and official and visibility <> 'private'
-      and (${space.okfDocId ?? null}::uuid is null or id <> ${space.okfDocId ?? null})
-    order by updated_at desc limit 14
-  `) as unknown as Array<{ id: string; title: string; body: string }>
+  const tagsMatch = /^TAGS:\s*(.+)$/m.exec(text)
+  const tags = (tagsMatch?.[1] ?? '')
+    .split(',')
+    .map((t) => t.trim().toLowerCase().replace(/[^a-z0-9-]/g, ''))
+    .filter(Boolean)
+    .slice(0, 5)
+  const body = text.replace(/^TAGS:.*$/m, '').trim()
+  const description = body.split('\n').find((l) => l.trim())?.slice(0, 160) ?? doc.title
 
-  let body: string
-  if (docs.length === 0) {
-    body = `_No promoted documents yet. Promote documents in this space and the Librarian will digest them here._`
-  } else {
-    const source = docs
-      .map((d) => `### ${d.title}\nLink: [Open the full document](/knowledge?d=${d.id})\n\n${clip(d.body)}`)
-      .join('\n\n---\n\n')
-    const { text } = await completeViaGateway(
-      model,
-      [
-        { role: 'system', content: PROMPT },
-        { role: 'user', content: `Space: "${space.name}"${space.body ? ` — ${clip(space.body, 600)}` : ''}\n\nDocuments:\n\n${source}` },
-      ],
-      { temperature: 0.2, caller: 'platform:librarian' },
-    )
-    if (!text.trim()) return // model hiccup — keep the previous digest
-    body = `> Auto-generated digest of promoted documents in **${space.name}** — maintained by the Librarian. Edits here are overwritten.\n\n${text.trim()}`
-  }
+  // OKF concept per the spec: frontmatter (type/title/description/resource/
+  // tags + generated trust stamp + lifecycle) over a markdown body.
+  const okf = [
+    '---',
+    'type: Knowledge Document',
+    `title: ${JSON.stringify(doc.title)}`,
+    `description: ${JSON.stringify(description)}`,
+    `resource: /knowledge?d=${doc.id}`,
+    tags.length ? `tags: [${tags.join(', ')}]` : null,
+    `generated: { by: talaria/librarian:${model}, at: ${new Date().toISOString()} }`,
+    'status: stable',
+    'sources:',
+    `  - resource: /knowledge?d=${doc.id}`,
+    `    last_modified: ${doc.updatedAt}`,
+    '---',
+    '',
+    body,
+  ]
+    .filter((l): l is string => l !== null)
+    .join('\n')
 
-  // Upsert the digest doc (kind 'agent' now MEANS generated OKF).
-  let doc: KbDoc | null = null
-  if (space.okfDocId) {
-    doc = await saveDoc(space.okfDocId, { title: `${space.name} — OKF digest`, body }, 'librarian')
-  }
-  if (!doc) {
-    doc = await createDoc({ spaceId, title: `${space.name} — OKF digest`, kind: 'agent', createdBy: 'librarian', ownerUserId: null })
-    await saveDoc(doc.id, { body }, 'librarian')
-    await sql`update kb_spaces set okf_doc_id = ${doc.id} where id = ${spaceId}`
-  }
-  // Official by definition — the digest is what grounds agents.
-  if (docs.length > 0) await setOfficial(doc.id, true, 'librarian')
+  await sql`update kb_docs set okf = ${okf} where id = ${docId}`
 }
 
-// ── Debounced autonomy: promotions queue their space; bursts collapse. ──────
+// ── Debounced autonomy: promotions/saves queue their doc; bursts collapse. ──
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
-export function queueOkfRegen(spaceId: string): void {
-  const prior = timers.get(spaceId)
+export function queueDocOkf(docId: string): void {
+  const prior = timers.get(docId)
   if (prior) clearTimeout(prior)
   timers.set(
-    spaceId,
+    docId,
     setTimeout(() => {
-      timers.delete(spaceId)
-      void regenerateOkf(spaceId).catch(() => {})
-    }, 20_000),
+      timers.delete(docId)
+      void generateDocOkf(docId).catch(() => {})
+    }, 15_000),
   )
 }

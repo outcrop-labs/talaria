@@ -251,6 +251,24 @@ export const RichEditor = forwardRef<RichEditorHandle, {
   )
 })
 
+/** Compact labeled buttons for the table segment — text beats cryptic icons
+ *  for structural ops. */
+function TableBtn({ label, title, onClick }: { label: string; title: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onMouseDown={(e) => {
+        e.preventDefault()
+        onClick()
+      }}
+      className="rounded px-1.5 py-0.5 text-[11px] text-muted transition-colors hover:bg-sidebar hover:text-fg"
+    >
+      {label}
+    </button>
+  )
+}
+
 function Toolbar({ editor, onSubmit, docSearch }: { editor: Editor | null; onSubmit?: () => void; docSearch?: DocSearchFn }) {
   const s = useEditorState({
     editor,
@@ -359,6 +377,16 @@ function Toolbar({ editor, onSubmit, docSearch }: { editor: Editor | null; onSub
         active={s.table}
         onClick={() => (s.table ? c().deleteTable().run() : c().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())}
       />
+      {s.table && (
+        <>
+          <span className="mx-1 h-4 w-px bg-line-subtle" />
+          <TableBtn label="+ row" title="Add row below" onClick={() => c().addRowAfter().run()} />
+          <TableBtn label="+ col" title="Add column right" onClick={() => c().addColumnAfter().run()} />
+          <TableBtn label="− row" title="Delete this row" onClick={() => c().deleteRow().run()} />
+          <TableBtn label="− col" title="Delete this column" onClick={() => c().deleteColumn().run()} />
+          <TableBtn label="header" title="Toggle header row" onClick={() => c().toggleHeaderRow().run()} />
+        </>
+      )}
       <Btn icon={ImageIcon} title="Insert image" active={false} onClick={() => { setImgUrl(''); setImgOpen(true) }} />
       <Btn icon={LinkIcon} title="Link" active={s.link} onClick={openLinkModal} />
       {docSearch && (

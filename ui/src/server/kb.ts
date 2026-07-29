@@ -69,6 +69,8 @@ export interface KbDocMeta {
 
 export interface KbDoc extends KbDocMeta {
   body: string
+  /** Hidden agent-facing OKF concept (frontmatter + summary), Librarian-written. */
+  okf?: string | null
 }
 
 // ── Spaces ────────────────────────────────────────────────────────────────────
@@ -149,7 +151,7 @@ export async function listDocs(spaceId: string): Promise<KbDocMeta[]> {
 export async function getDoc(id: string): Promise<KbDoc | null> {
   const sql = await db()
   const rows = (await sql.unsafe(
-    `select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
+    `select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, okf, kind, official,
             visibility, public_slug as "publicSlug", edit_policy as "editPolicy", perms_inherited as "permsInherited",
             sort, owner_user_id as "ownerUserId", rag_routing as "ragRouting",
             created_by as "createdBy", updated_by as "updatedBy",
@@ -162,7 +164,7 @@ export async function getDoc(id: string): Promise<KbDoc | null> {
 export async function getPublicDoc(slug: string): Promise<KbDoc | null> {
   const sql = await db()
   const rows = (await sql`
-    select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, kind, official,
+    select id, space_id as "spaceId", parent_id as "parentId", title, icon, body, okf, kind, official,
            visibility, public_slug as "publicSlug", edit_policy as "editPolicy", perms_inherited as "permsInherited",
            sort, owner_user_id as "ownerUserId",
            created_by as "createdBy", updated_by as "updatedBy", updated_at as "updatedAt"

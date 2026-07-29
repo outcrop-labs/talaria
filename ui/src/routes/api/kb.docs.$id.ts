@@ -5,7 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setDocRouting, setOfficial } from '@/server/kb'
-import { queueOkfRegen } from '@/server/kb-okf'
+import { generateDocOkf, queueDocOkf } from '@/server/kb-okf'
 import { canEditAgent, canEditHuman, canRead, canReadAgent, setEditors, canGovern } from '@/server/kb-perms'
 import { isElevatedAssistant } from '@/server/users'
 import { logAudit } from '@/server/audit'
@@ -21,6 +21,7 @@ const Patch = z.object({
   permsInherited: z.boolean().optional(),
   parentId: z.string().uuid().nullish(),
   official: z.boolean().optional(),
+  regenerateOkf: z.boolean().optional(),
   /** RAG routing: 'auto' | 'none' | a custom brain id. Owner-only. */
   ragRouting: z.string().max(60).optional(),
 })
@@ -112,14 +113,19 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
             return json({ error: (e as Error).message }, { status: 400 })
           }
         }
-        let updated = await saveDoc(params.id, parsed.data, actor)
+        const { regenerateOkf, ...patch } = parsed.data
+        let updated = await saveDoc(params.id, patch, actor)
         if (!updated) return json({ error: 'not found' }, { status: 404 })
+        if (regenerateOkf) {
+          await generateDocOkf(params.id).catch(() => {})
+          updated = (await getDoc(params.id)) ?? updated
+        }
         if (parsed.data.official !== undefined && parsed.data.official !== updated.official) {
           updated = (await setOfficial(params.id, parsed.data.official, actor)) ?? updated
           void logAudit({ actor, action: parsed.data.official ? 'kb.officialize' : 'kb.deofficialize', targetType: 'kb-doc', targetId: params.id, targetLabel: updated.title })
-          queueOkfRegen(updated.spaceId) // the Librarian re-digests the space
+          queueDocOkf(params.id) // the Librarian writes/clears this doc's OKF
         } else if (updated.official && parsed.data.body !== undefined) {
-          queueOkfRegen(updated.spaceId) // promoted content changed
+          queueDocOkf(params.id) // promoted content changed
         }
         const eff = await effectiveDocPerms(updated)
         return json({ doc: { ...updated, visibility: eff.perms.visibility, editPolicy: eff.perms.editPolicy }, editors: eff.grants })
@@ -131,9 +137,7 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         const { perms, grants } = await effectiveDocPerms(doc)
         if (!canEditHuman(perms, user.id, user.email ?? user.name, grants)) return json({ error: 'forbidden' }, { status: 403 })
-        const gone = await getDoc(params.id)
         await deleteDoc(params.id)
-        if (gone?.official) queueOkfRegen(gone.spaceId)
         return json({ ok: true })
       },
     },

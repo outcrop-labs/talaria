@@ -54,6 +54,8 @@ export interface KbDocMeta {
 }
 export interface KbDoc extends KbDocMeta {
   body: string
+  /** Hidden agent-facing OKF summary (Librarian-maintained, promoted docs). */
+  okf?: string | null
   /** The viewer may change sharing: owner — or, for agent-created docs,
    *  anyone with access to that agent (server-computed). */
   governs?: boolean

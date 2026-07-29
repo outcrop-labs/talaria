@@ -1018,6 +1018,7 @@ function DocEditor({
   const [showComments, setShowComments] = useState(false)
   const [focusThread, setFocusThread] = useState<string | null>(null)
   const [museSel, setMuseSel] = useState<{ text: string; source: 'read' | 'editor' } | null>(null)
+  const [okfOpen, setOkfOpen] = useState(false)
   const { openMenu: openDocMenu, menu: docMenu } = useContextMenu()
   const readRef = useRef<HTMLDivElement>(null)
   const [pendingQuote, setPendingQuote] = useState<string | null>(null)
@@ -1189,13 +1190,15 @@ function DocEditor({
             </div>
           </div>
         )}
-        {doc.kind === 'agent' && (
-          <span
-            className="shrink-0 rounded border border-accent/40 bg-accent/10 px-1.5 text-[10px] uppercase tracking-wide text-accent"
-            title="Generated OKF digest — the Librarian maintains it from this space's promoted documents. Hand edits are overwritten on the next regeneration."
+        {doc.okf && (
+          <button
+            type="button"
+            onClick={() => setOkfOpen(true)}
+            className="shrink-0 rounded border border-accent/40 bg-accent/10 px-1.5 text-[10px] uppercase tracking-wide text-accent transition-colors hover:bg-accent/20"
+            title="This promoted document carries an agent-facing OKF summary, maintained by the Librarian. Click to view."
           >
-            OKF · generated
-          </span>
+            OKF
+          </button>
         )}
         {/* Who's here: green ring = editing right now. */}
         {presence.length > 1 && (
@@ -1589,6 +1592,24 @@ function DocEditor({
         )}
       </div>
 
+      {okfOpen && doc.okf && (
+        <Modal open onClose={() => setOkfOpen(false)} title="OKF — agent-facing summary">
+          <div className="space-y-3">
+            <p className="font-sans text-xs text-muted">
+              What agents read instead of the full document: an Open Knowledge Format concept the Librarian maintains from the
+              promoted content. It refreshes automatically when this document changes.
+            </p>
+            <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded-xl bg-card/60 p-3 text-xs leading-relaxed text-fg">{doc.okf}</pre>
+            {isOwner && (
+              <div className="flex justify-end border-t border-line-subtle pt-3">
+                <Button size="sm" variant="outline" onClick={() => void save({ regenerateOkf: true } as never)}>
+                  Regenerate now
+                </Button>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
       {docMenu}
       <PermissionsModal
         open={shareOpen}
