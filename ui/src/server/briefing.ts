@@ -70,7 +70,7 @@ async function attentionState(userId: string, isAdmin: boolean, scope: BriefingS
   `) as unknown as Array<{ id: string; title: string | null; bucket: string; working: boolean; failed: boolean }>)
 
   const runs = scope !== 'research' ? [] : ((await sql`
-    select id, question, status from research_runs
+    select id, coalesce(title, question) as question, status from research_runs
     where (owner_user_id = ${userId}
         or exists(select 1 from research_members rm where rm.run_id = research_runs.id and rm.user_id = ${userId}))
       and (status in ('queued', 'running')

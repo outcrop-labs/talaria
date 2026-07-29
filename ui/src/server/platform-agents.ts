@@ -11,7 +11,7 @@
 import { getSetting, setSetting } from './audit'
 import { resolveRoute } from './llm-gateway'
 
-export type PlatformAgentId = 'muse' | 'distiller' | 'concluder' | 'blurb-writer' | 'judge' | 'briefer'
+export type PlatformAgentId = 'muse' | 'distiller' | 'concluder' | 'blurb-writer' | 'titler' | 'judge' | 'briefer'
 
 export const PLATFORM_AGENTS: Array<{
   id: PlatformAgentId
@@ -54,6 +54,14 @@ export const PLATFORM_AGENTS: Array<{
     job: 'Keeps the model catalog human: one-line plain-language blurbs for every registered model.',
     skills: ['plain-language descriptions', 'org-profile awareness'],
     auto: 'the Utility role chain',
+    assignable: true,
+  },
+  {
+    id: 'titler',
+    label: 'Titler',
+    job: 'Names things as they take shape: chats and plans after their first exchange, research runs from their question.',
+    skills: ['concise naming', 'never clobbers user-chosen names'],
+    auto: 'the Utility role chain — a fast, cheap model is ideal',
     assignable: true,
   },
   {

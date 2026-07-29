@@ -11,6 +11,7 @@ export interface ResearchRun {
   agentModel: string
   mode: ResearchMode
   question: string
+  title: string | null
   status: ResearchStatus
   phase: string | null
   artifactId: string | null

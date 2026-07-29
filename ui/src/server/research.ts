@@ -26,6 +26,7 @@ import { buildUpstream, fetchUpstream, gatewayModels, recordGatewayUsage, resolv
 import { resolveRoleModel } from './model-roles'
 import { addNotification } from './notifications'
 import { indexActivity, indexPersonal } from './retrieval/sources'
+import { generateTitle } from './titler'
 import { estimateTokens, recordUsage } from './usage'
 
 export type ResearchMode = 'recon' | 'brief' | 'expedition'
@@ -38,6 +39,7 @@ export interface ResearchRun {
   agentModel: string
   mode: ResearchMode
   question: string
+  title: string | null
   status: ResearchStatus
   phase: string | null
   artifactId: string | null
@@ -231,7 +233,7 @@ class SourceRegistry {
 // ── Run lifecycle ─────────────────────────────────────────────────────────────
 
 const ROW = `id, owner_user_id as "ownerUserId", requested_by as "requestedBy", agent_model as "agentModel",
-  mode, question, status, phase, artifact_id as "artifactId", error, stats,
+  mode, question, title, status, phase, artifact_id as "artifactId", error, stats,
   created_at as "createdAt", updated_at as "updatedAt", completed_at as "completedAt"`
 
 /** Runs a viewer may see: their own, ones shared with them, and org runs
@@ -347,6 +349,13 @@ export async function startResearch(input: {
     returning ${sql.unsafe(ROW)}
   `) as unknown as ResearchRun[]
   const run = rows[0]!
+  // The Titler names the run from its question — fire-and-forget, the list
+  // shows the raw question until the title lands.
+  void generateTitle('research', input.question)
+    .then(async (t) => {
+      if (t) await sql`update research_runs set title = ${t} where id = ${run.id}`
+    })
+    .catch(() => {})
   void runResearch(run.id).catch(() => {})
   return run
 }

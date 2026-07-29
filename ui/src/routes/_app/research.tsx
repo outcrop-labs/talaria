@@ -144,7 +144,7 @@ function ResearchPage() {
                 >
                   <div className="flex items-center gap-2">
                     <StatusDot status={STATUS_DOT[r.status]} pulse={r.status === 'running'} className="h-1.5 w-1.5" />
-                    <span className="min-w-0 flex-1 truncate text-sm text-fg">{r.question}</span>
+                    <span className="min-w-0 flex-1 truncate text-sm text-fg">{r.title ?? r.question}</span>
                     {canDelete(r) && (
                       <Trash2
                         size={13}
@@ -172,7 +172,7 @@ function ResearchPage() {
         header={
           selected ? (
             <StageHeader
-              title={selected.question}
+              title={selected.title ?? selected.question}
               meta={`${MODE_META[selected.mode].label} · ${selected.agentModel}`}
               actions={canDelete(selected) ? <DangerLink onClick={() => void remove(selected)}>Remove</DangerLink> : undefined}
             />
