@@ -7,6 +7,7 @@
 import { gatewayModels, resolveRoute } from './llm-gateway'
 import { memberModelAllowlist, modelAllowedFor } from './model-access'
 import { resolveRoleModel } from './model-roles'
+import { platformAgentModel } from './platform-agents'
 import { orgLine, orgProfile } from './org'
 import { getPreferredModel, getUserRole } from './users'
 
@@ -105,6 +106,9 @@ export async function museModelFor(userId: string): Promise<string | null> {
   const pref = await getPreferredModel(userId)
   const utility = await resolveRoleModel('utility')
   const candidates = [
+    // An admin-pinned Muse model (Models → Platform) is org policy — it wins
+    // over personal preference and isn't subject to the member allowlist.
+    await platformAgentModel('muse'),
     pref && modelAllowedFor(role, pref, allow, catalog) ? pref : null,
     // The org's assigned Utility role model (Model Roles on /models) — still
     // subject to the member allowlist for non-admins.

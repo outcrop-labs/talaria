@@ -99,6 +99,7 @@ import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminStorageRouteImport } from './routes/api/admin.storage'
 import { Route as ApiAdminSettingsRouteImport } from './routes/api/admin.settings'
 import { Route as ApiAdminRagRouteImport } from './routes/api/admin.rag'
+import { Route as ApiAdminPlatformAgentsRouteImport } from './routes/api/admin.platform-agents'
 import { Route as ApiAdminOutreachRouteImport } from './routes/api/admin.outreach'
 import { Route as ApiAdminModelRolesRouteImport } from './routes/api/admin.model-roles'
 import { Route as ApiAdminJudgeRouteImport } from './routes/api/admin.judge'
@@ -621,6 +622,11 @@ const ApiAdminRagRoute = ApiAdminRagRouteImport.update({
   path: '/api/admin/rag',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAdminPlatformAgentsRoute = ApiAdminPlatformAgentsRouteImport.update({
+  id: '/api/admin/platform-agents',
+  path: '/api/admin/platform-agents',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAdminOutreachRoute = ApiAdminOutreachRouteImport.update({
   id: '/api/admin/outreach',
   path: '/api/admin/outreach',
@@ -1053,6 +1059,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/outreach': typeof ApiAdminOutreachRoute
+  '/api/admin/platform-agents': typeof ApiAdminPlatformAgentsRoute
   '/api/admin/rag': typeof ApiAdminRagRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/storage': typeof ApiAdminStorageRoute
@@ -1216,6 +1223,7 @@ export interface FileRoutesByTo {
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/outreach': typeof ApiAdminOutreachRoute
+  '/api/admin/platform-agents': typeof ApiAdminPlatformAgentsRoute
   '/api/admin/rag': typeof ApiAdminRagRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/storage': typeof ApiAdminStorageRoute
@@ -1381,6 +1389,7 @@ export interface FileRoutesById {
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/outreach': typeof ApiAdminOutreachRoute
+  '/api/admin/platform-agents': typeof ApiAdminPlatformAgentsRoute
   '/api/admin/rag': typeof ApiAdminRagRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/storage': typeof ApiAdminStorageRoute
@@ -1546,6 +1555,7 @@ export interface FileRouteTypes {
     | '/api/admin/judge'
     | '/api/admin/model-roles'
     | '/api/admin/outreach'
+    | '/api/admin/platform-agents'
     | '/api/admin/rag'
     | '/api/admin/settings'
     | '/api/admin/storage'
@@ -1709,6 +1719,7 @@ export interface FileRouteTypes {
     | '/api/admin/judge'
     | '/api/admin/model-roles'
     | '/api/admin/outreach'
+    | '/api/admin/platform-agents'
     | '/api/admin/rag'
     | '/api/admin/settings'
     | '/api/admin/storage'
@@ -1873,6 +1884,7 @@ export interface FileRouteTypes {
     | '/api/admin/judge'
     | '/api/admin/model-roles'
     | '/api/admin/outreach'
+    | '/api/admin/platform-agents'
     | '/api/admin/rag'
     | '/api/admin/settings'
     | '/api/admin/storage'
@@ -2021,6 +2033,7 @@ export interface RootRouteChildren {
   ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
   ApiAdminModelRolesRoute: typeof ApiAdminModelRolesRoute
   ApiAdminOutreachRoute: typeof ApiAdminOutreachRoute
+  ApiAdminPlatformAgentsRoute: typeof ApiAdminPlatformAgentsRoute
   ApiAdminRagRoute: typeof ApiAdminRagRoute
   ApiAdminSettingsRoute: typeof ApiAdminSettingsRoute
   ApiAdminStorageRoute: typeof ApiAdminStorageRoute
@@ -2683,6 +2696,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/rag'
       fullPath: '/api/admin/rag'
       preLoaderRoute: typeof ApiAdminRagRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin/platform-agents': {
+      id: '/api/admin/platform-agents'
+      path: '/api/admin/platform-agents'
+      fullPath: '/api/admin/platform-agents'
+      preLoaderRoute: typeof ApiAdminPlatformAgentsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/admin/outreach': {
@@ -3793,6 +3813,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminJudgeRoute: ApiAdminJudgeRoute,
   ApiAdminModelRolesRoute: ApiAdminModelRolesRoute,
   ApiAdminOutreachRoute: ApiAdminOutreachRoute,
+  ApiAdminPlatformAgentsRoute: ApiAdminPlatformAgentsRoute,
   ApiAdminRagRoute: ApiAdminRagRoute,
   ApiAdminSettingsRoute: ApiAdminSettingsRoute,
   ApiAdminStorageRoute: ApiAdminStorageRoute,

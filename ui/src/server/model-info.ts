@@ -12,6 +12,7 @@
 import { db } from './db/pg'
 import { completeViaGateway, gatewayModels, resolveRoute } from './llm-gateway'
 import { resolveRoleModel } from './model-roles'
+import { platformAgentModel } from './platform-agents'
 import { orgProfile } from './org'
 import { NATIVE_BASE } from './provider-catalog'
 
@@ -86,6 +87,9 @@ export async function modelInfo(modelId: string): Promise<ModelInfo | null> {
  *  env default → pl-main → the first routable bare model. Null when the
  *  gateway serves nothing. */
 async function systemModel(): Promise<string | null> {
+  // The Catalog-writer platform agent's own assignment, else the Utility role.
+  const pinned = await platformAgentModel('blurb-writer')
+  if (pinned) return pinned
   const assigned = await resolveRoleModel('utility')
   if (assigned) return assigned
   for (const m of [process.env.TALARIA_COPILOT_MODEL ?? null, 'pl-main']) {
@@ -130,7 +134,7 @@ export async function rewritePendingBlurbs(batch = 10): Promise<number> {
       },
       { role: 'user', content: JSON.stringify(pending) },
     ],
-    { temperature: 0.4, caller: 'model-blurbs' },
+    { temperature: 0.4, caller: 'platform:blurb-writer' },
   )
   const raw = /\{[\s\S]*\}/.exec(text)?.[0]
   if (!raw) return 0

@@ -44,6 +44,7 @@ export const Route = createFileRoute('/_app/models')({
 const MODEL_TABS = [
   { id: 'models', label: 'Models' },
   { id: 'roles', label: 'Roles' },
+  { id: 'platform', label: 'Platform' },
   { id: 'access', label: 'Access' },
 ] as const
 type ModelsTab = (typeof MODEL_TABS)[number]['id']
@@ -113,6 +114,7 @@ function ModelsPage() {
             </>
           ))}
         {tab === 'roles' && <ModelRolesPanel />}
+        {tab === 'platform' && <PlatformAgentsPanel />}
         {tab === 'access' && <MemberAccessPanel />}
 
         {adding && <AddProviderModal open={adding} onClose={() => setAdding(false)} onAdded={setManageId} />}
@@ -424,6 +426,100 @@ interface ModelRoleRow {
   label: string
   hint: string
   wired: boolean
+}
+
+// ── Platform sub-agents: Talaria's own workers, one model pick each ─────────
+interface PlatformAgentRow {
+  id: string
+  label: string
+  job: string
+  skills: string[]
+  auto: string
+  assignable: boolean
+}
+
+function PlatformAgentsPanel() {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['platform-agents'],
+    queryFn: async (): Promise<{ agents: PlatformAgentRow[]; assignments: Record<string, string>; models: string[] }> => {
+      const r = await fetch('/api/admin/platform-agents', { credentials: 'same-origin' })
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+  })
+  const assign = async (id: string, model: string | null) => {
+    await fetch('/api/admin/platform-agents', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, model }),
+    })
+    await qc.invalidateQueries({ queryKey: ['platform-agents'] })
+  }
+  if (!data)
+    return (
+      <Panel>
+        <Skeleton className="mb-4 h-4 w-32 rounded-full" />
+        <div className="space-y-4">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="flex items-center gap-3">
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <Skeleton className="h-3 w-36 rounded-full" delay={i * 0.1} />
+                <Skeleton className="h-2.5 w-72 rounded-full" delay={i * 0.1 + 0.06} />
+              </div>
+              <Skeleton className="h-8 w-56 shrink-0" delay={i * 0.1} />
+            </div>
+          ))}
+        </div>
+      </Panel>
+    )
+
+  return (
+    <Panel>
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Platform agents</span>
+        <InfoTip text="Talaria's own sub-agents — the workers behind internal jobs like distilling chats and drafting with Muse. Separate from your Hermes fleet: each has its own harness and skills, and you pick its model here. Unset = auto (each job's own sensible chain)." />
+      </div>
+      <ul className="divide-y divide-line-subtle">
+        {data.agents.map((a) => (
+          <li key={a.id} className="flex items-center gap-3 py-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-sm text-fg">
+                {a.label}
+                {a.skills.map((sk) => (
+                  <span key={sk} className="rounded bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                    {sk}
+                  </span>
+                ))}
+              </div>
+              <div className="font-sans text-xs text-muted">{a.job}</div>
+              <div className="text-[11px] text-muted/80">Auto: {a.auto}</div>
+            </div>
+            {a.assignable ? (
+              <Select
+                size="sm"
+                className="w-56 shrink-0"
+                value={data.assignments[a.id] ?? ''}
+                onChange={(e) => void assign(a.id, e.target.value || null)}
+              >
+                <option value="">Auto</option>
+                {data.models.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </Select>
+            ) : (
+              <span className="w-56 shrink-0 text-right text-xs text-muted" title={a.auto}>
+                fixed by design
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  )
 }
 
 function ModelRolesPanel() {
