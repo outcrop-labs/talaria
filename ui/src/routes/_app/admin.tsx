@@ -461,15 +461,15 @@ function SignupDomainsPanel() {
   return (
     <Panel className="mt-4">
       <div className="mb-3 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Sign-up domains</span>
-        <InfoTip text="Self-service joins for your organization: add your email domain, publish the TXT record to prove you own it, and anyone signing in with Google on that domain becomes a member automatically — no invites, no env edits. Subdomains are separate domains; add each one you want. Password logins stay env-managed." />
+        <span className="text-sm font-semibold text-fg">Email sign-up domains</span>
+        <InfoTip text="The domain after the @ in your team's EMAIL addresses — not where Talaria is hosted (talaria.yourcompany.com hosting still means yourcompany.com emails). Add it, publish the TXT record to prove ownership, and anyone signing in with Google on that email domain becomes a member automatically — no invites, no env edits. Email subdomains are separate; add each you use. Password logins stay env-managed." />
       </div>
       {isPending ? (
         <SkeletonRows rows={2} />
       ) : (
         <div className="space-y-2">
           {(data ?? []).length === 0 && (
-            <div className="font-sans text-xs text-muted">No domains yet — add yours to open self-service joins.</div>
+            <div className="font-sans text-xs text-muted">No email domains yet — add the domain your team's email addresses use to open self-service joins.</div>
           )}
           {(data ?? []).map((d) => (
             <div key={d.id} className="space-y-1.5 rounded-xl border border-line-subtle p-2.5">
@@ -510,7 +510,7 @@ function SignupDomainsPanel() {
               </div>
               {!d.verified && (
                 <div className="flex items-center gap-2">
-                  <span className="shrink-0 text-[11px] text-muted">TXT on _talaria.{d.domain}:</span>
+                  <span className="shrink-0 text-[11px] text-muted">TXT on _talaria-verify.{d.domain}:</span>
                   <code className="min-w-0 flex-1 truncate rounded bg-card px-1.5 py-0.5 text-[11px] text-fg">{d.verificationToken}</code>
                   <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard.writeText(d.verificationToken)}>
                     Copy
@@ -525,8 +525,8 @@ function SignupDomainsPanel() {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void add()}
-              placeholder="yourcompany.com"
-              className="w-64"
+              placeholder="yourcompany.com — your email domain"
+              className="w-72"
             />
             <Button size="sm" onClick={() => void add()} disabled={!draft.trim()}>
               Add domain

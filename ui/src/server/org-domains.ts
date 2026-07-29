@@ -1,5 +1,8 @@
-// Org sign-up domains — self-joins for federated identities. An admin adds a
-// domain/subdomain, proves ownership with a DNS TXT record, and from then on
+// Org sign-up EMAIL domains — self-joins for federated identities. These are
+// the domains after the @ in people's email addresses, wholly independent of
+// wherever this Talaria instance is HOSTED (talaria.example.com hosting ≠
+// example.com emails). An admin adds an email domain, proves ownership with a
+// DNS TXT record, and from then on
 // anyone who authenticates through a provider that VERIFIES email (Google)
 // with an address on that domain joins automatically as a member. DNS proof
 // is required before a domain admits anyone — an admin can't (typo or
@@ -47,13 +50,16 @@ export async function removeOrgDomain(id: string): Promise<void> {
   await sql`delete from org_domains where id = ${id}`
 }
 
-/** Check DNS for the verification TXT record — on the domain itself or the
- *  `_talaria.` subdomain (either placement passes). */
+/** Check DNS for the verification TXT record. Canonical placement is
+ *  `_talaria-verify.<domain>` — deliberately NOT `talaria.<domain>`-shaped,
+ *  since many orgs HOST Talaria on a subdomain like talaria.example.com and
+ *  the email domain being verified here is a separate concern entirely.
+ *  Legacy/root placements still pass. */
 export async function verifyOrgDomain(id: string): Promise<{ verified: boolean; error?: string }> {
   const sql = await db()
   const [row] = (await sql.unsafe(`select ${ROW} from org_domains where id = $1`, [id])) as unknown as OrgDomain[]
   if (!row) return { verified: false, error: 'not found' }
-  const hosts = [`_talaria.${row.domain}`, row.domain]
+  const hosts = [`_talaria-verify.${row.domain}`, `_talaria.${row.domain}`, row.domain]
   for (const host of hosts) {
     const records = await resolveTxt(host).catch(() => [] as string[][])
     if (records.some((chunks) => chunks.join('').trim() === row.verificationToken)) {
@@ -63,7 +69,7 @@ export async function verifyOrgDomain(id: string): Promise<{ verified: boolean; 
   }
   return {
     verified: false,
-    error: `TXT record not found — add "${row.verificationToken}" as a TXT record on _talaria.${row.domain} (or ${row.domain}) and try again`,
+    error: `TXT record not found — add "${row.verificationToken}" as a TXT record on _talaria-verify.${row.domain} (or on ${row.domain} itself) and try again`,
   }
 }
 
