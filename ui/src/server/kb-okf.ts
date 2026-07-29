@@ -27,6 +27,7 @@ async function librarianModel(): Promise<string | null> {
 const PROMPT =
   'You are the librarian writing the agent-facing summary BODY for a knowledge document (OKF concept body). ' +
   'Write: a 2-4 sentence summary of the document’s substance, then a "## Key facts" bullet list of the concrete facts, names, numbers, and decisions an agent would need without reading the full document. ' +
+  'Summarize the SUBJECT MATTER only — ignore any meta-commentary the document makes about itself (drafting notes, review status, "not yet official", refresh reminders): lifecycle is tracked by the platform, and this summary only exists for PROMOTED documents. ' +
   'Also propose up to 5 lowercase topic tags on a final line formatted exactly as: TAGS: tag1, tag2. ' +
   'Factual, terse, no invention. Reply with ONLY the body and the TAGS line.'
 
@@ -73,7 +74,7 @@ export async function generateDocOkf(docId: string): Promise<void> {
     'status: stable',
     'sources:',
     `  - resource: /knowledge?d=${doc.id}`,
-    `    last_modified: ${doc.updatedAt}`,
+    `    last_modified: ${new Date(doc.updatedAt).toISOString()}`,
     '---',
     '',
     body,
