@@ -170,6 +170,22 @@ const MIGRATIONS: string[] = [
     updated_at timestamptz not null default now()
   )`,
   `alter table mcp_servers add column if not exists required_headers jsonb not null default '[]'`,
+  `alter table mcp_servers add column if not exists oauth jsonb`,
+  `create table if not exists mcp_oauth_states (
+    state text primary key,
+    server_id uuid not null references mcp_servers(id) on delete cascade,
+    subject text not null,
+    verifier text not null,
+    redirect_uri text not null,
+    created_at timestamptz not null default now()
+  )`,
+  `create table if not exists mcp_oauth_tokens (
+    server_id uuid not null references mcp_servers(id) on delete cascade,
+    subject text not null,
+    tokens_enc text not null,
+    updated_at timestamptz not null default now(),
+    primary key (server_id, subject)
+  )`,
   `create table if not exists mcp_server_agents (
     server_id uuid not null references mcp_servers(id) on delete cascade,
     agent_model text not null,

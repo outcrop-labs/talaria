@@ -37,11 +37,17 @@ interface McpServerRow {
   enabled: boolean
   allAgents: boolean
   authMode: 'org' | 'per-user'
+  oauthEnabled: boolean
+  /** OAuth org connection state (null for header-auth servers). */
+  orgConnected: boolean | null
   tools: Array<{ name: string; description?: string }>
   toolsRefreshedAt: string | null
   assignments: Array<{ agentModel: string; tools: string[] | null }>
   userAccess: Array<{ userId: string; allowed: boolean; tools: string[] | null }>
 }
+
+const connectPopup = (serverId: string, scope: 'org' | 'me') =>
+  window.open(`/api/mcp/oauth/start?server=${serverId}&scope=${scope}`, 'talaria-mcp-oauth', 'width=620,height=780')
 
 function useMcpServers() {
   return useQuery({
@@ -146,6 +152,36 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
           <div className="truncate font-sans text-xs text-muted">{s.url}</div>
           {s.description && <div className="truncate font-sans text-xs text-muted/80">{s.description}</div>}
         </div>
+        {s.oauthEnabled && s.authMode === 'org' && (
+          <button
+            type="button"
+            onClick={() => void connectPopup(s.id, 'org')}
+            className={cn(
+              'flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors',
+              s.orgConnected
+                ? 'border-line-subtle text-muted hover:border-line hover:text-fg'
+                : 'border-accent/60 bg-accent/10 text-accent hover:bg-accent/15',
+            )}
+            title={
+              s.orgConnected
+                ? 'Connected via OAuth as the org — click to reconnect'
+                : 'This server authenticates with OAuth — connect the org account so agents can use it'
+            }
+          >
+            {s.orgConnected ? (
+              <>
+                <Check size={12} /> connected
+              </>
+            ) : (
+              'Connect'
+            )}
+          </button>
+        )}
+        {s.oauthEnabled && s.authMode === 'per-user' && (
+          <span className="shrink-0 text-[11px] text-muted" title="Each person connects their own account in Settings → Connections">
+            OAuth · per-user
+          </span>
+        )}
         <Select
           size="sm"
           value={s.authMode}

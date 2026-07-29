@@ -221,6 +221,7 @@ interface McpConnection {
   label: string
   description: string | null
   requiredHeaders: Array<{ name: string; description: string | null; isSecret: boolean; placeholder: string | null }>
+  authKind: 'oauth' | 'headers'
   connected: boolean
 }
 
@@ -274,6 +275,14 @@ function McpConnectionsSection() {
                       Disconnect
                     </Button>
                   </>
+                ) : s.authKind === 'oauth' ? (
+                  <Button
+                    size="sm"
+                    title="Sign in with the provider — your assistant then acts as you on this server"
+                    onClick={() => void window.open(`/api/mcp/oauth/start?server=${s.id}&scope=me`, 'talaria-mcp-oauth', 'width=620,height=780')}
+                  >
+                    Connect
+                  </Button>
                 ) : (
                   <Button size="sm" onClick={() => setConnecting(connecting === s.id ? null : s.id)}>
                     Connect

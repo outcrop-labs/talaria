@@ -3,7 +3,8 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
-import { createMcpServer, listMcpServers, listAssignments, listUserAccess } from '@/server/mcp-registry'
+import { createMcpServer, getMcpServer, listMcpServers, listAssignments, listUserAccess } from '@/server/mcp-registry'
+import { ensureOauthConfig, hasOauthTokens } from '@/server/mcp-oauth'
 import { renderFleet } from '@/server/fleet-render'
 import { logAudit } from '@/server/audit'
 
@@ -46,6 +47,7 @@ export const Route = createFileRoute('/api/mcp/servers')({
             headers: Object.fromEntries(Object.keys(s.headers).map((k) => [k, '•••'])), // never echo secrets
             assignments: await listAssignments(s.id),
             userAccess: await listUserAccess(s.id),
+            orgConnected: s.oauthEnabled ? await hasOauthTokens(s.id, 'org') : null,
           })),
         )
         return json({ servers: detail })
@@ -57,7 +59,10 @@ export const Route = createFileRoute('/api/mcp/servers')({
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
         try {
-          const server = await createMcpServer({ ...parsed.data, createdBy: user.email ?? user.name ?? 'admin' })
+          let server = await createMcpServer({ ...parsed.data, createdBy: user.email ?? user.name ?? 'admin' })
+          // Sniff the auth shape right away: a 401 challenge with resource
+          // metadata marks the server OAuth and unlocks the Connect flow.
+          if (await ensureOauthConfig(server.id, server.url)) server = (await getMcpServer(server.id)) ?? server
           void logAudit({
             actor: user.email ?? user.name ?? 'admin',
             action: 'mcp.server_add',

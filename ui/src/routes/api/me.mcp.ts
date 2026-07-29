@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { hasUserCredentials, listMcpServers, setUserCredentials } from '@/server/mcp-registry'
+import { dropOauthTokens, hasOauthTokens } from '@/server/mcp-oauth'
 import { renderFleet } from '@/server/fleet-render'
 import { logAudit } from '@/server/audit'
 
@@ -26,7 +27,8 @@ export const Route = createFileRoute('/api/me/mcp')({
               label: s.label,
               description: s.description,
               requiredHeaders: s.requiredHeaders,
-              connected: await hasUserCredentials(s.id, user.id),
+              authKind: s.oauthEnabled ? ('oauth' as const) : ('headers' as const),
+              connected: s.oauthEnabled ? await hasOauthTokens(s.id, user.id) : await hasUserCredentials(s.id, user.id),
             })),
           ),
         })
@@ -39,6 +41,7 @@ export const Route = createFileRoute('/api/me/mcp')({
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         await setUserCredentials(parsed.data.serverId, user.id, parsed.data.headers)
+        if (parsed.data.headers === null) await dropOauthTokens(parsed.data.serverId, user.id)
         void logAudit({
           actor: user.email ?? user.name ?? 'user',
           action: parsed.data.headers ? 'mcp.connect' : 'mcp.disconnect',

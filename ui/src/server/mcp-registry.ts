@@ -12,6 +12,7 @@
 import { db } from './db/pg'
 import { seal, open } from './secretbox'
 import { personalAssistantOwners } from './users'
+import { hasOauthTokens, oauthTokenFor } from './mcp-oauth'
 
 export interface McpServer {
   id: string
@@ -29,6 +30,8 @@ export interface McpServer {
   toolsRefreshedAt: string | null
   /** Header declarations captured at install (drive per-user connect forms). */
   requiredHeaders: Array<{ name: string; description: string | null; isSecret: boolean; placeholder: string | null }>
+  /** The server negotiates OAuth (discovered from its 401 challenge). */
+  oauthEnabled: boolean
   createdBy: string | null
   createdAt: string
 }
@@ -47,7 +50,8 @@ export interface McpUserAccess {
 
 const ROW = `id, name, label, description, url, headers, timeout_secs as "timeoutSecs", enabled,
   all_agents as "allAgents", auth_mode as "authMode", tools, tools_refreshed_at as "toolsRefreshedAt",
-  required_headers as "requiredHeaders", created_by as "createdBy", created_at as "createdAt"`
+  required_headers as "requiredHeaders", (oauth is not null) as "oauthEnabled",
+  created_by as "createdBy", created_at as "createdAt"`
 
 export async function listMcpServers(): Promise<McpServer[]> {
   const sql = await db()
@@ -128,6 +132,8 @@ export async function refreshMcpTools(id: string): Promise<{ tools: Array<{ name
   const server = await getMcpServer(id)
   if (!server) return { error: 'not found' }
   try {
+    // OAuth servers list tools with the org connection when one exists.
+    const bearer = server.oauthEnabled ? await oauthTokenFor(server.id, 'org') : null
     const call = async (body: unknown, sessionId?: string | null) => {
       const r = await fetch(server.url, {
         method: 'POST',
@@ -135,6 +141,7 @@ export async function refreshMcpTools(id: string): Promise<{ tools: Array<{ name
           'content-type': 'application/json',
           accept: 'application/json, text/event-stream',
           ...server.headers,
+          ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
           ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
         },
         body: JSON.stringify(body),
@@ -305,14 +312,26 @@ export async function effectiveMcpFor(agentModel: string, serverName: string): P
     if (access && !access.allowed) return null
     userTools = access?.tools ?? null
     if (server.authMode === 'per-user') {
-      const creds = await getUserCredentials(server.id, owner)
-      if (!creds) return null // not connected — the server doesn't exist for this assistant yet
-      upstreamHeaders = { ...server.headers, ...creds }
+      if (server.oauthEnabled) {
+        const bearer = await oauthTokenFor(server.id, owner)
+        if (!bearer) return null // not connected — the server doesn't exist for this assistant yet
+        upstreamHeaders = { ...server.headers, authorization: `Bearer ${bearer}` }
+      } else {
+        const creds = await getUserCredentials(server.id, owner)
+        if (!creds) return null
+        upstreamHeaders = { ...server.headers, ...creds }
+      }
     }
   } else if (server.authMode === 'per-user') {
     // Org agents have no single acting user to be — per-user servers are
     // personal-assistant territory by definition.
     return null
+  }
+  // Org-auth OAuth servers speak with the shared org connection.
+  if (server.authMode === 'org' && server.oauthEnabled) {
+    const bearer = await oauthTokenFor(server.id, 'org')
+    if (!bearer) return null // nobody connected the org account yet
+    upstreamHeaders = { ...upstreamHeaders, authorization: `Bearer ${bearer}` }
   }
 
   return { server, tools: intersect(agentTools, userTools), upstreamHeaders }
@@ -322,19 +341,23 @@ export async function effectiveMcpFor(agentModel: string, serverName: string): P
 export async function serversForAgent(agentModel: string): Promise<Array<{ name: string; timeoutSecs: number | null }>> {
   const sql = await db()
   const rows = (await sql`
-    select s.name, s.timeout_secs as "timeoutSecs", s.auth_mode as "authMode", s.id
+    select s.name, s.timeout_secs as "timeoutSecs", s.auth_mode as "authMode", (s.oauth is not null) as "oauthEnabled", s.id
     from mcp_servers s
     where s.enabled and (s.all_agents or exists (
       select 1 from mcp_server_agents a where a.server_id = s.id and a.agent_model = ${agentModel}
     ))
     order by s.name
-  `) as unknown as Array<{ name: string; timeoutSecs: number | null; authMode: string; id: string }>
+  `) as unknown as Array<{ name: string; timeoutSecs: number | null; authMode: string; oauthEnabled: boolean; id: string }>
   const owner = (await personalAssistantOwners()).get(agentModel) ?? null
   const out: Array<{ name: string; timeoutSecs: number | null }> = []
   for (const r of rows) {
     if (r.authMode === 'per-user') {
       // Only rendered once the acting user actually connected an account.
-      if (!owner || !(await hasUserCredentials(r.id, owner))) continue
+      if (!owner) continue
+      const connected = r.oauthEnabled ? await hasOauthTokens(r.id, owner) : await hasUserCredentials(r.id, owner)
+      if (!connected) continue
+    } else if (r.oauthEnabled && !(await hasOauthTokens(r.id, 'org'))) {
+      continue // org account not connected yet — keep it out of configs
     } else if (owner) {
       // A PA skips servers its owner is explicitly denied.
       const [access] = (await sql`
