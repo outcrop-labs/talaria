@@ -4,6 +4,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
 import { getMcpServer } from '@/server/mcp-registry'
 import { startOauth } from '@/server/mcp-oauth'
+import { instanceBaseUrl } from '@/server/instance'
 
 // GET ?server=<id>&scope=org|me → 302 into the provider's authorization page.
 // scope=org (one shared connection) needs agents.manage; scope=me connects
@@ -21,7 +22,10 @@ export const Route = createFileRoute('/api/mcp/oauth/start')({
         if (!server) return json({ error: 'not found' }, { status: 404 })
         if (scope === 'org' && !(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
         try {
-          const authorize = await startOauth(server.id, server.url, scope === 'me' ? user.id : 'org', url.origin)
+          // A verified hosting domain gives every OAuth app ONE stable
+          // callback URL, whatever origin the admin happens to browse from.
+          const base = (await instanceBaseUrl()) ?? url.origin
+          const authorize = await startOauth(server.id, server.url, scope === 'me' ? user.id : 'org', base)
           return new Response(null, { status: 302, headers: { location: authorize } })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })

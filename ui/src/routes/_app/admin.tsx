@@ -148,6 +148,7 @@ function AdminPage() {
         {tab === 'org' && (
           <>
             <OrgPanel />
+            <InstanceDomainPanel />
             <SignupDomainsPanel />
             <OrgGooglePanel />
           </>
@@ -398,6 +399,98 @@ function MemberDefaultsPanel({ perms }: { perms: PermsData }) {
           </div>
         ))}
       </div>
+    </Panel>
+  )
+}
+
+/** The HOSTING domain — where this deployment lives. Verified by a self-
+ *  fetch round trip (DNS + routing + TLS must land on this instance), and
+ *  then used as the canonical base URL (stable OAuth callbacks, links). */
+function InstanceDomainPanel() {
+  const qc = useQueryClient()
+  const { data, isPending } = useQuery({
+    queryKey: ['instance-domain'],
+    queryFn: async (): Promise<{ domain: string; verified: boolean; verifiedAt: string | null } | null> => {
+      const r = await fetch('/api/admin/instance', { credentials: 'same-origin' })
+      if (!r.ok) return null
+      return ((await r.json()) as { instance: { domain: string; verified: boolean; verifiedAt: string | null } | null }).instance
+    },
+  })
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const refresh = () => qc.invalidateQueries({ queryKey: ['instance-domain'] })
+
+  const post = async (body: unknown) => {
+    setBusy(true)
+    setError(null)
+    const r = await fetch('/api/admin/instance', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const j = (await r.json().catch(() => ({}))) as { error?: string; verified?: boolean }
+    setBusy(false)
+    if (!r.ok || j.error) setError(j.error ?? 'failed')
+    await refresh()
+  }
+
+  return (
+    <Panel className="mt-4">
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Instance domain</span>
+        <InfoTip text="Where THIS Talaria deployment is hosted (e.g. talaria.yourcompany.com) — separate from your email sign-up domains below. Verification round-trips through the domain and confirms it reaches this exact instance. Once verified it becomes the canonical base URL: OAuth apps get one stable callback, links use it." />
+      </div>
+      {isPending ? (
+        <SkeletonRows rows={1} />
+      ) : data ? (
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-fg">{data.domain}</span>
+          {data.verified ? (
+            <span className="rounded-full border border-[color:var(--theme-success)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-success)]">
+              ✓ verified — routes to this instance
+            </span>
+          ) : (
+            <span className="rounded-full border border-[color:var(--theme-warning)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-warning)]">
+              unverified
+            </span>
+          )}
+          <span className="flex-1" />
+          {!data.verified && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void post({ verify: true })}>
+              {busy ? 'Checking' : 'Verify'}
+            </Button>
+          )}
+          <button
+            type="button"
+            title="Clear the hosting domain"
+            onClick={() => void post({ domain: null })}
+            className="text-muted hover:text-[color:var(--theme-danger)]"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Input
+            size="sm"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && draft.trim() && void post({ domain: draft.trim() })}
+            placeholder="talaria.yourcompany.com — where this instance is hosted"
+            className="w-96"
+          />
+          <Button size="sm" disabled={!draft.trim() || busy} onClick={() => void post({ domain: draft.trim() })}>
+            Set domain
+          </Button>
+        </div>
+      )}
+      {error && (
+        <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
+          {error}
+        </div>
+      )}
     </Panel>
   )
 }
