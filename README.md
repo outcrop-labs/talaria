@@ -50,9 +50,11 @@ your team, and watch the work (and what it costs) move in one place.
 
 - **Comms.** Every conversation in one place, Slack-shaped but agent-native: persistent **#channels**,
   **Relays** (named gatherings of people + agents around a purpose, which *conclude* with a summary and
-  archive), teammate DMs, and agent DMs where each topic starts a fresh thread. @mention an agent (or
-  `@agent:tier`) and the reply streams in live. Unread badges everywhere; DM messages notify your
-  inbox and deep-link back.
+  archive), teammate DMs, and agent DMs where each topic starts a fresh thread. **Threads** (agents
+  reply in-thread with the thread as context), **reactions** (agents react too), file paste/drop,
+  edit & delete, and a rich composer with live markdown, @mentions, and :emoji:. @mention an agent
+  (or `@agent:tier`) and the reply streams in live. Unread badges everywhere; DM messages notify
+  your inbox and deep-link back.
 - **Plan.** Think through the work with an agent while a **living plan document** takes shape beside
   the chat, kept in sync by the agent itself — **multiplayer**: share a plan with teammates and
   everyone joins the same conversation and document (author names on turns, presence showing who's
@@ -65,11 +67,14 @@ your team, and watch the work (and what it costs) move in one place.
 - **Boards.** Plane/Linear-grade project management: kanban + list views, rich tickets (effort,
   multiple assignees, dependencies, watchers, a review gate, per-ticket cost), teams, and a per-board
   agent policy. Fully multiplayer.
-- **Knowledge.** An Outline-style markdown drive with versioned docs, visibility controls, and public
-  share links. Docs feed the right **RAG brain** by visibility (org / personal / team / departmental —
-  spin up brains and point KB spaces at them), a workspace-activity brain ambiently indexes
-  conversations, plans, and tickets, and retrieval runs on native CPU embeddings with a pluggable
-  **reranker** (self-hosted or US cloud providers) for precision.
+- **Knowledge.** A Notion-grade drive with versioned docs, quote-anchored **comment threads**,
+  multiplayer presence, inline images and artifact embeds, tables with real controls, context menus
+  everywhere, and **Muse in the page** (ambient chat-to-edit plus select-and-refine). Promote docs
+  to **Official** with a clean lifecycle; official docs carry an agent-facing **OKF summary**
+  (Open Knowledge Format) maintained autonomously by the Librarian. Docs feed the right **RAG
+  brain** by visibility (org / personal / team / departmental — spin up brains and point KB spaces
+  at them), a workspace-activity brain ambiently indexes conversations, plans, and tickets, and
+  retrieval runs on native CPU embeddings with a pluggable **reranker** for precision.
 - **Artifacts.** Docs, microsites, sheets, and files with versioning, sharing, and public hosting;
   attached to tickets, plans, and chats; exported to Google Workspace; created and updated by agents.
 
@@ -91,11 +96,38 @@ your team, and watch the work (and what it costs) move in one place.
   before the old one retires, with in-flight replies drained.
 - **Scheduled work.** Native cron jobs per agent (drafted from plain language), fleet-wide or
   individual.
+- **External tools, governed.** An org-wide **MCP registry** with a marketplace (official MCP
+  registry search, brand-ranked), OAuth 2.1 (discovery, DCR, PKCE — plus manual-app flows for
+  providers without DCR), per-user connected accounts, and per-agent / per-person **tool subsets
+  enforced at a gateway** — a hand-edited agent config can never exceed what the registry granted.
+  Registry changes roll agents blue/green. Details: [`docs/MCP.md`](./docs/MCP.md).
+- **Platform sub-agents.** Talaria's own workers (Muse, Titler, Librarian, Distiller, Concluder,
+  Briefer, Judge, Catalog writer) are visible, per-agent model-assignable citizens on
+  Models → Platform — the platform's internal AI is governed like everything else.
+
+### Extend it — apps and the SDK
+
+Talaria is an **app platform**. Apps are self-contained codebases that compile into the deployment
+and load as native surfaces — new work views, manage views, settings panels, their own APIs, their
+own per-app document store, and even **MCP tools for your agents** that inherit the full granular
+governance. Build with `@talaria/sdk` (the same Mercury UI kit and session hooks the platform uses),
+install from the **marketplace** (community + official apps) or any git URL, govern access
+per-person like every core view. Official apps for marketing, sales, and support ship as separate
+installables, not core bloat. Start at [`docs/APPS.md`](./docs/APPS.md) and
+[`docs/SDK.md`](./docs/SDK.md); the in-repo reference app is [`apps/contacts`](./apps/contacts).
 
 ### Trust, control, and cost
 
 - **Guardrails at the protocol layer.** The agent-facing MCP exposes no assign tool and no complete
   tool; agents report up to quality review and a human closes.
+- **Fine-grained permissions.** A 13-permission catalog (three layers: per-user overrides →
+  org member defaults → shipped defaults), per-person view gating for work, manage, AND app
+  surfaces, per-person agent allow-lists — resolved server-side on every request, not just hidden
+  in the UI. [`docs/PERMISSIONS.md`](./docs/PERMISSIONS.md).
+- **Onboarding that proves ownership.** Email sign-up domains verify via DNS TXT before self-joins
+  open; the instance's hosting domain verifies by a self-fetch round trip and becomes the canonical
+  base URL; email invites (14-day, revocable) ride your own SMTP or Resend — with sealed
+  credentials and an audit trail. [`docs/ONBOARDING.md`](./docs/ONBOARDING.md).
 - **Quality gates.** An optional QA judge reviews agent work at the review gate against your ticket
   templates as the rubric (advisory or enforcing, with a bounded revision loop); a gateway-native
   confab guard catches fabricated claims; unroutable agent models surface as alerts before a chat can
@@ -151,7 +183,8 @@ port. One `talaria` docker network, official images only, no Dockerfiles.
 
 | Path | Piece | What it does |
 |---|---|---|
-| [`ui/`](./ui) | **Talaria app** | The product: every surface above, the LLM gateway, the fleet renderer/orchestrator. |
+| [`ui/`](./ui) | **Talaria app** | The product: every surface above, the LLM gateway, the fleet renderer/orchestrator, the app-platform host + `@talaria/sdk`. |
+| [`apps/`](./apps) | **Talaria apps** | Self-contained apps that compile into the deployment (installed via the marketplace or git). Ships the `contacts` reference app + dev guide. |
 | [`fleet/`](./fleet) | **rendered fleet** (gitignored) | One chassis renders every agent into `docker-compose.yml` + `fleet.json` (model → each agent's persona-gateway url + key). |
 | [`mcp/`](./mcp) | **talaria-mcp** | The agent-facing MCP server: only the safe tools; guardrails hold at the protocol layer. |
 | [`plugin/talaria/`](./plugin/talaria) | **Hermes plugin** | Rides on each agent: registers, heartbeats for work, reports up to `quality_review`. |
@@ -164,22 +197,36 @@ provider; Talaria maintains no internal model lists.
 
 ## Status & roadmap
 
-**Shipped and running today:** the PM suite · Comms (channels/relays/DMs with unread badges, DM
-notifications, and distill-then-archive) · multiplayer Plan (shared living document, presence,
-templates, dependency-aware drafting) · Research (Recon/Brief/Expedition, fully cited, agent-driven) ·
-Knowledge + RAG brains · Artifacts (docs/sheets/sites/files, incl. Google Workspace) · the full agent
-harness (Muse design, federation, versioned internals, personal assistants with identity proxy +
-admin elevation, org identity, rolling replacement, crons, encrypted secrets) · the LLM gateway +
-model roles · QA judge (template rubric) + confab guard + brain-routability health · the priced
-ledger · ops surfaces (activity/alerts/inference) · auth + admin governance.
+**Shipped and running today:** the PM suite · Comms (channels/relays/DMs, threads, reactions,
+files, distill-then-archive) · multiplayer Plan (shared living document, presence, templates,
+dependency-aware drafting) · Research (Recon/Brief/Expedition, fully cited, agent-driven) ·
+Knowledge (Notion-grade: comments, presence, in-page Muse, Official + OKF) + RAG brains · Artifacts
+(docs/sheets/sites/files, incl. Google Workspace) · the full agent harness (Muse design, federation,
+versioned internals, personal assistants with identity proxy + admin elevation, private RAG memory,
+org identity, rolling replacement, crons, encrypted secrets) · platform sub-agents with per-agent
+model choice · the **app platform** (native in-deployment apps, `@talaria/sdk`, marketplace,
+app-published MCP tools) · org-wide **MCP governance** (registry, marketplace, OAuth 2.1, gateway
+enforcement, per-user connections) · fine-grained permissions + per-person view gating ·
+onboarding (verified sign-up domains, instance domain, invites, transactional email) · the LLM
+gateway + model roles · QA judge (template rubric) + confab guard + brain-routability health · the
+priced ledger · ops surfaces (activity/alerts/inference/audit) · auth + admin governance.
 
-**On the way:** design & creative surfaces · finance · agentic coding in-app · role-ready base
-agents · marketplace · connectors (Slack/Matrix, MCP-out, accounting/HR) · business multitenancy ·
-fine-grained permissions · managed cloud.
+**On the way:** official marketing/sales/support apps (as installables) · design & creative
+surfaces · finance · agentic coding in-app · role-ready base agents · connectors (Slack/Matrix,
+MCP-out, accounting/HR) · business multitenancy · managed cloud.
 
 Milestones and detail: [`ROADMAP.md`](./ROADMAP.md) · [`docs/TODO.md`](./docs/TODO.md) ·
 [`CHANGELOG.md`](./CHANGELOG.md). New contributors start with [`HANDOFF.md`](./HANDOFF.md) and
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+**Docs:** building apps [`docs/APPS.md`](./docs/APPS.md) · SDK reference
+[`docs/SDK.md`](./docs/SDK.md) · MCP governance [`docs/MCP.md`](./docs/MCP.md) · permissions
+[`docs/PERMISSIONS.md`](./docs/PERMISSIONS.md) · onboarding/domains/email
+[`docs/ONBOARDING.md`](./docs/ONBOARDING.md) · API conventions
+[`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) · UI conventions
+[`docs/UI-CONVENTIONS.md`](./docs/UI-CONVENTIONS.md) · encryption
+[`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md) · Google Workspace
+[`docs/GOOGLE-WORKSPACE.md`](./docs/GOOGLE-WORKSPACE.md).
 
 ## License
 

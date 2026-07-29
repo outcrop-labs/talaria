@@ -19,6 +19,93 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   throttle). Live result: unpriced cloud tokens 13.5M → 0.
 
 ### Added
+- **Platform hardening: one API dialect, a modular UI kit, a complete SDK.**
+  A two-sided audit (all 162 API routes; the whole component tree) worked
+  through to zero: a guard module (`requireUser`/`requireAdmin`/
+  `requirePerm`/`requireView`/`parseBody`/`actorOf`) replaced ~160
+  hand-rolled auth prologues and ~90 body validations; 400s now name the
+  first zod issue; audit logging landed on every sensitive mutation that
+  lacked it (agent secrets, endpoint key rotations, gateway keys, agent
+  edits, cron lifecycle, KB creates, ACL grants); a provider key moved
+  out of a GET query string; org-wide views (cost, fleet, inference)
+  gained real authz. The kit grew Tabs, Checkbox/Toggle, SectionHeader,
+  Segmented, DropdownMenu, SaveButton, CopyButton, Chip modes, and
+  EmptyState variants — then the eight worst offender surfaces were swept
+  onto them at visual parity. The SDK now exports every primitive and
+  type a third-party app needs. Config writes are PUT; actions are POST.
+- **Talaria is an app platform.** Apps are self-contained codebases in
+  `apps/<slug>/` that compile INTO the deployment and load as native
+  surfaces — work views, manage views, settings tabs — on the same
+  router, design system, and session as core. Each app can ship its own
+  API (`/api/apps/<slug>/*` with an authenticated user handed to every
+  handler), a migrations-free per-app document store, and MCP tools for
+  agents that register in the MCP registry (badged "app") under the SAME
+  granular governance — per-agent assignment, tool subsets, per-person
+  access, gateway-enforced, dispatched in-process. Apps are
+  explicit-grant: enabling one gives members nothing until an admin
+  allows its views per person. Manage → Apps has Installed + Discover:
+  a marketplace catalog (community + official, configurable index) and
+  install-from-any-git-URL — a shallow clone into `apps/` IS the
+  install; dev picks it up live, prod flags "awaiting build". Built on
+  `@talaria/sdk` (docs/SDK.md); `apps/contacts` is the reference.
+- **Invites + transactional email.** The third admission door: invite an
+  email address, they get a branded join link (public /join page shows
+  who invited them, to which org, bound to which address), and signing in
+  with Google admits them, stamping the invite accepted. 14-day expiry,
+  one live invite per address, instant revoke, state chips. Email rides a
+  provider seam — your own SMTP (Google Workspace works with an app
+  password) or Resend — with sealed secrets, masked GETs, and a
+  send-me-a-test button. Invite creation survives a broken mail config
+  (the error surfaces; the invite persists).
+- **Sign-up domains + the instance's own address.** Two kinds of domain,
+  deliberately separate. EMAIL sign-up domains (Admin → Org): prove
+  ownership via a DNS TXT record at `_talaria-verify.<domain>` and anyone
+  with a matching address may self-join — verification is mandatory, so
+  nobody claims gmail.com. The HOSTING domain verifies by a self-fetch
+  round trip: the server requests its own identity beacon through the
+  candidate domain and checks the instance id that answers — proof DNS,
+  routing, and TLS land on THIS deployment. Once verified it is the
+  canonical base URL for MCP OAuth callbacks and links.
+- **Knowledge goes Notion-lite.** Quote-anchored COMMENT THREADS with
+  in-text highlights and resolve; multiplayer presence (who's here,
+  view/edit); Muse IN the page — an always-on chat bar that edits the doc,
+  plus select-any-text → Comment or Muse for surgical rewrites; context
+  menus across reading and editing (with full table controls and a
+  visible table toolbar); image paste/upload; inline artifact embeds; a
+  clean Official promote/demote lifecycle (double-confirm demote) with
+  agent-doc governance; and per-doc OKF summaries (GoogleCloudPlatform
+  knowledge-catalog spec) — an agent-facing frontmatter+summary the
+  Librarian maintains autonomously as official docs change. Space pages
+  and doc pages now share one editor grammar.
+- **MCP OAuth 2.1, end to end.** Servers that answer 401 get the full
+  spec treatment: protected-resource metadata → RFC 8414 authorization-
+  server metadata (path-aware, so github.com/login/oauth resolves) →
+  dynamic client registration → PKCE, with resource indicators. No-DCR
+  providers (GitHub) get a manual OAuth-app flow: Talaria shows the
+  callback URL to copy and links the provider's own app portal from its
+  service_documentation. Tokens seal per subject (org or user), refresh
+  silently, and force a visible reconnect on revocation. Registry changes
+  that alter what a running agent carries roll the fleet blue/green —
+  Hermes wires MCP at process start, so a render alone was never enough.
+- **Org-wide MCP with a real marketplace.** A registry of MCP servers
+  governed per agent AND per person (assignments ∩ allowances, tool
+  subsets everywhere, "All tools" explicit), enforced at a gateway that
+  filters tools/list and rejects tools/call — config can't be jailbroken
+  past the registry. The add flow searches the official MCP registry
+  (latest schema) with tier ranking so real remote servers beat wrapper
+  noise, brand icons, a featured business shelf, credential-driven
+  install forms from declared headers, and publisher resolution for
+  names the registry lacks (well-known manifests, documented endpoints).
+  Per-user servers connect each person's own account under Settings →
+  Connections. The built-in Talaria toolkit became a governable registry
+  row too — same subsets, same gateway, identity locked.
+- **Fine-grained permissions.** A 13-permission catalog across agents,
+  work surfaces, knowledge, artifacts, files, templates, and models —
+  resolved three layers deep (per-user overrides → org member defaults →
+  shipped defaults), admins unconditional, enforced server-side by the
+  same helpers everywhere. Admin → People shows per-person chips with
+  override provenance, one checklist gating work views, manage views,
+  and (later) app views, and agent allow-lists beside them.
 - **Comms goes Slack-lite: threads, reactions, paste-a-file, edit &
   delete.** Channel messages (channels, Relays, DMs) now spawn THREADS —
   a side panel with the root + replies and its own composer; replies stay
