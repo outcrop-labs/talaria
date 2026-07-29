@@ -254,7 +254,7 @@ function AdminPage() {
                         />
                         <Combobox
                           options={[
-                            ...GATEABLE_VIEWS.map((v) => ({ value: v.to, label: v.label })),
+                            ...GATEABLE_VIEWS.map((v) => ({ value: v.to, label: v.label, sub: 'work' })),
                             ...MANAGE_VIEWS.map((v) => ({ value: v.to, label: v.label, sub: 'manage' })),
                           ]}
                           selected={allowedViews}
