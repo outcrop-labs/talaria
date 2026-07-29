@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { deleteEndpoint, listEndpoints, updateEndpoint } from '@/server/agent-defs'
 import { cascadeRemoval, modelUsage, type ModelUsage } from '@/server/fleet-cascade'
 import { refreshAutoPrices } from '@/server/price-oracle'
+import { logAudit } from '@/server/audit'
 
 const Patch = z.object({
   class: z.enum(['local', 'cloud']).optional(),
@@ -70,7 +71,16 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
           models: parsed.data.models,
           modelPrices: parsed.data.modelPrices,
           requestDefaults: parsed.data.requestDefaults,
-          apiKey: parsed.data.apiKey,
+          // Empty string = an untouched masked field round-tripping — keep the
+          // stored key. Only a non-empty value rotates it.
+          apiKey: parsed.data.apiKey?.trim() ? parsed.data.apiKey : undefined,
+        })
+        void logAudit({
+          actor: user.email ?? user.name ?? 'admin',
+          action: 'endpoint.update',
+          targetType: 'endpoint',
+          targetId: params.id,
+          after: { ...(parsed.data.apiKey?.trim() ? { apiKeyRotated: true } : {}), ...(parsed.data.models ? { models: parsed.data.models.length } : {}) },
         })
         // New catalog models get auto-priced in the background (never block an
         // interactive save on the external catalog fetch).
@@ -105,6 +115,13 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
         if (usage.length) cascade = await cascadeRemoval(ep.name, null, user.email ?? user.name ?? 'admin')
         const res = await deleteEndpoint(params.id)
         if (!res.ok) return json({ error: `still in use by: ${res.usedBy!.join(', ')}` }, { status: 400 })
+        void logAudit({
+          actor: user.email ?? user.name ?? 'admin',
+          action: 'endpoint.delete',
+          targetType: 'endpoint',
+          targetId: params.id,
+          targetLabel: ep.name,
+        })
         return json({
           ok: true,
           cascaded: cascade.changed,

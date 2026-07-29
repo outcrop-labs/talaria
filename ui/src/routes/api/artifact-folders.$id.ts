@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { deleteFolder, updateFolder } from '@/server/artifacts'
 
 const Patch = z.object({
@@ -18,6 +19,7 @@ export const Route = createFileRoute('/api/artifact-folders/$id')({
       PUT: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        if (!(await hasPerm(user, 'artifacts.create'))) return json({ error: 'forbidden' }, { status: 403 })
         const parsed = Patch.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const folder = await updateFolder(params.id, parsed.data)
@@ -27,6 +29,7 @@ export const Route = createFileRoute('/api/artifact-folders/$id')({
       DELETE: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        if (!(await hasPerm(user, 'artifacts.create'))) return json({ error: 'forbidden' }, { status: 403 })
         await deleteFolder(params.id)
         return json({ ok: true })
       },

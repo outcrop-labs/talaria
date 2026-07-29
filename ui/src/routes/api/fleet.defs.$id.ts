@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
 import { getAgentDef, updateAgentMeta } from '@/server/agent-defs'
 import { setAgentTemplates } from '@/server/templates'
+import { logAudit } from '@/server/audit'
 
 const Body = z.object({
   role: z.string().max(80).nullish(),
@@ -34,6 +35,13 @@ export const Route = createFileRoute('/api/fleet/defs/$id')({
             planTemplateId: parsed.data.planTemplateId,
           })
         }
+        void logAudit({
+          actor: user.email ?? user.name ?? 'admin',
+          action: 'agent.meta',
+          targetType: 'agent',
+          targetId: def.id,
+          targetLabel: def.displayName,
+        })
         return json({ ok: true })
       },
     },

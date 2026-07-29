@@ -6,6 +6,7 @@ import { hasPerm } from '@/server/permissions'
 import { addVersionIfChanged, getAgentDef, listVersions } from '@/server/agent-defs'
 import { applyMcpEdits } from '@/server/agent-mcp'
 import { rollAgent } from '@/server/fleet-reconcile'
+import { logAudit } from '@/server/audit'
 
 const Body = z.object({
   add: z
@@ -48,6 +49,16 @@ export const Route = createFileRoute('/api/fleet/defs/$id/mcp')({
             note: `mcp: ${[added && `+${added}`, removed && `-${removed}`].filter(Boolean).join(' ') || 'no-op'}`,
             createdBy: user.email ?? user.name ?? 'admin',
           })
+          if (created) {
+            void logAudit({
+              actor: user.email ?? user.name ?? 'admin',
+              action: 'agent.mcp_edit',
+              targetType: 'agent',
+              targetId: def.id,
+              targetLabel: def.displayName,
+              after: { added: parsed.data.add.map((a) => a.name), removed: parsed.data.remove },
+            })
+          }
           let applied = false
           if (created && parsed.data.apply && def.managed) {
             // Roll, don't restart — see fleet.defs.$id.edit.

@@ -6,6 +6,7 @@ import { hasPerm } from '@/server/permissions'
 import { addEndpointModels, addVersionIfChanged, applyConfigEdits, getAgentDef, listEndpoints, listVersions } from '@/server/agent-defs'
 import { availableModels } from '@/server/provider-catalog'
 import { rollAgent } from '@/server/fleet-reconcile'
+import { logAudit } from '@/server/audit'
 
 const Target = z.object({
   endpoint: z.string().min(1).max(100),
@@ -76,6 +77,16 @@ export const Route = createFileRoute('/api/fleet/defs/$id/edit')({
             note: parsed.data.note ?? 'edited in Talaria',
             createdBy: user.email ?? user.name ?? 'admin',
           })
+          if (created) {
+            void logAudit({
+              actor: user.email ?? user.name ?? 'admin',
+              action: 'agent.edit',
+              targetType: 'agent',
+              targetId: def.id,
+              targetLabel: def.displayName,
+              after: { version },
+            })
+          }
           let applied = false
           if (created && parsed.data.apply && def.managed) {
             // Roll, don't restart: the new config comes up beside the old

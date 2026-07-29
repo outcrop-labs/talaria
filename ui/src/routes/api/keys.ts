@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { canMintKeys, listKeys, mintKey } from '@/server/llm-keys'
+import { logAudit } from '@/server/audit'
 
 const Body = z.object({ name: z.string().min(1).max(60) })
 
@@ -25,6 +26,13 @@ export const Route = createFileRoute('/api/keys')({
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const { key, secret } = await mintKey(user.id, parsed.data.name)
+        void logAudit({
+          actor: user.email ?? user.name ?? 'user',
+          action: 'key.mint',
+          targetType: 'llm-key',
+          targetId: key.id,
+          targetLabel: parsed.data.name,
+        })
         return json({ key, secret })
       },
     },

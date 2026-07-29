@@ -59,7 +59,10 @@ export const Route = createFileRoute('/api/admin/encryption')({
           })
           return json({ ok: true, ...res })
         } catch (e) {
-          return json({ error: `rotation failed (no secrets changed): ${(e as Error).message}` }, { status: 500 })
+          // Server log gets the real error; the client gets a generic line —
+          // crypto failure messages must never risk echoing key material.
+          console.error('[encryption.rotate]', e)
+          return json({ error: 'rotation failed (no secrets changed) — see server logs' }, { status: 500 })
         }
       },
     },

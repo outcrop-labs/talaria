@@ -4,12 +4,17 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { deleteSkill, readSkill, writeSkill } from '@/server/agent-skills'
 import { ownsAgent } from '@/server/personal-agent'
+import { deniedViews } from '@/server/users'
 
 const Body = z.object({ content: z.string().max(500_000) })
 
 /** Admins write anywhere; a member may write their own assistant's skills. */
 const canWrite = async (user: { id: string; role: string }, owner: string) =>
   user.role === 'admin' || ownsAgent(user.id, { slug: owner })
+
+/** Reads: writers, plus members granted the Agents manage view. */
+const canRead = async (user: { id: string; role: 'admin' | 'member' }, owner: string) =>
+  (await canWrite(user, owner)) || !(await deniedViews(user.id, user.role)).includes('/agents')
 
 // One skill's SKILL.md. GET → content + file list. PUT → save (creates the
 // skill if new). DELETE → remove the whole skill dir. Writes: admin, or the
@@ -21,6 +26,7 @@ export const Route = createFileRoute('/api/skills/$owner/$name')({
       GET: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        if (!(await canRead(user, params.owner))) return json({ error: 'forbidden' }, { status: 403 })
         try {
           return json(await readSkill(params.owner, params.name))
         } catch (e) {

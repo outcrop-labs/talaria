@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { db } from '@/server/db/pg'
 import { getOutreachConfig, recentOutreachEvents, setOutreachConfig } from '@/server/outreach'
+import { logAudit } from '@/server/audit'
 
 const Body = z.object({
   enabled: z.boolean(),
@@ -39,6 +40,12 @@ export const Route = createFileRoute('/api/admin/outreach')({
         await setOutreachConfig(config)
         const sql = await db()
         await sql`update agent_defs set proactive = (model = any(${proactiveAgents})) where enabled`
+        void logAudit({
+          actor: user.email ?? user.name ?? 'admin',
+          action: 'outreach.config',
+          targetType: 'outreach',
+          after: { proactiveAgents },
+        })
         return json({ ok: true })
       },
     },

@@ -32,10 +32,17 @@ const Put = z.object({
   spaceBrain: z.object({ spaceId: z.string().uuid(), collectionId: z.string().uuid().nullable() }).optional(),
 })
 
+const Post = z.union([
+  z.object({ action: z.enum(['reindex', 'backfill']) }),
+  // Model catalog for the picker. The candidate API key travels in a POST
+  // body — NEVER a query string, where it would land in access/proxy logs.
+  z.object({ models: z.string().min(1).max(40), key: z.string().max(500).nullish() }),
+])
+
 // Admin → Retrieval. GET → services health + backfill status + reranker
 // providers/config + KB-space brain bindings. PUT → reranker config and/or a
-// space↔brain binding. POST → kick a full backfill (detached).
-// GET ?models=<provider>[&key=] → live model catalog for the picker.
+// space↔brain binding. POST → kick a full backfill (detached), or
+// { models, key? } → live model catalog for the picker.
 export const Route = createFileRoute('/api/admin/rag')({
   server: {
     handlers: {
@@ -43,11 +50,6 @@ export const Route = createFileRoute('/api/admin/rag')({
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const url = new URL(request.url)
-        const modelsFor = url.searchParams.get('models')
-        if (modelsFor) {
-          return json({ models: await rerankModels(modelsFor as RerankProviderId, url.searchParams.get('key')) })
-        }
         const sql = await db()
         const spaces = (await sql`
           select id, name, rag_collection_id as "collectionId" from kb_spaces order by name asc
@@ -88,10 +90,14 @@ export const Route = createFileRoute('/api/admin/rag')({
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        // { action: 'reindex' } rebuilds collections in the current model's
-        // shape then refills; default (or 'backfill') refills in place.
-        const body = (await request.json().catch(() => ({}))) as { action?: string }
-        const action = body.action === 'reindex' ? 'reindex' : 'backfill'
+        const parsed = Post.safeParse(await request.json().catch(() => null))
+        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        if ('models' in parsed.data) {
+          return json({ models: await rerankModels(parsed.data.models as RerankProviderId, parsed.data.key ?? null) })
+        }
+        // 'reindex' rebuilds collections in the current model's shape then
+        // refills; 'backfill' refills in place. Both detach.
+        const action = parsed.data.action
         if (action === 'reindex') void reindexAll().catch(() => {})
         else void backfillAll().catch(() => {})
         void logAudit({ actor: user.email ?? 'admin', action: `rag.${action}`, targetType: 'rag', targetId: action })
