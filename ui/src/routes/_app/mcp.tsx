@@ -126,6 +126,8 @@ async function patchServer(id: string, body: unknown): Promise<string | null> {
   return null
 }
 
+const NO_ACCESS = '__no_access__'
+
 /** One registered server. Design grammar: a calm header (identity left, one
  *  status cluster right, actions in a kebab), the tool strip, then a single
  *  ACCESS table where every row reads the same — name · tools · remove — and
@@ -346,20 +348,27 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
                 <AccessRow
                   key={ua.userId}
                   name={userLabel(ua.userId)}
-                  denied={!ua.allowed}
-                  onToggleDenied={() => void patch({ userAccess: { userId: ua.userId, allowed: !ua.allowed, tools: ua.tools } })}
+                  dim={!ua.allowed}
                   tools={
-                    ua.allowed ? (
-                      <Combobox
-                        options={toolOptions}
-                        selected={ua.tools ?? []}
-                        onChange={(tools) => void patch({ userAccess: { userId: ua.userId, allowed: true, tools: tools.length ? tools : null } })}
-                        multiple
-                        size="sm"
-                        placeholder="All tools"
-                        className="w-full"
-                      />
-                    ) : null
+                    <Combobox
+                      options={[{ value: NO_ACCESS, label: 'No access' }, ...toolOptions]}
+                      selected={ua.allowed ? (ua.tools ?? []) : [NO_ACCESS]}
+                      onChange={(sel) => {
+                        // Picking "No access" denies; picking any tool (or
+                        // clearing back to empty = all tools) re-allows.
+                        const denyPicked = sel.includes(NO_ACCESS) && ua.allowed
+                        if (denyPicked) {
+                          void patch({ userAccess: { userId: ua.userId, allowed: false, tools: null } })
+                        } else {
+                          const tools = sel.filter((t) => t !== NO_ACCESS)
+                          void patch({ userAccess: { userId: ua.userId, allowed: true, tools: tools.length ? tools : null } })
+                        }
+                      }}
+                      multiple
+                      size="sm"
+                      placeholder="All tools"
+                      className="w-full"
+                    />
                   }
                   onRemove={() => void patch({ userAccess: { userId: ua.userId, allowed: null, tools: null } })}
                   removeTitle="Remove this rule (back to default access)"
@@ -458,43 +467,28 @@ function AddPickerButton({
   )
 }
 
-/** The access sections' one row shape: name · tool scope · quiet controls. */
+/** The access sections' one row shape: name · tool scope · quiet remove. */
 function AccessRow({
   name,
   tools,
-  denied,
-  onToggleDenied,
+  dim,
   onRemove,
   removeTitle,
 }: {
   name: string
   tools: React.ReactNode
-  denied?: boolean
-  onToggleDenied?: () => void
+  dim?: boolean
   onRemove: () => void
   removeTitle: string
 }) {
   return (
     <div className="group flex items-center gap-3 rounded-lg px-1.5 py-1 transition-colors hover:bg-card/50">
       <span className="w-44 shrink-0 truncate">
-        <span className={cn('text-sm', denied ? 'text-muted line-through' : 'text-fg')}>{name}</span>
+        <span className={cn('text-sm', dim ? 'text-muted' : 'text-fg')}>{name}</span>
       </span>
-      <span className="min-w-0 flex-1">{tools ?? <span className="text-xs text-muted/60">{denied ? 'no access' : 'all tools'}</span>}</span>
+      <span className="min-w-0 flex-1">{tools ?? <span className="text-xs text-muted/60">all tools</span>}</span>
       {/* Fixed-width control cluster so every row's tool box ends flush. */}
-      <span className="flex w-16 shrink-0 items-center justify-end gap-1.5">
-        {onToggleDenied && (
-          <button
-            type="button"
-            onClick={onToggleDenied}
-            title={denied ? 'Allow again' : 'Deny this person outright'}
-            className={cn(
-              'rounded px-1 py-0.5 text-[10px] uppercase tracking-wide transition-colors',
-              denied ? 'text-[color:var(--theme-danger)]' : 'text-muted opacity-0 hover:text-[color:var(--theme-danger)] group-hover:opacity-100',
-            )}
-          >
-            {denied ? 'denied' : 'deny'}
-          </button>
-        )}
+      <span className="flex w-8 shrink-0 items-center justify-end">
         <button
           type="button"
           onClick={onRemove}
