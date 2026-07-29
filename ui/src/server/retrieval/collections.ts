@@ -194,7 +194,8 @@ export async function collectionsForPrincipal(principal: {
        or (a.principal_type = 'user' and ${uid} <> '' and a.principal_id = ${uid})
        or (a.principal_type = 'agent' and ${agent} <> '' and a.principal_id = ${agent})
        or (a.principal_type = 'team' and ${uid} <> '' and exists (
-             select 1 from team_members tm where tm.team_id::text = a.principal_id and tm.user_id = ${uid}
+             -- text-side compare: the '' sentinel must not hit a uuid cast
+             select 1 from team_members tm where tm.team_id::text = a.principal_id and tm.user_id::text = ${uid}
            ))
     order by c.name asc
   `) as unknown as RagCollection[]

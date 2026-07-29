@@ -25,7 +25,7 @@ import { describeAgent, proxyChat } from './gateway'
 import { buildUpstream, fetchUpstream, gatewayModels, recordGatewayUsage, resolveRoute } from './llm-gateway'
 import { resolveRoleModel } from './model-roles'
 import { addNotification } from './notifications'
-import { indexActivity } from './retrieval/sources'
+import { indexActivity, indexPersonal } from './retrieval/sources'
 import { estimateTokens, recordUsage } from './usage'
 
 export type ResearchMode = 'recon' | 'brief' | 'expedition'
@@ -467,14 +467,19 @@ async function runResearch(runId: string): Promise<void> {
       where id = ${runId}
     `
 
-    void indexActivity({
+    // Placement follows ownership: a personal run's report goes to the owner's
+    // private brain (them + their assistant); an org-wide run's report goes to
+    // the ambient index, marked orgWide so scopes actually match it.
+    const reportDoc = {
       sourceType: 'research',
       sourceId: artifact.id,
       title,
       text: `${title}\n\n${body}`,
-      payload: { runId, question, mode },
+      payload: ownerUserId ? { runId, question, mode } : { runId, question, mode, orgWide: true },
       href: `/research?r=${runId}`,
-    }).catch(() => {})
+    }
+    if (ownerUserId) void indexPersonal(ownerUserId, reportDoc).catch(() => {})
+    else void indexActivity(reportDoc).catch(() => {})
     if (ownerUserId) {
       void addNotification(ownerUserId, {
         kind: 'research',

@@ -2,7 +2,7 @@
 // (channel posts, KB doc saves, and so on) don't resolve collection ids themselves.
 // All fire-and-forget friendly — indexing must never block the write it follows.
 import { db } from '../db/pg'
-import { ensureAutoCollections, personalCollectionFor } from './collections'
+import { ensureAutoCollections, ensurePersonalCollection, personalCollectionFor } from './collections'
 import { indexDocument, unindexDocument, type IndexDoc } from './index'
 import { deleteByFilter } from './qdrant'
 
@@ -23,6 +23,27 @@ export async function indexActivity(doc: IndexDoc): Promise<void> {
 export async function indexOrgKb(doc: IndexDoc): Promise<void> {
   const id = await autoCollectionId('org-kb')
   if (id) await indexDocument(id, doc).catch(() => {})
+}
+
+/** Index into a user's PRIVATE brain — their personal collection, retrievable
+ *  only by them and their personal assistant. Created lazily (binding the PA
+ *  when they have one), so history starts landing without any setup step. */
+export async function indexPersonal(userId: string, doc: IndexDoc): Promise<void> {
+  try {
+    const sql = await db()
+    const [pa] = (await sql`
+      select model from agent_defs where owner_user_id = ${userId} limit 1
+    `) as unknown as Array<{ model: string }>
+    const col = await ensurePersonalCollection(userId, pa ? { agentModel: pa.model } : {})
+    await indexDocument(col.id, doc)
+  } catch {
+    /* fire-and-forget — indexing never blocks the write it follows */
+  }
+}
+
+export async function unindexPersonal(userId: string, sourceType: string, sourceId: string): Promise<void> {
+  const col = await personalCollectionFor(userId)
+  if (col) await unindexDocument(col.id, sourceType, sourceId).catch(() => {})
 }
 
 export async function unindexOrgKb(sourceType: string, sourceId: string): Promise<void> {

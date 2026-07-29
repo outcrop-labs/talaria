@@ -146,18 +146,33 @@ async function activityScope(principal: { userId?: string; agentModel?: string }
         { key: 'planOwnerId', match: { value: principal.userId } },
         // Distilled agent chats are likewise owner-private.
         { key: 'ownerUserId', match: { value: principal.userId } },
+        // Content explicitly published org-wide (e.g. org research reports).
+        { key: 'orgWide', match: { value: true } },
       ],
     }
   }
   if (principal.agentModel) {
-    // Agents: boards whose policy allows them (channels an agent is in are also
-    // fine, but boards are the primary agent scope).
+    // A personal assistant retrieves as its OWNER'S PROXY: the owner's
+    // channels, boards, plans, and distilled history — exactly what the owner
+    // themselves could retrieve, nothing more.
+    const [pa] = (await sql`
+      select owner_user_id as owner from agent_defs
+      where model = ${principal.agentModel} and owner_user_id is not null
+    `) as unknown as Array<{ owner: string }>
+    if (pa?.owner) return activityScope({ userId: pa.owner })
+    // Org agents: boards whose policy allows them (channels an agent is in are
+    // also fine, but boards are the primary agent scope) + org-wide content.
     const boards = (await sql`
       select b.id from boards b
       where b.allow_all_agents
          or exists (select 1 from board_agents ba where ba.board_id = b.id and ba.agent_model = ${principal.agentModel})
     `) as unknown as Array<{ id: string }>
-    return { should: [{ key: 'boardId', match: { any: boards.map((b) => b.id) } }] }
+    return {
+      should: [
+        { key: 'boardId', match: { any: boards.map((b) => b.id) } },
+        { key: 'orgWide', match: { value: true } },
+      ],
+    }
   }
   return { should: [] } // no scope → nothing from activity
 }
