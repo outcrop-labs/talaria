@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -61,8 +61,20 @@ function useMcpServers() {
 }
 
 function McpPage() {
+  const qc = useQueryClient()
   const { data: servers, isPending } = useMcpServers()
   const [adding, setAdding] = useState<null | 'marketplace' | 'custom'>(null)
+
+  // The OAuth popup announces completion — refresh connection states live.
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin === window.location.origin && (e.data as { type?: string })?.type === 'talaria:mcp-oauth-done') {
+        void qc.invalidateQueries({ queryKey: ['mcp-servers'] })
+      }
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+  }, [qc])
 
   return (
     <div className="h-full overflow-y-auto p-8">

@@ -9,7 +9,10 @@ const page = (title: string, body: string) =>
 <body style="font-family:ui-monospace,monospace;background:#0b0c0e;color:#e6e6e6;display:grid;place-items:center;height:100vh;margin:0">
 <div style="text-align:center"><p style="font-size:15px">${body}</p>
 <p style="font-size:12px;opacity:.6">This window closes itself.</p></div>
-<script>setTimeout(()=>{ if (window.opener) window.close(); else location.href='/mcp' }, 1200)</script></body>`,
+<script>
+try { window.opener && window.opener.postMessage({ type: 'talaria:mcp-oauth-done' }, window.location.origin) } catch {}
+setTimeout(()=>{ if (window.opener) window.close(); else location.href='/mcp' }, 1200)
+</script></body>`,
     { headers: { 'content-type': 'text/html; charset=utf-8' } },
   )
 

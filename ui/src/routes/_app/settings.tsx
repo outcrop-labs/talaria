@@ -238,6 +238,17 @@ function McpConnectionsSection() {
   const [connecting, setConnecting] = useState<string | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
 
+  // The OAuth popup announces completion — flip to "connected" live.
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin === window.location.origin && (e.data as { type?: string })?.type === 'talaria:mcp-oauth-done') {
+        void qc.invalidateQueries({ queryKey: ['me-mcp'] })
+      }
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+  }, [qc])
+
   const put = async (serverId: string, headers: Record<string, string> | null) => {
     await fetch('/api/me/mcp', {
       method: 'PUT',
