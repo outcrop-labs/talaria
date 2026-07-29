@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { hasUserCredentials, listMcpServers, setUserCredentials } from '@/server/mcp-registry'
 import { dropOauthTokens, hasOauthTokens } from '@/server/mcp-oauth'
+import { rollAgentForUser } from '@/server/mcp-apply'
 import { renderFleet } from '@/server/fleet-render'
 import { logAudit } from '@/server/audit'
 
@@ -48,7 +49,8 @@ export const Route = createFileRoute('/api/me/mcp')({
           targetType: 'mcp-server',
           targetId: parsed.data.serverId,
         })
-        void renderFleet().catch(() => {}) // the PA picks the server up/drops it
+        void renderFleet().catch(() => {}) // config truth first…
+        void rollAgentForUser(user.id).catch(() => {}) // …then the live cutover
         return json({ ok: true })
       },
     },

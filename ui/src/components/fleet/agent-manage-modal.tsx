@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { stringify as stringifyYaml } from 'yaml'
 import { Loader2, Check, Lock, X, RotateCcw, Plug } from 'lucide-react'
@@ -570,6 +571,15 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
                     built-in
                   </span>
                 )}
+                {s.extras.includes('managed') && (
+                  <Link
+                    to="/mcp"
+                    className="shrink-0 rounded border border-accent/50 bg-accent/10 px-1 text-[10px] uppercase tracking-wide text-accent hover:bg-accent/15"
+                    title="Attached from the org MCP registry — assignment, tool subsets, and credentials are managed on the MCP page"
+                  >
+                    org registry
+                  </Link>
+                )}
                 <span className="min-w-0 flex-1 truncate text-muted">{s.url}</span>
                 {probe === 'testing' ? (
                   <Loader2 size={13} className="shrink-0 animate-spin text-muted" />
@@ -578,10 +588,12 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
                     {PROBE_UI[probe.state].icon} {PROBE_UI[probe.state].label}
                   </span>
                 ) : null}
-                <button type="button" onClick={() => void test(s)} className="shrink-0 text-xs text-muted hover:text-accent">
-                  Test
-                </button>
-                {isAdmin && !s.extras.includes('built-in') && (
+                {!s.extras.includes('managed') && (
+                  <button type="button" onClick={() => void test(s)} className="shrink-0 text-xs text-muted hover:text-accent">
+                    Test
+                  </button>
+                )}
+                {isAdmin && !s.extras.includes('built-in') && !s.extras.includes('managed') && (
                   <button
                     type="button"
                     disabled={busy}

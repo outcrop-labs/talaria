@@ -1,7 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { useContextMenu } from '@/components/ui/context-menu'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Check, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -126,12 +127,19 @@ async function patchServer(id: string, body: unknown): Promise<string | null> {
   return null
 }
 
+/** One registered server. Design grammar: a calm header (identity left, one
+ *  status cluster right, actions in a kebab), the tool strip, then a single
+ *  ACCESS table where every row reads the same — name · tools · remove — and
+ *  adders stay hidden behind ghost "+" buttons until asked for. */
 function ServerCard({ server: s }: { server: McpServerRow }) {
   const qc = useQueryClient()
   const { data: fleet } = useAgents()
   const { data: users = [] } = useUsers()
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [addingAgent, setAddingAgent] = useState(false)
+  const [addingPerson, setAddingPerson] = useState(false)
+  const { openMenu, menu } = useContextMenu()
   const refresh = () => qc.invalidateQueries({ queryKey: ['mcp-servers'] })
 
   const patch = async (body: unknown) => {
@@ -142,106 +150,97 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
   }
 
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
+  const agentLabel = (model: string) => agentOptions.find((o) => o.value === model)?.label ?? model
   const toolOptions = s.tools.map((t) => ({ value: t.name, label: t.name }))
   const userLabel = (id: string) => {
     const u = users.find((x) => x.id === id)
     return u?.name ?? u?.email ?? id.slice(0, 8)
   }
+  const domain = (() => {
+    try {
+      return new URL(s.url).hostname
+    } catch {
+      return null
+    }
+  })()
+
+  const cardMenu = (e: React.MouseEvent) =>
+    openMenu(e, [
+      { label: s.enabled ? 'Disable server' : 'Enable server', onSelect: () => void patch({ enabled: !s.enabled }) },
+      {
+        label: s.authMode === 'org' ? 'Switch to per-user auth' : 'Switch to org auth',
+        onSelect: () => void patch({ authMode: s.authMode === 'org' ? 'per-user' : 'org' }),
+      },
+      ...(s.oauthEnabled && s.authMode === 'org' && s.orgConnected
+        ? [{ label: 'Reconnect org account', onSelect: () => void connectPopup(s.id, 'org') }]
+        : []),
+      'sep' as const,
+      {
+        label: 'Remove server',
+        danger: true,
+        onSelect: () => {
+          void confirm({
+            title: 'Remove MCP server',
+            message: `Remove "${s.label}" org-wide? Every agent loses it on its next roll.`,
+            confirmLabel: 'Remove',
+          }).then(async (ok) => {
+            if (!ok) return
+            await fetch(`/api/mcp/servers/${s.id}`, { method: 'DELETE', credentials: 'same-origin' })
+            await refresh()
+          })
+        },
+      },
+    ])
+
+  // The one status the header needs: connection first, then lifecycle.
+  const status = !s.enabled
+    ? { label: 'disabled', cls: 'border-line-subtle text-muted' }
+    : s.oauthEnabled && s.authMode === 'org' && !s.orgConnected
+      ? null // the Connect button IS the status
+      : s.oauthEnabled && s.authMode === 'per-user'
+        ? { label: 'per-user auth', cls: 'border-line-subtle text-muted' }
+        : s.oauthEnabled && s.orgConnected
+          ? { label: '✓ connected', cls: 'border-[color:var(--theme-success)]/40 text-[color:var(--theme-success)]' }
+          : null
 
   return (
     <Panel className={cn(!s.enabled && 'opacity-60')}>
+      {/* ── Header: identity left, one status cluster right ── */}
       <div className="flex items-center gap-3">
-        <ServerMark title={s.label} domain={(() => { try { return new URL(s.url).hostname.replace(/^mcp\./, '') } catch { return null } })()} size={34} />
+        <ServerMark title={s.label} domain={domain?.replace(/^mcp\./, '')} size={36} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-fg">{s.label}</span>
-            <span className="rounded bg-card px-1.5 py-0.5 text-[10px] text-muted">{s.name}</span>
-            {s.authMode === 'per-user' && (
-              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent" title="Each person connects their own account (Settings → Connections); the server acts as them.">
-                per-user auth
-              </span>
-            )}
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-sm font-semibold text-fg">{s.label}</span>
+            {domain && <span className="truncate text-[11px] text-muted">{domain}</span>}
           </div>
-          <div className="truncate font-sans text-xs text-muted">{s.url}</div>
-          {s.description && <div className="truncate font-sans text-xs text-muted/80">{s.description}</div>}
+          {s.description && <div className="truncate font-sans text-xs text-muted">{s.description}</div>}
         </div>
-        {s.oauthEnabled && s.authMode === 'org' && (s.oauthMeta?.dcr || s.oauthMeta?.clientSet) && (
+        {status && <span className={cn('shrink-0 rounded-full border px-2 py-0.5 text-[11px]', status.cls)}>{status.label}</span>}
+        {s.oauthEnabled && s.authMode === 'org' && !s.orgConnected && s.enabled && (s.oauthMeta?.dcr || s.oauthMeta?.clientSet) && (
           <button
             type="button"
             onClick={() => void connectPopup(s.id, 'org')}
-            className={cn(
-              'flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors',
-              s.orgConnected
-                ? 'border-line-subtle text-muted hover:border-line hover:text-fg'
-                : 'border-accent/60 bg-accent/10 text-accent hover:bg-accent/15',
-            )}
-            title={
-              s.orgConnected
-                ? 'Connected via OAuth as the org — click to reconnect'
-                : 'This server authenticates with OAuth — connect the org account so agents can use it'
-            }
+            className="shrink-0 rounded-lg border border-accent/60 bg-accent/10 px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/15"
+            title="This server authenticates with OAuth — connect the org account so agents can use it"
           >
-            {s.orgConnected ? (
-              <>
-                <Check size={12} /> connected
-              </>
-            ) : (
-              'Connect'
-            )}
+            Connect
           </button>
         )}
-        {s.oauthEnabled && s.authMode === 'per-user' && (
-          <span className="shrink-0 text-[11px] text-muted" title="Each person connects their own account in Settings → Connections">
-            OAuth · per-user
-          </span>
-        )}
-        <Select
-          size="sm"
-          value={s.authMode}
-          onChange={(e) => void patch({ authMode: e.target.value })}
-          className="w-32 shrink-0"
-          title="Org auth: shared credentials for everyone. Per-user: each person connects their own account."
-        >
-          <option value="org">Org auth</option>
-          <option value="per-user">Per-user auth</option>
-        </Select>
-        <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted" title="Disabled servers vanish from every agent on the next config render">
-          <input
-            type="checkbox"
-            checked={s.enabled}
-            onChange={(e) => void patch({ enabled: e.target.checked })}
-            className="accent-[var(--theme-accent)]"
-          />
-          enabled
-        </label>
         <button
           type="button"
-          title="Delete this server (assignments and connections go with it)"
-          onClick={() => {
-            void confirm({ title: 'Remove MCP server', message: `Remove "${s.label}" org-wide? Every agent loses it on the next config render.`, confirmLabel: 'Remove' }).then(async (ok) => {
-              if (!ok) return
-              await fetch(`/api/mcp/servers/${s.id}`, { method: 'DELETE', credentials: 'same-origin' })
-              await refresh()
-            })
-          }}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-[color:var(--theme-danger)]"
+          onClick={cardMenu}
+          title="Server actions"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-fg"
         >
-          <Trash2 size={14} />
+          <MoreHorizontal size={15} />
         </button>
       </div>
 
-      {/* DCR-less providers (GitHub): the admin registers an OAuth app with
-          the provider and pastes its credentials — then Connect lights up. */}
       {s.oauthEnabled && s.oauthMeta && !s.oauthMeta.dcr && !s.oauthMeta.clientSet && (
-        <OauthAppSetup
-          serverId={s.id}
-          domain={(() => { try { return new URL(s.url).hostname } catch { return null } })()}
-          docs={s.oauthMeta.documentation}
-          onSaved={refresh}
-        />
+        <OauthAppSetup serverId={s.id} domain={domain} docs={s.oauthMeta.documentation} onSaved={refresh} />
       )}
 
-      {/* Discovered tools */}
+      {/* ── Tools strip ── */}
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <button
           type="button"
@@ -249,124 +248,143 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
             setRefreshing(true)
             void patch({ refreshTools: true }).finally(() => setRefreshing(false))
           }}
-          className="flex items-center gap-1.5 rounded-lg border border-line-subtle px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-line hover:text-fg"
+          className="flex items-center gap-1.5 rounded-full border border-line-subtle px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-line hover:text-fg"
           title="Ask the server for its tool catalog"
         >
           <RefreshCw size={11} className={cn(refreshing && 'animate-spin')} />
           {s.tools.length ? `${s.tools.length} tools` : 'Discover tools'}
           {s.toolsRefreshedAt && <span className="text-muted/70">· {relativeTime(s.toolsRefreshedAt)}</span>}
         </button>
-        {s.tools.slice(0, 10).map((t) => (
+        {s.tools.slice(0, 6).map((t) => (
           <span key={t.name} title={t.description} className="rounded-full border border-line-subtle px-2 py-0.5 text-[11px] text-muted">
             {t.name}
           </span>
         ))}
-        {s.tools.length > 10 && <span className="text-[11px] text-muted/70">+{s.tools.length - 10} more</span>}
-      </div>
-
-      {/* Agents */}
-      <div className="mt-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wide text-muted">Agents</span>
-          <label className="flex items-center gap-1.5 text-xs text-muted" title="Every agent carries this server (tool subsets below still apply per pick)">
-            <input
-              type="checkbox"
-              checked={s.allAgents}
-              onChange={(e) => void patch({ allAgents: e.target.checked })}
-              className="accent-[var(--theme-accent)]"
-            />
-            all agents
-          </label>
-        </div>
-        {!s.allAgents && (
-          <div className="space-y-1.5">
-            {s.assignments.map((a) => (
-              <div key={a.agentModel} className="flex items-center gap-2">
-                <span className="w-40 shrink-0 truncate text-sm text-fg">
-                  {agentOptions.find((o) => o.value === a.agentModel)?.label ?? a.agentModel}
-                </span>
-                <Combobox
-                  options={toolOptions}
-                  selected={a.tools ?? []}
-                  onChange={(tools) => void patch({ assign: { agentModel: a.agentModel, tools: tools.length ? tools : null } })}
-                  multiple
-                  size="sm"
-                  placeholder="All tools"
-                  className="min-w-0 flex-1"
-                />
-                <button
-                  type="button"
-                  title="Remove this agent"
-                  onClick={() => void patch({ unassign: a.agentModel })}
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted hover:text-[color:var(--theme-danger)]"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            ))}
-            <Combobox
-              options={agentOptions.filter((o) => !s.assignments.some((a) => a.agentModel === o.value))}
-              selected={[]}
-              onChange={(models) => {
-                const m = models[0]
-                if (m) void patch({ assign: { agentModel: m, tools: null } })
-              }}
-              multiple
-              size="sm"
-              placeholder="Add an agent"
-              className="w-64"
-            />
-          </div>
+        {s.tools.length > 6 && (
+          <span className="text-[11px] text-muted/70" title={s.tools.slice(6).map((t) => t.name).join(', ')}>
+            +{s.tools.length - 6} more
+          </span>
         )}
       </div>
 
-      {/* People */}
-      <div className="mt-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wide text-muted">People</span>
-          <InfoTip text="Who may exercise this server through agents acting for them (their personal assistant, for now). Nobody listed = everyone with an assigned agent. A row can deny outright or narrow to specific tools." />
+      {/* ── Access: one table, one row grammar ── */}
+      <div className="mt-4 border-t border-line-subtle pt-3">
+        <div className="mb-2 flex items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">Access</span>
+          <InfoTip text="Which agents carry this server, and which people may exercise it through agents acting for them. Tool cells narrow a row to a subset; empty = every tool. The gateway enforces all of it." />
         </div>
-        <div className="space-y-1.5">
+        <div className="space-y-0.5">
+          {/* Agents */}
+          {s.allAgents ? (
+            <AccessRow
+              name="All agents"
+              sub="every enabled agent carries this server"
+              tools={null}
+              onRemove={() => void patch({ allAgents: false })}
+              removeTitle="Switch to per-agent assignment"
+            />
+          ) : (
+            s.assignments.map((a) => (
+              <AccessRow
+                key={a.agentModel}
+                name={agentLabel(a.agentModel)}
+                sub="agent"
+                tools={
+                  <Combobox
+                    options={toolOptions}
+                    selected={a.tools ?? []}
+                    onChange={(tools) => void patch({ assign: { agentModel: a.agentModel, tools: tools.length ? tools : null } })}
+                    multiple
+                    size="sm"
+                    placeholder="All tools"
+                    className="w-full"
+                  />
+                }
+                onRemove={() => void patch({ unassign: a.agentModel })}
+                removeTitle="Remove this agent"
+              />
+            ))
+          )}
+          {/* People rules */}
           {s.userAccess.map((ua) => (
-            <div key={ua.userId} className="flex items-center gap-2">
-              <span className="w-40 shrink-0 truncate text-sm text-fg">{userLabel(ua.userId)}</span>
-              <Select
-                size="sm"
-                value={ua.allowed ? 'allow' : 'deny'}
-                onChange={(e) => void patch({ userAccess: { userId: ua.userId, allowed: e.target.value === 'allow', tools: ua.tools } })}
-                className="w-24 shrink-0"
-              >
-                <option value="allow">Allow</option>
-                <option value="deny">Deny</option>
-              </Select>
-              {ua.allowed && (
-                <Combobox
-                  options={toolOptions}
-                  selected={ua.tools ?? []}
-                  onChange={(tools) => void patch({ userAccess: { userId: ua.userId, allowed: true, tools: tools.length ? tools : null } })}
-                  multiple
-                  size="sm"
-                  placeholder="All tools"
-                  className="min-w-0 flex-1"
-                />
-              )}
+            <AccessRow
+              key={ua.userId}
+              name={userLabel(ua.userId)}
+              sub={ua.allowed ? 'person' : 'person · denied'}
+              denied={!ua.allowed}
+              onToggleDenied={() => void patch({ userAccess: { userId: ua.userId, allowed: !ua.allowed, tools: ua.tools } })}
+              tools={
+                ua.allowed ? (
+                  <Combobox
+                    options={toolOptions}
+                    selected={ua.tools ?? []}
+                    onChange={(tools) => void patch({ userAccess: { userId: ua.userId, allowed: true, tools: tools.length ? tools : null } })}
+                    multiple
+                    size="sm"
+                    placeholder="All tools"
+                    className="w-full"
+                  />
+                ) : null
+              }
+              onRemove={() => void patch({ userAccess: { userId: ua.userId, allowed: null, tools: null } })}
+              removeTitle="Remove this rule (back to default access)"
+            />
+          ))}
+
+          {/* Ghost adders — pickers appear only when asked for */}
+          <div className="flex items-center gap-4 pt-1.5">
+            {!s.allAgents && !addingAgent && (
+              <button type="button" onClick={() => setAddingAgent(true)} className="flex items-center gap-1 text-xs text-muted transition-colors hover:text-accent">
+                <Plus size={12} /> agent
+              </button>
+            )}
+            {!s.allAgents && (
               <button
                 type="button"
-                title="Remove this rule (back to default access)"
-                onClick={() => void patch({ userAccess: { userId: ua.userId, allowed: null, tools: null } })}
-                className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted hover:text-[color:var(--theme-danger)]"
+                onClick={() => void patch({ allAgents: true })}
+                className="flex items-center gap-1 text-xs text-muted transition-colors hover:text-accent"
+                title="Every enabled agent carries this server"
               >
-                <Trash2 size={12} />
+                <Plus size={12} /> all agents
               </button>
+            )}
+            {!addingPerson && (
+              <button type="button" onClick={() => setAddingPerson(true)} className="flex items-center gap-1 text-xs text-muted transition-colors hover:text-accent">
+                <Plus size={12} /> person rule
+              </button>
+            )}
+          </div>
+          {addingAgent && (
+            <div className="max-w-72 pt-1">
+              <Combobox
+                options={agentOptions.filter((o) => !s.assignments.some((a) => a.agentModel === o.value))}
+                selected={[]}
+                onChange={(models) => {
+                  const m = models[0]
+                  setAddingAgent(false)
+                  if (m) void patch({ assign: { agentModel: m, tools: null } })
+                }}
+                multiple
+                size="sm"
+                placeholder="Pick an agent"
+                className="w-full"
+              />
             </div>
-          ))}
-          <UserPicker
-            size="sm"
-            className="w-64"
-            placeholder="Add a person rule"
-            exclude={s.userAccess.map((u) => u.userId)}
-            onPick={(u) => void patch({ userAccess: { userId: u.id, allowed: true, tools: null } })}
-          />
+          )}
+          {addingPerson && (
+            <div className="max-w-72 pt-1">
+              <UserPicker
+                size="sm"
+                className="w-full"
+                placeholder="Pick a person"
+                exclude={s.userAccess.map((u) => u.userId)}
+                onPick={(u) => {
+                  setAddingPerson(false)
+                  void patch({ userAccess: { userId: u.id, allowed: true, tools: null } })
+                }}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -375,7 +393,58 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
           {error}
         </div>
       )}
+      {menu}
     </Panel>
+  )
+}
+
+/** The access table's one row shape: name · tool scope · remove. */
+function AccessRow({
+  name,
+  sub,
+  tools,
+  denied,
+  onToggleDenied,
+  onRemove,
+  removeTitle,
+}: {
+  name: string
+  sub: string
+  tools: React.ReactNode
+  denied?: boolean
+  onToggleDenied?: () => void
+  onRemove: () => void
+  removeTitle: string
+}) {
+  return (
+    <div className="group flex items-center gap-3 rounded-lg px-1.5 py-1 transition-colors hover:bg-card/50">
+      <span className="w-44 shrink-0 truncate">
+        <span className={cn('text-sm', denied ? 'text-muted line-through' : 'text-fg')}>{name}</span>
+        <span className="ml-2 text-[10px] uppercase tracking-wide text-muted/70">{sub}</span>
+      </span>
+      <span className="min-w-0 flex-1">{tools ?? <span className="text-xs text-muted/60">{denied ? 'no access' : 'all tools'}</span>}</span>
+      {onToggleDenied && (
+        <button
+          type="button"
+          onClick={onToggleDenied}
+          title={denied ? 'Allow again' : 'Deny this person outright'}
+          className={cn(
+            'shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide transition-colors',
+            denied ? 'text-[color:var(--theme-danger)]' : 'text-muted opacity-0 hover:text-[color:var(--theme-danger)] group-hover:opacity-100',
+          )}
+        >
+          {denied ? 'denied' : 'deny'}
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        title={removeTitle}
+        className="shrink-0 text-muted opacity-0 transition-opacity hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
+      >
+        <Trash2 size={13} />
+      </button>
+    </div>
   )
 }
 

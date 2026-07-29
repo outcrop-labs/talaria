@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { handleOauthCallback } from '@/server/mcp-oauth'
 import { renderFleet } from '@/server/fleet-render'
+import { rollAgentsForServer, rollAgentForUser } from '@/server/mcp-apply'
 import { logAudit } from '@/server/audit'
 
 const page = (title: string, body: string) =>
@@ -37,7 +38,11 @@ export const Route = createFileRoute('/api/mcp/oauth/callback')({
             targetId: serverId,
           })
           void renderFleet().catch(() => {}) // connected servers appear in configs
-          return page('Connected', 'Connected — your agents can use this server now.')
+          // Running agents wire MCP at start — roll the affected ones so the
+          // connection is usable without anyone bouncing containers.
+          if (subject === 'org') void rollAgentsForServer(serverId).catch(() => {})
+          else void rollAgentForUser(subject).catch(() => {})
+          return page('Connected', 'Connected — your agents are picking it up now (a graceful restart runs behind the scenes).')
         } catch (e) {
           return page('Connection failed', (e as Error).message)
         }
