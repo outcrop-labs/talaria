@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import { Extension, type Editor, type Range } from '@tiptap/core'
 import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
+import { PluginKey } from '@tiptap/pm/state'
 import { ReactRenderer } from '@tiptap/react'
 import { cn } from '@/lib/cn'
 import type { Mentionable } from '@/components/chat/mentions'
@@ -96,27 +97,28 @@ function buildSuggestion(items: () => Mentionable[]): Omit<SuggestionOptions<Men
     render: () => {
       let component: ReactRenderer<MenuHandle> | null = null
       let popup: HTMLDivElement | null = null
-      return {
-        onStart: (props) => {
-          if (!props.items.length) return
+      // Creatable from onUpdate too: if the first result set is empty (query
+      // typed fast, filtered pool), onStart alone would never show the menu.
+      const ensure = (props: { items: Mentionable[]; command: (item: Mentionable) => void; editor: Editor; clientRect?: (() => DOMRect | null) | null }) => {
+        if (component) {
+          component.updateProps({ items: props.items, command: (item: Mentionable) => props.command(item) })
+        } else if (props.items.length) {
           component = new ReactRenderer(MentionList, {
             props: { items: props.items, command: (item: Mentionable) => props.command(item) },
             editor: props.editor,
           })
-          if (!props.clientRect) return
           popup = document.createElement('div')
           popup.style.position = 'fixed'
           popup.style.zIndex = '60'
           document.body.appendChild(popup)
           popup.appendChild(component.element)
-          const rect = props.clientRect()
-          if (rect) place(popup, rect)
-        },
-        onUpdate: (props) => {
-          component?.updateProps({ items: props.items, command: (item: Mentionable) => props.command(item) })
-          const rect = props.clientRect?.()
-          if (popup && rect) place(popup, rect)
-        },
+        }
+        const rect = props.clientRect?.()
+        if (popup && rect) place(popup, rect)
+      }
+      return {
+        onStart: ensure,
+        onUpdate: ensure,
         onKeyDown: (props) => {
           if (props.event.key === 'Escape') {
             popup?.remove()
@@ -148,6 +150,6 @@ export const MentionSuggest = Extension.create<MentionSuggestOptions>({
     return { items: [] }
   },
   addProseMirrorPlugins() {
-    return [Suggestion({ editor: this.editor, ...buildSuggestion(() => this.options.items) })]
+    return [Suggestion({ editor: this.editor, pluginKey: new PluginKey('mentionSuggest'), ...buildSuggestion(() => this.options.items) })]
   },
 })

@@ -1,24 +1,43 @@
 import { useEffect, useRef, useState } from 'react'
+import { MessageSquareText, Pencil, SmilePlus, Trash2, X } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
-import { copyAppLink, useContextMenu } from '@/components/ui/context-menu'
+import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { Markdown } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
+import { confirm } from '@/components/ui/confirm'
+import { cn } from '@/lib/cn'
 import { useQueryClient } from '@tanstack/react-query'
-import { markChannelRead, sendChannelMessage, useChannelDetail, useChannelEvents, useChannelMessages, type ChannelMessage } from '@/lib/channels'
+import {
+  deleteChannelMessage,
+  editChannelMessage,
+  markChannelRead,
+  sendChannelMessage,
+  toggleMessageReaction,
+  useChannelDetail,
+  useChannelEvents,
+  useChannelMessages,
+  useThreadMessages,
+  type ChannelMessage,
+} from '@/lib/channels'
 import { useUsers } from '@/lib/users'
+import { useSession } from '@/lib/session'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { GuardCaveat } from '@/components/chat/guard-caveat'
 import { KeyHint } from '@/components/ui/kbd'
 import { resolveAgentMedia } from '@/lib/agent-media'
-import { MentionMenu, useMentions, userMentionInsert, type Mentionable } from '@/components/chat/mentions'
-import { splitAttachments, type Attachment } from '@/lib/attachments'
+import { relativeTime } from '@/lib/fleet'
+import { userMentionInsert, type Mentionable } from '@/components/chat/mentions'
+import { splitAttachments, uploadFile, type Attachment } from '@/lib/attachments'
+import { EmojiButton } from '@/components/chat/emoji'
+import { ChatComposer, type ChatComposerHandle } from '@/components/chat/chat-composer'
 import type { AgentModel } from '@/lib/agents'
 
-// One channel: live message feed + composer. Agents reply when @mentioned;
-// their streamed replies arrive over the channel's SSE feed like anyone else's.
-// @mentioning a human member drops a notification in their inbox.
+// One channel: live message feed + composer, Slack-shaped. Messages take
+// reactions (agents react too), spawn threads (agents @mentioned in a thread
+// reply in the thread), and carry pasted/dropped files. Agents reply when
+// @mentioned; their streamed replies arrive over the channel's SSE feed.
 export function ChannelView({
   channelId,
   channelName,
@@ -35,10 +54,10 @@ export function ChannelView({
   const channelAgents = detail?.agents ?? []
   const members = detail?.members ?? []
   const { data: users = [] } = useUsers()
+  const { data: session } = useSession()
   useChannelEvents(channelId)
   const [error, setError] = useState<string | null>(null)
-  // Right-click a message: copy its text, or copy a link to the channel
-  // (messages have no per-message anchor — the channel link is honest).
+  const [threadRoot, setThreadRoot] = useState<string | null>(null)
   const { openMenu, menu } = useContextMenu()
   const scrollRef = useRef<HTMLDivElement>(null)
   const prevCount = useRef(0)
@@ -55,6 +74,11 @@ export function ChannelView({
     lastReadPosted.current = { id: channelId, seq: latest }
     void markChannelRead(channelId, latest).then(() => qc.invalidateQueries({ queryKey: ['channels'] })).catch(() => {})
   }, [messages, channelId, qc])
+
+  // A thread panel only survives while its root does.
+  useEffect(() => {
+    if (threadRoot && messages.length > 0 && !messages.some((m) => m.id === threadRoot)) setThreadRoot(null)
+  }, [messages, threadRoot])
 
   // Instant, pinned-only follow (see chat-view): streamed flushes + smooth
   // scrolling rubber-band into a bounce, and reading history must never be
@@ -73,6 +97,31 @@ export function ChannelView({
   const userLabel = (author: string) =>
     users.find((u) => u.email === author)?.name ?? (author.split('@')[0] || author)
 
+  const ctx: MessageCtx = {
+    channelId,
+    me: session?.email ?? session?.name ?? '',
+    isChannelOwner: detail?.role === 'owner',
+    labelFor,
+    userLabel,
+  }
+
+  const mentionables: Mentionable[] = [
+    ...channelAgents.map((id) => ({ insert: labelFor(id), label: labelFor(id), sub: id })),
+    // Tier mentions: "@Dex:opus" routes the reply to that model tier.
+    ...channelAgents.flatMap((id) =>
+      (fleet.find((a) => a.id === id)?.tiers ?? []).map((t) => ({
+        insert: `${labelFor(id)}:${t}`,
+        label: `${labelFor(id)}:${t}`,
+        sub: 'tier',
+      })),
+    ),
+    ...members.map((m) => ({
+      insert: userMentionInsert(m),
+      label: m.name ?? m.email ?? m.userId,
+      sub: m.email ?? undefined,
+    })),
+  ].filter((m) => m.insert)
+
   const send = async (text: string, atts: Attachment[]) => {
     setError(null)
     try {
@@ -84,102 +133,174 @@ export function ChannelView({
   }
 
   return (
-    // One chat width everywhere: the same content token agent DMs use.
-    <div className="mx-auto flex h-full min-h-0 w-full max-w-[var(--chat-content-max-width)] flex-col">
-      <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
-        {messagesLoading ? (
-          // Transcript-shaped shimmer while the history loads — never the
-          // "Welcome" hero, which reads as an empty channel it isn't.
-          <div aria-hidden className="space-y-5">
-            {Array.from({ length: 5 }, (_, i) => (
-              <div key={i} className="flex gap-2.5">
-                <Skeleton className="mt-0.5 h-7 w-7 shrink-0 rounded-full" delay={i * 0.12} />
-                <div className="min-w-0 flex-1 space-y-2 pt-1">
-                  <Skeleton className="h-2.5 w-24 rounded-full" delay={i * 0.12} />
-                  <div style={{ width: ['82%', '64%', '90%', '71%', '58%'][i] }}>
-                    <Skeleton className="h-2.5 w-full rounded-full" delay={i * 0.12 + 0.06} />
-                  </div>
-                  <div style={{ width: ['55%', '78%', '40%', '62%', '84%'][i] }}>
-                    <Skeleton className="h-2.5 w-full rounded-full" delay={i * 0.12 + 0.12} />
+    <div className="flex h-full min-h-0">
+      {/* One chat width everywhere: the same content token agent DMs use. */}
+      <div className="mx-auto flex h-full min-h-0 w-full max-w-[var(--chat-content-max-width)] flex-1 flex-col">
+        <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
+          {messagesLoading ? (
+            // Transcript-shaped shimmer while the history loads — never the
+            // "Welcome" hero, which reads as an empty channel it isn't.
+            <div aria-hidden className="space-y-5">
+              {Array.from({ length: 5 }, (_, i) => (
+                <div key={i} className="flex gap-2.5">
+                  <Skeleton className="mt-0.5 h-7 w-7 shrink-0 rounded-full" delay={i * 0.12} />
+                  <div className="min-w-0 flex-1 space-y-2 pt-1">
+                    <Skeleton className="h-2.5 w-24 rounded-full" delay={i * 0.12} />
+                    <div style={{ width: ['82%', '64%', '90%', '71%', '58%'][i] }}>
+                      <Skeleton className="h-2.5 w-full rounded-full" delay={i * 0.12 + 0.06} />
+                    </div>
+                    <div style={{ width: ['55%', '78%', '40%', '62%', '84%'][i] }}>
+                      <Skeleton className="h-2.5 w-full rounded-full" delay={i * 0.12 + 0.12} />
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        ) : messages.length === 0 ? (
-          <EmptyState
-            icon="#"
-            title={`Welcome to #${channelName}`}
-            hint={
-              channelAgents.length
-                ? `Say something. @mention ${channelAgents.map(labelFor).join(', ')} to bring the agents in.`
-                : 'Say something, or add people & agents.'
-            }
-          />
-        ) : (
-          messages.map((m) => (
-            <MessageRow
-              key={m.id}
-              message={m}
-              labelFor={labelFor}
-              userLabel={userLabel}
-              onContextMenu={(e) =>
-                openMenu(e, [
-                  { label: 'Copy text', disabled: !m.content, onSelect: () => void navigator.clipboard.writeText(m.content) },
-                  { label: 'Copy link', onSelect: () => copyAppLink(`/comms?c=${channelId}`) },
-                ])
+              ))}
+            </div>
+          ) : messages.length === 0 ? (
+            <EmptyState
+              icon="#"
+              title={`Welcome to #${channelName}`}
+              hint={
+                channelAgents.length
+                  ? `Say something. @mention ${channelAgents.map(labelFor).join(', ')} to bring the agents in.`
+                  : 'Say something, or add people & agents.'
               }
             />
-          ))
-        )}
-        {error && (
-          <div className="text-center text-sm" style={{ color: 'var(--theme-danger)' }}>
-            {error}
-          </div>
-        )}
+          ) : (
+            messages.map((m) => (
+              <MessageRow
+                key={m.id}
+                message={m}
+                ctx={ctx}
+                onOpenThread={() => setThreadRoot(m.threadRootId ?? m.id)}
+                onContextMenu={(e) => openMenu(e, rowMenuEntries(m, ctx, () => setThreadRoot(m.id)))}
+              />
+            ))
+          )}
+          {error && (
+            <div className="text-center text-sm" style={{ color: 'var(--theme-danger)' }}>
+              {error}
+            </div>
+          )}
+        </div>
+
+        <Composer channelName={channelName} mentionables={mentionables} onSend={send} />
+        {menu}
       </div>
 
-      <Composer
-        channelName={channelName}
-        mentionables={[
-          ...channelAgents.map((id) => ({ insert: labelFor(id), label: labelFor(id), sub: id })),
-          // Tier mentions: "@Dex:opus" routes the reply to that model tier.
-          ...channelAgents.flatMap((id) =>
-            (fleet.find((a) => a.id === id)?.tiers ?? []).map((t) => ({
-              insert: `${labelFor(id)}:${t}`,
-              label: `${labelFor(id)}:${t}`,
-              sub: 'tier',
-            })),
-          ),
-          ...members.map((m) => ({
-            insert: userMentionInsert(m),
-            label: m.name ?? m.email ?? m.userId,
-            sub: m.email ?? undefined,
-          })),
-        ].filter((m) => m.insert)}
-        onSend={send}
-      />
-      {menu}
+      {threadRoot && (
+        <ThreadPanel
+          channelId={channelId}
+          rootId={threadRoot}
+          ctx={ctx}
+          mentionables={mentionables}
+          onClose={() => setThreadRoot(null)}
+        />
+      )}
     </div>
   )
 }
 
+// Everything a message row needs to know about the room it's in.
+interface MessageCtx {
+  channelId: string
+  /** The viewer's author identity (email) — gates edit/delete/mine-highlight. */
+  me: string
+  isChannelOwner: boolean
+  labelFor: (model: string) => string
+  userLabel: (author: string) => string
+}
+
+const actorLabel = (ctx: MessageCtx, actor: string, actorType: string) =>
+  actorType === 'agent' ? ctx.labelFor(actor) : ctx.userLabel(actor)
+
+function rowMenuEntries(m: ChannelMessage, ctx: MessageCtx, openThread: () => void): ContextMenuEntry[] {
+  const own = m.authorType === 'user' && m.author === ctx.me
+  return [
+    { label: 'Copy text', disabled: !m.content, onSelect: () => void navigator.clipboard.writeText(m.content) },
+    { label: 'Copy link', onSelect: () => copyAppLink(`/comms?c=${ctx.channelId}`) },
+    ...(m.threadRootId
+      ? []
+      : [{ label: 'Reply in thread', onSelect: openThread }]),
+    ...(own || ctx.isChannelOwner
+      ? [
+          'sep' as const,
+          {
+            label: 'Delete message',
+            danger: true,
+            onSelect: () => {
+              void confirm({
+                title: 'Delete message',
+                message: m.thread?.count
+                  ? `Delete this message and its ${m.thread.count} thread ${m.thread.count === 1 ? 'reply' : 'replies'}?`
+                  : 'Delete this message?',
+                confirmLabel: 'Delete',
+              }).then((ok) => {
+                if (ok) void deleteChannelMessage(ctx.channelId, m.id)
+              })
+            },
+          },
+        ]
+      : []),
+  ]
+}
+
+// A quick-react palette, not an emoji browser — Slack-lite on purpose.
+const REACTION_SET = ['👍', '✅', '👀', '🎉', '❤️', '😂', '🚀', '🙏']
+
 function MessageRow({
   message: m,
-  labelFor,
-  userLabel,
+  ctx,
+  inThread = false,
+  onOpenThread,
   onContextMenu,
 }: {
   message: ChannelMessage
-  labelFor: (model: string) => string
-  userLabel: (author: string) => string
+  ctx: MessageCtx
+  /** Rendered inside the thread panel: no thread affordances of its own. */
+  inThread?: boolean
+  onOpenThread?: () => void
   onContextMenu?: (e: React.MouseEvent) => void
 }) {
-  const name = m.authorType === 'agent' ? labelFor(m.author) : userLabel(m.author)
+  const name = m.authorType === 'agent' ? ctx.labelFor(m.author) : ctx.userLabel(m.author)
   const time = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const live = m.status === 'streaming'
+  const own = m.authorType === 'user' && m.author === ctx.me
+  const [picking, setPicking] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const toolbarRef = useRef<HTMLDivElement>(null)
+
+  // The palette must never trap you: outside click, Esc, or simply moving
+  // off the message all dismiss it.
+  useEffect(() => {
+    if (!picking) return
+    const onDoc = (e: MouseEvent) => {
+      if (!toolbarRef.current?.contains(e.target as Node)) setPicking(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPicking(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [picking])
+
+  const react = (emoji: string) => {
+    setPicking(false)
+    void toggleMessageReaction(ctx.channelId, m.id, emoji).catch(() => {})
+  }
+  const saveEdit = () => {
+    const text = draft.trim()
+    setEditing(false)
+    if (text && text !== m.content) void editChannelMessage(ctx.channelId, m.id, text).catch(() => {})
+  }
+
   return (
-    <div className="flex gap-2.5" onContextMenu={onContextMenu}>
+    <div className="group relative flex gap-2.5" onContextMenu={onContextMenu} onMouseLeave={() => setPicking(false)}>
       <Avatar name={name} className="mt-0.5 shrink-0" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
@@ -190,9 +311,30 @@ function MessageRow({
             </span>
           )}
           <span className="text-xs text-muted">{time}</span>
+          {m.editedAt && <span className="text-[10px] text-muted/80">(edited)</span>}
         </div>
         <div className="text-sm">
-          {m.content ? (
+          {editing ? (
+            <div className="mt-1">
+              <Textarea
+                autoFocus
+                autoGrow
+                rows={1}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    saveEdit()
+                  } else if (e.key === 'Escape') {
+                    setEditing(false)
+                  }
+                }}
+                className="max-h-40"
+              />
+              <div className="mt-1 text-[11px] text-muted">enter to save · esc to cancel</div>
+            </div>
+          ) : m.content ? (
             <Markdown>{m.authorType === 'agent' ? resolveAgentMedia(m.content, m.author) : m.content}</Markdown>
           ) : live ? (
             <span className="inline-flex gap-1 py-1">
@@ -208,78 +350,282 @@ function MessageRow({
             </div>
           )}
         </div>
+
+        {/* Reaction chips: click toggles yours; hover names the reactors. */}
+        {(m.reactions?.length ?? 0) > 0 && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            {m.reactions!.map((r) => {
+              const mine = r.actors.some((a, i) => r.actorTypes[i] === 'user' && a === ctx.me)
+              return (
+                <button
+                  key={r.emoji}
+                  type="button"
+                  title={r.actors.map((a, i) => actorLabel(ctx, a, r.actorTypes[i] ?? 'user')).join(', ')}
+                  onClick={() => react(r.emoji)}
+                  className={cn(
+                    'flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs transition-colors',
+                    mine ? 'border-accent bg-accent/10 text-fg' : 'border-line-subtle bg-card/50 text-muted hover:border-line hover:text-fg',
+                  )}
+                >
+                  <span>{r.emoji}</span>
+                  <span className="text-[11px]">{r.actors.length}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Thread rollup on roots (main flow only). */}
+        {!inThread && m.thread && (
+          <button
+            type="button"
+            onClick={onOpenThread}
+            className="mt-1.5 flex items-center gap-1.5 rounded-lg border border-line-subtle bg-card/50 px-2 py-1 text-xs text-accent transition-colors hover:border-accent"
+          >
+            <MessageSquareText size={12} />
+            {m.thread.count} {m.thread.count === 1 ? 'reply' : 'replies'}
+            <span className="text-muted">· {relativeTime(m.thread.lastAt)}</span>
+          </button>
+        )}
       </div>
+
+      {/* Hover toolbar: react · thread · edit (own) — delete lives in the
+          context menu behind a confirm. */}
+      {!live && !editing && (
+        <div
+          ref={toolbarRef}
+          className={cn(
+            'absolute -top-2 right-0 items-center gap-0.5 rounded-lg border border-line bg-card p-0.5 shadow-sm',
+            picking ? 'flex' : 'hidden group-hover:flex',
+          )}
+        >
+          {picking ? (
+            REACTION_SET.map((e) => (
+              <button
+                key={e}
+                type="button"
+                onClick={() => react(e)}
+                className="grid h-7 w-7 place-items-center rounded-md text-base transition-colors hover:bg-sidebar"
+              >
+                {e}
+              </button>
+            ))
+          ) : (
+            <>
+              <HoverAction title="Add reaction" onClick={() => setPicking(true)}>
+                <SmilePlus size={14} />
+              </HoverAction>
+              {!inThread && !m.threadRootId && (
+                <HoverAction title="Reply in thread" onClick={() => onOpenThread?.()}>
+                  <MessageSquareText size={14} />
+                </HoverAction>
+              )}
+              {own && (
+                <HoverAction
+                  title="Edit message"
+                  onClick={() => {
+                    setDraft(m.content)
+                    setEditing(true)
+                  }}
+                >
+                  <Pencil size={14} />
+                </HoverAction>
+              )}
+              {(own || ctx.isChannelOwner) && (
+                <HoverAction
+                  title="Delete message"
+                  danger
+                  onClick={() => {
+                    void confirm({
+                      title: 'Delete message',
+                      message: m.thread?.count
+                        ? `Delete this message and its ${m.thread.count} thread ${m.thread.count === 1 ? 'reply' : 'replies'}?`
+                        : 'Delete this message?',
+                      confirmLabel: 'Delete',
+                    }).then((ok) => {
+                if (ok) void deleteChannelMessage(ctx.channelId, m.id)
+              })
+                  }}
+                >
+                  <Trash2 size={14} />
+                </HoverAction>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
-/** Composer with @mention autocomplete over the channel's agents and members. */
+function HoverAction({
+  title,
+  danger,
+  onClick,
+  children,
+}: {
+  title: string
+  danger?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className={cn(
+        'grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-sidebar',
+        danger ? 'hover:text-[color:var(--theme-danger)]' : 'hover:text-fg',
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+/** The thread side panel: root + replies + its own composer. Replies are
+ *  channel messages that hang off the root; @mentioned agents answer HERE. */
+function ThreadPanel({
+  channelId,
+  rootId,
+  ctx,
+  mentionables,
+  onClose,
+}: {
+  channelId: string
+  rootId: string
+  ctx: MessageCtx
+  mentionables: Mentionable[]
+  onClose: () => void
+}) {
+  const { data: messages = [], isLoading } = useThreadMessages(channelId, rootId)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const prevCount = useRef(0)
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const loaded = prevCount.current === 0 && messages.length > 0
+    prevCount.current = messages.length
+    const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+    if (loaded || pinned) el.scrollTop = el.scrollHeight
+  }, [messages])
+
+  const send = async (text: string, atts: Attachment[]) => {
+    const { attachmentIds, refs } = splitAttachments(atts)
+    await sendChannelMessage(channelId, text, attachmentIds, refs, rootId)
+  }
+
+  return (
+    <div className="flex w-[380px] shrink-0 flex-col border-l border-line-subtle bg-surface/50">
+      <div className="flex items-center gap-2 border-b border-line-subtle px-4 py-2.5">
+        <MessageSquareText size={14} className="text-muted" />
+        <span className="text-sm font-semibold text-fg">Thread</span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="ml-auto grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-fg"
+          title="Close thread"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+        {isLoading ? (
+          <div aria-hidden className="space-y-4">
+            {Array.from({ length: 3 }, (_, i) => (
+              <div key={i} className="flex gap-2.5">
+                <Skeleton className="mt-0.5 h-7 w-7 shrink-0 rounded-full" delay={i * 0.12} />
+                <div className="min-w-0 flex-1 space-y-2 pt-1">
+                  <Skeleton className="h-2.5 w-20 rounded-full" delay={i * 0.12} />
+                  <Skeleton className="h-2.5 w-4/5 rounded-full" delay={i * 0.12 + 0.06} />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          messages.map((m, i) => (
+            <div key={m.id}>
+              <MessageRow message={m} ctx={ctx} inThread />
+              {i === 0 && messages.length > 1 && (
+                <div className="mt-3 border-t border-line-subtle pt-1 text-[11px] text-muted">
+                  {messages.length - 1} {messages.length - 1 === 1 ? 'reply' : 'replies'}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+      <Composer channelName="thread" placeholder="Reply in thread. @mention an agent to bring it in" mentionables={mentionables} onSend={send} />
+    </div>
+  )
+}
+
+/** The channel composer: the Slack-shaped rich editor (chat-composer.tsx)
+ *  plus attachment chips. Files paste and drop straight in — images from the
+ *  clipboard, files from the desktop — uploading immediately as pending chips. */
 function Composer({
   channelName,
+  placeholder,
   mentionables,
   onSend,
 }: {
   channelName: string
+  placeholder?: string
   mentionables: Mentionable[]
   onSend: (text: string, attachments: Attachment[]) => Promise<void>
 }) {
-  const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
-  const [caret, setCaret] = useState(0)
-  const taRef = useRef<HTMLTextAreaElement>(null)
+  const [empty, setEmpty] = useState(true)
+  const [dragging, setDragging] = useState(false)
+  const editorRef = useRef<ChatComposerHandle>(null)
 
-  const { mention, picked, insert, onKeyDown: onMentionKey } = useMentions(input, caret, setCaret, mentionables, (next, pos) => {
-    setInput(next)
-    requestAnimationFrame(() => {
-      taRef.current?.focus()
-      taRef.current?.setSelectionRange(pos, pos)
-      setCaret(pos)
-    })
-  })
-
-  const send = () => {
-    const text = input.trim()
-    if (!text && attachments.length === 0) return
-    const atts = attachments
-    setInput('')
-    setAttachments([])
-    void onSend(text, atts)
-  }
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (onMentionKey(e)) return
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      send()
+  const uploadAll = (files: Iterable<File>) => {
+    for (const f of files) {
+      void uploadFile(f).then((r) => {
+        if ('id' in r) setAttachments((prev) => [...prev, r])
+      })
     }
   }
 
-  const trackCaret = () => setCaret(taRef.current?.selectionStart ?? 0)
+  const submit = (markdown: string) => {
+    if (!markdown && attachments.length === 0) return
+    const atts = attachments
+    setAttachments([])
+    editorRef.current?.clear()
+    void onSend(markdown, atts)
+  }
 
   return (
     <div className="relative px-6 pb-6">
-      {mention && <MentionMenu mention={mention} picked={picked} onPick={insert} className="absolute bottom-full left-4 mb-1" />}
-      <div className="mercury-panel rounded-2xl p-2">
+      <div
+        className={cn('mercury-panel rounded-2xl p-2 transition-colors', dragging && 'border-accent bg-accent/5')}
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes('Files')) {
+            e.preventDefault()
+            setDragging(true)
+          }
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={() => setDragging(false)}
+      >
         <PendingAttachments items={attachments} onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} />
-        <div className="flex items-end gap-2">
-          <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} />
-          <Textarea
-            ref={taRef}
-            autoGrow
-            rows={1}
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value)
-              trackCaret()
-            }}
-            onKeyUp={trackCaret}
-            onClick={trackCaret}
-            onKeyDown={onKeyDown}
-            placeholder={`Message #${channelName}. @mention an agent to bring it in`}
-            className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
-          />
-          <KeyHint keys="⏎" label="send" visible={!!input.trim() || attachments.length > 0} className="self-end mb-3" />
-        </div>
+        <ChatComposer
+          ref={editorRef}
+          placeholder={placeholder ?? `Message #${channelName}. @mention an agent to bring it in`}
+          mentionables={mentionables}
+          onSubmit={submit}
+          onFiles={uploadAll}
+          onEmptyChange={setEmpty}
+          leftControls={
+            <>
+              <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} />
+              <EmojiButton onPick={(ch) => editorRef.current?.insertText(ch)} />
+            </>
+          }
+          rightControls={<KeyHint keys="⏎" label="send" visible={!empty || attachments.length > 0} />}
+        />
       </div>
     </div>
   )
