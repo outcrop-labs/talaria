@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as JoinRouteImport } from './routes/join'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as KbSlugRouteImport } from './routes/kb.$slug'
@@ -25,6 +26,7 @@ import { Route as ApiMuseRouteImport } from './routes/api/muse'
 import { Route as ApiModelsRouteImport } from './routes/api/models'
 import { Route as ApiMcpRouteImport } from './routes/api/mcp'
 import { Route as ApiKeysRouteImport } from './routes/api/keys'
+import { Route as ApiJoinRouteImport } from './routes/api/join'
 import { Route as ApiInferenceRouteImport } from './routes/api/inference'
 import { Route as ApiHomeRouteImport } from './routes/api/home'
 import { Route as ApiHistoryRouteImport } from './routes/api/history'
@@ -110,9 +112,11 @@ import { Route as ApiAdminPermissionsRouteImport } from './routes/api/admin.perm
 import { Route as ApiAdminOutreachRouteImport } from './routes/api/admin.outreach'
 import { Route as ApiAdminModelRolesRouteImport } from './routes/api/admin.model-roles'
 import { Route as ApiAdminJudgeRouteImport } from './routes/api/admin.judge'
+import { Route as ApiAdminInvitesRouteImport } from './routes/api/admin.invites'
 import { Route as ApiAdminInstanceRouteImport } from './routes/api/admin.instance'
 import { Route as ApiAdminGuardrailsRouteImport } from './routes/api/admin.guardrails'
 import { Route as ApiAdminEncryptionRouteImport } from './routes/api/admin.encryption'
+import { Route as ApiAdminEmailRouteImport } from './routes/api/admin.email'
 import { Route as ApiAdminDomainsRouteImport } from './routes/api/admin.domains'
 import { Route as AppBoardsBoardIdRouteImport } from './routes/_app/boards/$boardId'
 import { Route as ApiTeamsIdMembersRouteImport } from './routes/api/teams.$id.members'
@@ -196,6 +200,11 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const JoinRoute = JoinRouteImport.update({
+  id: '/join',
+  path: '/join',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppRoute = AppRouteImport.update({
   id: '/_app',
   getParentRoute: () => rootRouteImport,
@@ -268,6 +277,11 @@ const ApiMcpRoute = ApiMcpRouteImport.update({
 const ApiKeysRoute = ApiKeysRouteImport.update({
   id: '/api/keys',
   path: '/api/keys',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiJoinRoute = ApiJoinRouteImport.update({
+  id: '/api/join',
+  path: '/api/join',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiInferenceRoute = ApiInferenceRouteImport.update({
@@ -696,6 +710,11 @@ const ApiAdminJudgeRoute = ApiAdminJudgeRouteImport.update({
   path: '/api/admin/judge',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAdminInvitesRoute = ApiAdminInvitesRouteImport.update({
+  id: '/api/admin/invites',
+  path: '/api/admin/invites',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAdminInstanceRoute = ApiAdminInstanceRouteImport.update({
   id: '/api/admin/instance',
   path: '/api/admin/instance',
@@ -709,6 +728,11 @@ const ApiAdminGuardrailsRoute = ApiAdminGuardrailsRouteImport.update({
 const ApiAdminEncryptionRoute = ApiAdminEncryptionRouteImport.update({
   id: '/api/admin/encryption',
   path: '/api/admin/encryption',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAdminEmailRoute = ApiAdminEmailRouteImport.update({
+  id: '/api/admin/email',
+  path: '/api/admin/email',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAdminDomainsRoute = ApiAdminDomainsRouteImport.update({
@@ -1119,6 +1143,7 @@ const ApiChannelsIdMessagesMsgIdReactionsRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
+  '/join': typeof JoinRoute
   '/login': typeof LoginRoute
   '/admin': typeof AppAdminRoute
   '/agents': typeof AppAgentsRoute
@@ -1152,6 +1177,7 @@ export interface FileRoutesByFullPath {
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
+  '/api/join': typeof ApiJoinRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRouteWithChildren
   '/api/models': typeof ApiModelsRoute
@@ -1167,9 +1193,11 @@ export interface FileRoutesByFullPath {
   '/kb/$slug': typeof KbSlugRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/admin/domains': typeof ApiAdminDomainsRoute
+  '/api/admin/email': typeof ApiAdminEmailRoute
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/instance': typeof ApiAdminInstanceRoute
+  '/api/admin/invites': typeof ApiAdminInvitesRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/outreach': typeof ApiAdminOutreachRoute
@@ -1300,6 +1328,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/agents/$id/crons/$jobId': typeof ApiFleetAgentsIdCronsJobIdRoute
 }
 export interface FileRoutesByTo {
+  '/join': typeof JoinRoute
   '/login': typeof LoginRoute
   '/admin': typeof AppAdminRoute
   '/agents': typeof AppAgentsRoute
@@ -1333,6 +1362,7 @@ export interface FileRoutesByTo {
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
+  '/api/join': typeof ApiJoinRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRouteWithChildren
   '/api/models': typeof ApiModelsRoute
@@ -1349,9 +1379,11 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/admin/domains': typeof ApiAdminDomainsRoute
+  '/api/admin/email': typeof ApiAdminEmailRoute
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/instance': typeof ApiAdminInstanceRoute
+  '/api/admin/invites': typeof ApiAdminInvitesRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/outreach': typeof ApiAdminOutreachRoute
@@ -1484,6 +1516,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
+  '/join': typeof JoinRoute
   '/login': typeof LoginRoute
   '/_app/admin': typeof AppAdminRoute
   '/_app/agents': typeof AppAgentsRoute
@@ -1517,6 +1550,7 @@ export interface FileRoutesById {
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
+  '/api/join': typeof ApiJoinRoute
   '/api/keys': typeof ApiKeysRouteWithChildren
   '/api/mcp': typeof ApiMcpRouteWithChildren
   '/api/models': typeof ApiModelsRoute
@@ -1533,9 +1567,11 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/admin/domains': typeof ApiAdminDomainsRoute
+  '/api/admin/email': typeof ApiAdminEmailRoute
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/instance': typeof ApiAdminInstanceRoute
+  '/api/admin/invites': typeof ApiAdminInvitesRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/outreach': typeof ApiAdminOutreachRoute
@@ -1669,6 +1705,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/join'
     | '/login'
     | '/admin'
     | '/agents'
@@ -1702,6 +1739,7 @@ export interface FileRouteTypes {
     | '/api/history'
     | '/api/home'
     | '/api/inference'
+    | '/api/join'
     | '/api/keys'
     | '/api/mcp'
     | '/api/models'
@@ -1717,9 +1755,11 @@ export interface FileRouteTypes {
     | '/kb/$slug'
     | '/boards/$boardId'
     | '/api/admin/domains'
+    | '/api/admin/email'
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/instance'
+    | '/api/admin/invites'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
     | '/api/admin/outreach'
@@ -1850,6 +1890,7 @@ export interface FileRouteTypes {
     | '/api/fleet/agents/$id/crons/$jobId'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/join'
     | '/login'
     | '/admin'
     | '/agents'
@@ -1883,6 +1924,7 @@ export interface FileRouteTypes {
     | '/api/history'
     | '/api/home'
     | '/api/inference'
+    | '/api/join'
     | '/api/keys'
     | '/api/mcp'
     | '/api/models'
@@ -1899,9 +1941,11 @@ export interface FileRouteTypes {
     | '/'
     | '/boards/$boardId'
     | '/api/admin/domains'
+    | '/api/admin/email'
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/instance'
+    | '/api/admin/invites'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
     | '/api/admin/outreach'
@@ -2033,6 +2077,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_app'
+    | '/join'
     | '/login'
     | '/_app/admin'
     | '/_app/agents'
@@ -2066,6 +2111,7 @@ export interface FileRouteTypes {
     | '/api/history'
     | '/api/home'
     | '/api/inference'
+    | '/api/join'
     | '/api/keys'
     | '/api/mcp'
     | '/api/models'
@@ -2082,9 +2128,11 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/boards/$boardId'
     | '/api/admin/domains'
+    | '/api/admin/email'
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/instance'
+    | '/api/admin/invites'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
     | '/api/admin/outreach'
@@ -2217,6 +2265,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
+  JoinRoute: typeof JoinRoute
   LoginRoute: typeof LoginRoute
   ASlugRoute: typeof ASlugRoute
   ApiActivityRoute: typeof ApiActivityRoute
@@ -2234,6 +2283,7 @@ export interface RootRouteChildren {
   ApiHistoryRoute: typeof ApiHistoryRoute
   ApiHomeRoute: typeof ApiHomeRoute
   ApiInferenceRoute: typeof ApiInferenceRoute
+  ApiJoinRoute: typeof ApiJoinRoute
   ApiKeysRoute: typeof ApiKeysRouteWithChildren
   ApiMcpRoute: typeof ApiMcpRouteWithChildren
   ApiModelsRoute: typeof ApiModelsRoute
@@ -2248,9 +2298,11 @@ export interface RootRouteChildren {
   ApiUsersRoute: typeof ApiUsersRoute
   KbSlugRoute: typeof KbSlugRoute
   ApiAdminDomainsRoute: typeof ApiAdminDomainsRoute
+  ApiAdminEmailRoute: typeof ApiAdminEmailRoute
   ApiAdminEncryptionRoute: typeof ApiAdminEncryptionRoute
   ApiAdminGuardrailsRoute: typeof ApiAdminGuardrailsRoute
   ApiAdminInstanceRoute: typeof ApiAdminInstanceRoute
+  ApiAdminInvitesRoute: typeof ApiAdminInvitesRoute
   ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
   ApiAdminModelRolesRoute: typeof ApiAdminModelRolesRoute
   ApiAdminOutreachRoute: typeof ApiAdminOutreachRoute
@@ -2298,6 +2350,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/join': {
+      id: '/join'
+      path: '/join'
+      fullPath: '/join'
+      preLoaderRoute: typeof JoinRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app': {
@@ -2403,6 +2462,13 @@ declare module '@tanstack/react-router' {
       path: '/api/keys'
       fullPath: '/api/keys'
       preLoaderRoute: typeof ApiKeysRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/join': {
+      id: '/api/join'
+      path: '/api/join'
+      fullPath: '/api/join'
+      preLoaderRoute: typeof ApiJoinRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/inference': {
@@ -3000,6 +3066,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdminJudgeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/admin/invites': {
+      id: '/api/admin/invites'
+      path: '/api/admin/invites'
+      fullPath: '/api/admin/invites'
+      preLoaderRoute: typeof ApiAdminInvitesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/admin/instance': {
       id: '/api/admin/instance'
       path: '/api/admin/instance'
@@ -3019,6 +3092,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/encryption'
       fullPath: '/api/admin/encryption'
       preLoaderRoute: typeof ApiAdminEncryptionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin/email': {
+      id: '/api/admin/email'
+      path: '/api/admin/email'
+      fullPath: '/api/admin/email'
+      preLoaderRoute: typeof ApiAdminEmailRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/admin/domains': {
@@ -4187,6 +4267,7 @@ const ApiKbDocsIdRouteWithChildren = ApiKbDocsIdRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
+  JoinRoute: JoinRoute,
   LoginRoute: LoginRoute,
   ASlugRoute: ASlugRoute,
   ApiActivityRoute: ApiActivityRoute,
@@ -4204,6 +4285,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiHistoryRoute: ApiHistoryRoute,
   ApiHomeRoute: ApiHomeRoute,
   ApiInferenceRoute: ApiInferenceRoute,
+  ApiJoinRoute: ApiJoinRoute,
   ApiKeysRoute: ApiKeysRouteWithChildren,
   ApiMcpRoute: ApiMcpRouteWithChildren,
   ApiModelsRoute: ApiModelsRoute,
@@ -4218,9 +4300,11 @@ const rootRouteChildren: RootRouteChildren = {
   ApiUsersRoute: ApiUsersRoute,
   KbSlugRoute: KbSlugRoute,
   ApiAdminDomainsRoute: ApiAdminDomainsRoute,
+  ApiAdminEmailRoute: ApiAdminEmailRoute,
   ApiAdminEncryptionRoute: ApiAdminEncryptionRoute,
   ApiAdminGuardrailsRoute: ApiAdminGuardrailsRoute,
   ApiAdminInstanceRoute: ApiAdminInstanceRoute,
+  ApiAdminInvitesRoute: ApiAdminInvitesRoute,
   ApiAdminJudgeRoute: ApiAdminJudgeRoute,
   ApiAdminModelRolesRoute: ApiAdminModelRolesRoute,
   ApiAdminOutreachRoute: ApiAdminOutreachRoute,

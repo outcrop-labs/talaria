@@ -150,6 +150,7 @@ function AdminPage() {
             <OrgPanel />
             <InstanceDomainPanel />
             <SignupDomainsPanel />
+            <EmailPanel />
             <OrgGooglePanel />
           </>
         )}
@@ -168,6 +169,7 @@ function AdminPage() {
             <SettingsPanel />
           </>
         )}
+        {tab === 'people' && <InvitesPanel />}
         {tab === 'people' && perms && <MemberDefaultsPanel perms={perms} />}
         {tab === 'people' && (
         <Panel>
@@ -490,6 +492,266 @@ function InstanceDomainPanel() {
         <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
           {error}
         </div>
+      )}
+    </Panel>
+  )
+}
+
+/** Transactional email: bring your own SMTP (Google Workspace etc.) or
+ *  connect Resend. More providers as requested. */
+function EmailPanel() {
+  const qc = useQueryClient()
+  interface EmailCfg {
+    provider: 'smtp' | 'resend' | null
+    from: string
+    smtp: { host: string; port: number; secure: boolean; user: string; passSet: boolean }
+    resend: { apiKeySet: boolean }
+  }
+  const { data, isPending } = useQuery({
+    queryKey: ['email-config'],
+    queryFn: async (): Promise<EmailCfg | null> => {
+      const r = await fetch('/api/admin/email', { credentials: 'same-origin' })
+      if (!r.ok) return null
+      return ((await r.json()) as { config: EmailCfg }).config
+    },
+  })
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [secret, setSecret] = useState('') // smtp password / resend key draft
+
+  const post = async (body: unknown, okNotice?: string) => {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    const r = await fetch('/api/admin/email', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    setBusy(false)
+    const j = (await r.json().catch(() => ({}))) as { error?: string }
+    if (!r.ok || j.error) setError(j.error ?? 'failed')
+    else if (okNotice) setNotice(okNotice)
+    await qc.invalidateQueries({ queryKey: ['email-config'] })
+  }
+
+  if (isPending || !data) {
+    return (
+      <Panel className="mt-4">
+        <Skeleton className="mb-3 h-4 w-24 rounded-full" />
+        <SkeletonRows rows={2} />
+      </Panel>
+    )
+  }
+  return (
+    <Panel className="mt-4">
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Email</span>
+        <InfoTip text="Transactional email — invites today, more later. Bring your own SMTP (e.g. Google Workspace: smtp.gmail.com, port 587, an app password) or connect Resend. Secrets are stored encrypted and never shown again." />
+      </div>
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">Provider</label>
+          <Select
+            size="sm"
+            value={data.provider ?? ''}
+            onChange={(e) => void post({ provider: (e.target.value || null) as 'smtp' | 'resend' | null })}
+            className="w-44"
+          >
+            <option value="">Not configured</option>
+            <option value="smtp">Your own SMTP</option>
+            <option value="resend">Resend</option>
+          </Select>
+        </div>
+        {data.provider && (
+          <div className="flex items-center gap-3">
+            <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">From</label>
+            <Input
+              size="sm"
+              defaultValue={data.from}
+              onBlur={(e) => e.target.value !== data.from && void post({ from: e.target.value })}
+              placeholder='Talaria <talaria@yourcompany.com>'
+              className="w-96"
+            />
+          </div>
+        )}
+        {data.provider === 'smtp' && (
+          <>
+            <div className="flex items-center gap-3">
+              <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">Host / port</label>
+              <Input size="sm" defaultValue={data.smtp.host} onBlur={(e) => void post({ smtp: { host: e.target.value } })} placeholder="smtp.gmail.com" className="w-56" />
+              <Input size="sm" defaultValue={String(data.smtp.port)} onBlur={(e) => void post({ smtp: { port: Number(e.target.value) || 587 } })} className="w-20" />
+              <label className="flex items-center gap-1.5 text-xs text-muted" title="TLS from the first byte (port 465). Off = STARTTLS (587).">
+                <input type="checkbox" checked={data.smtp.secure} onChange={(e) => void post({ smtp: { secure: e.target.checked } })} className="accent-[var(--theme-accent)]" />
+                TLS
+              </label>
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">User</label>
+              <Input size="sm" defaultValue={data.smtp.user} onBlur={(e) => void post({ smtp: { user: e.target.value } })} placeholder="talaria@yourcompany.com" className="w-56" />
+              <Input
+                size="sm"
+                type="password"
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                placeholder={data.smtp.passSet ? 'password saved — type to replace' : 'password / app password'}
+                autoComplete="off"
+                className="w-56"
+              />
+              <Button size="sm" variant="outline" disabled={!secret.trim() || busy} onClick={() => { void post({ smtp: { pass: secret } }, 'password saved'); setSecret('') }}>
+                Save
+              </Button>
+            </div>
+          </>
+        )}
+        {data.provider === 'resend' && (
+          <div className="flex items-center gap-3">
+            <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">API key</label>
+            <Input
+              size="sm"
+              type="password"
+              value={secret}
+              onChange={(e) => setSecret(e.target.value)}
+              placeholder={data.resend.apiKeySet ? 'key saved — type to replace' : 're_…'}
+              autoComplete="off"
+              className="w-72"
+            />
+            <Button size="sm" variant="outline" disabled={!secret.trim() || busy} onClick={() => { void post({ resend: { apiKey: secret } }, 'key saved'); setSecret('') }}>
+              Save
+            </Button>
+          </div>
+        )}
+        {data.provider && (
+          <div className="flex items-center gap-2 border-t border-line-subtle pt-3">
+            <Button size="sm" disabled={busy} onClick={() => void post({ test: true }, 'test sent — check your inbox')}>
+              {busy ? 'Working' : 'Send me a test'}
+            </Button>
+            {notice && <span className="text-xs" style={{ color: 'var(--theme-success)' }}>{notice}</span>}
+          </div>
+        )}
+        {error && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{error}</div>}
+      </div>
+    </Panel>
+  )
+}
+
+/** Invites: the third door in. Create + send, watch state, revoke. */
+function InvitesPanel() {
+  const qc = useQueryClient()
+  interface InviteRow {
+    id: string
+    email: string
+    invitedBy: string | null
+    createdAt: string
+    expiresAt: string
+    acceptedAt: string | null
+    revokedAt: string | null
+  }
+  const { data, isPending } = useQuery({
+    queryKey: ['invites'],
+    queryFn: async (): Promise<InviteRow[]> => {
+      const r = await fetch('/api/admin/invites', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { invites: InviteRow[] }).invites
+    },
+  })
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const refresh = () => qc.invalidateQueries({ queryKey: ['invites'] })
+
+  const invite = async () => {
+    if (!draft.trim()) return
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    const r = await fetch('/api/admin/invites', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: draft.trim() }),
+    })
+    setBusy(false)
+    const j = (await r.json().catch(() => ({}))) as { error?: string; emailSent?: boolean; emailError?: string }
+    if (!r.ok || j.error) {
+      setError(j.error ?? 'failed')
+    } else {
+      setDraft('')
+      setNotice(j.emailSent ? 'invite sent' : `invite created, but the email failed: ${j.emailError ?? 'no email provider configured'}`)
+    }
+    await refresh()
+  }
+  const state = (i: InviteRow) =>
+    i.acceptedAt ? 'accepted' : i.revokedAt ? 'revoked' : new Date(i.expiresAt) < new Date() ? 'expired' : 'pending'
+
+  return (
+    <Panel className="mb-4">
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Invites</span>
+        <InfoTip text="Invite by email — they get a join link and are admitted the moment they sign in with Google on that address. Invites expire after two weeks; re-inviting re-issues a fresh link; revoking shuts the door instantly. Needs the Email provider on the Org tab." />
+      </div>
+      <div className="mb-3 flex items-center gap-2">
+        <Input
+          size="sm"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && void invite()}
+          placeholder="teammate@yourcompany.com"
+          className="w-72"
+        />
+        <Button size="sm" disabled={busy || !draft.trim()} onClick={() => void invite()}>
+          {busy ? 'Sending' : 'Invite'}
+        </Button>
+        {notice && <span className="min-w-0 truncate text-xs text-muted">{notice}</span>}
+      </div>
+      {error && <div className="mb-2 text-xs" style={{ color: 'var(--theme-danger)' }}>{error}</div>}
+      {isPending ? (
+        <SkeletonRows rows={2} />
+      ) : (data ?? []).length === 0 ? (
+        <div className="font-sans text-xs text-muted">No invites yet.</div>
+      ) : (
+        <ul className="divide-y divide-line-subtle">
+          {(data ?? []).map((i) => {
+            const st = state(i)
+            return (
+              <li key={i.id} className="flex items-center gap-3 py-2 text-sm">
+                <span className="min-w-0 flex-1 truncate text-fg">{i.email}</span>
+                <span
+                  className={cn(
+                    'shrink-0 rounded-full border px-1.5 py-0.5 text-[10px]',
+                    st === 'accepted' && 'border-[color:var(--theme-success)]/40 text-[color:var(--theme-success)]',
+                    st === 'pending' && 'border-line-subtle text-muted',
+                    (st === 'revoked' || st === 'expired') && 'border-line-subtle text-muted/60 line-through',
+                  )}
+                >
+                  {st}
+                </span>
+                <span className="shrink-0 text-xs text-muted">{relativeTime(i.createdAt)}</span>
+                {st === 'pending' && (
+                  <button
+                    type="button"
+                    title="Revoke — the link stops working immediately"
+                    onClick={async () => {
+                      await fetch('/api/admin/invites', {
+                        method: 'DELETE',
+                        credentials: 'same-origin',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ id: i.id }),
+                      })
+                      await refresh()
+                    }}
+                    className="shrink-0 text-muted hover:text-[color:var(--theme-danger)]"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
+              </li>
+            )
+          })}
+        </ul>
       )}
     </Panel>
   )

@@ -154,6 +154,18 @@ const MIGRATIONS: string[] = [
   `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
   `alter table kb_docs add column if not exists okf text`,
   `update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null)`,
+  `create table if not exists invites (
+    id uuid primary key default gen_random_uuid(),
+    email text not null,
+    token text not null unique,
+    invited_by text,
+    created_at timestamptz not null default now(),
+    expires_at timestamptz not null,
+    accepted_at timestamptz,
+    accepted_user_id uuid references users(id) on delete set null,
+    revoked_at timestamptz
+  )`,
+  `create index if not exists invites_email_idx on invites(email)`,
   `create table if not exists org_domains (
     id uuid primary key default gen_random_uuid(),
     domain text not null unique,
