@@ -919,7 +919,10 @@ function DocEditor({
   const [fullscreen, setFullscreen] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [seed, setSeed] = useState(0) // bump to remount the editor (e.g. after restore)
-  const isOwner = useIsOwner(doc)
+  const ownFallback = useIsOwner(doc)
+  // Sharing governance: server-computed (covers agent-created docs any
+  // agent-user may govern); fall back to plain ownership for older payloads.
+  const isOwner = doc?.governs ?? ownFallback
   // Authored docs open in read mode (like tickets); empty ones open in edit.
   const [mode, setMode] = useState<'read' | 'edit'>('read')
   const [showComments, setShowComments] = useState(false)
@@ -1144,19 +1147,42 @@ function DocEditor({
             </button>
           ))}
         </div>
-        <Button variant="outline" size="sm" className="shrink-0" title="Share &amp; permissions" onClick={() => setShareOpen(true)}>
+        {/* Sharing + promotion: one quiet cluster. The Official pill is a
+            STATE — promoting confirms once, demoting confirms twice (it pulls
+            the doc out of what grounds every agent). */}
+        <Button variant="ghost" size="sm" className="shrink-0" title="Share & permissions" onClick={() => setShareOpen(true)}>
           <VisibilityIcon v={doc.visibility} /> <span className="ml-1.5 capitalize">{doc.visibility}</span>
         </Button>
-        <Button
-          variant={doc.official ? 'primary' : 'outline'}
-          size="sm"
-          className="shrink-0"
-          onClick={() => void save({ official: !doc.official })}
-          title="Official docs are indexed into the organization brain agents ground on"
-        >
-          <Star size={13} className="mr-1" /> {doc.official ? 'Official' : 'Make official'}
-        </Button>
-        <BrainRoutingSelect value={doc.ragRouting} canEdit={!!me?.id && doc.ownerUserId === me.id} onChange={(ragRouting) => void save({ ragRouting })} />
+        {doc.official ? (
+          <button
+            type="button"
+            className="flex shrink-0 items-center gap-1 rounded-full border border-[color:var(--theme-warning)]/50 bg-[color:var(--theme-warning)]/10 px-2.5 py-1 text-xs text-[color:var(--theme-warning)] transition-colors hover:bg-[color:var(--theme-warning)]/20"
+            title="Official — grounds every agent via the org brain. Click to demote (double confirm)."
+            onClick={async () => {
+              if (!(await confirm({ title: 'Demote from official?', message: `“${doc.title}” currently grounds every agent through the org brain. Demoting removes it from retrieval.`, confirmLabel: 'Continue' }))) return
+              if (!(await confirm({ title: 'Really demote?', message: 'Agents stop grounding on this document immediately. This is the final confirmation.', confirmLabel: 'Demote', danger: true }))) return
+              void save({ official: false })
+            }}
+          >
+            <Star size={12} fill="currentColor" /> Official
+          </button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0"
+            title="Promote to official — indexed into the organization brain agents ground on"
+            onClick={async () => {
+              if (await confirm({ title: 'Promote to official?', message: `“${doc.title}” will be indexed into the org brain and ground every agent's answers.`, confirmLabel: 'Promote' })) {
+                void save({ official: true })
+              }
+            }}
+          >
+            <Star size={13} className="mr-1" /> Promote
+          </Button>
+        )}
+        <BrainRoutingSelect value={doc.ragRouting} canEdit={isOwner} onChange={(ragRouting) => void save({ ragRouting })} />
+        <span className="mx-0.5 h-4 shrink-0 border-l border-line-subtle" />
         <Button variant={showToc ? 'outline' : 'ghost'} size="sm" className="shrink-0" title="Table of contents" onClick={() => setShowToc((v) => !v)}>
           <ListTree size={14} />
         </Button>

@@ -5,7 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setDocRouting, setOfficial } from '@/server/kb'
-import { canEditAgent, canEditHuman, canRead, canReadAgent, isOwner, setEditors } from '@/server/kb-perms'
+import { canEditAgent, canEditHuman, canRead, canReadAgent, setEditors, canGovern } from '@/server/kb-perms'
 import { isElevatedAssistant } from '@/server/users'
 import { logAudit } from '@/server/audit'
 
@@ -43,8 +43,9 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (!canRead(perms, user.id, user.email ?? user.name, grants)) return json({ error: 'forbidden' }, { status: 403 })
+        const governs = await canGovern(perms, user)
         // Surface the effective visibility/policy so the UI shows what actually applies.
-        return json({ doc: { ...doc, visibility: perms.visibility, editPolicy: perms.editPolicy }, editors: grants })
+        return json({ doc: { ...doc, visibility: perms.visibility, editPolicy: perms.editPolicy, governs }, editors: grants })
       },
       PUT: async ({ request, params }) => {
         const doc = await getDoc(params.id)
@@ -81,7 +82,7 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
             return json({ error: 'no permission to curate official knowledge' }, { status: 403 })
           }
           actor = user.email ?? user.name ?? 'user'
-          owner = isOwner(perms, user.id, user.email ?? user.name)
+          owner = await canGovern(perms, user)
           const sharing = parsed.data.visibility !== undefined || parsed.data.editPolicy !== undefined || parsed.data.editors !== undefined || parsed.data.permsInherited !== undefined
           if (!owner && sharing) return json({ error: 'only the owner can change sharing' }, { status: 403 })
           // Routing decides which brain can retrieve the doc — owner's call.

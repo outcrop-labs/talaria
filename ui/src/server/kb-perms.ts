@@ -78,6 +78,25 @@ export function isOwner(item: Guarded, userId: string | null, author: string | n
   return !!author && item.createdBy === author
 }
 
+/** Governance over an item's SHARING: the owner — or, for an ownerless item
+ *  an AGENT created, any user allowed to use that agent (plus admins). An
+ *  org agent's docs must never be orphans only the agent can re-share. */
+export async function canGovern(
+  item: Guarded,
+  user: { id: string; role: 'admin' | 'member'; email: string | null; name: string | null },
+): Promise<boolean> {
+  if (isOwner(item, user.id, user.email ?? user.name)) return true
+  if (item.ownerUserId) return false // human-owned: the owner alone governs
+  if (user.role === 'admin') return true
+  if (!item.createdBy) return false
+  const { db } = await import('./db/pg')
+  const sql = await db()
+  const agent = (await sql`select model from agent_defs where model = ${item.createdBy} limit 1`) as unknown as Array<{ model: string }>
+  if (agent.length === 0) return false
+  const { canUseAgentModel } = await import('./users')
+  return canUseAgentModel(user.id, user.role, agent[0]!.model)
+}
+
 /** Can this signed-in human read the item? Owner, org/public visibility, or any
  *  explicit grant (viewer or editor) on a private item. */
 export function canRead(item: Guarded, userId: string | null, author: string | null, grants: EditorGrant[] = []): boolean {

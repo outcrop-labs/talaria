@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { deleteSpace, getSpace, updateSpace } from '@/server/kb'
-import { canEditHuman, canRead, isOwner, listEditors, setEditors } from '@/server/kb-perms'
+import { canEditHuman, canRead, listEditors, setEditors, canGovern } from '@/server/kb-perms'
 import { logAudit } from '@/server/audit'
 
 const Editor = z.object({ principalType: z.enum(['user', 'agent']), principalId: z.string().min(1).max(200), role: z.enum(['viewer', 'editor']).default('viewer') })
@@ -40,7 +40,7 @@ export const Route = createFileRoute('/api/kb/spaces/$id')({
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const editors = await listEditors('space', space.id)
         if (!canEditHuman(space, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
-        const owner = isOwner(space, user.id, user.email ?? user.name)
+        const owner = await canGovern(space, user)
         if (!owner && (parsed.data.visibility !== undefined || parsed.data.editPolicy !== undefined || parsed.data.editors !== undefined)) {
           return json({ error: 'only the owner can change sharing' }, { status: 403 })
         }

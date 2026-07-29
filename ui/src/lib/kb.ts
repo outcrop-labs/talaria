@@ -54,6 +54,9 @@ export interface KbDocMeta {
 }
 export interface KbDoc extends KbDocMeta {
   body: string
+  /** The viewer may change sharing: owner — or, for agent-created docs,
+   *  anyone with access to that agent (server-computed). */
+  governs?: boolean
 }
 
 export const useSpaces = () =>
