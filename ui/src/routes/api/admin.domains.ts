@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { addOrgDomain, listOrgDomains, removeOrgDomain, verifyOrgDomain } from '@/server/org-domains'
 import { logAudit } from '@/server/audit'
 
@@ -12,29 +12,28 @@ export const Route = createFileRoute('/api/admin/domains')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         return json({ domains: await listOrgDomains() })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
         const actor = user.email ?? user.name ?? 'admin'
-        const parsed = z
-          .union([z.object({ domain: z.string().min(3).max(253) }), z.object({ verifyId: z.string().uuid() })])
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        if ('verifyId' in parsed.data) {
-          const r = await verifyOrgDomain(parsed.data.verifyId)
+        const body = await parseBody(
+          request,
+          z.union([z.object({ domain: z.string().min(3).max(253) }), z.object({ verifyId: z.string().uuid() })]),
+        )
+        if (body instanceof Response) return body
+        if ('verifyId' in body) {
+          const r = await verifyOrgDomain(body.verifyId)
           if (r.verified) {
-            void logAudit({ actor, action: 'domain.verify', targetType: 'org-domain', targetId: parsed.data.verifyId })
+            void logAudit({ actor, action: 'domain.verify', targetType: 'org-domain', targetId: body.verifyId })
           }
           return json(r)
         }
         try {
-          const domain = await addOrgDomain(parsed.data.domain, actor)
+          const domain = await addOrgDomain(body.domain, actor)
           void logAudit({ actor, action: 'domain.add', targetType: 'org-domain', targetId: domain.id, targetLabel: domain.domain })
           return json({ domain })
         } catch (e) {
@@ -42,17 +41,16 @@ export const Route = createFileRoute('/api/admin/domains')({
         }
       },
       DELETE: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = z.object({ id: z.string().uuid() }).safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        await removeOrgDomain(parsed.data.id)
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, z.object({ id: z.string().uuid() }))
+        if (body instanceof Response) return body
+        await removeOrgDomain(body.id)
         void logAudit({
-          actor: user.email ?? user.name ?? 'admin',
+          actor: actorOf(user),
           action: 'domain.remove',
           targetType: 'org-domain',
-          targetId: parsed.data.id,
+          targetId: body.id,
         })
         return json({ ok: true })
       },

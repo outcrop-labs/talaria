@@ -1,7 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
-import { hasPerm } from '@/server/permissions'
+import { requirePerm } from '@/server/api-guard'
 import { featuredMcpLibrary, searchMcpLibrary } from '@/server/mcp-library'
 
 // GET ?q= → the MCP server library (the official registry, live, filtered to
@@ -10,9 +9,8 @@ export const Route = createFileRoute('/api/mcp/library')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requirePerm(request, 'agents.manage')
+        if (user instanceof Response) return user
         const url = new URL(request.url)
         const q = url.searchParams.get('q') ?? ''
         try {

@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { auditRetentionDays, logAudit, setSetting } from '@/server/audit'
 import { orgProfile, setOrgProfile } from '@/server/org'
 import { memberModelAllowlist, setMemberModelAllowlist } from '@/server/model-access'
@@ -13,9 +13,8 @@ export const Route = createFileRoute('/api/admin/settings')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         return json({
           auditRetentionDays: await auditRetentionDays(),
           org: await orgProfile(),
@@ -23,47 +22,47 @@ export const Route = createFileRoute('/api/admin/settings')({
         })
       },
       PUT: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = z
-          .object({
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(
+          request,
+          z.object({
             auditRetentionDays: z.number().int().min(0).max(3650).optional(),
             org: z.object({ name: z.string().max(120).optional(), about: z.string().max(2000).optional() }).optional(),
             /** Bare model ids members may pick; empty = all models. */
             memberModels: z.array(z.string().min(1).max(200)).max(200).optional(),
-          })
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        if (parsed.data.auditRetentionDays !== undefined) {
-          await setSetting('audit_retention_days', parsed.data.auditRetentionDays)
+          }),
+        )
+        if (body instanceof Response) return body
+        if (body.auditRetentionDays !== undefined) {
+          await setSetting('audit_retention_days', body.auditRetentionDays)
           void logAudit({
-            actor: user.email ?? user.name ?? 'admin',
+            actor: actorOf(user),
             action: 'settings.audit_retention',
             targetType: 'settings',
-            after: { auditRetentionDays: parsed.data.auditRetentionDays },
+            after: { auditRetentionDays: body.auditRetentionDays },
           })
         }
-        if (parsed.data.memberModels !== undefined) {
-          await setMemberModelAllowlist(parsed.data.memberModels)
+        if (body.memberModels !== undefined) {
+          await setMemberModelAllowlist(body.memberModels)
           void logAudit({
-            actor: user.email ?? user.name ?? 'admin',
+            actor: actorOf(user),
             action: 'settings.member_models',
             targetType: 'settings',
-            after: { memberModels: parsed.data.memberModels },
+            after: { memberModels: body.memberModels },
           })
         }
-        if (parsed.data.org) {
-          await setOrgProfile(parsed.data.org)
+        if (body.org) {
+          await setOrgProfile(body.org)
           // The org lives in every rendered soul — propagate by ROLLING running
           // agents (new container up + healthy before the old one retires), so
           // an identity edit never kills anyone's in-flight conversation.
           void rollRunningAgents().catch(() => {})
           void logAudit({
-            actor: user.email ?? user.name ?? 'admin',
+            actor: actorOf(user),
             action: 'settings.org',
             targetType: 'settings',
-            after: parsed.data.org,
+            after: body.org,
           })
         }
         return json({ ok: true })

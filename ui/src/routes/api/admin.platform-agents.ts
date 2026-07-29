@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { PLATFORM_AGENTS, getPlatformAgentModels, setPlatformAgentModel, type PlatformAgentId } from '@/server/platform-agents'
 import { getJudgeConfig, setJudgeConfig } from '@/server/judge'
 import { gatewayModels } from '@/server/llm-gateway'
@@ -18,9 +18,8 @@ export const Route = createFileRoute('/api/admin/platform-agents')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         const assignments: Partial<Record<string, string>> = { ...(await getPlatformAgentModels()) }
         assignments.judge = (await getJudgeConfig()).model ?? undefined
         return json({
@@ -30,28 +29,28 @@ export const Route = createFileRoute('/api/admin/platform-agents')({
         })
       },
       PUT: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = z
-          .object({ id: z.enum(IDS as [PlatformAgentId, ...PlatformAgentId[]]), model: z.string().max(200).nullable() })
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        if (parsed.data.model && !(await gatewayModels()).some((m) => m.id === parsed.data.model)) {
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(
+          request,
+          z.object({ id: z.enum(IDS as [PlatformAgentId, ...PlatformAgentId[]]), model: z.string().max(200).nullable() }),
+        )
+        if (body instanceof Response) return body
+        if (body.model && !(await gatewayModels()).some((m) => m.id === body.model)) {
           return json({ error: 'that model is not on the gateway' }, { status: 400 })
         }
-        if (parsed.data.id === 'judge') {
+        if (body.id === 'judge') {
           const cfg = await getJudgeConfig()
-          await setJudgeConfig({ ...cfg, model: parsed.data.model })
+          await setJudgeConfig({ ...cfg, model: body.model })
         } else {
-          await setPlatformAgentModel(parsed.data.id, parsed.data.model)
+          await setPlatformAgentModel(body.id, body.model)
         }
         void logAudit({
-          actor: user.email ?? user.name ?? 'admin',
+          actor: actorOf(user),
           action: 'platform_agent.assign',
           targetType: 'platform-agent',
-          targetId: parsed.data.id,
-          after: { model: parsed.data.model },
+          targetId: body.id,
+          after: { model: body.model },
         })
         return json({ ok: true })
       },

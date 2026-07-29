@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import {
   archiveChannel,
   channelRole,
@@ -12,14 +12,16 @@ import {
 } from '@/server/channels'
 import { purgeActivityByField } from '@/server/retrieval/sources'
 
+const Put = z.object({ name: z.string().min(1).max(80).optional(), topic: z.string().max(300).nullish() })
+
 // GET → channel detail (members + agents). PUT → rename / set topic (owner).
 // DELETE → archive (?hard=1 deletes; owner only).
 export const Route = createFileRoute('/api/channels/$id')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         const role = await channelRole(user.id, params.id)
         if (!role) return json({ error: 'forbidden' }, { status: 403 })
         return json({
@@ -29,19 +31,17 @@ export const Route = createFileRoute('/api/channels/$id')({
         })
       },
       PUT: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if ((await channelRole(user.id, params.id)) !== 'owner') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = z
-          .object({ name: z.string().min(1).max(80).optional(), topic: z.string().max(300).nullish() })
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        await updateChannel(params.id, { name: parsed.data.name, topic: parsed.data.topic })
+        const body = await parseBody(request, Put)
+        if (body instanceof Response) return body
+        await updateChannel(params.id, { name: body.name, topic: body.topic })
         return json({ ok: true })
       },
       DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if ((await channelRole(user.id, params.id)) !== 'owner') return json({ error: 'forbidden' }, { status: 403 })
         const hard = new URL(request.url).searchParams.get('hard') === '1'
         await (hard ? deleteChannel(params.id) : archiveChannel(params.id))

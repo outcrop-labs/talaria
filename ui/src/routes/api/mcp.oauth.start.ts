@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { getMcpServer } from '@/server/mcp-registry'
 import { startOauth } from '@/server/mcp-oauth'
@@ -13,8 +13,8 @@ export const Route = createFileRoute('/api/mcp/oauth/start')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         const url = new URL(request.url)
         const serverId = url.searchParams.get('server') ?? ''
         const scope = url.searchParams.get('scope') === 'me' ? 'me' : 'org'

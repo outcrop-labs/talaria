@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
 import { getGuardConfig, guardRuleMeta, guardStats, listFindings, setGuardConfig } from '@/server/guardrails'
 
@@ -19,21 +19,19 @@ export const Route = createFileRoute('/api/admin/guardrails')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         const [config, stats, findings] = await Promise.all([getGuardConfig(), guardStats(), listFindings(50)])
         return json({ config, stats, findings, rules: guardRuleMeta() })
       },
       PUT: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        await setGuardConfig(parsed.data)
-        void logAudit({ actor: user.email ?? user.name ?? 'admin', action: 'settings.guardrails', targetType: 'settings', after: { mode: parsed.data.mode } })
-        return json({ config: parsed.data })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
+        await setGuardConfig(body)
+        void logAudit({ actor: actorOf(user), action: 'settings.guardrails', targetType: 'settings', after: { mode: body.mode } })
+        return json({ config: body })
       },
     },
   },

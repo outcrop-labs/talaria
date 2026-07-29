@@ -1,8 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
-import { hasPerm } from '@/server/permissions'
+import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import { createMcpServer, getMcpServer, listMcpServers, listAssignments, listUserAccess } from '@/server/mcp-registry'
 import { ensureOauthConfig, hasOauthTokens, oauthMeta } from '@/server/mcp-oauth'
 import { renderFleet } from '@/server/fleet-render'
@@ -37,9 +36,8 @@ export const Route = createFileRoute('/api/mcp/servers')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requirePerm(request, 'agents.manage')
+        if (user instanceof Response) return user
         const servers = await listMcpServers()
         const detail = await Promise.all(
           servers.map(async (s) => ({
@@ -54,19 +52,18 @@ export const Route = createFileRoute('/api/mcp/servers')({
         return json({ servers: detail })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
+        const user = await requirePerm(request, 'agents.manage')
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         try {
-          let server = await createMcpServer({ ...parsed.data, createdBy: user.email ?? user.name ?? 'admin' })
+          let server = await createMcpServer({ ...body, createdBy: user.email ?? user.name ?? 'admin' })
           // Sniff the auth shape right away: a 401 challenge with resource
           // metadata marks the server OAuth and unlocks the Connect flow.
           const oauthCfg = await ensureOauthConfig(server.id, server.url)
           if (oauthCfg) server = (await getMcpServer(server.id)) ?? server
           void logAudit({
-            actor: user.email ?? user.name ?? 'admin',
+            actor: actorOf(user),
             action: 'mcp.server_add',
             targetType: 'mcp-server',
             targetId: server.id,

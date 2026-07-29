@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, requireUser } from '@/server/api-guard'
 import { revokeKey } from '@/server/llm-keys'
 import { logAudit } from '@/server/audit'
 
@@ -9,11 +9,11 @@ export const Route = createFileRoute('/api/keys/$id')({
   server: {
     handlers: {
       DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         await revokeKey(user.id, params.id)
         void logAudit({
-          actor: user.email ?? user.name ?? 'user',
+          actor: actorOf(user),
           action: 'key.revoke',
           targetType: 'llm-key',
           targetId: params.id,

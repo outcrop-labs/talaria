@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { listFleetAgents } from '@/server/fleet-agents'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { usableAgentGate } from '@/server/users'
 
 // GET /api/agents → the fleet the current user may use (definition-backed
@@ -10,8 +10,8 @@ export const Route = createFileRoute('/api/agents')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
 
         const { agents, source } = await listFleetAgents()
         // Owner-aware: a personal assistant is only visible to its owner.

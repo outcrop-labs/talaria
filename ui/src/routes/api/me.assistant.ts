@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { HANDLE_RE, createPersonalAgent, personalAgentFor, updatePersonalAgent } from '@/server/personal-agent'
 
 const Name = z.string().trim().min(1, 'give it a name').max(60, 'keep the name under 60 characters')
@@ -38,30 +38,29 @@ export const Route = createFileRoute('/api/me/assistant')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         return json({ assistant: await personalAgentFor(user.id) })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const body = await request.json().catch(() => ({}))
-        const parsed = CreateBody.safeParse(body ?? {})
-        if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, CreateBody)
+        if (body instanceof Response) return body
         try {
-          const assistant = await createPersonalAgent({ id: user.id, email: user.email, name: user.name }, parsed.data)
+          const assistant = await createPersonalAgent({ id: user.id, email: user.email, name: user.name }, body)
           return json({ assistant })
         } catch (e) {
           return json({ error: friendly((e as Error).message) }, { status: 400 })
         }
       },
       PATCH: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const parsed = PatchBody.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, PatchBody)
+        if (body instanceof Response) return body
         try {
-          const assistant = await updatePersonalAgent({ id: user.id, email: user.email, name: user.name }, parsed.data)
+          const assistant = await updatePersonalAgent({ id: user.id, email: user.email, name: user.name }, body)
           return json({ assistant })
         } catch (e) {
           return json({ error: friendly((e as Error).message) }, { status: 400 })

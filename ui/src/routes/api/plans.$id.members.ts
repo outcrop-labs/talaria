@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { addPlanMember, listPlanMembers, planRole, removePlanMember } from '@/server/conversations'
 import { planDocFor } from '@/server/plan-doc'
 import { listEditors, setEditors } from '@/server/kb-perms'
@@ -32,8 +32,8 @@ export const Route = createFileRoute('/api/plans/$id/members')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (!(await planRole(user.id, params.id))) return json({ error: 'not found' }, { status: 404 })
         const members = await listPlanMembers(params.id)
         const redis = getRedis()
@@ -41,15 +41,15 @@ export const Route = createFileRoute('/api/plans/$id/members')({
         return json({ members, active: members.filter((_, i) => flags[i] === 1).map((m) => m.userId) })
       },
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if ((await planRole(user.id, params.id)) !== 'owner') {
           return json({ error: 'only the plan owner can share it' }, { status: 403 })
         }
-        const parsed = z.object({ email: z.string().email() }).safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, z.object({ email: z.string().email() }))
+        if (body instanceof Response) return body
         const sql = await db()
-        const rows = (await sql`select id from users where lower(email) = ${parsed.data.email.toLowerCase()}`) as unknown as Array<{ id: string }>
+        const rows = (await sql`select id from users where lower(email) = ${body.email.toLowerCase()}`) as unknown as Array<{ id: string }>
         if (!rows[0]) return json({ error: 'no user with that email' }, { status: 400 })
         if (rows[0].id === user.id) return json({ error: 'that is you' }, { status: 400 })
         await addPlanMember(params.id, rows[0].id)
@@ -64,22 +64,22 @@ export const Route = createFileRoute('/api/plans/$id/members')({
         return json({ members: await listPlanMembers(params.id) })
       },
       DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         const role = await planRole(user.id, params.id)
-        const parsed = z.object({ userId: z.string().uuid() }).safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, z.object({ userId: z.string().uuid() }))
+        if (body instanceof Response) return body
         // Owner removes anyone; a collaborator may remove only themself (leave).
-        if (role !== 'owner' && !(role === 'collaborator' && parsed.data.userId === user.id)) {
+        if (role !== 'owner' && !(role === 'collaborator' && body.userId === user.id)) {
           return json({ error: 'forbidden' }, { status: 403 })
         }
-        await removePlanMember(params.id, parsed.data.userId)
-        await syncDocGrant(params.id, parsed.data.userId, false)
+        await removePlanMember(params.id, body.userId)
+        await syncDocGrant(params.id, body.userId, false)
         return json({ members: await listPlanMembers(params.id) })
       },
       PUT: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (!(await planRole(user.id, params.id))) return json({ error: 'not found' }, { status: 404 })
         await getRedis().set(presenceKey(params.id, user.id), '1', 'EX', PRESENCE_TTL_S)
         return json({ ok: true })

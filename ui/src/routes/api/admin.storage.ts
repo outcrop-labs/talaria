@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
 import {
   ensureBucket,
@@ -33,13 +33,6 @@ const Body = z.object({
   replica: z.object({ enabled: z.boolean(), ...Target }),
 })
 
-const guard = async (request: Request) => {
-  const user = await getSessionUser(request)
-  if (!user) return { user: null, res: json({ error: 'unauthorized' }, { status: 401 }) }
-  if (user.role !== 'admin') return { user: null, res: json({ error: 'forbidden' }, { status: 403 }) }
-  return { user, res: null }
-}
-
 // Object storage (uploads blob store) config. GET → config (secrets masked) +
 // blob location stats + migration/sync status + the built-in bucket's endpoint.
 // PUT → save config. POST → connection tests, local→bucket migration, or a
@@ -48,30 +41,30 @@ export const Route = createFileRoute('/api/admin/storage')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const { res } = await guard(request)
-        if (res) return res
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         const [config, stats, migrate, sync] = await Promise.all([publicStorageConfig(), uploadStats(), migrateStatus(), syncStatus()])
         return json({ config, stats, migrate, sync, internal: { endpoint: internalTarget().endpoint, bucket: internalTarget().bucket } })
       },
       PUT: async ({ request }) => {
-        const { user, res } = await guard(request)
-        if (res) return res
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         const current = await getStorageConfig()
         const next = {
-          ...parsed.data,
-          endpoint: parsed.data.endpoint.trim().replace(/\/+$/, ''),
-          secretAccessKey: parsed.data.secretAccessKey || current.secretAccessKey,
+          ...body,
+          endpoint: body.endpoint.trim().replace(/\/+$/, ''),
+          secretAccessKey: body.secretAccessKey || current.secretAccessKey,
           replica: {
-            ...parsed.data.replica,
-            endpoint: parsed.data.replica.endpoint.trim().replace(/\/+$/, ''),
-            secretAccessKey: parsed.data.replica.secretAccessKey || current.replica.secretAccessKey,
+            ...body.replica,
+            endpoint: body.replica.endpoint.trim().replace(/\/+$/, ''),
+            secretAccessKey: body.replica.secretAccessKey || current.replica.secretAccessKey,
           },
         }
         await setStorageConfig(next)
         void logAudit({
-          actor: user!.email ?? user!.name ?? 'admin',
+          actor: actorOf(user),
           action: 'settings.storage',
           targetType: 'settings',
           after: { mode: next.mode, endpoint: next.endpoint, bucket: next.bucket, replica: next.replica.enabled ? next.replica.bucket : 'off' },
@@ -79,12 +72,16 @@ export const Route = createFileRoute('/api/admin/storage')({
         return json({ config: await publicStorageConfig() })
       },
       POST: async ({ request }) => {
-        const { user, res } = await guard(request)
-        if (res) return res
-        const body = (await request.json().catch(() => ({}))) as { action?: string }
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(
+          request,
+          z.object({ action: z.enum(['test', 'test-replica', 'migrate', 'sync']).optional() }),
+        )
+        if (body instanceof Response) return body
         const cfg = await getStorageConfig()
         const audit = (action: string, after?: unknown) =>
-          void logAudit({ actor: user!.email ?? user!.name ?? 'admin', action: `storage.${action}`, targetType: 'settings', after: after as never })
+          void logAudit({ actor: actorOf(user), action: `storage.${action}`, targetType: 'settings', after: after as never })
         try {
           if (body.action === 'test') {
             // Test what the current mode would actually use.

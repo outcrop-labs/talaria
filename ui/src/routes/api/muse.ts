@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { buildMuseMessages, museModelFor, type MuseKind } from '@/server/muse'
 import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '@/server/llm-gateway'
 import { estimateTokens } from '@/server/usage'
@@ -25,17 +25,17 @@ export const Route = createFileRoute('/api/muse')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
 
         const model = await museModelFor(user.id)
         if (!model) return json({ error: 'no routable model found — add an endpoint with models on /models first' }, { status: 400 })
         const route = await resolveRoute(model)
         if (!route) return json({ error: `model "${model}" is not routable` }, { status: 400 })
 
-        const messages = await buildMuseMessages({ ...parsed.data, kind: parsed.data.kind as MuseKind })
+        const messages = await buildMuseMessages({ ...body, kind: body.kind as MuseKind })
         let upstream
         try {
           upstream = await buildUpstream(route, { model, messages, stream: true, temperature: 0.4 })

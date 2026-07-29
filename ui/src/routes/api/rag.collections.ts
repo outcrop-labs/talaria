@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin, requireUser } from '@/server/api-guard'
 import { createCollection, ensureAutoCollections, listCollections } from '@/server/retrieval/collections'
 import { logAudit } from '@/server/audit'
 
@@ -21,8 +21,8 @@ export const Route = createFileRoute('/api/rag/collections')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         await ensureAutoCollections().catch(() => {})
         const collections = await listCollections()
         // Members get names only (the doc "Brain" picker); the binding matrix
@@ -33,19 +33,18 @@ export const Route = createFileRoute('/api/rag/collections')({
         return json({ collections })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         try {
           const col = await createCollection({
-            name: parsed.data.name,
-            description: parsed.data.description,
+            name: body.name,
+            description: body.description,
             createdBy: user.email ?? user.name ?? 'admin',
-            bindings: parsed.data.bindings?.map((b) => ({ principalType: b.principalType, principalId: b.principalId ?? null })),
+            bindings: body.bindings?.map((b) => ({ principalType: b.principalType, principalId: b.principalId ?? null })),
           })
-          void logAudit({ actor: user.email ?? user.name ?? 'admin', action: 'rag.create', targetType: 'rag_collection', targetId: col.id, targetLabel: col.name })
+          void logAudit({ actor: actorOf(user), action: 'rag.create', targetType: 'rag_collection', targetId: col.id, targetLabel: col.name })
           return json({ collection: col })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })

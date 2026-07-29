@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { deleteEndpoint, listEndpoints, updateEndpoint } from '@/server/agent-defs'
 import { cascadeRemoval, modelUsage, type ModelUsage } from '@/server/fleet-cascade'
 import { refreshAutoPrices } from '@/server/price-oracle'
@@ -37,17 +37,16 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
   server: {
     handlers: {
       PUT: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Patch.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Patch)
+        if (body instanceof Response) return body
 
         let cascade: { changed: string[]; renderError?: string } = { changed: [] }
-        if (parsed.data.models) {
+        if (body.models) {
           const ep = (await listEndpoints()).find((e) => e.id === params.id)
           if (!ep) return json({ error: 'not found' }, { status: 404 })
-          const removed = ep.models.filter((m) => !parsed.data.models!.includes(m))
+          const removed = ep.models.filter((m) => !body.models!.includes(m))
           const usage = removed.length ? await modelUsage(ep.name, removed) : []
           const mains = usage.filter((u) => u.asMain)
           if (mains.length) {
@@ -56,7 +55,7 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
               { status: 400 },
             )
           }
-          if (usage.length && !parsed.data.force) {
+          if (usage.length && !body.force) {
             return json({ needsForce: true, affected: summarize(usage) }, { status: 409 })
           }
           if (usage.length) {
@@ -65,26 +64,26 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
           }
         }
         await updateEndpoint(params.id, {
-          class: parsed.data.class,
-          priceInPerMtok: parsed.data.priceInPerMtok,
-          priceOutPerMtok: parsed.data.priceOutPerMtok,
-          models: parsed.data.models,
-          modelPrices: parsed.data.modelPrices,
-          requestDefaults: parsed.data.requestDefaults,
+          class: body.class,
+          priceInPerMtok: body.priceInPerMtok,
+          priceOutPerMtok: body.priceOutPerMtok,
+          models: body.models,
+          modelPrices: body.modelPrices,
+          requestDefaults: body.requestDefaults,
           // Empty string = an untouched masked field round-tripping — keep the
           // stored key. Only a non-empty value rotates it.
-          apiKey: parsed.data.apiKey?.trim() ? parsed.data.apiKey : undefined,
+          apiKey: body.apiKey?.trim() ? body.apiKey : undefined,
         })
         void logAudit({
-          actor: user.email ?? user.name ?? 'admin',
+          actor: actorOf(user),
           action: 'endpoint.update',
           targetType: 'endpoint',
           targetId: params.id,
-          after: { ...(parsed.data.apiKey?.trim() ? { apiKeyRotated: true } : {}), ...(parsed.data.models ? { models: parsed.data.models.length } : {}) },
+          after: { ...(body.apiKey?.trim() ? { apiKeyRotated: true } : {}), ...(body.models ? { models: body.models.length } : {}) },
         })
         // New catalog models get auto-priced in the background (never block an
         // interactive save on the external catalog fetch).
-        if (parsed.data.models) void refreshAutoPrices().catch(() => {})
+        if (body.models) void refreshAutoPrices().catch(() => {})
         return json({
           ok: true,
           cascaded: cascade.changed,
@@ -94,9 +93,8 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
         })
       },
       DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
         const force = new URL(request.url).searchParams.get('force') === '1'
         const ep = (await listEndpoints()).find((e) => e.id === params.id)
         if (!ep) return json({ ok: true })
@@ -116,7 +114,7 @@ export const Route = createFileRoute('/api/fleet/endpoints/$id')({
         const res = await deleteEndpoint(params.id)
         if (!res.ok) return json({ error: `still in use by: ${res.usedBy!.join(', ')}` }, { status: 400 })
         void logAudit({
-          actor: user.email ?? user.name ?? 'admin',
+          actor: actorOf(user),
           action: 'endpoint.delete',
           targetType: 'endpoint',
           targetId: params.id,

@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { briefingChat, type BriefingScope } from '@/server/briefing'
 
 const Body = z.object({
@@ -16,14 +16,15 @@ export const Route = createFileRoute('/api/me/briefing/chat')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         try {
-          return await briefingChat(user.id, parsed.data.scope as BriefingScope, parsed.data.history, parsed.data.content)
+          return await briefingChat(user.id, body.scope as BriefingScope, body.history, body.content)
         } catch (e) {
-          return json({ error: (e as Error).message }, { status: 500 })
+          console.error('[me.briefing]', e)
+          return json({ error: 'briefing failed — see server logs' }, { status: 500 })
         }
       },
     },

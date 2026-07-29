@@ -1,7 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireUser } from '@/server/api-guard'
+import { logAudit } from '@/server/audit'
 import { moveDoc } from '@/server/kb'
 
 const Body = z.object({
@@ -14,12 +15,14 @@ export const Route = createFileRoute('/api/kb/docs/$id/move')({
   server: {
     handlers: {
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        const doc = await moveDoc(params.id, parsed.data.parentId, parsed.data.sort)
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
+        const doc = await moveDoc(params.id, body.parentId, body.sort)
         if (!doc) return json({ error: 'invalid move' }, { status: 400 })
+        void logAudit({ actor: actorOf(user), action: 'kb.doc_move', targetType: 'kb-doc', targetId: params.id, targetLabel: doc.title, after: { parentId: body.parentId, sort: body.sort } })
         return json({ doc })
       },
     },

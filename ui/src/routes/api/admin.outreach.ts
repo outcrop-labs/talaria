@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { db } from '@/server/db/pg'
 import { getOutreachConfig, recentOutreachEvents, setOutreachConfig } from '@/server/outreach'
 import { logAudit } from '@/server/audit'
@@ -20,9 +20,8 @@ export const Route = createFileRoute('/api/admin/outreach')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         const sql = await db()
         const agents = (await sql`
           select model, display_name as "displayName", proactive, owner_user_id is not null as personal
@@ -31,17 +30,16 @@ export const Route = createFileRoute('/api/admin/outreach')({
         return json({ config: await getOutreachConfig(), agents, events: await recentOutreachEvents() })
       },
       PUT: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        const { proactiveAgents, ...config } = parsed.data
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
+        const { proactiveAgents, ...config } = body
         await setOutreachConfig(config)
         const sql = await db()
         await sql`update agent_defs set proactive = (model = any(${proactiveAgents})) where enabled`
         void logAudit({
-          actor: user.email ?? user.name ?? 'admin',
+          actor: actorOf(user),
           action: 'outreach.config',
           targetType: 'outreach',
           after: { proactiveAgents },

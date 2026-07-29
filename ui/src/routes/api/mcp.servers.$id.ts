@@ -1,8 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
-import { hasPerm } from '@/server/permissions'
+import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import {
   deleteMcpServer,
   getMcpServer,
@@ -43,20 +42,18 @@ export const Route = createFileRoute('/api/mcp/servers/$id')({
   server: {
     handlers: {
       PUT: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requirePerm(request, 'agents.manage')
+        if (user instanceof Response) return user
         const server = await getMcpServer(params.id)
         if (!server) return json({ error: 'not found' }, { status: 404 })
-        const parsed = Patch.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        const p = parsed.data
-        const actor = user.email ?? user.name ?? 'admin'
+        const body = await parseBody(request, Patch)
+        if (body instanceof Response) return body
+        const actor = actorOf(user)
 
         // Self-heal: failed/aged discovery re-probes and backfills on any touch.
         await ensureOauthConfig(server.id, server.url)
 
-        const { refreshTools, assign, unassign, userAccess, oauthClient, ...config } = p
+        const { refreshTools, assign, unassign, userAccess, oauthClient, ...config } = body
         if (oauthClient) {
           try {
             await setManualOauthClient(
@@ -109,9 +106,8 @@ export const Route = createFileRoute('/api/mcp/servers/$id')({
         return json({ ok: true, ...(tools !== undefined ? { tools } : {}) })
       },
       DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requirePerm(request, 'agents.manage')
+        if (user instanceof Response) return user
         const server = await getMcpServer(params.id)
         if (!server) return json({ error: 'not found' }, { status: 404 })
         const carriers = await carriersForServer(server.id) // captured before the row vanishes
@@ -122,7 +118,7 @@ export const Route = createFileRoute('/api/mcp/servers/$id')({
         }
         enqueueRolls(carriers)
         void logAudit({
-          actor: user.email ?? user.name ?? 'admin',
+          actor: actorOf(user),
           action: 'mcp.server_delete',
           targetType: 'mcp-server',
           targetId: server.id,

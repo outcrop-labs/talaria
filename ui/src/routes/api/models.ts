@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { gatewayModelsFor } from '@/server/model-access'
 import { maybeRewriteBlurbs, modelInfo } from '@/server/model-info'
 import { museModelFor } from '@/server/muse'
@@ -14,8 +14,8 @@ export const Route = createFileRoute('/api/models')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         maybeRewriteBlurbs() // new registered models get their org-voice blurb (throttled, detached)
         const models = await Promise.all(
           (await gatewayModelsFor(user.role)).map(async (m) => {

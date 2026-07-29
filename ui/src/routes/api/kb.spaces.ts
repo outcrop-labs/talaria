@@ -1,11 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
-import { hasPerm } from '@/server/permissions'
+import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { createSpace, listSpaces } from '@/server/kb'
 import { canRead, canReadAgent, grantedItemIds, grantedItemIdsForAgent } from '@/server/kb-perms'
+import { logAudit } from '@/server/audit'
 
 const Body = z.object({ name: z.string().min(1).max(80), description: z.string().max(400).optional(), icon: z.string().max(8).optional() })
 
@@ -22,30 +22,33 @@ export const Route = createFileRoute('/api/kb/spaces')({
           const spaces = (await listSpaces()).filter((s) => granted.has(s.id) || canReadAgent(s, name))
           return json({ spaces })
         }
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         // Hide folders the caller can't read, but keep ones shared with them.
         const granted = await grantedItemIds('space', user.id)
         const spaces = (await listSpaces()).filter((s) => granted.has(s.id) || canRead(s, user.id, user.email ?? user.name))
         return json({ spaces })
       },
       POST: async ({ request }) => {
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         // Agents (over MCP) may create spaces too — a space is just a shelf,
         // and docs stay drafts until a human officializes them. No owner, so
         // sharing/deletion stay human calls.
         if (checkAgentKey(request)) {
           const name = agentName(request)
           if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
-          const dup = (await listSpaces()).find((s) => s.name.trim().toLowerCase() === parsed.data.name.trim().toLowerCase())
+          const dup = (await listSpaces()).find((s) => s.name.trim().toLowerCase() === body.name.trim().toLowerCase())
           if (dup) return json({ space: dup }) // find-or-create: agents retry; duplicates rot the KB
-          return json({ space: await createSpace({ ...parsed.data, createdBy: name, ownerUserId: null }) })
+          return json({ space: await createSpace({ ...body, createdBy: name, ownerUserId: null }) })
         }
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'kb.official'))) return json({ error: 'no permission to create spaces' }, { status: 403 })
-        return json({ space: await createSpace({ ...parsed.data, createdBy: user.email ?? user.name ?? 'user', ownerUserId: user.id }) })
+        const gate = await requirePerm(request, 'kb.official')
+        if (gate instanceof Response) return gate
+        const user = gate
+        const space = await createSpace({ ...body, createdBy: user.email ?? user.name ?? 'user', ownerUserId: user.id })
+        void logAudit({ actor: actorOf(user), action: 'kb.space_create', targetType: 'kb-space', targetId: space.id, targetLabel: space.name })
+        return json({ space })
       },
     },
   },

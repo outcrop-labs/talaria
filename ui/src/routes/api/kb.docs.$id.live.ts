@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { canDiscussDoc } from '@/server/kb-comments'
 import { getRedis } from '@/server/db/redis'
 import { db } from '@/server/db/pg'
@@ -16,18 +16,20 @@ export const Route = createFileRoute('/api/kb/docs/$id/live')({
   server: {
     handlers: {
       PUT: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         if (!(await canDiscussDoc(params.id, user.id, user.email ?? user.name))) return json({ error: 'not found' }, { status: 404 })
-        const parsed = z.object({ mode: z.enum(['view', 'edit']) }).safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, z.object({ mode: z.enum(['view', 'edit']) }))
+        if (body instanceof Response) return body
         const redis = getRedis()
-        await redis.set(`${KEY_PREFIX(params.id)}${user.id}`, parsed.data.mode, 'EX', TTL)
+        await redis.set(`${KEY_PREFIX(params.id)}${user.id}`, body.mode, 'EX', TTL)
         return json({ ok: true })
       },
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         if (!(await canDiscussDoc(params.id, user.id, user.email ?? user.name))) return json({ error: 'not found' }, { status: 404 })
         const redis = getRedis()
         const keys = await redis.keys(`${KEY_PREFIX(params.id)}*`)

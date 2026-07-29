@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import {
   addResearchMember,
   listResearchMembers,
@@ -31,21 +31,21 @@ export const Route = createFileRoute('/api/research/$id/members')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (!(await researchRole(user.id, params.id))) return json({ error: 'not found' }, { status: 404 })
         return json({ members: await listResearchMembers(params.id) })
       },
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if ((await researchRole(user.id, params.id)) !== 'owner') {
           return json({ error: 'only the research owner can share it' }, { status: 403 })
         }
-        const parsed = z.object({ email: z.string().email() }).safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, z.object({ email: z.string().email() }))
+        if (body instanceof Response) return body
         const sql = await db()
-        const rows = (await sql`select id from users where lower(email) = ${parsed.data.email.toLowerCase()}`) as unknown as Array<{ id: string }>
+        const rows = (await sql`select id from users where lower(email) = ${body.email.toLowerCase()}`) as unknown as Array<{ id: string }>
         if (!rows[0]) return json({ error: 'no user with that email' }, { status: 400 })
         if (rows[0].id === user.id) return json({ error: 'that is you' }, { status: 400 })
         await addResearchMember(params.id, rows[0].id)
@@ -60,16 +60,16 @@ export const Route = createFileRoute('/api/research/$id/members')({
         return json({ members: await listResearchMembers(params.id) })
       },
       DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         const role = await researchRole(user.id, params.id)
-        const parsed = z.object({ userId: z.string().uuid() }).safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        if (role !== 'owner' && !(role === 'member' && parsed.data.userId === user.id)) {
+        const body = await parseBody(request, z.object({ userId: z.string().uuid() }))
+        if (body instanceof Response) return body
+        if (role !== 'owner' && !(role === 'member' && body.userId === user.id)) {
           return json({ error: 'forbidden' }, { status: 403 })
         }
-        await removeResearchMember(params.id, parsed.data.userId)
-        await syncReportGrant(params.id, parsed.data.userId, false)
+        await removeResearchMember(params.id, body.userId)
+        await syncReportGrant(params.id, body.userId, false)
         return json({ members: await listResearchMembers(params.id) })
       },
     },

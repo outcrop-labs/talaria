@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
 import { boardTemplates, setBoardTemplates } from '@/server/templates'
 
@@ -16,21 +16,21 @@ export const Route = createFileRoute('/api/boards/$id/templates')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (!(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
         return json({ bindings: await boardTemplates(params.id) })
       },
       PUT: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Put.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        if (parsed.data.defaultId && !parsed.data.templateIds.includes(parsed.data.defaultId)) {
+        const body = await parseBody(request, Put)
+        if (body instanceof Response) return body
+        if (body.defaultId && !body.templateIds.includes(body.defaultId)) {
           return json({ error: 'defaultId must be one of templateIds' }, { status: 400 })
         }
-        await setBoardTemplates(params.id, parsed.data.templateIds, parsed.data.defaultId)
+        await setBoardTemplates(params.id, body.templateIds, body.defaultId)
         return json({ bindings: await boardTemplates(params.id) })
       },
     },

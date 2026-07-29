@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setDocRouting, setOfficial } from '@/server/kb'
@@ -42,8 +42,9 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
           if (!name || !canReadAgent(perms, name, grants)) return json({ error: 'forbidden' }, { status: 403 })
           return json({ doc: { ...doc, visibility: perms.visibility, editPolicy: perms.editPolicy }, editors: grants })
         }
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         if (!canRead(perms, user.id, user.email ?? user.name, grants)) return json({ error: 'forbidden' }, { status: 403 })
         const governs = await canGovern(perms, user)
         // Surface the effective visibility/policy so the UI shows what actually applies.
@@ -52,8 +53,8 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
       PUT: async ({ request, params }) => {
         const doc = await getDoc(params.id)
         if (!doc) return json({ error: 'not found' }, { status: 404 })
-        const parsed = Patch.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, Patch)
+        if (body instanceof Response) return body
         const { perms, grants } = await effectiveDocPerms(doc)
 
         let actor: string
@@ -69,58 +70,58 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
             (doc.createdBy === name || canEditAgent(name, grants) || (perms.visibility !== 'private' && (await isElevatedAssistant(name))))
           if (!name || !mayEdit) return json({ error: 'forbidden' }, { status: 403 })
           actor = name
-          parsed.data.visibility = undefined
-          parsed.data.editPolicy = undefined
-          parsed.data.editors = undefined
-          parsed.data.permsInherited = undefined
-          parsed.data.official = undefined
+          body.visibility = undefined
+          body.editPolicy = undefined
+          body.editors = undefined
+          body.permsInherited = undefined
+          body.official = undefined
         } else {
-          const user = await getSessionUser(request)
-          if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-          if (!(await hasPerm(user, 'kb.edit'))) return json({ error: 'no permission to edit knowledge' }, { status: 403 })
+          const gate = await requirePerm(request, 'kb.edit')
+          if (gate instanceof Response) return gate
+          const user = gate
           if (!canEditHuman(perms, user.id, user.email ?? user.name, grants)) return json({ error: 'forbidden' }, { status: 403 })
           // Marking OFFICIAL grounds every agent — a curation power of its own.
-          if (parsed.data.official !== undefined && !(await hasPerm(user, 'kb.official'))) {
+          if (body.official !== undefined && !(await hasPerm(user, 'kb.official'))) {
             return json({ error: 'no permission to curate official knowledge' }, { status: 403 })
           }
-          actor = user.email ?? user.name ?? 'user'
+          actor = actorOf(user)
           owner = await canGovern(perms, user)
-          const sharing = parsed.data.visibility !== undefined || parsed.data.editPolicy !== undefined || parsed.data.editors !== undefined || parsed.data.permsInherited !== undefined
+          const sharing = body.visibility !== undefined || body.editPolicy !== undefined || body.editors !== undefined || body.permsInherited !== undefined
           if (!owner && sharing) return json({ error: 'only the owner can change sharing' }, { status: 403 })
           // Routing decides which brain can retrieve the doc — owner's call.
-          if (!owner && parsed.data.ragRouting !== undefined) {
+          if (!owner && body.ragRouting !== undefined) {
             return json({ error: 'only the owner can change brain routing' }, { status: 403 })
           }
         }
-        if (checkAgentKey(request)) parsed.data.ragRouting = undefined
+        if (checkAgentKey(request)) body.ragRouting = undefined
 
         if (owner) {
-          if (parsed.data.permsInherited === true) {
+          if (body.permsInherited === true) {
             // Reset to inherit from the folder — drop the doc's own grants.
             await setEditors('doc', params.id, [])
-            parsed.data.editors = undefined
-          } else if (parsed.data.visibility !== undefined || parsed.data.editPolicy !== undefined || parsed.data.editors !== undefined) {
+            body.editors = undefined
+          } else if (body.visibility !== undefined || body.editPolicy !== undefined || body.editors !== undefined) {
             // Any explicit sharing change customizes the doc (stops inheriting).
-            parsed.data.permsInherited = false
-            if (parsed.data.editors !== undefined) await setEditors('doc', params.id, parsed.data.editors)
+            body.permsInherited = false
+            if (body.editors !== undefined) await setEditors('doc', params.id, body.editors)
           }
         }
 
-        if (parsed.data.ragRouting !== undefined) {
+        if (body.ragRouting !== undefined) {
           try {
-            await setDocRouting(params.id, parsed.data.ragRouting, actor)
+            await setDocRouting(params.id, body.ragRouting, actor)
           } catch (e) {
             return json({ error: (e as Error).message }, { status: 400 })
           }
         }
-        const { regenerateOkf, ...patch } = parsed.data
+        const { regenerateOkf, ...patch } = body
         let updated = await saveDoc(params.id, patch, actor)
         if (!updated) return json({ error: 'not found' }, { status: 404 })
-        if (parsed.data.official !== undefined && parsed.data.official !== updated.official) {
-          updated = (await setOfficial(params.id, parsed.data.official, actor)) ?? updated
-          void logAudit({ actor, action: parsed.data.official ? 'kb.officialize' : 'kb.deofficialize', targetType: 'kb-doc', targetId: params.id, targetLabel: updated.title })
+        if (body.official !== undefined && body.official !== updated.official) {
+          updated = (await setOfficial(params.id, body.official, actor)) ?? updated
+          void logAudit({ actor, action: body.official ? 'kb.officialize' : 'kb.deofficialize', targetType: 'kb-doc', targetId: params.id, targetLabel: updated.title })
           queueDocOkf(params.id) // the Librarian writes/clears this doc's OKF
-        } else if (updated.official && parsed.data.body !== undefined) {
+        } else if (updated.official && body.body !== undefined) {
           queueDocOkf(params.id) // promoted content changed
         }
         if (regenerateOkf) {
@@ -134,8 +135,9 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
       DELETE: async ({ request, params }) => {
         const doc = await getDoc(params.id)
         if (!doc) return json({ error: 'not found' }, { status: 404 })
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         const { perms, grants } = await effectiveDocPerms(doc)
         if (!canEditHuman(perms, user.id, user.email ?? user.name, grants)) return json({ error: 'forbidden' }, { status: 403 })
         await deleteDoc(params.id)

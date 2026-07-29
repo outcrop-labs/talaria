@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { proxyChat } from '@/server/gateway'
 import { routedModelFor } from '@/server/fleet-agents'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { canUseAgentModel } from '@/server/users'
 import {
@@ -52,18 +52,18 @@ export const Route = createFileRoute('/api/chat')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
 
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        const { model, conversationId, content } = parsed.data
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
+        const { model, conversationId, content } = body
 
         // Resolve the conversation (access-checked: yours, or a plan you're a
         // member of) or create a new one.
         let convId = conversationId ?? null
         let agentModel = model
-        let kind: 'chat' | 'plan' = parsed.data.kind ?? 'chat'
+        let kind: 'chat' | 'plan' = body.kind ?? 'chat'
         let planTitle: string | null = null
         let planOwnerId = user.id
         let multiVoice = false
@@ -85,20 +85,20 @@ export const Route = createFileRoute('/api/chat')({
 
         // Tier routing: validate against the agent's defined aliases, then
         // request `<base>-<tier>` — the agent's own gateway resolves the alias.
-        const routedModel = await routedModelFor(agentModel, parsed.data.tier)
-        if (!routedModel) return json({ error: `unknown tier "${parsed.data.tier}" for ${agentModel}` }, { status: 400 })
+        const routedModel = await routedModelFor(agentModel, body.tier)
+        if (!routedModel) return json({ error: `unknown tier "${body.tier}" for ${agentModel}` }, { status: 400 })
 
         // Validate attachments belong to real uploads before stamping them;
         // knowledge/artifact refs resolve to content-carrying chips.
-        const uploads = await resolveAttachments(parsed.data.attachmentIds ?? [])
-        const refChips = await resolveRefs(user, parsed.data.refs ?? [])
+        const uploads = await resolveAttachments(body.attachmentIds ?? [])
+        const refChips = await resolveRefs(user, body.refs ?? [])
         const attachments = [...uploads, ...refChips]
         const title = titleFrom(content || attachments[0]?.filename || 'chat')
         if (!convId) {
           if (kind === 'plan' && !(await hasPerm(user, 'plans.create'))) {
             return json({ error: 'no permission to create plans' }, { status: 403 })
           }
-          convId = await createConversation(user.id, agentModel, title, kind, parsed.data.templateId ?? null)
+          convId = await createConversation(user.id, agentModel, title, kind, body.templateId ?? null)
           planTitle = title
         }
 
@@ -106,7 +106,7 @@ export const Route = createFileRoute('/api/chat')({
         // into history instead of interrupting — the completing turn (or the
         // continuation below, if the stream just ended) picks them up.
         const inFlight = await activeStreamingAssistant(convId)
-        const queued = inFlight !== null || parsed.data.queue === true
+        const queued = inFlight !== null || body.queue === true
 
         // Record this turn (history is built AFTER for normal turns, so the
         // new message isn't duplicated into the prior list).
@@ -135,7 +135,7 @@ export const Route = createFileRoute('/api/chat')({
           // If the stream ended between the client's view and this landing,
           // nothing would pick the message up — chain the next turn ourselves.
           if (!inFlight) {
-            void continueConversation(convId, { agentModel, tier: parsed.data.tier ?? null, plan: planMeta }).catch(() => {})
+            void continueConversation(convId, { agentModel, tier: body.tier ?? null, plan: planMeta }).catch(() => {})
           }
           return json({ queued: true, conversationId: convId }, { status: 202 })
         }
@@ -183,7 +183,7 @@ export const Route = createFileRoute('/api/chat')({
         void persistAssistantStream(toStore, assistantId, convId, {
           agentModel,
           promptChars,
-          tier: parsed.data.tier ?? null,
+          tier: body.tier ?? null,
           plan: planMeta,
         })
         return new Response(toClient, { status: upstream.status, headers })

@@ -1,7 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, requireUser } from '@/server/api-guard'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { logAudit } from '@/server/audit'
 import { getArtifact, guarded, recordGoogleExport } from '@/server/artifacts'
 import { canRead, listEditors } from '@/server/kb-perms'
 import { isConnected } from '@/server/google/connections'
@@ -40,8 +41,9 @@ export const Route = createFileRoute('/api/artifacts/$id/export/google')({
             const folderId = google.principal === 'org' ? (await getOrgTargets()).driveFolderId : null
             file = await exportArtifactWithToken(google.token, artifact, { folderId })
           } else {
-            const user = await getSessionUser(request)
-            if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+            const gate = await requireUser(request)
+            if (gate instanceof Response) return gate
+            const user = gate
             if (!canRead(guarded(artifact), user.id, user.email ?? user.name, editors)) {
               return json({ error: 'forbidden' }, { status: 403 })
             }
@@ -49,6 +51,7 @@ export const Route = createFileRoute('/api/artifacts/$id/export/google')({
               return json({ error: 'not_connected', message: 'Connect a Google account first (Settings → Integrations).' }, { status: 409 })
             }
             file = await exportArtifactToDrive(user.id, artifact, Date.now())
+            void logAudit({ actor: actorOf(user), action: 'artifact.export_google', targetType: 'artifact', targetId: params.id, targetLabel: artifact.title })
           }
 
           await recordGoogleExport(artifact.id, file.id, file.url)

@@ -1,8 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { createFleetCrons, listFleetCrons } from '@/server/agent-crons'
+import { logAudit } from '@/server/audit'
 
 const Body = z.object({
   agentIds: z.array(z.string().uuid()).min(1).max(64),
@@ -19,18 +20,25 @@ export const Route = createFileRoute('/api/fleet/crons')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
         return json({ agents: await listFleetCrons() })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
-        return json({ results: await createFleetCrons(parsed.data) })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
+        const results = await createFleetCrons(body)
+        void logAudit({
+          actor: actorOf(user),
+          action: 'cron.create',
+          targetType: 'fleet',
+          targetId: 'fleet',
+          targetLabel: body.name,
+          after: { agentIds: body.agentIds, schedule: body.schedule },
+        })
+        return json({ results })
       },
     },
   },

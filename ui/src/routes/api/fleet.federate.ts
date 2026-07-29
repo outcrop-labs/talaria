@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { federateFromDir } from '@/server/fleet-federate'
 import { logAudit } from '@/server/audit'
 
@@ -17,15 +17,14 @@ export const Route = createFileRoute('/api/fleet/federate')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         const actor = user.email ?? user.name ?? 'admin'
-        const result = await federateFromDir(parsed.data.dir, actor)
+        const result = await federateFromDir(body.dir, actor)
         if (result.agents.some((a) => a.status === 'federated')) {
-          void logAudit({ actor, action: 'agent.federate', targetType: 'fleet', targetId: 'fleet', targetLabel: parsed.data.dir })
+          void logAudit({ actor: actorOf(user), action: 'agent.federate', targetType: 'fleet', targetId: 'fleet', targetLabel: body.dir })
         }
         return json({ result })
       },

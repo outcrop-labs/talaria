@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { backfillAll, backfillStatus, ragHealth } from '@/server/retrieval/backfill'
 import { reindexAll, reindexStatus, retrievalUpgradeStatus } from '@/server/retrieval/migrate'
 import {
@@ -47,9 +47,8 @@ export const Route = createFileRoute('/api/admin/rag')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         const sql = await db()
         const spaces = (await sql`
           select id, name, rag_collection_id as "collectionId" from kb_spaces order by name asc
@@ -64,43 +63,41 @@ export const Route = createFileRoute('/api/admin/rag')({
         })
       },
       PUT: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Put.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        const actor = user.email ?? user.name ?? 'admin'
-        if (parsed.data.reranker) {
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Put)
+        if (body instanceof Response) return body
+        const actor = actorOf(user)
+        if (body.reranker) {
           const cfg = await setRerankConfig({
-            ...parsed.data.reranker,
-            provider: parsed.data.reranker.provider as RerankProviderId | undefined,
+            ...body.reranker,
+            provider: body.reranker.provider as RerankProviderId | undefined,
           })
           void logAudit({ actor, action: 'rag.reranker', targetType: 'rag', targetId: 'reranker', after: { provider: cfg.provider, model: cfg.model } })
         }
-        if (parsed.data.spaceBrain) {
+        if (body.spaceBrain) {
           const sql = await db()
-          await sql`update kb_spaces set rag_collection_id = ${parsed.data.spaceBrain.collectionId} where id = ${parsed.data.spaceBrain.spaceId}`
+          await sql`update kb_spaces set rag_collection_id = ${body.spaceBrain.collectionId} where id = ${body.spaceBrain.spaceId}`
           // Existing docs move to their new home right away.
-          void resyncSpaceDocs(parsed.data.spaceBrain.spaceId).catch(() => {})
-          void logAudit({ actor, action: 'rag.space_brain', targetType: 'kb-space', targetId: parsed.data.spaceBrain.spaceId, after: { collectionId: parsed.data.spaceBrain.collectionId } })
+          void resyncSpaceDocs(body.spaceBrain.spaceId).catch(() => {})
+          void logAudit({ actor, action: 'rag.space_brain', targetType: 'kb-space', targetId: body.spaceBrain.spaceId, after: { collectionId: body.spaceBrain.collectionId } })
         }
         return json({ rerank: { config: await rerankConfigPublic() } })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Post.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        if ('models' in parsed.data) {
-          return json({ models: await rerankModels(parsed.data.models as RerankProviderId, parsed.data.key ?? null) })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Post)
+        if (body instanceof Response) return body
+        if ('models' in body) {
+          return json({ models: await rerankModels(body.models as RerankProviderId, body.key ?? null) })
         }
         // 'reindex' rebuilds collections in the current model's shape then
         // refills; 'backfill' refills in place. Both detach.
-        const action = parsed.data.action
+        const action = body.action
         if (action === 'reindex') void reindexAll().catch(() => {})
         else void backfillAll().catch(() => {})
-        void logAudit({ actor: user.email ?? 'admin', action: `rag.${action}`, targetType: 'rag', targetId: action })
+        void logAudit({ actor: actorOf(user), action: `rag.${action}`, targetType: 'rag', targetId: action })
         return json({ started: true, action })
       },
     },

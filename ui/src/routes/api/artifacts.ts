@@ -1,13 +1,13 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
-import { hasPerm } from '@/server/permissions'
+import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { personalAssistantOwners } from '@/server/users'
 import { agentCategoryFolder, createArtifact, guarded, listArtifacts, namedRootFolder, saveArtifact } from '@/server/artifacts'
 import { describeAgent } from '@/server/gateway'
 import { canRead, grantedItemIds, grantedItemIdsForAgent, setEditors } from '@/server/kb-perms'
+import { logAudit } from '@/server/audit'
 
 const Body = z.object({
   kind: z.enum(['doc', 'sheet', 'microsite', 'file']).optional(),
@@ -33,15 +33,16 @@ export const Route = createFileRoute('/api/artifacts')({
           const artifacts = (await listArtifacts()).filter((a) => a.visibility !== 'private' || granted.has(a.id))
           return json({ artifacts })
         }
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         const granted = await grantedItemIds('artifact', user.id)
         const artifacts = (await listArtifacts()).filter((a) => granted.has(a.id) || canRead(guarded(a), user.id, user.email ?? user.name))
         return json({ artifacts })
       },
       POST: async ({ request }) => {
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
 
         if (checkAgentKey(request)) {
           const name = agentName(request)
@@ -51,10 +52,10 @@ export const Route = createFileRoute('/api/artifacts')({
           // share it; the assistant cannot make it org-wide). A general org
           // agent's output is for the workspace — org-visible, ownerless.
           const paOwner = (await personalAssistantOwners()).get(name) ?? null
-          const folderId = parsed.data.folder ? await namedRootFolder(parsed.data.folder, name) : null
+          const folderId = body.folder ? await namedRootFolder(body.folder, name) : null
           const artifact = await createArtifact({
-            kind: parsed.data.kind,
-            title: parsed.data.title,
+            kind: body.kind,
+            title: body.title,
             createdBy: name,
             ownerUserId: paOwner,
             // Named folder (find-or-create) when the agent files deliberately;
@@ -65,18 +66,19 @@ export const Route = createFileRoute('/api/artifacts')({
           const updated = await saveArtifact(
             artifact.id,
             paOwner
-              ? { body: parsed.data.body, visibility: 'private', editPolicy: 'owner' }
-              : { body: parsed.data.body, visibility: parsed.data.visibility ?? 'org', editPolicy: 'org' },
+              ? { body: body.body, visibility: 'private', editPolicy: 'owner' }
+              : { body: body.body, visibility: body.visibility ?? 'org', editPolicy: 'org' },
             name,
           )
           return json({ artifact: updated ?? artifact })
         }
 
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'artifacts.create'))) return json({ error: 'no permission to create documents' }, { status: 403 })
-        const artifact = await createArtifact({ kind: parsed.data.kind, title: parsed.data.title, createdBy: user.email ?? user.name ?? 'user', ownerUserId: user.id })
-        const updated = parsed.data.body !== undefined ? await saveArtifact(artifact.id, { body: parsed.data.body }, user.email ?? user.name ?? 'user') : null
+        const gate = await requirePerm(request, 'artifacts.create')
+        if (gate instanceof Response) return gate
+        const user = gate
+        const artifact = await createArtifact({ kind: body.kind, title: body.title, createdBy: user.email ?? user.name ?? 'user', ownerUserId: user.id })
+        const updated = body.body !== undefined ? await saveArtifact(artifact.id, { body: body.body }, user.email ?? user.name ?? 'user') : null
+        void logAudit({ actor: actorOf(user), action: 'artifact.create', targetType: 'artifact', targetId: artifact.id, targetLabel: artifact.title })
         return json({ artifact: updated ?? artifact })
       },
     },

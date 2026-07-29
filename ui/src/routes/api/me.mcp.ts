@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { hasUserCredentials, listMcpServers, setUserCredentials } from '@/server/mcp-registry'
 import { dropOauthTokens, hasOauthTokens } from '@/server/mcp-oauth'
 import { rollAgentForUser } from '@/server/mcp-apply'
@@ -17,8 +17,8 @@ export const Route = createFileRoute('/api/me/mcp')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         const servers = (await listMcpServers()).filter((s) => s.enabled && s.authMode === 'per-user')
         return json({
           servers: await Promise.all(
@@ -35,19 +35,20 @@ export const Route = createFileRoute('/api/me/mcp')({
         })
       },
       PUT: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const parsed = z
-          .object({ serverId: z.string().uuid(), headers: z.record(z.string(), z.string().max(4000)).nullable() })
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        await setUserCredentials(parsed.data.serverId, user.id, parsed.data.headers)
-        if (parsed.data.headers === null) await dropOauthTokens(parsed.data.serverId, user.id)
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(
+          request,
+          z.object({ serverId: z.string().uuid(), headers: z.record(z.string(), z.string().max(4000)).nullable() }),
+        )
+        if (body instanceof Response) return body
+        await setUserCredentials(body.serverId, user.id, body.headers)
+        if (body.headers === null) await dropOauthTokens(body.serverId, user.id)
         void logAudit({
-          actor: user.email ?? user.name ?? 'user',
-          action: parsed.data.headers ? 'mcp.connect' : 'mcp.disconnect',
+          actor: actorOf(user),
+          action: body.headers ? 'mcp.connect' : 'mcp.disconnect',
           targetType: 'mcp-server',
-          targetId: parsed.data.serverId,
+          targetId: body.serverId,
         })
         void renderFleet().catch(() => {}) // config truth first…
         void rollAgentForUser(user.id).catch(() => {}) // …then the live cutover

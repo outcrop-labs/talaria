@@ -1,7 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, requireAdmin } from '@/server/api-guard'
 import { reconcileFleet } from '@/server/fleet-reconcile'
+import { logAudit } from '@/server/audit'
 
 // POST → render + start every enabled managed agent that isn't running. One
 // button to bring the fleet to desired state (drift, cold start). Admin.
@@ -9,13 +10,15 @@ export const Route = createFileRoute('/api/fleet/reconcile')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
         try {
-          return json(await reconcileFleet())
+          const result = await reconcileFleet()
+          void logAudit({ actor: actorOf(user), action: 'fleet.reconcile', targetType: 'fleet', targetId: 'fleet' })
+          return json(result)
         } catch (e) {
-          return json({ error: (e as Error).message }, { status: 500 })
+          console.error('[fleet.reconcile]', e)
+          return json({ error: 'reconcile failed — see server logs' }, { status: 500 })
         }
       },
     },

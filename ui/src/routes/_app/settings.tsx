@@ -13,8 +13,9 @@ import { savePreferredModel, useModels, usePreferredModel } from '@/lib/muse'
 import { AssistantSection } from '@/components/assistant/assistant-section'
 import { AppSurface } from '@/components/app/app-surface'
 import { useEnabledApps } from '@/lib/apps'
-import { InfoTip } from '@/components/ui/info-tip'
-import { cn } from '@/lib/cn'
+import { Tabs } from '@/components/ui/tabs'
+import { SectionHeader } from '@/components/ui/section-header'
+import { useSavedFlash } from '@/components/ui/save-button'
 
 export const Route = createFileRoute('/_app/settings')({
   component: SettingsPage,
@@ -44,7 +45,7 @@ function SettingsPage() {
   const qc = useQueryClient()
   const { data: user, isLoading: sessionLoading } = useSession()
   const [name, setName] = useState('')
-  const [saved, setSaved] = useState(false)
+  const { saved, flash } = useSavedFlash()
   const [busy, setBusy] = useState(false)
   const search = Route.useSearch()
   const nav = Route.useNavigate()
@@ -76,8 +77,7 @@ function SettingsPage() {
       if (r.ok) {
         await qc.invalidateQueries({ queryKey: ['session'] })
         await qc.invalidateQueries({ queryKey: ['users'] })
-        setSaved(true)
-        setTimeout(() => setSaved(false), 1500)
+        flash()
       }
     } finally {
       setBusy(false)
@@ -88,19 +88,7 @@ function SettingsPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto w-full max-w-2xl">
         <h1 className="mercury-text mb-4 text-lg font-semibold">Settings</h1>
-        <div className="mb-6 flex gap-1 border-b border-line-subtle">
-          {[...SETTINGS_TABS, ...appTabs].map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn('relative px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
-            >
-              {t.label}
-              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
-            </button>
-          ))}
-        </div>
+        <Tabs items={[...SETTINGS_TABS, ...appTabs]} value={tab} onChange={setTab} className="mb-6" />
         {tab === 'profile' && (
         <section className="mercury-panel rounded-2xl p-6">
           <div className="mb-4 flex items-center gap-3">
@@ -170,7 +158,7 @@ function PreferredModelPicker() {
   const qc = useQueryClient()
   const { data: catalog, isLoading: catalogLoading } = useModels()
   const { data: prefs, isLoading: prefsLoading } = usePreferredModel()
-  const [saved, setSaved] = useState(false)
+  const { saved, flash } = useSavedFlash()
   const [error, setError] = useState<string | null>(null)
   // Bare model names only — endpoint-qualified ids stay available as raw ids
   // for power users via the same list (they're in the catalog too).
@@ -182,8 +170,7 @@ function PreferredModelPicker() {
     if (r && typeof r === 'object' && 'error' in r && r.error) setError(String(r.error))
     await qc.invalidateQueries({ queryKey: ['profile-prefs'] })
     await qc.invalidateQueries({ queryKey: ['gateway-models'] })
-    setSaved(true)
-    setTimeout(() => setSaved(false), 1500)
+    flash()
   }
 
   return (
@@ -279,10 +266,10 @@ function McpConnectionsSection() {
   if (!isPending && (data ?? []).length === 0) return null
   return (
     <section className="mercury-panel mt-4 rounded-2xl p-6">
-      <div className="mb-3 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Tool accounts</span>
-        <InfoTip text="MCP servers your org runs in per-user mode. Connect your own account (stored encrypted) and your assistant can use the server as you. Disconnect any time — the server drops off your assistant on the next config render." />
-      </div>
+      <SectionHeader
+        title="Tool accounts"
+        info="MCP servers your org runs in per-user mode. Connect your own account (stored encrypted) and your assistant can use the server as you. Disconnect any time — the server drops off your assistant on the next config render."
+      />
       {isPending ? (
         <SkeletonRows rows={2} />
       ) : (
@@ -394,10 +381,11 @@ function IntegrationsSection() {
 
   return (
     <section className="mercury-panel rounded-2xl p-6">
-      <div className="mb-4 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Connected accounts</span>
-        <InfoTip text="Connect Google to export docs and sheets into your Drive, and let the agents working for you build Google Docs on your behalf." />
-      </div>
+      <SectionHeader
+        className="mb-4"
+        title="Connected accounts"
+        info="Connect Google to export docs and sheets into your Drive, and let the agents working for you build Google Docs on your behalf."
+      />
 
       {isLoading ? (
         // Never show "Not connected" + Connect while the status is unknown —
@@ -495,10 +483,11 @@ function ApiKeysSection() {
 
   return (
     <section className="mercury-panel rounded-2xl p-6">
-      <div className="mb-4 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">API keys</span>
-        <InfoTip text={`Connect external tools to the org's model stack: base URL ${baseUrl}, any model from /models (or endpoint/model to pin a backend).`} />
-      </div>
+      <SectionHeader
+        className="mb-4"
+        title="API keys"
+        info={`Connect external tools to the org's model stack: base URL ${baseUrl}, any model from /models (or endpoint/model to pin a backend).`}
+      />
 
       {isLoading ? (
         // Hold BOTH the key list and the canMint branch — flashing "API keys

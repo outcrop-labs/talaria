@@ -4,8 +4,11 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Combobox } from '@/components/ui/combobox'
+import { CopyButton } from '@/components/ui/copy-link-button'
 import { EmptyState } from '@/components/ui/empty-state'
+import { IconButton } from '@/components/ui/icon-button'
 import { Input } from '@/components/ui/input'
 import { InfoTip } from '@/components/ui/info-tip'
 import { Modal } from '@/components/ui/modal'
@@ -250,24 +253,20 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
         </div>
         {status && <span className={cn('shrink-0 rounded-full border px-2 py-0.5 text-[11px]', status.cls)}>{status.label}</span>}
         {s.oauthEnabled && s.authMode === 'org' && !s.orgConnected && s.enabled && (s.oauthMeta?.dcr || s.oauthMeta?.clientSet) && (
-          <button
-            type="button"
+          <Button
+            size="sm"
+            variant="accent-soft"
+            className="shrink-0"
             onClick={() => void connectPopup(s.id, 'org')}
-            className="shrink-0 rounded-lg border border-accent/60 bg-accent/10 px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/15"
             title="This server authenticates with OAuth — connect the org account so agents can use it"
           >
             Connect
-          </button>
+          </Button>
         )}
         {!s.builtin && (
-          <button
-            type="button"
-            onClick={cardMenu}
-            title="Server actions"
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-fg"
-          >
+          <IconButton size="sm" title="Server actions" onClick={cardMenu}>
             <MoreHorizontal size={15} />
-          </button>
+          </IconButton>
         )}
       </div>
 
@@ -316,15 +315,12 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
             {s.builtin ? (
               <span className="text-xs text-muted">every agent — rows below narrow individual agents</span>
             ) : (
-              <label className="flex items-center gap-1.5 text-xs text-muted" title="Every enabled agent carries this server; rows below become per-agent tool overrides">
-                <input
-                  type="checkbox"
-                  checked={s.allAgents}
-                  onChange={(e) => void patch({ allAgents: e.target.checked })}
-                  className="accent-[var(--theme-accent)]"
-                />
-                all agents
-              </label>
+              <Checkbox
+                checked={s.allAgents}
+                onChange={(checked) => void patch({ allAgents: checked })}
+                label="all agents"
+                title="Every enabled agent carries this server; rows below become per-agent tool overrides"
+              />
             )}
             <span className="flex-1" />
             <AddPickerButton
@@ -335,9 +331,11 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
             />
           </div>
           {s.assignments.length === 0 ? (
-            <div className="px-1.5 py-1 text-xs text-muted/70">
-              {s.allAgents ? 'Every enabled agent, every tool. Add a row to narrow one agent.' : 'No agents yet — add one, or check “all agents”.'}
-            </div>
+            <EmptyState
+              variant="inline"
+              className="px-1.5 py-1 text-muted/70"
+              title={s.allAgents ? 'Every enabled agent, every tool. Add a row to narrow one agent.' : 'No agents yet — add one, or check “all agents”.'}
+            />
           ) : (
             <div className="space-y-0.5">
               {s.allAgents && (
@@ -385,7 +383,7 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
             />
           </div>
           {s.userAccess.length === 0 ? (
-            <div className="px-1.5 py-1 text-xs text-muted/70">Everyone with an assigned agent may use it.</div>
+            <EmptyState variant="inline" className="px-1.5 py-1 text-muted/70" title="Everyone with an assigned agent may use it." />
           ) : (
             <div className="space-y-0.5">
               {s.userAccess.map((ua) => (
@@ -824,8 +822,8 @@ function InstallDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" onClick={onCancel}>
-      <div className="w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+    <Modal open onClose={onCancel} width="max-w-md">
+      <div>
         <div className="flex items-center gap-3">
           <ServerMark title={l.title} domain={l.domain} icon={l.icon} size={36} />
           <div className="min-w-0 flex-1">
@@ -891,7 +889,7 @@ function InstallDialog({
           </Button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -954,9 +952,7 @@ function OauthAppSetup({ serverId, domain, docs, onSaved }: { serverId: string; 
             <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Callback URL (register this with the provider)</label>
             <div className="flex items-center gap-2">
               <code className="min-w-0 flex-1 truncate rounded-lg bg-card px-2 py-1.5 text-xs text-fg">{callback}</code>
-              <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard.writeText(callback)}>
-                Copy
-              </Button>
+              <CopyButton value={callback} label="Copy" className="shrink-0 text-xs" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">

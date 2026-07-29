@@ -1,8 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
-import { hasPerm } from '@/server/permissions'
+import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import { addEndpointModels, addVersionIfChanged, applyConfigEdits, getAgentDef, listEndpoints, listVersions } from '@/server/agent-defs'
 import { availableModels } from '@/server/provider-catalog'
 import { rollAgent } from '@/server/fleet-reconcile'
@@ -31,11 +30,10 @@ export const Route = createFileRoute('/api/fleet/defs/$id/edit')({
   server: {
     handlers: {
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requirePerm(request, 'agents.manage')
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         const def = await getAgentDef(params.id)
         if (!def) return json({ error: 'not found' }, { status: 404 })
 
@@ -48,7 +46,7 @@ export const Route = createFileRoute('/api/fleet/defs/$id/edit')({
         // Without this, an unregistered model renders fine and the agent then
         // dies with a gateway 404 on its first turn — a silent-freeze chat.
         const endpoints = new Map((await listEndpoints()).map((e) => [e.name, e]))
-        const targets = [parsed.data.main, ...parsed.data.aliases, ...parsed.data.fallbacks]
+        const targets = [body.main, ...body.aliases, ...body.fallbacks]
         for (const t of targets) {
           const ep = endpoints.get(t.endpoint)
           if (!ep) return json({ error: `endpoint "${t.endpoint}" does not exist` }, { status: 400 })
@@ -67,19 +65,19 @@ export const Route = createFileRoute('/api/fleet/defs/$id/edit')({
 
         try {
           const config = await applyConfigEdits(latest.config, {
-            main: parsed.data.main,
-            aliases: parsed.data.aliases,
-            fallbacks: parsed.data.fallbacks,
+            main: body.main,
+            aliases: body.aliases,
+            fallbacks: body.fallbacks,
           })
           const { version, created } = await addVersionIfChanged(def.id, {
-            soul: parsed.data.soul,
+            soul: body.soul,
             config,
-            note: parsed.data.note ?? 'edited in Talaria',
+            note: body.note ?? 'edited in Talaria',
             createdBy: user.email ?? user.name ?? 'admin',
           })
           if (created) {
             void logAudit({
-              actor: user.email ?? user.name ?? 'admin',
+              actor: actorOf(user),
               action: 'agent.edit',
               targetType: 'agent',
               targetId: def.id,
@@ -88,7 +86,7 @@ export const Route = createFileRoute('/api/fleet/defs/$id/edit')({
             })
           }
           let applied = false
-          if (created && parsed.data.apply && def.managed) {
+          if (created && body.apply && def.managed) {
             // Roll, don't restart: the new config comes up beside the old
             // container and traffic cuts over only after health — applying an
             // edit never interrupts conversations in flight.

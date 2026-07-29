@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { createInvite, listInvites, revokeInvite } from '@/server/invites'
 import { logAudit } from '@/server/audit'
 
@@ -11,20 +11,18 @@ export const Route = createFileRoute('/api/admin/invites')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         return json({ invites: await listInvites() })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
         const actor = user.email ?? user.name ?? 'admin'
-        const parsed = z.object({ email: z.string().max(200) }).safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, z.object({ email: z.string().max(200) }))
+        if (body instanceof Response) return body
         try {
-          const r = await createInvite(parsed.data.email, actor, new URL(request.url).origin)
+          const r = await createInvite(body.email, actor, new URL(request.url).origin)
           void logAudit({ actor, action: 'invite.create', targetType: 'invite', targetId: r.invite.id, targetLabel: r.invite.email })
           return json(r)
         } catch (e) {
@@ -32,13 +30,12 @@ export const Route = createFileRoute('/api/admin/invites')({
         }
       },
       DELETE: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = z.object({ id: z.string().uuid() }).safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        await revokeInvite(parsed.data.id)
-        void logAudit({ actor: user.email ?? user.name ?? 'admin', action: 'invite.revoke', targetType: 'invite', targetId: parsed.data.id })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, z.object({ id: z.string().uuid() }))
+        if (body instanceof Response) return body
+        await revokeInvite(body.id)
+        void logAudit({ actor: actorOf(user), action: 'invite.revoke', targetType: 'invite', targetId: body.id })
         return json({ ok: true })
       },
     },

@@ -1,8 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
-import { hasPerm } from '@/server/permissions'
+import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import { getAgentDef, updateAgentMeta } from '@/server/agent-defs'
 import { setAgentTemplates } from '@/server/templates'
 import { logAudit } from '@/server/audit'
@@ -21,22 +20,21 @@ export const Route = createFileRoute('/api/fleet/defs/$id')({
   server: {
     handlers: {
       PATCH: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requirePerm(request, 'agents.manage')
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         const def = await getAgentDef(params.id)
         if (!def) return json({ error: 'not found' }, { status: 404 })
-        await updateAgentMeta(params.id, { role: parsed.data.role, displayName: parsed.data.displayName })
-        if (parsed.data.ticketTemplateId !== undefined || parsed.data.planTemplateId !== undefined) {
+        await updateAgentMeta(params.id, { role: body.role, displayName: body.displayName })
+        if (body.ticketTemplateId !== undefined || body.planTemplateId !== undefined) {
           await setAgentTemplates(def.model, {
-            ticketTemplateId: parsed.data.ticketTemplateId,
-            planTemplateId: parsed.data.planTemplateId,
+            ticketTemplateId: body.ticketTemplateId,
+            planTemplateId: body.planTemplateId,
           })
         }
         void logAudit({
-          actor: user.email ?? user.name ?? 'admin',
+          actor: actorOf(user),
           action: 'agent.meta',
           targetType: 'agent',
           targetId: def.id,

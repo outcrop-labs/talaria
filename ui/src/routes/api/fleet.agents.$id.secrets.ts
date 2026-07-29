@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { deleteAgentSecret, listAgentSecrets, setAgentSecret } from '@/server/agent-secrets'
 import { ownsAgent } from '@/server/personal-agent'
 import { logAudit } from '@/server/audit'
@@ -19,27 +19,27 @@ export const Route = createFileRoute('/api/fleet/agents/$id/secrets')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
         return json({ secrets: await listAgentSecrets(params.id) })
       },
       PUT: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = PutBody.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })
+        const body = await parseBody(request, PutBody)
+        if (body instanceof Response) return body
         try {
-          await setAgentSecret(params.id, parsed.data.name, parsed.data.value, user.email ?? user.name ?? null)
+          await setAgentSecret(params.id, body.name, body.value, user.email ?? user.name ?? null)
           void logAudit({
-            actor: user.email ?? user.name ?? 'admin',
+            actor: actorOf(user),
             action: 'agent.secret_set',
             targetType: 'agent',
             targetId: params.id,
-            after: { name: parsed.data.name },
+            after: { name: body.name },
           })
           return json({ ok: true })
         } catch (e) {
@@ -47,8 +47,8 @@ export const Route = createFileRoute('/api/fleet/agents/$id/secrets')({
         }
       },
       DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
         // Body { name } — matches PUT's transport (was ?name=).
@@ -59,7 +59,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/secrets')({
         if (!name) return json({ error: 'missing name' }, { status: 400 })
         await deleteAgentSecret(params.id, name)
         void logAudit({
-          actor: user.email ?? user.name ?? 'admin',
+          actor: actorOf(user),
           action: 'agent.secret_delete',
           targetType: 'agent',
           targetId: params.id,

@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { artifactsForTarget, guarded } from '@/server/artifacts'
 import { canRead } from '@/server/kb-perms'
 
@@ -10,8 +10,9 @@ export const Route = createFileRoute('/api/artifacts/for')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         const q = new URL(request.url).searchParams
         const targetType = q.get('targetType')
         const targetId = q.get('targetId')

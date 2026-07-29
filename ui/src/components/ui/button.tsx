@@ -2,7 +2,7 @@ import { forwardRef } from 'react'
 import { cn } from '@/lib/cn'
 import { controlSizes, type ControlSize } from './control'
 
-type Variant = 'primary' | 'outline' | 'ghost' | 'danger'
+type Variant = 'primary' | 'outline' | 'ghost' | 'danger' | 'danger-outline' | 'accent-soft' | 'link'
 type Size = ControlSize
 
 const base =
@@ -16,6 +16,12 @@ const variants: Record<Variant, string> = {
   outline: 'border border-line bg-card text-fg hover:border-[var(--theme-accent-border)]',
   ghost: 'text-muted hover:text-accent',
   danger: 'bg-[color:var(--theme-danger)] text-white hover:brightness-110 shadow-[var(--theme-shadow-1)]',
+  // Quiet destructive with a border — for danger actions inside dense panels.
+  'danger-outline': 'border border-[color:var(--theme-danger)]/40 bg-card text-[color:var(--theme-danger)] hover:border-[color:var(--theme-danger)]',
+  // Soft accent call-to-action (connect/enable nudges) — visible, not primary.
+  'accent-soft': 'border border-accent/60 bg-accent/10 text-accent hover:bg-accent/15',
+  // Text-link action; sizes collapse (no height) — inline with prose.
+  link: 'text-accent underline-offset-2 hover:underline !h-auto !px-0',
 }
 
 const sizes: Record<Size, string> = {

@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { getEmailConfig, setEmailConfig, sendEmail, emailShell } from '@/server/email'
 import { logAudit } from '@/server/audit'
 
@@ -11,9 +11,8 @@ export const Route = createFileRoute('/api/admin/email')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         const cfg = await getEmailConfig()
         return json({
           config: {
@@ -25,12 +24,12 @@ export const Route = createFileRoute('/api/admin/email')({
         })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const actor = user.email ?? user.name ?? 'admin'
-        const parsed = z
-          .union([
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const actor = actorOf(user)
+        const body = await parseBody(
+          request,
+          z.union([
             z.object({ test: z.literal(true) }),
             z.object({
               provider: z.enum(['smtp', 'resend']).nullable().optional(),
@@ -46,10 +45,10 @@ export const Route = createFileRoute('/api/admin/email')({
                 .optional(),
               resend: z.object({ apiKey: z.string().max(200).nullable().optional() }).optional(),
             }),
-          ])
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        if ('test' in parsed.data) {
+          ]),
+        )
+        if (body instanceof Response) return body
+        if ('test' in body) {
           if (!user.email) return json({ error: 'your account has no email to test against' }, { status: 400 })
           const r = await sendEmail({
             to: user.email,
@@ -59,8 +58,8 @@ export const Route = createFileRoute('/api/admin/email')({
           })
           return r.ok ? json({ ok: true }) : json({ error: r.error }, { status: 502 })
         }
-        await setEmailConfig(parsed.data)
-        void logAudit({ actor, action: 'email.config', targetType: 'email', targetId: 'config', after: { provider: parsed.data.provider } })
+        await setEmailConfig(body)
+        void logAudit({ actor, action: 'email.config', targetType: 'email', targetId: 'config', after: { provider: body.provider } })
         return json({ ok: true })
       },
     },

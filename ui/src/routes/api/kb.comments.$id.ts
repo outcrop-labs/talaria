@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { deleteComment, setResolved } from '@/server/kb-comments'
 
 // One comment. PATCH { resolved } → resolve/unresolve its thread (author,
@@ -10,16 +10,18 @@ export const Route = createFileRoute('/api/kb/comments/$id')({
   server: {
     handlers: {
       PATCH: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const parsed = z.object({ resolved: z.boolean() }).safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        const ok = await setResolved(params.id, parsed.data.resolved, user.id)
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
+        const body = await parseBody(request, z.object({ resolved: z.boolean() }))
+        if (body instanceof Response) return body
+        const ok = await setResolved(params.id, body.resolved, user.id)
         return ok ? json({ ok: true }) : json({ error: 'forbidden' }, { status: 403 })
       },
       DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         const ok = await deleteComment(params.id, user.id)
         return ok ? json({ ok: true }) : json({ error: 'forbidden' }, { status: 403 })
       },

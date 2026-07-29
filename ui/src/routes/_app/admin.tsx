@@ -20,7 +20,11 @@ import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
 import { useEnabledApps } from '@/lib/apps'
 import { RetrievalPanel } from '@/components/admin/retrieval-panel'
 import { StoragePanel } from '@/components/admin/storage-panel'
-import { InfoTip } from '@/components/ui/info-tip'
+import { Tabs } from '@/components/ui/tabs'
+import { Checkbox } from '@/components/ui/checkbox'
+import { SectionHeader } from '@/components/ui/section-header'
+import { useSavedFlash } from '@/components/ui/save-button'
+import { CopyButton } from '@/components/ui/copy-link-button'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 
@@ -142,19 +146,7 @@ function AdminPage() {
         <h1 className="mercury-text text-2xl font-semibold">Admin</h1>
 
         {/* One concern per tab; every panel keeps its own component. */}
-        <div className="flex gap-1 border-b border-line-subtle">
-          {ADMIN_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn('relative px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
-            >
-              {t.label}
-              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
-            </button>
-          ))}
-        </div>
+        <Tabs items={ADMIN_TABS} value={tab} onChange={setTab} />
 
         {tab === 'org' && (
           <>
@@ -184,10 +176,11 @@ function AdminPage() {
         {tab === 'people' && perms && <MemberDefaultsPanel perms={perms} />}
         {tab === 'people' && (
         <Panel>
-          <div className="mb-4 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">People</span>
-        <InfoTip text="Roles, per-person agent access, and which views each member can reach. Empty = all (open by default); pick any to restrict. Admins always have full access." />
-      </div>
+          <SectionHeader
+            className="mb-4"
+            title="People"
+            info="Roles, per-person agent access, and which views each member can reach. Empty = all (open by default); pick any to restrict. Admins always have full access."
+          />
           {error && (
             <div className="mb-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
               {error}
@@ -241,18 +234,13 @@ function AdminPage() {
                       <option value="admin">Admin</option>
                     </Select>
                     {u.role === 'admin' && u.assistantModel && (
-                      <label
-                        className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
+                      <Checkbox
+                        className="shrink-0"
                         title={`Give ${u.assistantModel} org-wide view/edit: every board, every channel and relay (never DMs), and editor rights on all org-visible knowledge and artifacts. Only while this user is an admin.`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={u.assistantElevated}
-                          onChange={(e) => void update(u.id, { assistantElevated: e.target.checked })}
-                          className="accent-[var(--theme-accent)]"
-                        />
-                        elevated assistant
-                      </label>
+                        checked={u.assistantElevated}
+                        onChange={(checked) => void update(u.id, { assistantElevated: checked })}
+                        label="elevated assistant"
+                      />
                     )}
                     <span className="w-16 shrink-0 text-right text-xs text-muted">{relativeTime(u.lastSeenAt)}</span>
                   </div>
@@ -389,10 +377,10 @@ function MemberDefaultsPanel({ perms }: { perms: PermsData }) {
   }
   return (
     <Panel>
-      <div className="mb-3 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Member defaults</span>
-        <InfoTip text="What every plain member may do out of the box. Per-person exceptions live on each row below; admins always hold every permission. A dot marks a default you've changed from Talaria's shipped baseline." />
-      </div>
+      <SectionHeader
+        title="Member defaults"
+        info="What every plain member may do out of the box. Per-person exceptions live on each row below; admins always hold every permission. A dot marks a default you've changed from Talaria's shipped baseline."
+      />
       <div className="space-y-2">
         {permGroups(perms.catalog).map(([group, entries]) => (
           <div key={group} className="flex flex-wrap items-center gap-1.5">
@@ -451,10 +439,10 @@ function InstanceDomainPanel() {
 
   return (
     <Panel className="mt-4">
-      <div className="mb-3 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Instance domain</span>
-        <InfoTip text="Where THIS Talaria deployment is hosted (e.g. talaria.yourcompany.com) — separate from your email sign-up domains below. Verification round-trips through the domain and confirms it reaches this exact instance. Once verified it becomes the canonical base URL: OAuth apps get one stable callback, links use it." />
-      </div>
+      <SectionHeader
+        title="Instance domain"
+        info="Where THIS Talaria deployment is hosted (e.g. talaria.yourcompany.com) — separate from your email sign-up domains below. Verification round-trips through the domain and confirms it reaches this exact instance. Once verified it becomes the canonical base URL: OAuth apps get one stable callback, links use it."
+      />
       {isPending ? (
         <SkeletonRows rows={1} />
       ) : data ? (
@@ -558,10 +546,10 @@ function EmailPanel() {
   }
   return (
     <Panel className="mt-4">
-      <div className="mb-3 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Email</span>
-        <InfoTip text="Transactional email — invites today, more later. Bring your own SMTP (e.g. Google Workspace: smtp.gmail.com, port 587, an app password) or connect Resend. Secrets are stored encrypted and never shown again." />
-      </div>
+      <SectionHeader
+        title="Email"
+        info="Transactional email — invites today, more later. Bring your own SMTP (e.g. Google Workspace: smtp.gmail.com, port 587, an app password) or connect Resend. Secrets are stored encrypted and never shown again."
+      />
       <div className="space-y-3">
         <div className="flex items-center gap-3">
           <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">Provider</label>
@@ -594,10 +582,12 @@ function EmailPanel() {
               <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">Host / port</label>
               <Input size="sm" defaultValue={data.smtp.host} onBlur={(e) => void post({ smtp: { host: e.target.value } })} placeholder="smtp.gmail.com" className="w-56" />
               <Input size="sm" defaultValue={String(data.smtp.port)} onBlur={(e) => void post({ smtp: { port: Number(e.target.value) || 587 } })} className="w-20" />
-              <label className="flex items-center gap-1.5 text-xs text-muted" title="TLS from the first byte (port 465). Off = STARTTLS (587).">
-                <input type="checkbox" checked={data.smtp.secure} onChange={(e) => void post({ smtp: { secure: e.target.checked } })} className="accent-[var(--theme-accent)]" />
-                TLS
-              </label>
+              <Checkbox
+                title="TLS from the first byte (port 465). Off = STARTTLS (587)."
+                checked={data.smtp.secure}
+                onChange={(checked) => void post({ smtp: { secure: checked } })}
+                label="TLS"
+              />
             </div>
             <div className="flex items-center gap-3">
               <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">User</label>
@@ -700,10 +690,10 @@ function InvitesPanel() {
 
   return (
     <Panel className="mb-4">
-      <div className="mb-3 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Invites</span>
-        <InfoTip text="Invite by email — they get a join link and are admitted the moment they sign in with Google on that address. Invites expire after two weeks; re-inviting re-issues a fresh link; revoking shuts the door instantly. Needs the Email provider on the Org tab." />
-      </div>
+      <SectionHeader
+        title="Invites"
+        info="Invite by email — they get a join link and are admitted the moment they sign in with Google on that address. Invites expire after two weeks; re-inviting re-issues a fresh link; revoking shuts the door instantly. Needs the Email provider on the Org tab."
+      />
       <div className="mb-3 flex items-center gap-2">
         <Input
           size="sm"
@@ -722,7 +712,7 @@ function InvitesPanel() {
       {isPending ? (
         <SkeletonRows rows={2} />
       ) : (data ?? []).length === 0 ? (
-        <div className="font-sans text-xs text-muted">No invites yet.</div>
+        <EmptyState variant="inline" title="No invites yet." className="font-sans" />
       ) : (
         <ul className="divide-y divide-line-subtle">
           {(data ?? []).map((i) => {
@@ -826,16 +816,21 @@ function SignupDomainsPanel() {
 
   return (
     <Panel className="mt-4">
-      <div className="mb-3 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Email sign-up domains</span>
-        <InfoTip text="The domain after the @ in your team's EMAIL addresses — not where Talaria is hosted (talaria.yourcompany.com hosting still means yourcompany.com emails). Add it, publish the TXT record to prove ownership, and anyone signing in with Google on that email domain becomes a member automatically — no invites, no env edits. Email subdomains are separate; add each you use. Password logins stay env-managed." />
-      </div>
+      <SectionHeader
+        title="Email sign-up domains"
+        info="The domain after the @ in your team's EMAIL addresses — not where Talaria is hosted (talaria.yourcompany.com hosting still means yourcompany.com emails). Add it, publish the TXT record to prove ownership, and anyone signing in with Google on that email domain becomes a member automatically — no invites, no env edits. Email subdomains are separate; add each you use. Password logins stay env-managed."
+      />
       {isPending ? (
         <SkeletonRows rows={2} />
       ) : (
         <div className="space-y-2">
           {(data ?? []).length === 0 && (
-            <div className="font-sans text-xs text-muted">No email domains yet — add the domain your team's email addresses use to open self-service joins.</div>
+            <EmptyState
+              variant="inline"
+              title="No email domains yet"
+              hint="add the domain your team's email addresses use to open self-service joins."
+              className="font-sans"
+            />
           )}
           {(data ?? []).map((d) => (
             <div key={d.id} className="space-y-1.5 rounded-xl border border-line-subtle p-2.5">
@@ -878,9 +873,7 @@ function SignupDomainsPanel() {
                 <div className="flex items-center gap-2">
                   <span className="shrink-0 text-[11px] text-muted">TXT on _talaria-verify.{d.domain}:</span>
                   <code className="min-w-0 flex-1 truncate rounded bg-card px-1.5 py-0.5 text-[11px] text-fg">{d.verificationToken}</code>
-                  <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard.writeText(d.verificationToken)}>
-                    Copy
-                  </Button>
+                  <CopyButton value={d.verificationToken} label="Copy" className="text-xs" />
                 </div>
               )}
             </div>
@@ -925,7 +918,7 @@ function OrgPanel() {
   })
   const [name, setName] = useState<string | null>(null)
   const [about, setAbout] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
+  const { saved, flash } = useSavedFlash()
   const nameVal = name ?? data?.org.name ?? ''
   const aboutVal = about ?? data?.org.about ?? ''
   const dirty = nameVal !== (data?.org.name ?? '') || aboutVal !== (data?.org.about ?? '')
@@ -938,8 +931,7 @@ function OrgPanel() {
     })
     setName(null)
     setAbout(null)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 1500)
+    flash()
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
   }
 
@@ -1097,10 +1089,11 @@ function EncryptionPanel() {
 
   return (
     <Panel>
-      <div className="mb-4 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Encryption</span>
-        <InfoTip text="Every stored secret is encrypted at rest (AES-256-GCM). A random data key encrypts the secrets; that key is stored wrapped by the root secret, so the key that unlocks everything is never in a config file. Rotating re-encrypts every secret under a fresh key in one pass." />
-      </div>
+      <SectionHeader
+        className="mb-4"
+        title="Encryption"
+        info="Every stored secret is encrypted at rest (AES-256-GCM). A random data key encrypts the secrets; that key is stored wrapped by the root secret, so the key that unlocks everything is never in a config file. Rotating re-encrypts every secret under a fresh key in one pass."
+      />
       {isPending ? (
         // Stat pills shimmer instead of rendering "v—/—" and reflowing.
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
@@ -1159,7 +1152,7 @@ function JudgePanel() {
       return r.json()
     },
   })
-  const [saved, setSaved] = useState(false)
+  const { saved, flash } = useSavedFlash()
   const enabled = data?.config.enabled ?? false
   const model = data?.config.model ?? ''
 
@@ -1168,17 +1161,17 @@ function JudgePanel() {
     const r = await fetch('/api/admin/judge', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     if (r.ok) {
       await qc.invalidateQueries({ queryKey: ['judge-config'] })
-      setSaved(true)
-      setTimeout(() => setSaved(false), 1500)
+      flash()
     }
   }
 
   return (
     <Panel>
-      <div className="mb-4 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">QA judge</span>
-        <InfoTip text="When an agent hands a ticket to quality review, a judge model reviews the reported work and posts a verdict (pass / revise / escalate) with specific issues. Advisory: the human reviewer still decides. Pick a strong model for the sharpest review." />
-      </div>
+      <SectionHeader
+        className="mb-4"
+        title="QA judge"
+        info="When an agent hands a ticket to quality review, a judge model reviews the reported work and posts a verdict (pass / revise / escalate) with specific issues. Advisory: the human reviewer still decides. Pick a strong model for the sharpest review."
+      />
       {isPending ? (
         // The checkbox and model select seed from the query — hold the whole
         // control row so nothing renders unchecked and then flips.
@@ -1189,10 +1182,12 @@ function JudgePanel() {
         </div>
       ) : (
       <div className="flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2 text-sm text-fg">
-          <input type="checkbox" checked={enabled} onChange={(e) => void save({ enabled: e.target.checked })} />
-          Run the judge on quality review
-        </label>
+        <Checkbox
+          className="gap-2 text-sm text-fg"
+          checked={enabled}
+          onChange={(checked) => void save({ enabled: checked })}
+          label="Run the judge on quality review"
+        />
         <div className="flex items-center gap-2">
           <span className="text-[11px] uppercase tracking-wide text-muted">Model</span>
           <Select size="sm" value={model} onChange={(e) => void save({ model: e.target.value || null })} className="w-64" disabled={!enabled}>
@@ -1240,10 +1235,11 @@ function GuardrailsPanel() {
 
   return (
     <Panel>
-      <div className="mb-4 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Confab guard</span>
-        <InfoTip text="A structural check on every model output at the gateway: fabricated tool claims, invented links, outage stories, leaked secrets and PII. Observe records findings; annotate flags the reply; strict also redacts. Flagged content never re-enters an agent\u2019s context." />
-      </div>
+      <SectionHeader
+        className="mb-4"
+        title="Confab guard"
+        info="A structural check on every model output at the gateway: fabricated tool claims, invented links, outage stories, leaked secrets and PII. Observe records findings; annotate flags the reply; strict also redacts. Flagged content never re-enters an agent\u2019s context."
+      />
       {isPending ? (
         // Everything here seeds from the query (mode, slider, coach toggle,
         // rules) — hold the full control area so no false defaults flash.
@@ -1288,32 +1284,31 @@ function GuardrailsPanel() {
           />
           <span className="w-8 text-fg">{((cfg?.minConfidence ?? 0.5) * 100).toFixed(0)}%</span>
         </label>
-        <label
-          className="flex items-center gap-2 text-xs text-muted"
+        <Checkbox
+          className="gap-2"
           title="Repeated findings become templated behavioral notes in the agent's rendered soul (counts + advice only, never the flagged content). Applies on the next fleet render."
-        >
-          <input
-            type="checkbox"
-            checked={cfg?.coach ?? false}
-            disabled={cfg?.mode === 'off'}
-            onChange={(e) => void save({ coach: e.target.checked })}
-          />
-          Coach agents from findings
-        </label>
+          checked={cfg?.coach ?? false}
+          disabled={cfg?.mode === 'off'}
+          onChange={(checked) => void save({ coach: checked })}
+          label="Coach agents from findings"
+        />
         <div className="text-xs text-muted">{data?.stats.total ?? 0} findings</div>
       </div>
       <div className="mt-3 space-y-1.5">
         {rules.map((c) => (
-          <label key={c.id} className="flex items-center gap-2 text-sm text-fg">
-            <input
-              type="checkbox"
-              checked={cfg?.checks[c.id] ?? c.defaultOn}
-              disabled={cfg?.mode === 'off'}
-              onChange={(e) => cfg && void save({ checks: { ...cfg.checks, [c.id]: e.target.checked } })}
-            />
-            {c.label}
-            {data?.stats.byCheck[c.id] ? <span className="text-[11px] text-muted">· {data.stats.byCheck[c.id]}</span> : null}
-          </label>
+          <Checkbox
+            key={c.id}
+            className="gap-2 text-sm text-fg"
+            checked={cfg?.checks[c.id] ?? c.defaultOn}
+            disabled={cfg?.mode === 'off'}
+            onChange={(checked) => cfg && void save({ checks: { ...cfg.checks, [c.id]: checked } })}
+            label={
+              <>
+                {c.label}
+                {data?.stats.byCheck[c.id] ? <span className="text-[11px] text-muted">· {data.stats.byCheck[c.id]}</span> : null}
+              </>
+            }
+          />
         ))}
       </div>
       {data?.findings && data.findings.length > 0 && (
@@ -1370,10 +1365,11 @@ function OutreachPanel() {
 
   return (
     <Panel>
-      <div className="mb-4 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Proactive outreach</span>
-        <InfoTip text="Opted-in agents get a periodic check-in: a look at their stale or blocked work, and the chance to act through their normal tools — a ticket comment, a channel post, or a direct message to your inbox. Everything stays attributed and board-policy-gated; DMs are capped per person per day. Off by default." />
-      </div>
+      <SectionHeader
+        className="mb-4"
+        title="Proactive outreach"
+        info="Opted-in agents get a periodic check-in: a look at their stale or blocked work, and the chance to act through their normal tools — a ticket comment, a channel post, or a direct message to your inbox. Everything stays attributed and board-policy-gated; DMs are capped per person per day. Off by default."
+      />
       {isPending ? (
         // Controls, agent chips, and the recent list all seed from the query —
         // hold their footprint so the toggle never flashes unchecked.
@@ -1398,10 +1394,12 @@ function OutreachPanel() {
       ) : (
       <>
       <div className="flex flex-wrap items-center gap-4">
-        <label className="flex items-center gap-2 text-xs text-muted">
-          <input type="checkbox" checked={cfg?.enabled ?? false} onChange={(e) => void save({ enabled: e.target.checked })} />
-          Enable periodic check-ins
-        </label>
+        <Checkbox
+          className="gap-2"
+          checked={cfg?.enabled ?? false}
+          onChange={(checked) => void save({ enabled: checked })}
+          label="Enable periodic check-ins"
+        />
         <label className="flex items-center gap-2 text-xs text-muted" title="Minimum minutes between one agent's check-ins">
           <span className="uppercase tracking-wide">Every</span>
           <Input
@@ -1427,18 +1425,21 @@ function OutreachPanel() {
           <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Proactive agents</div>
           <div className="flex flex-wrap gap-x-4 gap-y-1.5">
             {agents.map((a) => (
-              <label key={a.model} className="flex items-center gap-2 text-sm text-fg">
-                <input
-                  type="checkbox"
-                  checked={a.proactive}
-                  onChange={(e) => {
-                    const next = agents.filter((x) => (x.model === a.model ? e.target.checked : x.proactive)).map((x) => x.model)
-                    void save({}, next)
-                  }}
-                />
-                {a.displayName}
-                {a.personal && <span className="text-[10px] uppercase text-muted">personal</span>}
-              </label>
+              <Checkbox
+                key={a.model}
+                className="gap-2 text-sm text-fg"
+                checked={a.proactive}
+                onChange={(checked) => {
+                  const next = agents.filter((x) => (x.model === a.model ? checked : x.proactive)).map((x) => x.model)
+                  void save({}, next)
+                }}
+                label={
+                  <>
+                    {a.displayName}
+                    {a.personal && <span className="text-[10px] uppercase text-muted">personal</span>}
+                  </>
+                }
+              />
             ))}
           </div>
         </div>
@@ -1511,10 +1512,11 @@ function OrgGooglePanel() {
 
   return (
     <Panel>
-      <div className="mb-4 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Organization Google account</span>
-        <InfoTip text="A single shared Google account the fleet builds in. General agents (no personal owner) create Docs, Sheets, and Drive files here; a personal assistant instead acts as its owner\u2019s own connected Google." />
-      </div>
+      <SectionHeader
+        className="mb-4"
+        title="Organization Google account"
+        info="A single shared Google account the fleet builds in. General agents (no personal owner) create Docs, Sheets, and Drive files here; a personal assistant instead acts as its owner\u2019s own connected Google."
+      />
       {isPending ? (
         // Never show "Not connected" + Connect while the status is in flight —
         // hold the connection row's shape until it resolves.
@@ -1561,7 +1563,7 @@ function OrgGoogleTargets({ targets }: { targets: OrgGoogle['targets'] }) {
   const [drive, setDrive] = useState(targets.driveFolderId ?? '')
   const [cal, setCal] = useState(targets.calendarId ?? '')
   const [sendAs, setSendAs] = useState(targets.sendAs ?? '')
-  const [saved, setSaved] = useState(false)
+  const { saved, flash } = useSavedFlash()
   const dirty = drive !== (targets.driveFolderId ?? '') || cal !== (targets.calendarId ?? '') || sendAs !== (targets.sendAs ?? '')
 
   const save = async () => {
@@ -1572,8 +1574,7 @@ function OrgGoogleTargets({ targets }: { targets: OrgGoogle['targets'] }) {
     })
     if (r.ok) {
       await qc.invalidateQueries({ queryKey: ['org-google'] })
-      setSaved(true)
-      setTimeout(() => setSaved(false), 1500)
+      flash()
     }
   }
 

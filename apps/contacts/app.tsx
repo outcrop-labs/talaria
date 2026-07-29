@@ -21,7 +21,6 @@ import {
   SkeletonRows,
   confirm,
   alert,
-  cn,
 } from '@talaria/sdk'
 
 const APP = 'contacts'
@@ -70,16 +69,9 @@ function ContactsWork() {
         {stages.length > 0 && (
           <div className="mb-4 flex flex-wrap gap-1.5">
             {[null, ...stages].map((s) => (
-              <button
-                key={s ?? 'all'}
-                onClick={() => setStageFilter(s)}
-                className={cn(
-                  'rounded-full border px-2.5 py-0.5 text-xs capitalize transition-colors',
-                  stageFilter === s ? 'border-[var(--theme-accent-border)] bg-card text-fg' : 'border-line text-muted hover:text-fg',
-                )}
-              >
+              <Chip key={s ?? 'all'} onSelect={() => setStageFilter(s)} selected={stageFilter === s} className="capitalize">
                 {s ?? 'all'}
-              </button>
+              </Chip>
             ))}
           </div>
         )}

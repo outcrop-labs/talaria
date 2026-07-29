@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { deleteCollectionById, getCollection, setBindings } from '@/server/retrieval/collections'
 import { logAudit } from '@/server/audit'
 
@@ -15,23 +15,21 @@ export const Route = createFileRoute('/api/rag/collections/$id')({
   server: {
     handlers: {
       PUT: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         if (!(await getCollection(params.id))) return json({ error: 'not found' }, { status: 404 })
-        await setBindings(params.id, parsed.data.bindings.map((b) => ({ principalType: b.principalType, principalId: b.principalId ?? null })))
-        void logAudit({ actor: user.email ?? user.name ?? 'admin', action: 'rag.bindings', targetType: 'rag_collection', targetId: params.id })
+        await setBindings(params.id, body.bindings.map((b) => ({ principalType: b.principalType, principalId: b.principalId ?? null })))
+        void logAudit({ actor: actorOf(user), action: 'rag.bindings', targetType: 'rag_collection', targetId: params.id })
         return json({ ok: true })
       },
       DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
         const r = await deleteCollectionById(params.id)
         if (!r.ok) return json({ error: r.error }, { status: 400 })
-        void logAudit({ actor: user.email ?? user.name ?? 'admin', action: 'rag.delete', targetType: 'rag_collection', targetId: params.id })
+        void logAudit({ actor: actorOf(user), action: 'rag.delete', targetType: 'rag_collection', targetId: params.id })
         return json({ ok: true })
       },
     },
