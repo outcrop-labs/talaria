@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { createEndpoint, listEndpoints } from '@/server/agent-defs'
 import { maybeRefreshAutoPrices, refreshAutoPrices } from '@/server/price-oracle'
 import { migrateEnvKeysToCipher } from '@/server/provider-catalog'
@@ -33,22 +33,20 @@ export const Route = createFileRoute('/api/fleet/endpoints')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
         maybeRefreshAutoPrices() // background; persisted rates show on the next load
         void migrateEnvKeysToCipher().catch(() => {}) // one-time: seal any config-only keys into the DB
         return json({ endpoints: await listEndpoints() })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         try {
-          const id = await createEndpoint({ ...parsed.data, baseUrl: parsed.data.baseUrl ?? null, apiKeyEnv: parsed.data.apiKeyEnv ?? null, apiKey: parsed.data.apiKey ?? null })
-          void logAudit({ actor: user.email ?? user.name ?? 'admin', action: 'endpoint.create', targetType: 'endpoint', targetLabel: parsed.data.name, after: { provider: parsed.data.provider, class: parsed.data.class } })
+          const id = await createEndpoint({ ...body, baseUrl: body.baseUrl ?? null, apiKeyEnv: body.apiKeyEnv ?? null, apiKey: body.apiKey ?? null })
+          void logAudit({ actor: actorOf(user), action: 'endpoint.create', targetType: 'endpoint', targetLabel: body.name, after: { provider: body.provider, class: body.class } })
           // Price the new provider's models in the background — never block an
           // interactive save on a fetch to openrouter.ai (15s worst case offline).
           void refreshAutoPrices().catch(() => {})

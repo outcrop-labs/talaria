@@ -32,7 +32,10 @@ const dispatch = async ({ request, params }: { request: Request; params: { app: 
       store: storeFor(app),
     })
   } catch (e) {
-    return json({ error: (e as Error).message }, { status: 500 })
+    // App exceptions log server-side; clients get a generic 500 — internal
+    // messages can embed paths/config and reach any signed-in member here.
+    console.error(`[apps:${app}]`, e)
+    return json({ error: 'app error' }, { status: 500 })
   }
 }
 

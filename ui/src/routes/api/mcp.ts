@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { listAgentMcp } from '@/server/agent-mcp'
 import { serversForAgent } from '@/server/mcp-registry'
 import { db } from '@/server/db/pg'
@@ -14,8 +14,8 @@ export const Route = createFileRoute('/api/mcp')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         const agents = await listAgentMcp()
         const sql = await db()
         const models = (await sql`select id, model from agent_defs where enabled`) as unknown as Array<{ id: string; model: string }>

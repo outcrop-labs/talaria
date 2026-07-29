@@ -2,16 +2,18 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { confirm } from '@/components/ui/confirm'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
 import { submitOnEnter } from '@/components/ui/control'
 import { Modal } from '@/components/ui/modal'
 import { Generating } from '@/components/ui/generating'
-import { cn } from '@/lib/cn'
 import { Panel } from '@/components/ui/panel'
 import { InfoTip } from '@/components/ui/info-tip'
+import { SectionHeader } from '@/components/ui/section-header'
 import { Select } from '@/components/ui/select'
+import { Tabs } from '@/components/ui/tabs'
 import { Skeleton, SkeletonCard, SkeletonRows } from '@/components/ui/skeleton'
 import { Combobox } from '@/components/ui/combobox'
 import { ProviderMark } from '@/components/fleet/provider-mark'
@@ -80,19 +82,7 @@ function ModelsPage() {
           )}
         </div>
 
-        <div className="flex gap-1 border-b border-line-subtle">
-          {MODEL_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn('relative px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
-            >
-              {t.label}
-              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
-            </button>
-          ))}
-        </div>
+        <Tabs items={MODEL_TABS} value={tab} onChange={setTab} />
 
         {tab === 'models' &&
           (endpointsPending ? (
@@ -304,7 +294,7 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
               ))}
             </div>
           ) : (
-            <div className="mb-2 text-xs text-muted">No models added yet.</div>
+            <EmptyState variant="inline" className="mb-2" title="No models added yet." />
           )}
           <ModelAdder catalog={available?.models ?? []} existing={ep.models} onAdd={addModel} />
           {available?.note && <div className="mt-1.5 text-xs text-muted">Provider catalog unavailable: {available.note}</div>}
@@ -477,10 +467,10 @@ function PlatformAgentsPanel() {
 
   return (
     <Panel>
-      <div className="mb-3 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Platform agents</span>
-        <InfoTip text="Talaria's own sub-agents — the workers behind internal jobs like distilling chats and drafting with Muse. Separate from your Hermes fleet: each has its own harness and skills, and you pick its model here. Unset = auto (each job's own sensible chain)." />
-      </div>
+      <SectionHeader
+        title="Platform agents"
+        info="Talaria's own sub-agents — the workers behind internal jobs like distilling chats and drafting with Muse. Separate from your Hermes fleet: each has its own harness and skills, and you pick its model here. Unset = auto (each job's own sensible chain)."
+      />
       <ul className="divide-y divide-line-subtle">
         {data.agents.map((a) => (
           <li key={a.id} className="flex items-center gap-3 py-3">
@@ -562,10 +552,10 @@ function ModelRolesPanel() {
 
   return (
     <Panel>
-      <div className="mb-3 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Model roles</span>
-        <InfoTip text="Which model handles each class of activity. Unset = auto (a sensible pick from what's registered). Agents' own brains are configured per agent and unaffected." />
-      </div>
+      <SectionHeader
+        title="Model roles"
+        info="Which model handles each class of activity. Unset = auto (a sensible pick from what's registered). Agents' own brains are configured per agent and unaffected."
+      />
       <ul className="divide-y divide-line-subtle">
         {data.roles.map((r) => (
           <li key={r.role} className="flex items-center gap-3 py-2.5">
@@ -646,10 +636,10 @@ function MemberAccessPanel() {
 
   return (
     <Panel>
-      <div className="mb-3 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Member access</span>
-        <InfoTip text="Which models non-admins may pick for AI drafting and as their preferred model. Keep the expensive ones for deliberate, admin-configured use. Agents' own brains are set per agent and unaffected." />
-      </div>
+      <SectionHeader
+        title="Member access"
+        info="Which models non-admins may pick for AI drafting and as their preferred model. Keep the expensive ones for deliberate, admin-configured use. Agents' own brains are set per agent and unaffected."
+      />
       {catalogPending || settingsPending ? (
         // The restrict toggle and the list both seed from these queries — hold
         // them with skeletons so the checkbox never flips after load.
@@ -662,15 +652,12 @@ function MemberAccessPanel() {
         </div>
       ) : (
       <>
-      <label className="mb-3 flex cursor-pointer items-center gap-2 text-sm text-fg">
-        <input
-          type="checkbox"
-          checked={restricted}
-          onChange={(e) => setModeOverride(e.target.checked)}
-          className="accent-[var(--theme-accent)]"
-        />
-        Limit members to selected models
-      </label>
+      <Checkbox
+        className="mb-3 gap-2 text-sm text-fg"
+        checked={restricted}
+        onChange={(checked) => setModeOverride(checked)}
+        label="Limit members to selected models"
+      />
       {restricted && (
         <div className="space-y-1 rounded-xl border border-line-subtle p-2">
           {models.map((m) => (
@@ -687,7 +674,7 @@ function MemberAccessPanel() {
               </span>
             </label>
           ))}
-          {models.length === 0 && <div className="px-2 py-1.5 text-xs text-muted">No models registered yet.</div>}
+          {models.length === 0 && <EmptyState variant="inline" className="px-2 py-1.5" title="No models registered yet." />}
         </div>
       )}
       <div className="mt-3 flex items-center gap-2">

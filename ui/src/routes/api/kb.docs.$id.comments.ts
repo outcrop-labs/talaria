@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { addComment, canDiscussDoc, listComments } from '@/server/kb-comments'
 
 // Doc comment threads. GET → all comments (client assembles threads).
@@ -11,30 +11,33 @@ export const Route = createFileRoute('/api/kb/docs/$id/comments')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         if (!(await canDiscussDoc(params.id, user.id, user.email ?? user.name))) return json({ error: 'not found' }, { status: 404 })
         return json({ comments: await listComments(params.id) })
       },
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         if (!(await canDiscussDoc(params.id, user.id, user.email ?? user.name))) return json({ error: 'not found' }, { status: 404 })
-        const parsed = z
-          .object({
+        const body = await parseBody(
+          request,
+          z.object({
             content: z.string().trim().min(1).max(8_000),
             parentId: z.string().uuid().nullish(),
             quote: z.string().trim().max(500).nullish(),
-          })
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+          }),
+        )
+        if (body instanceof Response) return body
         const comment = await addComment({
           docId: params.id,
-          parentId: parsed.data.parentId ?? null,
+          parentId: body.parentId ?? null,
           authorUserId: user.id,
           author: user.name ?? user.email ?? 'user',
-          quote: parsed.data.quote ?? null,
-          content: parsed.data.content,
+          quote: body.quote ?? null,
+          content: body.content,
         })
         return json({ comment })
       },

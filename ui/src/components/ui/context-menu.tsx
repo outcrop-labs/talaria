@@ -143,7 +143,78 @@ function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
   )
 }
 
-/** Copy an app path as a full URL — the standard "Copy link" action. */
-export function copyAppLink(path: string): void {
-  void navigator.clipboard.writeText(`${window.location.origin}${path}`)
+// Re-export from its real home (lib) — kit files hold no app URL logic.
+export { copyAppLink } from '@/lib/links'
+
+/** Anchored dropdown menu — the SAME shell and item grammar as the context
+ *  menu, attached to a trigger instead of the cursor. Replaces every ad-hoc
+ *  `absolute top-full … rounded-xl border bg-card p-1` panel. */
+export function DropdownMenu({
+  trigger,
+  items,
+  align = 'right',
+  className,
+}: {
+  /** Renders the trigger; `open` lets it style its active state. */
+  trigger: (open: boolean) => ReactNode
+  items: ContextMenuEntry[] | (() => ContextMenuEntry[])
+  align?: 'left' | 'right'
+  className?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const entries = typeof items === 'function' ? (open ? items() : []) : items
+  return (
+    <div ref={ref} className={cn('relative', className)}>
+      <span onClick={() => setOpen((o) => !o)}>{trigger(open)}</span>
+      {open && (
+        <div
+          role="menu"
+          className={cn('absolute top-full z-40 mt-1 min-w-44 rounded-xl border border-line bg-card p-1 shadow-lg', align === 'right' ? 'right-0' : 'left-0')}
+        >
+          {entries.map((item, i) => {
+            if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
+            return (
+              <button
+                key={`${item.label}${i}`}
+                type="button"
+                role="menuitem"
+                disabled={item.disabled}
+                onClick={() => {
+                  item.onSelect()
+                  setOpen(false)
+                }}
+                className={cn(
+                  'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                  item.disabled
+                    ? 'cursor-default text-muted opacity-50'
+                    : item.danger
+                      ? 'text-[color:var(--theme-danger)] hover:bg-[color:var(--theme-danger)]/10'
+                      : 'text-fg hover:bg-sidebar',
+                )}
+              >
+                {item.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{item.icon}</span>}
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }

@@ -1,8 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
-import { hasPerm } from '@/server/permissions'
+import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import { createAgent } from '@/server/fleet-create'
 import { writeSkill } from '@/server/agent-skills'
 import { logAudit } from '@/server/audit'
@@ -33,24 +32,23 @@ export const Route = createFileRoute('/api/fleet/create')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requirePerm(request, 'agents.manage')
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         try {
           const actor = user.email ?? user.name ?? 'admin'
           const { def, keyCreated } = await createAgent({
-            ...parsed.data,
+            ...body,
             createdBy: actor,
           })
-          for (const s of parsed.data.skills ?? []) {
+          for (const s of body.skills ?? []) {
             await writeSkill(def.slug, s.name, s.content, actor).catch(() => {})
           }
-          void logAudit({ actor, action: 'agent.create', targetType: 'agent', targetId: def.id, targetLabel: def.displayName, after: { slug: def.slug, department: def.department } })
+          void logAudit({ actor: actorOf(user), action: 'agent.create', targetType: 'agent', targetId: def.id, targetLabel: def.displayName, after: { slug: def.slug, department: def.department } })
           const render = await renderFleet()
           let healthy: boolean | undefined
-          if (parsed.data.start) {
+          if (body.start) {
             await fleetUp(def.department)
             healthy = await waitHealthy(def.department)
           }

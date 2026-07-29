@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin, requireView } from '@/server/api-guard'
 import {
   catalogUrl,
   discoveredApps,
@@ -15,7 +15,6 @@ import {
   uninstallApp,
 } from '@/server/apps'
 import { storeFor } from '@/server/app-store'
-import { deniedViews } from '@/server/users'
 import { logAudit } from '@/server/audit'
 
 // App administration. GET → installed apps (+ ?catalog=1 for the marketplace
@@ -26,12 +25,8 @@ export const Route = createFileRoute('/api/admin/apps')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') {
-          const denied = await deniedViews(user.id, user.role)
-          if (denied.includes('/apps')) return json({ error: 'forbidden' }, { status: 403 })
-        }
+        const gate = await requireView(request, '/apps')
+        if (gate instanceof Response) return gate
         const [enabled, pending, sources] = await Promise.all([enabledAppSlugs(), pendingApps(), installedSources()])
         const apps = discoveredApps().map((a) => ({
           ...a,
@@ -42,58 +37,67 @@ export const Route = createFileRoute('/api/admin/apps')({
         const catalog = wantCatalog ? await fetchCatalog() : null
         return json({ apps, pending, catalog, catalogUrl: await catalogUrl() })
       },
-      POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const actor = user.email ?? user.name ?? 'admin'
-        const parsed = z
-          .union([
+      // PUT → config writes (enable/disable, catalog source); POST → install
+      // (the action that pulls code into the deployment).
+      PUT: async ({ request }) => {
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const actor = actorOf(user)
+        const body = await parseBody(
+          request,
+          z.union([
             z.object({ app: z.string().min(1), enabled: z.boolean() }),
-            z.object({ installUrl: z.string().url(), slug: z.string().min(1).max(64).optional() }),
             z.object({ catalogUrl: z.string().url().nullable() }),
-          ])
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+          ]),
+        )
+        if (body instanceof Response) return body
         try {
-          if ('enabled' in parsed.data) {
-            await setAppEnabled(parsed.data.app, parsed.data.enabled)
+          if ('enabled' in body) {
+            await setAppEnabled(body.app, body.enabled)
             void logAudit({
               actor,
-              action: parsed.data.enabled ? 'app.enable' : 'app.disable',
+              action: body.enabled ? 'app.enable' : 'app.disable',
               targetType: 'app',
-              targetId: parsed.data.app,
+              targetId: body.app,
             })
             return json({ ok: true })
           }
-          if ('installUrl' in parsed.data) {
-            const r = await installAppFromGit(parsed.data.installUrl, parsed.data.slug)
-            void logAudit({ actor, action: 'app.install', targetType: 'app', targetId: r.slug, targetLabel: parsed.data.installUrl })
-            return json(r)
-          }
-          await setCatalogUrl(parsed.data.catalogUrl)
-          void logAudit({ actor, action: 'app.catalog-url', targetType: 'app', targetLabel: parsed.data.catalogUrl ?? 'default' })
+          await setCatalogUrl(body.catalogUrl)
+          void logAudit({ actor, action: 'app.catalog-url', targetType: 'app', targetLabel: body.catalogUrl ?? 'default' })
           return json({ ok: true, catalogUrl: await catalogUrl() })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })
         }
       },
-      DELETE: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = z
-          .object({ app: z.string().min(1), wipeData: z.boolean().optional() })
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+      POST: async ({ request }) => {
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(
+          request,
+          z.object({ installUrl: z.string().url(), slug: z.string().min(1).max(64).optional() }),
+        )
+        if (body instanceof Response) return body
         try {
-          await uninstallApp(parsed.data.app)
-          if (parsed.data.wipeData) await storeFor(parsed.data.app).wipe()
+          const r = await installAppFromGit(body.installUrl, body.slug)
+          void logAudit({ actor: actorOf(user), action: 'app.install', targetType: 'app', targetId: r.slug, targetLabel: body.installUrl })
+          return json(r)
+        } catch (e) {
+          return json({ error: (e as Error).message }, { status: 400 })
+        }
+      },
+      DELETE: async ({ request }) => {
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, z.object({ app: z.string().min(1), wipeData: z.boolean().optional() }))
+        if (body instanceof Response) return body
+        try {
+          await uninstallApp(body.app)
+          if (body.wipeData) await storeFor(body.app).wipe()
           void logAudit({
-            actor: user.email ?? user.name ?? 'admin',
+            actor: actorOf(user),
             action: 'app.uninstall',
             targetType: 'app',
-            targetId: parsed.data.app,
+            targetId: body.app,
           })
           return json({ ok: true })
         } catch (e) {

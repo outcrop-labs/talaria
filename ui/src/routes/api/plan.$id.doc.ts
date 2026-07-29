@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { accessibleConversation } from '@/server/conversations'
 import { ensurePlanDoc, syncPlanDoc } from '@/server/plan-doc'
 import { routedModelFor } from '@/server/fleet-agents'
@@ -18,8 +18,8 @@ export const Route = createFileRoute('/api/plan/$id/doc')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         const conv = await accessibleConversation(user.id, params.id)
         if (!conv || conv.kind !== 'plan') return json({ error: 'plan not found' }, { status: 404 })
         const artifact = await ensurePlanDoc(
@@ -32,17 +32,17 @@ export const Route = createFileRoute('/api/plan/$id/doc')({
         return json({ artifact })
       },
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         const conv = await accessibleConversation(user.id, params.id)
         if (!conv || conv.kind !== 'plan') return json({ error: 'plan not found' }, { status: 404 })
         if (!(await canUseAgentModel(user.id, user.role, conv.agentModel))) {
           return json({ error: 'you do not have access to that agent' }, { status: 403 })
         }
-        const parsed = Body.safeParse(await request.json().catch(() => ({})))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         const routed =
-          (parsed.data.tier ? await routedModelFor(conv.agentModel, parsed.data.tier).catch(() => null) : null) ??
+          (body.tier ? await routedModelFor(conv.agentModel, body.tier).catch(() => null) : null) ??
           conv.agentModel
         try {
           const artifact = await syncPlanDoc(

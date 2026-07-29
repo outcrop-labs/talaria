@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { db } from '@/server/db/pg'
 import { rotateSecrets } from '@/server/secret-rotation'
 import { logAudit } from '@/server/audit'
@@ -13,9 +13,8 @@ export const Route = createFileRoute('/api/admin/encryption')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         const sql = await db()
         const active = (await sql`
           select version, created_at as "createdAt" from secret_keys where active order by version desc limit 1
@@ -41,17 +40,21 @@ export const Route = createFileRoute('/api/admin/encryption')({
         })
       },
       POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const body = z
-          .object({ newRootSecret: z.string().min(16).max(400).optional() })
-          .safeParse(await request.json().catch(() => ({})))
-        if (!body.success) return json({ error: 'new root secret must be at least 16 chars' }, { status: 400 })
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        // A bodyless POST is a plain rotation — .nullable() keeps that working
+        // (parseBody turns an unreadable body into null).
+        const body = await parseBody(
+          request,
+          z
+            .object({ newRootSecret: z.string().min(16, 'new root secret must be at least 16 chars').max(400).optional() })
+            .nullable(),
+        )
+        if (body instanceof Response) return body
         try {
-          const res = await rotateSecrets(body.data.newRootSecret)
+          const res = await rotateSecrets(body?.newRootSecret)
           void logAudit({
-            actor: user.email ?? user.name ?? 'admin',
+            actor: actorOf(user),
             action: 'encryption.rotate',
             targetType: 'secret_keys',
             targetLabel: `v${res.version}`,
@@ -59,7 +62,10 @@ export const Route = createFileRoute('/api/admin/encryption')({
           })
           return json({ ok: true, ...res })
         } catch (e) {
-          return json({ error: `rotation failed (no secrets changed): ${(e as Error).message}` }, { status: 500 })
+          // Server log gets the real error; the client gets a generic line —
+          // crypto failure messages must never risk echoing key material.
+          console.error('[encryption.rotate]', e)
+          return json({ error: 'rotation failed (no secrets changed) — see server logs' }, { status: 500 })
         }
       },
     },

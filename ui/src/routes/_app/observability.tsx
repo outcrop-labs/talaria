@@ -1,10 +1,10 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { cn } from '@/lib/cn'
 import { Panel } from '@/components/ui/panel'
+import { Tabs } from '@/components/ui/tabs'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { formatTokens } from '@/lib/cost'
-import { relativeTime } from '@/lib/fleet'
+import { ActivityRow } from '@/components/app/activity-row'
 import { ComputePanel } from '@/components/observability/inference'
 import { CostPanel } from '@/components/observability/cost'
 import { AuditPanel } from '@/components/observability/activity'
@@ -41,19 +41,7 @@ function ObservabilityPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-5xl space-y-6">
         <h1 className="mercury-text text-2xl font-semibold">Observability</h1>
-        <div className="flex gap-1 border-b border-line-subtle">
-          {OBS_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn('relative px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
-            >
-              {t.label}
-              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
-            </button>
-          ))}
-        </div>
+        <Tabs items={OBS_TABS} value={tab} onChange={setTab} />
         {tab === 'overview' && <OverviewPanel onOpen={setTab} />}
         {tab === 'compute' && <ComputePanel />}
         {tab === 'cost' && <CostPanel />}
@@ -221,20 +209,7 @@ function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
         ) : (
           <ul className="space-y-1">
             {audit!.slice(0, 6).map((a, i) => (
-              <li key={i}>
-                <button
-                  type="button"
-                  onClick={() => a.href && void nav({ to: a.href })}
-                  className="w-full rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-card"
-                >
-                  <div className="flex items-baseline gap-2">
-                    <span className="min-w-0 flex-1 truncate font-sans text-xs text-fg">
-                      <span className="font-medium">{a.actor}</span> · {a.detail}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-muted">{relativeTime(a.at)}</span>
-                  </div>
-                </button>
-              </li>
+              <ActivityRow key={i} actor={a.actor} detail={a.detail} at={a.at} onClick={() => a.href && void nav({ to: a.href })} />
             ))}
           </ul>
         )}

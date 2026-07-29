@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { parseBody, requireUser } from '@/server/api-guard'
 import { accessibleConversation } from '@/server/conversations'
 import { planFromConversation } from '@/server/channel-plan'
 import { routedModelFor } from '@/server/fleet-agents'
@@ -21,21 +21,21 @@ export const Route = createFileRoute('/api/plan/$id/draft')({
   server: {
     handlers: {
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         const agentModel = (await accessibleConversation(user.id, params.id))?.agentModel ?? null
         if (!agentModel) return json({ error: 'plan not found' }, { status: 404 })
         if (!(await canUseAgentModel(user.id, user.role, agentModel))) {
           return json({ error: 'you do not have access to that agent' }, { status: 403 })
         }
-        const parsed = Body.safeParse(await request.json().catch(() => ({})))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         const routed =
-          (parsed.data.tier ? await routedModelFor(agentModel, parsed.data.tier).catch(() => null) : null) ?? agentModel
+          (body.tier ? await routedModelFor(agentModel, body.tier).catch(() => null) : null) ?? agentModel
         try {
           const { proposals, raw } = await planFromConversation(params.id, agentModel, routed, {
-            boardId: parsed.data.boardId,
-            templateId: parsed.data.templateId,
+            boardId: body.boardId,
+            templateId: body.templateId,
           })
           if (proposals.length === 0) {
             return json({ proposals: [], note: raw ? 'the agent did not return parseable tickets' : 'nothing to plan yet' })

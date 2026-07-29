@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { stringify as stringifyYaml } from 'yaml'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { getRevision, listHistory, type InternalKind } from '@/server/internal-history'
 import { listVersions } from '@/server/agent-defs'
 import { ownsAgent, personalityOf } from '@/server/personal-agent'
@@ -74,8 +74,8 @@ export const Route = createFileRoute('/api/history')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         const q = new URL(request.url).searchParams
         const kind = q.get('kind') as InternalKind | VersionKind | null
         const rev = q.get('rev')

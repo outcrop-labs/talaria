@@ -39,11 +39,13 @@ export const Route = createFileRoute('/api/boards')({
       POST: async ({ request }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        // Authorization BEFORE body parsing — never do work for a caller who
+        // can't take the action.
+        if (!(await hasPerm(user, 'boards.create'))) return json({ error: 'no permission to create boards' }, { status: 403 })
         const parsed = z
           .object({ name: z.string().min(1).max(120), teamId: z.string().uuid().nullish() })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        if (!(await hasPerm(user, 'boards.create'))) return json({ error: 'no permission to create boards' }, { status: 403 })
         // Team boards require membership in that team.
         if (parsed.data.teamId && !(await teamRole(user.id, parsed.data.teamId))) {
           return json({ error: 'not a member of that team' }, { status: 403 })

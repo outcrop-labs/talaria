@@ -4,12 +4,15 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Plus, FileText, Bot, Globe, Lock, Users, Star, Trash2, History,
-  ChevronRight, Search, Link2, ListTree, X, Maximize2, Minimize2, MoreHorizontal, Paperclip,
+  ChevronRight, Search, Link2, ListTree, Maximize2, Minimize2, MoreHorizontal, Paperclip,
   MessageSquareText, Sparkles, CheckCircle2, CornerDownRight, Pencil,
   type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { IconButton } from '@/components/ui/icon-button'
+import { CloseButton } from '@/components/ui/close-button'
+import { Segmented } from '@/components/ui/segmented'
+import { Chip } from '@/components/ui/chip'
 import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { inlineEditKeys } from '@/components/ui/control'
@@ -18,7 +21,7 @@ import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
 import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { RichEditor, type RichEditorHandle, type DocSearchFn } from '@/components/ui/rich-editor'
-import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
+import { useContextMenu, copyAppLink, DropdownMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { Combobox } from '@/components/ui/combobox'
 import { useArtifacts, useTargetArtifacts, attachArtifact, detachArtifact } from '@/lib/artifacts'
@@ -258,7 +261,7 @@ function KnowledgePage() {
           {spacesLoading ? (
             <SkeletonRows rows={6} className="px-2 py-3" />
           ) : spaces.length === 0 ? (
-            <div className="px-2 py-6 text-center text-xs text-muted">No spaces yet.</div>
+            <EmptyState variant="inline" title="No spaces yet." className="px-2 py-6 text-center" />
           ) : (
             spaces.map((s) => (
               <div key={s.id} className="mb-2">
@@ -310,42 +313,24 @@ interface MenuItem {
   onClick: () => void
 }
 function SettingsMenu({ items }: { items: MenuItem[] }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [open])
   return (
-    <div ref={ref} className="relative shrink-0">
-      <Button variant="ghost" size="sm" title="More" onClick={() => setOpen((v) => !v)}>
-        <MoreHorizontal size={14} />
-      </Button>
-      {open && (
-        <div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-line bg-card p-1 shadow-lg">
-          {items.map((it, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => {
-                setOpen(false)
-                it.onClick()
-              }}
-              className={cn(
-                'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-sidebar',
-                it.danger ? 'text-[color:var(--theme-danger)]' : 'text-fg',
-              )}
-            >
-              {it.icon && <it.icon size={13} />} {it.label}
-            </button>
-          ))}
-        </div>
+    <DropdownMenu
+      align="right"
+      className="shrink-0"
+      trigger={() => (
+        <Button variant="ghost" size="sm" title="More">
+          <MoreHorizontal size={14} />
+        </Button>
       )}
-    </div>
+      items={items.map(
+        (it): ContextMenuEntry => ({
+          label: it.label,
+          icon: it.icon ? <it.icon size={13} /> : undefined,
+          danger: it.danger,
+          onSelect: it.onClick,
+        }),
+      )}
+    />
   )
 }
 
@@ -681,6 +666,10 @@ function DocPageSkeleton({ breadcrumb = false, bars = 10 }: { breadcrumb?: boole
   )
 }
 
+// Editor shell: normal fill vs a fullscreen takeover — same column layout.
+const editorShell = (fullscreen: boolean) =>
+  cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')
+
 // ── Space overview (top-level folder = document) ────────────────────────────
 function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewDoc: () => void; onDeleted: () => void }) {
   const qc = useQueryClient()
@@ -727,7 +716,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
   if (!space) return <DocPageSkeleton bars={9} />
 
   return (
-    <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
+    <div className={editorShell(fullscreen)}>
       <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
         <div className="relative shrink-0">
           <button type="button" onClick={() => setEmojiOpen((v) => !v)} className="rounded-lg px-1 text-xl leading-none hover:bg-card" title="Set icon">
@@ -762,22 +751,16 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
             <div className="truncate text-[11px] text-muted">space overview</div>
           </div>
         )}
-        <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">Folder</span>
-        <div className="flex shrink-0 rounded-md border border-line p-0.5">
-          {(['read', 'edit'] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => {
-                if (m === 'read' && mode === 'edit') void saveBody()
-                setMode(m)
-              }}
-              className={cn('rounded px-2 py-0.5 text-[11px] capitalize transition-colors', mode === m ? 'bg-card text-fg' : 'text-muted hover:text-fg')}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
+        <Chip className="font-normal">Folder</Chip>
+        <Segmented
+          size="xs"
+          options={[{ id: 'read' as const, label: 'Read' }, { id: 'edit' as const, label: 'Edit' }]}
+          value={mode}
+          onChange={(m) => {
+            if (m === 'read' && mode === 'edit') void saveBody()
+            setMode(m)
+          }}
+        />
         <Button variant="ghost" size="sm" className="shrink-0" title="Share & permissions" onClick={() => setShareOpen(true)}>
           <VisibilityIcon v={space.visibility} /> <span className="ml-1.5 capitalize">{space.visibility}</span>
         </Button>
@@ -915,25 +898,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
           </div>
         )}
         {showToc && (
-          <div className="w-56 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
-            <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-muted">
-              <span>Contents</span>
-              <button type="button" onClick={() => setShowToc(false)} className="hover:text-fg">
-                <X size={12} />
-              </button>
-            </div>
-            {headings.length === 0 ? (
-              <div className="text-xs text-muted">No headings yet.</div>
-            ) : (
-              <div className="space-y-0.5">
-                {headings.map((h, i) => (
-                  <button key={i} type="button" onClick={() => scrollToHeading(i)} className="block w-full truncate text-left font-sans text-xs text-muted hover:text-fg" style={{ paddingLeft: (h.level - 1) * 10 }}>
-                    {h.text || 'Untitled'}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <TocPanel headings={headings} onJump={scrollToHeading} onClose={() => setShowToc(false)} emptyText="No headings yet." />
         )}
         {showHistory && (
           <div className="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
@@ -984,6 +949,42 @@ function parseHeadings(md: string): Heading[] {
     if (m) out.push({ level: m[1]!.length, text: m[2]!.replace(/[*_`]/g, '').trim() })
   }
   return out
+}
+
+// The table-of-contents side rail — identical in the space and doc editors.
+function TocPanel({
+  headings, onJump, onClose, emptyText,
+}: {
+  headings: Heading[]
+  onJump: (index: number) => void
+  onClose: () => void
+  emptyText: string
+}) {
+  return (
+    <div className="w-56 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+      <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-muted">
+        <span>Contents</span>
+        <CloseButton onClick={onClose} size={12} className="p-0 hover:bg-transparent" />
+      </div>
+      {headings.length === 0 ? (
+        <EmptyState variant="inline" title={emptyText} />
+      ) : (
+        <div className="space-y-0.5">
+          {headings.map((h, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => onJump(i)}
+              className="block w-full truncate text-left font-sans text-xs text-muted hover:text-fg"
+              style={{ paddingLeft: (h.level - 1) * 10 }}
+            >
+              {h.text || 'Untitled'}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function DocEditor({
@@ -1127,7 +1128,7 @@ function DocEditor({
   if (!doc) return <DocPageSkeleton breadcrumb bars={12} />
 
   return (
-    <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
+    <div className={editorShell(fullscreen)}>
       {/* Breadcrumb */}
       <div className="flex items-center gap-1 border-b border-line-subtle px-6 pt-2 text-[11px] text-muted">
         {trail.map((d, i) => (
@@ -1235,21 +1236,15 @@ function DocEditor({
           {openThreads > 0 && <span className="ml-1 text-[11px] text-accent">{openThreads}</span>}
         </Button>
         {/* Read / Edit toggle — authored docs open in read mode. */}
-        <div className="flex shrink-0 rounded-md border border-line p-0.5">
-          {(['read', 'edit'] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => {
-                if (m === 'read' && mode === 'edit') void saveBody() // capture edits on exit
-                setMode(m)
-              }}
-              className={cn('rounded px-2 py-0.5 text-[11px] capitalize transition-colors', mode === m ? 'bg-card text-fg' : 'text-muted hover:text-fg')}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          size="xs"
+          options={[{ id: 'read' as const, label: 'Read' }, { id: 'edit' as const, label: 'Edit' }]}
+          value={mode}
+          onChange={(m) => {
+            if (m === 'read' && mode === 'edit') void saveBody() // capture edits on exit
+            setMode(m)
+          }}
+        />
         {/* Sharing + promotion: one quiet cluster. The Official pill is a
             STATE — promoting confirms once, demoting confirms twice (it pulls
             the doc out of what grounds every agent). */}
@@ -1548,31 +1543,12 @@ function DocEditor({
           />
         )}
         {showToc && (
-          <div className="w-56 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
-            <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-muted">
-              <span>Contents</span>
-              <button type="button" onClick={() => setShowToc(false)} className="hover:text-fg">
-                <X size={12} />
-              </button>
-            </div>
-            {headings.length === 0 ? (
-              <div className="text-xs text-muted">No headings yet. Add one (H1–H3) and it shows up here.</div>
-            ) : (
-              <div className="space-y-0.5">
-                {headings.map((h, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => scrollToHeading(i)}
-                    className="block w-full truncate text-left font-sans text-xs text-muted hover:text-fg"
-                    style={{ paddingLeft: (h.level - 1) * 10 }}
-                  >
-                    {h.text || 'Untitled'}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <TocPanel
+            headings={headings}
+            onJump={scrollToHeading}
+            onClose={() => setShowToc(false)}
+            emptyText="No headings yet. Add one (H1–H3) and it shows up here."
+          />
         )}
         {showHistory && (
           <div className="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
@@ -1670,9 +1646,12 @@ function ArtifactAttachments({ docId }: { docId: string }) {
                 <span>{a.icon ?? '◆'}</span>
                 <span className="max-w-[14rem] truncate text-fg">{a.title}</span>
                 <span className="text-[9px] uppercase tracking-wide">{a.kind}</span>
-                <button type="button" onClick={async () => { await detachArtifact(a.id, 'kb-doc', docId); await refresh() }} className="hover:text-[color:var(--theme-danger)]">
-                  <X size={11} />
-                </button>
+                <CloseButton
+                  size={11}
+                  label="Detach"
+                  onClick={async () => { await detachArtifact(a.id, 'kb-doc', docId); await refresh() }}
+                  className="p-0 hover:bg-transparent hover:text-[color:var(--theme-danger)]"
+                />
               </span>
             ))}
           </div>
@@ -1724,7 +1703,7 @@ function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb
       {loading ? (
         <SkeletonRows rows={4} className="px-2 py-1" />
       ) : revs.length === 0 ? (
-        <div className="text-xs text-muted">No saved revisions yet.</div>
+        <EmptyState variant="inline" title="No saved revisions yet." />
       ) : (
         revs.map((r, i) => (
           <button
@@ -1913,9 +1892,7 @@ function CommentsPanel({
             {showResolved ? 'Hide resolved' : `Resolved (${resolved.length})`}
           </button>
         )}
-        <button type="button" onClick={onClose} className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-card hover:text-fg">
-          <X size={13} />
-        </button>
+        <CloseButton onClick={onClose} size={13} className="h-6 w-6 rounded p-0" />
       </div>
       <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3">
         {open.length === 0 && !showResolved && <div className="font-sans text-xs text-muted">No open threads. Select text in the doc to comment on it.</div>}
@@ -1928,9 +1905,7 @@ function CommentsPanel({
         {pendingQuote && (
           <div className="mb-1.5 flex items-start gap-1.5 border-l-2 border-accent/50 pl-2 font-sans text-[11px] italic text-muted">
             <span className="min-w-0 flex-1 line-clamp-2">“{pendingQuote}”</span>
-            <button type="button" onClick={onQuoteConsumed} className="shrink-0 text-muted hover:text-fg">
-              <X size={11} />
-            </button>
+            <CloseButton onClick={onQuoteConsumed} size={11} className="shrink-0 p-0 hover:bg-transparent" />
           </div>
         )}
         <Textarea
@@ -2065,9 +2040,12 @@ function MuseBar({
           <span className="min-w-0 flex-1 line-clamp-2">
             {surgical ? 'editing selection: ' : 'focused on: '}“{selection}”
           </span>
-          <button type="button" onClick={onClearSelection} className="shrink-0 text-muted hover:text-fg" title="Back to whole-document edits">
-            <X size={11} />
-          </button>
+          <CloseButton
+            onClick={() => onClearSelection?.()}
+            size={11}
+            label="Back to whole-document edits"
+            className="shrink-0 p-0 hover:bg-transparent"
+          />
         </div>
       )}
       {proposal !== null && (

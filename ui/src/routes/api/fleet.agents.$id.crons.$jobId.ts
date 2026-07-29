@@ -1,10 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { editCronJob, pauseCronJob, removeCronJob, resumeCronJob, runCronJob } from '@/server/agent-crons'
 import { ownsAgent } from '@/server/personal-agent'
+import { logAudit } from '@/server/audit'
 
 const Body = z.object({ action: z.enum(['pause', 'resume', 'run']) })
 const EditBody = z.object({
@@ -20,41 +21,44 @@ export const Route = createFileRoute('/api/fleet/agents/$id/crons/$jobId')({
   server: {
     handlers: {
       DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (!(await hasPerm(user, 'agents.manage')) && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
         try {
           await removeCronJob(params.id, params.jobId)
+          void logAudit({ actor: actorOf(user), action: 'cron.delete', targetType: 'agent', targetId: params.id, after: { jobId: params.jobId } })
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })
         }
       },
       PUT: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (!(await hasPerm(user, 'agents.manage')) && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = EditBody.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, EditBody)
+        if (body instanceof Response) return body
         try {
-          await editCronJob(params.id, params.jobId, parsed.data)
+          await editCronJob(params.id, params.jobId, body)
+          void logAudit({ actor: actorOf(user), action: 'cron.update', targetType: 'agent', targetId: params.id, after: { jobId: params.jobId, name: body.name, schedule: body.schedule } })
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })
         }
       },
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (!(await hasPerm(user, 'agents.manage')) && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         try {
-          const fn = { pause: pauseCronJob, resume: resumeCronJob, run: runCronJob }[parsed.data.action]
+          const fn = { pause: pauseCronJob, resume: resumeCronJob, run: runCronJob }[body.action]
           await fn(params.id, params.jobId)
+          void logAudit({ actor: actorOf(user), action: `cron.${body.action}`, targetType: 'agent', targetId: params.id, after: { jobId: params.jobId } })
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })

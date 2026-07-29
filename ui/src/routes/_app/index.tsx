@@ -9,8 +9,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
+import { Tabs } from '@/components/ui/tabs'
+import { Chip } from '@/components/ui/chip'
+import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from '@/components/assistant/assistant-wizard'
 import { NotificationsPanel } from '@/components/app/notifications-panel'
+import { ActivityRow } from '@/components/app/activity-row'
 import { relativeTime } from '@/lib/fleet'
 import { cn } from '@/lib/cn'
 import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
@@ -131,22 +135,21 @@ function HomePage() {
       <div className="mx-auto max-w-6xl space-y-6">
         <h1 className="mercury-text text-2xl font-semibold">{greeting(session?.name ?? session?.email)}</h1>
 
-        <div className="flex gap-1 border-b border-line-subtle">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn('relative flex items-center gap-1.5 px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
-            >
-              {t.label}
-              {t.badge !== undefined && (
-                <span className="rounded-full bg-accent/15 px-1.5 text-[10px] font-semibold text-accent">{t.badge}</span>
-              )}
-              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
-            </button>
-          ))}
-        </div>
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          items={tabs.map((t) => ({
+            id: t.id,
+            label: (
+              <span className="flex items-center gap-1.5">
+                {t.label}
+                {t.badge !== undefined && (
+                  <span className="rounded-full bg-accent/15 px-1.5 text-[10px] font-semibold text-accent">{t.badge}</span>
+                )}
+              </span>
+            ),
+          }))}
+        />
 
         {tab === 'inbox' && (
           <div className="space-y-6">
@@ -206,21 +209,7 @@ function ActivityList({ kinds, title = 'Recent activity', collapsible = false }:
       ) : (
         <ul className="space-y-1">
           {data!.slice(0, 12).map((a, i) => (
-            <li key={i}>
-              <button
-                type="button"
-                onClick={() => a.href && void navigate({ to: a.href })}
-                className="w-full rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-card"
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="min-w-0 flex-1 truncate font-sans text-xs text-fg">
-                    <span className="font-medium">{a.actor}</span> · {a.detail}
-                  </span>
-                  <span className="shrink-0 text-[10px] text-muted">{relativeTime(a.at)}</span>
-                </div>
-                <div className="truncate text-[11px] text-muted">{a.context}</div>
-              </button>
-            </li>
+            <ActivityRow key={i} actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigate({ to: a.href })} />
           ))}
         </ul>
       )}
@@ -373,7 +362,7 @@ function PlansTab() {
         {isLoading ? (
           <SkeletonRows rows={5} />
         ) : plans.length === 0 ? (
-          <div className="text-xs text-muted">No plans yet. Start one on /plan.</div>
+          <EmptyState variant="inline" title="No plans yet. Start one on /plan." />
         ) : (
           <ul className="divide-y divide-line-subtle">
             {plans.slice(0, 10).map((c) => (
@@ -476,7 +465,7 @@ function DocsTab() {
         {isLoading ? (
           <SkeletonRows rows={6} />
         ) : recent.length === 0 ? (
-          <div className="text-xs text-muted">No documents yet.</div>
+          <EmptyState variant="inline" title="No documents yet." />
         ) : (
           <ul className="divide-y divide-line-subtle">
             {recent.map((a) => (
@@ -592,21 +581,7 @@ function FleetPulse({ activity }: { activity: OrgActivity[] }) {
       ) : (
         <ul className="space-y-2">
           {activity.map((a, i) => (
-            <li key={i}>
-              <button
-                type="button"
-                onClick={() => a.href && void navigate({ to: a.href })}
-                className="w-full rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-card"
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="min-w-0 flex-1 truncate font-sans text-xs text-fg">
-                    <span className="font-medium">{a.actor}</span> · {a.detail}
-                  </span>
-                  <span className="shrink-0 text-[10px] text-muted">{relativeTime(a.at)}</span>
-                </div>
-                <div className="truncate text-[11px] text-muted">{a.context}</div>
-              </button>
-            </li>
+            <ActivityRow key={i} actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigate({ to: a.href })} />
           ))}
         </ul>
       )}
@@ -914,17 +889,19 @@ function QuickEvent({ onDone }: { onDone: () => void }) {
 
   return (
     <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-line-subtle p-2">
-      <input
+      <Input
+        size="sm"
         value={summary}
         onChange={(e) => setSummary(e.target.value)}
         placeholder="Event title"
-        className="min-w-0 flex-1 bg-transparent px-2 text-sm text-fg outline-none placeholder:text-muted"
+        className="min-w-0 flex-1"
       />
-      <input
+      <Input
+        size="sm"
         type="datetime-local"
         value={start}
         onChange={(e) => setStart(e.target.value)}
-        className="rounded-lg border border-line-subtle bg-transparent px-2 py-1 text-xs text-fg outline-none"
+        className="w-auto"
       />
       <Button size="sm" onClick={() => void submit()} disabled={busy || !summary.trim() || !start}>
         Add
@@ -1125,7 +1102,7 @@ function ApprovalsPanel() {
       <div className="divide-y divide-line-subtle">
         {pending.map((a) => (
           <div key={a.id} className="flex items-center gap-3 py-2.5">
-            <span className="shrink-0 rounded border border-line-subtle px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">{kindLabel(a.kind)}</span>
+            <Chip>{kindLabel(a.kind)}</Chip>
             {a.isOrg && <span className="shrink-0 rounded bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted" title="Shared org account">org</span>}
             <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{a.summary ?? '(action)'}</span>
             {a.agentModel && <span className="hidden shrink-0 text-[11px] text-muted sm:block">{a.agentModel}</span>}

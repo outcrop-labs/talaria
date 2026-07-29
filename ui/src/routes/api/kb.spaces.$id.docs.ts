@@ -1,12 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
-import { hasPerm } from '@/server/permissions'
+import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { personalAssistantOwners } from '@/server/users'
 import { createDoc, getSpace, listDocs, saveDoc } from '@/server/kb'
 import { canRead, canReadAgent, grantedItemIds, grantedItemIdsForAgent, listEditors } from '@/server/kb-perms'
+import { logAudit } from '@/server/audit'
 
 const Body = z.object({
   title: z.string().max(200).optional(),
@@ -33,9 +33,9 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
           const docsA = (await listDocs(params.id)).filter((d) => d.permsInherited || grantedA.has(d.id) || canReadAgent(d, name))
           return json({ docs: docsA })
         }
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'kb.edit'))) return json({ error: 'no permission to edit knowledge' }, { status: 403 })
+        const gate = await requirePerm(request, 'kb.edit')
+        if (gate instanceof Response) return gate
+        const user = gate
         // Gate the whole tree on folder access first.
         if (!canRead(space, user.id, user.email ?? user.name, await listEditors('space', params.id))) return json({ docs: [] })
         // Inherited docs are as visible as the (readable) folder, so they show.
@@ -47,8 +47,8 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
         return json({ docs })
       },
       POST: async ({ request, params }) => {
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
 
         // Agents (over MCP) create docs in spaces they can read. Agent docs
         // start as drafts — they never ground the org brain until a human
@@ -62,29 +62,31 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
           }
           const doc = await createDoc({
             spaceId: params.id,
-            parentId: parsed.data.parentId ?? null,
-            title: parsed.data.title,
+            parentId: body.parentId ?? null,
+            title: body.title,
             kind: 'human',
             createdBy: name,
             // A personal assistant's doc belongs to its owner — otherwise the
             // human could never re-share what their assistant wrote for them.
             ownerUserId: (await personalAssistantOwners()).get(name) ?? null,
           })
-          const saved = parsed.data.body ? await saveDoc(doc.id, { body: parsed.data.body }, name) : doc
+          const saved = body.body ? await saveDoc(doc.id, { body: body.body }, name) : doc
           return json({ doc: saved ?? doc })
         }
 
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         const doc = await createDoc({
           spaceId: params.id,
-          parentId: parsed.data.parentId ?? null,
-          title: parsed.data.title,
-          kind: parsed.data.kind,
+          parentId: body.parentId ?? null,
+          title: body.title,
+          kind: body.kind,
           createdBy: user.email ?? user.name ?? 'user',
           ownerUserId: user.id,
         })
-        const saved = parsed.data.body ? await saveDoc(doc.id, { body: parsed.data.body }, user.email ?? user.name ?? 'user') : doc
+        const saved = body.body ? await saveDoc(doc.id, { body: body.body }, user.email ?? user.name ?? 'user') : doc
+        void logAudit({ actor: actorOf(user), action: 'kb.doc_create', targetType: 'kb-doc', targetId: doc.id, targetLabel: doc.title })
         return json({ doc: saved ?? doc })
       },
     },

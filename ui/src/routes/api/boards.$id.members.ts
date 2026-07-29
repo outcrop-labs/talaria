@@ -6,6 +6,7 @@ import { boardAllowsAgent, boardRole, canEdit, listMembers, shareBoard, unshareB
 import { db } from '@/server/db/pg'
 import { actingUser } from '@/server/users'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { logAudit } from '@/server/audit'
 
 // GET → members. POST { email, role } → share (owner/editor). DELETE { userId
 // | email } → unshare. Write actions accept a personal assistant acting as its
@@ -35,7 +36,15 @@ export const Route = createFileRoute('/api/boards/$id/members')({
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const result = await shareBoard(params.id, parsed.data.email, parsed.data.role)
-        return result.ok ? json({ ok: true }) : json({ ok: false, error: result.error }, { status: 400 })
+        if (!result.ok) return json({ error: result.error }, { status: 400 })
+        void logAudit({
+          actor: user.label,
+          action: 'board.member_add',
+          targetType: 'board',
+          targetId: params.id,
+          after: { email: parsed.data.email, role: parsed.data.role },
+        })
+        return json({ ok: true })
       },
       DELETE: async ({ request, params }) => {
         const user = await actingUser(request)
@@ -54,6 +63,13 @@ export const Route = createFileRoute('/api/boards/$id/members')({
           userId = rows[0].id
         }
         await unshareBoard(params.id, userId!)
+        void logAudit({
+          actor: user.label,
+          action: 'board.member_remove',
+          targetType: 'board',
+          targetId: params.id,
+          after: { userId },
+        })
         return json({ ok: true })
       },
     },

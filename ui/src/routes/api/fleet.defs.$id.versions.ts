@@ -1,8 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
-import { hasPerm } from '@/server/permissions'
+import { parseBody, requirePerm } from '@/server/api-guard'
 import { addVersionIfChanged, getAgentDef, listVersions } from '@/server/agent-defs'
 
 // GET → an agent definition's full version history (admin).
@@ -12,24 +11,20 @@ export const Route = createFileRoute('/api/fleet/defs/$id/versions')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
+        const user = await requirePerm(request, 'agents.manage')
+        if (user instanceof Response) return user
         const def = await getAgentDef(params.id)
         if (!def) return json({ error: 'not found' }, { status: 404 })
         return json({ def, versions: await listVersions(params.id) })
       },
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = z
-          .object({ revertTo: z.number().int().positive() })
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requirePerm(request, 'agents.manage')
+        if (user instanceof Response) return user
+        const body = await parseBody(request, z.object({ revertTo: z.number().int().positive() }))
+        if (body instanceof Response) return body
         const def = await getAgentDef(params.id)
         if (!def) return json({ error: 'not found' }, { status: 404 })
-        const target = (await listVersions(def.id)).find((v) => v.version === parsed.data.revertTo)
+        const target = (await listVersions(def.id)).find((v) => v.version === body.revertTo)
         if (!target) return json({ error: 'version not found' }, { status: 404 })
         const res = await addVersionIfChanged(def.id, {
           soul: target.soul,

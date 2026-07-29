@@ -2,17 +2,66 @@
 // link that destructive actions use instead of a button.
 import { cn } from '@/lib/cn'
 
-/** Bordered micro-chip for kinds/modes ("DOC", "Brief", "custom"). */
-export function Chip({ children, className, title }: { children: React.ReactNode; className?: string; title?: string }) {
-  return (
-    <span
-      title={title}
-      className={cn(
-        'shrink-0 rounded border border-line-subtle px-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted',
-        className,
-      )}
-    >
+export type ChipTone = 'neutral' | 'accent' | 'success' | 'warn' | 'danger'
+
+const TONES: Record<ChipTone, string> = {
+  neutral: 'border-line-subtle text-muted',
+  accent: 'border-[var(--theme-accent-border)] text-accent',
+  success: 'border-[color:var(--theme-success)]/40 text-[color:var(--theme-success)]',
+  warn: 'border-[color:var(--theme-warning)]/40 text-[color:var(--theme-warning)]',
+  danger: 'border-[color:var(--theme-danger)]/40 text-[color:var(--theme-danger)]',
+}
+
+export interface ChipProps {
+  children: React.ReactNode
+  className?: string
+  title?: string
+  /** Tint — replaces ad-hoc recoloring by className. */
+  tone?: ChipTone
+  /** Renders as a toggle button (filter pills); `selected` is the active state. */
+  onSelect?: () => void
+  selected?: boolean
+  /** Trailing ✕ that removes the token (renders as part of the chip). */
+  onRemove?: () => void
+}
+
+/** Bordered micro-chip for kinds/modes ("DOC", "Brief", "custom") — and, with
+ *  `onSelect`/`onRemove`, the one filter-pill and removable-token primitive. */
+export function Chip({ children, className, title, tone = 'neutral', onSelect, selected, onRemove }: ChipProps) {
+  const base = cn(
+    'shrink-0 rounded border px-1.5 text-[10px] font-semibold uppercase tracking-wide',
+    selected ? 'border-[var(--theme-accent-border)] bg-card text-fg' : TONES[tone],
+    onSelect && !selected && 'transition-colors hover:text-fg',
+    className,
+  )
+  const body = (
+    <>
       {children}
+      {onRemove && (
+        <button
+          type="button"
+          aria-label="Remove"
+          onClick={(e) => {
+            e.stopPropagation()
+            onRemove()
+          }}
+          className="ml-1 text-muted transition-colors hover:text-[color:var(--theme-danger)]"
+        >
+          ✕
+        </button>
+      )}
+    </>
+  )
+  if (onSelect) {
+    return (
+      <button type="button" title={title} onClick={onSelect} className={cn(base, 'inline-flex items-center')}>
+        {body}
+      </button>
+    )
+  }
+  return (
+    <span title={title} className={cn(base, onRemove && 'inline-flex items-center')}>
+      {body}
     </span>
   )
 }

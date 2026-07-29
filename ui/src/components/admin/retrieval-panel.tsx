@@ -340,8 +340,12 @@ function RerankSection({ rag }: { rag: RagAdmin }) {
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
   }
   const loadModels = async () => {
-    const q = key ? `&key=${encodeURIComponent(key)}` : ''
-    const r = await fetch(`/api/admin/rag?models=${cfg.provider}${q}`)
+    // The candidate key goes in the body — never a query string (logs).
+    const r = await fetch('/api/admin/rag', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ models: cfg.provider, ...(key ? { key } : {}) }),
+    })
     if (r.ok) setModels(((await r.json()) as { models: string[] }).models)
   }
   const saveKey = async () => {

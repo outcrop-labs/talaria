@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { getAgentDef } from '@/server/agent-defs'
 import { ownsAgent } from '@/server/personal-agent'
@@ -26,24 +26,23 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
   server: {
     handlers: {
       POST: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(request, Body)
+        if (body instanceof Response) return body
         const ownerAllowed =
-          ['up', 'stop', 'restart'].includes(parsed.data.action) && (await ownsAgent(user.id, { defId: params.id }))
+          ['up', 'stop', 'restart'].includes(body.action) && (await ownsAgent(user.id, { defId: params.id }))
         if (!(await hasPerm(user, 'agents.manage')) && !ownerAllowed) return json({ error: 'forbidden' }, { status: 403 })
         const def = await getAgentDef(params.id)
         if (!def) return json({ error: 'not found' }, { status: 404 })
 
         const sql = await db()
-        const actor = user.email ?? user.name ?? 'admin'
         // Lifecycle actions are governance-relevant — record them.
-        if (['restart', 'roll', 'retire', 'unretire', 'delete'].includes(parsed.data.action)) {
-          void logAudit({ actor, action: `agent.${parsed.data.action}`, targetType: 'agent', targetId: def.id, targetLabel: def.displayName })
+        if (['restart', 'roll', 'retire', 'unretire', 'delete'].includes(body.action)) {
+          void logAudit({ actor: actorOf(user), action: `agent.${body.action}`, targetType: 'agent', targetId: def.id, targetLabel: def.displayName })
         }
         try {
-          switch (parsed.data.action) {
+          switch (body.action) {
             case 'up': {
               if (!def.managed) return json({ error: 'not a managed agent' }, { status: 400 })
               await renderFleet()

@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { channelRole } from '@/server/channels'
 import { channelEventStream } from '@/server/realtime'
 
@@ -10,8 +10,8 @@ export const Route = createFileRoute('/api/channels/$id/events')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
         return new Response(channelEventStream(params.id, request.signal), {
           headers: {

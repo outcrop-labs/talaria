@@ -74,8 +74,8 @@ function TeamMembers({ teamId, canManage }: { teamId: string; canManage: boolean
   const add = async (email: string) => {
     setErr(null)
     const res = await addTeamMember(teamId, email, role)
-    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
-    if (!res.ok || !data.ok) return setErr(data.error ?? 'Could not add')
+    const data = (await res.json().catch(() => ({}))) as { error?: string }
+    if (!res.ok || data.error) return setErr(data.error ?? 'Could not add')
     refresh()
     void qc.invalidateQueries({ queryKey: ['teams'] })
   }

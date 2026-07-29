@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { boardRole } from '@/server/boards'
 import { boardEventStream } from '@/server/realtime'
 
@@ -10,8 +10,8 @@ export const Route = createFileRoute('/api/boards/$id/events')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         if (!(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
         return new Response(boardEventStream(params.id, request.signal), {
           headers: {

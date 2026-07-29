@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, X, Upload, ExternalLink, DownloadCloud, Search, type LucideIcon } from 'lucide-react'
+import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, Upload, ExternalLink, DownloadCloud, Search, type LucideIcon } from 'lucide-react'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { confirm, alert } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
@@ -12,7 +12,11 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { Markdown } from '@/components/ui/markdown'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
-import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
+import { useContextMenu, copyAppLink, DropdownMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
+import { Modal } from '@/components/ui/modal'
+import { Chip } from '@/components/ui/chip'
+import { Segmented } from '@/components/ui/segmented'
+import { CloseButton } from '@/components/ui/close-button'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { BrainRoutingSelect } from '@/components/kb/brain-select'
 import { IconButton } from '@/components/ui/icon-button'
@@ -163,7 +167,7 @@ function ArtifactsPage() {
             // Both queries feed the same tree — reveal it once, fully formed.
             <SkeletonRows rows={6} className="px-2 py-3" />
           ) : folders.length === 0 && artifacts.length === 0 ? (
-            <div className="px-2 py-6 text-center text-xs text-muted">No artifacts yet.</div>
+            <EmptyState variant="inline" title="No artifacts yet." className="px-2 py-6 text-center" />
           ) : (
             <>
               {rootFolders.map((f) => (
@@ -274,76 +278,62 @@ function DriveImportModal({ onClose, onImported }: { onClose: () => void; onImpo
     : '📎 File'
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 pt-[10vh]" onClick={onClose}>
-      <div className="w-full max-w-lg rounded-2xl border border-line bg-card shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-2 border-b border-line-subtle px-4 py-3">
-          <DownloadCloud size={16} className="text-muted" />
-          <span className="text-sm font-semibold text-fg">Import from Google Drive</span>
-          <button type="button" onClick={onClose} className="ml-auto rounded p-1 text-muted hover:text-fg"><X size={15} /></button>
-        </div>
-
-        {(state === 'not_connected' || state === 'reconnect') ? (
-          <div className="p-8 text-center">
-            <div className="mb-3 text-sm text-muted">
-              {state === 'reconnect'
-                ? 'Reconnect Google to grant Drive read access.'
-                : 'Connect a Google account to browse your Drive.'}
-            </div>
-            <a href="/api/integrations/google/connect" className={buttonClasses({ size: 'sm' })}>
-              {state === 'reconnect' ? 'Reconnect Google' : 'Connect Google'}
-            </a>
+    <Modal
+      open
+      onClose={onClose}
+      width="max-w-lg"
+      title={
+        <span className="flex items-center gap-2">
+          <DownloadCloud size={16} className="text-muted" /> Import from Google Drive
+        </span>
+      }
+    >
+      {(state === 'not_connected' || state === 'reconnect') ? (
+        <div className="py-6 text-center">
+          <div className="mb-3 text-sm text-muted">
+            {state === 'reconnect'
+              ? 'Reconnect Google to grant Drive read access.'
+              : 'Connect a Google account to browse your Drive.'}
           </div>
-        ) : (
-          <>
-            <div className="flex items-center gap-2 border-b border-line-subtle px-4 py-2">
-              <Search size={14} className="text-muted" />
-              <input
-                autoFocus
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search your Drive"
-                className="w-full bg-transparent text-sm text-fg outline-none placeholder:text-muted"
-              />
-            </div>
-            <div className="max-h-[50vh] min-h-[12rem] overflow-y-auto p-2">
-              {state === 'loading' && (
-                // File-row shaped: kind chip + name + time, like the results.
-                <div aria-hidden>
-                  {['70%', '85%', '55%', '78%', '62%', '88%'].map((w, i) => (
-                    <div key={i} className="flex items-center gap-3 px-2 py-2">
-                      <Skeleton className="h-3 w-14 shrink-0 rounded-full" delay={i * 0.1} />
-                      <div className="min-w-0 flex-1">
-                        <div style={{ width: w }}>
-                          <Skeleton className="h-3 w-full rounded-full" delay={i * 0.1} />
-                        </div>
-                      </div>
-                      <Skeleton className="h-3 w-10 shrink-0 rounded-full" delay={i * 0.1} />
-                    </div>
-                  ))}
-                </div>
-              )}
-              {state === 'error' && <div className="p-6 text-center text-xs text-[color:var(--theme-danger)]">Couldn’t reach Google Drive.</div>}
-              {state === 'ready' && files && files.length === 0 && <div className="p-6 text-center text-xs text-muted">No files found.</div>}
-              {state === 'ready' && files?.map((f) => (
-                <button
-                  key={f.id}
-                  type="button"
-                  disabled={!!importing}
-                  onClick={() => void doImport(f.id)}
-                  className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-sidebar disabled:opacity-50"
-                >
-                  <span className="w-14 shrink-0 text-[11px] text-muted">{driveKind(f.mimeType)}</span>
-                  <span className="min-w-0 flex-1 truncate text-sm text-fg">{f.name}</span>
-                  <span className="shrink-0 text-[11px] text-muted">
-                    {importing === f.id ? 'Importing' : f.modifiedTime ? relativeTime(f.modifiedTime) : ''}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+          <a href="/api/integrations/google/connect" className={buttonClasses({ size: 'sm' })}>
+            {state === 'reconnect' ? 'Reconnect Google' : 'Connect Google'}
+          </a>
+        </div>
+      ) : (
+        <>
+          <div className="mb-2 flex items-center gap-2">
+            <Search size={14} className="shrink-0 text-muted" />
+            <Input
+              size="sm"
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search your Drive"
+            />
+          </div>
+          <div className="max-h-[50vh] min-h-[12rem] overflow-y-auto">
+            {state === 'loading' && <SkeletonRows rows={6} className="px-2 py-3" />}
+            {state === 'error' && <div className="p-6 text-center text-xs text-[color:var(--theme-danger)]">Couldn’t reach Google Drive.</div>}
+            {state === 'ready' && files && files.length === 0 && <div className="p-6 text-center text-xs text-muted">No files found.</div>}
+            {state === 'ready' && files?.map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                disabled={!!importing}
+                onClick={() => void doImport(f.id)}
+                className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-sidebar disabled:opacity-50"
+              >
+                <span className="w-14 shrink-0 text-[11px] text-muted">{driveKind(f.mimeType)}</span>
+                <span className="min-w-0 flex-1 truncate text-sm text-fg">{f.name}</span>
+                <span className="shrink-0 text-[11px] text-muted">
+                  {importing === f.id ? 'Importing' : f.modifiedTime ? relativeTime(f.modifiedTime) : ''}
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </Modal>
   )
 }
 
@@ -440,14 +430,12 @@ function FolderNode({
             <span className="truncate font-medium">{folder.name}</span>
           </button>
         )}
-        <button
-          type="button"
-          title="Delete folder"
+        <CloseButton
+          size={12}
+          label="Delete folder"
           onClick={() => void remove()}
-          className="shrink-0 rounded p-0.5 opacity-0 hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
-        >
-          <X size={12} />
-        </button>
+          className="shrink-0 rounded p-0.5 opacity-0 hover:bg-transparent hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
+        />
       </div>
       {isOpen && (
         <div>
@@ -477,7 +465,6 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
   const [shareOpen, setShareOpen] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [seed, setSeed] = useState(0)
-  const [menuOpen, setMenuOpen] = useState(false)
   const [html, setHtml] = useState('') // microsite source
   const htmlTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const initMode = useRef(false)
@@ -533,7 +520,6 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
 
   const [exporting, setExporting] = useState(false)
   const exportToGoogle = async () => {
-    setMenuOpen(false)
     setExporting(true)
     try {
       const r = await fetch(`/api/artifacts/${id}/export/google`, { method: 'POST' })
@@ -581,14 +567,13 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
         ) : (
           <h1 className="min-w-0 flex-1 truncate font-sans text-lg font-semibold text-fg">{artifact.title}</h1>
         )}
-        <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">{artifact.kind}</span>
-        <div className="flex shrink-0 rounded-md border border-line p-0.5">
-          {(['read', 'edit'] as const).map((m) => (
-            <button key={m} type="button" onClick={() => { if (m === 'read' && mode === 'edit') void saveBody(); setMode(m) }} className={cn('rounded px-2 py-0.5 text-[11px] capitalize transition-colors', mode === m ? 'bg-card text-fg' : 'text-muted hover:text-fg')}>
-              {m}
-            </button>
-          ))}
-        </div>
+        <Chip>{artifact.kind}</Chip>
+        <Segmented
+          size="xs"
+          options={[{ id: 'read', label: 'Read' }, { id: 'edit', label: 'Edit' }] as const}
+          value={mode}
+          onChange={(m) => { if (m === 'read' && mode === 'edit') void saveBody(); setMode(m) }}
+        />
         <Button variant="outline" size="sm" className="shrink-0 capitalize" title="Share &amp; permissions" onClick={() => setShareOpen(true)}>
           {artifact.visibility}
         </Button>
@@ -607,39 +592,34 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
         <Button variant="ghost" size="sm" className="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onClick={() => setFullscreen((v) => !v)}>
           {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         </Button>
-        <div className="relative shrink-0">
-          <Button variant="ghost" size="sm" title="More" onClick={() => setMenuOpen((v) => !v)}>
-            <MoreHorizontal size={14} />
-          </Button>
-          {menuOpen && (
-            <div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-line bg-card p-1 shadow-lg" onMouseLeave={() => setMenuOpen(false)}>
-              <button type="button" onClick={() => { setShowHistory((v) => !v); setMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar">
-                <History size={13} /> {showHistory ? 'Hide history' : 'Version history'}
-              </button>
-              <button type="button" disabled={exporting} onClick={() => void exportToGoogle()} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar disabled:opacity-50">
-                <Upload size={13} /> {exporting ? 'Exporting' : googleLabel}
-              </button>
-              {artifact.googleFileUrl && (
-                <a href={artifact.googleFileUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar">
-                  <ExternalLink size={13} /> Open in Google Drive
-                </a>
-              )}
-              <button
-                type="button"
-                onClick={async () => {
-                  setMenuOpen(false)
-                  if (!(await confirm({ title: 'Delete artifact', message: `Delete "${artifact.title}"?`, confirmLabel: 'Delete', danger: true }))) return
-                  await deleteArtifact(id)
-                  await qc.invalidateQueries({ queryKey: ['artifacts'] })
-                  onDeleted()
-                }}
-                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[color:var(--theme-danger)] hover:bg-sidebar"
-              >
-                <Trash2 size={13} /> Delete artifact
-              </button>
-            </div>
+        <DropdownMenu
+          className="shrink-0"
+          trigger={() => (
+            <Button variant="ghost" size="sm" title="More">
+              <MoreHorizontal size={14} />
+            </Button>
           )}
-        </div>
+          items={() => {
+            const entries: ContextMenuEntry[] = [
+              { label: showHistory ? 'Hide history' : 'Version history', icon: <History size={13} />, onSelect: () => setShowHistory((v) => !v) },
+              { label: exporting ? 'Exporting' : googleLabel, icon: <Upload size={13} />, disabled: exporting, onSelect: () => void exportToGoogle() },
+            ]
+            const driveUrl = artifact.googleFileUrl
+            if (driveUrl) entries.push({ label: 'Open in Google Drive', icon: <ExternalLink size={13} />, onSelect: () => window.open(driveUrl, '_blank', 'noopener,noreferrer') })
+            entries.push({
+              label: 'Delete artifact',
+              icon: <Trash2 size={13} />,
+              danger: true,
+              onSelect: async () => {
+                if (!(await confirm({ title: 'Delete artifact', message: `Delete "${artifact.title}"?`, confirmLabel: 'Delete', danger: true }))) return
+                await deleteArtifact(id)
+                await qc.invalidateQueries({ queryKey: ['artifacts'] })
+                onDeleted()
+              },
+            })
+            return entries
+          }}
+        />
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -808,7 +788,7 @@ function ArtifactHistory({ id, onRestore }: { id: string; onRestore: (content: s
       {loading ? (
         <SkeletonRows rows={4} className="px-2 py-1" />
       ) : revs.length === 0 ? (
-        <div className="text-xs text-muted">No saved revisions yet.</div>
+        <EmptyState variant="inline" title="No saved revisions yet." />
       ) : (
         revs.map((r, i) => (
           <button key={r.id} type="button" onClick={() => void restore(r)} className="block w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-card" title="Restore this version">

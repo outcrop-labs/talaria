@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { getSessionUser } from '@/server/auth/session'
+import { requireUser } from '@/server/api-guard'
 import { enabledApps } from '@/server/apps'
 
 // The signed-in view of installed apps: ENABLED apps only, manifest data the
@@ -11,8 +11,8 @@ export const Route = createFileRoute('/api/apps')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
         return json({ apps: await enabledApps() })
       },
     },

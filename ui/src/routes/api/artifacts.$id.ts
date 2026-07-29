@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteArtifact, getArtifact, guarded, saveArtifact, setArtifactOfficial, setArtifactRouting, targetsForArtifact } from '@/server/artifacts'
@@ -43,16 +43,17 @@ export const Route = createFileRoute('/api/artifacts/$id')({
           if (!name || !allowed) return json({ error: 'forbidden' }, { status: 403 })
           return json({ artifact, editors })
         }
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         if (!canRead(guarded(artifact), user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
         return json({ artifact, editors })
       },
       PUT: async ({ request, params }) => {
         const artifact = await getArtifact(params.id)
         if (!artifact) return json({ error: 'not found' }, { status: 404 })
-        const parsed = Patch.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const body = await parseBody(request, Patch)
+        if (body instanceof Response) return body
         const editors = await listEditors('artifact', artifact.id)
         const g = guarded(artifact)
 
@@ -64,40 +65,41 @@ export const Route = createFileRoute('/api/artifacts/$id')({
           const mayEdit = !!name && (canEditAgent(name, editors) || (artifact.visibility !== 'private' && (await isElevatedAssistant(name))))
           if (!name || !mayEdit) return json({ error: 'forbidden' }, { status: 403 })
           actor = name
-          parsed.data.visibility = undefined
-          parsed.data.editPolicy = undefined
-          parsed.data.editors = undefined
-          parsed.data.official = undefined
-          parsed.data.ragRouting = undefined
+          body.visibility = undefined
+          body.editPolicy = undefined
+          body.editors = undefined
+          body.official = undefined
+          body.ragRouting = undefined
         } else {
-          const user = await getSessionUser(request)
-          if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+          const gate = await requireUser(request)
+          if (gate instanceof Response) return gate
+          const user = gate
           if (!canEditHuman(g, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
-          actor = user.email ?? user.name ?? 'user'
+          actor = actorOf(user)
           owner = isOwner(g, user.id, user.email ?? user.name)
-          if (parsed.data.visibility === 'public' && !(await hasPerm(user, 'artifacts.publish'))) {
+          if (body.visibility === 'public' && !(await hasPerm(user, 'artifacts.publish'))) {
             return json({ error: 'no permission to publish to the web' }, { status: 403 })
           }
-          const sharing = parsed.data.visibility !== undefined || parsed.data.editPolicy !== undefined || parsed.data.editors !== undefined
+          const sharing = body.visibility !== undefined || body.editPolicy !== undefined || body.editors !== undefined
           if (!owner && sharing) return json({ error: 'only the owner can change sharing' }, { status: 403 })
           // Routing decides which brain retrieves the content — owner's call.
-          if (!owner && parsed.data.ragRouting !== undefined) {
+          if (!owner && body.ragRouting !== undefined) {
             return json({ error: 'only the owner can change brain routing' }, { status: 403 })
           }
         }
 
-        if (!owner) parsed.data.official = undefined
-        if (owner && parsed.data.editors !== undefined) await setEditors('artifact', params.id, parsed.data.editors)
-        let updated = await saveArtifact(params.id, parsed.data, actor)
+        if (!owner) body.official = undefined
+        if (owner && body.editors !== undefined) await setEditors('artifact', params.id, body.editors)
+        let updated = await saveArtifact(params.id, body, actor)
         if (!updated) return json({ error: 'not found' }, { status: 404 })
-        if (parsed.data.official !== undefined && parsed.data.official !== updated.official) {
-          updated = (await setArtifactOfficial(params.id, parsed.data.official, actor)) ?? updated
-          void logAudit({ actor, action: parsed.data.official ? 'artifact.officialize' : 'artifact.deofficialize', targetType: 'artifact', targetId: params.id, targetLabel: updated.title })
+        if (body.official !== undefined && body.official !== updated.official) {
+          updated = (await setArtifactOfficial(params.id, body.official, actor)) ?? updated
+          void logAudit({ actor, action: body.official ? 'artifact.officialize' : 'artifact.deofficialize', targetType: 'artifact', targetId: params.id, targetLabel: updated.title })
         }
         // Routing change → re-place immediately (and validate the brain).
-        if (parsed.data.ragRouting !== undefined) {
+        if (body.ragRouting !== undefined) {
           try {
-            const routed = await setArtifactRouting(params.id, parsed.data.ragRouting, actor)
+            const routed = await setArtifactRouting(params.id, body.ragRouting, actor)
             if (routed) {
               updated = routed
               void applyArtifactRouting(routed).catch(() => {})
@@ -108,7 +110,7 @@ export const Route = createFileRoute('/api/artifacts/$id')({
         }
         // Content edits keep the artifact's retrievable copy current: auto →
         // the plan-doc activity flow; explicit brain → re-index there.
-        if (parsed.data.body !== undefined || parsed.data.title !== undefined) {
+        if (body.body !== undefined || body.title !== undefined) {
           const u = updated
           if (u.ragRouting && u.ragRouting !== 'auto') {
             void applyArtifactRouting(u).catch(() => {})
@@ -126,8 +128,9 @@ export const Route = createFileRoute('/api/artifacts/$id')({
       DELETE: async ({ request, params }) => {
         const artifact = await getArtifact(params.id)
         if (!artifact) return json({ error: 'not found' }, { status: 404 })
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const gate = await requireUser(request)
+        if (gate instanceof Response) return gate
+        const user = gate
         const editors = await listEditors('artifact', artifact.id)
         if (!canEditHuman(guarded(artifact), user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
         await deleteArtifact(params.id)

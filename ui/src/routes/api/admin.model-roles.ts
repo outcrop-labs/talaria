@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { getModelRoles, MODEL_ROLES, setModelRole } from '@/server/model-roles'
 import { gatewayModels } from '@/server/llm-gateway'
 import { logAudit } from '@/server/audit'
@@ -15,9 +15,8 @@ export const Route = createFileRoute('/api/admin/model-roles')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         return json({
           roles: MODEL_ROLES,
           assignments: await getModelRoles(),
@@ -25,23 +24,23 @@ export const Route = createFileRoute('/api/admin/model-roles')({
         })
       },
       PUT: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const parsed = z
-          .object({ role: z.enum(ROLES as [string, ...string[]]), model: z.string().max(200).nullable() })
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        if (parsed.data.model && !(await gatewayModels()).some((m) => m.id === parsed.data.model)) {
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(
+          request,
+          z.object({ role: z.enum(ROLES as [string, ...string[]]), model: z.string().max(200).nullable() }),
+        )
+        if (body instanceof Response) return body
+        if (body.model && !(await gatewayModels()).some((m) => m.id === body.model)) {
           return json({ error: 'that model is not on the gateway' }, { status: 400 })
         }
-        await setModelRole(parsed.data.role as (typeof ROLES)[number], parsed.data.model)
+        await setModelRole(body.role as (typeof ROLES)[number], body.model)
         void logAudit({
-          actor: user.email ?? user.name ?? 'admin',
+          actor: actorOf(user),
           action: 'model_role.assign',
           targetType: 'model-role',
-          targetId: parsed.data.role,
-          after: { model: parsed.data.model },
+          targetId: body.role,
+          after: { model: body.model },
         })
         return json({ assignments: await getModelRoles() })
       },

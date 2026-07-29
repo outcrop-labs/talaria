@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { getSessionUser } from '@/server/auth/session'
+import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import {
   PERMISSIONS,
   getOrgDefaultPerms,
@@ -24,9 +24,8 @@ export const Route = createFileRoute('/api/admin/permissions')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        const gate = await requireAdmin(request)
+        if (gate instanceof Response) return gate
         const sql = await db()
         const rows = (await sql`select user_id as "userId", perm, allowed from user_permissions`) as unknown as Array<{
           userId: string
@@ -38,12 +37,12 @@ export const Route = createFileRoute('/api/admin/permissions')({
         return json({ catalog: PERMISSIONS, orgDefaults: await getOrgDefaultPerms(), overrides })
       },
       PUT: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-        const actor = user.email ?? user.name ?? 'admin'
-        const parsed = z
-          .union([
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const actor = actorOf(user)
+        const body = await parseBody(
+          request,
+          z.union([
             z.object({
               userId: z.string().uuid(),
               perm: z.enum(PERM_IDS as [Perm, ...Perm[]]),
@@ -52,17 +51,17 @@ export const Route = createFileRoute('/api/admin/permissions')({
             z.object({
               orgDefault: z.object({ perm: z.enum(PERM_IDS as [Perm, ...Perm[]]), enabled: z.boolean().nullable() }),
             }),
-          ])
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+          ]),
+        )
+        if (body instanceof Response) return body
 
-        if ('orgDefault' in parsed.data) {
-          const { perm, enabled } = parsed.data.orgDefault
+        if ('orgDefault' in body) {
+          const { perm, enabled } = body.orgDefault
           await setOrgDefaultPerm(perm, enabled)
           void logAudit({ actor, action: 'permissions.org_default', targetType: 'permission', targetId: perm, after: { enabled } })
           return json({ orgDefaults: await getOrgDefaultPerms() })
         }
-        const { userId, perm, allowed } = parsed.data
+        const { userId, perm, allowed } = body
         await setUserPermOverride(userId, perm, allowed)
         void logAudit({ actor, action: 'permissions.user_override', targetType: 'user', targetId: userId, after: { perm, allowed } })
         return json({ overrides: await getUserPermOverrides(userId) })
