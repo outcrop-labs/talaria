@@ -27,6 +27,8 @@ export interface McpServer {
   authMode: 'org' | 'per-user'
   tools: Array<{ name: string; description?: string }>
   toolsRefreshedAt: string | null
+  /** Header declarations captured at install (drive per-user connect forms). */
+  requiredHeaders: Array<{ name: string; description: string | null; isSecret: boolean; placeholder: string | null }>
   createdBy: string | null
   createdAt: string
 }
@@ -45,7 +47,7 @@ export interface McpUserAccess {
 
 const ROW = `id, name, label, description, url, headers, timeout_secs as "timeoutSecs", enabled,
   all_agents as "allAgents", auth_mode as "authMode", tools, tools_refreshed_at as "toolsRefreshedAt",
-  created_by as "createdBy", created_at as "createdAt"`
+  required_headers as "requiredHeaders", created_by as "createdBy", created_at as "createdAt"`
 
 export async function listMcpServers(): Promise<McpServer[]> {
   const sql = await db()
@@ -69,13 +71,21 @@ export async function createMcpServer(input: {
   headers?: Record<string, string>
   timeoutSecs?: number | null
   authMode?: 'org' | 'per-user'
+  requiredHeaders?: Array<{ name: string; description?: string | null; isSecret?: boolean; placeholder?: string | null }>
   createdBy: string
 }): Promise<McpServer> {
   const sql = await db()
+  const declared = (input.requiredHeaders ?? []).map((h) => ({
+    name: h.name,
+    description: h.description ?? null,
+    isSecret: h.isSecret ?? false,
+    placeholder: h.placeholder ?? null,
+  }))
   const rows = (await sql`
-    insert into mcp_servers (name, label, description, url, headers, timeout_secs, auth_mode, created_by)
+    insert into mcp_servers (name, label, description, url, headers, timeout_secs, auth_mode, required_headers, created_by)
     values (${input.name}, ${input.label ?? input.name}, ${input.description ?? null}, ${input.url},
-            ${sql.json(input.headers ?? {})}, ${input.timeoutSecs ?? null}, ${input.authMode ?? 'org'}, ${input.createdBy})
+            ${sql.json(input.headers ?? {})}, ${input.timeoutSecs ?? null}, ${input.authMode ?? 'org'},
+            ${sql.json(declared)}, ${input.createdBy})
     returning ${sql.unsafe(ROW)}
   `) as unknown as McpServer[]
   return rows[0]!

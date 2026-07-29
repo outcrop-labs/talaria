@@ -319,6 +319,16 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
   )
 }
 
+interface LibraryHeaderRow {
+  name: string
+  description: string | null
+  isRequired: boolean
+  isSecret: boolean
+  placeholder: string | null
+  default: string | null
+  choices: string[] | null
+}
+
 interface LibraryServerRow {
   registryName: string
   title: string
@@ -327,12 +337,15 @@ interface LibraryServerRow {
   domain: string | null
   icon: string | null
   tier: 'first-party' | 'verified' | 'community'
+  requiredHeaders: LibraryHeaderRow[]
 }
 
-/** Publisher mark: declared icon → proxied favicon → monogram tile. */
+/** Publisher mark: the registry-declared icon hotlinks DIRECTLY (fast, no
+ *  middleman); the cached favicon proxy is only the fallback; a monogram tile
+ *  is the floor. */
 function ServerMark({ title, domain, icon, size = 32 }: { title: string; domain?: string | null; icon?: string | null; size?: number }) {
   const [failed, setFailed] = useState(false)
-  const src = icon ? `/api/mcp/icon?src=${encodeURIComponent(icon)}` : domain ? `/api/mcp/icon?domain=${encodeURIComponent(domain)}` : null
+  const src = icon ?? (domain ? `/api/mcp/icon?domain=${encodeURIComponent(domain)}` : null)
   if (!src || failed) {
     return (
       <span
@@ -349,6 +362,7 @@ function ServerMark({ title, domain, icon, size = 32 }: { title: string; domain?
       alt=""
       width={size}
       height={size}
+      loading="lazy"
       onError={() => setFailed(true)}
       className="shrink-0 rounded-lg bg-card object-contain"
       style={{ width: size, height: size }}
@@ -376,6 +390,7 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
   const [busyAdd, setBusyAdd] = useState<string | null>(null)
   const [added, setAdded] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
+  const [installing, setInstalling] = useState<LibraryServerRow | null>(null)
 
   const { data: results, isFetching } = useQuery({
     queryKey: ['mcp-marketplace', q],
@@ -394,24 +409,40 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
   const installedUrls = new Set((existing ?? []).map((s) => s.url))
   const slugify = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
 
-  const install = async (l: LibraryServerRow) => {
+  const register = async (l: LibraryServerRow, opts: { headers?: Record<string, string>; authMode?: 'org' | 'per-user' }) => {
     setBusyAdd(l.registryName)
     setError(null)
     const r = await fetch('/api/mcp/servers', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: slugify(l.title), label: l.title, url: l.url, description: l.description }),
+      body: JSON.stringify({
+        name: slugify(l.title),
+        label: l.title,
+        url: l.url,
+        description: l.description,
+        headers: opts.headers,
+        authMode: opts.authMode,
+        requiredHeaders: l.requiredHeaders,
+      }),
     })
     setBusyAdd(null)
     if (!r.ok) {
       setError(((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed')
-      return
+      return false
     }
     const { server } = (await r.json()) as { server: { id: string } }
     setAdded((prev) => new Set(prev).add(l.registryName))
+    setInstalling(null)
     await qc.invalidateQueries({ queryKey: ['mcp-servers'] })
     void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
+    return true
+  }
+
+  // Servers declaring credentials get the install dialog; the rest one-click.
+  const install = (l: LibraryServerRow) => {
+    if (l.requiredHeaders.length > 0) setInstalling(l)
+    else void register(l, {})
   }
 
   return (
@@ -500,9 +531,9 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
                       ) : (
                         <button
                           type="button"
-                          title="Add to your org"
+                          title={l.requiredHeaders.length ? 'Add to your org (needs credentials)' : 'Add to your org'}
                           disabled={busy}
-                          onClick={() => void install(l)}
+                          onClick={() => install(l)}
                           className={cn(
                             'grid h-7 w-7 place-items-center rounded-full border transition-all',
                             busy
@@ -520,8 +551,114 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
             </div>
           )}
         </div>
+        {installing && (
+          <InstallDialog
+            server={installing}
+            busy={busyAdd === installing.registryName}
+            onCancel={() => setInstalling(null)}
+            onInstall={(opts) => void register(installing, opts)}
+          />
+        )}
       </div>
     </Modal>
+  )
+}
+
+/** Credential capture for servers that declare required headers — schema-
+ *  driven: secret fields mask, choices become selects, placeholders and
+ *  descriptions come from the publisher. Per-user mode skips values here and
+ *  lets each person connect their own account in Settings. */
+function InstallDialog({
+  server: l,
+  busy,
+  onCancel,
+  onInstall,
+}: {
+  server: LibraryServerRow
+  busy: boolean
+  onCancel: () => void
+  onInstall: (opts: { headers?: Record<string, string>; authMode?: 'org' | 'per-user' }) => void
+}) {
+  const [authMode, setAuthMode] = useState<'org' | 'per-user'>('org')
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(l.requiredHeaders.filter((h) => h.default).map((h) => [h.name, h.default!])),
+  )
+  const missing = authMode === 'org' && l.requiredHeaders.some((h) => h.isRequired && !values[h.name]?.trim())
+  const submit = () => {
+    if (busy || missing) return
+    const headers = Object.fromEntries(Object.entries(values).filter(([, v]) => v.trim()))
+    onInstall(authMode === 'org' ? { headers } : { authMode: 'per-user' })
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" onClick={onCancel}>
+      <div className="w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3">
+          <ServerMark title={l.title} domain={l.domain} icon={l.icon} size={36} />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-fg">Connect {l.title}</div>
+            {l.domain && <div className="text-[11px] text-muted">{l.domain}</div>}
+          </div>
+        </div>
+        <p className="mt-2 font-sans text-xs text-muted">This server declares credentials. Choose how your org authenticates:</p>
+        <div className="mt-3">
+          <Combobox
+            options={[
+              { value: 'org', label: 'Org account', sub: 'one shared credential, stored on the server row' },
+              { value: 'per-user', label: 'Per-user accounts', sub: 'each person connects their own in Settings' },
+            ]}
+            selected={[authMode]}
+            onChange={([v]) => v && setAuthMode(v as 'org' | 'per-user')}
+            placeholder="Auth mode"
+          />
+        </div>
+        {authMode === 'org' && (
+          <div className="mt-3 space-y-3">
+            {l.requiredHeaders.map((h) => (
+              <div key={h.name}>
+                <label className="mb-1 flex items-baseline gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+                  {h.name}
+                  {h.isRequired && <span className="text-accent">*</span>}
+                </label>
+                {h.choices?.length ? (
+                  <Select size="sm" value={values[h.name] ?? ''} onChange={(e) => setValues((p) => ({ ...p, [h.name]: e.target.value }))} className="w-full">
+                    <option value="">Pick one</option>
+                    {h.choices.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </Select>
+                ) : (
+                  <Input
+                    type={h.isSecret ? 'password' : 'text'}
+                    value={values[h.name] ?? ''}
+                    onChange={(e) => setValues((p) => ({ ...p, [h.name]: e.target.value }))}
+                    placeholder={h.placeholder ?? (h.isSecret ? '•••' : '')}
+                    autoComplete="off"
+                  />
+                )}
+                {h.description && <div className="mt-1 font-sans text-[11px] text-muted/90">{h.description}</div>}
+              </div>
+            ))}
+            <div className="font-sans text-[11px] text-muted/80">Spoken only by Talaria's gateway — never rendered into an agent config.</div>
+          </div>
+        )}
+        {authMode === 'per-user' && (
+          <p className="mt-3 font-sans text-xs text-muted">
+            Nobody gets access until they connect their own account in Settings → Connections. Their assistant then acts as them on this server.
+          </p>
+        )}
+        <div className="mt-4 flex justify-end gap-2 border-t border-line-subtle pt-3">
+          <Button size="sm" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button size="sm" disabled={busy || missing} onClick={submit}>
+            {busy ? 'Connecting' : 'Add to org'}
+          </Button>
+        </div>
+      </div>
+    </div>
   )
 }
 

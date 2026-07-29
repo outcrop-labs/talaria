@@ -15,6 +15,17 @@ const Body = z.object({
   headers: z.record(z.string(), z.string().max(2000)).optional(),
   timeoutSecs: z.number().int().positive().max(3600).nullish(),
   authMode: z.enum(['org', 'per-user']).optional(),
+  requiredHeaders: z
+    .array(
+      z.object({
+        name: z.string().max(120),
+        description: z.string().max(500).nullish(),
+        isSecret: z.boolean().optional(),
+        placeholder: z.string().max(200).nullish(),
+      }),
+    )
+    .max(10)
+    .optional(),
 })
 
 // The org MCP registry. GET → servers + their assignments + user access

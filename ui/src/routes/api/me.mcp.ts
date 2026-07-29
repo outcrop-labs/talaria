@@ -25,6 +25,7 @@ export const Route = createFileRoute('/api/me/mcp')({
               name: s.name,
               label: s.label,
               description: s.description,
+              requiredHeaders: s.requiredHeaders,
               connected: await hasUserCredentials(s.id, user.id),
             })),
           ),

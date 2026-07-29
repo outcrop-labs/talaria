@@ -215,19 +215,27 @@ interface GoogleStatus {
 /** Per-user MCP connected accounts: servers the org registered in per-user
  *  auth mode. Connect yours (a token header, sealed at rest) and your
  *  assistant starts carrying the server — acting as YOU there. */
+interface McpConnection {
+  id: string
+  name: string
+  label: string
+  description: string | null
+  requiredHeaders: Array<{ name: string; description: string | null; isSecret: boolean; placeholder: string | null }>
+  connected: boolean
+}
+
 function McpConnectionsSection() {
   const qc = useQueryClient()
   const { data, isPending } = useQuery({
     queryKey: ['me-mcp'],
-    queryFn: async (): Promise<Array<{ id: string; name: string; label: string; description: string | null; connected: boolean }>> => {
+    queryFn: async (): Promise<McpConnection[]> => {
       const r = await fetch('/api/me/mcp', { credentials: 'same-origin' })
       if (!r.ok) return []
-      return ((await r.json()) as { servers: Array<{ id: string; name: string; label: string; description: string | null; connected: boolean }> }).servers
+      return ((await r.json()) as { servers: McpConnection[] }).servers
     },
   })
   const [connecting, setConnecting] = useState<string | null>(null)
-  const [headerKey, setHeaderKey] = useState('Authorization')
-  const [headerVal, setHeaderVal] = useState('')
+  const [values, setValues] = useState<Record<string, string>>({})
 
   const put = async (serverId: string, headers: Record<string, string> | null) => {
     await fetch('/api/me/mcp', {
@@ -237,7 +245,7 @@ function McpConnectionsSection() {
       body: JSON.stringify({ serverId, headers }),
     })
     setConnecting(null)
-    setHeaderVal('')
+    setValues({})
     await qc.invalidateQueries({ queryKey: ['me-mcp'] })
   }
 
@@ -273,18 +281,36 @@ function McpConnectionsSection() {
                 )}
               </div>
               {connecting === s.id && (
-                <div className="flex items-end gap-2 pl-1">
-                  <label className="w-40 space-y-1 text-xs text-muted">
-                    header
-                    <Input size="sm" value={headerKey} onChange={(e) => setHeaderKey(e.target.value)} />
-                  </label>
-                  <label className="min-w-0 flex-1 space-y-1 text-xs text-muted">
-                    value (e.g. Bearer …)
-                    <Input size="sm" type="password" value={headerVal} onChange={(e) => setHeaderVal(e.target.value)} />
-                  </label>
-                  <Button size="sm" disabled={!headerKey.trim() || !headerVal.trim()} onClick={() => void put(s.id, { [headerKey.trim()]: headerVal })}>
-                    Save
-                  </Button>
+                <div className="space-y-2 pl-1">
+                  {/* Publisher-declared credentials drive the form; a server
+                      without declarations falls back to one auth header. */}
+                  {(s.requiredHeaders.length ? s.requiredHeaders : [{ name: 'Authorization', description: null, isSecret: true, placeholder: 'Bearer …' }]).map((h) => (
+                    <div key={h.name} className="flex items-end gap-2">
+                      <span className="w-40 shrink-0 truncate pb-2 text-xs text-muted" title={h.name}>
+                        {h.name}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <Input
+                          size="sm"
+                          type={h.isSecret ? 'password' : 'text'}
+                          value={values[h.name] ?? ''}
+                          onChange={(e) => setValues((p) => ({ ...p, [h.name]: e.target.value }))}
+                          placeholder={h.placeholder ?? ''}
+                          autoComplete="off"
+                        />
+                        {h.description && <div className="mt-0.5 font-sans text-[11px] text-muted/80">{h.description}</div>}
+                      </div>
+                    </div>
+                  ))}
+                  <div className="flex justify-end">
+                    <Button
+                      size="sm"
+                      disabled={!Object.values(values).some((v) => v.trim())}
+                      onClick={() => void put(s.id, Object.fromEntries(Object.entries(values).filter(([, v]) => v.trim())))}
+                    >
+                      Connect
+                    </Button>
+                  </div>
                 </div>
               )}
             </li>

@@ -169,6 +169,7 @@ const MIGRATIONS: string[] = [
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now()
   )`,
+  `alter table mcp_servers add column if not exists required_headers jsonb not null default '[]'`,
   `create table if not exists mcp_server_agents (
     server_id uuid not null references mcp_servers(id) on delete cascade,
     agent_model text not null,

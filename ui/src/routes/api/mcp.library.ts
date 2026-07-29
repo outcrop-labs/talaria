@@ -17,7 +17,7 @@ export const Route = createFileRoute('/api/mcp/library')({
         const q = url.searchParams.get('q') ?? ''
         try {
           if (url.searchParams.get('featured') === '1') {
-            return json(await featuredMcpLibrary(url.searchParams.get('cursor')))
+            return json(await featuredMcpLibrary())
           }
           return json({ servers: await searchMcpLibrary(q) })
         } catch (e) {
