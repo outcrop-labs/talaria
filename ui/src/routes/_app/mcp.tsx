@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useContextMenu } from '@/components/ui/context-menu'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -13,7 +13,6 @@ import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { confirm } from '@/components/ui/confirm'
-import { UserPicker } from '@/components/app/user-picker'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useAgents } from '@/lib/agents'
@@ -137,8 +136,6 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
   const { data: users = [] } = useUsers()
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
-  const [addingAgent, setAddingAgent] = useState(false)
-  const [addingPerson, setAddingPerson] = useState(false)
   const { openMenu, menu } = useContextMenu()
   const refresh = () => qc.invalidateQueries({ queryKey: ['mcp-servers'] })
 
@@ -289,19 +286,17 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
             </label>
             <span className="flex-1" />
             {!s.allAgents && (
-              <button
-                type="button"
-                onClick={() => setAddingAgent((v) => !v)}
+              <AddPickerButton
                 title="Add an agent"
-                className="grid h-6 w-6 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-accent"
-              >
-                <Plus size={14} />
-              </button>
+                placeholder="Search agents"
+                options={agentOptions.filter((o) => !s.assignments.some((a) => a.agentModel === o.value))}
+                onPick={(m) => void patch({ assign: { agentModel: m, tools: null } })}
+              />
             )}
           </div>
           {s.allAgents ? (
             <div className="px-1.5 py-1 text-xs text-muted">Every enabled agent carries this server.</div>
-          ) : s.assignments.length === 0 && !addingAgent ? (
+          ) : s.assignments.length === 0 ? (
             <div className="px-1.5 py-1 text-xs text-muted/70">No agents yet — add one, or check “all agents”.</div>
           ) : (
             <div className="space-y-0.5">
@@ -326,23 +321,6 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
               ))}
             </div>
           )}
-          {addingAgent && !s.allAgents && (
-            <div className="max-w-72 pt-1.5">
-              <Combobox
-                options={agentOptions.filter((o) => !s.assignments.some((a) => a.agentModel === o.value))}
-                selected={[]}
-                onChange={(models) => {
-                  const m = models[0]
-                  setAddingAgent(false)
-                  if (m) void patch({ assign: { agentModel: m, tools: null } })
-                }}
-                multiple
-                size="sm"
-                placeholder="Pick an agent"
-                className="w-full"
-              />
-            </div>
-          )}
         </div>
 
         {/* People */}
@@ -351,16 +329,16 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
             <span className="text-[11px] font-semibold uppercase tracking-wide text-muted/80">People</span>
             <InfoTip text="No rules = everyone with an assigned agent may use it. A rule narrows one person to specific tools, or denies them outright." />
             <span className="flex-1" />
-            <button
-              type="button"
-              onClick={() => setAddingPerson((v) => !v)}
+            <AddPickerButton
               title="Add a person rule"
-              className="grid h-6 w-6 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-accent"
-            >
-              <Plus size={14} />
-            </button>
+              placeholder="Search people"
+              options={users
+                .filter((u) => !s.userAccess.some((r) => r.userId === u.id))
+                .map((u) => ({ value: u.id, label: u.name ?? u.email ?? u.id.slice(0, 8), sub: u.email ?? undefined }))}
+              onPick={(id) => void patch({ userAccess: { userId: id, allowed: true, tools: null } })}
+            />
           </div>
-          {s.userAccess.length === 0 && !addingPerson ? (
+          {s.userAccess.length === 0 ? (
             <div className="px-1.5 py-1 text-xs text-muted/70">Everyone with an assigned agent may use it.</div>
           ) : (
             <div className="space-y-0.5">
@@ -389,20 +367,6 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
               ))}
             </div>
           )}
-          {addingPerson && (
-            <div className="max-w-72 pt-1.5">
-              <UserPicker
-                size="sm"
-                className="w-full"
-                placeholder="Pick a person"
-                exclude={s.userAccess.map((u) => u.userId)}
-                onPick={(u) => {
-                  setAddingPerson(false)
-                  void patch({ userAccess: { userId: u.id, allowed: true, tools: null } })
-                }}
-              />
-            </div>
-          )}
         </div>
       </div>
 
@@ -413,6 +377,84 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
       )}
       {menu}
     </Panel>
+  )
+}
+
+/** A "+" that opens a search popover anchored to itself — pick to commit.
+ *  The attach-menu pattern: outside click or Esc dismisses. */
+function AddPickerButton({
+  title,
+  placeholder,
+  options,
+  onPick,
+}: {
+  title: string
+  placeholder: string
+  options: Array<{ value: string; label: string; sub?: string }>
+  onPick: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const needle = q.trim().toLowerCase()
+  const results = options.filter((o) => !needle || o.label.toLowerCase().includes(needle) || (o.sub ?? '').toLowerCase().includes(needle))
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        title={title}
+        onClick={() => {
+          setOpen((v) => !v)
+          setQ('')
+        }}
+        className={cn(
+          'grid h-6 w-6 place-items-center rounded-md transition-colors',
+          open ? 'bg-card text-accent' : 'text-muted hover:bg-card hover:text-accent',
+        )}
+      >
+        <Plus size={14} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-line bg-card p-1.5 shadow-lg">
+          <Input autoFocus size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder={placeholder} className="mb-1" />
+          <div className="max-h-48 overflow-y-auto">
+            {results.length === 0 && <div className="px-2 py-1.5 text-xs text-muted">No matches</div>}
+            {results.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  onPick(o.value)
+                }}
+                className="flex w-full items-baseline gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-sidebar"
+              >
+                <span className="min-w-0 flex-1 truncate text-sm text-fg">{o.label}</span>
+                {o.sub && <span className="shrink-0 truncate text-[11px] text-muted">{o.sub}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -438,27 +480,30 @@ function AccessRow({
         <span className={cn('text-sm', denied ? 'text-muted line-through' : 'text-fg')}>{name}</span>
       </span>
       <span className="min-w-0 flex-1">{tools ?? <span className="text-xs text-muted/60">{denied ? 'no access' : 'all tools'}</span>}</span>
-      {onToggleDenied && (
+      {/* Fixed-width control cluster so every row's tool box ends flush. */}
+      <span className="flex w-16 shrink-0 items-center justify-end gap-1.5">
+        {onToggleDenied && (
+          <button
+            type="button"
+            onClick={onToggleDenied}
+            title={denied ? 'Allow again' : 'Deny this person outright'}
+            className={cn(
+              'rounded px-1 py-0.5 text-[10px] uppercase tracking-wide transition-colors',
+              denied ? 'text-[color:var(--theme-danger)]' : 'text-muted opacity-0 hover:text-[color:var(--theme-danger)] group-hover:opacity-100',
+            )}
+          >
+            {denied ? 'denied' : 'deny'}
+          </button>
+        )}
         <button
           type="button"
-          onClick={onToggleDenied}
-          title={denied ? 'Allow again' : 'Deny this person outright'}
-          className={cn(
-            'shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide transition-colors',
-            denied ? 'text-[color:var(--theme-danger)]' : 'text-muted opacity-0 hover:text-[color:var(--theme-danger)] group-hover:opacity-100',
-          )}
+          onClick={onRemove}
+          title={removeTitle}
+          className="text-muted opacity-0 transition-opacity hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
         >
-          {denied ? 'denied' : 'deny'}
+          <Trash2 size={13} />
         </button>
-      )}
-      <button
-        type="button"
-        onClick={onRemove}
-        title={removeTitle}
-        className="shrink-0 text-muted opacity-0 transition-opacity hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
-      >
-        <Trash2 size={13} />
-      </button>
+      </span>
     </div>
   )
 }
