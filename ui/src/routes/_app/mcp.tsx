@@ -890,22 +890,25 @@ function OauthAppSetup({ serverId, domain, docs, onSaved }: { serverId: string; 
 
   return (
     <div className="mt-3 rounded-xl border border-accent/40 bg-accent/5 p-3">
-      <div className="flex items-center gap-2">
-        <span className="text-xs font-medium text-fg">This provider needs a pre-registered OAuth app</span>
-        <InfoTip text="It doesn't support automatic client registration (GitHub, for example). Create an OAuth app in the provider's developer settings with the callback URL below, then paste the app's client id and secret here — stored encrypted, spoken only during the OAuth flow." />
-        <span className="flex-1" />
-        {(() => {
-          // The provider's own service_documentation (from its AS metadata)
-          // beats our portal map — API data first.
-          const link = docs ?? (domain ? OAUTH_APP_PORTALS[domain] : undefined)
-          return link ? (
-            <a href={link} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
-              Create the app ↗
-            </a>
-          ) : null
-        })()}
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-fg">This provider needs a pre-registered OAuth app</span>
+            <InfoTip text="It doesn't support automatic client registration (GitHub, for example). Create an OAuth app in the provider's developer settings with the callback URL below, then paste the app's client id and secret here — stored encrypted, spoken only during the OAuth flow." />
+          </div>
+          {(() => {
+            // The provider's own service_documentation (from its AS metadata)
+            // beats our portal map — API data first.
+            const link = docs ?? (domain ? OAUTH_APP_PORTALS[domain] : undefined)
+            return link ? (
+              <a href={link} target="_blank" rel="noreferrer" className="mt-0.5 inline-block text-xs text-accent hover:underline">
+                Create the app ↗
+              </a>
+            ) : null
+          })()}
+        </div>
         {!openForm && (
-          <Button size="sm" onClick={() => setOpenForm(true)}>
+          <Button size="sm" className="shrink-0" onClick={() => setOpenForm(true)}>
             Set up
           </Button>
         )}
