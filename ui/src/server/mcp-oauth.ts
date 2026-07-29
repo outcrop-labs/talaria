@@ -59,12 +59,25 @@ export async function discoverOauth(serverUrl: string): Promise<OauthConfig | nu
     const as = meta.authorization_servers?.[0]
     if (!as) return null
 
+    // RFC 8414: for an issuer WITH a path (github.com/login/oauth), the
+    // well-known segment goes BETWEEN host and path.
+    const asUrl = new URL(as)
+    const asPath = asUrl.pathname.replace(/\/$/, '')
+    const candidates = [
+      `${asUrl.origin}/.well-known/oauth-authorization-server${asPath}`,
+      `${asUrl.origin}/.well-known/oauth-authorization-server`,
+      `${asUrl.origin}/.well-known/openid-configuration${asPath}`,
+      `${as.replace(/\/$/, '')}/.well-known/openid-configuration`,
+    ].filter((v, i, a) => a.indexOf(v) === i)
     let asMeta: Record<string, unknown> | null = null
-    for (const path of ['/.well-known/oauth-authorization-server', '/.well-known/openid-configuration']) {
-      const r = await fetch(new URL(path, as), { signal: AbortSignal.timeout(8_000) }).catch(() => null)
+    for (const c of candidates) {
+      const r = await fetch(c, { signal: AbortSignal.timeout(8_000) }).catch(() => null)
       if (r?.ok) {
-        asMeta = (await r.json()) as Record<string, unknown>
-        break
+        const j = (await r.json().catch(() => null)) as Record<string, unknown> | null
+        if (j?.authorization_endpoint) {
+          asMeta = j
+          break
+        }
       }
     }
     if (!asMeta?.authorization_endpoint || !asMeta.token_endpoint) return null
@@ -97,7 +110,14 @@ async function ensureClient(serverId: string, config: OauthConfig, redirectUri: 
   if (config.client && config.client.redirectUri === redirectUri) {
     return { id: config.client.id, secret: config.client.secretEnc ? open(config.client.secretEnc) : null }
   }
-  if (!config.registrationEndpoint) throw new Error('this authorization server does not support dynamic client registration')
+  // A manually-configured client (DCR-less providers like GitHub) is pinned
+  // to whatever redirect the admin registered — reuse it as-is.
+  if (config.client && !config.registrationEndpoint) {
+    return { id: config.client.id, secret: config.client.secretEnc ? open(config.client.secretEnc) : null }
+  }
+  if (!config.registrationEndpoint) {
+    throw new Error('this provider requires a pre-registered OAuth app — add its client credentials on the server card')
+  }
   const r = await fetch(config.registrationEndpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -126,7 +146,8 @@ async function ensureClient(serverId: string, config: OauthConfig, redirectUri: 
 export async function startOauth(serverId: string, serverUrl: string, subject: string, origin: string): Promise<string> {
   const config = await ensureOauthConfig(serverId, serverUrl)
   if (!config) throw new Error("this server doesn't advertise OAuth")
-  const redirectUri = `${origin}/api/mcp/oauth/callback`
+  let redirectUri = `${origin}/api/mcp/oauth/callback`
+  if (config.client && !config.registrationEndpoint) redirectUri = config.client.redirectUri
   const client = await ensureClient(serverId, config, redirectUri)
   const state = b64url(randomBytes(24))
   const verifier = b64url(randomBytes(48))
@@ -249,4 +270,33 @@ export async function oauthTokenFor(serverId: string, subject: string): Promise<
   if (!next.refreshToken) next.refreshToken = t.refreshToken // rotation optional
   await storeTokens(serverId, subject, next)
   return next.accessToken
+}
+
+/** Store admin-provided OAuth app credentials (providers without dynamic
+ *  registration — GitHub). The redirect URI must be registered with the
+ *  provider exactly as shown in the UI. */
+export async function setManualOauthClient(
+  serverId: string,
+  serverUrl: string,
+  clientId: string,
+  clientSecret: string | null,
+  redirectUri: string,
+): Promise<void> {
+  const config = await ensureOauthConfig(serverId, serverUrl)
+  if (!config) throw new Error("this server doesn't advertise OAuth")
+  const sql = await db()
+  const next: OauthConfig = {
+    ...config,
+    client: { id: clientId, secretEnc: clientSecret ? seal(clientSecret) : null, redirectUri },
+  }
+  await sql`update mcp_servers set oauth = ${sql.json(next as never)}, updated_at = now() where id = ${serverId}`
+}
+
+/** Surface the flags the UI needs: is this OAuth, does it self-register, is a
+ *  client configured. */
+export async function oauthMeta(serverId: string): Promise<{ dcr: boolean; clientSet: boolean } | null> {
+  const sql = await db()
+  const [row] = (await sql`select oauth from mcp_servers where id = ${serverId}`) as unknown as Array<{ oauth: OauthConfig | null }>
+  if (!row?.oauth) return null
+  return { dcr: row.oauth.registrationEndpoint !== null, clientSet: !!row.oauth.client }
 }

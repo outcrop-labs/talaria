@@ -13,6 +13,7 @@ import {
   updateMcpServer,
 } from '@/server/mcp-registry'
 import { renderFleet } from '@/server/fleet-render'
+import { ensureOauthConfig, setManualOauthClient } from '@/server/mcp-oauth'
 import { logAudit } from '@/server/audit'
 
 const Patch = z.object({
@@ -30,6 +31,8 @@ const Patch = z.object({
   userAccess: z
     .object({ userId: z.string().uuid(), allowed: z.boolean().nullable(), tools: z.array(z.string().max(120)).nullable() })
     .optional(),
+  /** Pre-registered OAuth app credentials (providers without dynamic registration). */
+  oauthClient: z.object({ clientId: z.string().min(1).max(200), clientSecret: z.string().max(500).nullable() }).optional(),
 })
 
 // One registry server: PUT patches config / assignment / user access / tool
@@ -49,7 +52,25 @@ export const Route = createFileRoute('/api/mcp/servers/$id')({
         const p = parsed.data
         const actor = user.email ?? user.name ?? 'admin'
 
-        const { refreshTools, assign, unassign, userAccess, ...config } = p
+        // Self-heal: a server whose discovery failed at register (or predates
+        // a discovery fix) re-probes on any touch.
+        if (!server.oauthEnabled) await ensureOauthConfig(server.id, server.url)
+
+        const { refreshTools, assign, unassign, userAccess, oauthClient, ...config } = p
+        if (oauthClient) {
+          try {
+            await setManualOauthClient(
+              server.id,
+              server.url,
+              oauthClient.clientId,
+              oauthClient.clientSecret,
+              `${new URL(request.url).origin}/api/mcp/oauth/callback`,
+            )
+            void logAudit({ actor, action: 'mcp.oauth_client', targetType: 'mcp-server', targetId: server.id, targetLabel: server.name })
+          } catch (e) {
+            return json({ error: (e as Error).message }, { status: 400 })
+          }
+        }
         if (Object.keys(config).length > 0) {
           // An omitted headers field keeps the stored secrets; sending {} clears.
           await updateMcpServer(server.id, config)

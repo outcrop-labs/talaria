@@ -40,6 +40,7 @@ interface McpServerRow {
   oauthEnabled: boolean
   /** OAuth org connection state (null for header-auth servers). */
   orgConnected: boolean | null
+  oauthMeta: { dcr: boolean; clientSet: boolean } | null
   tools: Array<{ name: string; description?: string }>
   toolsRefreshedAt: string | null
   assignments: Array<{ agentModel: string; tools: string[] | null }>
@@ -164,7 +165,7 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
           <div className="truncate font-sans text-xs text-muted">{s.url}</div>
           {s.description && <div className="truncate font-sans text-xs text-muted/80">{s.description}</div>}
         </div>
-        {s.oauthEnabled && s.authMode === 'org' && (
+        {s.oauthEnabled && s.authMode === 'org' && (s.oauthMeta?.dcr || s.oauthMeta?.clientSet) && (
           <button
             type="button"
             onClick={() => void connectPopup(s.id, 'org')}
@@ -228,6 +229,12 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
           <Trash2 size={14} />
         </button>
       </div>
+
+      {/* DCR-less providers (GitHub): the admin registers an OAuth app with
+          the provider and pastes its credentials — then Connect lights up. */}
+      {s.oauthEnabled && s.oauthMeta && !s.oauthMeta.dcr && !s.oauthMeta.clientSet && (
+        <OauthAppSetup serverId={s.id} domain={(() => { try { return new URL(s.url).hostname } catch { return null } })()} onSaved={refresh} />
+      )}
 
       {/* Discovered tools */}
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -706,6 +713,91 @@ function InstallDialog({
           </Button>
         </div>
       </div>
+    </div>
+  )
+}
+
+/** Credentials form for providers without dynamic client registration: shows
+ *  the exact callback URL to register, takes the app's client id/secret. */
+// Where to create the app, for providers we recognize. One-time, org-owner.
+const OAUTH_APP_PORTALS: Record<string, string> = {
+  'api.githubcopilot.com': 'https://github.com/settings/developers',
+}
+
+function OauthAppSetup({ serverId, domain, onSaved }: { serverId: string; domain?: string | null; onSaved: () => void }) {
+  const [openForm, setOpenForm] = useState(false)
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const callback = `${window.location.origin}/api/mcp/oauth/callback`
+
+  const save = async () => {
+    setBusy(true)
+    setError(null)
+    const e = await patchServer(serverId, { oauthClient: { clientId: clientId.trim(), clientSecret: clientSecret.trim() || null } })
+    setBusy(false)
+    if (e) {
+      setError(e)
+      return
+    }
+    setOpenForm(false)
+    onSaved()
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-accent/40 bg-accent/5 p-3">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-medium text-fg">This provider needs a pre-registered OAuth app</span>
+        <InfoTip text="It doesn't support automatic client registration (GitHub, for example). Create an OAuth app in the provider's developer settings with the callback URL below, then paste the app's client id and secret here — stored encrypted, spoken only during the OAuth flow." />
+        <span className="flex-1" />
+        {domain && OAUTH_APP_PORTALS[domain] && (
+          <a href={OAUTH_APP_PORTALS[domain]} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
+            Create the app ↗
+          </a>
+        )}
+        {!openForm && (
+          <Button size="sm" onClick={() => setOpenForm(true)}>
+            Set up
+          </Button>
+        )}
+      </div>
+      {openForm && (
+        <div className="mt-3 space-y-3">
+          <div>
+            <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Callback URL (register this with the provider)</label>
+            <div className="flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate rounded-lg bg-card px-2 py-1.5 text-xs text-fg">{callback}</code>
+              <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard.writeText(callback)}>
+                Copy
+              </Button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Client ID</label>
+              <Input value={clientId} onChange={(e) => setClientId(e.target.value)} autoComplete="off" />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Client secret</label>
+              <Input type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} autoComplete="off" />
+            </div>
+          </div>
+          {error && (
+            <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
+              {error}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setOpenForm(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" disabled={busy || !clientId.trim()} onClick={() => void save()}>
+              {busy ? 'Saving' : 'Save credentials'}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

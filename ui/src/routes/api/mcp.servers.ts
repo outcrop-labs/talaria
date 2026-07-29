@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
 import { createMcpServer, getMcpServer, listMcpServers, listAssignments, listUserAccess } from '@/server/mcp-registry'
-import { ensureOauthConfig, hasOauthTokens } from '@/server/mcp-oauth'
+import { ensureOauthConfig, hasOauthTokens, oauthMeta } from '@/server/mcp-oauth'
 import { renderFleet } from '@/server/fleet-render'
 import { logAudit } from '@/server/audit'
 
@@ -48,6 +48,7 @@ export const Route = createFileRoute('/api/mcp/servers')({
             assignments: await listAssignments(s.id),
             userAccess: await listUserAccess(s.id),
             orgConnected: s.oauthEnabled ? await hasOauthTokens(s.id, 'org') : null,
+            oauthMeta: s.oauthEnabled ? await oauthMeta(s.id) : null,
           })),
         )
         return json({ servers: detail })
