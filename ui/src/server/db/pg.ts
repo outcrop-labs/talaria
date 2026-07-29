@@ -151,6 +151,7 @@ const MIGRATIONS: string[] = [
   `alter table channel_messages add column if not exists edited_at timestamptz`,
   `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
   `alter table users add column if not exists allowed_manage_views text[] not null default '{}'`,
+  `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
   `create table if not exists user_permissions (
     user_id uuid not null references users(id) on delete cascade,
     perm text not null,

@@ -133,8 +133,17 @@ export async function deleteAgentForever(defId: string): Promise<{ removedVolume
   await removeContainerByName(slotContainer(def.department, 'a')).catch(() => {})
   await removeContainerByName(slotContainer(def.department, 'b')).catch(() => {})
 
-  // The def row — versions + secrets cascade with it.
+  // The def row — versions + secrets cascade with it. Access references keyed
+  // by the model string are scrubbed too: per-user agent allow-lists, board and
+  // channel seats, and RAG-collection bindings must not dangle on a ghost.
+  // (Usage/ledger/message HISTORY keeps the model string on purpose.)
+  const model = `${def.slug}-${def.department}`
   await sql`delete from agent_defs where id = ${defId}`
+  await sql`delete from user_agent_access where agent_model = ${model}`
+  await sql`delete from board_agents where agent_model = ${model}`
+  await sql`delete from channel_agents where agent_model = ${model}`
+  await sql`delete from rag_collection_access where principal_type = 'agent' and principal_id = ${model}`
+  await sql`delete from fleet_agents where name = ${model}`
 
   // Rendered dir + fleet key line (best-effort cleanup).
   await rm(join(FLEET_DIR(), 'agents', def.slug), { recursive: true, force: true }).catch(() => {})
