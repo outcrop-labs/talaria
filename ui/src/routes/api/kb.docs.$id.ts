@@ -5,7 +5,8 @@ import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setDocRouting, setOfficial } from '@/server/kb'
-import { canEditAgent, canEditHuman, canRead, canReadAgent, isOwner, setEditors } from '@/server/kb-perms'
+import { generateDocOkf, queueDocOkf } from '@/server/kb-okf'
+import { canEditAgent, canEditHuman, canRead, canReadAgent, setEditors, canGovern } from '@/server/kb-perms'
 import { isElevatedAssistant } from '@/server/users'
 import { logAudit } from '@/server/audit'
 
@@ -20,6 +21,7 @@ const Patch = z.object({
   permsInherited: z.boolean().optional(),
   parentId: z.string().uuid().nullish(),
   official: z.boolean().optional(),
+  regenerateOkf: z.boolean().optional(),
   /** RAG routing: 'auto' | 'none' | a custom brain id. Owner-only. */
   ragRouting: z.string().max(60).optional(),
 })
@@ -43,8 +45,9 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (!canRead(perms, user.id, user.email ?? user.name, grants)) return json({ error: 'forbidden' }, { status: 403 })
+        const governs = await canGovern(perms, user)
         // Surface the effective visibility/policy so the UI shows what actually applies.
-        return json({ doc: { ...doc, visibility: perms.visibility, editPolicy: perms.editPolicy }, editors: grants })
+        return json({ doc: { ...doc, visibility: perms.visibility, editPolicy: perms.editPolicy, governs }, editors: grants })
       },
       PUT: async ({ request, params }) => {
         const doc = await getDoc(params.id)
@@ -81,7 +84,7 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
             return json({ error: 'no permission to curate official knowledge' }, { status: 403 })
           }
           actor = user.email ?? user.name ?? 'user'
-          owner = isOwner(perms, user.id, user.email ?? user.name)
+          owner = await canGovern(perms, user)
           const sharing = parsed.data.visibility !== undefined || parsed.data.editPolicy !== undefined || parsed.data.editors !== undefined || parsed.data.permsInherited !== undefined
           if (!owner && sharing) return json({ error: 'only the owner can change sharing' }, { status: 403 })
           // Routing decides which brain can retrieve the doc — owner's call.
@@ -110,11 +113,20 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
             return json({ error: (e as Error).message }, { status: 400 })
           }
         }
-        let updated = await saveDoc(params.id, parsed.data, actor)
+        const { regenerateOkf, ...patch } = parsed.data
+        let updated = await saveDoc(params.id, patch, actor)
         if (!updated) return json({ error: 'not found' }, { status: 404 })
         if (parsed.data.official !== undefined && parsed.data.official !== updated.official) {
           updated = (await setOfficial(params.id, parsed.data.official, actor)) ?? updated
           void logAudit({ actor, action: parsed.data.official ? 'kb.officialize' : 'kb.deofficialize', targetType: 'kb-doc', targetId: params.id, targetLabel: updated.title })
+          queueDocOkf(params.id) // the Librarian writes/clears this doc's OKF
+        } else if (updated.official && parsed.data.body !== undefined) {
+          queueDocOkf(params.id) // promoted content changed
+        }
+        if (regenerateOkf) {
+          // Explicit regen runs against the FINAL state (post any promote/demote).
+          await generateDocOkf(params.id).catch(() => {})
+          updated = (await getDoc(params.id)) ?? updated
         }
         const eff = await effectiveDocPerms(updated)
         return json({ doc: { ...updated, visibility: eff.perms.visibility, editPolicy: eff.perms.editPolicy }, editors: eff.grants })

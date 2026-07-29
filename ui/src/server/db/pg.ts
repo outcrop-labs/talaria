@@ -152,6 +152,20 @@ const MIGRATIONS: string[] = [
   `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
   `alter table users add column if not exists allowed_manage_views text[] not null default '{}'`,
   `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
+  `alter table kb_docs add column if not exists okf text`,
+  `update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null)`,
+  `create table if not exists kb_comments (
+    id uuid primary key default gen_random_uuid(),
+    doc_id uuid not null references kb_docs(id) on delete cascade,
+    parent_id uuid references kb_comments(id) on delete cascade,
+    author_user_id uuid references users(id) on delete set null,
+    author text not null,
+    quote text,
+    content text not null,
+    resolved boolean not null default false,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists kb_comments_doc_idx on kb_comments(doc_id, created_at)`,
   `create table if not exists mcp_servers (
     id uuid primary key default gen_random_uuid(),
     name text not null unique,

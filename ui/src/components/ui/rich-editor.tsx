@@ -54,6 +54,18 @@ import { Button } from '@/components/ui/button'
 export interface RichEditorHandle {
   getMarkdown: () => string
   clear: () => void
+  /** Selected text (plain), '' when empty — context menus and inline Muse. */
+  getSelectionText: () => string
+  /** Replace the current selection with markdown/text. */
+  replaceSelection: (content: string) => void
+  /** Toggle an inline mark on the selection (context-menu formatting). */
+  toggleMark: (mark: 'bold' | 'italic' | 'strike' | 'code') => void
+  /** True when the caret sits inside a table (gates table menu items). */
+  isInTable: () => boolean
+  /** Table structure ops for context menus. */
+  tableCommand: (
+    cmd: 'addRowBefore' | 'addRowAfter' | 'addColumnBefore' | 'addColumnAfter' | 'deleteRow' | 'deleteColumn' | 'deleteTable' | 'insertTable',
+  ) => void
 }
 
 /** Optional cross-reference search: given a query, return docs to link to.
@@ -120,7 +132,25 @@ export const RichEditor = forwardRef<RichEditorHandle, {
     content: value,
     // min-height goes on the contenteditable itself (not a wrapper) so clicking
     // anywhere in the empty area focuses and places the caret.
-    editorProps: { attributes: { class: 'tiptap px-3 py-2 text-sm', style: `min-height:${fill ? '100%' : minHeight}` } },
+    editorProps: {
+      attributes: { class: 'tiptap px-3 py-2 text-sm', style: `min-height:${fill ? '100%' : minHeight}` },
+      // Images paste/drop straight in: upload → insert the served URL as an
+      // image node (markdown round-trips it as ![alt](url)).
+      handlePaste: (_view, event) => {
+        const files = Array.from(event.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'))
+        if (files.length === 0) return false
+        event.preventDefault()
+        for (const f of files) void insertImageFile(f)
+        return true
+      },
+      handleDrop: (_view, event) => {
+        const files = Array.from(event.dataTransfer?.files ?? []).filter((f) => f.type.startsWith('image/'))
+        if (files.length === 0) return false
+        event.preventDefault()
+        for (const f of files) void insertImageFile(f)
+        return true
+      },
+    },
     onCreate: ({ editor }) => {
       lastSaved.current = editor.storage.markdown.getMarkdown()
     },
@@ -148,6 +178,12 @@ export const RichEditor = forwardRef<RichEditorHandle, {
     if (saveTimer.current) clearTimeout(saveTimer.current)
   }, [])
 
+  const insertImageFile = async (file: File) => {
+    const { uploadFile } = await import('@/lib/attachments')
+    const r = await uploadFile(file)
+    if ('id' in r) editor?.chain().focus().setImage({ src: `/api/uploads/${r.id}`, alt: file.name }).run()
+  }
+
   useImperativeHandle(
     ref,
     () => ({
@@ -155,6 +191,33 @@ export const RichEditor = forwardRef<RichEditorHandle, {
       clear: () => {
         editor?.commands.clearContent()
         lastSaved.current = ''
+      },
+      getSelectionText: () => {
+        if (!editor) return ''
+        const { from, to } = editor.state.selection
+        return editor.state.doc.textBetween(from, to, ' ')
+      },
+      replaceSelection: (content: string) => editor?.chain().focus().deleteSelection().insertContent(content).run(),
+      toggleMark: (mark: 'bold' | 'italic' | 'strike' | 'code') => {
+        if (!editor) return
+        const c = editor.chain().focus()
+        if (mark === 'bold') c.toggleBold().run()
+        else if (mark === 'italic') c.toggleItalic().run()
+        else if (mark === 'strike') c.toggleStrike().run()
+        else c.toggleCode().run()
+      },
+      isInTable: () => !!editor?.isActive('table'),
+      tableCommand: (cmd) => {
+        if (!editor) return
+        const c = editor.chain().focus()
+        if (cmd === 'addRowBefore') c.addRowBefore().run()
+        else if (cmd === 'addRowAfter') c.addRowAfter().run()
+        else if (cmd === 'addColumnBefore') c.addColumnBefore().run()
+        else if (cmd === 'addColumnAfter') c.addColumnAfter().run()
+        else if (cmd === 'deleteRow') c.deleteRow().run()
+        else if (cmd === 'deleteColumn') c.deleteColumn().run()
+        else if (cmd === 'deleteTable') c.deleteTable().run()
+        else c.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
       },
     }),
     [editor],
@@ -187,6 +250,24 @@ export const RichEditor = forwardRef<RichEditorHandle, {
     </div>
   )
 })
+
+/** Compact labeled buttons for the table segment — text beats cryptic icons
+ *  for structural ops. */
+function TableBtn({ label, title, onClick }: { label: string; title: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onMouseDown={(e) => {
+        e.preventDefault()
+        onClick()
+      }}
+      className="rounded px-1.5 py-0.5 text-[11px] text-muted transition-colors hover:bg-sidebar hover:text-fg"
+    >
+      {label}
+    </button>
+  )
+}
 
 function Toolbar({ editor, onSubmit, docSearch }: { editor: Editor | null; onSubmit?: () => void; docSearch?: DocSearchFn }) {
   const s = useEditorState({
@@ -296,6 +377,16 @@ function Toolbar({ editor, onSubmit, docSearch }: { editor: Editor | null; onSub
         active={s.table}
         onClick={() => (s.table ? c().deleteTable().run() : c().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())}
       />
+      {s.table && (
+        <>
+          <span className="mx-1 h-4 w-px bg-line-subtle" />
+          <TableBtn label="+ row" title="Add row below" onClick={() => c().addRowAfter().run()} />
+          <TableBtn label="+ col" title="Add column right" onClick={() => c().addColumnAfter().run()} />
+          <TableBtn label="− row" title="Delete this row" onClick={() => c().deleteRow().run()} />
+          <TableBtn label="− col" title="Delete this column" onClick={() => c().deleteColumn().run()} />
+          <TableBtn label="header" title="Toggle header row" onClick={() => c().toggleHeaderRow().run()} />
+        </>
+      )}
       <Btn icon={ImageIcon} title="Insert image" active={false} onClick={() => { setImgUrl(''); setImgOpen(true) }} />
       <Btn icon={LinkIcon} title="Link" active={s.link} onClick={openLinkModal} />
       {docSearch && (
