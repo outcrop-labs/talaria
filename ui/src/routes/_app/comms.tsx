@@ -8,7 +8,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
 import { GeneratingOverlay } from '@/components/ui/generating'
-import { alert, confirm } from '@/components/ui/confirm'
+import { alert, confirm, prompt } from '@/components/ui/confirm'
 import { ChatView } from '@/components/chat/chat-view'
 import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { CountPill, Rail, RailRow, RailSurface } from '@/components/app/surface'
@@ -322,6 +322,21 @@ function CommsPage() {
                           openMenu(e, [
                             { label: 'Open', onSelect: () => setSel({ t: 'agent', model: a.id, conversationId: c.id }) },
                             { label: 'Copy link', onSelect: () => copyAppLink(`/comms?a=${a.id}&x=${c.id}`) },
+                            {
+                              label: 'Rename',
+                              onSelect: () => {
+                                void prompt({ title: 'Rename thread', defaultValue: c.title ?? '', placeholder: 'Thread name', confirmLabel: 'Rename' }).then(async (name) => {
+                                  if (!name?.trim()) return
+                                  await fetch(`/api/conversations/${c.id}`, {
+                                    method: 'PATCH',
+                                    credentials: 'same-origin',
+                                    headers: { 'content-type': 'application/json' },
+                                    body: JSON.stringify({ title: name.trim() }),
+                                  })
+                                  void qc.invalidateQueries({ queryKey: ['conversations'] })
+                                })
+                              },
+                            },
                           ])
                         }
                       >

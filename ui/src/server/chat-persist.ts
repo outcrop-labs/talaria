@@ -4,6 +4,7 @@
 // Also records the turn in the token ledger (real usage or a char estimate).
 
 import { parseAgentStream, mergeTool, type ToolCall } from '@/lib/sse-parse'
+import { maybeRetitleConversation } from './titler'
 import {
   activeStreamingAssistant,
   insertStreamingAssistant,
@@ -113,6 +114,10 @@ export async function persistAssistantStream(
     await flush('complete')
     await touchConversation(conversationId)
     ledger()
+    // First-exchange naming: the Titler upgrades the mechanical truncated
+    // title once there's a real exchange to name (early-outs make this a
+    // single cheap query on every later reply).
+    void maybeRetitleConversation(conversationId).catch(() => {})
     if (usageMeta?.plan && content.trim()) {
       void indexActivity({
         sourceType: 'plan',

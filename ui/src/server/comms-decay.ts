@@ -9,6 +9,7 @@ import { archiveChannel, insertChannelMessage, listChannelAgents, listChannelMes
 import { describeAgent } from './gateway'
 import { completeViaGateway } from './llm-gateway'
 import { museModelFor } from './muse'
+import { platformAgentModel } from './platform-agents'
 import { indexActivity, indexPersonal } from './retrieval/sources'
 
 const TTL_DAYS = () => Math.max(1, Number(process.env.TALARIA_CHAT_TTL_DAYS ?? 14))
@@ -28,7 +29,8 @@ async function distillConversation(conv: {
   title: string | null
 }): Promise<void> {
   const sql = await db()
-  const model = await museModelFor(conv.userId)
+  // The Distiller platform agent: its assigned model, else the owner's muse.
+  const model = (await platformAgentModel('distiller')) ?? (await museModelFor(conv.userId))
   if (!model) return // no routable model — leave it for a sweep that has one
   const msgs = (await sql`
     select role, content from messages
@@ -44,7 +46,7 @@ async function distillConversation(conv: {
         { role: 'system', content: DISTILL_PROMPT },
         { role: 'user', content: `Conversation with ${label}:\n\n${transcript}` },
       ],
-      { temperature: 0.2, caller: `distill:${conv.userId}` },
+      { temperature: 0.2, caller: `platform:distiller:${conv.userId}` },
     )
     if (!text.trim()) return // don't archive on a failed distillation
     const title = `Distilled: ${conv.title || `chat with ${label}`}`
@@ -117,7 +119,8 @@ export function maybeSweepIdleChats(): void {
 /** Conclude a Relay: post + index a summary of what was decided, then archive.
  *  Returns the summary so the UI can show it after the relay leaves the list. */
 export async function concludeRelay(channelId: string, byUserId: string, channelName: string): Promise<string> {
-  const model = await museModelFor(byUserId)
+  // The Concluder platform agent: its assigned model, else the user's muse.
+  const model = (await platformAgentModel('concluder')) ?? (await museModelFor(byUserId))
   if (!model) throw new Error('no model configured to summarize with — add an endpoint on /models')
   const history = await listChannelMessages(channelId, -1, 500)
   const transcript = clip(
@@ -138,7 +141,7 @@ export async function concludeRelay(channelId: string, byUserId: string, channel
       },
       { role: 'user', content: `Relay "${channelName}":\n\n${transcript}` },
     ],
-    { temperature: 0.2, caller: `relay-conclude:${byUserId}` },
+    { temperature: 0.2, caller: `platform:concluder:${byUserId}` },
   )
   if (!text.trim()) throw new Error('the summary came back empty — try again')
 

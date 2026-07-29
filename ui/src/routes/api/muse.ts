@@ -85,7 +85,7 @@ export const Route = createFileRoute('/api/muse')({
           },
           flush() {
             void recordGatewayUsage({
-              caller: `muse:${user.email ?? user.name ?? user.id}`,
+              caller: `platform:muse:${user.email ?? user.name ?? user.id}`,
               endpoint: route.endpoint,
               upstreamModel: route.upstreamModel,
               promptTokens: usage?.prompt_tokens ?? estimateTokens(promptChars),

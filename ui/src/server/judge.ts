@@ -140,7 +140,7 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
         { role: 'system', content: SYSTEM },
         { role: 'user', content: buildPrompt(task, template) + preNote },
       ],
-      { temperature: 0, caller: `judge${model ? `:${model}` : ''}` },
+      { temperature: 0, caller: 'platform:judge' },
     )
     const { verdict, summary, issues } = parseVerdict(text)
 

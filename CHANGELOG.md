@@ -5,6 +5,32 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 ## [Unreleased]
 
 ### Added
+- **Platform sub-agents (Models → Platform).** Talaria's own workers are
+  now first-class, named agents — separate from the Hermes fleet, each a
+  model-agnostic harness with its own skills for one internal job: Muse
+  (prompt-editing everywhere), Distiller (chat → private-brain distills),
+  Concluder (relay closing summaries), Catalog writer (model blurbs),
+  Judge (ticket outcome review), and Briefer (view briefings; fixed to
+  your personal assistant by design). Each agent's model is configured
+  granularly on the new Models → Platform tab — an admin pick wins while
+  it routes, otherwise the job's auto chain keeps working untouched (the
+  Judge's pick shares judge_config with the Guard panel, one source of
+  truth). All platform work is now metered under `platform:<agent>`
+  callers, so spend per sub-agent is attributable.
+- **Dynamic titles (the Titler).** A seventh platform agent names things
+  as they take shape: chats and plans are retitled after their first real
+  exchange — but only while the title is still the mechanical truncated
+  first message, so a name a user typed is never clobbered — and research
+  runs get a concise title from their question the moment they start
+  (shown across the run list, header, and briefings; the raw question
+  remains underneath). Naming is fire-and-forget: a rate-limited or dead
+  model keeps the current title, never blocks the work. A RETROACTIVE
+  hourly sweep (kicked from comms reads, mirroring the distill sweep)
+  names everything that predates the Titler or whose call failed —
+  batched per pass, fail-fast when the model is down — so old chats,
+  plans, and research runs pick up titles too. Chats can also be renamed
+  by hand from the thread context menu (owner or plan collaborator);
+  a hand-picked name is never overwritten.
 - **Personal agents get a private RAG brain.** Every user's personal
   collection ("My knowledge") is now the assistant's long-term memory of
   that user, created lazily and bound to the owner + their assistant only:

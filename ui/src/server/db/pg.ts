@@ -146,6 +146,7 @@ const MIGRATIONS: string[] = [
   `create index if not exists task_activity_task_idx on task_activity(task_id, created_at desc)`,
   // Ticket refs (BOARD-12): a per-board prefix + monotonic counter.
   `alter table boards add column if not exists ticket_prefix text`,
+  `alter table research_runs add column if not exists title text`,
   `alter table boards add column if not exists ticket_seq integer not null default 0`,
   // Richer task fields (ripped from mission-control): ticket no, effort, the
   // agent's structured result (outcome/resolution/error), completion time.

@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { createChannel, listChannels, listChannelsForAgent } from '@/server/channels'
 import { maybeSweepIdleChats } from '@/server/comms-decay'
+import { maybeSweepTitles } from '@/server/titler'
 import { ensureMcpService } from '@/server/mcp-service'
 import { maybeRagSweep } from '@/server/retrieval/backfill'
 import { maybeOutreachSweep } from '@/server/outreach'
@@ -24,6 +25,7 @@ export const Route = createFileRoute('/api/channels')({
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         maybeSweepIdleChats() // distill-then-archive idle agent DMs (throttled, detached)
+        maybeSweepTitles() // retroactive + ongoing naming (hourly, detached)
         ensureMcpService() // keep the fleet's toolkit MCP endpoint alive (probe-guarded)
         maybeRagSweep() // incremental catch-up indexing (15-minute throttle)
         maybeOutreachSweep() // proactive agent check-ins (opt-in, throttled, detached)
