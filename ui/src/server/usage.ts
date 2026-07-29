@@ -3,6 +3,7 @@
 // chars/4 estimate flagged `estimated`. Dollar cost comes later (needs
 // per-LLM pricing attribution — see ROADMAP).
 import { db } from './db/pg'
+import { nudgeAutoPrices } from './price-oracle'
 
 export interface UsageInput {
   agentModel: string
@@ -69,6 +70,19 @@ export async function recordUsage(u: UsageInput): Promise<void> {
             ${Math.max(0, Math.round(u.promptTokens))}, ${Math.max(0, Math.round(u.completionTokens))},
             ${u.estimated}, ${cls?.endpointClass ?? null}, ${cls?.llmModel ?? null}, ${cls?.endpoint ?? null})
   `
+  // A cloud row landing without a price is the oracle's cue to look again —
+  // detached, throttled, and idempotent, so the hot path never feels it.
+  if (cls?.endpointClass === 'cloud' && cls.llmModel && cls.endpoint) {
+    void sql`
+      select 1 as ok from llm_endpoints
+      where name = ${cls.endpoint}
+        and (model_prices ? ${cls.llmModel} or auto_prices ? ${cls.llmModel} or price_in_per_mtok is not null)
+    `
+      .then((rows) => {
+        if (rows.length === 0) nudgeAutoPrices()
+      })
+      .catch(() => {})
+  }
 }
 
 export interface CostOverview {

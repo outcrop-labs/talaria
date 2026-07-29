@@ -10,8 +10,27 @@ interface OrModel {
   pricing?: { prompt?: string | number; completion?: string | number }
 }
 
-/** "anthropic/claude-opus-4.8" → vendor "anthropic", norm "claude-opus-4-8". */
-const normalize = (s: string) => s.toLowerCase().replace(/\./g, '-')
+/** "anthropic/claude-opus-4.8" → vendor "anthropic", norm "claude-opus-4-8".
+ *  Leading "~" (Talaria's alias marker) never appears in public catalogs. */
+const normalize = (s: string) => s.toLowerCase().replace(/^~/, '').replace(/\./g, '-')
+
+/** The id shapes a model might wear in a public catalog, most-specific first:
+ *  as-is → ":variant" stripped → trailing "-YYYYMMDD" date stripped →
+ *  "-latest" stripped. Each step feeds the next, so all combinations occur. */
+function idCandidates(model: string): string[] {
+  const out: string[] = []
+  const push = (m: string) => {
+    if (m && !out.includes(m)) out.push(m)
+  }
+  let cur = model.replace(/^~/, '')
+  push(cur)
+  if (cur.includes(':')) push((cur = cur.split(':')[0]!))
+  const dateless = cur.replace(/-\d{8}$/, '')
+  if (dateless !== cur) push((cur = dateless))
+  const unlatest = cur.replace(/-latest$/, '')
+  if (unlatest !== cur) push(unlatest)
+  return out
+}
 
 let lastRefresh = 0
 let lastAttempt = 0 // failure backoff: don't hammer an unreachable catalog
@@ -50,19 +69,42 @@ async function fetchCatalog(): Promise<Catalog> {
 
 /** Pick a price for a model on a provider. Vendor-prefixed ids match the full
  *  catalog id; bare ids match by suffix (exact vendor wins, else only an
- *  unambiguous candidate). Null = no match — stays unpriced, never guessed. */
+ *  unambiguous candidate). Alias shapes (":free" variants, "-latest",
+ *  trailing dates, "~" prefixes) fall back through idCandidates. Null = no
+ *  match — stays unpriced, never guessed. */
 function match(catalog: Catalog, provider: string, model: string): { in: number; out: number } | null {
-  if (model.includes('/')) return catalog.byId.get(normalize(model)) ?? null
+  for (const id of idCandidates(model)) {
+    if (id.includes('/')) {
+      const hit = catalog.byId.get(normalize(id))
+      if (hit) return hit
+      // A vendor-prefixed id can still suffix-match when the catalog files the
+      // model under a different vendor path (rare, but aliases do this).
+      const [vendor, ...rest] = id.split('/')
+      const suffixHit = suffixMatch(catalog, vendor!, rest.join('/'))
+      if (suffixHit) return suffixHit
+      continue
+    }
+    const hit = suffixMatch(catalog, provider, id)
+    if (hit) return hit
+  }
+  return null
+}
+
+function suffixMatch(catalog: Catalog, vendor: string, model: string): { in: number; out: number } | null {
   const candidates = catalog.bySuffix.get(normalize(model))
   if (!candidates?.length) return null
-  const vendorHit = candidates.find((c) => c.vendor === normalize(provider))
+  const vendorHit = candidates.find((c) => c.vendor === normalize(vendor))
   if (vendorHit) return { in: vendorHit.in, out: vendorHit.out }
   const first = candidates[0]!
   const unambiguous = candidates.every((c) => c.in === first.in && c.out === first.out)
   return unambiguous ? { in: first.in, out: first.out } : null
 }
 
-/** Refresh auto_prices for every cloud endpoint's catalog models. */
+/** Refresh auto_prices for every cloud endpoint — its registered catalog
+ *  models PLUS every model usage has actually been attributed to on it. The
+ *  second set is what keeps costing honest: tier routing and aliases send
+ *  usage to models nobody registered, and those rows must price too. Keys are
+ *  the EXACT strings usage carries, so the costing join hits directly. */
 export async function refreshAutoPrices(): Promise<{ priced: number; endpoints: number }> {
   lastAttempt = Date.now()
   const catalog = await fetchCatalog()
@@ -70,11 +112,19 @@ export async function refreshAutoPrices(): Promise<{ priced: number; endpoints: 
   const endpoints = (await sql`
     select id, name, provider, models from llm_endpoints where class = 'cloud'
   `) as unknown as Array<{ id: string; name: string; provider: string; models: string[] }>
+  const seen = (await sql`
+    select distinct endpoint, llm_model as model from usage_events
+    where endpoint is not null and llm_model is not null
+  `) as unknown as Array<{ endpoint: string; model: string }>
 
   let priced = 0
   for (const ep of endpoints) {
+    const models = new Set<string>([
+      ...(ep.models ?? []),
+      ...seen.filter((s) => s.endpoint === ep.name).map((s) => s.model),
+    ])
     const auto: Record<string, { in: number; out: number }> = {}
-    for (const m of ep.models ?? []) {
+    for (const m of models) {
       const hit = match(catalog, ep.provider, m)
       if (hit) {
         auto[m] = { in: Number(hit.in.toFixed(4)), out: Number(hit.out.toFixed(4)) }
@@ -95,6 +145,20 @@ export function maybeRefreshAutoPrices(): void {
   if (refreshing || now - lastRefresh < MIN_INTERVAL_MS || now - lastAttempt < RETRY_INTERVAL_MS) return
   refreshing = refreshAutoPrices()
     .catch(() => {}) // offline/unreachable → prices stay as they were
+    .finally(() => {
+      refreshing = null
+    }) as unknown as Promise<void>
+}
+
+/** Usage just landed on a cloud model with NO price: refresh sooner than the
+ *  6h cadence (new model, new alias), but never storm — 15min between nudges,
+ *  and the failure backoff still applies. */
+const NUDGE_INTERVAL_MS = 15 * 60 * 1000
+export function nudgeAutoPrices(): void {
+  const now = Date.now()
+  if (refreshing || now - lastRefresh < NUDGE_INTERVAL_MS || now - lastAttempt < RETRY_INTERVAL_MS) return
+  refreshing = refreshAutoPrices()
+    .catch(() => {})
     .finally(() => {
       refreshing = null
     }) as unknown as Promise<void>
