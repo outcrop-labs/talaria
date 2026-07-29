@@ -116,16 +116,17 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         const { regenerateOkf, ...patch } = parsed.data
         let updated = await saveDoc(params.id, patch, actor)
         if (!updated) return json({ error: 'not found' }, { status: 404 })
-        if (regenerateOkf) {
-          await generateDocOkf(params.id).catch(() => {})
-          updated = (await getDoc(params.id)) ?? updated
-        }
         if (parsed.data.official !== undefined && parsed.data.official !== updated.official) {
           updated = (await setOfficial(params.id, parsed.data.official, actor)) ?? updated
           void logAudit({ actor, action: parsed.data.official ? 'kb.officialize' : 'kb.deofficialize', targetType: 'kb-doc', targetId: params.id, targetLabel: updated.title })
           queueDocOkf(params.id) // the Librarian writes/clears this doc's OKF
         } else if (updated.official && parsed.data.body !== undefined) {
           queueDocOkf(params.id) // promoted content changed
+        }
+        if (regenerateOkf) {
+          // Explicit regen runs against the FINAL state (post any promote/demote).
+          await generateDocOkf(params.id).catch(() => {})
+          updated = (await getDoc(params.id)) ?? updated
         }
         const eff = await effectiveDocPerms(updated)
         return json({ doc: { ...updated, visibility: eff.perms.visibility, editPolicy: eff.perms.editPolicy }, editors: eff.grants })
