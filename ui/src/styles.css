@@ -365,3 +365,22 @@ body {
 .re-prose .tiptap h2 { font-size: 1.25rem; margin-top: 1rem; }
 .re-prose .tiptap h3 { font-size: 1.05rem; margin-top: 0.75rem; }
 .re-prose .tiptap > * + * { margin-top: 0.75rem; }
+
+/* Quote-anchored comment marks in knowledge docs (applied post-render). */
+.kb-comment-mark {
+  background: color-mix(in srgb, var(--theme-warning) 18%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--theme-warning) 55%, transparent);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.kb-comment-mark:hover {
+  background: color-mix(in srgb, var(--theme-warning) 32%, transparent);
+}
+.kb-comment-flash {
+  animation: kb-comment-flash 1.2s ease;
+}
+@keyframes kb-comment-flash {
+  0% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent) 45%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}

@@ -923,6 +923,8 @@ function DocEditor({
   // Authored docs open in read mode (like tickets); empty ones open in edit.
   const [mode, setMode] = useState<'read' | 'edit'>('read')
   const [showComments, setShowComments] = useState(false)
+  const [focusThread, setFocusThread] = useState<string | null>(null)
+  const readRef = useRef<HTMLDivElement>(null)
   const [pendingQuote, setPendingQuote] = useState<string | null>(null)
   const [selPop, setSelPop] = useState<{ x: number; y: number; quote: string } | null>(null)
   const { data: presence = [] } = useDocLive(docId, mode)
@@ -945,6 +947,49 @@ function DocEditor({
     const t = setInterval(() => void qc.invalidateQueries({ queryKey: ['kb-doc', docId] }), 10_000)
     return () => clearInterval(t)
   }, [mode, presence.length, docId, qc])
+
+  // Quote-anchored highlights: after render, find each OPEN thread's quote in
+  // the read surface and wrap it in a clickable mark. Idempotent — old marks
+  // unwrap first; single-text-node matches only (quotes are plain sentences).
+  useEffect(() => {
+    const host = readRef.current
+    if (!host || mode !== 'read') return
+    for (const old of Array.from(host.querySelectorAll('[data-kb-mark]'))) {
+      const parent = old.parentNode
+      if (!parent) continue
+      while (old.firstChild) parent.insertBefore(old.firstChild, old)
+      parent.removeChild(old)
+      parent.normalize()
+    }
+    const targets = comments.filter((c) => !c.parentId && !c.resolved && c.quote?.trim())
+    for (const c of targets) {
+      const quote = c.quote!.replace(/\s+/g, ' ').trim()
+      const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT)
+      let node: Text | null
+      while ((node = walker.nextNode() as Text | null)) {
+        if (node.parentElement?.closest('[data-kb-mark]')) continue
+        const text = node.textContent ?? ''
+        const idx = text.replace(/\s+/g, ' ').indexOf(quote)
+        if (idx === -1) continue
+        // Map the normalized index back — safe when the node has no runs of
+        // whitespace; bail to a plain indexOf otherwise.
+        const rawIdx = text.indexOf(c.quote!.trim()) !== -1 ? text.indexOf(c.quote!.trim()) : idx
+        try {
+          const range = document.createRange()
+          range.setStart(node, rawIdx)
+          range.setEnd(node, Math.min(rawIdx + c.quote!.trim().length, text.length))
+          const mark = document.createElement('span')
+          mark.className = 'kb-comment-mark'
+          mark.dataset.kbMark = c.id
+          mark.title = `${c.author}: ${c.content.slice(0, 80)}`
+          range.surroundContents(mark)
+        } catch {
+          /* range crossed an element boundary — skip this quote */
+        }
+        break
+      }
+    }
+  }, [mode, comments, doc?.body])
 
   // Esc leaves fullscreen (unless a menu/popup is open and swallows it first).
   useEffect(() => {
@@ -1174,7 +1219,15 @@ function DocEditor({
           // Read mode: rendered markdown with the identical measure/typography as
           // the editor (both use .re-prose), so switching modes doesn't reflow.
           <div
+            ref={readRef}
             className="re-prose relative min-w-0 flex-1 overflow-y-auto"
+            onClick={(e) => {
+              const mark = (e.target as HTMLElement).closest?.('[data-kb-mark]') as HTMLElement | null
+              if (mark?.dataset.kbMark) {
+                setShowComments(true)
+                setFocusThread(mark.dataset.kbMark)
+              }
+            }}
             onMouseUp={() => {
               const sel = window.getSelection()
               const text = sel?.toString().trim() ?? ''
@@ -1258,6 +1311,8 @@ function DocEditor({
             docOwnerId={doc.ownerUserId}
             pendingQuote={pendingQuote}
             onQuoteConsumed={() => setPendingQuote(null)}
+            focusId={focusThread}
+            onFocusConsumed={() => setFocusThread(null)}
             onClose={() => setShowComments(false)}
           />
         )}
@@ -1487,6 +1542,8 @@ function CommentsPanel({
   docOwnerId,
   pendingQuote,
   onQuoteConsumed,
+  focusId,
+  onFocusConsumed,
   onClose,
 }: {
   docId: string
@@ -1495,6 +1552,8 @@ function CommentsPanel({
   docOwnerId: string | null
   pendingQuote: string | null
   onQuoteConsumed: () => void
+  focusId?: string | null
+  onFocusConsumed?: () => void
   onClose: () => void
 }) {
   const qc = useQueryClient()
@@ -1528,13 +1587,25 @@ function CommentsPanel({
     await refresh()
   }
 
+  // A mark click lands here: scroll its thread into view and flash it.
+  useEffect(() => {
+    if (!focusId) return
+    const el = document.querySelector(`[data-kb-thread="${focusId}"]`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.classList.add('kb-comment-flash')
+      setTimeout(() => el.classList.remove('kb-comment-flash'), 1300)
+    }
+    onFocusConsumed?.()
+  }, [focusId, onFocusConsumed])
+
   const roots = comments.filter((c) => !c.parentId)
   const open = roots.filter((c) => !c.resolved)
   const resolved = roots.filter((c) => c.resolved)
   const repliesOf = (id: string) => comments.filter((c) => c.parentId === id)
 
   const Thread = ({ root }: { root: KbComment }) => (
-    <div className={cn('space-y-2 rounded-xl border border-line-subtle/70 p-2.5', root.resolved && 'opacity-60')}>
+    <div data-kb-thread={root.id} className={cn('space-y-2 rounded-xl border border-line-subtle/70 p-2.5', root.resolved && 'opacity-60')}>
       {root.quote && (
         <div className="border-l-2 border-accent/50 pl-2 font-sans text-[11px] italic text-muted line-clamp-2">“{root.quote}”</div>
       )}
