@@ -33,3 +33,4 @@ ui/.uploads/
 # Reference repos studied but not vendored
 .reference/
 .inspect/
+ui/.tanstack/
