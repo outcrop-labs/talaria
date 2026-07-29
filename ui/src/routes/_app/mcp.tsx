@@ -370,18 +370,15 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
                   dim={!ua.allowed}
                   tools={
                     <Combobox
-                      options={[{ value: NO_ACCESS, label: 'No access' }, ...toolOptions]}
-                      selected={ua.allowed ? (ua.tools ?? []) : [NO_ACCESS]}
+                      options={[
+                        { value: ALL_TOOLS, label: 'All tools' },
+                        { value: NO_ACCESS, label: 'No access' },
+                        ...toolOptions,
+                      ]}
+                      selected={ua.allowed ? (ua.tools ?? [ALL_TOOLS]) : [NO_ACCESS]}
                       onChange={(sel) => {
-                        // Picking "No access" denies; picking any tool (or
-                        // clearing back to empty = all tools) re-allows.
-                        const denyPicked = sel.includes(NO_ACCESS) && ua.allowed
-                        if (denyPicked) {
-                          void patch({ userAccess: { userId: ua.userId, allowed: false, tools: null } })
-                        } else {
-                          const tools = sel.filter((t) => t !== NO_ACCESS)
-                          void patch({ userAccess: { userId: ua.userId, allowed: true, tools: tools.length ? tools : null } })
-                        }
+                        const next = resolveScopePick(sel, { denied: !ua.allowed, tools: ua.tools })
+                        void patch({ userAccess: { userId: ua.userId, allowed: !next.denied, tools: next.tools } })
                       }}
                       multiple
                       size="sm"
