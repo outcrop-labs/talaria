@@ -17,6 +17,7 @@ import { useAgents } from '@/lib/agents'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
 import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
+import { useEnabledApps } from '@/lib/apps'
 import { RetrievalPanel } from '@/components/admin/retrieval-panel'
 import { StoragePanel } from '@/components/admin/storage-panel'
 import { InfoTip } from '@/components/ui/info-tip'
@@ -102,6 +103,14 @@ function AdminPage() {
   const { data: perms } = useAdminPermissions()
   const { data: fleet } = useAgents()
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
+  // Enabled apps join the per-person view checklist like core views: work
+  // surfaces default-allowed (denials stored), manage surfaces default-denied
+  // (grants stored) — same resting states as the built-in sections.
+  const { data: enabledApps = [] } = useEnabledApps()
+  const appWorkViews = enabledApps.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work! }))
+  const appManageViews = enabledApps.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage! }))
+  const workViews = [...GATEABLE_VIEWS, ...appWorkViews]
+  const manageViews = [...MANAGE_VIEWS, ...appManageViews]
   const [error, setError] = useState<string | null>(null)
 
   const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[]; allowedManageViews?: string[]; assistantElevated?: boolean }) => {
@@ -205,8 +214,8 @@ function AdminPage() {
               // One ALLOW list spanning both worlds: work views default in
               // (denials stored), Manage views default out (allows stored).
               const allowedViews = [
-                ...GATEABLE_VIEWS.filter((v) => !u.deniedViews.includes(v.to)).map((v) => v.to),
-                ...MANAGE_VIEWS.filter((v) => u.allowedManageViews.includes(v.to)).map((v) => v.to),
+                ...workViews.filter((v) => !u.deniedViews.includes(v.to)).map((v) => v.to),
+                ...manageViews.filter((v) => u.allowedManageViews.includes(v.to)).map((v) => v.to),
               ]
               return (
                 <li key={u.id} className="space-y-2 py-3">
@@ -259,14 +268,14 @@ function AdminPage() {
                         />
                         <Combobox
                           options={[
-                            ...GATEABLE_VIEWS.map((v) => ({ value: v.to, label: v.label, sub: 'work' })),
-                            ...MANAGE_VIEWS.map((v) => ({ value: v.to, label: v.label, sub: 'manage' })),
+                            ...workViews.map((v) => ({ value: v.to, label: v.label, sub: 'work' })),
+                            ...manageViews.map((v) => ({ value: v.to, label: v.label, sub: 'manage' })),
                           ]}
                           selected={allowedViews}
                           onChange={(views) =>
                             void update(u.id, {
-                              deniedViews: GATEABLE_VIEWS.filter((v) => !views.includes(v.to)).map((v) => v.to),
-                              allowedManageViews: MANAGE_VIEWS.filter((v) => views.includes(v.to)).map((v) => v.to),
+                              deniedViews: workViews.filter((v) => !views.includes(v.to)).map((v) => v.to),
+                              allowedManageViews: manageViews.filter((v) => views.includes(v.to)).map((v) => v.to),
                             })
                           }
                           multiple

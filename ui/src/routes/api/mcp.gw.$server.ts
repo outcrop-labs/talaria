@@ -47,6 +47,14 @@ export const Route = createFileRoute('/api/mcp/gw/$server')({
           )
         }
 
+        // App-published servers dispatch IN-PROCESS — same access resolution
+        // as above, no HTTP hop, tool subset enforced again inside.
+        if (eff.server.appSlug) {
+          const { dispatchAppMcp } = await import('@/server/app-mcp')
+          const r = await dispatchAppMcp(eff.server.appSlug, rpc ?? {}, name, eff.tools)
+          return r.body === null ? new Response(null, { status: r.status }) : json(r.body, { status: r.status })
+        }
+
         const upstream = await fetch(eff.server.url, {
           method: 'POST',
           headers: {
@@ -108,6 +116,8 @@ export const Route = createFileRoute('/api/mcp/gw/$server')({
         if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
         const eff = await effectiveMcpFor(name, params.server)
         if (!eff) return json({ error: 'no access to this MCP server' }, { status: 403 })
+        // App servers have no notification stream — decline politely.
+        if (eff.server.appSlug) return new Response(null, { status: 405 })
         const upstream = await fetch(eff.server.url, {
           method: 'GET',
           headers: {

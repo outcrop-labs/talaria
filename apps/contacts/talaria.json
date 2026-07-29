@@ -1,0 +1,11 @@
+{
+  "name": "Contacts",
+  "icon": "☏",
+  "version": "0.1.0",
+  "description": "Lightweight CRM — people, companies, stages, notes. The reference Talaria app: three surfaces, an app server, and the document store.",
+  "surfaces": {
+    "work": "Contacts",
+    "manage": "Contacts data",
+    "settings": "Contacts"
+  }
+}

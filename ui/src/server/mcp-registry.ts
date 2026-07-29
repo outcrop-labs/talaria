@@ -34,6 +34,9 @@ export interface McpServer {
   oauthEnabled: boolean
   /** Talaria's own toolkit — governable here, but not removable/reconfigurable. */
   builtin: boolean
+  /** Set when a Talaria APP publishes this server (mcp.ts) — lifecycle follows
+   *  the app (enable/disable), calls dispatch in-process, access rules here. */
+  appSlug: string | null
   createdBy: string | null
   createdAt: string
 }
@@ -53,7 +56,7 @@ export interface McpUserAccess {
 const ROW = `id, name, label, description, url, headers, timeout_secs as "timeoutSecs", enabled,
   all_agents as "allAgents", auth_mode as "authMode", tools, tools_refreshed_at as "toolsRefreshedAt",
   required_headers as "requiredHeaders", (oauth is not null) as "oauthEnabled", builtin,
-  created_by as "createdBy", created_at as "createdAt"`
+  app_slug as "appSlug", created_by as "createdBy", created_at as "createdAt"`
 
 /** The Talaria toolkit as a governable system row: every agent carries it,
  *  and the same per-agent/per-person tool subsets apply — enforced by the
@@ -126,12 +129,22 @@ export async function updateMcpServer(
   }>,
 ): Promise<void> {
   const sql = await db()
-  const [row] = (await sql`select builtin from mcp_servers where id = ${id}`) as unknown as Array<{ builtin: boolean }>
+  const [row] = (await sql`select builtin, app_slug as "appSlug" from mcp_servers where id = ${id}`) as unknown as Array<{
+    builtin: boolean
+    appSlug: string | null
+  }>
   if (row?.builtin) {
     // The toolkit's identity and lifecycle are Talaria's; only access rules
     // (assignments/user access, handled elsewhere) are governable.
     for (const k of ['url', 'headers', 'enabled', 'allAgents', 'authMode'] as const) {
       if (patch[k] !== undefined) throw new Error('the built-in Talaria toolkit cannot be reconfigured')
+    }
+  }
+  if (row?.appSlug) {
+    // App servers have no upstream to point elsewhere and follow the app's
+    // lifecycle; allAgents/access stay governable like any server.
+    for (const k of ['url', 'headers', 'enabled', 'authMode'] as const) {
+      if (patch[k] !== undefined) throw new Error('this server is published by an app — disable the app instead')
     }
   }
   if (patch.label !== undefined) await sql`update mcp_servers set label = ${patch.label}, updated_at = now() where id = ${id}`
@@ -146,9 +159,49 @@ export async function updateMcpServer(
 
 export async function deleteMcpServer(id: string): Promise<void> {
   const sql = await db()
-  const [row] = (await sql`select builtin from mcp_servers where id = ${id}`) as unknown as Array<{ builtin: boolean }>
+  const [row] = (await sql`select builtin, app_slug as "appSlug" from mcp_servers where id = ${id}`) as unknown as Array<{
+    builtin: boolean
+    appSlug: string | null
+  }>
   if (row?.builtin) throw new Error('the built-in Talaria toolkit cannot be removed')
+  if (row?.appSlug) throw new Error('this server is published by an app — disable or uninstall the app instead')
   await sql`delete from mcp_servers where id = ${id}` // assignments/access/credentials cascade
+}
+
+// ── App-published servers ───────────────────────────────────────────────────
+
+/** Reconcile registry rows with the ENABLED apps that publish MCP tools:
+ *  upsert one row per app (tools cached straight from the module, no probe),
+ *  drop rows whose app went away — rolling the agents that carried them. */
+export async function syncAppMcpServers(): Promise<void> {
+  const sql = await db()
+  const [{ enabledApps }, { appHasMcp, appMcpTools }, { rollAgentsForServer }] = await Promise.all([
+    import('./apps'),
+    import('./app-mcp'),
+    import('./mcp-apply'),
+  ])
+  const want = (await enabledApps()).filter((a) => appHasMcp(a.slug))
+  const have = (await sql`select id, app_slug as "appSlug" from mcp_servers where app_slug is not null`) as unknown as Array<{
+    id: string
+    appSlug: string
+  }>
+  for (const row of have) {
+    if (!want.some((a) => a.slug === row.appSlug)) {
+      await rollAgentsForServer(row.id).catch(() => {})
+      await sql`delete from mcp_servers where id = ${row.id}`
+    }
+  }
+  for (const a of want) {
+    const tools = await appMcpTools(a.slug)
+    await sql`
+      insert into mcp_servers (name, label, description, url, all_agents, app_slug, tools, tools_refreshed_at, created_by)
+      values (${`app-${a.slug}`}, ${a.name}, ${a.description || null}, ${`talaria-app://${a.slug}`}, false, ${a.slug},
+              ${sql.json(tools)}, now(), 'talaria')
+      on conflict (name) do update set
+        label = excluded.label, description = excluded.description, app_slug = excluded.app_slug,
+        tools = excluded.tools, tools_refreshed_at = now(), enabled = true, updated_at = now()
+    `
+  }
 }
 
 // ── Discovery ───────────────────────────────────────────────────────────────
@@ -158,6 +211,14 @@ export async function deleteMcpServer(id: string): Promise<void> {
 export async function refreshMcpTools(id: string): Promise<{ tools: Array<{ name: string; description?: string }> } | { error: string }> {
   const server = await getMcpServer(id)
   if (!server) return { error: 'not found' }
+  if (server.appSlug) {
+    // App servers: the catalog comes straight from the compiled module.
+    const { appMcpTools } = await import('./app-mcp')
+    const tools = await appMcpTools(server.appSlug)
+    const sql = await db()
+    await sql`update mcp_servers set tools = ${sql.json(tools)}, tools_refreshed_at = now(), updated_at = now() where id = ${id}`
+    return { tools }
+  }
   try {
     // OAuth servers list tools with the org connection when one exists; the
     // builtin toolkit authenticates with the fleet key as Talaria itself.

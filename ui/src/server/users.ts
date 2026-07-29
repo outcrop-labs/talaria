@@ -269,8 +269,14 @@ export async function canUseAgentModel(userId: string, role: Role, model: string
 
 // Manage-section routes: default DENIED for members, granted explicitly via
 // allowed_manage_views. Kept here (not imported from lib/nav) so the server
-// module stays client-import-free.
-const MANAGE_VIEW_ROUTES = ['/agents', '/models', '/mcp', '/templates', '/observability']
+// module stays client-import-free. Enabled apps with a manage surface extend
+// this set dynamically (/x/<slug>/manage) — same grant flow as core views.
+const MANAGE_VIEW_ROUTES = ['/agents', '/models', '/mcp', '/templates', '/observability', '/apps']
+
+const allManageRoutes = async (): Promise<string[]> => {
+  const { appManageRoutes } = await import('./apps')
+  return [...MANAGE_VIEW_ROUTES, ...(await appManageRoutes())]
+}
 
 /** Views a member may NOT reach: their explicit work-view denials PLUS every
  *  Manage view they haven't been granted. Admins are never restricted. */
@@ -281,13 +287,14 @@ export async function deniedViews(userId: string, role: Role): Promise<string[]>
     select denied_views as "deniedViews", allowed_manage_views as "allowedManageViews" from users where id = ${userId}
   `) as unknown as Array<{ deniedViews: string[]; allowedManageViews: string[] | null }>
   const allowed = new Set(rows[0]?.allowedManageViews ?? [])
-  return [...(rows[0]?.deniedViews ?? []), ...MANAGE_VIEW_ROUTES.filter((v) => !allowed.has(v))]
+  return [...(rows[0]?.deniedViews ?? []), ...(await allManageRoutes()).filter((v) => !allowed.has(v))]
 }
 
 /** Replace a member's granted Manage views. */
 export async function setAllowedManageViews(userId: string, views: string[]): Promise<void> {
   const sql = await db()
-  await sql`update users set allowed_manage_views = ${views.filter((v) => MANAGE_VIEW_ROUTES.includes(v))} where id = ${userId}`
+  const valid = await allManageRoutes()
+  await sql`update users set allowed_manage_views = ${views.filter((v) => valid.includes(v))} where id = ${userId}`
 }
 
 export async function setDeniedViews(userId: string, views: string[]): Promise<void> {

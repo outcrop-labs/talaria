@@ -8,11 +8,12 @@ import { CreateBoardModal } from '@/components/board/create-board-modal'
 import { alert } from '@/components/ui/confirm'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
-import { NAV } from '@/lib/nav'
+import { NAV, type NavItem } from '@/lib/nav'
 import { useBoards, useArchivedBoards, moveBoardToTeam, type Board } from '@/lib/boards'
 import { useTeams } from '@/lib/teams'
 import { useNotifications } from '@/lib/notifications'
 import { useDeniedViews, useHasPerm, type SessionUser } from '@/lib/session'
+import { useEnabledApps } from '@/lib/apps'
 
 // The main application menu. The Boards item expands to the user's boards
 // (grouped by team) when that section is active.
@@ -23,12 +24,22 @@ export function NavRail({ user }: { user: SessionUser }) {
   const [creating, setCreating] = useState(false)
   const [teamsOpen, setTeamsOpen] = useState(false)
   const unread = useNotifications().data?.unread ?? 0
+  // Enabled apps slot into the sections as if they shipped with the platform:
+  // work surfaces under Work, manage surfaces under Manage (grant-gated like
+  // any core Manage view via deniedViews).
+  const { data: apps = [] } = useEnabledApps()
+  const appItems: Record<string, NavItem[]> = {
+    Work: apps.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work!, icon: a.icon })),
+    Manage: apps.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage!, icon: a.icon })),
+  }
 
   return (
     <nav className="flex h-full w-56 shrink-0 flex-col gap-6 overflow-y-auto border-r border-line-subtle bg-sidebar px-3 py-5">
       {NAV.map((section) => {
         if (section.adminOnly && !isAdmin) return null
-        const items = section.items.filter((i) => (!i.adminOnly || isAdmin) && !denied.includes(i.to))
+        const items = [...section.items, ...(appItems[section.title] ?? [])].filter(
+          (i) => (!i.adminOnly || isAdmin) && !denied.includes(i.to) && !denied.some((d) => i.to.startsWith(d + '/')),
+        )
         if (items.length === 0) return null
         return (
           <div key={section.title}>
