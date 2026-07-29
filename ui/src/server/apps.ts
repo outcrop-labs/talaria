@@ -101,10 +101,15 @@ export function appServerModule(slug: string): (() => Promise<unknown>) | null {
   return entry?.[1] ?? null
 }
 
-/** Manage-surface routes of ENABLED apps — merged into the default-denied
- *  manage set (members need an explicit grant, same as core Manage views). */
-export async function appManageRoutes(): Promise<string[]> {
-  return (await enabledApps()).filter((a) => a.surfaces.manage).map((a) => `/x/${a.slug}/manage`)
+/** ALL app view routes of ENABLED apps (work + manage surfaces). Apps are
+ *  explicit-grant: members get NO app access by default — an admin allows
+ *  each view per person, same flow as core Manage views. */
+export async function appViewRoutes(): Promise<string[]> {
+  const apps = await enabledApps()
+  return [
+    ...apps.filter((a) => a.surfaces.work).map((a) => `/x/${a.slug}`),
+    ...apps.filter((a) => a.surfaces.manage).map((a) => `/x/${a.slug}/manage`),
+  ]
 }
 
 // ── Runtime install (marketplace / git) ────────────────────────────────────

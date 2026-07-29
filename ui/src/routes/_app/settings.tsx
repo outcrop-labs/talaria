@@ -7,7 +7,7 @@ import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Combobox } from '@/components/ui/combobox'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
-import { useSession } from '@/lib/session'
+import { useDeniedViews, useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
 import { savePreferredModel, useModels, usePreferredModel } from '@/lib/muse'
 import { AssistantSection } from '@/components/assistant/assistant-section'
@@ -50,10 +50,12 @@ function SettingsPage() {
   const nav = Route.useNavigate()
   const tab: SettingsTab = search.tab ?? 'profile'
   const setTab = (t: SettingsTab) => void nav({ search: t === 'profile' ? {} : { tab: t } })
-  // Enabled apps with a settings surface get their own tab, labeled by the app.
+  // Enabled apps with a settings surface get their own tab, labeled by the
+  // app — only for people granted the app (apps are explicit-grant).
   const { data: enabledApps = [] } = useEnabledApps()
+  const deniedForApps = useDeniedViews()
   const appTabs = enabledApps
-    .filter((a) => a.surfaces.settings)
+    .filter((a) => a.surfaces.settings && !deniedForApps.includes(`/x/${a.slug}`))
     .map((a) => ({ id: `app:${a.slug}` as SettingsTab, label: a.surfaces.settings! }))
 
   useEffect(() => {

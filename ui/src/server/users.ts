@@ -269,13 +269,14 @@ export async function canUseAgentModel(userId: string, role: Role, model: string
 
 // Manage-section routes: default DENIED for members, granted explicitly via
 // allowed_manage_views. Kept here (not imported from lib/nav) so the server
-// module stays client-import-free. Enabled apps with a manage surface extend
-// this set dynamically (/x/<slug>/manage) — same grant flow as core views.
+// module stays client-import-free. Enabled apps extend this set dynamically
+// with EVERY app view (work and manage) — apps are explicit-grant only, an
+// admin adds each one per person.
 const MANAGE_VIEW_ROUTES = ['/agents', '/models', '/mcp', '/templates', '/observability', '/apps']
 
 const allManageRoutes = async (): Promise<string[]> => {
-  const { appManageRoutes } = await import('./apps')
-  return [...MANAGE_VIEW_ROUTES, ...(await appManageRoutes())]
+  const { appViewRoutes } = await import('./apps')
+  return [...MANAGE_VIEW_ROUTES, ...(await appViewRoutes())]
 }
 
 /** Views a member may NOT reach: their explicit work-view denials PLUS every

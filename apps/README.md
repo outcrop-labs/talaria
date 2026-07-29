@@ -38,13 +38,15 @@ apps/<slug>/
 
 Surfaces are opt-in; ship any combination:
 
-| surface    | where it appears                          | default access                          |
-|------------|-------------------------------------------|-----------------------------------------|
-| `work`     | Work section of the nav → `/x/<slug>`      | all members (denialable per person)     |
-| `manage`   | Manage section → `/x/<slug>/manage`        | admins; members need an explicit grant  |
-| `settings` | a tab on every user's Settings page        | all members                             |
+| surface    | where it appears                      | access                                       |
+|------------|----------------------------------------|----------------------------------------------|
+| `work`     | Work section of the nav → `/x/<slug>`  | admins; members need an explicit grant       |
+| `manage`   | Manage section → `/x/<slug>/manage`    | admins; members need an explicit grant       |
+| `settings` | a Settings tab (for people with access)| follows the work-view grant                  |
 
-Access is governed in **Admin → People** with the same checklist as core views.
+Apps are **explicit-grant**: enabling one gives members nothing until an admin adds its views per
+person in **Admin → People** — the same checklist that governs core Manage views. The app API
+gateway enforces the grant server-side.
 
 ### app.tsx
 

@@ -103,14 +103,16 @@ function AdminPage() {
   const { data: perms } = useAdminPermissions()
   const { data: fleet } = useAgents()
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
-  // Enabled apps join the per-person view checklist like core views: work
-  // surfaces default-allowed (denials stored), manage surfaces default-denied
-  // (grants stored) — same resting states as the built-in sections.
+  // Enabled apps join the per-person view checklist as EXPLICIT grants —
+  // every app view (work and manage) defaults denied for members; an admin
+  // adds each one per person, same storage as core Manage views.
   const { data: enabledApps = [] } = useEnabledApps()
-  const appWorkViews = enabledApps.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work! }))
-  const appManageViews = enabledApps.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage! }))
-  const workViews = [...GATEABLE_VIEWS, ...appWorkViews]
-  const manageViews = [...MANAGE_VIEWS, ...appManageViews]
+  const appViews = [
+    ...enabledApps.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work! })),
+    ...enabledApps.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage! })),
+  ]
+  const workViews = GATEABLE_VIEWS
+  const manageViews = [...MANAGE_VIEWS.map((v) => ({ ...v, sub: 'manage' })), ...appViews.map((v) => ({ ...v, sub: 'app' }))]
   const [error, setError] = useState<string | null>(null)
 
   const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[]; allowedManageViews?: string[]; assistantElevated?: boolean }) => {
@@ -269,7 +271,7 @@ function AdminPage() {
                         <Combobox
                           options={[
                             ...workViews.map((v) => ({ value: v.to, label: v.label, sub: 'work' })),
-                            ...manageViews.map((v) => ({ value: v.to, label: v.label, sub: 'manage' })),
+                            ...manageViews.map((v) => ({ value: v.to, label: v.label, sub: v.sub })),
                           ]}
                           selected={allowedViews}
                           onChange={(views) =>
