@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { personalAssistantOwners } from '@/server/users'
 import { agentCategoryFolder, createArtifact, guarded, listArtifacts, namedRootFolder, saveArtifact } from '@/server/artifacts'
 import { describeAgent } from '@/server/gateway'
 import { canRead, grantedItemIds, grantedItemIdsForAgent, setEditors } from '@/server/kb-perms'
@@ -44,22 +45,29 @@ export const Route = createFileRoute('/api/artifacts')({
         if (checkAgentKey(request)) {
           const name = agentName(request)
           if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+          // WHO the agent works for decides reach: a PERSONAL assistant's
+          // output belongs to its owner and stays private to them (they can
+          // share it; the assistant cannot make it org-wide). A general org
+          // agent's output is for the workspace — org-visible, ownerless.
+          const paOwner = (await personalAssistantOwners()).get(name) ?? null
           const folderId = parsed.data.folder ? await namedRootFolder(parsed.data.folder, name) : null
           const artifact = await createArtifact({
             kind: parsed.data.kind,
             title: parsed.data.title,
             createdBy: name,
-            ownerUserId: null,
+            ownerUserId: paOwner,
             // Named folder (find-or-create) when the agent files deliberately;
             // its own cabinet otherwise.
             folderId: folderId ?? (await agentCategoryFolder(describeAgent(name).label, 'Documents', name)),
           })
-          // The creating agent can keep editing it; default it org-visible so the
-          // workspace can see the agent's output.
           await setEditors('artifact', artifact.id, [{ principalType: 'agent', principalId: name, role: 'editor' }])
-          // Org-visible + org-editable so the workspace can pick up and manage the
-          // agent's document (the agent keeps its own editor grant too).
-          const updated = await saveArtifact(artifact.id, { body: parsed.data.body, visibility: parsed.data.visibility ?? 'org', editPolicy: 'org' }, name)
+          const updated = await saveArtifact(
+            artifact.id,
+            paOwner
+              ? { body: parsed.data.body, visibility: 'private', editPolicy: 'owner' }
+              : { body: parsed.data.body, visibility: parsed.data.visibility ?? 'org', editPolicy: 'org' },
+            name,
+          )
           return json({ artifact: updated ?? artifact })
         }
 

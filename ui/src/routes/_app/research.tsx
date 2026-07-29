@@ -1,8 +1,8 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useMemo, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Gauge, Loader2, Trash2 } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { ExternalLink, Gauge, Loader2, Trash2, UserPlus, X } from 'lucide-react'
 import { RailSurface, Rail, Stage, StageHeader } from '@/components/app/surface'
 import { Chip, DangerLink, StatusDot, type DotStatus } from '@/components/ui/chip'
 import { ComposerPicker } from '@/components/chat/composer-picker'
@@ -15,7 +15,8 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { Markdown } from '@/components/ui/markdown'
 import { Panel } from '@/components/ui/panel'
 import { Textarea } from '@/components/ui/textarea'
-import { confirm } from '@/components/ui/confirm'
+import { alert, confirm } from '@/components/ui/confirm'
+import { UserPicker } from '@/components/app/user-picker'
 import { useAgents } from '@/lib/agents'
 import { useArtifact } from '@/lib/artifacts'
 import { useSession } from '@/lib/session'
@@ -257,6 +258,90 @@ function ReportSkeleton() {
   )
 }
 
+/** Members + share, in the run header. Mirrors plan sharing: the owner adds
+ *  teammates (they get the run AND its report), a collaborator can leave. */
+function ResearchMembers({ runId }: { runId: string }) {
+  const { data: session } = useSession()
+  const qc = useQueryClient()
+  const [adding, setAdding] = useState(false)
+  const { data } = useQuery({
+    queryKey: ['research-members', runId],
+    queryFn: async (): Promise<{ members: Array<{ userId: string; name: string | null; email: string | null; role: 'owner' | 'collaborator' }> }> => {
+      const r = await fetch(`/api/research/${runId}/members`, { credentials: 'same-origin' })
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+  })
+  const members = data?.members ?? []
+  const isOwner = !!session?.id && session.id === members.find((m) => m.role === 'owner')?.userId
+  const refresh = () => qc.invalidateQueries({ queryKey: ['research-members', runId] })
+  const remove = (userId: string) =>
+    fetch(`/api/research/${runId}/members`, {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userId }),
+    }).then(refresh)
+  // Org-wide runs (no owner) have nothing to share.
+  if (members.length === 0 || !members.some((m) => m.role === 'owner')) return null
+
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="flex -space-x-1.5">
+        {members.map((m) => (
+          <span key={m.userId} className="group relative" title={`${m.name ?? m.email}${m.role === 'owner' ? ' (owner)' : ''}`}>
+            <Avatar name={m.name ?? m.email ?? '?'} className="h-6 w-6 text-[10px] ring-2 ring-surface" />
+            {(isOwner && m.role !== 'owner') || (m.userId === session?.id && m.role === 'collaborator') ? (
+              <button
+                type="button"
+                title={m.userId === session?.id ? 'Leave this research' : `Remove ${m.name ?? m.email}`}
+                onClick={() => void remove(m.userId)}
+                className="absolute -right-1 -top-1 hidden h-3.5 w-3.5 place-items-center rounded-full bg-card text-muted shadow group-hover:grid hover:text-fg"
+              >
+                <X size={9} />
+              </button>
+            ) : null}
+          </span>
+        ))}
+      </span>
+      {isOwner &&
+        (adding ? (
+          <UserPicker
+            size="sm"
+            className="w-48"
+            placeholder="Share with"
+            exclude={members.map((m) => m.userId)}
+            onPick={(u) => {
+              setAdding(false)
+              if (!u.email) return
+              void fetch(`/api/research/${runId}/members`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ email: u.email }),
+              }).then(async (r) => {
+                if (!r.ok) {
+                  const e = ((await r.json().catch(() => ({}))) as { error?: string }).error
+                  void alert({ title: 'Could not share', message: e ?? 'share failed' })
+                }
+                refresh()
+              })
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            title="Share this research with a teammate"
+            onClick={() => setAdding(true)}
+            className="grid h-6 w-6 place-items-center rounded-full border border-dashed border-line text-muted hover:text-fg"
+          >
+            <UserPlus size={12} />
+          </button>
+        ))}
+    </span>
+  )
+}
+
 function RunView({ runId }: { runId: string }) {
   const { data } = useResearchRun(runId)
   const run = data?.run
@@ -289,6 +374,7 @@ function RunView({ runId }: { runId: string }) {
         <span>by {run.requestedBy}</span>
         {run.stats.sources !== undefined && <span>· {run.stats.sources} sources ({run.stats.cited} cited)</span>}
         <span className="ml-auto" />
+        <ResearchMembers runId={runId} />
         {run.artifactId && (
           <Link to="/artifacts" className="flex shrink-0 items-center gap-1 text-xs text-muted hover:text-fg">
             Open in Artifacts <ExternalLink size={12} />

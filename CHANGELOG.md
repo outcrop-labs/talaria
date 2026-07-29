@@ -5,6 +5,45 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 ## [Unreleased]
 
 ### Added
+- **Personal agents get a private RAG brain.** Every user's personal
+  collection ("My knowledge") is now the assistant's long-term memory of
+  that user, created lazily and bound to the owner + their assistant only:
+  chat distills land there (alongside the owner-scoped ambient copy —
+  search merges dedupe), and personal research reports index there instead
+  of sitting unreachable in the activity index. A personal assistant now
+  retrieves as its **owner's proxy** — the owner's channels, boards, plans,
+  and distilled history, exactly what the owner could retrieve and nothing
+  more (org agents keep their board-policy scope). Org-wide research
+  reports get an `orgWide` payload + matching scope clause, so they're
+  finally retrievable at all. Also fixes agent-key RAG search 502ing on a
+  uuid cast in the team-binding clause.
+- **Personal-content privacy pass + multiplayer research.** Personal-agent
+  output is now private to its owner everywhere: PA-created documents, KB
+  docs, research reports, and generated media carry the owner's
+  `owner_user_id` and default to `private` (org agents keep publishing
+  org-wide). Research is scoped like plans: you see your own runs, runs
+  shared with you, and org-wide (agent-initiated) runs — and it's now
+  **multiplayer**: a `research_members` table, `/api/research/:id/members`
+  (share by email, owner-only, with notification + automatic editor grant
+  on the report artifact; collaborators can leave), and an avatar-stack
+  share UI in the run header mirroring plan sharing. Briefings only
+  surface research you own or were invited to.
+
+### Fixed
+- **ACL audit fixes — six leaks closed.** (1) `/api/uploads/:id` streamed
+  any file by id; now gated by `canAccessUpload` — owner, admin, or
+  reachable through a conversation/channel/board/artifact the viewer can
+  actually read (agents resolve through their board/channel grants or
+  their owner's chats). (2) `/api/history` served full snapshot bodies for
+  any key; now enforces per-kind ACLs (artifact + KB perms incl. space
+  inheritance and editor grants, memory/skill by agent ownership,
+  templates admin-only). (3) `/api/memory/:id` GET let any user read any
+  agent's memory; now admin-or-owner like PUT. (4) KB search matched raw
+  row visibility, ignoring space inheritance and grants — a doc in a
+  private space leaked into results; now filters through the same
+  effective-permission check the read routes use. (5) Artifact link
+  DELETE had no read gate (POST did). (6) Research list/get had no owner
+  predicate at all — everyone saw everyone's runs.
 - **Templates view (Manage → Templates).** Templates managed in one place
   instead of a modal buried in board settings: tabbed by consumer
   (Tickets · Plans, with counts), deep-linked down to the selected

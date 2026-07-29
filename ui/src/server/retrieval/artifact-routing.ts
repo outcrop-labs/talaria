@@ -8,7 +8,7 @@ import { artifactToMarkdown, targetsForArtifact, type Artifact } from '../artifa
 import { indexPlanDoc } from '../plan-doc'
 import { db } from '../db/pg'
 import { indexDocument, unindexDocument } from './index'
-import { indexActivity, unindexActivity } from './sources'
+import { indexActivity, indexPersonal, unindexActivity, unindexPersonal } from './sources'
 
 /** Re-place an artifact according to its routing. Idempotent; call after any
  *  routing change (and the backfill/sweep call it for non-auto artifacts). */
@@ -19,16 +19,18 @@ export async function applyArtifactRouting(artifact: Artifact): Promise<void> {
   for (const c of customs) await unindexDocument(c.id, 'artifact', artifact.id).catch(() => {})
 
   if (artifact.ragRouting === 'none') {
-    // Scrub the activity copies its auto flows may have created.
+    // Scrub the copies its auto flows may have created.
     await unindexActivity('plan-doc', artifact.id).catch(() => {})
     await unindexActivity('research', artifact.id).catch(() => {})
+    if (artifact.ownerUserId) await unindexPersonal(artifact.ownerUserId, 'research', artifact.id).catch(() => {})
     return
   }
 
   if (artifact.ragRouting !== 'auto') {
-    // Explicit brain: it lives only there — activity copies go too.
+    // Explicit brain: it lives only there — auto-flow copies go too.
     await unindexActivity('plan-doc', artifact.id).catch(() => {})
     await unindexActivity('research', artifact.id).catch(() => {})
+    if (artifact.ownerUserId) await unindexPersonal(artifact.ownerUserId, 'research', artifact.id).catch(() => {})
     if (artifact.visibility === 'private') return // privacy trumps routing
     const text = artifactToMarkdown(artifact)
     if (!text.trim()) return // files have no text body
@@ -48,14 +50,18 @@ export async function applyArtifactRouting(artifact: Artifact): Promise<void> {
   const research = targets.find((t) => t.targetType === 'research')
   if (plan) {
     await indexPlanDoc(artifact, plan.targetId).catch(() => {})
-  } else if (research && artifact.visibility !== 'private') {
-    await indexActivity({
+  } else if (research) {
+    // Personal research lives in the owner's private brain; org research in
+    // the ambient index, marked orgWide so scopes match it.
+    const doc = {
       sourceType: 'research',
       sourceId: artifact.id,
       title: artifact.title,
       text: `${artifact.title}\n\n${artifact.body}`,
-      payload: { runId: research.targetId },
+      payload: artifact.ownerUserId ? { runId: research.targetId } : { runId: research.targetId, orgWide: true },
       href: `/research?r=${research.targetId}`,
-    }).catch(() => {})
+    }
+    if (artifact.visibility === 'private' && artifact.ownerUserId) await indexPersonal(artifact.ownerUserId, doc).catch(() => {})
+    else if (artifact.visibility !== 'private') await indexActivity(doc).catch(() => {})
   }
 }

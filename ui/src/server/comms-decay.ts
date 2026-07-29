@@ -9,7 +9,7 @@ import { archiveChannel, insertChannelMessage, listChannelAgents, listChannelMes
 import { describeAgent } from './gateway'
 import { completeViaGateway } from './llm-gateway'
 import { museModelFor } from './muse'
-import { indexActivity } from './retrieval/sources'
+import { indexActivity, indexPersonal } from './retrieval/sources'
 
 const TTL_DAYS = () => Math.max(1, Number(process.env.TALARIA_CHAT_TTL_DAYS ?? 14))
 const SWEEP_BATCH = 8
@@ -48,14 +48,20 @@ async function distillConversation(conv: {
     )
     if (!text.trim()) return // don't archive on a failed distillation
     const title = `Distilled: ${conv.title || `chat with ${label}`}`
-    await indexActivity({
+    // Twice on purpose: the activity copy keeps the owner's ambient search
+    // working as before (owner-scoped), and the personal-brain copy is what
+    // their assistant retrieves — its private memory of this user's history.
+    // Search merges dedupe by source, so the owner never sees it doubled.
+    const distillDoc = {
       sourceType: 'chat-distill',
       sourceId: conv.id,
       title,
       text,
       payload: { ownerUserId: conv.userId },
       href: '/comms',
-    })
+    }
+    await indexActivity(distillDoc)
+    await indexPersonal(conv.userId, distillDoc)
     // The distill is also a browsable artifact — PRIVATE to the chat's owner
     // (a DM's substance is theirs), filed under the agent's "Chat summaries".
     try {

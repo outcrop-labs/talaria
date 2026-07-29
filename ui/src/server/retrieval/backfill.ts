@@ -12,7 +12,7 @@ import { describeAgent } from '../gateway'
 import { applyArtifactRouting } from './artifact-routing'
 import { ensureQdrantFor } from './collections'
 import { embedOne } from './embed'
-import { indexActivity, indexTicket, indexTicketComment, syncKbDoc } from './sources'
+import { indexActivity, indexPersonal, indexTicket, indexTicketComment, syncKbDoc } from './sources'
 
 const QDRANT_URL = () => (process.env.TALARIA_QDRANT_URL ?? 'http://localhost:6333').replace(/\/$/, '')
 
@@ -160,15 +160,17 @@ export async function backfillAll(): Promise<void> {
           href: '/artifacts',
         }).catch(() => {})
         counts.planDocs = (counts.planDocs ?? 0) + 1
-      } else if (a.targetType === 'research' && a.visibility !== 'private') {
-        await indexActivity({
+      } else if (a.targetType === 'research') {
+        const doc = {
           sourceType: 'research',
           sourceId: a.id,
           title: a.title,
           text: `${a.title}\n\n${a.body}`,
-          payload: { runId: a.targetId },
+          payload: a.ownerId ? { runId: a.targetId } : { runId: a.targetId, orgWide: true },
           href: `/research?r=${a.targetId}`,
-        }).catch(() => {})
+        }
+        if (a.visibility === 'private' && a.ownerId) await indexPersonal(a.ownerId, doc).catch(() => {})
+        else if (a.visibility !== 'private') await indexActivity(doc).catch(() => {})
         counts.research = (counts.research ?? 0) + 1
       }
     }
@@ -246,15 +248,19 @@ export async function sweepNewActivity(): Promise<number> {
       continue
     }
     const isPlan = a.targetType === 'plan'
-    if (!isPlan && a.visibility === 'private') continue
-    await indexActivity({
+    const doc = {
       sourceType: isPlan ? 'plan-doc' : 'research',
       sourceId: a.id,
       title: a.title,
       text: `${a.title}\n\n${a.body}`,
-      payload: isPlan ? { planId: a.targetId, planOwnerId: a.ownerId } : { runId: a.targetId },
+      payload: isPlan ? { planId: a.targetId, planOwnerId: a.ownerId } : a.ownerId ? { runId: a.targetId } : { runId: a.targetId, orgWide: true },
       href: isPlan ? '/artifacts' : `/research?r=${a.targetId}`,
-    }).catch(() => {})
+    }
+    if (!isPlan && a.visibility === 'private') {
+      if (a.ownerId) await indexPersonal(a.ownerId, doc).catch(() => {})
+    } else {
+      await indexActivity(doc).catch(() => {})
+    }
     indexed++
   }
 

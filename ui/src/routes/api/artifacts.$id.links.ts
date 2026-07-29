@@ -26,6 +26,9 @@ export const Route = createFileRoute('/api/artifacts/$id/links')({
       DELETE: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        const artifact = await getArtifact(params.id)
+        if (!artifact) return json({ error: 'not found' }, { status: 404 })
+        if (!canRead(guarded(artifact), user.id, user.email ?? user.name, await listEditors('artifact', artifact.id))) return json({ error: 'forbidden' }, { status: 403 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         await detachArtifact(params.id, parsed.data)

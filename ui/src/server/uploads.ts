@@ -264,3 +264,88 @@ export async function attachmentAsDataUrl(id: string): Promise<string | null> {
   if (!up || !isImage(up.mime)) return null
   return `data:${up.mime};base64,${up.bytes.toString('base64')}`
 }
+
+/** Can this viewer fetch this upload's bytes? Owner and admins always; anyone
+ *  else only when the upload is REACHABLE through a container they can read
+ *  (a conversation they're in, a channel they're a member of, a ticket on a
+ *  board they belong to, or an artifact they can read). Agents mirror that
+ *  through their own access model. Fail closed. */
+export async function canAccessUpload(
+  uploadId: string,
+  viewer: { userId: string; who: string | null; isAdmin: boolean } | { agent: string },
+): Promise<boolean> {
+  const sql = await db()
+  const ref = JSON.stringify([{ id: uploadId }])
+
+  if ('agent' in viewer) {
+    // Ticket on a board that allows the agent.
+    const [task] = (await sql`
+      select 1 as ok from tasks t join boards b on b.id = t.board_id
+      where t.attachments @> ${ref}::jsonb
+        and (b.allow_all_agents or exists(select 1 from board_agents ba where ba.board_id = b.id and ba.agent_model = ${viewer.agent}))
+      limit 1
+    `) as unknown as Array<{ ok: number }>
+    if (task) return true
+    // Message in a channel the agent belongs to.
+    const [ch] = (await sql`
+      select 1 as ok from channel_messages cm
+      where cm.attachments @> ${ref}::jsonb
+        and exists(select 1 from channel_agents ca where ca.channel_id = cm.channel_id and ca.agent_model = ${viewer.agent})
+      limit 1
+    `) as unknown as Array<{ ok: number }>
+    if (ch) return true
+    // A personal assistant reads through its owner's conversations.
+    const [conv] = (await sql`
+      select 1 as ok from messages m
+      join conversations c on c.id = m.conversation_id
+      join agent_defs d on d.owner_user_id = c.user_id and d.model = ${viewer.agent}
+      where m.attachments @> ${ref}::jsonb
+      limit 1
+    `) as unknown as Array<{ ok: number }>
+    return !!conv
+  }
+
+  if (viewer.isAdmin) return true
+  const [own] = (await sql`
+    select 1 as ok from uploads where id = ${uploadId} and uploaded_by = ${viewer.userId} limit 1
+  `) as unknown as Array<{ ok: number }>
+  if (own) return true
+  const [reach] = (await sql`
+    select 1 as ok where
+      exists(
+        select 1 from messages m join conversations c on c.id = m.conversation_id
+        where m.attachments @> ${ref}::jsonb
+          and (c.user_id = ${viewer.userId}
+            or (c.kind = 'plan' and exists(select 1 from conversation_members cm where cm.conversation_id = c.id and cm.user_id = ${viewer.userId})))
+      )
+      or exists(
+        select 1 from channel_messages cm
+        where cm.attachments @> ${ref}::jsonb
+          and exists(select 1 from channel_members x where x.channel_id = cm.channel_id and x.user_id = ${viewer.userId})
+      )
+      or exists(
+        select 1 from tasks t join boards b on b.id = t.board_id
+        left join board_members m2 on m2.board_id = b.id and m2.user_id = ${viewer.userId}
+        left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${viewer.userId}
+        where t.attachments @> ${ref}::jsonb and (m2.user_id is not null or tm.user_id is not null)
+      )
+    limit 1
+  `) as unknown as Array<{ ok: number }>
+  if (reach) return true
+  // Artifact whose file IS this upload — visible per the artifact's own ACL.
+  const arts = (await sql`
+    select id, owner_user_id as "ownerUserId", created_by as "createdBy", visibility, edit_policy as "editPolicy"
+    from artifacts where storage_ref = ${uploadId} limit 3
+  `) as unknown as Array<{ id: string; ownerUserId: string | null; createdBy: string; visibility: string; editPolicy: string }>
+  for (const a of arts) {
+    if (a.visibility !== 'private') return true
+    if (a.ownerUserId === viewer.userId) return true
+    if (viewer.who && a.createdBy === viewer.who) return true
+    const grants = (await sql`
+      select 1 as ok from kb_editors where item_type = 'artifact' and item_id = ${a.id}
+        and principal_type = 'user' and principal_id = ${viewer.userId} limit 1
+    `) as unknown as Array<{ ok: number }>
+    if (grants[0]) return true
+  }
+  return false
+}
