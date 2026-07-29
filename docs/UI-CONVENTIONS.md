@@ -59,6 +59,36 @@ Components: `components/app/surface.tsx` (`RailSurface`, `Rail`, `Stage`,
   section they affect — they must not compete for attention. The in-app
   `confirm()` dialog remains the deliberate step; the trigger stays quiet.
 
+## Primitive-first (post-audit, 2026-07)
+
+A full modularity audit swept the top surfaces onto the kit; these primitives now exist so nobody
+re-rolls them (each replaced 5-20 hand-rolled copies):
+
+- **`<Tabs>`** — the underline tab strip; absorbs the `?tab=` deep-link pattern's render half.
+- **`<Checkbox>` / `<Radio>` / `<Toggle>`** — accent-styled selection controls, label included.
+  A raw `<input type="checkbox">` (native blue in a bronze app) is a bug.
+- **`<SectionHeader title info action>`** — the panel-header cluster (title + InfoTip + trailing
+  control).
+- **`<Segmented>`** — small exclusive mode switches (read/edit). Tabs for page sections; Segmented
+  for modes inside a surface.
+- **`<DropdownMenu trigger items>`** — anchored menus sharing the context-menu shell/grammar.
+  Ad-hoc `absolute top-full` panels with hand-rolled outside-click are banned for action lists
+  (search/typeahead popovers remain bespoke).
+- **`<Chip>` grew modes** — `tone` (accent/success/warn/danger), filter pills (`onSelect` +
+  `selected`), removable tokens (`onRemove`). Filled `rounded-full` pills are a different species;
+  don't force them into Chip.
+- **`<EmptyState variant="compact" | "inline">`** — panel-scale and one-line zero states; the
+  hand-rolled "no X yet" div stays banned at every size.
+- **`<SaveButton>` / `useSavedFlash()`** — the "Save → Saved ✓" pattern; no more setTimeout state
+  machines.
+- **`<CopyButton value|path>`** — every copy affordance flashes the check.
+- **`Button` variants** — `danger-outline` (quiet destructive in dense panels), `accent-soft`
+  (connect/enable nudges), `link` (inline text actions).
+
+Parity rule for adoption: swapping onto a primitive must not redesign the surface. When a primitive
+can't express the existing look without fighting it, keep the bespoke markup and leave a comment —
+that's a signal the kit needs a variant, not more overrides.
+
 ## Rows, chips, dots
 
 - Selectable list rows: `<RailRow>` (rounded-lg px-2 py-1.5 text-sm,

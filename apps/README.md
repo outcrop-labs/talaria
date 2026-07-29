@@ -1,5 +1,9 @@
 # Talaria apps
 
+> The quick in-repo guide. Full docs: [`docs/APPS.md`](../docs/APPS.md) (anatomy, lifecycle,
+> marketplace, publishing) and [`docs/SDK.md`](../docs/SDK.md) (the complete `@talaria/sdk`
+> reference).
+
 Apps are self-contained codebases that compile **into** the Talaria deployment and render as
 **native platform surfaces** — same design system, same router, same session. Not iframes, not
 webhooks: your code becomes part of the product, and integrates with anything the signed-in user
