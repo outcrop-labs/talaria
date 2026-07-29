@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { agentMayAccessChannel, channelRole, insertChannelMessage, listChannelMessages } from '@/server/channels'
+import { agentMayAccessChannel, channelRole, getChannelMessage, insertChannelMessage, listChannelMessages, listThreadMessages } from '@/server/channels'
 import { notifyDmMessage, notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
 import { describeAgent } from '@/server/gateway'
 import { resolveAttachments } from '@/server/uploads'
@@ -17,17 +17,23 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
-        const since = Number(new URL(request.url).searchParams.get('since') ?? -1)
+        const url = new URL(request.url)
+        const since = Number(url.searchParams.get('since') ?? -1)
+        const thread = url.searchParams.get('thread')
+        const page = () =>
+          thread
+            ? listThreadMessages(params.id, thread)
+            : listChannelMessages(params.id, Number.isFinite(since) ? since : -1)
         // Agents in the channel can read it (elevated assistants: any non-DM).
         if (checkAgentKey(request)) {
           const name = agentName(request)
           if (!name || !(await agentMayAccessChannel(params.id, name))) return json({ error: 'forbidden' }, { status: 403 })
-          return json({ messages: await listChannelMessages(params.id, Number.isFinite(since) ? since : -1) })
+          return json({ messages: await page() })
         }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        return json({ messages: await listChannelMessages(params.id, Number.isFinite(since) ? since : -1) })
+        return json({ messages: await page() })
       },
       POST: async ({ request, params }) => {
         const parsed = z
@@ -35,6 +41,7 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
             content: z.string().max(20_000).default(''),
             attachmentIds: z.array(z.string().uuid()).max(10).optional(),
             refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
+            threadRootId: z.string().uuid().nullish(),
           })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success || (!parsed.data.content && !parsed.data.attachmentIds?.length && !parsed.data.refs?.length)) {
@@ -59,10 +66,18 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
+        // A thread reply hangs off a ROOT in this channel; replying to a reply
+        // re-roots onto its thread (Slack semantics — threads never nest).
+        let threadRootId: string | null = null
+        if (parsed.data.threadRootId) {
+          const root = await getChannelMessage(params.id, parsed.data.threadRootId)
+          if (!root) return json({ error: 'no such thread' }, { status: 400 })
+          threadRootId = root.threadRootId ?? root.id
+        }
         const author = user.email ?? user.name ?? 'user'
         const uploads = await resolveAttachments(parsed.data.attachmentIds ?? [])
         const refChips = await resolveRefs(user, parsed.data.refs ?? [])
-        const message = await insertChannelMessage(params.id, 'user', author, parsed.data.content, 'complete', [...uploads, ...refChips])
+        const message = await insertChannelMessage(params.id, 'user', author, parsed.data.content, 'complete', [...uploads, ...refChips], threadRootId)
 
         // Agent replies + mention notifications run detached; the POST returns at once.
         const sql = await db()
@@ -80,7 +95,7 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
             href: '/channels',
           }).catch(() => {})
         }
-        void triggerAgentReplies(params.id, channelName, parsed.data.content).catch(() => {})
+        void triggerAgentReplies(params.id, channelName, parsed.data.content, threadRootId).catch(() => {})
         // A DM message notifies the peer outright (deduped while unread);
         // channel/relay messages notify only on @mention.
         const kind = ((await sql`select kind from channels where id = ${params.id}`)[0] as { kind?: string } | undefined)?.kind

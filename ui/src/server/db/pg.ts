@@ -147,6 +147,17 @@ const MIGRATIONS: string[] = [
   // Ticket refs (BOARD-12): a per-board prefix + monotonic counter.
   `alter table boards add column if not exists ticket_prefix text`,
   `alter table research_runs add column if not exists title text`,
+  `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
+  `alter table channel_messages add column if not exists edited_at timestamptz`,
+  `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
+  `create table if not exists channel_message_reactions (
+    message_id uuid not null references channel_messages(id) on delete cascade,
+    emoji text not null,
+    actor text not null,
+    actor_type text not null default 'user',
+    created_at timestamptz not null default now(),
+    primary key (message_id, emoji, actor)
+  )`,
   `alter table boards add column if not exists ticket_seq integer not null default 0`,
   // Richer task fields (ripped from mission-control): ticket no, effort, the
   // agent's structured result (outcome/resolution/error), completion time.

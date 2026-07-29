@@ -42,6 +42,10 @@ export interface ChannelMessage {
   content: string
   status: 'streaming' | 'complete' | 'error'
   createdAt: string
+  threadRootId?: string | null
+  editedAt?: string | null
+  reactions?: Array<{ emoji: string; actors: string[]; actorTypes: string[] }>
+  thread?: { count: number; authors: string[]; lastAt: string } | null
   attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
   /** Confab-guard findings pinned to an agent reply (annotate/strict modes). */
   guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
@@ -77,6 +81,21 @@ export function useChannelMessages(id: string | null) {
     queryFn: async (): Promise<ChannelMessage[]> =>
       (await j<{ messages: ChannelMessage[] }>(await fetch(`/api/channels/${id}/messages`, { credentials: 'same-origin' })))
         .messages,
+  })
+}
+
+/** One thread (root + replies). Refreshes on the channel's SSE ticks because
+ *  the key shares the 'channel-messages' prefix the events handler invalidates. */
+export function useThreadMessages(channelId: string | null, rootId: string | null) {
+  return useQuery({
+    queryKey: ['channel-messages', channelId, 'thread', rootId],
+    enabled: !!channelId && !!rootId,
+    queryFn: async (): Promise<ChannelMessage[]> =>
+      (
+        await j<{ messages: ChannelMessage[] }>(
+          await fetch(`/api/channels/${channelId}/messages?thread=${rootId}`, { credentials: 'same-origin' }),
+        )
+      ).messages,
   })
 }
 
@@ -119,8 +138,21 @@ export const sendChannelMessage = async (
   content: string,
   attachmentIds: string[] = [],
   refs: Array<{ type: 'kb-doc' | 'artifact'; id: string }> = [],
+  threadRootId: string | null = null,
 ): Promise<void> => {
-  await j(await post(`/api/channels/${id}/messages`, { content, attachmentIds, refs }))
+  await j(await post(`/api/channels/${id}/messages`, { content, attachmentIds, refs, threadRootId }))
+}
+
+export const toggleMessageReaction = async (channelId: string, messageId: string, emoji: string): Promise<void> => {
+  await j(await post(`/api/channels/${channelId}/messages/${messageId}/reactions`, { emoji }))
+}
+
+export const editChannelMessage = async (channelId: string, messageId: string, content: string): Promise<void> => {
+  await j(await post(`/api/channels/${channelId}/messages/${messageId}`, { content }, 'PATCH'))
+}
+
+export const deleteChannelMessage = async (channelId: string, messageId: string): Promise<void> => {
+  await j(await fetch(`/api/channels/${channelId}/messages/${messageId}`, { method: 'DELETE', credentials: 'same-origin' }))
 }
 
 export const updateChannel = async (id: string, patch: { name?: string; topic?: string | null }): Promise<void> => {

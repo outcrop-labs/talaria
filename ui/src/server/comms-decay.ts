@@ -122,7 +122,7 @@ export async function concludeRelay(channelId: string, byUserId: string, channel
   // The Concluder platform agent: its assigned model, else the user's muse.
   const model = (await platformAgentModel('concluder')) ?? (await museModelFor(byUserId))
   if (!model) throw new Error('no model configured to summarize with — add an endpoint on /models')
-  const history = await listChannelMessages(channelId, -1, 500)
+  const history = await listChannelMessages(channelId, -1, 500, { includeThreads: true })
   const transcript = clip(
     history
       .filter((m) => m.status === 'complete' && m.content)

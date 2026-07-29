@@ -169,9 +169,11 @@ import { Route as ApiFleetDefsIdEditRouteImport } from './routes/api/fleet.defs.
 import { Route as ApiFleetAgentsIdSecretsRouteImport } from './routes/api/fleet.agents.$id.secrets'
 import { Route as ApiFleetAgentsIdCronsRouteImport } from './routes/api/fleet.agents.$id.crons'
 import { Route as ApiFleetAgentsIdControlRouteImport } from './routes/api/fleet.agents.$id.control'
+import { Route as ApiChannelsIdMessagesMsgIdRouteImport } from './routes/api/channels.$id.messages.$msgId'
 import { Route as ApiArtifactsPublicSlugDownloadRouteImport } from './routes/api/artifacts.public.$slug.download'
 import { Route as ApiArtifactsIdExportGoogleRouteImport } from './routes/api/artifacts.$id.export.google'
 import { Route as ApiFleetAgentsIdCronsJobIdRouteImport } from './routes/api/fleet.agents.$id.crons.$jobId'
+import { Route as ApiChannelsIdMessagesMsgIdReactionsRouteImport } from './routes/api/channels.$id.messages.$msgId.reactions'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -987,6 +989,12 @@ const ApiFleetAgentsIdControlRoute = ApiFleetAgentsIdControlRouteImport.update({
   path: '/agents/$id/control',
   getParentRoute: () => ApiFleetRoute,
 } as any)
+const ApiChannelsIdMessagesMsgIdRoute =
+  ApiChannelsIdMessagesMsgIdRouteImport.update({
+    id: '/$msgId',
+    path: '/$msgId',
+    getParentRoute: () => ApiChannelsIdMessagesRoute,
+  } as any)
 const ApiArtifactsPublicSlugDownloadRoute =
   ApiArtifactsPublicSlugDownloadRouteImport.update({
     id: '/download',
@@ -1004,6 +1012,12 @@ const ApiFleetAgentsIdCronsJobIdRoute =
     id: '/$jobId',
     path: '/$jobId',
     getParentRoute: () => ApiFleetAgentsIdCronsRoute,
+  } as any)
+const ApiChannelsIdMessagesMsgIdReactionsRoute =
+  ApiChannelsIdMessagesMsgIdReactionsRouteImport.update({
+    id: '/reactions',
+    path: '/reactions',
+    getParentRoute: () => ApiChannelsIdMessagesMsgIdRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -1118,7 +1132,7 @@ export interface FileRoutesByFullPath {
   '/api/channels/$id/conclude': typeof ApiChannelsIdConcludeRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
-  '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
+  '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRouteWithChildren
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/channels/$id/read': typeof ApiChannelsIdReadRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
@@ -1146,6 +1160,7 @@ export interface FileRoutesByFullPath {
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/artifacts/$id/export/google': typeof ApiArtifactsIdExportGoogleRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
+  '/api/channels/$id/messages/$msgId': typeof ApiChannelsIdMessagesMsgIdRouteWithChildren
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/agents/$id/crons': typeof ApiFleetAgentsIdCronsRouteWithChildren
   '/api/fleet/agents/$id/secrets': typeof ApiFleetAgentsIdSecretsRoute
@@ -1168,6 +1183,7 @@ export interface FileRoutesByFullPath {
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
+  '/api/channels/$id/messages/$msgId/reactions': typeof ApiChannelsIdMessagesMsgIdReactionsRoute
   '/api/fleet/agents/$id/crons/$jobId': typeof ApiFleetAgentsIdCronsJobIdRoute
 }
 export interface FileRoutesByTo {
@@ -1282,7 +1298,7 @@ export interface FileRoutesByTo {
   '/api/channels/$id/conclude': typeof ApiChannelsIdConcludeRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
-  '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
+  '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRouteWithChildren
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/channels/$id/read': typeof ApiChannelsIdReadRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
@@ -1310,6 +1326,7 @@ export interface FileRoutesByTo {
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/artifacts/$id/export/google': typeof ApiArtifactsIdExportGoogleRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
+  '/api/channels/$id/messages/$msgId': typeof ApiChannelsIdMessagesMsgIdRouteWithChildren
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/agents/$id/crons': typeof ApiFleetAgentsIdCronsRouteWithChildren
   '/api/fleet/agents/$id/secrets': typeof ApiFleetAgentsIdSecretsRoute
@@ -1332,6 +1349,7 @@ export interface FileRoutesByTo {
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
+  '/api/channels/$id/messages/$msgId/reactions': typeof ApiChannelsIdMessagesMsgIdReactionsRoute
   '/api/fleet/agents/$id/crons/$jobId': typeof ApiFleetAgentsIdCronsJobIdRoute
 }
 export interface FileRoutesById {
@@ -1448,7 +1466,7 @@ export interface FileRoutesById {
   '/api/channels/$id/conclude': typeof ApiChannelsIdConcludeRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
   '/api/channels/$id/members': typeof ApiChannelsIdMembersRoute
-  '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRoute
+  '/api/channels/$id/messages': typeof ApiChannelsIdMessagesRouteWithChildren
   '/api/channels/$id/plan': typeof ApiChannelsIdPlanRoute
   '/api/channels/$id/read': typeof ApiChannelsIdReadRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
@@ -1476,6 +1494,7 @@ export interface FileRoutesById {
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
   '/api/artifacts/$id/export/google': typeof ApiArtifactsIdExportGoogleRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
+  '/api/channels/$id/messages/$msgId': typeof ApiChannelsIdMessagesMsgIdRouteWithChildren
   '/api/fleet/agents/$id/control': typeof ApiFleetAgentsIdControlRoute
   '/api/fleet/agents/$id/crons': typeof ApiFleetAgentsIdCronsRouteWithChildren
   '/api/fleet/agents/$id/secrets': typeof ApiFleetAgentsIdSecretsRoute
@@ -1498,6 +1517,7 @@ export interface FileRoutesById {
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
   '/api/llm/v1/chat/completions': typeof ApiLlmV1ChatCompletionsRoute
+  '/api/channels/$id/messages/$msgId/reactions': typeof ApiChannelsIdMessagesMsgIdReactionsRoute
   '/api/fleet/agents/$id/crons/$jobId': typeof ApiFleetAgentsIdCronsJobIdRoute
 }
 export interface FileRouteTypes {
@@ -1642,6 +1662,7 @@ export interface FileRouteTypes {
     | '/api/teams/$id/members'
     | '/api/artifacts/$id/export/google'
     | '/api/artifacts/public/$slug/download'
+    | '/api/channels/$id/messages/$msgId'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/agents/$id/crons'
     | '/api/fleet/agents/$id/secrets'
@@ -1664,6 +1685,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
+    | '/api/channels/$id/messages/$msgId/reactions'
     | '/api/fleet/agents/$id/crons/$jobId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -1806,6 +1828,7 @@ export interface FileRouteTypes {
     | '/api/teams/$id/members'
     | '/api/artifacts/$id/export/google'
     | '/api/artifacts/public/$slug/download'
+    | '/api/channels/$id/messages/$msgId'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/agents/$id/crons'
     | '/api/fleet/agents/$id/secrets'
@@ -1828,6 +1851,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
+    | '/api/channels/$id/messages/$msgId/reactions'
     | '/api/fleet/agents/$id/crons/$jobId'
   id:
     | '__root__'
@@ -1971,6 +1995,7 @@ export interface FileRouteTypes {
     | '/api/teams/$id/members'
     | '/api/artifacts/$id/export/google'
     | '/api/artifacts/public/$slug/download'
+    | '/api/channels/$id/messages/$msgId'
     | '/api/fleet/agents/$id/control'
     | '/api/fleet/agents/$id/crons'
     | '/api/fleet/agents/$id/secrets'
@@ -1993,6 +2018,7 @@ export interface FileRouteTypes {
     | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
     | '/api/llm/v1/chat/completions'
+    | '/api/channels/$id/messages/$msgId/reactions'
     | '/api/fleet/agents/$id/crons/$jobId'
   fileRoutesById: FileRoutesById
 }
@@ -3188,6 +3214,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFleetAgentsIdControlRouteImport
       parentRoute: typeof ApiFleetRoute
     }
+    '/api/channels/$id/messages/$msgId': {
+      id: '/api/channels/$id/messages/$msgId'
+      path: '/$msgId'
+      fullPath: '/api/channels/$id/messages/$msgId'
+      preLoaderRoute: typeof ApiChannelsIdMessagesMsgIdRouteImport
+      parentRoute: typeof ApiChannelsIdMessagesRoute
+    }
     '/api/artifacts/public/$slug/download': {
       id: '/api/artifacts/public/$slug/download'
       path: '/download'
@@ -3208,6 +3241,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/fleet/agents/$id/crons/$jobId'
       preLoaderRoute: typeof ApiFleetAgentsIdCronsJobIdRouteImport
       parentRoute: typeof ApiFleetAgentsIdCronsRoute
+    }
+    '/api/channels/$id/messages/$msgId/reactions': {
+      id: '/api/channels/$id/messages/$msgId/reactions'
+      path: '/reactions'
+      fullPath: '/api/channels/$id/messages/$msgId/reactions'
+      preLoaderRoute: typeof ApiChannelsIdMessagesMsgIdReactionsRouteImport
+      parentRoute: typeof ApiChannelsIdMessagesMsgIdRoute
     }
   }
 }
@@ -3368,12 +3408,40 @@ const ApiBoardsRouteWithChildren = ApiBoardsRoute._addFileChildren(
   ApiBoardsRouteChildren,
 )
 
+interface ApiChannelsIdMessagesMsgIdRouteChildren {
+  ApiChannelsIdMessagesMsgIdReactionsRoute: typeof ApiChannelsIdMessagesMsgIdReactionsRoute
+}
+
+const ApiChannelsIdMessagesMsgIdRouteChildren: ApiChannelsIdMessagesMsgIdRouteChildren =
+  {
+    ApiChannelsIdMessagesMsgIdReactionsRoute:
+      ApiChannelsIdMessagesMsgIdReactionsRoute,
+  }
+
+const ApiChannelsIdMessagesMsgIdRouteWithChildren =
+  ApiChannelsIdMessagesMsgIdRoute._addFileChildren(
+    ApiChannelsIdMessagesMsgIdRouteChildren,
+  )
+
+interface ApiChannelsIdMessagesRouteChildren {
+  ApiChannelsIdMessagesMsgIdRoute: typeof ApiChannelsIdMessagesMsgIdRouteWithChildren
+}
+
+const ApiChannelsIdMessagesRouteChildren: ApiChannelsIdMessagesRouteChildren = {
+  ApiChannelsIdMessagesMsgIdRoute: ApiChannelsIdMessagesMsgIdRouteWithChildren,
+}
+
+const ApiChannelsIdMessagesRouteWithChildren =
+  ApiChannelsIdMessagesRoute._addFileChildren(
+    ApiChannelsIdMessagesRouteChildren,
+  )
+
 interface ApiChannelsIdRouteChildren {
   ApiChannelsIdAgentsRoute: typeof ApiChannelsIdAgentsRoute
   ApiChannelsIdConcludeRoute: typeof ApiChannelsIdConcludeRoute
   ApiChannelsIdEventsRoute: typeof ApiChannelsIdEventsRoute
   ApiChannelsIdMembersRoute: typeof ApiChannelsIdMembersRoute
-  ApiChannelsIdMessagesRoute: typeof ApiChannelsIdMessagesRoute
+  ApiChannelsIdMessagesRoute: typeof ApiChannelsIdMessagesRouteWithChildren
   ApiChannelsIdPlanRoute: typeof ApiChannelsIdPlanRoute
   ApiChannelsIdReadRoute: typeof ApiChannelsIdReadRoute
 }
@@ -3383,7 +3451,7 @@ const ApiChannelsIdRouteChildren: ApiChannelsIdRouteChildren = {
   ApiChannelsIdConcludeRoute: ApiChannelsIdConcludeRoute,
   ApiChannelsIdEventsRoute: ApiChannelsIdEventsRoute,
   ApiChannelsIdMembersRoute: ApiChannelsIdMembersRoute,
-  ApiChannelsIdMessagesRoute: ApiChannelsIdMessagesRoute,
+  ApiChannelsIdMessagesRoute: ApiChannelsIdMessagesRouteWithChildren,
   ApiChannelsIdPlanRoute: ApiChannelsIdPlanRoute,
   ApiChannelsIdReadRoute: ApiChannelsIdReadRoute,
 }

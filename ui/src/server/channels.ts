@@ -42,6 +42,13 @@ export interface ChannelMessage {
   content: string
   status: 'streaming' | 'complete' | 'error'
   createdAt: string
+  /** Set on thread replies — the root message they hang off. */
+  threadRootId?: string | null
+  editedAt?: string | null
+  /** Rolled-up reactions, actors in insertion order. */
+  reactions?: Array<{ emoji: string; actors: string[]; actorTypes: string[] }>
+  /** On thread roots with replies: the rollup the main flow renders. */
+  thread?: { count: number; authors: string[]; lastAt: string } | null
   attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
   /** Confab-guard findings on an agent reply (annotate/strict modes). */
   guard?: Finding[] | null
@@ -247,16 +254,62 @@ export async function removeChannelAgent(channelId: string, model: string): Prom
 
 // ── Messages ─────────────────────────────────────────────────────────────────
 const MSG_SELECT = `select id, seq, author_type as "authorType", author, content, status,
-  created_at as "createdAt", attachments, guard from channel_messages`
+  created_at as "createdAt", attachments, guard, thread_root_id as "threadRootId",
+  edited_at as "editedAt" from channel_messages`
 
-/** A channel's messages, oldest first. `sinceSeq` fetches only newer ones. */
-export async function listChannelMessages(channelId: string, sinceSeq = -1, limit = 200): Promise<ChannelMessage[]> {
+/** Bolt reaction rollups + thread rollups onto a fetched page of messages. */
+async function decorateMessages(messages: ChannelMessage[]): Promise<ChannelMessage[]> {
+  if (messages.length === 0) return messages
+  const sql = await db()
+  const ids = messages.map((m) => m.id)
+  const reactions = (await sql`
+    select message_id as "messageId", emoji,
+           array_agg(actor order by created_at) as actors,
+           array_agg(actor_type order by created_at) as "actorTypes"
+    from channel_message_reactions where message_id = any(${ids}::uuid[])
+    group by message_id, emoji
+    order by min(created_at)
+  `) as unknown as Array<{ messageId: string; emoji: string; actors: string[]; actorTypes: string[] }>
+  const threads = (await sql`
+    select thread_root_id as "rootId", count(*)::int as count, max(created_at) as "lastAt",
+           (array_agg(distinct author))[1:4] as authors
+    from channel_messages where thread_root_id = any(${ids}::uuid[])
+    group by thread_root_id
+  `) as unknown as Array<{ rootId: string; count: number; lastAt: string; authors: string[] }>
+  for (const m of messages) {
+    const rs = reactions.filter((r) => r.messageId === m.id)
+    if (rs.length) m.reactions = rs.map((r) => ({ emoji: r.emoji, actors: r.actors, actorTypes: r.actorTypes }))
+    const t = threads.find((t) => t.rootId === m.id)
+    if (t) m.thread = { count: t.count, authors: t.authors, lastAt: t.lastAt }
+  }
+  return messages
+}
+
+/** A channel's MAIN flow (thread replies live in their panels), oldest first.
+ *  `sinceSeq` fetches only newer ones. `includeThreads` flattens everything
+ *  back in — the distill/conclude summarizers want the whole conversation. */
+export async function listChannelMessages(
+  channelId: string,
+  sinceSeq = -1,
+  limit = 200,
+  opts: { includeThreads?: boolean } = {},
+): Promise<ChannelMessage[]> {
   const sql = await db()
   const rows = await sql.unsafe(
-    `${MSG_SELECT} where channel_id = $1 and seq > $2 order by seq desc limit $3`,
+    `${MSG_SELECT} where channel_id = $1 and seq > $2 ${opts.includeThreads ? '' : 'and thread_root_id is null'} order by seq desc limit $3`,
     [channelId, sinceSeq, limit],
   )
-  return (rows as unknown as ChannelMessage[]).reverse()
+  return decorateMessages((rows as unknown as ChannelMessage[]).reverse())
+}
+
+/** One thread: its root + replies, oldest first. */
+export async function listThreadMessages(channelId: string, rootId: string): Promise<ChannelMessage[]> {
+  const sql = await db()
+  const rows = await sql.unsafe(
+    `${MSG_SELECT} where channel_id = $1 and (id = $2 or thread_root_id = $2) order by seq asc limit 300`,
+    [channelId, rootId],
+  )
+  return decorateMessages(rows as unknown as ChannelMessage[])
 }
 
 /** Insert a message, drawing seq from the channel's counter. */
@@ -267,6 +320,7 @@ export async function insertChannelMessage(
   content: string,
   status: 'streaming' | 'complete' = 'complete',
   attachments: unknown[] = [],
+  threadRootId: string | null = null,
 ): Promise<ChannelMessage> {
   const sql = await db()
   const row = await sql.begin(async (tx) => {
@@ -275,14 +329,66 @@ export async function insertChannelMessage(
     `
     const seq = (seqRows[0] as { msg_seq: number }).msg_seq
     const rows = await tx`
-      insert into channel_messages (channel_id, seq, author_type, author, content, status, attachments)
-      values (${channelId}, ${seq}, ${authorType}, ${author}, ${content}, ${status}, ${sql.json(attachments as never)})
-      returning id, seq, author_type as "authorType", author, content, status, created_at as "createdAt", attachments
+      insert into channel_messages (channel_id, seq, author_type, author, content, status, attachments, thread_root_id)
+      values (${channelId}, ${seq}, ${authorType}, ${author}, ${content}, ${status}, ${sql.json(attachments as never)}, ${threadRootId})
+      returning id, seq, author_type as "authorType", author, content, status, created_at as "createdAt", attachments,
+        thread_root_id as "threadRootId"
     `
     return rows[0] as unknown as ChannelMessage
   })
   publishChannel(channelId, { type: 'message', messageId: row.id, seq: row.seq })
   return row
+}
+
+/** Toggle a reaction (add if absent, remove if present). Anyone in the room —
+ *  human or agent — reacts under their own identity. */
+export async function toggleReaction(
+  channelId: string,
+  messageId: string,
+  emoji: string,
+  actor: string,
+  actorType: 'user' | 'agent',
+): Promise<void> {
+  const sql = await db()
+  const removed = await sql`
+    delete from channel_message_reactions
+    where message_id = ${messageId} and emoji = ${emoji} and actor = ${actor} returning 1 as ok
+  `
+  if (removed.length === 0) {
+    await sql`
+      insert into channel_message_reactions (message_id, emoji, actor, actor_type)
+      values (${messageId}, ${emoji}, ${actor}, ${actorType}) on conflict do nothing
+    `
+  }
+  publishChannel(channelId, { type: 'message', messageId })
+}
+
+/** Author-gated edit: new content, edited marker, republish. */
+export async function editChannelMessage(channelId: string, messageId: string, content: string): Promise<void> {
+  const sql = await db()
+  await sql`update channel_messages set content = ${content}, edited_at = now() where id = ${messageId}`
+  publishChannel(channelId, { type: 'message', messageId })
+}
+
+/** Hard delete (author or channel owner). A thread root takes its replies
+ *  with it (FK cascade) — the confirm dialog says so. */
+export async function deleteChannelMessage(channelId: string, messageId: string): Promise<void> {
+  const sql = await db()
+  await sql`delete from channel_messages where id = ${messageId}`
+  publishChannel(channelId, { type: 'message', messageId })
+}
+
+/** The row an edit/delete/react targets, for permission checks. */
+export async function getChannelMessage(
+  channelId: string,
+  messageId: string,
+): Promise<{ id: string; authorType: 'user' | 'agent'; author: string; threadRootId: string | null } | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select id, author_type as "authorType", author, thread_root_id as "threadRootId"
+    from channel_messages where id = ${messageId} and channel_id = ${channelId}
+  `) as unknown as Array<{ id: string; authorType: 'user' | 'agent'; author: string; threadRootId: string | null }>
+  return rows[0] ?? null
 }
 
 /** Flush accumulated agent-reply state (throttled during streaming, final at end). */

@@ -16,6 +16,7 @@ import { refBlocks } from './refs'
 import { attachmentAsDataUrl, attachmentTextBlocks, isImage, type Attachment } from './uploads'
 import {
   insertChannelMessage,
+  listThreadMessages,
   listChannelAgents,
   listChannelMembers,
   listChannelMessages,
@@ -144,8 +145,15 @@ function systemPrompt(model: string, channelName: string, channelAgents: string[
 }
 
 /** Fire agent replies for a just-posted message. Detached: returns after the
- *  streaming rows exist; the streams drain in the background. */
-export async function triggerAgentReplies(channelId: string, channelName: string, content: string): Promise<void> {
+ *  streaming rows exist; the streams drain in the background. An agent
+ *  @mentioned inside a thread replies IN that thread, and its context is the
+ *  thread's own conversation (root + replies), not the channel at large. */
+export async function triggerAgentReplies(
+  channelId: string,
+  channelName: string,
+  content: string,
+  threadRootId: string | null = null,
+): Promise<void> {
   const agents = await listChannelAgents(channelId)
   const mentioned = mentionedAgents(content, agents)
   if (mentioned.length === 0) return
@@ -164,8 +172,10 @@ export async function triggerAgentReplies(channelId: string, channelName: string
     // An unknown tier falls back to the agent's main model — a typo shouldn't
     // swallow the reply.
     const routed = (tier ? await routedModelFor(model, tier).catch(() => null) : null) ?? model
-    const history = await listChannelMessages(channelId, -1, 60)
-    const row = await insertChannelMessage(channelId, 'agent', model, '', 'streaming')
+    const history = threadRootId
+      ? await listThreadMessages(channelId, threadRootId)
+      : await listChannelMessages(channelId, -1, 60)
+    const row = await insertChannelMessage(channelId, 'agent', model, '', 'streaming', [], threadRootId)
     void transcriptFor(model, history)
       .then((transcript) =>
         streamReply(channelId, channelName, row.id, model, routed, [

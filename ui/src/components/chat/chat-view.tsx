@@ -14,7 +14,7 @@ import { resolveAgentMedia } from '@/lib/agent-media'
 import { queueChatMessage, streamChat } from '@/lib/chat'
 import { mergeTool, type ToolCall } from '@/lib/sse-parse'
 import { loadConversation, type StoredMessage } from '@/lib/conversations'
-import { splitAttachments, type Attachment } from '@/lib/attachments'
+import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
 
 interface DisplayMessage {
   role: 'user' | 'assistant'
@@ -375,7 +375,22 @@ export function ChatView({
 
       <div className="relative px-6 pb-6">
         {mention && <MentionMenu mention={mention} picked={picked} onPick={insert} className="absolute bottom-full left-4 mb-1" />}
-        <div className="mercury-panel rounded-2xl p-2">
+        <div
+          className="mercury-panel rounded-2xl p-2"
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes('Files')) e.preventDefault()
+          }}
+          onDrop={(e) => {
+            const files = Array.from(e.dataTransfer?.files ?? [])
+            if (files.length === 0) return
+            e.preventDefault()
+            for (const f of files) {
+              void uploadFile(f).then((r) => {
+                if ('id' in r) setAttachments((prev) => [...prev, r])
+              })
+            }
+          }}
+        >
           <PendingAttachments items={attachments} onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} />
           <div className="flex items-end gap-2">
             <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} disabled={streaming} />
@@ -391,6 +406,16 @@ export function ChatView({
               onKeyUp={trackCaret}
               onClick={trackCaret}
               onKeyDown={onKeyDown}
+              onPaste={(e) => {
+                const files = Array.from(e.clipboardData?.files ?? [])
+                if (files.length === 0) return
+                e.preventDefault()
+                for (const f of files) {
+                  void uploadFile(f).then((r) => {
+                    if ('id' in r) setAttachments((prev) => [...prev, r])
+                  })
+                }
+              }}
               placeholder={`Message ${agentLabel}`}
               className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
             />
