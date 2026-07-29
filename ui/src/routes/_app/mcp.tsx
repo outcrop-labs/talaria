@@ -267,95 +267,67 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
         )}
       </div>
 
-      {/* ── Access: one table, one row grammar ── */}
+      {/* ── Access: two bounded groups — agents, then people ── */}
       <div className="mt-4 border-t border-line-subtle pt-3">
         <div className="mb-2 flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">Access</span>
           <InfoTip text="Which agents carry this server, and which people may exercise it through agents acting for them. Tool cells narrow a row to a subset; empty = every tool. The gateway enforces all of it." />
         </div>
-        <div className="space-y-0.5">
-          {/* Agents */}
-          {s.allAgents ? (
-            <AccessRow
-              name="All agents"
-              sub="every enabled agent carries this server"
-              tools={null}
-              onRemove={() => void patch({ allAgents: false })}
-              removeTitle="Switch to per-agent assignment"
-            />
-          ) : (
-            s.assignments.map((a) => (
-              <AccessRow
-                key={a.agentModel}
-                name={agentLabel(a.agentModel)}
-                sub="agent"
-                tools={
-                  <Combobox
-                    options={toolOptions}
-                    selected={a.tools ?? []}
-                    onChange={(tools) => void patch({ assign: { agentModel: a.agentModel, tools: tools.length ? tools : null } })}
-                    multiple
-                    size="sm"
-                    placeholder="All tools"
-                    className="w-full"
-                  />
-                }
-                onRemove={() => void patch({ unassign: a.agentModel })}
-                removeTitle="Remove this agent"
-              />
-            ))
-          )}
-          {/* People rules */}
-          {s.userAccess.map((ua) => (
-            <AccessRow
-              key={ua.userId}
-              name={userLabel(ua.userId)}
-              sub={ua.allowed ? 'person' : 'person · denied'}
-              denied={!ua.allowed}
-              onToggleDenied={() => void patch({ userAccess: { userId: ua.userId, allowed: !ua.allowed, tools: ua.tools } })}
-              tools={
-                ua.allowed ? (
-                  <Combobox
-                    options={toolOptions}
-                    selected={ua.tools ?? []}
-                    onChange={(tools) => void patch({ userAccess: { userId: ua.userId, allowed: true, tools: tools.length ? tools : null } })}
-                    multiple
-                    size="sm"
-                    placeholder="All tools"
-                    className="w-full"
-                  />
-                ) : null
-              }
-              onRemove={() => void patch({ userAccess: { userId: ua.userId, allowed: null, tools: null } })}
-              removeTitle="Remove this rule (back to default access)"
-            />
-          ))}
 
-          {/* Ghost adders — pickers appear only when asked for */}
-          <div className="flex items-center gap-4 pt-1.5">
-            {!s.allAgents && !addingAgent && (
-              <button type="button" onClick={() => setAddingAgent(true)} className="flex items-center gap-1 text-xs text-muted transition-colors hover:text-accent">
-                <Plus size={12} /> agent
-              </button>
-            )}
+        {/* Agents */}
+        <div>
+          <div className="flex items-center gap-3 pb-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted/80">Agents</span>
+            <label className="flex items-center gap-1.5 text-xs text-muted" title="Every enabled agent carries this server; per-agent rows below are replaced">
+              <input
+                type="checkbox"
+                checked={s.allAgents}
+                onChange={(e) => void patch({ allAgents: e.target.checked })}
+                className="accent-[var(--theme-accent)]"
+              />
+              all agents
+            </label>
+            <span className="flex-1" />
             {!s.allAgents && (
               <button
                 type="button"
-                onClick={() => void patch({ allAgents: true })}
-                className="flex items-center gap-1 text-xs text-muted transition-colors hover:text-accent"
-                title="Every enabled agent carries this server"
+                onClick={() => setAddingAgent((v) => !v)}
+                title="Add an agent"
+                className="grid h-6 w-6 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-accent"
               >
-                <Plus size={12} /> all agents
-              </button>
-            )}
-            {!addingPerson && (
-              <button type="button" onClick={() => setAddingPerson(true)} className="flex items-center gap-1 text-xs text-muted transition-colors hover:text-accent">
-                <Plus size={12} /> person rule
+                <Plus size={14} />
               </button>
             )}
           </div>
-          {addingAgent && (
-            <div className="max-w-72 pt-1">
+          {s.allAgents ? (
+            <div className="px-1.5 py-1 text-xs text-muted">Every enabled agent carries this server.</div>
+          ) : s.assignments.length === 0 && !addingAgent ? (
+            <div className="px-1.5 py-1 text-xs text-muted/70">No agents yet — add one, or check “all agents”.</div>
+          ) : (
+            <div className="space-y-0.5">
+              {s.assignments.map((a) => (
+                <AccessRow
+                  key={a.agentModel}
+                  name={agentLabel(a.agentModel)}
+                  tools={
+                    <Combobox
+                      options={toolOptions}
+                      selected={a.tools ?? []}
+                      onChange={(tools) => void patch({ assign: { agentModel: a.agentModel, tools: tools.length ? tools : null } })}
+                      multiple
+                      size="sm"
+                      placeholder="All tools"
+                      className="w-full"
+                    />
+                  }
+                  onRemove={() => void patch({ unassign: a.agentModel })}
+                  removeTitle="Remove this agent"
+                />
+              ))}
+            </div>
+          )}
+          {addingAgent && !s.allAgents && (
+            <div className="max-w-72 pt-1.5">
               <Combobox
                 options={agentOptions.filter((o) => !s.assignments.some((a) => a.agentModel === o.value))}
                 selected={[]}
@@ -371,8 +343,54 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
               />
             </div>
           )}
+        </div>
+
+        {/* People */}
+        <div className="mt-3 border-t border-line-subtle/70 pt-2.5">
+          <div className="flex items-center gap-2 pb-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted/80">People</span>
+            <InfoTip text="No rules = everyone with an assigned agent may use it. A rule narrows one person to specific tools, or denies them outright." />
+            <span className="flex-1" />
+            <button
+              type="button"
+              onClick={() => setAddingPerson((v) => !v)}
+              title="Add a person rule"
+              className="grid h-6 w-6 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-accent"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+          {s.userAccess.length === 0 && !addingPerson ? (
+            <div className="px-1.5 py-1 text-xs text-muted/70">Everyone with an assigned agent may use it.</div>
+          ) : (
+            <div className="space-y-0.5">
+              {s.userAccess.map((ua) => (
+                <AccessRow
+                  key={ua.userId}
+                  name={userLabel(ua.userId)}
+                  denied={!ua.allowed}
+                  onToggleDenied={() => void patch({ userAccess: { userId: ua.userId, allowed: !ua.allowed, tools: ua.tools } })}
+                  tools={
+                    ua.allowed ? (
+                      <Combobox
+                        options={toolOptions}
+                        selected={ua.tools ?? []}
+                        onChange={(tools) => void patch({ userAccess: { userId: ua.userId, allowed: true, tools: tools.length ? tools : null } })}
+                        multiple
+                        size="sm"
+                        placeholder="All tools"
+                        className="w-full"
+                      />
+                    ) : null
+                  }
+                  onRemove={() => void patch({ userAccess: { userId: ua.userId, allowed: null, tools: null } })}
+                  removeTitle="Remove this rule (back to default access)"
+                />
+              ))}
+            </div>
+          )}
           {addingPerson && (
-            <div className="max-w-72 pt-1">
+            <div className="max-w-72 pt-1.5">
               <UserPicker
                 size="sm"
                 className="w-full"
@@ -398,10 +416,9 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
   )
 }
 
-/** The access table's one row shape: name · tool scope · remove. */
+/** The access sections' one row shape: name · tool scope · quiet controls. */
 function AccessRow({
   name,
-  sub,
   tools,
   denied,
   onToggleDenied,
@@ -409,7 +426,6 @@ function AccessRow({
   removeTitle,
 }: {
   name: string
-  sub: string
   tools: React.ReactNode
   denied?: boolean
   onToggleDenied?: () => void
@@ -420,7 +436,6 @@ function AccessRow({
     <div className="group flex items-center gap-3 rounded-lg px-1.5 py-1 transition-colors hover:bg-card/50">
       <span className="w-44 shrink-0 truncate">
         <span className={cn('text-sm', denied ? 'text-muted line-through' : 'text-fg')}>{name}</span>
-        <span className="ml-2 text-[10px] uppercase tracking-wide text-muted/70">{sub}</span>
       </span>
       <span className="min-w-0 flex-1">{tools ?? <span className="text-xs text-muted/60">{denied ? 'no access' : 'all tools'}</span>}</span>
       {onToggleDenied && (
