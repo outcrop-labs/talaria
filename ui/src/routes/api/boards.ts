@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { createBoard, listAllBoards, listBoards, listBoardsForAgent } from '@/server/boards'
 import { teamRole } from '@/server/teams'
@@ -42,6 +43,7 @@ export const Route = createFileRoute('/api/boards')({
           .object({ name: z.string().min(1).max(120), teamId: z.string().uuid().nullish() })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        if (!(await hasPerm(user, 'boards.create'))) return json({ error: 'no permission to create boards' }, { status: 403 })
         // Team boards require membership in that team.
         if (parsed.data.teamId && !(await teamRole(user.id, parsed.data.teamId))) {
           return json({ error: 'not a member of that team' }, { status: 403 })

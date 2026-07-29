@@ -150,6 +150,56 @@ const MIGRATIONS: string[] = [
   `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
   `alter table channel_messages add column if not exists edited_at timestamptz`,
   `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
+  `alter table users add column if not exists allowed_manage_views text[] not null default '{}'`,
+  `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
+  `create table if not exists mcp_servers (
+    id uuid primary key default gen_random_uuid(),
+    name text not null unique,
+    label text not null,
+    description text,
+    url text not null,
+    headers jsonb not null default '{}',
+    timeout_secs int,
+    enabled boolean not null default true,
+    all_agents boolean not null default false,
+    auth_mode text not null default 'org',
+    tools jsonb not null default '[]',
+    tools_refreshed_at timestamptz,
+    created_by text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
+  `alter table mcp_servers add column if not exists required_headers jsonb not null default '[]'`,
+  `create table if not exists mcp_server_agents (
+    server_id uuid not null references mcp_servers(id) on delete cascade,
+    agent_model text not null,
+    tools text[],
+    primary key (server_id, agent_model)
+  )`,
+  `create table if not exists mcp_user_access (
+    server_id uuid not null references mcp_servers(id) on delete cascade,
+    user_id uuid not null references users(id) on delete cascade,
+    allowed boolean not null default true,
+    tools text[],
+    primary key (server_id, user_id)
+  )`,
+  `create table if not exists mcp_user_credentials (
+    server_id uuid not null references mcp_servers(id) on delete cascade,
+    user_id uuid not null references users(id) on delete cascade,
+    headers_enc text not null,
+    updated_at timestamptz not null default now(),
+    primary key (server_id, user_id)
+  )`,
+  `create table if not exists user_permissions (
+    user_id uuid not null references users(id) on delete cascade,
+    perm text not null,
+    allowed boolean not null,
+    created_at timestamptz not null default now(),
+    primary key (user_id, perm)
+  )`,
+  `insert into user_permissions (user_id, perm, allowed)
+     select id, 'models.mint-keys', true from users where can_mint_keys
+     on conflict (user_id, perm) do nothing`,
   `create table if not exists channel_message_reactions (
     message_id uuid not null references channel_messages(id) on delete cascade,
     emoji text not null,

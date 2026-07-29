@@ -16,7 +16,7 @@ import { ChannelView } from '@/components/chat/channel-view'
 import { ChannelSettingsModal } from '@/components/chat/channel-settings'
 import { PlanModal } from '@/components/chat/plan-modal'
 import { useAgents } from '@/lib/agents'
-import { useSession } from '@/lib/session'
+import { useSession, useHasPerm } from '@/lib/session'
 import { useUsers } from '@/lib/users'
 import { useConversations } from '@/lib/conversations'
 import {
@@ -166,6 +166,8 @@ function CommsPage() {
     { label: 'Mark read', disabled: !c.unreadCount, onSelect: () => void markRead(c.id) },
   ]
 
+  const mayCreateChannels = useHasPerm('comms.channels')
+  const mayStartRelays = useHasPerm('comms.relays')
   const create = async (name: string, kind: 'channel' | 'group') => {
     const c = await createChannel(name, kind)
     await refresh()
@@ -206,7 +208,7 @@ function CommsPage() {
   return (
     <RailSurface>
       <Rail title="Comms">
-        <Section label="Channels" createPlaceholder="channel name" onCreate={(v) => void create(v, 'channel')}>
+        <Section label="Channels" createPlaceholder="channel name" onCreate={mayCreateChannels ? (v) => void create(v, 'channel') : undefined}>
           {rooms.map((c) => (
             <RailRow key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
               {/* display:contents wrapper — carries the context menu without touching row layout */}
@@ -220,7 +222,7 @@ function CommsPage() {
           {rooms.length === 0 && (isLoading ? <SkeletonRows rows={4} className="px-2 py-1.5" /> : <Hint>Ambient, persistent talk.</Hint>)}
         </Section>
 
-        <Section label="Relays" createPlaceholder="what's it about?" onCreate={(v) => void create(v, 'group')}>
+        <Section label="Relays" createPlaceholder="what's it about?" onCreate={mayStartRelays ? (v) => void create(v, 'group') : undefined}>
           {relays.map((c) => (
             <RailRow key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
               <span className="contents" onContextMenu={(e) => openMenu(e, channelRowMenu(c))}>

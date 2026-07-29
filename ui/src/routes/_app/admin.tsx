@@ -15,7 +15,7 @@ import { Select } from '@/components/ui/select'
 import { useAgents } from '@/lib/agents'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
-import { GATEABLE_VIEWS } from '@/lib/nav'
+import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
 import { RetrievalPanel } from '@/components/admin/retrieval-panel'
 import { StoragePanel } from '@/components/admin/storage-panel'
 import { InfoTip } from '@/components/ui/info-tip'
@@ -52,6 +52,7 @@ interface AdminUser {
   agentModels: string[]
   canMintKeys: boolean
   deniedViews: string[]
+  allowedManageViews: string[]
   pinnedAdmin: boolean
   assistantModel: string | null
   assistantElevated: boolean
@@ -68,16 +69,41 @@ function useAdminUsers() {
   })
 }
 
+interface PermCatalogEntry {
+  id: string
+  label: string
+  hint: string
+  group: string
+  memberDefault: boolean
+}
+interface PermsData {
+  catalog: PermCatalogEntry[]
+  orgDefaults: Record<string, boolean>
+  overrides: Record<string, Record<string, boolean>>
+}
+
+function useAdminPermissions() {
+  return useQuery({
+    queryKey: ['admin-permissions'],
+    queryFn: async (): Promise<PermsData | null> => {
+      const r = await fetch('/api/admin/permissions', { credentials: 'same-origin' })
+      if (!r.ok) return null
+      return r.json()
+    },
+  })
+}
+
 // The admin console: people, their roles, and which agents each may use.
 function AdminPage() {
   const qc = useQueryClient()
   const { data: me } = useSession()
   const { data: users, isPending: usersPending } = useAdminUsers()
+  const { data: perms } = useAdminPermissions()
   const { data: fleet } = useAgents()
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
   const [error, setError] = useState<string | null>(null)
 
-  const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[]; assistantElevated?: boolean }) => {
+  const update = async (userId: string, patch: { role?: 'admin' | 'member'; agentModels?: string[]; canMintKeys?: boolean; deniedViews?: string[]; allowedManageViews?: string[]; assistantElevated?: boolean }) => {
     setError(null)
     const r = await fetch('/api/admin/users', {
       method: 'PUT',
@@ -139,6 +165,7 @@ function AdminPage() {
             <SettingsPanel />
           </>
         )}
+        {tab === 'people' && perms && <MemberDefaultsPanel perms={perms} />}
         {tab === 'people' && (
         <Panel>
           <div className="mb-4 flex items-center gap-1.5">
@@ -170,9 +197,12 @@ function AdminPage() {
           ) : (
           <ul className="divide-y divide-line-subtle">
             {(users ?? []).map((u) => {
-              // Views shown as an ALLOW list (all selected by default); denying =
-              // stored as gateable-minus-allowed.
-              const allowedViews = GATEABLE_VIEWS.filter((v) => !u.deniedViews.includes(v.to)).map((v) => v.to)
+              // One ALLOW list spanning both worlds: work views default in
+              // (denials stored), Manage views default out (allows stored).
+              const allowedViews = [
+                ...GATEABLE_VIEWS.filter((v) => !u.deniedViews.includes(v.to)).map((v) => v.to),
+                ...MANAGE_VIEWS.filter((v) => u.allowedManageViews.includes(v.to)).map((v) => v.to),
+              ]
               return (
                 <li key={u.id} className="space-y-2 py-3">
                   <div className="flex items-center gap-3">
@@ -194,19 +224,6 @@ function AdminPage() {
                       <option value="member">Member</option>
                       <option value="admin">Admin</option>
                     </Select>
-                    <label
-                      className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
-                      title="May create API keys for the Talaria LLM gateway (Settings → API keys)"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={u.role === 'admin' || u.canMintKeys}
-                        disabled={u.role === 'admin'}
-                        onChange={(e) => void update(u.id, { canMintKeys: e.target.checked })}
-                        className="accent-[var(--theme-accent)]"
-                      />
-                      keys
-                    </label>
                     {u.role === 'admin' && u.assistantModel && (
                       <label
                         className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
@@ -224,28 +241,37 @@ function AdminPage() {
                     <span className="w-16 shrink-0 text-right text-xs text-muted">{relativeTime(u.lastSeenAt)}</span>
                   </div>
                   {u.role !== 'admin' && (
-                    <div className="flex items-center gap-2 pl-10">
-                      <Combobox
-                        options={agentOptions}
-                        selected={u.agentModels}
-                        onChange={(models) => void update(u.id, { agentModels: models })}
-                        multiple
-                        size="sm"
-                        placeholder="All agents"
-                        className="min-w-0 flex-1"
-                      />
-                      <Combobox
-                        options={GATEABLE_VIEWS.map((v) => ({ value: v.to, label: v.label }))}
-                        selected={allowedViews}
-                        onChange={(views) =>
-                          void update(u.id, { deniedViews: GATEABLE_VIEWS.filter((v) => !views.includes(v.to)).map((v) => v.to) })
-                        }
-                        multiple
-                        size="sm"
-                        placeholder="All views"
-                        className="min-w-0 flex-1"
-                      />
-                    </div>
+                    <>
+                      <div className="flex items-center gap-2 pl-10">
+                        <Combobox
+                          options={agentOptions}
+                          selected={u.agentModels}
+                          onChange={(models) => void update(u.id, { agentModels: models })}
+                          multiple
+                          size="sm"
+                          placeholder="All agents"
+                          className="min-w-0 flex-1"
+                        />
+                        <Combobox
+                          options={[
+                            ...GATEABLE_VIEWS.map((v) => ({ value: v.to, label: v.label, sub: 'work' })),
+                            ...MANAGE_VIEWS.map((v) => ({ value: v.to, label: v.label, sub: 'manage' })),
+                          ]}
+                          selected={allowedViews}
+                          onChange={(views) =>
+                            void update(u.id, {
+                              deniedViews: GATEABLE_VIEWS.filter((v) => !views.includes(v.to)).map((v) => v.to),
+                              allowedManageViews: MANAGE_VIEWS.filter((v) => views.includes(v.to)).map((v) => v.to),
+                            })
+                          }
+                          multiple
+                          size="sm"
+                          placeholder="Work views"
+                          className="min-w-0 flex-1"
+                        />
+                      </div>
+                      {perms && <UserPermChips userId={u.id} perms={perms} />}
+                    </>
                   )}
                 </li>
               )
@@ -256,6 +282,121 @@ function AdminPage() {
         )}
       </div>
     </div>
+  )
+}
+
+/** One permission as a toggle chip. Filled = effectively allowed. A dot marks
+ *  a value overridden away from the org default; clicking toggles, and
+ *  toggling back to the default clears the override. */
+function PermChip({
+  entry,
+  effective,
+  overridden,
+  onToggle,
+}: {
+  entry: PermCatalogEntry
+  effective: boolean
+  overridden: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      type="button"
+      title={`${entry.hint}${overridden ? ' (overridden — click twice to return to default)' : ''}`}
+      onClick={onToggle}
+      className={cn(
+        'flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors',
+        effective
+          ? 'border-accent/60 bg-accent/10 text-fg'
+          : 'border-line-subtle text-muted hover:border-line hover:text-fg',
+      )}
+    >
+      {entry.label}
+      {overridden && <span className="h-1 w-1 rounded-full bg-[color:var(--theme-warning)]" title="overridden" />}
+    </button>
+  )
+}
+
+const permGroups = (catalog: PermCatalogEntry[]): Array<[string, PermCatalogEntry[]]> => {
+  const groups = new Map<string, PermCatalogEntry[]>()
+  for (const p of catalog) groups.set(p.group, [...(groups.get(p.group) ?? []), p])
+  return [...groups.entries()]
+}
+
+/** Per-user fine-grained permissions: chips grouped by concern, showing the
+ *  EFFECTIVE state (override → org default → shipped default). */
+function UserPermChips({ userId, perms }: { userId: string; perms: PermsData }) {
+  const qc = useQueryClient()
+  const overrides = perms.overrides[userId] ?? {}
+  const orgDefault = (p: PermCatalogEntry) => perms.orgDefaults[p.id] ?? p.memberDefault
+  const set = async (perm: string, allowed: boolean | null) => {
+    await fetch('/api/admin/permissions', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userId, perm, allowed }),
+    })
+    await qc.invalidateQueries({ queryKey: ['admin-permissions'] })
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 pl-10">
+      <span className="text-[11px] uppercase tracking-wide text-muted/80">can</span>
+      {perms.catalog.map((p) => {
+        const effective = overrides[p.id] ?? orgDefault(p)
+        return (
+          <PermChip
+            key={p.id}
+            entry={p}
+            effective={effective}
+            overridden={overrides[p.id] !== undefined}
+            // Toggling back to the org default clears the override row.
+            onToggle={() => void set(p.id, !effective === orgDefault(p) ? null : !effective)}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+/** Org-wide member defaults — what a plain member can do before any per-user
+ *  override. Chips toggle; returning to the shipped default clears the row. */
+function MemberDefaultsPanel({ perms }: { perms: PermsData }) {
+  const qc = useQueryClient()
+  const set = async (perm: string, enabled: boolean | null) => {
+    await fetch('/api/admin/permissions', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgDefault: { perm, enabled } }),
+    })
+    await qc.invalidateQueries({ queryKey: ['admin-permissions'] })
+  }
+  return (
+    <Panel>
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Member defaults</span>
+        <InfoTip text="What every plain member may do out of the box. Per-person exceptions live on each row below; admins always hold every permission. A dot marks a default you've changed from Talaria's shipped baseline." />
+      </div>
+      <div className="space-y-2">
+        {permGroups(perms.catalog).map(([group, entries]) => (
+          <div key={group} className="flex flex-wrap items-center gap-1.5">
+            <span className="w-16 shrink-0 text-[11px] uppercase tracking-wide text-muted/80">{group}</span>
+            {entries.map((p) => {
+              const effective = perms.orgDefaults[p.id] ?? p.memberDefault
+              return (
+                <PermChip
+                  key={p.id}
+                  entry={p}
+                  effective={effective}
+                  overridden={perms.orgDefaults[p.id] !== undefined && perms.orgDefaults[p.id] !== p.memberDefault}
+                  onToggle={() => void set(p.id, !effective === p.memberDefault ? null : !effective)}
+                />
+              )
+            })}
+          </div>
+        ))}
+      </div>
+    </Panel>
   )
 }
 

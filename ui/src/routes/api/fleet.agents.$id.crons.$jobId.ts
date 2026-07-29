@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { editCronJob, pauseCronJob, removeCronJob, resumeCronJob, runCronJob } from '@/server/agent-crons'
 import { ownsAgent } from '@/server/personal-agent'
 
@@ -21,7 +22,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/crons/$jobId')({
       DELETE: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: params.id })))
+        if (!(await hasPerm(user, 'agents.manage')) && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
         try {
           await removeCronJob(params.id, params.jobId)
@@ -33,7 +34,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/crons/$jobId')({
       PUT: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: params.id })))
+        if (!(await hasPerm(user, 'agents.manage')) && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
         const parsed = EditBody.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
@@ -47,7 +48,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/crons/$jobId')({
       POST: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: params.id })))
+        if (!(await hasPerm(user, 'agents.manage')) && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })

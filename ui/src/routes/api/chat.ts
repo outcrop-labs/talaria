@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { proxyChat } from '@/server/gateway'
 import { routedModelFor } from '@/server/fleet-agents'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { canUseAgentModel } from '@/server/users'
 import {
   accessibleConversation,
@@ -94,6 +95,9 @@ export const Route = createFileRoute('/api/chat')({
         const attachments = [...uploads, ...refChips]
         const title = titleFrom(content || attachments[0]?.filename || 'chat')
         if (!convId) {
+          if (kind === 'plan' && !(await hasPerm(user, 'plans.create'))) {
+            return json({ error: 'no permission to create plans' }, { status: 403 })
+          }
           convId = await createConversation(user.id, agentModel, title, kind, parsed.data.templateId ?? null)
           planTitle = title
         }

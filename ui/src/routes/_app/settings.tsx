@@ -135,7 +135,12 @@ function SettingsPage() {
         )}
 
         {tab === 'assistant' && <AssistantSection />}
-        {tab === 'connections' && <IntegrationsSection />}
+        {tab === 'connections' && (
+          <>
+            <IntegrationsSection />
+            <McpConnectionsSection />
+          </>
+        )}
         {tab === 'keys' && <ApiKeysSection />}
       </div>
     </div>
@@ -207,6 +212,115 @@ interface GoogleStatus {
 
 // Connected accounts. Per-user OAuth: connecting grants Talaria (and the agents
 // working for you) offline access to build Google Docs/Sheets in YOUR Drive.
+/** Per-user MCP connected accounts: servers the org registered in per-user
+ *  auth mode. Connect yours (a token header, sealed at rest) and your
+ *  assistant starts carrying the server — acting as YOU there. */
+interface McpConnection {
+  id: string
+  name: string
+  label: string
+  description: string | null
+  requiredHeaders: Array<{ name: string; description: string | null; isSecret: boolean; placeholder: string | null }>
+  connected: boolean
+}
+
+function McpConnectionsSection() {
+  const qc = useQueryClient()
+  const { data, isPending } = useQuery({
+    queryKey: ['me-mcp'],
+    queryFn: async (): Promise<McpConnection[]> => {
+      const r = await fetch('/api/me/mcp', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { servers: McpConnection[] }).servers
+    },
+  })
+  const [connecting, setConnecting] = useState<string | null>(null)
+  const [values, setValues] = useState<Record<string, string>>({})
+
+  const put = async (serverId: string, headers: Record<string, string> | null) => {
+    await fetch('/api/me/mcp', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ serverId, headers }),
+    })
+    setConnecting(null)
+    setValues({})
+    await qc.invalidateQueries({ queryKey: ['me-mcp'] })
+  }
+
+  if (!isPending && (data ?? []).length === 0) return null
+  return (
+    <section className="mercury-panel mt-4 rounded-2xl p-6">
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Tool accounts</span>
+        <InfoTip text="MCP servers your org runs in per-user mode. Connect your own account (stored encrypted) and your assistant can use the server as you. Disconnect any time — the server drops off your assistant on the next config render." />
+      </div>
+      {isPending ? (
+        <SkeletonRows rows={2} />
+      ) : (
+        <ul className="divide-y divide-line-subtle">
+          {(data ?? []).map((s) => (
+            <li key={s.id} className="space-y-2 py-2.5">
+              <div className="flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-fg">{s.label}</div>
+                  {s.description && <div className="truncate font-sans text-xs text-muted">{s.description}</div>}
+                </div>
+                {s.connected ? (
+                  <>
+                    <span className="text-xs" style={{ color: 'var(--theme-success)' }}>connected</span>
+                    <Button size="sm" variant="ghost" onClick={() => void put(s.id, null)}>
+                      Disconnect
+                    </Button>
+                  </>
+                ) : (
+                  <Button size="sm" onClick={() => setConnecting(connecting === s.id ? null : s.id)}>
+                    Connect
+                  </Button>
+                )}
+              </div>
+              {connecting === s.id && (
+                <div className="space-y-2 pl-1">
+                  {/* Publisher-declared credentials drive the form; a server
+                      without declarations falls back to one auth header. */}
+                  {(s.requiredHeaders.length ? s.requiredHeaders : [{ name: 'Authorization', description: null, isSecret: true, placeholder: 'Bearer …' }]).map((h) => (
+                    <div key={h.name} className="flex items-end gap-2">
+                      <span className="w-40 shrink-0 truncate pb-2 text-xs text-muted" title={h.name}>
+                        {h.name}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <Input
+                          size="sm"
+                          type={h.isSecret ? 'password' : 'text'}
+                          value={values[h.name] ?? ''}
+                          onChange={(e) => setValues((p) => ({ ...p, [h.name]: e.target.value }))}
+                          placeholder={h.placeholder ?? ''}
+                          autoComplete="off"
+                        />
+                        {h.description && <div className="mt-0.5 font-sans text-[11px] text-muted/80">{h.description}</div>}
+                      </div>
+                    </div>
+                  ))}
+                  <div className="flex justify-end">
+                    <Button
+                      size="sm"
+                      disabled={!Object.values(values).some((v) => v.trim())}
+                      onClick={() => void put(s.id, Object.fromEntries(Object.entries(values).filter(([, v]) => v.trim())))}
+                    >
+                      Connect
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 function IntegrationsSection() {
   const qc = useQueryClient()
   const { data, isLoading } = useQuery({

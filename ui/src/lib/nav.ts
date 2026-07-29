@@ -12,7 +12,9 @@ export interface NavItem {
 }
 
 // Views an admin can grant/revoke per user. Home and Settings are always
-// reachable; admin-only views (the whole Manage section) are gated by role.
+// reachable. Work views default ALLOWED (denials stored per user); Manage
+// views default DENIED for members (explicit allows stored per user) — same
+// checklist in Admin → People, opposite resting state.
 export const GATEABLE_VIEWS: { to: string; label: string }[] = [
   { to: '/comms', label: 'Comms' },
   { to: '/plan', label: 'Plan' },
@@ -20,6 +22,16 @@ export const GATEABLE_VIEWS: { to: string; label: string }[] = [
   { to: '/research', label: 'Research' },
   { to: '/knowledge', label: 'Knowledge' },
   { to: '/artifacts', label: 'Artifacts' },
+]
+
+/** Manage-section views a member can be granted (pairs with the fine-grained
+ *  permissions: view access opens the door, permissions gate the actions). */
+export const MANAGE_VIEWS: { to: string; label: string }[] = [
+  { to: '/agents', label: 'Agents' },
+  { to: '/models', label: 'Models' },
+  { to: '/mcp', label: 'MCP' },
+  { to: '/templates', label: 'Templates' },
+  { to: '/observability', label: 'Observability' },
 ]
 
 export interface NavSection {
@@ -43,20 +55,21 @@ export const NAV: NavSection[] = [
     ],
   },
   {
+    // Not a blanket admin section anymore: members see whichever Manage views
+    // they've been granted (deniedViews computes the default-denied set).
     title: 'Manage',
-    adminOnly: true,
     items: [
       { to: '/agents', label: 'Agents', icon: '◍' },
       { to: '/models', label: 'Models', icon: '▤' },
+      { to: '/mcp', label: 'MCP', icon: '⌁' },
       { to: '/templates', label: 'Templates', icon: '▣' },
       { to: '/observability', label: 'Observability', icon: '◉' },
     ],
   },
 ]
 
-/** Routes members can never reach — every item of an admin-only section plus
- *  views that live OFF the sidebar (Admin sits under the user menu now) but
- *  must still be route-gated. */
+/** Routes members can never reach regardless of grants. Manage views moved to
+ *  the grantable set; Admin (under the user menu) stays role-locked. */
 export const ADMIN_VIEWS: string[] = [
   ...NAV.flatMap((s) => s.items.filter((i) => s.adminOnly || i.adminOnly).map((i) => i.to)),
   '/admin',

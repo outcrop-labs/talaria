@@ -1,0 +1,61 @@
+// Marketplace icon cache. Icons resolve server-side (declared icon URL, else
+// the DuckDuckGo favicon CDN — fast — else the site's own favicon) and are
+// WARMED in bulk whenever a library page is served, so cards paint from cache
+// instead of fanning out cold fetches per image.
+const cache = new Map<string, { at: number; buf: ArrayBuffer; ct: string } | { at: number; miss: true }>()
+const CACHE_MS = 24 * 60 * 60 * 1000
+const MAX_BYTES = 512 * 1024
+
+const fetchIcon = async (url: string): Promise<{ buf: ArrayBuffer; ct: string } | null> => {
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(5_000), redirect: 'follow' })
+    if (!r.ok) return null
+    const ct = r.headers.get('content-type') ?? ''
+    if (!/^image\//.test(ct)) return null
+    const buf = await r.arrayBuffer()
+    if (buf.byteLength === 0 || buf.byteLength > MAX_BYTES) return null
+    return { buf, ct }
+  } catch {
+    return null
+  }
+}
+
+const candidatesFor = (key: { src?: string | null; domain?: string | null }): string[] =>
+  key.src
+    ? [key.src]
+    : key.domain
+      ? [`https://icons.duckduckgo.com/ip3/${key.domain}.ico`, `https://${key.domain}/favicon.ico`]
+      : []
+
+export async function resolveIcon(key: { src?: string | null; domain?: string | null }): Promise<{ buf: ArrayBuffer; ct: string } | null> {
+  const id = key.src ?? key.domain ?? ''
+  if (!id) return null
+  const hit = cache.get(id)
+  if (hit && Date.now() - hit.at < CACHE_MS) return 'miss' in hit ? null : hit
+  for (const c of candidatesFor(key)) {
+    const icon = await fetchIcon(c)
+    if (icon) {
+      cache.set(id, { at: Date.now(), ...icon })
+      return icon
+    }
+  }
+  cache.set(id, { at: Date.now(), miss: true })
+  return null
+}
+
+/** Fire-and-forget bulk warm — bounded concurrency, silent failures. */
+export function warmIcons(keys: Array<{ src?: string | null; domain?: string | null }>): void {
+  const fresh = keys.filter((k) => {
+    const id = k.src ?? k.domain ?? ''
+    const hit = id ? cache.get(id) : null
+    return id && (!hit || Date.now() - hit.at >= CACHE_MS)
+  })
+  void (async () => {
+    const queue = [...fresh]
+    await Promise.all(
+      Array.from({ length: 6 }, async () => {
+        for (let k = queue.shift(); k; k = queue.shift()) await resolveIcon(k)
+      }),
+    )
+  })()
+}

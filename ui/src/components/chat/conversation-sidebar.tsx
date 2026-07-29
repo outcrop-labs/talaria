@@ -1,6 +1,7 @@
 // The plan rail — LEFT, on the shared Rail primitives (agent picker up top,
 // this agent's plans below, plans shared with you at the end).
 import { Plus } from 'lucide-react'
+import { useHasPerm } from '@/lib/session'
 import { AgentPicker } from '@/components/chat/agent-picker'
 import { IconButton } from '@/components/ui/icon-button'
 import { Rail, RailRow, RailSection } from '@/components/app/surface'
@@ -35,7 +36,11 @@ export function ConversationSidebar({
   return (
     <Rail
       title="Plan"
-      actions={<IconButton size="sm" title="New plan: think it through, then draft tickets" onClick={onNewChat} disabled={!selectedAgent}><Plus size={15} /></IconButton>}
+      actions={
+        useHasPerm('plans.create') ? (
+          <IconButton size="sm" title="New plan: think it through, then draft tickets" onClick={onNewChat} disabled={!selectedAgent}><Plus size={15} /></IconButton>
+        ) : null
+      }
     >
       <div className="mb-3">
         <AgentPicker agents={agents} value={selectedAgent} onChange={onSelectAgent} loading={agentsLoading} fullWidth />

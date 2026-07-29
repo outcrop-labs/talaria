@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useHasPerm } from '@/lib/session'
 import { Globe, Lock, Building2, Bot, X, Check, Copy } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
@@ -119,6 +120,10 @@ export function PermissionsModal({
     }
   }
 
+  // Publishing to the open web is its own permission; without it the tier
+  // simply isn't offered (the server enforces regardless).
+  const mayPublish = useHasPerm('artifacts.publish')
+  const accessOptions = mayPublish ? ACCESS_OPTIONS : ACCESS_OPTIONS.filter((o) => o.value !== 'public')
   const publicBase = kind === 'artifacts' ? 'a' : kind === 'spaces' ? 'kb/space' : 'kb'
   const publicUrl = publicSlug ? `${typeof window !== 'undefined' ? window.location.origin : ''}/${publicBase}/${publicSlug}` : null
   const AccessIcon = vis === 'public' ? Globe : vis === 'org' ? Building2 : Lock
@@ -220,7 +225,7 @@ export function PermissionsModal({
               <AccessIcon size={16} />
             </span>
             <Combobox
-              options={ACCESS_OPTIONS}
+              options={accessOptions}
               selected={[vis]}
               onChange={(v) => v[0] && setVis(v[0] as Visibility)}
               searchable={false}

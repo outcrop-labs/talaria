@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { createAgent } from '@/server/fleet-create'
 import { writeSkill } from '@/server/agent-skills'
 import { logAudit } from '@/server/audit'
@@ -34,7 +35,7 @@ export const Route = createFileRoute('/api/fleet/create')({
       POST: async ({ request }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         try {

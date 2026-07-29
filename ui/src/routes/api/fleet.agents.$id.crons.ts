@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { createCronJob, listCronJobs } from '@/server/agent-crons'
 import { ownsAgent } from '@/server/personal-agent'
 
@@ -19,7 +20,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/crons')({
       GET: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: params.id })))
+        if (!(await hasPerm(user, 'agents.manage')) && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
         try {
           return json({ jobs: await listCronJobs(params.id) })
@@ -30,7 +31,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/crons')({
       POST: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: params.id })))
+        if (!(await hasPerm(user, 'agents.manage')) && !(await ownsAgent(user.id, { defId: params.id })))
           return json({ error: 'forbidden' }, { status: 403 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, { status: 400 })

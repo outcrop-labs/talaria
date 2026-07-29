@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { listResearchRuns, RESEARCH_MODES, startResearch } from '@/server/research'
 import { canUseAgentModel, personalAssistantOwners } from '@/server/users'
@@ -50,6 +51,7 @@ export const Route = createFileRoute('/api/research')({
         } else {
           const user = await getSessionUser(request)
           if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+          if (!(await hasPerm(user, 'research.run'))) return json({ error: 'no permission to run research' }, { status: 403 })
           if (!parsed.data.agentModel) return json({ error: 'agentModel required' }, { status: 400 })
           agentModel = parsed.data.agentModel
           if (!(await canUseAgentModel(user.id, user.role, agentModel))) {

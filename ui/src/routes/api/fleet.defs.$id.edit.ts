@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { addEndpointModels, addVersionIfChanged, applyConfigEdits, getAgentDef, listEndpoints, listVersions } from '@/server/agent-defs'
 import { availableModels } from '@/server/provider-catalog'
 import { rollAgent } from '@/server/fleet-reconcile'
@@ -31,7 +32,7 @@ export const Route = createFileRoute('/api/fleet/defs/$id/edit')({
       POST: async ({ request, params }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const def = await getAgentDef(params.id)

@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { createTemplate, listTemplates } from '@/server/templates'
 
 const Body = z.object({
@@ -25,6 +26,7 @@ export const Route = createFileRoute('/api/templates')({
       POST: async ({ request }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        if (!(await hasPerm(user, 'templates.manage'))) return json({ error: 'no permission to manage templates' }, { status: 403 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const template = await createTemplate({ ...parsed.data, createdBy: user.email ?? user.name ?? 'user' })

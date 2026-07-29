@@ -2,6 +2,7 @@
 // shown exactly once at mint time; only its sha256 is stored. Admins may
 // always mint; other users need the can_mint_keys grant (admin console).
 import { createHash, randomBytes } from 'node:crypto'
+import { hasPerm } from './permissions'
 import { db } from './db/pg'
 
 export interface LlmApiKey {
@@ -16,10 +17,9 @@ export interface LlmApiKey {
 const hash = (secret: string) => createHash('sha256').update(secret).digest('hex')
 
 export async function canMintKeys(userId: string, role: string): Promise<boolean> {
-  if (role === 'admin') return true
-  const sql = await db()
-  const rows = await sql`select can_mint_keys from users where id = ${userId}`
-  return Boolean((rows[0] as { can_mint_keys?: boolean } | undefined)?.can_mint_keys)
+  // Delegated to the fine-grained permission system (the old can_mint_keys
+  // column was backfilled into user_permissions as 'models.mint-keys').
+  return hasPerm({ id: userId, role: role === 'admin' ? 'admin' : 'member' }, 'models.mint-keys')
 }
 
 export async function mintKey(userId: string, name: string): Promise<{ key: LlmApiKey; secret: string }> {

@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser, updateSessionsForUser } from '@/server/auth/session'
-import { listUsersAdmin, setAssistantElevated, setDeniedViews, setUserAgentAccess, setUserCanMintKeys, setUserRole } from '@/server/users'
+import { listUsersAdmin, setAssistantElevated, setDeniedViews, setUserAgentAccess, setUserCanMintKeys, setUserRole, setAllowedManageViews } from '@/server/users'
 import { logAudit } from '@/server/audit'
 
 // Admin console API. GET → all users with roles + agent allow-lists.
@@ -27,6 +27,7 @@ export const Route = createFileRoute('/api/admin/users')({
             agentModels: z.array(z.string().max(200)).max(100).optional(),
             canMintKeys: z.boolean().optional(),
             deniedViews: z.array(z.string().max(60)).max(40).optional(),
+            allowedManageViews: z.array(z.string().max(60)).max(10).optional(),
             /** Promote/demote the user's personal assistant to org-wide view/edit. */
             assistantElevated: z.boolean().optional(),
           })
@@ -67,6 +68,10 @@ export const Route = createFileRoute('/api/admin/users')({
         if (parsed.data.deniedViews) {
           await setDeniedViews(parsed.data.userId, parsed.data.deniedViews)
           void logAudit({ actor, action: 'user.view_access', targetType: 'user', targetId: parsed.data.userId, after: { deniedViews: parsed.data.deniedViews } })
+        }
+        if (parsed.data.allowedManageViews) {
+          await setAllowedManageViews(parsed.data.userId, parsed.data.allowedManageViews)
+          void logAudit({ actor, action: 'user.manage_views', targetType: 'user', targetId: parsed.data.userId, after: { allowedManageViews: parsed.data.allowedManageViews } })
         }
         return json({ ok: true })
       },
