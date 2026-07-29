@@ -1,7 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useContextMenu } from '@/components/ui/context-menu'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Check, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -12,7 +13,6 @@ import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { confirm } from '@/components/ui/confirm'
-import { UserPicker } from '@/components/app/user-picker'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useAgents } from '@/lib/agents'
@@ -37,11 +37,19 @@ interface McpServerRow {
   enabled: boolean
   allAgents: boolean
   authMode: 'org' | 'per-user'
+  builtin: boolean
+  oauthEnabled: boolean
+  /** OAuth org connection state (null for header-auth servers). */
+  orgConnected: boolean | null
+  oauthMeta: { dcr: boolean; clientSet: boolean; documentation: string | null } | null
   tools: Array<{ name: string; description?: string }>
   toolsRefreshedAt: string | null
   assignments: Array<{ agentModel: string; tools: string[] | null }>
   userAccess: Array<{ userId: string; allowed: boolean; tools: string[] | null }>
 }
+
+const connectPopup = (serverId: string, scope: 'org' | 'me') =>
+  window.open(`/api/mcp/oauth/start?server=${serverId}&scope=${scope}`, 'talaria-mcp-oauth', 'width=620,height=780')
 
 function useMcpServers() {
   return useQuery({
@@ -55,8 +63,20 @@ function useMcpServers() {
 }
 
 function McpPage() {
+  const qc = useQueryClient()
   const { data: servers, isPending } = useMcpServers()
   const [adding, setAdding] = useState<null | 'marketplace' | 'custom'>(null)
+
+  // The OAuth popup announces completion — refresh connection states live.
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin === window.location.origin && (e.data as { type?: string })?.type === 'talaria:mcp-oauth-done') {
+        void qc.invalidateQueries({ queryKey: ['mcp-servers'] })
+      }
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+  }, [qc])
 
   return (
     <div className="h-full overflow-y-auto p-8">
@@ -107,12 +127,35 @@ async function patchServer(id: string, body: unknown): Promise<string | null> {
   return null
 }
 
+// Scope dropdown sentinels: explicit states, not empty-placeholder magic.
+const ALL_TOOLS = '__all_tools__'
+const NO_ACCESS = '__no_access__'
+
+/** What a scope selection means. Sentinels win over tool picks when NEWLY
+ *  added; otherwise the tool subset stands. */
+function resolveScopePick(
+  sel: string[],
+  prev: { denied: boolean; tools: string[] | null },
+): { denied: boolean; tools: string[] | null } {
+  const pickedNone = sel.includes(NO_ACCESS) && !prev.denied
+  if (pickedNone) return { denied: true, tools: null }
+  const pickedAll = sel.includes(ALL_TOOLS) && (prev.denied || prev.tools !== null)
+  if (pickedAll) return { denied: false, tools: null }
+  const tools = sel.filter((t) => t !== ALL_TOOLS && t !== NO_ACCESS)
+  return { denied: false, tools: tools.length ? tools : null }
+}
+
+/** One registered server. Design grammar: a calm header (identity left, one
+ *  status cluster right, actions in a kebab), the tool strip, then a single
+ *  ACCESS table where every row reads the same — name · tools · remove — and
+ *  adders stay hidden behind ghost "+" buttons until asked for. */
 function ServerCard({ server: s }: { server: McpServerRow }) {
   const qc = useQueryClient()
   const { data: fleet } = useAgents()
   const { data: users = [] } = useUsers()
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const { openMenu, menu } = useContextMenu()
   const refresh = () => qc.invalidateQueries({ queryKey: ['mcp-servers'] })
 
   const patch = async (body: unknown) => {
@@ -123,65 +166,108 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
   }
 
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
+  const agentLabel = (model: string) => agentOptions.find((o) => o.value === model)?.label ?? model
   const toolOptions = s.tools.map((t) => ({ value: t.name, label: t.name }))
   const userLabel = (id: string) => {
     const u = users.find((x) => x.id === id)
     return u?.name ?? u?.email ?? id.slice(0, 8)
   }
+  const domain = (() => {
+    try {
+      return new URL(s.url).hostname
+    } catch {
+      return null
+    }
+  })()
+
+  const cardMenu = (e: React.MouseEvent) =>
+    openMenu(e, [
+      { label: s.enabled ? 'Disable server' : 'Enable server', onSelect: () => void patch({ enabled: !s.enabled }) },
+      {
+        label: s.authMode === 'org' ? 'Switch to per-user auth' : 'Switch to org auth',
+        onSelect: () => void patch({ authMode: s.authMode === 'org' ? 'per-user' : 'org' }),
+      },
+      ...(s.oauthEnabled && s.authMode === 'org' && s.orgConnected
+        ? [{ label: 'Reconnect org account', onSelect: () => void connectPopup(s.id, 'org') }]
+        : []),
+      'sep' as const,
+      {
+        label: 'Remove server',
+        danger: true,
+        onSelect: () => {
+          void confirm({
+            title: 'Remove MCP server',
+            message: `Remove "${s.label}" org-wide? Every agent loses it on its next roll.`,
+            confirmLabel: 'Remove',
+          }).then(async (ok) => {
+            if (!ok) return
+            await fetch(`/api/mcp/servers/${s.id}`, { method: 'DELETE', credentials: 'same-origin' })
+            await refresh()
+          })
+        },
+      },
+    ])
+
+  // The one status the header needs: connection first, then lifecycle.
+  const status = !s.enabled
+    ? { label: 'disabled', cls: 'border-line-subtle text-muted' }
+    : s.oauthEnabled && s.authMode === 'org' && !s.orgConnected
+      ? null // the Connect button IS the status
+      : s.oauthEnabled && s.authMode === 'per-user'
+        ? { label: 'per-user auth', cls: 'border-line-subtle text-muted' }
+        : s.oauthEnabled && s.orgConnected
+          ? { label: '✓ connected', cls: 'border-[color:var(--theme-success)]/40 text-[color:var(--theme-success)]' }
+          : null
 
   return (
     <Panel className={cn(!s.enabled && 'opacity-60')}>
+      {/* ── Header: identity left, one status cluster right ── */}
       <div className="flex items-center gap-3">
-        <ServerMark title={s.label} domain={(() => { try { return new URL(s.url).hostname.replace(/^mcp\./, '') } catch { return null } })()} size={34} />
+        <ServerMark title={s.label} domain={domain?.replace(/^mcp\./, '')} size={36} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-fg">{s.label}</span>
-            <span className="rounded bg-card px-1.5 py-0.5 text-[10px] text-muted">{s.name}</span>
-            {s.authMode === 'per-user' && (
-              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent" title="Each person connects their own account (Settings → Connections); the server acts as them.">
-                per-user auth
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-sm font-semibold text-fg">{s.label}</span>
+            {s.builtin ? (
+              <span
+                className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted"
+                title="Talaria's own toolkit — every agent carries it. Govern who may use which tools below; identity and lifecycle are managed by the platform."
+              >
+                built-in
               </span>
+            ) : (
+              domain && <span className="truncate text-[11px] text-muted">{domain}</span>
             )}
           </div>
-          <div className="truncate font-sans text-xs text-muted">{s.url}</div>
-          {s.description && <div className="truncate font-sans text-xs text-muted/80">{s.description}</div>}
+          {s.description && <div className="truncate font-sans text-xs text-muted">{s.description}</div>}
         </div>
-        <Select
-          size="sm"
-          value={s.authMode}
-          onChange={(e) => void patch({ authMode: e.target.value })}
-          className="w-32 shrink-0"
-          title="Org auth: shared credentials for everyone. Per-user: each person connects their own account."
-        >
-          <option value="org">Org auth</option>
-          <option value="per-user">Per-user auth</option>
-        </Select>
-        <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted" title="Disabled servers vanish from every agent on the next config render">
-          <input
-            type="checkbox"
-            checked={s.enabled}
-            onChange={(e) => void patch({ enabled: e.target.checked })}
-            className="accent-[var(--theme-accent)]"
-          />
-          enabled
-        </label>
-        <button
-          type="button"
-          title="Delete this server (assignments and connections go with it)"
-          onClick={() => {
-            void confirm({ title: 'Remove MCP server', message: `Remove "${s.label}" org-wide? Every agent loses it on the next config render.`, confirmLabel: 'Remove' }).then(async (ok) => {
-              if (!ok) return
-              await fetch(`/api/mcp/servers/${s.id}`, { method: 'DELETE', credentials: 'same-origin' })
-              await refresh()
-            })
-          }}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-[color:var(--theme-danger)]"
-        >
-          <Trash2 size={14} />
-        </button>
+        {status && <span className={cn('shrink-0 rounded-full border px-2 py-0.5 text-[11px]', status.cls)}>{status.label}</span>}
+        {s.oauthEnabled && s.authMode === 'org' && !s.orgConnected && s.enabled && (s.oauthMeta?.dcr || s.oauthMeta?.clientSet) && (
+          <button
+            type="button"
+            onClick={() => void connectPopup(s.id, 'org')}
+            className="shrink-0 rounded-lg border border-accent/60 bg-accent/10 px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/15"
+            title="This server authenticates with OAuth — connect the org account so agents can use it"
+          >
+            Connect
+          </button>
+        )}
+        {!s.builtin && (
+          <button
+            type="button"
+            onClick={cardMenu}
+            title="Server actions"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-fg"
+          >
+            <MoreHorizontal size={15} />
+          </button>
+        )}
       </div>
 
-      {/* Discovered tools */}
+      {s.oauthEnabled && s.oauthMeta && !s.oauthMeta.dcr && !s.oauthMeta.clientSet && (
+        <OauthAppSetup serverId={s.id} domain={domain} docs={s.oauthMeta.documentation} onSaved={refresh} />
+      )}
+
+      {/* ── Tools strip ── */}
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <button
           type="button"
@@ -189,124 +275,140 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
             setRefreshing(true)
             void patch({ refreshTools: true }).finally(() => setRefreshing(false))
           }}
-          className="flex items-center gap-1.5 rounded-lg border border-line-subtle px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-line hover:text-fg"
+          className="flex items-center gap-1.5 rounded-full border border-line-subtle px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-line hover:text-fg"
           title="Ask the server for its tool catalog"
         >
           <RefreshCw size={11} className={cn(refreshing && 'animate-spin')} />
           {s.tools.length ? `${s.tools.length} tools` : 'Discover tools'}
           {s.toolsRefreshedAt && <span className="text-muted/70">· {relativeTime(s.toolsRefreshedAt)}</span>}
         </button>
-        {s.tools.slice(0, 10).map((t) => (
+        {s.tools.slice(0, 6).map((t) => (
           <span key={t.name} title={t.description} className="rounded-full border border-line-subtle px-2 py-0.5 text-[11px] text-muted">
             {t.name}
           </span>
         ))}
-        {s.tools.length > 10 && <span className="text-[11px] text-muted/70">+{s.tools.length - 10} more</span>}
-      </div>
-
-      {/* Agents */}
-      <div className="mt-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wide text-muted">Agents</span>
-          <label className="flex items-center gap-1.5 text-xs text-muted" title="Every agent carries this server (tool subsets below still apply per pick)">
-            <input
-              type="checkbox"
-              checked={s.allAgents}
-              onChange={(e) => void patch({ allAgents: e.target.checked })}
-              className="accent-[var(--theme-accent)]"
-            />
-            all agents
-          </label>
-        </div>
-        {!s.allAgents && (
-          <div className="space-y-1.5">
-            {s.assignments.map((a) => (
-              <div key={a.agentModel} className="flex items-center gap-2">
-                <span className="w-40 shrink-0 truncate text-sm text-fg">
-                  {agentOptions.find((o) => o.value === a.agentModel)?.label ?? a.agentModel}
-                </span>
-                <Combobox
-                  options={toolOptions}
-                  selected={a.tools ?? []}
-                  onChange={(tools) => void patch({ assign: { agentModel: a.agentModel, tools: tools.length ? tools : null } })}
-                  multiple
-                  size="sm"
-                  placeholder="All tools"
-                  className="min-w-0 flex-1"
-                />
-                <button
-                  type="button"
-                  title="Remove this agent"
-                  onClick={() => void patch({ unassign: a.agentModel })}
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted hover:text-[color:var(--theme-danger)]"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            ))}
-            <Combobox
-              options={agentOptions.filter((o) => !s.assignments.some((a) => a.agentModel === o.value))}
-              selected={[]}
-              onChange={(models) => {
-                const m = models[0]
-                if (m) void patch({ assign: { agentModel: m, tools: null } })
-              }}
-              multiple
-              size="sm"
-              placeholder="Add an agent"
-              className="w-64"
-            />
-          </div>
+        {s.tools.length > 6 && (
+          <span className="text-[11px] text-muted/70" title={s.tools.slice(6).map((t) => t.name).join(', ')}>
+            +{s.tools.length - 6} more
+          </span>
         )}
       </div>
 
-      {/* People */}
-      <div className="mt-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wide text-muted">People</span>
-          <InfoTip text="Who may exercise this server through agents acting for them (their personal assistant, for now). Nobody listed = everyone with an assigned agent. A row can deny outright or narrow to specific tools." />
+      {/* ── Access: two bounded groups — agents, then people ── */}
+      <div className="mt-4 border-t border-line-subtle pt-3">
+        <div className="mb-2 flex items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">Access</span>
+          <InfoTip text="Which agents carry this server, and which people may exercise it through agents acting for them. Tool cells narrow a row to a subset; empty = every tool. The gateway enforces all of it." />
         </div>
-        <div className="space-y-1.5">
-          {s.userAccess.map((ua) => (
-            <div key={ua.userId} className="flex items-center gap-2">
-              <span className="w-40 shrink-0 truncate text-sm text-fg">{userLabel(ua.userId)}</span>
-              <Select
-                size="sm"
-                value={ua.allowed ? 'allow' : 'deny'}
-                onChange={(e) => void patch({ userAccess: { userId: ua.userId, allowed: e.target.value === 'allow', tools: ua.tools } })}
-                className="w-24 shrink-0"
-              >
-                <option value="allow">Allow</option>
-                <option value="deny">Deny</option>
-              </Select>
-              {ua.allowed && (
-                <Combobox
-                  options={toolOptions}
-                  selected={ua.tools ?? []}
-                  onChange={(tools) => void patch({ userAccess: { userId: ua.userId, allowed: true, tools: tools.length ? tools : null } })}
-                  multiple
-                  size="sm"
-                  placeholder="All tools"
-                  className="min-w-0 flex-1"
+
+        {/* Agents */}
+        <div>
+          <div className="flex items-center gap-3 pb-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted/80">Agents</span>
+            {s.builtin ? (
+              <span className="text-xs text-muted">every agent — rows below narrow individual agents</span>
+            ) : (
+              <label className="flex items-center gap-1.5 text-xs text-muted" title="Every enabled agent carries this server; rows below become per-agent tool overrides">
+                <input
+                  type="checkbox"
+                  checked={s.allAgents}
+                  onChange={(e) => void patch({ allAgents: e.target.checked })}
+                  className="accent-[var(--theme-accent)]"
                 />
-              )}
-              <button
-                type="button"
-                title="Remove this rule (back to default access)"
-                onClick={() => void patch({ userAccess: { userId: ua.userId, allowed: null, tools: null } })}
-                className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted hover:text-[color:var(--theme-danger)]"
-              >
-                <Trash2 size={12} />
-              </button>
+                all agents
+              </label>
+            )}
+            <span className="flex-1" />
+            <AddPickerButton
+              title={s.allAgents ? 'Add a per-agent tool override' : 'Add an agent'}
+              placeholder="Search agents"
+              options={agentOptions.filter((o) => !s.assignments.some((a) => a.agentModel === o.value))}
+              onPick={(m) => void patch({ assign: { agentModel: m, tools: null } })}
+            />
+          </div>
+          {s.assignments.length === 0 ? (
+            <div className="px-1.5 py-1 text-xs text-muted/70">
+              {s.allAgents ? 'Every enabled agent, every tool. Add a row to narrow one agent.' : 'No agents yet — add one, or check “all agents”.'}
             </div>
-          ))}
-          <UserPicker
-            size="sm"
-            className="w-64"
-            placeholder="Add a person rule"
-            exclude={s.userAccess.map((u) => u.userId)}
-            onPick={(u) => void patch({ userAccess: { userId: u.id, allowed: true, tools: null } })}
-          />
+          ) : (
+            <div className="space-y-0.5">
+              {s.allAgents && (
+                <div className="px-1.5 pb-0.5 text-[11px] text-muted/70">Every enabled agent carries this server; these rows narrow individual agents.</div>
+              )}
+              {s.assignments.map((a) => (
+                <AccessRow
+                  key={a.agentModel}
+                  name={agentLabel(a.agentModel)}
+                  tools={
+                    <Combobox
+                      options={[{ value: ALL_TOOLS, label: 'All tools' }, ...toolOptions]}
+                      selected={a.tools ?? [ALL_TOOLS]}
+                      onChange={(sel) => {
+                        const next = resolveScopePick(sel, { denied: false, tools: a.tools })
+                        void patch({ assign: { agentModel: a.agentModel, tools: next.tools } })
+                      }}
+                      multiple
+                      size="sm"
+                      placeholder="All tools"
+                      className="w-full"
+                    />
+                  }
+                  onRemove={() => void patch({ unassign: a.agentModel })}
+                  removeTitle="Remove this agent"
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* People */}
+        <div className="mt-3 border-t border-line-subtle/70 pt-2.5">
+          <div className="flex items-center gap-2 pb-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted/80">People</span>
+            <InfoTip text="No rules = everyone with an assigned agent may use it. A rule narrows one person to specific tools, or denies them outright." />
+            <span className="flex-1" />
+            <AddPickerButton
+              title="Add a person rule"
+              placeholder="Search people"
+              options={users
+                .filter((u) => !s.userAccess.some((r) => r.userId === u.id))
+                .map((u) => ({ value: u.id, label: u.name ?? u.email ?? u.id.slice(0, 8), sub: u.email ?? undefined }))}
+              onPick={(id) => void patch({ userAccess: { userId: id, allowed: true, tools: null } })}
+            />
+          </div>
+          {s.userAccess.length === 0 ? (
+            <div className="px-1.5 py-1 text-xs text-muted/70">Everyone with an assigned agent may use it.</div>
+          ) : (
+            <div className="space-y-0.5">
+              {s.userAccess.map((ua) => (
+                <AccessRow
+                  key={ua.userId}
+                  name={userLabel(ua.userId)}
+                  dim={!ua.allowed}
+                  tools={
+                    <Combobox
+                      options={[
+                        { value: ALL_TOOLS, label: 'All tools' },
+                        { value: NO_ACCESS, label: 'No access' },
+                        ...toolOptions,
+                      ]}
+                      selected={ua.allowed ? (ua.tools ?? [ALL_TOOLS]) : [NO_ACCESS]}
+                      onChange={(sel) => {
+                        const next = resolveScopePick(sel, { denied: !ua.allowed, tools: ua.tools })
+                        void patch({ userAccess: { userId: ua.userId, allowed: !next.denied, tools: next.tools } })
+                      }}
+                      multiple
+                      size="sm"
+                      placeholder="All tools"
+                      className="w-full"
+                    />
+                  }
+                  onRemove={() => void patch({ userAccess: { userId: ua.userId, allowed: null, tools: null } })}
+                  removeTitle="Remove this rule (back to default access)"
+                />
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -315,7 +417,121 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
           {error}
         </div>
       )}
+      {menu}
     </Panel>
+  )
+}
+
+/** A "+" that opens a search popover anchored to itself — pick to commit.
+ *  The attach-menu pattern: outside click or Esc dismisses. */
+function AddPickerButton({
+  title,
+  placeholder,
+  options,
+  onPick,
+}: {
+  title: string
+  placeholder: string
+  options: Array<{ value: string; label: string; sub?: string }>
+  onPick: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const needle = q.trim().toLowerCase()
+  const results = options.filter((o) => !needle || o.label.toLowerCase().includes(needle) || (o.sub ?? '').toLowerCase().includes(needle))
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        title={title}
+        onClick={() => {
+          setOpen((v) => !v)
+          setQ('')
+        }}
+        className={cn(
+          'grid h-6 w-6 place-items-center rounded-md transition-colors',
+          open ? 'bg-card text-accent' : 'text-muted hover:bg-card hover:text-accent',
+        )}
+      >
+        <Plus size={14} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-line bg-card p-1.5 shadow-lg">
+          <Input autoFocus size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder={placeholder} className="mb-1" />
+          <div className="max-h-48 overflow-y-auto">
+            {results.length === 0 && <div className="px-2 py-1.5 text-xs text-muted">No matches</div>}
+            {results.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  onPick(o.value)
+                }}
+                className="flex w-full items-baseline gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-sidebar"
+              >
+                <span className="min-w-0 flex-1 truncate text-sm text-fg">{o.label}</span>
+                {o.sub && <span className="shrink-0 truncate text-[11px] text-muted">{o.sub}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** The access sections' one row shape: name · tool scope · quiet remove. */
+function AccessRow({
+  name,
+  tools,
+  dim,
+  onRemove,
+  removeTitle,
+}: {
+  name: string
+  tools: React.ReactNode
+  dim?: boolean
+  onRemove: () => void
+  removeTitle: string
+}) {
+  return (
+    <div className="group flex items-center gap-3 rounded-lg px-1.5 py-1 transition-colors hover:bg-card/50">
+      <span className="w-44 shrink-0 truncate">
+        <span className={cn('text-sm', dim ? 'text-muted' : 'text-fg')}>{name}</span>
+      </span>
+      <span className="min-w-0 flex-1">{tools ?? <span className="text-xs text-muted/60">all tools</span>}</span>
+      {/* Fixed-width control cluster so every row's tool box ends flush. */}
+      <span className="flex w-8 shrink-0 items-center justify-end">
+        <button
+          type="button"
+          onClick={onRemove}
+          title={removeTitle}
+          className="text-muted opacity-0 transition-opacity hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
+        >
+          <Trash2 size={13} />
+        </button>
+      </span>
+    </div>
   )
 }
 
@@ -388,7 +604,7 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
   const { data: existing } = useMcpServers()
   const [q, setQ] = useState('')
   const [busyAdd, setBusyAdd] = useState<string | null>(null)
-  const [added, setAdded] = useState<Set<string>>(new Set())
+  const [added, setAdded] = useState<Map<string, 'ok' | 'setup'>>(new Map())
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState<LibraryServerRow | null>(null)
 
@@ -431,8 +647,9 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
       setError(((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed')
       return false
     }
-    const { server } = (await r.json()) as { server: { id: string } }
-    setAdded((prev) => new Set(prev).add(l.registryName))
+    const { server } = (await r.json()) as { server: { id: string; oauthMeta: { dcr: boolean; clientSet: boolean } | null } }
+    const needsSetup = !!server.oauthMeta && !server.oauthMeta.dcr && !server.oauthMeta.clientSet
+    setAdded((prev) => new Map(prev).set(l.registryName, needsSetup ? 'setup' : 'ok'))
     setInstalling(null)
     await qc.invalidateQueries({ queryKey: ['mcp-servers'] })
     void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
@@ -496,7 +713,8 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
           {results && results.servers.length > 0 && (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {results.servers.map((l) => {
-                const installed = installedUrls.has(l.url) || added.has(l.registryName)
+                const addedState = added.get(l.registryName) ?? (installedUrls.has(l.url) ? 'ok' : null)
+                const installed = addedState !== null
                 const busy = busyAdd === l.registryName
                 const badge = TIER_BADGE[l.tier]
                 return (
@@ -521,7 +739,14 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
                     </p>
                     {/* The install control: quiet until the card is engaged. */}
                     <div className="absolute right-3 top-3">
-                      {installed ? (
+                      {addedState === 'setup' ? (
+                        <span
+                          className="rounded-full bg-[color:var(--theme-warning)]/10 px-2 py-1 text-[10px] font-medium text-[color:var(--theme-warning)]"
+                          title="Added — this provider needs a one-time OAuth app setup on the MCP page before agents can connect"
+                        >
+                          needs setup
+                        </span>
+                      ) : installed ? (
                         <span
                           className="grid h-7 w-7 place-items-center rounded-full bg-[color:var(--theme-success)]/10 text-[color:var(--theme-success)]"
                           title="In your org registry"
@@ -658,6 +883,99 @@ function InstallDialog({
           </Button>
         </div>
       </div>
+    </div>
+  )
+}
+
+/** Credentials form for providers without dynamic client registration: shows
+ *  the exact callback URL to register, takes the app's client id/secret. */
+// Where to create the app, for providers we recognize. One-time, org-owner.
+const OAUTH_APP_PORTALS: Record<string, string> = {
+  'api.githubcopilot.com': 'https://github.com/settings/developers',
+}
+
+function OauthAppSetup({ serverId, domain, docs, onSaved }: { serverId: string; domain?: string | null; docs?: string | null; onSaved: () => void }) {
+  const [openForm, setOpenForm] = useState(false)
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const callback = `${window.location.origin}/api/mcp/oauth/callback`
+
+  const save = async () => {
+    setBusy(true)
+    setError(null)
+    const e = await patchServer(serverId, { oauthClient: { clientId: clientId.trim(), clientSecret: clientSecret.trim() || null } })
+    setBusy(false)
+    if (e) {
+      setError(e)
+      return
+    }
+    setOpenForm(false)
+    onSaved()
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-accent/40 bg-accent/5 p-3">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-fg">This provider needs a pre-registered OAuth app</span>
+            <InfoTip text="It doesn't support automatic client registration (GitHub, for example). Create an OAuth app in the provider's developer settings with the callback URL below, then paste the app's client id and secret here — stored encrypted, spoken only during the OAuth flow." />
+          </div>
+          {(() => {
+            // The provider's own service_documentation (from its AS metadata)
+            // beats our portal map — API data first.
+            const link = docs ?? (domain ? OAUTH_APP_PORTALS[domain] : undefined)
+            return link ? (
+              <a href={link} target="_blank" rel="noreferrer" className="mt-0.5 inline-block text-xs text-accent hover:underline">
+                Create the app ↗
+              </a>
+            ) : null
+          })()}
+        </div>
+        {!openForm && (
+          <Button size="sm" className="shrink-0" onClick={() => setOpenForm(true)}>
+            Set up
+          </Button>
+        )}
+      </div>
+      {openForm && (
+        <div className="mt-3 space-y-3">
+          <div>
+            <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Callback URL (register this with the provider)</label>
+            <div className="flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate rounded-lg bg-card px-2 py-1.5 text-xs text-fg">{callback}</code>
+              <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard.writeText(callback)}>
+                Copy
+              </Button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Client ID</label>
+              <Input value={clientId} onChange={(e) => setClientId(e.target.value)} autoComplete="off" />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Client secret</label>
+              <Input type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} autoComplete="off" />
+            </div>
+          </div>
+          {error && (
+            <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
+              {error}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setOpenForm(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" disabled={busy || !clientId.trim()} onClick={() => void save()}>
+              {busy ? 'Saving' : 'Save credentials'}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

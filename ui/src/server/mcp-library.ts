@@ -126,6 +126,80 @@ const registryPage = async (params: Record<string, string>): Promise<RegistryEnt
   return ((await r.json()) as { servers?: RegistryEntry[] }).servers ?? []
 }
 
+// ── Publisher resolution beyond the registry ────────────────────────────────
+// Not every company has registered (GitHub hasn't). Two live fallbacks:
+//   1. the /.well-known/mcp.json convention on the publisher's domain
+//      (Notion serves it: name/description/icon/endpoint)
+//   2. a tiny factual map of DOCUMENTED official endpoints for majors absent
+//      from both — the exception that keeps GitHub findable, not a catalog.
+const KNOWN_ENDPOINTS: Record<string, { title: string; url: string; description: string }> = {
+  'github.com': {
+    title: 'GitHub',
+    url: 'https://api.githubcopilot.com/mcp/',
+    description: "GitHub's official MCP server — repos, issues, PRs, actions — via OAuth.",
+  },
+}
+
+const wellKnownCache = new Map<string, { at: number; server: LibraryServer | null }>()
+async function wellKnownServer(domain: string): Promise<LibraryServer | null> {
+  const hit = wellKnownCache.get(domain)
+  if (hit && Date.now() - hit.at < 60 * 60 * 1000) return hit.server
+  let server: LibraryServer | null = null
+  try {
+    const r = await fetch(`https://${domain}/.well-known/mcp.json`, { signal: AbortSignal.timeout(5_000), redirect: 'follow' })
+    if (r.ok) {
+      const j = (await r.json()) as { name?: string; description?: string; icon?: string; endpoint?: string }
+      if (j.endpoint && /^https:\/\//.test(j.endpoint)) {
+        server = {
+          registryName: `wk:${domain}`,
+          title: j.name ?? domain.split('.')[0]!,
+          description: j.description?.slice(0, 220) ?? null,
+          url: j.endpoint,
+          domain,
+          icon: j.icon && /^https:\/\//.test(j.icon) ? j.icon : null,
+          tier: 'first-party',
+          requiredHeaders: [],
+        }
+      }
+    }
+  } catch {
+    /* no well-known — fall through */
+  }
+  wellKnownCache.set(domain, { at: Date.now(), server })
+  return server
+}
+
+const knownServer = (domain: string): LibraryServer | null => {
+  const k = KNOWN_ENDPOINTS[domain]
+  if (!k) return null
+  return {
+    registryName: `known:${domain}`,
+    title: k.title,
+    description: k.description,
+    url: k.url,
+    domain,
+    icon: null,
+    tier: 'first-party',
+    requiredHeaders: [],
+  }
+}
+
+/** One publisher, best source wins: registry → well-known → documented. */
+async function resolvePublisher(domain: string): Promise<LibraryServer | null> {
+  const term = domain.split('.')[0]!
+  try {
+    const entries = await registryPage({ search: term, limit: '30' })
+    const hits = entries
+      .map(classify)
+      .filter((s): s is LibraryServer => !!s && (s.domain === domain || onDomain(s.domain, domain)))
+      .sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier])
+    if (hits[0]) return hits[0]
+  } catch {
+    /* registry hiccup — try the fallbacks */
+  }
+  return (await wellKnownServer(domain)) ?? knownServer(domain)
+}
+
 /** Search the registry SERVER-SIDE (complete over 20k+ entries), rank locally:
  *  first-party publishers top the results, community wrappers sink. Favicon
  *  fallbacks warm in the background as results are served. */
@@ -140,9 +214,21 @@ export async function searchMcpLibrary(query: string): Promise<LibraryServer[]> 
     const s = classify(e)
     if (s) byName.set(s.registryName, s)
   }
-  const results = [...byName.values()]
+  let results = [...byName.values()]
     .sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier] || a.title.localeCompare(b.title))
     .slice(0, 40)
+  // A brand-shaped query ("github", "notion") pins the publisher's OFFICIAL
+  // server on top — resolved through the full chain, so a company the
+  // registry lacks (GitHub) still lands first instead of wrapper noise.
+  if (q && /^[a-z0-9 ]{2,20}$/.test(q)) {
+    const brands = [...FEATURED_DOMAINS, ...Object.keys(KNOWN_ENDPOINTS)]
+      .filter((d, i, a) => a.indexOf(d) === i)
+      .filter((d) => d.split('.')[0]!.startsWith(q.replace(/\s+/g, '')))
+      .slice(0, 3)
+    const pinned = (await Promise.all(brands.map(resolvePublisher))).filter((s): s is LibraryServer => s !== null)
+    const pinnedUrls = new Set(pinned.map((s) => s.url))
+    results = [...pinned, ...results.filter((s) => !pinnedUrls.has(s.url))].slice(0, 40)
+  }
   searchCache.set(q, { at: Date.now(), results })
   warmIcons(results.filter((s) => !s.icon && s.domain).map((s) => ({ domain: s.domain })))
   return results
@@ -163,21 +249,7 @@ const FEATURED_DOMAINS = [
 let featured: { at: number; servers: LibraryServer[] } | null = null
 export async function featuredMcpLibrary(): Promise<{ servers: LibraryServer[] }> {
   if (featured && Date.now() - featured.at < 60 * 60 * 1000) return { servers: featured.servers }
-  const results = await Promise.all(
-    FEATURED_DOMAINS.map(async (domain) => {
-      const term = domain.split('.')[0]!
-      try {
-        const entries = await registryPage({ search: term, limit: '30' })
-        const hits = entries
-          .map(classify)
-          .filter((s): s is LibraryServer => !!s && (s.domain === domain || onDomain(s.domain, domain)))
-          .sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier])
-        return hits[0] ?? null
-      } catch {
-        return null
-      }
-    }),
-  )
+  const results = await Promise.all(FEATURED_DOMAINS.map(resolvePublisher))
   const servers = results.filter((s): s is LibraryServer => s !== null)
   if (servers.length > 0) featured = { at: Date.now(), servers }
   warmIcons(servers.filter((s) => !s.icon && s.domain).map((s) => ({ domain: s.domain })))

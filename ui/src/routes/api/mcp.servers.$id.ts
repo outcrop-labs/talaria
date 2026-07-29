@@ -13,6 +13,8 @@ import {
   updateMcpServer,
 } from '@/server/mcp-registry'
 import { renderFleet } from '@/server/fleet-render'
+import { ensureOauthConfig, setManualOauthClient } from '@/server/mcp-oauth'
+import { carriersForServer, enqueueRolls, rollAgentsForServer, rollAgentForModel, rollAgentForUser } from '@/server/mcp-apply'
 import { logAudit } from '@/server/audit'
 
 const Patch = z.object({
@@ -25,11 +27,13 @@ const Patch = z.object({
   allAgents: z.boolean().optional(),
   authMode: z.enum(['org', 'per-user']).optional(),
   refreshTools: z.boolean().optional(),
-  assign: z.object({ agentModel: z.string().max(200), tools: z.array(z.string().max(120)).nullable() }).optional(),
-  unassign: z.string().max(200).optional(),
+  assign: z.object({ agentModel: z.string().min(1).max(200), tools: z.array(z.string().max(120)).nullable() }).optional(),
+  unassign: z.string().min(1).max(200).optional(),
   userAccess: z
     .object({ userId: z.string().uuid(), allowed: z.boolean().nullable(), tools: z.array(z.string().max(120)).nullable() })
     .optional(),
+  /** Pre-registered OAuth app credentials (providers without dynamic registration). */
+  oauthClient: z.object({ clientId: z.string().min(1).max(200), clientSecret: z.string().max(500).nullable() }).optional(),
 })
 
 // One registry server: PUT patches config / assignment / user access / tool
@@ -49,7 +53,24 @@ export const Route = createFileRoute('/api/mcp/servers/$id')({
         const p = parsed.data
         const actor = user.email ?? user.name ?? 'admin'
 
-        const { refreshTools, assign, unassign, userAccess, ...config } = p
+        // Self-heal: failed/aged discovery re-probes and backfills on any touch.
+        await ensureOauthConfig(server.id, server.url)
+
+        const { refreshTools, assign, unassign, userAccess, oauthClient, ...config } = p
+        if (oauthClient) {
+          try {
+            await setManualOauthClient(
+              server.id,
+              server.url,
+              oauthClient.clientId,
+              oauthClient.clientSecret,
+              `${new URL(request.url).origin}/api/mcp/oauth/callback`,
+            )
+            void logAudit({ actor, action: 'mcp.oauth_client', targetType: 'mcp-server', targetId: server.id, targetLabel: server.name })
+          } catch (e) {
+            return json({ error: (e as Error).message }, { status: 400 })
+          }
+        }
         if (Object.keys(config).length > 0) {
           // An omitted headers field keeps the stored secrets; sending {} clears.
           await updateMcpServer(server.id, config)
@@ -74,6 +95,17 @@ export const Route = createFileRoute('/api/mcp/servers/$id')({
           tools = r.tools
         }
         void renderFleet().catch(() => {})
+        // Live cutover for the agents this change touches: a running Hermes
+        // only wires MCP servers at start, so carriers roll blue/green.
+        if (config.enabled !== undefined || config.allAgents !== undefined || config.authMode !== undefined) {
+          void rollAgentsForServer(server.id).catch(() => {})
+        } else if (assign) {
+          void rollAgentForModel(assign.agentModel).catch(() => {})
+        } else if (unassign) {
+          void rollAgentForModel(unassign).catch(() => {})
+        } else if (userAccess) {
+          void rollAgentForUser(userAccess.userId).catch(() => {})
+        }
         return json({ ok: true, ...(tools !== undefined ? { tools } : {}) })
       },
       DELETE: async ({ request, params }) => {
@@ -82,7 +114,13 @@ export const Route = createFileRoute('/api/mcp/servers/$id')({
         if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
         const server = await getMcpServer(params.id)
         if (!server) return json({ error: 'not found' }, { status: 404 })
-        await deleteMcpServer(server.id)
+        const carriers = await carriersForServer(server.id) // captured before the row vanishes
+        try {
+          await deleteMcpServer(server.id)
+        } catch (e) {
+          return json({ error: (e as Error).message }, { status: 400 })
+        }
+        enqueueRolls(carriers)
         void logAudit({
           actor: user.email ?? user.name ?? 'admin',
           action: 'mcp.server_delete',

@@ -221,6 +221,7 @@ interface McpConnection {
   label: string
   description: string | null
   requiredHeaders: Array<{ name: string; description: string | null; isSecret: boolean; placeholder: string | null }>
+  authKind: 'oauth' | 'headers'
   connected: boolean
 }
 
@@ -236,6 +237,17 @@ function McpConnectionsSection() {
   })
   const [connecting, setConnecting] = useState<string | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
+
+  // The OAuth popup announces completion — flip to "connected" live.
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin === window.location.origin && (e.data as { type?: string })?.type === 'talaria:mcp-oauth-done') {
+        void qc.invalidateQueries({ queryKey: ['me-mcp'] })
+      }
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+  }, [qc])
 
   const put = async (serverId: string, headers: Record<string, string> | null) => {
     await fetch('/api/me/mcp', {
@@ -274,6 +286,14 @@ function McpConnectionsSection() {
                       Disconnect
                     </Button>
                   </>
+                ) : s.authKind === 'oauth' ? (
+                  <Button
+                    size="sm"
+                    title="Sign in with the provider — your assistant then acts as you on this server"
+                    onClick={() => void window.open(`/api/mcp/oauth/start?server=${s.id}&scope=me`, 'talaria-mcp-oauth', 'width=620,height=780')}
+                  >
+                    Connect
+                  </Button>
                 ) : (
                   <Button size="sm" onClick={() => setConnecting(connecting === s.id ? null : s.id)}>
                     Connect

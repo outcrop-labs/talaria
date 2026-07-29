@@ -126,6 +126,8 @@ import { Route as ApiPlanIdDraftRouteImport } from './routes/api/plan.$id.draft'
 import { Route as ApiPlanIdDocRouteImport } from './routes/api/plan.$id.doc'
 import { Route as ApiMeBriefingChatRouteImport } from './routes/api/me.briefing.chat'
 import { Route as ApiMcpServersIdRouteImport } from './routes/api/mcp.servers.$id'
+import { Route as ApiMcpOauthStartRouteImport } from './routes/api/mcp.oauth.start'
+import { Route as ApiMcpOauthCallbackRouteImport } from './routes/api/mcp.oauth.callback'
 import { Route as ApiMcpGwServerRouteImport } from './routes/api/mcp.gw.$server'
 import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
@@ -767,6 +769,16 @@ const ApiMcpServersIdRoute = ApiMcpServersIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ApiMcpServersRoute,
 } as any)
+const ApiMcpOauthStartRoute = ApiMcpOauthStartRouteImport.update({
+  id: '/oauth/start',
+  path: '/oauth/start',
+  getParentRoute: () => ApiMcpRoute,
+} as any)
+const ApiMcpOauthCallbackRoute = ApiMcpOauthCallbackRouteImport.update({
+  id: '/oauth/callback',
+  path: '/oauth/callback',
+  getParentRoute: () => ApiMcpRoute,
+} as any)
 const ApiMcpGwServerRoute = ApiMcpGwServerRouteImport.update({
   id: '/gw/$server',
   path: '/gw/$server',
@@ -1200,6 +1212,8 @@ export interface FileRoutesByFullPath {
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/mcp/gw/$server': typeof ApiMcpGwServerRoute
+  '/api/mcp/oauth/callback': typeof ApiMcpOauthCallbackRoute
+  '/api/mcp/oauth/start': typeof ApiMcpOauthStartRoute
   '/api/mcp/servers/$id': typeof ApiMcpServersIdRoute
   '/api/me/briefing/chat': typeof ApiMeBriefingChatRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
@@ -1374,6 +1388,8 @@ export interface FileRoutesByTo {
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/mcp/gw/$server': typeof ApiMcpGwServerRoute
+  '/api/mcp/oauth/callback': typeof ApiMcpOauthCallbackRoute
+  '/api/mcp/oauth/start': typeof ApiMcpOauthStartRoute
   '/api/mcp/servers/$id': typeof ApiMcpServersIdRoute
   '/api/me/briefing/chat': typeof ApiMeBriefingChatRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
@@ -1550,6 +1566,8 @@ export interface FileRoutesById {
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
   '/api/llm/v1/models': typeof ApiLlmV1ModelsRoute
   '/api/mcp/gw/$server': typeof ApiMcpGwServerRoute
+  '/api/mcp/oauth/callback': typeof ApiMcpOauthCallbackRoute
+  '/api/mcp/oauth/start': typeof ApiMcpOauthStartRoute
   '/api/mcp/servers/$id': typeof ApiMcpServersIdRoute
   '/api/me/briefing/chat': typeof ApiMeBriefingChatRoute
   '/api/plan/$id/doc': typeof ApiPlanIdDocRoute
@@ -1726,6 +1744,8 @@ export interface FileRouteTypes {
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
     | '/api/mcp/gw/$server'
+    | '/api/mcp/oauth/callback'
+    | '/api/mcp/oauth/start'
     | '/api/mcp/servers/$id'
     | '/api/me/briefing/chat'
     | '/api/plan/$id/doc'
@@ -1900,6 +1920,8 @@ export interface FileRouteTypes {
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
     | '/api/mcp/gw/$server'
+    | '/api/mcp/oauth/callback'
+    | '/api/mcp/oauth/start'
     | '/api/mcp/servers/$id'
     | '/api/me/briefing/chat'
     | '/api/plan/$id/doc'
@@ -2075,6 +2097,8 @@ export interface FileRouteTypes {
     | '/api/kb/spaces/$id'
     | '/api/llm/v1/models'
     | '/api/mcp/gw/$server'
+    | '/api/mcp/oauth/callback'
+    | '/api/mcp/oauth/start'
     | '/api/mcp/servers/$id'
     | '/api/me/briefing/chat'
     | '/api/plan/$id/doc'
@@ -3011,6 +3035,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMcpServersIdRouteImport
       parentRoute: typeof ApiMcpServersRoute
     }
+    '/api/mcp/oauth/start': {
+      id: '/api/mcp/oauth/start'
+      path: '/oauth/start'
+      fullPath: '/api/mcp/oauth/start'
+      preLoaderRoute: typeof ApiMcpOauthStartRouteImport
+      parentRoute: typeof ApiMcpRoute
+    }
+    '/api/mcp/oauth/callback': {
+      id: '/api/mcp/oauth/callback'
+      path: '/oauth/callback'
+      fullPath: '/api/mcp/oauth/callback'
+      preLoaderRoute: typeof ApiMcpOauthCallbackRouteImport
+      parentRoute: typeof ApiMcpRoute
+    }
     '/api/mcp/gw/$server': {
       id: '/api/mcp/gw/$server'
       path: '/gw/$server'
@@ -3763,6 +3801,8 @@ interface ApiMcpRouteChildren {
   ApiMcpServersRoute: typeof ApiMcpServersRouteWithChildren
   ApiMcpTestRoute: typeof ApiMcpTestRoute
   ApiMcpGwServerRoute: typeof ApiMcpGwServerRoute
+  ApiMcpOauthCallbackRoute: typeof ApiMcpOauthCallbackRoute
+  ApiMcpOauthStartRoute: typeof ApiMcpOauthStartRoute
 }
 
 const ApiMcpRouteChildren: ApiMcpRouteChildren = {
@@ -3771,6 +3811,8 @@ const ApiMcpRouteChildren: ApiMcpRouteChildren = {
   ApiMcpServersRoute: ApiMcpServersRouteWithChildren,
   ApiMcpTestRoute: ApiMcpTestRoute,
   ApiMcpGwServerRoute: ApiMcpGwServerRoute,
+  ApiMcpOauthCallbackRoute: ApiMcpOauthCallbackRoute,
+  ApiMcpOauthStartRoute: ApiMcpOauthStartRoute,
 }
 
 const ApiMcpRouteWithChildren =
