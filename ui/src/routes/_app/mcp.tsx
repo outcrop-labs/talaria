@@ -126,7 +126,23 @@ async function patchServer(id: string, body: unknown): Promise<string | null> {
   return null
 }
 
+// Scope dropdown sentinels: explicit states, not empty-placeholder magic.
+const ALL_TOOLS = '__all_tools__'
 const NO_ACCESS = '__no_access__'
+
+/** What a scope selection means. Sentinels win over tool picks when NEWLY
+ *  added; otherwise the tool subset stands. */
+function resolveScopePick(
+  sel: string[],
+  prev: { denied: boolean; tools: string[] | null },
+): { denied: boolean; tools: string[] | null } {
+  const pickedNone = sel.includes(NO_ACCESS) && !prev.denied
+  if (pickedNone) return { denied: true, tools: null }
+  const pickedAll = sel.includes(ALL_TOOLS) && (prev.denied || prev.tools !== null)
+  if (pickedAll) return { denied: false, tools: null }
+  const tools = sel.filter((t) => t !== ALL_TOOLS && t !== NO_ACCESS)
+  return { denied: false, tools: tools.length ? tools : null }
+}
 
 /** One registered server. Design grammar: a calm header (identity left, one
  *  status cluster right, actions in a kebab), the tool strip, then a single
@@ -308,9 +324,12 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
                   name={agentLabel(a.agentModel)}
                   tools={
                     <Combobox
-                      options={toolOptions}
-                      selected={a.tools ?? []}
-                      onChange={(tools) => void patch({ assign: { agentModel: a.agentModel, tools: tools.length ? tools : null } })}
+                      options={[{ value: ALL_TOOLS, label: 'All tools' }, ...toolOptions]}
+                      selected={a.tools ?? [ALL_TOOLS]}
+                      onChange={(sel) => {
+                        const next = resolveScopePick(sel, { denied: false, tools: a.tools })
+                        void patch({ assign: { agentModel: a.agentModel, tools: next.tools } })
+                      }}
                       multiple
                       size="sm"
                       placeholder="All tools"
