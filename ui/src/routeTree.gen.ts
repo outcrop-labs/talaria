@@ -59,6 +59,7 @@ import { Route as AppAgentsRouteImport } from './routes/_app/agents'
 import { Route as AppAdminRouteImport } from './routes/_app/admin'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as KbSpaceSlugRouteImport } from './routes/kb.space.$slug'
+import { Route as ApiWellKnownTalariaInstanceRouteImport } from './routes/api/well-known.talaria-instance'
 import { Route as ApiUploadsIdRouteImport } from './routes/api/uploads.$id'
 import { Route as ApiTemplatesIdRouteImport } from './routes/api/templates.$id'
 import { Route as ApiTasksIdRouteImport } from './routes/api/tasks.$id'
@@ -109,8 +110,10 @@ import { Route as ApiAdminPermissionsRouteImport } from './routes/api/admin.perm
 import { Route as ApiAdminOutreachRouteImport } from './routes/api/admin.outreach'
 import { Route as ApiAdminModelRolesRouteImport } from './routes/api/admin.model-roles'
 import { Route as ApiAdminJudgeRouteImport } from './routes/api/admin.judge'
+import { Route as ApiAdminInstanceRouteImport } from './routes/api/admin.instance'
 import { Route as ApiAdminGuardrailsRouteImport } from './routes/api/admin.guardrails'
 import { Route as ApiAdminEncryptionRouteImport } from './routes/api/admin.encryption'
+import { Route as ApiAdminDomainsRouteImport } from './routes/api/admin.domains'
 import { Route as AppBoardsBoardIdRouteImport } from './routes/_app/boards/$boardId'
 import { Route as ApiTeamsIdMembersRouteImport } from './routes/api/teams.$id.members'
 import { Route as ApiTasksIdWatchersRouteImport } from './routes/api/tasks.$id.watchers'
@@ -437,6 +440,12 @@ const KbSpaceSlugRoute = KbSpaceSlugRouteImport.update({
   path: '/kb/space/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiWellKnownTalariaInstanceRoute =
+  ApiWellKnownTalariaInstanceRouteImport.update({
+    id: '/api/well-known/talaria-instance',
+    path: '/api/well-known/talaria-instance',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiUploadsIdRoute = ApiUploadsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -687,6 +696,11 @@ const ApiAdminJudgeRoute = ApiAdminJudgeRouteImport.update({
   path: '/api/admin/judge',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAdminInstanceRoute = ApiAdminInstanceRouteImport.update({
+  id: '/api/admin/instance',
+  path: '/api/admin/instance',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAdminGuardrailsRoute = ApiAdminGuardrailsRouteImport.update({
   id: '/api/admin/guardrails',
   path: '/api/admin/guardrails',
@@ -695,6 +709,11 @@ const ApiAdminGuardrailsRoute = ApiAdminGuardrailsRouteImport.update({
 const ApiAdminEncryptionRoute = ApiAdminEncryptionRouteImport.update({
   id: '/api/admin/encryption',
   path: '/api/admin/encryption',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAdminDomainsRoute = ApiAdminDomainsRouteImport.update({
+  id: '/api/admin/domains',
+  path: '/api/admin/domains',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppBoardsBoardIdRoute = AppBoardsBoardIdRouteImport.update({
@@ -1147,8 +1166,10 @@ export interface FileRoutesByFullPath {
   '/api/users': typeof ApiUsersRoute
   '/kb/$slug': typeof KbSlugRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/domains': typeof ApiAdminDomainsRoute
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
+  '/api/admin/instance': typeof ApiAdminInstanceRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/outreach': typeof ApiAdminOutreachRoute
@@ -1199,6 +1220,7 @@ export interface FileRoutesByFullPath {
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
+  '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards/': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -1326,8 +1348,10 @@ export interface FileRoutesByTo {
   '/kb/$slug': typeof KbSlugRoute
   '/': typeof AppIndexRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/domains': typeof ApiAdminDomainsRoute
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
+  '/api/admin/instance': typeof ApiAdminInstanceRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/outreach': typeof ApiAdminOutreachRoute
@@ -1378,6 +1402,7 @@ export interface FileRoutesByTo {
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
+  '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -1507,8 +1532,10 @@ export interface FileRoutesById {
   '/kb/$slug': typeof KbSlugRoute
   '/_app/': typeof AppIndexRoute
   '/_app/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/domains': typeof ApiAdminDomainsRoute
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
+  '/api/admin/instance': typeof ApiAdminInstanceRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
   '/api/admin/model-roles': typeof ApiAdminModelRolesRoute
   '/api/admin/outreach': typeof ApiAdminOutreachRoute
@@ -1559,6 +1586,7 @@ export interface FileRoutesById {
   '/api/tasks/$id': typeof ApiTasksIdRouteWithChildren
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
+  '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/_app/boards/': typeof AppBoardsIndexRoute
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -1688,8 +1716,10 @@ export interface FileRouteTypes {
     | '/api/users'
     | '/kb/$slug'
     | '/boards/$boardId'
+    | '/api/admin/domains'
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
+    | '/api/admin/instance'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
     | '/api/admin/outreach'
@@ -1740,6 +1770,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id'
     | '/api/templates/$id'
     | '/api/uploads/$id'
+    | '/api/well-known/talaria-instance'
     | '/kb/space/$slug'
     | '/boards/'
     | '/boards/$boardId/$taskId'
@@ -1867,8 +1898,10 @@ export interface FileRouteTypes {
     | '/kb/$slug'
     | '/'
     | '/boards/$boardId'
+    | '/api/admin/domains'
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
+    | '/api/admin/instance'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
     | '/api/admin/outreach'
@@ -1919,6 +1952,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id'
     | '/api/templates/$id'
     | '/api/uploads/$id'
+    | '/api/well-known/talaria-instance'
     | '/kb/space/$slug'
     | '/boards'
     | '/boards/$boardId/$taskId'
@@ -2047,8 +2081,10 @@ export interface FileRouteTypes {
     | '/kb/$slug'
     | '/_app/'
     | '/_app/boards/$boardId'
+    | '/api/admin/domains'
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
+    | '/api/admin/instance'
     | '/api/admin/judge'
     | '/api/admin/model-roles'
     | '/api/admin/outreach'
@@ -2099,6 +2135,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id'
     | '/api/templates/$id'
     | '/api/uploads/$id'
+    | '/api/well-known/talaria-instance'
     | '/kb/space/$slug'
     | '/_app/boards/'
     | '/_app/boards/$boardId/$taskId'
@@ -2210,8 +2247,10 @@ export interface RootRouteChildren {
   ApiUploadsRoute: typeof ApiUploadsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
   KbSlugRoute: typeof KbSlugRoute
+  ApiAdminDomainsRoute: typeof ApiAdminDomainsRoute
   ApiAdminEncryptionRoute: typeof ApiAdminEncryptionRoute
   ApiAdminGuardrailsRoute: typeof ApiAdminGuardrailsRoute
+  ApiAdminInstanceRoute: typeof ApiAdminInstanceRoute
   ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
   ApiAdminModelRolesRoute: typeof ApiAdminModelRolesRoute
   ApiAdminOutreachRoute: typeof ApiAdminOutreachRoute
@@ -2239,6 +2278,7 @@ export interface RootRouteChildren {
   ApiRagCollectionsRoute: typeof ApiRagCollectionsRouteWithChildren
   ApiRagSearchRoute: typeof ApiRagSearchRoute
   ApiTasksIdRoute: typeof ApiTasksIdRouteWithChildren
+  ApiWellKnownTalariaInstanceRoute: typeof ApiWellKnownTalariaInstanceRoute
   KbSpaceSlugRoute: typeof KbSpaceSlugRoute
   ApiKbCommentsIdRoute: typeof ApiKbCommentsIdRoute
   ApiKbDocsIdRoute: typeof ApiKbDocsIdRouteWithChildren
@@ -2603,6 +2643,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KbSpaceSlugRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/well-known/talaria-instance': {
+      id: '/api/well-known/talaria-instance'
+      path: '/api/well-known/talaria-instance'
+      fullPath: '/api/well-known/talaria-instance'
+      preLoaderRoute: typeof ApiWellKnownTalariaInstanceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/uploads/$id': {
       id: '/api/uploads/$id'
       path: '/$id'
@@ -2953,6 +3000,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdminJudgeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/admin/instance': {
+      id: '/api/admin/instance'
+      path: '/api/admin/instance'
+      fullPath: '/api/admin/instance'
+      preLoaderRoute: typeof ApiAdminInstanceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/admin/guardrails': {
       id: '/api/admin/guardrails'
       path: '/api/admin/guardrails'
@@ -2965,6 +3019,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/encryption'
       fullPath: '/api/admin/encryption'
       preLoaderRoute: typeof ApiAdminEncryptionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin/domains': {
+      id: '/api/admin/domains'
+      path: '/api/admin/domains'
+      fullPath: '/api/admin/domains'
+      preLoaderRoute: typeof ApiAdminDomainsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/boards/$boardId': {
@@ -4156,8 +4217,10 @@ const rootRouteChildren: RootRouteChildren = {
   ApiUploadsRoute: ApiUploadsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
   KbSlugRoute: KbSlugRoute,
+  ApiAdminDomainsRoute: ApiAdminDomainsRoute,
   ApiAdminEncryptionRoute: ApiAdminEncryptionRoute,
   ApiAdminGuardrailsRoute: ApiAdminGuardrailsRoute,
+  ApiAdminInstanceRoute: ApiAdminInstanceRoute,
   ApiAdminJudgeRoute: ApiAdminJudgeRoute,
   ApiAdminModelRolesRoute: ApiAdminModelRolesRoute,
   ApiAdminOutreachRoute: ApiAdminOutreachRoute,
@@ -4185,6 +4248,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiRagCollectionsRoute: ApiRagCollectionsRouteWithChildren,
   ApiRagSearchRoute: ApiRagSearchRoute,
   ApiTasksIdRoute: ApiTasksIdRouteWithChildren,
+  ApiWellKnownTalariaInstanceRoute: ApiWellKnownTalariaInstanceRoute,
   KbSpaceSlugRoute: KbSpaceSlugRoute,
   ApiKbCommentsIdRoute: ApiKbCommentsIdRoute,
   ApiKbDocsIdRoute: ApiKbDocsIdRouteWithChildren,

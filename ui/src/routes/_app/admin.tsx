@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Avatar } from '@/components/ui/avatar'
@@ -147,6 +148,8 @@ function AdminPage() {
         {tab === 'org' && (
           <>
             <OrgPanel />
+            <InstanceDomainPanel />
+            <SignupDomainsPanel />
             <OrgGooglePanel />
           </>
         )}
@@ -396,6 +399,239 @@ function MemberDefaultsPanel({ perms }: { perms: PermsData }) {
           </div>
         ))}
       </div>
+    </Panel>
+  )
+}
+
+/** The HOSTING domain — where this deployment lives. Verified by a self-
+ *  fetch round trip (DNS + routing + TLS must land on this instance), and
+ *  then used as the canonical base URL (stable OAuth callbacks, links). */
+function InstanceDomainPanel() {
+  const qc = useQueryClient()
+  const { data, isPending } = useQuery({
+    queryKey: ['instance-domain'],
+    queryFn: async (): Promise<{ domain: string; verified: boolean; verifiedAt: string | null } | null> => {
+      const r = await fetch('/api/admin/instance', { credentials: 'same-origin' })
+      if (!r.ok) return null
+      return ((await r.json()) as { instance: { domain: string; verified: boolean; verifiedAt: string | null } | null }).instance
+    },
+  })
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const refresh = () => qc.invalidateQueries({ queryKey: ['instance-domain'] })
+
+  const post = async (body: unknown) => {
+    setBusy(true)
+    setError(null)
+    const r = await fetch('/api/admin/instance', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const j = (await r.json().catch(() => ({}))) as { error?: string; verified?: boolean }
+    setBusy(false)
+    if (!r.ok || j.error) setError(j.error ?? 'failed')
+    await refresh()
+  }
+
+  return (
+    <Panel className="mt-4">
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Instance domain</span>
+        <InfoTip text="Where THIS Talaria deployment is hosted (e.g. talaria.yourcompany.com) — separate from your email sign-up domains below. Verification round-trips through the domain and confirms it reaches this exact instance. Once verified it becomes the canonical base URL: OAuth apps get one stable callback, links use it." />
+      </div>
+      {isPending ? (
+        <SkeletonRows rows={1} />
+      ) : data ? (
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-fg">{data.domain}</span>
+          {data.verified ? (
+            <span className="rounded-full border border-[color:var(--theme-success)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-success)]">
+              ✓ verified — routes to this instance
+            </span>
+          ) : (
+            <span className="rounded-full border border-[color:var(--theme-warning)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-warning)]">
+              unverified
+            </span>
+          )}
+          <span className="flex-1" />
+          {!data.verified && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void post({ verify: true })}>
+              {busy ? 'Checking' : 'Verify'}
+            </Button>
+          )}
+          <button
+            type="button"
+            title="Clear the hosting domain"
+            onClick={() => void post({ domain: null })}
+            className="text-muted hover:text-[color:var(--theme-danger)]"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Input
+            size="sm"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && draft.trim() && void post({ domain: draft.trim() })}
+            placeholder="talaria.yourcompany.com — where this instance is hosted"
+            className="w-96"
+          />
+          <Button size="sm" disabled={!draft.trim() || busy} onClick={() => void post({ domain: draft.trim() })}>
+            Set domain
+          </Button>
+        </div>
+      )}
+      {error && (
+        <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
+          {error}
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+interface OrgDomainRow {
+  id: string
+  domain: string
+  verified: boolean
+  verificationToken: string
+  verifiedAt: string | null
+}
+
+/** Sign-up domains: prove a domain with a DNS TXT record and anyone signing
+ *  in through Google with an email on it joins as a member — no invites. */
+function SignupDomainsPanel() {
+  const qc = useQueryClient()
+  const { data, isPending } = useQuery({
+    queryKey: ['org-domains'],
+    queryFn: async (): Promise<OrgDomainRow[]> => {
+      const r = await fetch('/api/admin/domains', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { domains: OrgDomainRow[] }).domains
+    },
+  })
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [verifying, setVerifying] = useState<string | null>(null)
+  const refresh = () => qc.invalidateQueries({ queryKey: ['org-domains'] })
+
+  const add = async () => {
+    if (!draft.trim()) return
+    setError(null)
+    const r = await fetch('/api/admin/domains', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domain: draft.trim() }),
+    })
+    if (!r.ok) {
+      setError(((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed')
+      return
+    }
+    setDraft('')
+    await refresh()
+  }
+  const verify = async (id: string) => {
+    setVerifying(id)
+    setError(null)
+    const r = await fetch('/api/admin/domains', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verifyId: id }),
+    })
+    const j = (await r.json().catch(() => ({}))) as { verified?: boolean; error?: string }
+    setVerifying(null)
+    if (!j.verified) setError(j.error ?? 'verification failed')
+    await refresh()
+  }
+
+  return (
+    <Panel className="mt-4">
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Email sign-up domains</span>
+        <InfoTip text="The domain after the @ in your team's EMAIL addresses — not where Talaria is hosted (talaria.yourcompany.com hosting still means yourcompany.com emails). Add it, publish the TXT record to prove ownership, and anyone signing in with Google on that email domain becomes a member automatically — no invites, no env edits. Email subdomains are separate; add each you use. Password logins stay env-managed." />
+      </div>
+      {isPending ? (
+        <SkeletonRows rows={2} />
+      ) : (
+        <div className="space-y-2">
+          {(data ?? []).length === 0 && (
+            <div className="font-sans text-xs text-muted">No email domains yet — add the domain your team's email addresses use to open self-service joins.</div>
+          )}
+          {(data ?? []).map((d) => (
+            <div key={d.id} className="space-y-1.5 rounded-xl border border-line-subtle p-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-fg">{d.domain}</span>
+                {d.verified ? (
+                  <span className="rounded-full border border-[color:var(--theme-success)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-success)]">
+                    ✓ verified — self-joins open
+                  </span>
+                ) : (
+                  <span className="rounded-full border border-[color:var(--theme-warning)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-warning)]">
+                    awaiting DNS proof
+                  </span>
+                )}
+                <span className="flex-1" />
+                {!d.verified && (
+                  <Button size="sm" variant="outline" disabled={verifying === d.id} onClick={() => void verify(d.id)}>
+                    {verifying === d.id ? 'Checking' : 'Verify'}
+                  </Button>
+                )}
+                <button
+                  type="button"
+                  title="Remove — self-joins from this domain stop immediately"
+                  onClick={async () => {
+                    if (!(await confirm({ title: 'Remove domain', message: `Remove ${d.domain}? New self-joins stop; existing members keep their accounts.`, confirmLabel: 'Remove' }))) return
+                    await fetch('/api/admin/domains', {
+                      method: 'DELETE',
+                      credentials: 'same-origin',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ id: d.id }),
+                    })
+                    await refresh()
+                  }}
+                  className="text-muted hover:text-[color:var(--theme-danger)]"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+              {!d.verified && (
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0 text-[11px] text-muted">TXT on _talaria-verify.{d.domain}:</span>
+                  <code className="min-w-0 flex-1 truncate rounded bg-card px-1.5 py-0.5 text-[11px] text-fg">{d.verificationToken}</code>
+                  <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard.writeText(d.verificationToken)}>
+                    Copy
+                  </Button>
+                </div>
+              )}
+            </div>
+          ))}
+          <div className="flex items-center gap-2 pt-1">
+            <Input
+              size="sm"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void add()}
+              placeholder="yourcompany.com — your email domain"
+              className="w-72"
+            />
+            <Button size="sm" onClick={() => void add()} disabled={!draft.trim()}>
+              Add domain
+            </Button>
+          </div>
+          {error && (
+            <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
+              {error}
+            </div>
+          )}
+        </div>
+      )}
     </Panel>
   )
 }
