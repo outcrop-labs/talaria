@@ -7,26 +7,33 @@ import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Combobox } from '@/components/ui/combobox'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
-import { useSession } from '@/lib/session'
+import { useDeniedViews, useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
 import { savePreferredModel, useModels, usePreferredModel } from '@/lib/muse'
 import { AssistantSection } from '@/components/assistant/assistant-section'
+import { AppSurface } from '@/components/app/app-surface'
+import { useEnabledApps } from '@/lib/apps'
 import { InfoTip } from '@/components/ui/info-tip'
 import { cn } from '@/lib/cn'
 
 export const Route = createFileRoute('/_app/settings')({
   component: SettingsPage,
-  // /settings?tab=assistant deep-links a tab.
+  // /settings?tab=assistant deep-links a tab. `app:<slug>` tabs come from
+  // enabled apps' settings surfaces — validated at render (the app list is
+  // async), unknown slugs fall back to Profile.
   validateSearch: (search: Record<string, unknown>): { tab?: SettingsTab } => {
     const t = SETTINGS_TABS.find((v) => v.id === search.tab)
-    return t ? { tab: t.id } : {}
+    if (t) return { tab: t.id }
+    if (typeof search.tab === 'string' && /^app:[a-z0-9-]+$/.test(search.tab)) return { tab: search.tab as SettingsTab }
+    return {}
   },
 })
 
 // Personal settings, tabbed by concern: Profile (identity + drafting model),
-// Assistant (the member's whole personal agent), Connections, API keys.
+// Assistant (the member's whole personal agent), Connections, API keys —
+// plus one tab per enabled app that ships a settings surface.
 
-type SettingsTab = 'profile' | 'assistant' | 'connections' | 'keys'
+type SettingsTab = 'profile' | 'assistant' | 'connections' | 'keys' | `app:${string}`
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'profile', label: 'Profile' },
   { id: 'assistant', label: 'Assistant' },
@@ -43,6 +50,13 @@ function SettingsPage() {
   const nav = Route.useNavigate()
   const tab: SettingsTab = search.tab ?? 'profile'
   const setTab = (t: SettingsTab) => void nav({ search: t === 'profile' ? {} : { tab: t } })
+  // Enabled apps with a settings surface get their own tab, labeled by the
+  // app — only for people granted the app (apps are explicit-grant).
+  const { data: enabledApps = [] } = useEnabledApps()
+  const deniedForApps = useDeniedViews()
+  const appTabs = enabledApps
+    .filter((a) => a.surfaces.settings && !deniedForApps.includes(`/x/${a.slug}`))
+    .map((a) => ({ id: `app:${a.slug}` as SettingsTab, label: a.surfaces.settings! }))
 
   useEffect(() => {
     if (user) setName(user.name ?? '')
@@ -75,7 +89,7 @@ function SettingsPage() {
       <div className="mx-auto w-full max-w-2xl">
         <h1 className="mercury-text mb-4 text-lg font-semibold">Settings</h1>
         <div className="mb-6 flex gap-1 border-b border-line-subtle">
-          {SETTINGS_TABS.map((t) => (
+          {[...SETTINGS_TABS, ...appTabs].map((t) => (
             <button
               key={t.id}
               type="button"
@@ -142,6 +156,7 @@ function SettingsPage() {
           </>
         )}
         {tab === 'keys' && <ApiKeysSection />}
+        {tab.startsWith('app:') && <AppSurface slug={tab.slice(4)} surface="settings" />}
       </div>
     </div>
   )

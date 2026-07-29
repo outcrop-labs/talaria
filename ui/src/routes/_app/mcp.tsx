@@ -38,6 +38,7 @@ interface McpServerRow {
   allAgents: boolean
   authMode: 'org' | 'per-user'
   builtin: boolean
+  appSlug: string | null
   oauthEnabled: boolean
   /** OAuth org connection state (null for header-auth servers). */
   orgConnected: boolean | null
@@ -233,6 +234,13 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
                 title="Talaria's own toolkit — every agent carries it. Govern who may use which tools below; identity and lifecycle are managed by the platform."
               >
                 built-in
+              </span>
+            ) : s.appSlug ? (
+              <span
+                className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted"
+                title={`Published by the "${s.appSlug}" app — tools dispatch inside this deployment. Govern access below; lifecycle follows the app (Manage → Apps).`}
+              >
+                app
               </span>
             ) : (
               domain && <span className="truncate text-[11px] text-muted">{domain}</span>

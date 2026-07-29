@@ -166,6 +166,16 @@ const MIGRATIONS: string[] = [
     revoked_at timestamptz
   )`,
   `create index if not exists invites_email_idx on invites(email)`,
+  `create table if not exists app_data (
+    app text not null,
+    collection text not null,
+    id uuid not null default gen_random_uuid(),
+    data jsonb not null default '{}',
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    primary key (app, collection, id)
+  )`,
+  `create index if not exists app_data_updated_idx on app_data(app, collection, updated_at desc)`,
   `create table if not exists org_domains (
     id uuid primary key default gen_random_uuid(),
     domain text not null unique,
@@ -207,6 +217,7 @@ const MIGRATIONS: string[] = [
   `alter table mcp_servers add column if not exists required_headers jsonb not null default '[]'`,
   `alter table mcp_servers add column if not exists builtin boolean not null default false`,
   `alter table mcp_servers add column if not exists oauth jsonb`,
+  `alter table mcp_servers add column if not exists app_slug text`,
   `create table if not exists mcp_oauth_states (
     state text primary key,
     server_id uuid not null references mcp_servers(id) on delete cascade,

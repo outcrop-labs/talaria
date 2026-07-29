@@ -32,6 +32,7 @@ export const MANAGE_VIEWS: { to: string; label: string }[] = [
   { to: '/mcp', label: 'MCP' },
   { to: '/templates', label: 'Templates' },
   { to: '/observability', label: 'Observability' },
+  { to: '/apps', label: 'Apps' },
 ]
 
 export interface NavSection {
@@ -64,6 +65,7 @@ export const NAV: NavSection[] = [
       { to: '/mcp', label: 'MCP', icon: '⌁' },
       { to: '/templates', label: 'Templates', icon: '▣' },
       { to: '/observability', label: 'Observability', icon: '◉' },
+      { to: '/apps', label: 'Apps', icon: '⬡' },
     ],
   },
 ]
