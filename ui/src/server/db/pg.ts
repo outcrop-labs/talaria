@@ -152,6 +152,7 @@ const MIGRATIONS: string[] = [
   `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
   `alter table users add column if not exists allowed_manage_views text[] not null default '{}'`,
   `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
+  `alter table kb_spaces add column if not exists okf_doc_id uuid references kb_docs(id) on delete set null`,
   `create table if not exists kb_comments (
     id uuid primary key default gen_random_uuid(),
     doc_id uuid not null references kb_docs(id) on delete cascade,

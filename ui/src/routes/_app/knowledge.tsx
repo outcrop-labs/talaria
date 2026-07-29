@@ -99,12 +99,27 @@ function useIsOwner(item: { ownerUserId: string | null; createdBy: string | null
   return item.ownerUserId ? item.ownerUserId === me.id : item.createdBy === (me.email ?? me.name)
 }
 
-// Shared cross-reference search for the editor's "link to doc" button.
+// Shared cross-reference search for the editor's link button: knowledge docs
+// AND artifacts — an artifact picked here embeds INLINE as a link at the
+// caret (the bottom attachments strip stays for formal doc-artifact ties).
 const docSearch: DocSearchFn = async (q) => {
   if (!q.trim()) return []
-  const hits = await searchKb(q)
-  // Editor cross-links point at real docs only; space overviews have no route.
-  return hits.filter((h) => h.kind === 'doc').map((h) => ({ id: h.id, title: h.title, icon: h.icon, href: `/knowledge/${h.id}` }))
+  const [hits, artifacts] = await Promise.all([
+    searchKb(q),
+    fetch('/api/artifacts', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : { artifacts: [] }))
+      .then((d: { artifacts?: Array<{ id: string; title: string; kind: string }> }) =>
+        (d.artifacts ?? []).filter((a) => a.title.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 6),
+      )
+      .catch(() => [] as Array<{ id: string; title: string; kind: string }>),
+  ])
+  return [
+    ...hits
+      .filter((h) => h.kind === 'doc')
+      .slice(0, 6)
+      .map((h) => ({ id: h.id, title: h.title || 'Untitled', icon: h.icon, href: `/knowledge?d=${h.id}` })),
+    ...artifacts.map((a) => ({ id: a.id, title: a.title || 'Untitled', icon: '💎', href: `/artifacts?a=${a.id}` })),
+  ]
 }
 
 export const Route = createFileRoute('/_app/knowledge')({
@@ -674,7 +689,6 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
   const bodyRef = useRef<HTMLDivElement>(null)
   const [name, setName] = useState('')
   const [emojiOpen, setEmojiOpen] = useState(false)
-  const [saving, setSaving] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [showToc, setShowToc] = useState(false)
@@ -702,14 +716,9 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
   }, [fullscreen])
 
   const save = async (patch: Parameters<typeof updateSpace>[1]) => {
-    setSaving(true)
-    try {
-      await updateSpace(spaceId, patch)
-      await qc.invalidateQueries({ queryKey: ['kb-space', spaceId] })
-      await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
-    } finally {
-      setSaving(false)
-    }
+    await updateSpace(spaceId, patch)
+    await qc.invalidateQueries({ queryKey: ['kb-space', spaceId] })
+    await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
   }
   const saveBody = () => save({ name: name.trim() || 'Untitled', body: editorRef.current?.getMarkdown() ?? space?.body ?? '' })
 
@@ -856,12 +865,6 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
           </div>
         )}
       </div>
-      <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
-        <span>Top-level document · child docs nest under it</span>
-        <span className="ml-auto" />
-        {mode === 'edit' && <span className="text-[11px] text-muted">{saving ? 'Saving' : 'Saved'}</span>}
-      </div>
-
       <PermissionsModal
         open={shareOpen}
         onClose={() => setShareOpen(false)}
@@ -912,7 +915,6 @@ function DocEditor({
   const bodyRef = useRef<HTMLDivElement>(null)
   const [title, setTitle] = useState('')
   const [dirty, setDirty] = useState(false)
-  const [saving, setSaving] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [showToc, setShowToc] = useState(false)
   const [emojiOpen, setEmojiOpen] = useState(false)
@@ -927,6 +929,8 @@ function DocEditor({
   const [mode, setMode] = useState<'read' | 'edit'>('read')
   const [showComments, setShowComments] = useState(false)
   const [focusThread, setFocusThread] = useState<string | null>(null)
+  const [museSel, setMuseSel] = useState<{ text: string; source: 'read' | 'editor' } | null>(null)
+  const { openMenu: openDocMenu, menu: docMenu } = useContextMenu()
   const readRef = useRef<HTMLDivElement>(null)
   const [pendingQuote, setPendingQuote] = useState<string | null>(null)
   const [selPop, setSelPop] = useState<{ x: number; y: number; quote: string } | null>(null)
@@ -1018,15 +1022,10 @@ function DocEditor({
   }, [docs, docId])
 
   const save = async (patch: Parameters<typeof saveDoc>[1]) => {
-    setSaving(true)
-    try {
-      await saveDoc(docId, patch)
-      await qc.invalidateQueries({ queryKey: ['kb-doc', docId] })
-      await qc.invalidateQueries({ queryKey: ['kb-docs', doc?.spaceId] })
-      setDirty(false)
-    } finally {
-      setSaving(false)
-    }
+    await saveDoc(docId, patch)
+    await qc.invalidateQueries({ queryKey: ['kb-doc', docId] })
+    await qc.invalidateQueries({ queryKey: ['kb-docs', doc?.spaceId] })
+    setDirty(false)
   }
   const saveBody = () => save({ title, body: editorRef.current?.getMarkdown() ?? doc?.body ?? '' })
 
@@ -1094,9 +1093,22 @@ function DocEditor({
             placeholder="Untitled"
           />
         ) : (
-          <h1 className="min-w-0 flex-1 truncate font-sans text-lg font-semibold text-fg">{doc.title}</h1>
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate font-sans text-lg font-semibold text-fg">{doc.title}</h1>
+            <div className="truncate text-[11px] text-muted">
+              edited {relativeTime(doc.updatedAt)}
+              {doc.updatedBy ? ` by ${doc.updatedBy}` : ''}
+            </div>
+          </div>
         )}
-        {doc.kind === 'agent' && <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">OKF</span>}
+        {doc.kind === 'agent' && (
+          <span
+            className="shrink-0 rounded border border-accent/40 bg-accent/10 px-1.5 text-[10px] uppercase tracking-wide text-accent"
+            title="Generated OKF digest — the Librarian maintains it from this space's promoted documents. Hand edits are overwritten on the next regeneration."
+          >
+            OKF · generated
+          </span>
+        )}
         {/* Who's here: green ring = editing right now. */}
         {presence.length > 1 && (
           <div className="flex shrink-0 -space-x-1.5">
@@ -1218,7 +1230,38 @@ function DocEditor({
         {mode === 'edit' ? (
           // Flush page surface: the editor fills the panel, text wraps to a
           // comfortable centered measure, and it autosaves as you type.
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div
+            className="flex min-w-0 flex-1 flex-col"
+            onContextMenu={(e) => {
+              // Our menu replaces the native one inside the editor: formatting
+              // + table structure on the selection, Muse, copy. (Global
+              // suppression exempts contenteditable, so this is deliberate.)
+              const sel = editorRef.current?.getSelectionText() ?? ''
+              const inTable = editorRef.current?.isInTable() ?? false
+              openDocMenu(e, [
+                { label: 'Bold', disabled: !sel, onSelect: () => editorRef.current?.toggleMark('bold') },
+                { label: 'Italic', disabled: !sel, onSelect: () => editorRef.current?.toggleMark('italic') },
+                { label: 'Strikethrough', disabled: !sel, onSelect: () => editorRef.current?.toggleMark('strike') },
+                { label: 'Inline code', disabled: !sel, onSelect: () => editorRef.current?.toggleMark('code') },
+                'sep',
+                ...(inTable
+                  ? ([
+                      { label: 'Add row below', onSelect: () => editorRef.current?.tableCommand('addRowAfter') },
+                      { label: 'Add row above', onSelect: () => editorRef.current?.tableCommand('addRowBefore') },
+                      { label: 'Add column right', onSelect: () => editorRef.current?.tableCommand('addColumnAfter') },
+                      { label: 'Add column left', onSelect: () => editorRef.current?.tableCommand('addColumnBefore') },
+                      { label: 'Delete row', onSelect: () => editorRef.current?.tableCommand('deleteRow') },
+                      { label: 'Delete column', onSelect: () => editorRef.current?.tableCommand('deleteColumn') },
+                      { label: 'Delete table', danger: true, onSelect: () => editorRef.current?.tableCommand('deleteTable') },
+                      'sep',
+                    ] as const)
+                  : ([{ label: 'Insert table', onSelect: () => editorRef.current?.tableCommand('insertTable') }, 'sep'] as const)),
+                { label: 'Ask Muse about selection', disabled: !sel, onSelect: () => setMuseSel({ text: sel, source: 'editor' }) },
+                { label: 'Copy selection', disabled: !sel, onSelect: () => void navigator.clipboard.writeText(sel) },
+                { label: 'Copy link', onSelect: () => copyAppLink(`/knowledge?d=${docId}`) },
+              ])
+            }}
+          >
             <RichEditor
               key={`${docId}-${seed}`}
               ref={editorRef}
@@ -1235,18 +1278,55 @@ function DocEditor({
             <MuseBar
               context={`Knowledge document “${title || doc.title}”${folderName ? ` in the “${folderName}” space` : ''}.`}
               currentText={() => editorRef.current?.getMarkdown() ?? doc.body}
+              selection={museSel?.text ?? null}
+              onClearSelection={() => setMuseSel(null)}
+              surgical={!!museSel}
               onAccept={async (md) => {
                 await save({ title, body: md })
                 setSeed((v) => v + 1)
+                setMuseSel(null)
+              }}
+              onAcceptSelection={async (replacement) => {
+                if (!museSel) return
+                if (museSel.source === 'editor') {
+                  editorRef.current?.replaceSelection(replacement)
+                  await saveBody()
+                } else {
+                  const body = editorRef.current?.getMarkdown() ?? doc.body
+                  await save({ title, body: body.replace(museSel.text, replacement) })
+                  setSeed((v) => v + 1)
+                }
+                setMuseSel(null)
               }}
             />
           </div>
         ) : (
           // Read mode: rendered markdown with the identical measure/typography as
           // the editor (both use .re-prose), so switching modes doesn't reflow.
+          <div className="flex min-w-0 flex-1 flex-col">
           <div
             ref={readRef}
             className="re-prose relative min-w-0 flex-1 overflow-y-auto"
+            onContextMenu={(e) => {
+              const sel = window.getSelection()?.toString().trim() ?? ''
+              openDocMenu(e, [
+                { label: 'Copy text', disabled: !sel && !doc.body, onSelect: () => void navigator.clipboard.writeText(sel || doc.body) },
+                { label: 'Copy link', onSelect: () => copyAppLink(`/knowledge?d=${docId}`) },
+                ...(sel
+                  ? [
+                      {
+                        label: 'Comment on selection',
+                        onSelect: () => {
+                          setPendingQuote(sel.slice(0, 500))
+                          setShowComments(true)
+                        },
+                      },
+                      { label: 'Ask Muse about selection', onSelect: () => setMuseSel({ text: sel, source: 'read' }) },
+                    ]
+                  : []),
+                { label: showComments ? 'Hide comments' : 'Comments', onSelect: () => setShowComments((v) => !v) },
+              ])
+            }}
             onClick={(e) => {
               const mark = (e.target as HTMLElement).closest?.('[data-kb-mark]') as HTMLElement | null
               if (mark?.dataset.kbMark) {
@@ -1268,20 +1348,37 @@ function DocEditor({
             }}
           >
             {selPop && (
-              <button
-                type="button"
+              <div
                 style={{ left: selPop.x, top: Math.max(selPop.y, 4) }}
-                className="absolute z-20 -translate-x-1/2 -translate-y-full rounded-lg border border-line bg-card px-2 py-1 text-xs text-fg shadow-lg transition-colors hover:border-accent"
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  setPendingQuote(selPop.quote)
-                  setShowComments(true)
-                  setSelPop(null)
-                  window.getSelection()?.removeAllRanges()
-                }}
+                className="absolute z-20 flex -translate-x-1/2 -translate-y-full overflow-hidden rounded-lg border border-line bg-card text-xs text-fg shadow-lg"
               >
-                <MessageSquareText size={12} className="mr-1 inline" /> Comment
-              </button>
+                <button
+                  type="button"
+                  className="px-2 py-1 transition-colors hover:bg-sidebar"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setPendingQuote(selPop.quote)
+                    setShowComments(true)
+                    setSelPop(null)
+                    window.getSelection()?.removeAllRanges()
+                  }}
+                >
+                  <MessageSquareText size={12} className="mr-1 inline" /> Comment
+                </button>
+                <span className="my-1 border-l border-line-subtle" />
+                <button
+                  type="button"
+                  className="px-2 py-1 text-accent transition-colors hover:bg-sidebar"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setMuseSel({ text: selPop.quote, source: 'read' })
+                    setSelPop(null)
+                    window.getSelection()?.removeAllRanges()
+                  }}
+                >
+                  <Sparkles size={12} className="mr-1 inline" /> Muse
+                </button>
+              </div>
             )}
             {doc.body.trim() ? (
               <Markdown className="tiptap">{doc.body}</Markdown>
@@ -1326,6 +1423,23 @@ function DocEditor({
             )}
 
             <ArtifactAttachments docId={docId} />
+          </div>
+          <MuseBar
+            context={`Knowledge document “${title || doc.title}”${folderName ? ` in the “${folderName}” space` : ''}.`}
+            currentText={() => doc.body}
+            selection={museSel?.text ?? null}
+            onClearSelection={() => setMuseSel(null)}
+            surgical={!!museSel && doc.body.includes(museSel.text)}
+            onAccept={async (md) => {
+              await save({ title, body: md })
+              setMuseSel(null)
+            }}
+            onAcceptSelection={async (replacement) => {
+              if (!museSel) return
+              await save({ title, body: doc.body.replace(museSel.text, replacement) })
+              setMuseSel(null)
+            }}
+          />
           </div>
         )}
 
@@ -1387,13 +1501,7 @@ function DocEditor({
         )}
       </div>
 
-      <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
-        <VisibilityIcon v={doc.visibility} />
-        <span>edited {relativeTime(doc.updatedAt)}{doc.updatedBy ? ` by ${doc.updatedBy}` : ''}</span>
-        <span className="ml-auto" />
-        {mode === 'edit' && <span className="text-[11px] text-muted">{saving ? 'Saving' : 'Saved'}</span>}
-      </div>
-
+      {docMenu}
       <PermissionsModal
         open={shareOpen}
         onClose={() => setShareOpen(false)}
@@ -1761,22 +1869,32 @@ function CommentBody({ c, meId, onDelete }: { c: KbComment; meId: string | null;
   )
 }
 
-/** Muse as the knowledge worker — the same drafting harness the internal
- *  editors use, docked under the doc editor: describe the change, watch the
- *  proposal stream, accept to replace the doc (a version snapshot lands via
- *  the normal save path). Refinements keep short chat memory. */
+/** Muse as the knowledge worker — ALWAYS present under the doc (read and
+ *  edit): describe a change and it drafts from the current document. With a
+ *  SELECTION in scope it works surgically — the proposal is a replacement for
+ *  just that passage, applied in place on accept. Refinements keep short chat
+ *  memory. */
 function MuseBar({
   context,
   currentText,
+  selection,
+  surgical,
+  onClearSelection,
   onAccept,
+  onAcceptSelection,
 }: {
   context: string
   currentText: () => string
+  selection?: string | null
+  /** True when the selection can be replaced in place. */
+  surgical?: boolean
+  onClearSelection?: () => void
   onAccept: (markdown: string) => Promise<void>
+  onAcceptSelection?: (replacement: string) => Promise<void>
 }) {
-  const [open, setOpen] = useState(false)
   const [instruction, setInstruction] = useState('')
   const [proposal, setProposal] = useState<string | null>(null)
+  const [proposalScope, setProposalScope] = useState<'doc' | 'selection'>('doc')
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [chat, setChat] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
@@ -1789,11 +1907,25 @@ function MuseBar({
     setGenerating(true)
     setError(null)
     setProposal('')
+    const scope = selection && surgical ? 'selection' : 'doc'
+    setProposalScope(scope)
     const ac = new AbortController()
     abortRef.current = ac
     try {
+      const current =
+        proposal !== null && proposalScope === scope
+          ? proposal
+          : scope === 'selection'
+            ? selection!
+            : currentText()
+      const ctx =
+        scope === 'selection'
+          ? `${context} You are editing ONLY this passage of the document — reply with the replacement passage alone, no commentary.`
+          : selection
+            ? `${context} Focus especially on this passage: «${selection.slice(0, 400)}»`
+            : context
       const full = await streamMuse(
-        { kind: 'document', context, current: proposal ?? currentText(), instruction: instr, chat },
+        { kind: 'document', context: ctx, current, instruction: instr, chat },
         (piece) => setProposal((prev) => (prev ?? '') + piece),
         ac.signal,
       )
@@ -1809,18 +1941,26 @@ function MuseBar({
     }
   }
 
-  if (!open) {
-    return (
-      <div className="flex justify-end border-t border-line-subtle px-4 py-1.5">
-        <Button variant="ghost" size="sm" onClick={() => setOpen(true)} title="Draft with AI — uses your preferred model (Settings)">
-          <Sparkles size={13} className="mr-1.5" /> Muse
-        </Button>
-      </div>
-    )
+  const accept = () => {
+    if (proposal === null) return
+    const md = proposal
+    setProposal(null)
+    if (proposalScope === 'selection' && onAcceptSelection) void onAcceptSelection(md.trim())
+    else void onAccept(md)
   }
 
   return (
     <div className="space-y-2 border-t border-line-subtle px-4 py-2.5">
+      {selection && (
+        <div className="flex items-start gap-1.5 border-l-2 border-accent/50 pl-2 font-sans text-[11px] italic text-muted">
+          <span className="min-w-0 flex-1 line-clamp-2">
+            {surgical ? 'editing selection: ' : 'focused on: '}“{selection}”
+          </span>
+          <button type="button" onClick={onClearSelection} className="shrink-0 text-muted hover:text-fg" title="Back to whole-document edits">
+            <X size={11} />
+          </button>
+        </div>
+      )}
       {proposal !== null && (
         <div className="max-h-56 overflow-y-auto rounded-xl border border-accent/30 bg-card/40 p-3">
           <Markdown className="tiptap text-sm">{proposal}</Markdown>
@@ -1830,7 +1970,6 @@ function MuseBar({
       <div className="flex items-end gap-2">
         <Sparkles size={14} className="mb-2.5 shrink-0 text-accent" />
         <Textarea
-          autoFocus
           autoGrow
           rows={1}
           value={instruction}
@@ -1839,12 +1978,17 @@ function MuseBar({
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               void generate()
-            } else if (e.key === 'Escape' && !generating) {
-              setOpen(false)
-              setProposal(null)
             }
           }}
-          placeholder={proposal !== null ? 'Refine the proposal, e.g. “tighter, and add a checklist”' : 'Describe the change — Muse drafts from the current document'}
+          placeholder={
+            proposal !== null
+              ? 'Refine the proposal, e.g. “tighter, and add a checklist”'
+              : selection
+                ? surgical
+                  ? 'How should this passage change?'
+                  : 'What about this passage? (it will guide a whole-doc draft)'
+                : 'Edit with Muse — describe the change, or select text for inline edits'
+          }
           className="max-h-32 text-sm"
         />
         <Button size="sm" className="shrink-0" onClick={() => void generate()} disabled={generating || !instruction.trim()}>
@@ -1852,18 +1996,8 @@ function MuseBar({
         </Button>
         {proposal !== null && !generating && (
           <>
-            <Button
-              size="sm"
-              variant="outline"
-              className="shrink-0"
-              onClick={() => {
-                const md = proposal
-                setProposal(null)
-                setOpen(false)
-                void onAccept(md)
-              }}
-            >
-              Accept
+            <Button size="sm" variant="outline" className="shrink-0" onClick={accept}>
+              {proposalScope === 'selection' ? 'Replace passage' : 'Accept'}
             </Button>
             <Button size="sm" variant="ghost" className="shrink-0" onClick={() => setProposal(null)}>
               Discard

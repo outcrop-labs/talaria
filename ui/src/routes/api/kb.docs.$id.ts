@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setDocRouting, setOfficial } from '@/server/kb'
+import { queueOkfRegen } from '@/server/kb-okf'
 import { canEditAgent, canEditHuman, canRead, canReadAgent, setEditors, canGovern } from '@/server/kb-perms'
 import { isElevatedAssistant } from '@/server/users'
 import { logAudit } from '@/server/audit'
@@ -116,6 +117,9 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         if (parsed.data.official !== undefined && parsed.data.official !== updated.official) {
           updated = (await setOfficial(params.id, parsed.data.official, actor)) ?? updated
           void logAudit({ actor, action: parsed.data.official ? 'kb.officialize' : 'kb.deofficialize', targetType: 'kb-doc', targetId: params.id, targetLabel: updated.title })
+          queueOkfRegen(updated.spaceId) // the Librarian re-digests the space
+        } else if (updated.official && parsed.data.body !== undefined) {
+          queueOkfRegen(updated.spaceId) // promoted content changed
         }
         const eff = await effectiveDocPerms(updated)
         return json({ doc: { ...updated, visibility: eff.perms.visibility, editPolicy: eff.perms.editPolicy }, editors: eff.grants })
@@ -127,7 +131,9 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
         const { perms, grants } = await effectiveDocPerms(doc)
         if (!canEditHuman(perms, user.id, user.email ?? user.name, grants)) return json({ error: 'forbidden' }, { status: 403 })
+        const gone = await getDoc(params.id)
         await deleteDoc(params.id)
+        if (gone?.official) queueOkfRegen(gone.spaceId)
         return json({ ok: true })
       },
     },

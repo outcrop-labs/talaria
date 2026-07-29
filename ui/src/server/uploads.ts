@@ -310,6 +310,21 @@ export async function canAccessUpload(
     select 1 as ok from uploads where id = ${uploadId} and uploaded_by = ${viewer.userId} limit 1
   `) as unknown as Array<{ ok: number }>
   if (own) return true
+  // An image embedded in a KB doc: readable by whoever can read the doc.
+  {
+    const docs = (await sql`
+      select id from kb_docs where body like ${'%' + uploadId + '%'} limit 5
+    `) as unknown as Array<{ id: string }>
+    for (const d of docs) {
+      const { getDoc, effectiveDocPerms } = await import('./kb')
+      const { canRead } = await import('./kb-perms')
+      const doc = await getDoc(d.id)
+      if (!doc) continue
+      const { perms, grants } = await effectiveDocPerms(doc)
+      if (canRead(perms, viewer.userId, viewer.who ?? null, grants)) return true
+    }
+  }
+
   const [reach] = (await sql`
     select 1 as ok where
       exists(

@@ -64,7 +64,7 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
             spaceId: params.id,
             parentId: parsed.data.parentId ?? null,
             title: parsed.data.title,
-            kind: 'agent',
+            kind: 'human',
             createdBy: name,
             // A personal assistant's doc belongs to its owner — otherwise the
             // human could never re-share what their assistant wrote for them.
