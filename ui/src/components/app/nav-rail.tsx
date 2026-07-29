@@ -49,7 +49,10 @@ export function NavRail({ user }: { user: SessionUser }) {
                 <li key={item.to}>
                   <Link
                     to={item.to}
-                    activeOptions={{ exact: item.to === '/' }}
+                    // Exact for Home and for app WORK items: /x/<slug> is a
+                    // path prefix of its sibling /x/<slug>/manage, and fuzzy
+                    // matching would light both up at once.
+                    activeOptions={{ exact: item.to === '/' || appItems.Manage!.some((m) => m.to.startsWith(item.to + '/')) }}
                     className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted transition-colors hover:bg-card hover:text-fg"
                     activeProps={{ className: 'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm bg-card text-fg [&_.nav-ico]:text-accent' }}
                   >
