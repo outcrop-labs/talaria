@@ -422,11 +422,12 @@ function InstanceDomainPanel() {
   const [busy, setBusy] = useState(false)
   const refresh = () => qc.invalidateQueries({ queryKey: ['instance-domain'] })
 
-  const post = async (body: unknown) => {
+  const post = async (body: Record<string, unknown>) => {
     setBusy(true)
     setError(null)
+    // PUT writes the domain config; POST runs the verify action.
     const r = await fetch('/api/admin/instance', {
-      method: 'POST',
+      method: 'verify' in body ? 'POST' : 'PUT',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -523,8 +524,9 @@ function EmailPanel() {
     setBusy(true)
     setError(null)
     setNotice(null)
+    // PUT patches the config; POST sends the test email.
     const r = await fetch('/api/admin/email', {
-      method: 'POST',
+      method: typeof body === 'object' && body !== null && 'test' in body ? 'POST' : 'PUT',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),

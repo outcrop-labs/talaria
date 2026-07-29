@@ -55,9 +55,10 @@ const fetchAdminApps = async (withCatalog: boolean): Promise<AdminApps | null> =
   return r.json()
 }
 
-const post = async (body: unknown): Promise<{ error?: string; slug?: string; pendingBuild?: boolean }> => {
+const post = async (body: Record<string, unknown>): Promise<{ error?: string; slug?: string; pendingBuild?: boolean }> => {
+  // POST installs (the action); PUT writes config (enable/disable, catalog).
   const r = await fetch('/api/admin/apps', {
-    method: 'POST',
+    method: 'installUrl' in body ? 'POST' : 'PUT',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),

@@ -23,44 +23,45 @@ export const Route = createFileRoute('/api/admin/email')({
           },
         })
       },
+      // PUT → config patch (the write); POST → send a test email (the action).
+      PUT: async ({ request }) => {
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(
+          request,
+          z.object({
+            provider: z.enum(['smtp', 'resend']).nullable().optional(),
+            from: z.string().max(200).optional(),
+            smtp: z
+              .object({
+                host: z.string().max(200).optional(),
+                port: z.number().int().min(1).max(65535).optional(),
+                secure: z.boolean().optional(),
+                user: z.string().max(200).optional(),
+                pass: z.string().max(500).nullable().optional(),
+              })
+              .optional(),
+            resend: z.object({ apiKey: z.string().max(200).nullable().optional() }).optional(),
+          }),
+        )
+        if (body instanceof Response) return body
+        await setEmailConfig(body)
+        void logAudit({ actor: actorOf(user), action: 'email.config', targetType: 'email', targetId: 'config', after: { provider: body.provider } })
+        return json({ ok: true })
+      },
       POST: async ({ request }) => {
         const user = await requireAdmin(request)
         if (user instanceof Response) return user
-        const actor = actorOf(user)
-        const body = await parseBody(
-          request,
-          z.union([
-            z.object({ test: z.literal(true) }),
-            z.object({
-              provider: z.enum(['smtp', 'resend']).nullable().optional(),
-              from: z.string().max(200).optional(),
-              smtp: z
-                .object({
-                  host: z.string().max(200).optional(),
-                  port: z.number().int().min(1).max(65535).optional(),
-                  secure: z.boolean().optional(),
-                  user: z.string().max(200).optional(),
-                  pass: z.string().max(500).nullable().optional(),
-                })
-                .optional(),
-              resend: z.object({ apiKey: z.string().max(200).nullable().optional() }).optional(),
-            }),
-          ]),
-        )
+        const body = await parseBody(request, z.object({ test: z.literal(true) }))
         if (body instanceof Response) return body
-        if ('test' in body) {
-          if (!user.email) return json({ error: 'your account has no email to test against' }, { status: 400 })
-          const r = await sendEmail({
-            to: user.email,
-            subject: 'Talaria test email',
-            html: emailShell('It works', '<p>Your transactional email configuration delivers. This is a test message from Talaria.</p>'),
-            text: 'Your transactional email configuration delivers.',
-          })
-          return r.ok ? json({ ok: true }) : json({ error: r.error }, { status: 502 })
-        }
-        await setEmailConfig(body)
-        void logAudit({ actor, action: 'email.config', targetType: 'email', targetId: 'config', after: { provider: body.provider } })
-        return json({ ok: true })
+        if (!user.email) return json({ error: 'your account has no email to test against' }, { status: 400 })
+        const r = await sendEmail({
+          to: user.email,
+          subject: 'Talaria test email',
+          html: emailShell('It works', '<p>Your transactional email configuration delivers. This is a test message from Talaria.</p>'),
+          text: 'Your transactional email configuration delivers.',
+        })
+        return r.ok ? json({ ok: true }) : json({ error: r.error }, { status: 502 })
       },
     },
   },

@@ -37,7 +37,9 @@ export const Route = createFileRoute('/api/admin/apps')({
         const catalog = wantCatalog ? await fetchCatalog() : null
         return json({ apps, pending, catalog, catalogUrl: await catalogUrl() })
       },
-      POST: async ({ request }) => {
+      // PUT → config writes (enable/disable, catalog source); POST → install
+      // (the action that pulls code into the deployment).
+      PUT: async ({ request }) => {
         const user = await requireAdmin(request)
         if (user instanceof Response) return user
         const actor = actorOf(user)
@@ -45,7 +47,6 @@ export const Route = createFileRoute('/api/admin/apps')({
           request,
           z.union([
             z.object({ app: z.string().min(1), enabled: z.boolean() }),
-            z.object({ installUrl: z.string().url(), slug: z.string().min(1).max(64).optional() }),
             z.object({ catalogUrl: z.string().url().nullable() }),
           ]),
         )
@@ -61,14 +62,25 @@ export const Route = createFileRoute('/api/admin/apps')({
             })
             return json({ ok: true })
           }
-          if ('installUrl' in body) {
-            const r = await installAppFromGit(body.installUrl, body.slug)
-            void logAudit({ actor, action: 'app.install', targetType: 'app', targetId: r.slug, targetLabel: body.installUrl })
-            return json(r)
-          }
           await setCatalogUrl(body.catalogUrl)
           void logAudit({ actor, action: 'app.catalog-url', targetType: 'app', targetLabel: body.catalogUrl ?? 'default' })
           return json({ ok: true, catalogUrl: await catalogUrl() })
+        } catch (e) {
+          return json({ error: (e as Error).message }, { status: 400 })
+        }
+      },
+      POST: async ({ request }) => {
+        const user = await requireAdmin(request)
+        if (user instanceof Response) return user
+        const body = await parseBody(
+          request,
+          z.object({ installUrl: z.string().url(), slug: z.string().min(1).max(64).optional() }),
+        )
+        if (body instanceof Response) return body
+        try {
+          const r = await installAppFromGit(body.installUrl, body.slug)
+          void logAudit({ actor: actorOf(user), action: 'app.install', targetType: 'app', targetId: r.slug, targetLabel: body.installUrl })
+          return json(r)
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })
         }
