@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useContextMenu } from '@/components/ui/context-menu'
-import { Textarea } from '@/components/ui/textarea'
 import { TierPicker } from '@/components/chat/tier-picker'
 import { StopButton } from '@/components/chat/composer-buttons'
 import { KeyHint } from '@/components/ui/kbd'
-import { MentionMenu, useMentions, type Mentionable } from '@/components/chat/mentions'
+import { type Mentionable } from '@/components/chat/mentions'
+import { EmojiButton } from '@/components/chat/emoji'
+import { ChatComposer, type ChatComposerHandle } from '@/components/chat/chat-composer'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { GuardCaveat, type GuardFinding } from '@/components/chat/guard-caveat'
 import { Markdown } from '@/components/ui/markdown'
@@ -78,7 +79,7 @@ export function ChatView({
   onTurnComplete?: () => void
 }) {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
-  const [input, setInput] = useState('')
+  const [composerEmpty, setComposerEmpty] = useState(true)
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [tier, setTier] = useState('') // '' = the agent's main model
   const [streaming, setStreaming] = useState(false)
@@ -89,12 +90,11 @@ export function ChatView({
   // Right-click a bubble → copy its text (the content is already markdown,
   // so one copy action covers both plain and markdown wants).
   const { openMenu, menu } = useContextMenu()
-  const [caret, setCaret] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
   const convIdRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const prevCount = useRef(0)
-  const taRef = useRef<HTMLTextAreaElement>(null)
+  const composerRef = useRef<ChatComposerHandle>(null)
 
   // Follow the stream WITHOUT smooth-scrolling: token flushes fire this every
   // few ms, and overlapping smooth animations rubber-band (the "bounce").
@@ -188,13 +188,12 @@ export function ChatView({
     if (res && convIdRef.current === id) setMessages(res.messages.map(toDisplay))
   }
 
-  const send = async () => {
-    const text = input.trim()
+  const send = async (text: string) => {
     if (!text && attachments.length === 0) return
     const atts = attachments
     setError(null)
-    setInput('')
     setAttachments([])
+    composerRef.current?.clear()
 
     // Claude-style flow: sending while the agent is replying never interrupts —
     // the message queues into history and the agent picks it up next turn.
@@ -274,27 +273,6 @@ export function ChatView({
 
   const stop = () => abortRef.current?.abort()
 
-  const { mention, picked, insert, onKeyDown: onMentionKey } = useMentions(input, caret, setCaret, mentionables, (next, pos) => {
-    setInput(next)
-    requestAnimationFrame(() => {
-      taRef.current?.focus()
-      taRef.current?.setSelectionRange(pos, pos)
-      setCaret(pos)
-    })
-  })
-  const trackCaret = () => setCaret(taRef.current?.selectionStart ?? 0)
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (onMentionKey(e)) return
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      void send()
-    }
-    if (e.key === 'Escape' && streaming) {
-      e.preventDefault()
-      stop()
-    }
-  }
 
   // Esc stops the stream even when focus wandered off the textarea.
   useEffect(() => {
@@ -374,7 +352,6 @@ export function ChatView({
       </div>
 
       <div className="relative px-6 pb-6">
-        {mention && <MentionMenu mention={mention} picked={picked} onPick={insert} className="absolute bottom-full left-4 mb-1" />}
         <div
           className="mercury-panel rounded-2xl p-2"
           onDragOver={(e) => {
@@ -392,42 +369,38 @@ export function ChatView({
           }}
         >
           <PendingAttachments items={attachments} onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} />
-          <div className="flex items-end gap-2">
-            <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} disabled={streaming} />
-            <Textarea
-              ref={taRef}
-              autoGrow
-              rows={1}
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value)
-                trackCaret()
-              }}
-              onKeyUp={trackCaret}
-              onClick={trackCaret}
-              onKeyDown={onKeyDown}
-              onPaste={(e) => {
-                const files = Array.from(e.clipboardData?.files ?? [])
-                if (files.length === 0) return
-                e.preventDefault()
-                for (const f of files) {
-                  void uploadFile(f).then((r) => {
-                    if ('id' in r) setAttachments((prev) => [...prev, r])
-                  })
-                }
-              }}
-              placeholder={`Message ${agentLabel}`}
-              className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
-            />
-            <KeyHint
-              keys={streaming ? 'esc' : '⏎'}
-              label={streaming ? 'stop' : 'send'}
-              visible={streaming || !!input.trim() || attachments.length > 0}
-              className="self-end mb-3"
-            />
-            {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
-            {streaming && <StopButton onClick={stop} />}
-          </div>
+          <ChatComposer
+            ref={composerRef}
+            placeholder={`Message ${agentLabel}`}
+            mentionables={mentionables}
+            onSubmit={(md) => void send(md)}
+            onFiles={(files) => {
+              for (const f of files) {
+                void uploadFile(f).then((r) => {
+                  if ('id' in r) setAttachments((prev) => [...prev, r])
+                })
+              }
+            }}
+            onEscape={streaming ? stop : undefined}
+            onEmptyChange={setComposerEmpty}
+            leftControls={
+              <>
+                <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} disabled={streaming} />
+                <EmojiButton onPick={(ch) => composerRef.current?.insertText(ch)} />
+              </>
+            }
+            rightControls={
+              <>
+                {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
+                {streaming && <StopButton onClick={stop} />}
+                <KeyHint
+                  keys={streaming ? 'esc' : '⏎'}
+                  label={streaming ? 'stop' : 'send'}
+                  visible={streaming || !composerEmpty || attachments.length > 0}
+                />
+              </>
+            }
+          />
         </div>
       </div>
       {menu}

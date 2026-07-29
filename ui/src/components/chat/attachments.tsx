@@ -46,7 +46,7 @@ export function AttachButton({ onAttach, disabled }: { onAttach: (a: Attachment)
   const item = 'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-sidebar'
 
   return (
-    <div ref={wrapRef} className="relative self-end mb-1">
+    <div ref={wrapRef} className="relative">
       <input ref={fileRef} type="file" multiple hidden onChange={(e) => void pickFiles(e.target.files)} />
       <button
         type="button"
@@ -56,9 +56,9 @@ export function AttachButton({ onAttach, disabled }: { onAttach: (a: Attachment)
           setOpen((v) => !v)
           setPick(null)
         }}
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-card hover:text-fg disabled:opacity-40"
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-sidebar hover:text-fg disabled:opacity-40"
       >
-        {busy ? <Loader2 size={16} className="animate-spin" /> : <Paperclip size={16} />}
+        {busy ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
       </button>
       {open && (
         <div className="absolute bottom-full left-0 z-30 mb-1 w-64 rounded-xl border border-line bg-card p-1 shadow-lg">

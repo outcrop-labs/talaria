@@ -28,8 +28,10 @@ import { GuardCaveat } from '@/components/chat/guard-caveat'
 import { KeyHint } from '@/components/ui/kbd'
 import { resolveAgentMedia } from '@/lib/agent-media'
 import { relativeTime } from '@/lib/fleet'
-import { MentionMenu, useMentions, userMentionInsert, type Mentionable } from '@/components/chat/mentions'
+import { userMentionInsert, type Mentionable } from '@/components/chat/mentions'
 import { splitAttachments, uploadFile, type Attachment } from '@/lib/attachments'
+import { EmojiButton } from '@/components/chat/emoji'
+import { ChatComposer, type ChatComposerHandle } from '@/components/chat/chat-composer'
 import type { AgentModel } from '@/lib/agents'
 
 // One channel: live message feed + composer, Slack-shaped. Messages take
@@ -267,6 +269,25 @@ function MessageRow({
   const [picking, setPicking] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const toolbarRef = useRef<HTMLDivElement>(null)
+
+  // The palette must never trap you: outside click, Esc, or simply moving
+  // off the message all dismiss it.
+  useEffect(() => {
+    if (!picking) return
+    const onDoc = (e: MouseEvent) => {
+      if (!toolbarRef.current?.contains(e.target as Node)) setPicking(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPicking(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [picking])
 
   const react = (emoji: string) => {
     setPicking(false)
@@ -279,7 +300,7 @@ function MessageRow({
   }
 
   return (
-    <div className="group relative flex gap-2.5" onContextMenu={onContextMenu}>
+    <div className="group relative flex gap-2.5" onContextMenu={onContextMenu} onMouseLeave={() => setPicking(false)}>
       <Avatar name={name} className="mt-0.5 shrink-0" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
@@ -372,6 +393,7 @@ function MessageRow({
           context menu behind a confirm. */}
       {!live && !editing && (
         <div
+          ref={toolbarRef}
           className={cn(
             'absolute -top-2 right-0 items-center gap-0.5 rounded-lg border border-line bg-card p-0.5 shadow-sm',
             picking ? 'flex' : 'hidden group-hover:flex',
@@ -540,9 +562,9 @@ function ThreadPanel({
   )
 }
 
-/** Composer with @mention autocomplete over the channel's agents and members.
- *  Files paste and drop straight in: images from the clipboard, files from
- *  the desktop — they upload immediately and ride as pending chips. */
+/** The channel composer: the Slack-shaped rich editor (chat-composer.tsx)
+ *  plus attachment chips. Files paste and drop straight in — images from the
+ *  clipboard, files from the desktop — uploading immediately as pending chips. */
 function Composer({
   channelName,
   placeholder,
@@ -554,20 +576,10 @@ function Composer({
   mentionables: Mentionable[]
   onSend: (text: string, attachments: Attachment[]) => Promise<void>
 }) {
-  const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
-  const [caret, setCaret] = useState(0)
+  const [empty, setEmpty] = useState(true)
   const [dragging, setDragging] = useState(false)
-  const taRef = useRef<HTMLTextAreaElement>(null)
-
-  const { mention, picked, insert, onKeyDown: onMentionKey } = useMentions(input, caret, setCaret, mentionables, (next, pos) => {
-    setInput(next)
-    requestAnimationFrame(() => {
-      taRef.current?.focus()
-      taRef.current?.setSelectionRange(pos, pos)
-      setCaret(pos)
-    })
-  })
+  const editorRef = useRef<ChatComposerHandle>(null)
 
   const uploadAll = (files: Iterable<File>) => {
     for (const f of files) {
@@ -577,35 +589,16 @@ function Composer({
     }
   }
 
-  const onPaste = (e: React.ClipboardEvent) => {
-    const files = Array.from(e.clipboardData?.files ?? [])
-    if (files.length === 0) return
-    e.preventDefault()
-    uploadAll(files)
-  }
-
-  const send = () => {
-    const text = input.trim()
-    if (!text && attachments.length === 0) return
+  const submit = (markdown: string) => {
+    if (!markdown && attachments.length === 0) return
     const atts = attachments
-    setInput('')
     setAttachments([])
-    void onSend(text, atts)
+    editorRef.current?.clear()
+    void onSend(markdown, atts)
   }
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (onMentionKey(e)) return
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      send()
-    }
-  }
-
-  const trackCaret = () => setCaret(taRef.current?.selectionStart ?? 0)
 
   return (
     <div className="relative px-6 pb-6">
-      {mention && <MentionMenu mention={mention} picked={picked} onPick={insert} className="absolute bottom-full left-4 mb-1" />}
       <div
         className={cn('mercury-panel rounded-2xl p-2 transition-colors', dragging && 'border-accent bg-accent/5')}
         onDragOver={(e) => {
@@ -615,35 +608,24 @@ function Composer({
           }
         }}
         onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          setDragging(false)
-          const files = Array.from(e.dataTransfer?.files ?? [])
-          if (files.length === 0) return
-          e.preventDefault()
-          uploadAll(files)
-        }}
+        onDrop={() => setDragging(false)}
       >
         <PendingAttachments items={attachments} onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} />
-        <div className="flex items-end gap-2">
-          <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} />
-          <Textarea
-            ref={taRef}
-            autoGrow
-            rows={1}
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value)
-              trackCaret()
-            }}
-            onKeyUp={trackCaret}
-            onClick={trackCaret}
-            onKeyDown={onKeyDown}
-            onPaste={onPaste}
-            placeholder={placeholder ?? `Message #${channelName}. @mention an agent to bring it in`}
-            className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
-          />
-          <KeyHint keys="⏎" label="send" visible={!!input.trim() || attachments.length > 0} className="self-end mb-3" />
-        </div>
+        <ChatComposer
+          ref={editorRef}
+          placeholder={placeholder ?? `Message #${channelName}. @mention an agent to bring it in`}
+          mentionables={mentionables}
+          onSubmit={submit}
+          onFiles={uploadAll}
+          onEmptyChange={setEmpty}
+          leftControls={
+            <>
+              <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} />
+              <EmojiButton onPick={(ch) => editorRef.current?.insertText(ch)} />
+            </>
+          }
+          rightControls={<KeyHint keys="⏎" label="send" visible={!empty || attachments.length > 0} />}
+        />
       </div>
     </div>
   )

@@ -1,0 +1,132 @@
+import { forwardRef, useEffect, useImperativeHandle, useState } from 'react'
+import { Extension, type Editor, type Range } from '@tiptap/core'
+import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
+import { ReactRenderer } from '@tiptap/react'
+import { cn } from '@/lib/cn'
+import { searchEmoji, type EmojiEntry } from '@/lib/emoji'
+
+// ":" emoji autocomplete for the chat composer — the TipTap counterpart of
+// the textarea composers' useEmojiShortcodes. Picks insert the emoji CHARACTER
+// (not a node), so the markdown round-trip is untouched. Two typed characters
+// arm it (":ro" → 🚀), which keeps ordinary colons in prose quiet.
+
+interface MenuHandle {
+  onKeyDown: (e: KeyboardEvent) => boolean
+}
+
+const EmojiList = forwardRef<MenuHandle, { items: EmojiEntry[]; command: (item: EmojiEntry) => void }>(
+  function EmojiList({ items, command }, ref) {
+    const [active, setActive] = useState(0)
+    useEffect(() => setActive(0), [items])
+
+    useImperativeHandle(ref, () => ({
+      onKeyDown: (e) => {
+        if (e.key === 'ArrowDown') {
+          setActive((a) => (a + 1) % Math.max(items.length, 1))
+          return true
+        }
+        if (e.key === 'ArrowUp') {
+          setActive((a) => (a - 1 + items.length) % Math.max(items.length, 1))
+          return true
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          if (items[active]) command(items[active])
+          return true
+        }
+        return false
+      },
+    }))
+
+    if (items.length === 0) return null
+    return (
+      <div className="w-56 rounded-xl border border-line bg-card p-1 shadow-lg">
+        {items.map((item, i) => (
+          <button
+            key={item.ch}
+            type="button"
+            onMouseEnter={() => setActive(i)}
+            onMouseDown={(e) => {
+              e.preventDefault()
+              command(item)
+            }}
+            className={cn(
+              'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left',
+              i === active ? 'bg-sidebar' : 'hover:bg-sidebar',
+            )}
+          >
+            <span className="text-base">{item.ch}</span>
+            <span className="truncate text-xs text-muted">:{item.names[0]}:</span>
+          </button>
+        ))}
+      </div>
+    )
+  },
+)
+
+function place(el: HTMLElement, rect: DOMRect) {
+  const margin = 6
+  el.style.left = `${rect.left}px`
+  const below = rect.bottom + margin
+  if (below + el.offsetHeight > window.innerHeight && rect.top - margin - el.offsetHeight > 0) {
+    el.style.top = `${rect.top - margin - el.offsetHeight}px`
+  } else {
+    el.style.top = `${below}px`
+  }
+}
+
+const suggestion: Omit<SuggestionOptions<EmojiEntry>, 'editor'> = {
+  char: ':',
+  allowSpaces: false,
+  startOfLine: false,
+  items: ({ query }) => (query.length >= 2 ? searchEmoji(query, 8) : []),
+  command: ({ editor, range, props }: { editor: Editor; range: Range; props: EmojiEntry }) => {
+    editor.chain().focus().deleteRange(range).insertContent(`${props.ch} `).run()
+  },
+  render: () => {
+    let component: ReactRenderer<MenuHandle> | null = null
+    let popup: HTMLDivElement | null = null
+    return {
+      onStart: (props) => {
+        if (!props.items.length) return
+        component = new ReactRenderer(EmojiList, {
+          props: { items: props.items, command: (item: EmojiEntry) => props.command(item) },
+          editor: props.editor,
+        })
+        if (!props.clientRect) return
+        popup = document.createElement('div')
+        popup.style.position = 'fixed'
+        popup.style.zIndex = '60'
+        document.body.appendChild(popup)
+        popup.appendChild(component.element)
+        const rect = props.clientRect()
+        if (rect) place(popup, rect)
+      },
+      onUpdate: (props) => {
+        component?.updateProps({ items: props.items, command: (item: EmojiEntry) => props.command(item) })
+        const rect = props.clientRect?.()
+        if (popup && rect) place(popup, rect)
+      },
+      onKeyDown: (props) => {
+        if (props.event.key === 'Escape') {
+          popup?.remove()
+          popup = null
+          return true
+        }
+        return component?.ref?.onKeyDown(props.event) ?? false
+      },
+      onExit: () => {
+        popup?.remove()
+        popup = null
+        component?.destroy()
+        component = null
+      },
+    }
+  },
+}
+
+export const EmojiSuggest = Extension.create({
+  name: 'emojiSuggest',
+  addProseMirrorPlugins() {
+    return [Suggestion({ editor: this.editor, ...suggestion })]
+  },
+})

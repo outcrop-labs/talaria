@@ -19,7 +19,13 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   attachment chips, images rendering inline. Plus own-message EDIT
   (inline, enter-to-save, "(edited)" marker) and DELETE (author or
   channel owner; a root takes its thread with it, the confirm says so).
-  Relay conclusions summarize thread content too.
+  Relay conclusions summarize thread content too. The composer itself is
+  now the Slack-shaped RICH EDITOR: markdown syntax as you type (**bold**,
+  `code`, ``` blocks, > quotes, lists) with a formatting toolbar in a
+  controls row under the full-width input, Enter sends (inside a code
+  block it newlines), Shift+Enter soft-breaks, @mention and :emoji:
+  autocomplete inline, and a searchable emoji picker next to attach.
+  Reaction palette dismisses on Esc/outside-click/mouse-leave.
 - **Platform sub-agents (Models → Platform).** Talaria's own workers are
   now first-class, named agents — separate from the Hermes fleet, each a
   model-agnostic harness with its own skills for one internal job: Muse
