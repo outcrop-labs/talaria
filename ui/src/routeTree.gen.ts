@@ -111,6 +111,7 @@ import { Route as ApiAdminModelRolesRouteImport } from './routes/api/admin.model
 import { Route as ApiAdminJudgeRouteImport } from './routes/api/admin.judge'
 import { Route as ApiAdminGuardrailsRouteImport } from './routes/api/admin.guardrails'
 import { Route as ApiAdminEncryptionRouteImport } from './routes/api/admin.encryption'
+import { Route as ApiAdminDomainsRouteImport } from './routes/api/admin.domains'
 import { Route as AppBoardsBoardIdRouteImport } from './routes/_app/boards/$boardId'
 import { Route as ApiTeamsIdMembersRouteImport } from './routes/api/teams.$id.members'
 import { Route as ApiTasksIdWatchersRouteImport } from './routes/api/tasks.$id.watchers'
@@ -697,6 +698,11 @@ const ApiAdminEncryptionRoute = ApiAdminEncryptionRouteImport.update({
   path: '/api/admin/encryption',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAdminDomainsRoute = ApiAdminDomainsRouteImport.update({
+  id: '/api/admin/domains',
+  path: '/api/admin/domains',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppBoardsBoardIdRoute = AppBoardsBoardIdRouteImport.update({
   id: '/boards/$boardId',
   path: '/boards/$boardId',
@@ -1147,6 +1153,7 @@ export interface FileRoutesByFullPath {
   '/api/users': typeof ApiUsersRoute
   '/kb/$slug': typeof KbSlugRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/domains': typeof ApiAdminDomainsRoute
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
@@ -1326,6 +1333,7 @@ export interface FileRoutesByTo {
   '/kb/$slug': typeof KbSlugRoute
   '/': typeof AppIndexRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/domains': typeof ApiAdminDomainsRoute
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
@@ -1507,6 +1515,7 @@ export interface FileRoutesById {
   '/kb/$slug': typeof KbSlugRoute
   '/_app/': typeof AppIndexRoute
   '/_app/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
+  '/api/admin/domains': typeof ApiAdminDomainsRoute
   '/api/admin/encryption': typeof ApiAdminEncryptionRoute
   '/api/admin/guardrails': typeof ApiAdminGuardrailsRoute
   '/api/admin/judge': typeof ApiAdminJudgeRoute
@@ -1688,6 +1697,7 @@ export interface FileRouteTypes {
     | '/api/users'
     | '/kb/$slug'
     | '/boards/$boardId'
+    | '/api/admin/domains'
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/judge'
@@ -1867,6 +1877,7 @@ export interface FileRouteTypes {
     | '/kb/$slug'
     | '/'
     | '/boards/$boardId'
+    | '/api/admin/domains'
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/judge'
@@ -2047,6 +2058,7 @@ export interface FileRouteTypes {
     | '/kb/$slug'
     | '/_app/'
     | '/_app/boards/$boardId'
+    | '/api/admin/domains'
     | '/api/admin/encryption'
     | '/api/admin/guardrails'
     | '/api/admin/judge'
@@ -2210,6 +2222,7 @@ export interface RootRouteChildren {
   ApiUploadsRoute: typeof ApiUploadsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
   KbSlugRoute: typeof KbSlugRoute
+  ApiAdminDomainsRoute: typeof ApiAdminDomainsRoute
   ApiAdminEncryptionRoute: typeof ApiAdminEncryptionRoute
   ApiAdminGuardrailsRoute: typeof ApiAdminGuardrailsRoute
   ApiAdminJudgeRoute: typeof ApiAdminJudgeRoute
@@ -2965,6 +2978,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/encryption'
       fullPath: '/api/admin/encryption'
       preLoaderRoute: typeof ApiAdminEncryptionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin/domains': {
+      id: '/api/admin/domains'
+      path: '/api/admin/domains'
+      fullPath: '/api/admin/domains'
+      preLoaderRoute: typeof ApiAdminDomainsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/boards/$boardId': {
@@ -4156,6 +4176,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiUploadsRoute: ApiUploadsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
   KbSlugRoute: KbSlugRoute,
+  ApiAdminDomainsRoute: ApiAdminDomainsRoute,
   ApiAdminEncryptionRoute: ApiAdminEncryptionRoute,
   ApiAdminGuardrailsRoute: ApiAdminGuardrailsRoute,
   ApiAdminJudgeRoute: ApiAdminJudgeRoute,

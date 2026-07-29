@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Avatar } from '@/components/ui/avatar'
@@ -147,6 +148,7 @@ function AdminPage() {
         {tab === 'org' && (
           <>
             <OrgPanel />
+            <SignupDomainsPanel />
             <OrgGooglePanel />
           </>
         )}
@@ -396,6 +398,147 @@ function MemberDefaultsPanel({ perms }: { perms: PermsData }) {
           </div>
         ))}
       </div>
+    </Panel>
+  )
+}
+
+interface OrgDomainRow {
+  id: string
+  domain: string
+  verified: boolean
+  verificationToken: string
+  verifiedAt: string | null
+}
+
+/** Sign-up domains: prove a domain with a DNS TXT record and anyone signing
+ *  in through Google with an email on it joins as a member — no invites. */
+function SignupDomainsPanel() {
+  const qc = useQueryClient()
+  const { data, isPending } = useQuery({
+    queryKey: ['org-domains'],
+    queryFn: async (): Promise<OrgDomainRow[]> => {
+      const r = await fetch('/api/admin/domains', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { domains: OrgDomainRow[] }).domains
+    },
+  })
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [verifying, setVerifying] = useState<string | null>(null)
+  const refresh = () => qc.invalidateQueries({ queryKey: ['org-domains'] })
+
+  const add = async () => {
+    if (!draft.trim()) return
+    setError(null)
+    const r = await fetch('/api/admin/domains', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domain: draft.trim() }),
+    })
+    if (!r.ok) {
+      setError(((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed')
+      return
+    }
+    setDraft('')
+    await refresh()
+  }
+  const verify = async (id: string) => {
+    setVerifying(id)
+    setError(null)
+    const r = await fetch('/api/admin/domains', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verifyId: id }),
+    })
+    const j = (await r.json().catch(() => ({}))) as { verified?: boolean; error?: string }
+    setVerifying(null)
+    if (!j.verified) setError(j.error ?? 'verification failed')
+    await refresh()
+  }
+
+  return (
+    <Panel className="mt-4">
+      <div className="mb-3 flex items-center gap-1.5">
+        <span className="text-sm font-semibold text-fg">Sign-up domains</span>
+        <InfoTip text="Self-service joins for your organization: add your email domain, publish the TXT record to prove you own it, and anyone signing in with Google on that domain becomes a member automatically — no invites, no env edits. Subdomains are separate domains; add each one you want. Password logins stay env-managed." />
+      </div>
+      {isPending ? (
+        <SkeletonRows rows={2} />
+      ) : (
+        <div className="space-y-2">
+          {(data ?? []).length === 0 && (
+            <div className="font-sans text-xs text-muted">No domains yet — add yours to open self-service joins.</div>
+          )}
+          {(data ?? []).map((d) => (
+            <div key={d.id} className="space-y-1.5 rounded-xl border border-line-subtle p-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-fg">{d.domain}</span>
+                {d.verified ? (
+                  <span className="rounded-full border border-[color:var(--theme-success)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-success)]">
+                    ✓ verified — self-joins open
+                  </span>
+                ) : (
+                  <span className="rounded-full border border-[color:var(--theme-warning)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-warning)]">
+                    awaiting DNS proof
+                  </span>
+                )}
+                <span className="flex-1" />
+                {!d.verified && (
+                  <Button size="sm" variant="outline" disabled={verifying === d.id} onClick={() => void verify(d.id)}>
+                    {verifying === d.id ? 'Checking' : 'Verify'}
+                  </Button>
+                )}
+                <button
+                  type="button"
+                  title="Remove — self-joins from this domain stop immediately"
+                  onClick={async () => {
+                    if (!(await confirm({ title: 'Remove domain', message: `Remove ${d.domain}? New self-joins stop; existing members keep their accounts.`, confirmLabel: 'Remove' }))) return
+                    await fetch('/api/admin/domains', {
+                      method: 'DELETE',
+                      credentials: 'same-origin',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ id: d.id }),
+                    })
+                    await refresh()
+                  }}
+                  className="text-muted hover:text-[color:var(--theme-danger)]"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+              {!d.verified && (
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0 text-[11px] text-muted">TXT on _talaria.{d.domain}:</span>
+                  <code className="min-w-0 flex-1 truncate rounded bg-card px-1.5 py-0.5 text-[11px] text-fg">{d.verificationToken}</code>
+                  <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard.writeText(d.verificationToken)}>
+                    Copy
+                  </Button>
+                </div>
+              )}
+            </div>
+          ))}
+          <div className="flex items-center gap-2 pt-1">
+            <Input
+              size="sm"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void add()}
+              placeholder="yourcompany.com"
+              className="w-64"
+            />
+            <Button size="sm" onClick={() => void add()} disabled={!draft.trim()}>
+              Add domain
+            </Button>
+          </div>
+          {error && (
+            <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
+              {error}
+            </div>
+          )}
+        </div>
+      )}
     </Panel>
   )
 }

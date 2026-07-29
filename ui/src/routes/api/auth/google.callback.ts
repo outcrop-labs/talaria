@@ -9,6 +9,7 @@ import {
   STATE_COOKIE,
 } from '@/server/auth/session'
 import { upsertUser } from '@/server/users'
+import { selfJoinAllowed } from '@/server/org-domains'
 
 // Bounce back to the login screen with a machine-readable reason.
 function loginError(reason: string): Response {
@@ -45,7 +46,11 @@ export const Route = createFileRoute('/api/auth/google/callback')({
           return loginError('exchange_failed')
         }
 
-        if (!isEmailAllowed(identity.email, cfg)) return loginError('not_allowed')
+        // Two doors in: the env allow-list, or SELF-JOIN — Google has
+        // verified the email, and its domain is a DNS-verified org domain.
+        if (!isEmailAllowed(identity.email, cfg) && !(await selfJoinAllowed(identity.email))) {
+          return loginError('not_allowed')
+        }
 
         const user = await upsertUser(identity)
         const sid = await createSession({ ...user, provider: identity.provider })

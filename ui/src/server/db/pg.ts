@@ -154,6 +154,15 @@ const MIGRATIONS: string[] = [
   `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
   `alter table kb_docs add column if not exists okf text`,
   `update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null)`,
+  `create table if not exists org_domains (
+    id uuid primary key default gen_random_uuid(),
+    domain text not null unique,
+    verified boolean not null default false,
+    verification_token text not null,
+    added_by text,
+    created_at timestamptz not null default now(),
+    verified_at timestamptz
+  )`,
   `create table if not exists kb_comments (
     id uuid primary key default gen_random_uuid(),
     doc_id uuid not null references kb_docs(id) on delete cascade,
