@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { createChannel, listChannels, listChannelsForAgent } from '@/server/channels'
 import { maybeSweepIdleChats } from '@/server/comms-decay'
@@ -42,6 +43,8 @@ export const Route = createFileRoute('/api/channels')({
           })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        const needed = (parsed.data.kind ?? 'channel') === 'group' ? 'comms.relays' : 'comms.channels'
+        if (!(await hasPerm(user, needed))) return json({ error: `no permission to create ${needed === 'comms.relays' ? 'relays' : 'channels'}` }, { status: 403 })
         return json({
           channel: await createChannel(user.id, parsed.data.name, parsed.data.topic ?? null, parsed.data.kind ?? 'channel'),
         })

@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteArtifact, getArtifact, guarded, saveArtifact, setArtifactOfficial, setArtifactRouting, targetsForArtifact } from '@/server/artifacts'
 import { applyArtifactRouting } from '@/server/retrieval/artifact-routing'
@@ -74,6 +75,9 @@ export const Route = createFileRoute('/api/artifacts/$id')({
           if (!canEditHuman(g, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
           actor = user.email ?? user.name ?? 'user'
           owner = isOwner(g, user.id, user.email ?? user.name)
+          if (parsed.data.visibility === 'public' && !(await hasPerm(user, 'artifacts.publish'))) {
+            return json({ error: 'no permission to publish to the web' }, { status: 403 })
+          }
           const sharing = parsed.data.visibility !== undefined || parsed.data.editPolicy !== undefined || parsed.data.editors !== undefined
           if (!owner && sharing) return json({ error: 'only the owner can change sharing' }, { status: 403 })
           // Routing decides which brain retrieves the content — owner's call.

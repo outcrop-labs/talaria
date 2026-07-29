@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setDocRouting, setOfficial } from '@/server/kb'
 import { canEditAgent, canEditHuman, canRead, canReadAgent, isOwner, setEditors } from '@/server/kb-perms'
@@ -73,7 +74,12 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         } else {
           const user = await getSessionUser(request)
           if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+          if (!(await hasPerm(user, 'kb.edit'))) return json({ error: 'no permission to edit knowledge' }, { status: 403 })
           if (!canEditHuman(perms, user.id, user.email ?? user.name, grants)) return json({ error: 'forbidden' }, { status: 403 })
+          // Marking OFFICIAL grounds every agent — a curation power of its own.
+          if (parsed.data.official !== undefined && !(await hasPerm(user, 'kb.official'))) {
+            return json({ error: 'no permission to curate official knowledge' }, { status: 403 })
+          }
           actor = user.email ?? user.name ?? 'user'
           owner = isOwner(perms, user.id, user.email ?? user.name)
           const sharing = parsed.data.visibility !== undefined || parsed.data.editPolicy !== undefined || parsed.data.editors !== undefined || parsed.data.permsInherited !== undefined

@@ -150,6 +150,16 @@ const MIGRATIONS: string[] = [
   `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
   `alter table channel_messages add column if not exists edited_at timestamptz`,
   `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
+  `create table if not exists user_permissions (
+    user_id uuid not null references users(id) on delete cascade,
+    perm text not null,
+    allowed boolean not null,
+    created_at timestamptz not null default now(),
+    primary key (user_id, perm)
+  )`,
+  `insert into user_permissions (user_id, perm, allowed)
+     select id, 'models.mint-keys', true from users where can_mint_keys
+     on conflict (user_id, perm) do nothing`,
   `create table if not exists channel_message_reactions (
     message_id uuid not null references channel_messages(id) on delete cascade,
     emoji text not null,

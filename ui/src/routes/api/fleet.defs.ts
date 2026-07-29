@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { listAgentDefs, listEndpoints } from '@/server/agent-defs'
 import { fleetBrainHealth } from '@/server/brain-health'
 
@@ -12,7 +13,7 @@ export const Route = createFileRoute('/api/fleet/defs')({
       GET: async ({ request }) => {
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+        if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
         return json({ defs: await listAgentDefs(), endpoints: await listEndpoints(), brains: await fleetBrainHealth() })
       },
     },

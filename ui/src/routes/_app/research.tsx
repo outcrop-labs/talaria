@@ -19,7 +19,7 @@ import { alert, confirm } from '@/components/ui/confirm'
 import { UserPicker } from '@/components/app/user-picker'
 import { useAgents } from '@/lib/agents'
 import { useArtifact } from '@/lib/artifacts'
-import { useSession } from '@/lib/session'
+import { useHasPerm, useSession } from '@/lib/session'
 import { useStickyAgent } from '@/lib/sticky-agent'
 import { relativeTime } from '@/lib/fleet'
 import {
@@ -64,6 +64,7 @@ function ResearchPage() {
   const selectedId = search.r ?? null
   const setSelectedId = (id: string | null) => void navigate({ search: id ? { r: id } : {} })
   const [question, setQuestion] = useState('')
+  const mayRun = useHasPerm('research.run')
   const [mode, setMode] = useState<ResearchMode>('brief')
   const [agent, pickAgent] = useStickyAgent('research', agents)
   const [starting, setStarting] = useState(false)
@@ -204,8 +205,9 @@ function ResearchPage() {
                   autoGrow
                   rows={1}
                   value={question}
+                  disabled={!mayRun}
                   onChange={(e) => setQuestion(e.target.value)}
-                  placeholder="What should we find out?"
+                  placeholder={mayRun ? 'What should we find out?' : 'You don’t have permission to run research'}
                   className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {

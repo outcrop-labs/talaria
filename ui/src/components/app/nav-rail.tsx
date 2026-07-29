@@ -12,7 +12,7 @@ import { NAV } from '@/lib/nav'
 import { useBoards, useArchivedBoards, moveBoardToTeam, type Board } from '@/lib/boards'
 import { useTeams } from '@/lib/teams'
 import { useNotifications } from '@/lib/notifications'
-import { useDeniedViews, type SessionUser } from '@/lib/session'
+import { useDeniedViews, useHasPerm, type SessionUser } from '@/lib/session'
 
 // The main application menu. The Boards item expands to the user's boards
 // (grouped by team) when that section is active.
@@ -198,11 +198,14 @@ function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onN
 }
 
 function SublistFooter({ onNew, onTeams }: { onNew: () => void; onTeams: () => void }) {
+  const mayCreate = useHasPerm('boards.create')
   return (
     <div className="flex flex-col gap-0.5">
-      <button onClick={onNew} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:text-accent">
-        <Plus size={13} /> New board
-      </button>
+      {mayCreate && (
+        <button onClick={onNew} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:text-accent">
+          <Plus size={13} /> New board
+        </button>
+      )}
       <button onClick={onTeams} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:text-accent">
         <Users size={13} /> Manage teams
       </button>

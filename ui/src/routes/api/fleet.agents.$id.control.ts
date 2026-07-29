@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { getAgentDef } from '@/server/agent-defs'
 import { ownsAgent } from '@/server/personal-agent'
 import { fleetRemove, fleetRestart, fleetStop, fleetUp, pruneBundledSkills, waitHealthy } from '@/server/fleet-docker'
@@ -31,7 +32,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const ownerAllowed =
           ['up', 'stop', 'restart'].includes(parsed.data.action) && (await ownsAgent(user.id, { defId: params.id }))
-        if (user.role !== 'admin' && !ownerAllowed) return json({ error: 'forbidden' }, { status: 403 })
+        if (!(await hasPerm(user, 'agents.manage')) && !ownerAllowed) return json({ error: 'forbidden' }, { status: 403 })
         const def = await getAgentDef(params.id)
         if (!def) return json({ error: 'not found' }, { status: 404 })
 
@@ -65,7 +66,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
               // Zero-downtime replacement — fresh container, old one drains.
               // Long (health wait + drain), so it runs detached; the roster's
               // health polling tells the story.
-              if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+              if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
               if (!def.managed) return json({ error: 'not a managed agent' }, { status: 400 })
               void rollAgent(def.department).catch(() => {})
               return json({ ok: true, rolling: true })
@@ -81,7 +82,7 @@ export const Route = createFileRoute('/api/fleet/agents/$id/control')({
             case 'delete': {
               // Permanent: def + versions + secrets + rendered files + (for
               // created agents) the state volume. Admin only, retired only.
-              if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+              if (!(await hasPerm(user, 'agents.manage'))) return json({ error: 'forbidden' }, { status: 403 })
               const result = await deleteAgentForever(def.id)
               return json({ ok: true, ...result })
             }

@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { personalAssistantOwners } from '@/server/users'
 import { agentCategoryFolder, createArtifact, guarded, listArtifacts, namedRootFolder, saveArtifact } from '@/server/artifacts'
@@ -73,6 +74,7 @@ export const Route = createFileRoute('/api/artifacts')({
 
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        if (!(await hasPerm(user, 'artifacts.create'))) return json({ error: 'no permission to create documents' }, { status: 403 })
         const artifact = await createArtifact({ kind: parsed.data.kind, title: parsed.data.title, createdBy: user.email ?? user.name ?? 'user', ownerUserId: user.id })
         const updated = parsed.data.body !== undefined ? await saveArtifact(artifact.id, { body: parsed.data.body }, user.email ?? user.name ?? 'user') : null
         return json({ artifact: updated ?? artifact })

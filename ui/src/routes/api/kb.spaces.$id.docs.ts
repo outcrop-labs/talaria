@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { personalAssistantOwners } from '@/server/users'
 import { createDoc, getSpace, listDocs, saveDoc } from '@/server/kb'
@@ -34,6 +35,7 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
         }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        if (!(await hasPerm(user, 'kb.edit'))) return json({ error: 'no permission to edit knowledge' }, { status: 403 })
         // Gate the whole tree on folder access first.
         if (!canRead(space, user.id, user.email ?? user.name, await listEditors('space', params.id))) return json({ docs: [] })
         // Inherited docs are as visible as the (readable) folder, so they show.

@@ -19,17 +19,26 @@ export function useIsAdmin(user: SessionUser | null | undefined): boolean {
 interface SessionResult {
   user: SessionUser | null
   deniedViews: string[]
+  perms: string[]
 }
 
 const fetchSession = async (): Promise<SessionResult> => {
   const res = await fetch('/api/auth/session', { credentials: 'same-origin' })
-  if (!res.ok) return { user: null, deniedViews: [] }
-  const data = (await res.json()) as { user: SessionUser | null; deniedViews?: string[] }
-  return { user: data.user, deniedViews: data.deniedViews ?? [] }
+  if (!res.ok) return { user: null, deniedViews: [], perms: [] }
+  const data = (await res.json()) as { user: SessionUser | null; deniedViews?: string[]; perms?: string[] }
+  return { user: data.user, deniedViews: data.deniedViews ?? [], perms: data.perms ?? [] }
 }
 
 export function useSession() {
   return useQuery({ queryKey: ['session'], queryFn: fetchSession, select: (d) => d.user })
+}
+
+/** True while the effective permission set includes `perm`. Admins hold every
+ *  permission. Defaults false until the session resolves — affordances appear,
+ *  never flash-then-vanish. */
+export function useHasPerm(perm: string): boolean {
+  const { data } = useQuery({ queryKey: ['session'], queryFn: fetchSession, select: (d) => d.perms })
+  return (data ?? []).includes(perm)
 }
 
 /** Views the current user may NOT reach (empty for admins / open access). */

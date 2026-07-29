@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
+import { hasPerm } from '@/server/permissions'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { createSpace, listSpaces } from '@/server/kb'
 import { canRead, canReadAgent, grantedItemIds, grantedItemIdsForAgent } from '@/server/kb-perms'
@@ -43,6 +44,7 @@ export const Route = createFileRoute('/api/kb/spaces')({
         }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+        if (!(await hasPerm(user, 'kb.official'))) return json({ error: 'no permission to create spaces' }, { status: 403 })
         return json({ space: await createSpace({ ...parsed.data, createdBy: user.email ?? user.name ?? 'user', ownerUserId: user.id }) })
       },
     },
