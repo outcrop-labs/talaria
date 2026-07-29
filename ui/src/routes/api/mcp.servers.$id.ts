@@ -52,9 +52,8 @@ export const Route = createFileRoute('/api/mcp/servers/$id')({
         const p = parsed.data
         const actor = user.email ?? user.name ?? 'admin'
 
-        // Self-heal: a server whose discovery failed at register (or predates
-        // a discovery fix) re-probes on any touch.
-        if (!server.oauthEnabled) await ensureOauthConfig(server.id, server.url)
+        // Self-heal: failed/aged discovery re-probes and backfills on any touch.
+        await ensureOauthConfig(server.id, server.url)
 
         const { refreshTools, assign, unassign, userAccess, oauthClient, ...config } = p
         if (oauthClient) {

@@ -63,7 +63,8 @@ export const Route = createFileRoute('/api/mcp/servers')({
           let server = await createMcpServer({ ...parsed.data, createdBy: user.email ?? user.name ?? 'admin' })
           // Sniff the auth shape right away: a 401 challenge with resource
           // metadata marks the server OAuth and unlocks the Connect flow.
-          if (await ensureOauthConfig(server.id, server.url)) server = (await getMcpServer(server.id)) ?? server
+          const oauthCfg = await ensureOauthConfig(server.id, server.url)
+          if (oauthCfg) server = (await getMcpServer(server.id)) ?? server
           void logAudit({
             actor: user.email ?? user.name ?? 'admin',
             action: 'mcp.server_add',
@@ -73,7 +74,7 @@ export const Route = createFileRoute('/api/mcp/servers')({
             after: { url: server.url, authMode: server.authMode },
           })
           void renderFleet().catch(() => {})
-          return json({ server })
+          return json({ server: { ...server, oauthMeta: server.oauthEnabled ? await oauthMeta(server.id) : null } })
         } catch (e) {
           return json({ error: (e as Error).message.includes('duplicate') ? 'that name is taken' : (e as Error).message }, { status: 400 })
         }

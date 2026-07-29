@@ -40,7 +40,7 @@ interface McpServerRow {
   oauthEnabled: boolean
   /** OAuth org connection state (null for header-auth servers). */
   orgConnected: boolean | null
-  oauthMeta: { dcr: boolean; clientSet: boolean } | null
+  oauthMeta: { dcr: boolean; clientSet: boolean; documentation: string | null } | null
   tools: Array<{ name: string; description?: string }>
   toolsRefreshedAt: string | null
   assignments: Array<{ agentModel: string; tools: string[] | null }>
@@ -233,7 +233,12 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
       {/* DCR-less providers (GitHub): the admin registers an OAuth app with
           the provider and pastes its credentials — then Connect lights up. */}
       {s.oauthEnabled && s.oauthMeta && !s.oauthMeta.dcr && !s.oauthMeta.clientSet && (
-        <OauthAppSetup serverId={s.id} domain={(() => { try { return new URL(s.url).hostname } catch { return null } })()} onSaved={refresh} />
+        <OauthAppSetup
+          serverId={s.id}
+          domain={(() => { try { return new URL(s.url).hostname } catch { return null } })()}
+          docs={s.oauthMeta.documentation}
+          onSaved={refresh}
+        />
       )}
 
       {/* Discovered tools */}
@@ -443,7 +448,7 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
   const { data: existing } = useMcpServers()
   const [q, setQ] = useState('')
   const [busyAdd, setBusyAdd] = useState<string | null>(null)
-  const [added, setAdded] = useState<Set<string>>(new Set())
+  const [added, setAdded] = useState<Map<string, 'ok' | 'setup'>>(new Map())
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState<LibraryServerRow | null>(null)
 
@@ -486,8 +491,9 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
       setError(((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed')
       return false
     }
-    const { server } = (await r.json()) as { server: { id: string } }
-    setAdded((prev) => new Set(prev).add(l.registryName))
+    const { server } = (await r.json()) as { server: { id: string; oauthMeta: { dcr: boolean; clientSet: boolean } | null } }
+    const needsSetup = !!server.oauthMeta && !server.oauthMeta.dcr && !server.oauthMeta.clientSet
+    setAdded((prev) => new Map(prev).set(l.registryName, needsSetup ? 'setup' : 'ok'))
     setInstalling(null)
     await qc.invalidateQueries({ queryKey: ['mcp-servers'] })
     void patchServer(server.id, { refreshTools: true }).then(() => qc.invalidateQueries({ queryKey: ['mcp-servers'] }))
@@ -551,7 +557,8 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
           {results && results.servers.length > 0 && (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {results.servers.map((l) => {
-                const installed = installedUrls.has(l.url) || added.has(l.registryName)
+                const addedState = added.get(l.registryName) ?? (installedUrls.has(l.url) ? 'ok' : null)
+                const installed = addedState !== null
                 const busy = busyAdd === l.registryName
                 const badge = TIER_BADGE[l.tier]
                 return (
@@ -576,7 +583,14 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
                     </p>
                     {/* The install control: quiet until the card is engaged. */}
                     <div className="absolute right-3 top-3">
-                      {installed ? (
+                      {addedState === 'setup' ? (
+                        <span
+                          className="rounded-full bg-[color:var(--theme-warning)]/10 px-2 py-1 text-[10px] font-medium text-[color:var(--theme-warning)]"
+                          title="Added — this provider needs a one-time OAuth app setup on the MCP page before agents can connect"
+                        >
+                          needs setup
+                        </span>
+                      ) : installed ? (
                         <span
                           className="grid h-7 w-7 place-items-center rounded-full bg-[color:var(--theme-success)]/10 text-[color:var(--theme-success)]"
                           title="In your org registry"
@@ -724,7 +738,7 @@ const OAUTH_APP_PORTALS: Record<string, string> = {
   'api.githubcopilot.com': 'https://github.com/settings/developers',
 }
 
-function OauthAppSetup({ serverId, domain, onSaved }: { serverId: string; domain?: string | null; onSaved: () => void }) {
+function OauthAppSetup({ serverId, domain, docs, onSaved }: { serverId: string; domain?: string | null; docs?: string | null; onSaved: () => void }) {
   const [openForm, setOpenForm] = useState(false)
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
@@ -751,11 +765,16 @@ function OauthAppSetup({ serverId, domain, onSaved }: { serverId: string; domain
         <span className="text-xs font-medium text-fg">This provider needs a pre-registered OAuth app</span>
         <InfoTip text="It doesn't support automatic client registration (GitHub, for example). Create an OAuth app in the provider's developer settings with the callback URL below, then paste the app's client id and secret here — stored encrypted, spoken only during the OAuth flow." />
         <span className="flex-1" />
-        {domain && OAUTH_APP_PORTALS[domain] && (
-          <a href={OAUTH_APP_PORTALS[domain]} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
-            Create the app ↗
-          </a>
-        )}
+        {(() => {
+          // The provider's own service_documentation (from its AS metadata)
+          // beats our portal map — API data first.
+          const link = docs ?? (domain ? OAUTH_APP_PORTALS[domain] : undefined)
+          return link ? (
+            <a href={link} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
+              Create the app ↗
+            </a>
+          ) : null
+        })()}
         {!openForm && (
           <Button size="sm" onClick={() => setOpenForm(true)}>
             Set up

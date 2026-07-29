@@ -17,6 +17,9 @@ export interface OauthConfig {
   tokenEndpoint: string
   registrationEndpoint: string | null
   scopes: string[]
+  /** RFC 8414 service_documentation — for DCR-less providers this is usually
+   *  exactly the "register an app" guide (GitHub publishes it). */
+  documentation?: string | null
   client?: { id: string; secretEnc: string | null; redirectUri: string }
 }
 
@@ -87,6 +90,7 @@ export async function discoverOauth(serverUrl: string): Promise<OauthConfig | nu
       tokenEndpoint: String(asMeta.token_endpoint),
       registrationEndpoint: asMeta.registration_endpoint ? String(asMeta.registration_endpoint) : null,
       scopes: meta.scopes_supported ?? ((asMeta.scopes_supported as string[]) ?? []),
+      documentation: asMeta.service_documentation ? String(asMeta.service_documentation) : null,
     }
   } catch {
     return null
@@ -98,7 +102,19 @@ export async function discoverOauth(serverUrl: string): Promise<OauthConfig | nu
 export async function ensureOauthConfig(serverId: string, serverUrl: string): Promise<OauthConfig | null> {
   const sql = await db()
   const [row] = (await sql`select oauth from mcp_servers where id = ${serverId}`) as unknown as Array<{ oauth: OauthConfig | null }>
-  if (row?.oauth) return row.oauth
+  if (row?.oauth) {
+    // Backfill fields added since this config was discovered (docs link),
+    // preserving the registered client.
+    if (row.oauth.documentation === undefined) {
+      const fresh = await discoverOauth(serverUrl)
+      if (fresh) {
+        const merged: OauthConfig = { ...fresh, client: row.oauth.client }
+        await sql`update mcp_servers set oauth = ${sql.json(merged as never)}, updated_at = now() where id = ${serverId}`
+        return merged
+      }
+    }
+    return row.oauth
+  }
   const config = await discoverOauth(serverUrl)
   if (config) await sql`update mcp_servers set oauth = ${sql.json(config as never)}, updated_at = now() where id = ${serverId}`
   return config
@@ -294,9 +310,15 @@ export async function setManualOauthClient(
 
 /** Surface the flags the UI needs: is this OAuth, does it self-register, is a
  *  client configured. */
-export async function oauthMeta(serverId: string): Promise<{ dcr: boolean; clientSet: boolean } | null> {
+export async function oauthMeta(
+  serverId: string,
+): Promise<{ dcr: boolean; clientSet: boolean; documentation: string | null } | null> {
   const sql = await db()
   const [row] = (await sql`select oauth from mcp_servers where id = ${serverId}`) as unknown as Array<{ oauth: OauthConfig | null }>
   if (!row?.oauth) return null
-  return { dcr: row.oauth.registrationEndpoint !== null, clientSet: !!row.oauth.client }
+  return {
+    dcr: row.oauth.registrationEndpoint !== null,
+    clientSet: !!row.oauth.client,
+    documentation: row.oauth.documentation ?? null,
+  }
 }
