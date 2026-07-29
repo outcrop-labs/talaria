@@ -21,7 +21,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
-import { ensureMcpService, MCP_FLEET_URL } from './mcp-service'
+import { ensureMcpService } from './mcp-service'
 import { serversForAgent } from './mcp-registry'
 
 /** The MCP gateway base as fleet containers reach it — the UI server over the
@@ -320,7 +320,10 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     routed.mcp_servers = {
       ...((routed.mcp_servers as Record<string, unknown> | undefined) ?? {}),
       talaria: {
-        url: MCP_FLEET_URL(),
+        // Through the MCP gateway (not the service directly): the org's
+        // per-agent/per-person tool subsets for the toolkit apply to every
+        // call, same as any registry server.
+        url: `${MCP_GW_BASE()}/talaria`,
         headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '${TALARIA_AGENT_KEY}' },
       },
     }

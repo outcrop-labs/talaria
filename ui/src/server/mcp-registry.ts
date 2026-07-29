@@ -32,6 +32,8 @@ export interface McpServer {
   requiredHeaders: Array<{ name: string; description: string | null; isSecret: boolean; placeholder: string | null }>
   /** The server negotiates OAuth (discovered from its 401 challenge). */
   oauthEnabled: boolean
+  /** Talaria's own toolkit — governable here, but not removable/reconfigurable. */
+  builtin: boolean
   createdBy: string | null
   createdAt: string
 }
@@ -50,12 +52,27 @@ export interface McpUserAccess {
 
 const ROW = `id, name, label, description, url, headers, timeout_secs as "timeoutSecs", enabled,
   all_agents as "allAgents", auth_mode as "authMode", tools, tools_refreshed_at as "toolsRefreshedAt",
-  required_headers as "requiredHeaders", (oauth is not null) as "oauthEnabled",
+  required_headers as "requiredHeaders", (oauth is not null) as "oauthEnabled", builtin,
   created_by as "createdBy", created_at as "createdAt"`
+
+/** The Talaria toolkit as a governable system row: every agent carries it,
+ *  and the same per-agent/per-person tool subsets apply — enforced by the
+ *  gateway like any other server. Identity/lifecycle stay locked. */
+export async function ensureBuiltinMcp(): Promise<void> {
+  const sql = await db()
+  const { MCP_PORT } = await import('./mcp-service')
+  await sql`
+    insert into mcp_servers (name, label, description, url, all_agents, builtin, created_by)
+    values ('talaria', 'Talaria toolkit', 'Talaria''s own tools — tickets, documents, knowledge, channels, research, media.',
+            ${`http://127.0.0.1:${MCP_PORT()}/mcp`}, true, true, 'talaria')
+    on conflict (name) do update set builtin = true, all_agents = true, enabled = true
+  `
+}
 
 export async function listMcpServers(): Promise<McpServer[]> {
   const sql = await db()
-  return (await sql.unsafe(`select ${ROW} from mcp_servers order by name`)) as unknown as McpServer[]
+  await ensureBuiltinMcp().catch(() => {})
+  return (await sql.unsafe(`select ${ROW} from mcp_servers order by builtin desc, name`)) as unknown as McpServer[]
 }
 
 export async function getMcpServer(idOrName: string): Promise<McpServer | null> {
@@ -109,6 +126,14 @@ export async function updateMcpServer(
   }>,
 ): Promise<void> {
   const sql = await db()
+  const [row] = (await sql`select builtin from mcp_servers where id = ${id}`) as unknown as Array<{ builtin: boolean }>
+  if (row?.builtin) {
+    // The toolkit's identity and lifecycle are Talaria's; only access rules
+    // (assignments/user access, handled elsewhere) are governable.
+    for (const k of ['url', 'headers', 'enabled', 'allAgents', 'authMode'] as const) {
+      if (patch[k] !== undefined) throw new Error('the built-in Talaria toolkit cannot be reconfigured')
+    }
+  }
   if (patch.label !== undefined) await sql`update mcp_servers set label = ${patch.label}, updated_at = now() where id = ${id}`
   if (patch.description !== undefined) await sql`update mcp_servers set description = ${patch.description}, updated_at = now() where id = ${id}`
   if (patch.url !== undefined) await sql`update mcp_servers set url = ${patch.url}, tools = '[]', tools_refreshed_at = null, updated_at = now() where id = ${id}`
@@ -121,6 +146,8 @@ export async function updateMcpServer(
 
 export async function deleteMcpServer(id: string): Promise<void> {
   const sql = await db()
+  const [row] = (await sql`select builtin from mcp_servers where id = ${id}`) as unknown as Array<{ builtin: boolean }>
+  if (row?.builtin) throw new Error('the built-in Talaria toolkit cannot be removed')
   await sql`delete from mcp_servers where id = ${id}` // assignments/access/credentials cascade
 }
 
@@ -132,8 +159,12 @@ export async function refreshMcpTools(id: string): Promise<{ tools: Array<{ name
   const server = await getMcpServer(id)
   if (!server) return { error: 'not found' }
   try {
-    // OAuth servers list tools with the org connection when one exists.
+    // OAuth servers list tools with the org connection when one exists; the
+    // builtin toolkit authenticates with the fleet key as Talaria itself.
     const bearer = server.oauthEnabled ? await oauthTokenFor(server.id, 'org') : null
+    const builtinHeaders: Record<string, string> = server.builtin
+      ? { 'X-Agent-Name': 'talaria', 'X-Api-Key': process.env.TALARIA_AGENT_KEY ?? '' }
+      : {}
     const call = async (body: unknown, sessionId?: string | null) => {
       const r = await fetch(server.url, {
         method: 'POST',
@@ -141,6 +172,7 @@ export async function refreshMcpTools(id: string): Promise<{ tools: Array<{ name
           'content-type': 'application/json',
           accept: 'application/json, text/event-stream',
           ...server.headers,
+          ...builtinHeaders,
           ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
           ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
         },
@@ -294,12 +326,14 @@ export async function effectiveMcpFor(agentModel: string, serverName: string): P
   const sql = await db()
 
   let agentTools: string[] | null = null
-  if (!server.allAgents) {
+  {
     const rows = (await sql`
       select tools from mcp_server_agents where server_id = ${server.id} and agent_model = ${agentModel}
     `) as unknown as Array<{ tools: string[] | null }>
-    if (rows.length === 0) return null
-    agentTools = rows[0]!.tools
+    // All-agents servers carry everyone; assignment rows become per-agent
+    // tool OVERRIDES. Scoped servers require a row outright.
+    if (rows.length === 0 && !server.allAgents) return null
+    agentTools = rows[0]?.tools ?? null
   }
 
   const owner = (await personalAssistantOwners()).get(agentModel) ?? null
@@ -343,7 +377,7 @@ export async function serversForAgent(agentModel: string): Promise<Array<{ name:
   const rows = (await sql`
     select s.name, s.timeout_secs as "timeoutSecs", s.auth_mode as "authMode", (s.oauth is not null) as "oauthEnabled", s.id
     from mcp_servers s
-    where s.enabled and (s.all_agents or exists (
+    where s.enabled and not s.builtin and (s.all_agents or exists (
       select 1 from mcp_server_agents a where a.server_id = s.id and a.agent_model = ${agentModel}
     ))
     order by s.name

@@ -115,7 +115,11 @@ export const Route = createFileRoute('/api/mcp/servers/$id')({
         const server = await getMcpServer(params.id)
         if (!server) return json({ error: 'not found' }, { status: 404 })
         const carriers = await carriersForServer(server.id) // captured before the row vanishes
-        await deleteMcpServer(server.id)
+        try {
+          await deleteMcpServer(server.id)
+        } catch (e) {
+          return json({ error: (e as Error).message }, { status: 400 })
+        }
         enqueueRolls(carriers)
         void logAudit({
           actor: user.email ?? user.name ?? 'admin',

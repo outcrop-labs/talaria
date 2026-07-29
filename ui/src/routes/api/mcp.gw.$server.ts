@@ -54,6 +54,9 @@ export const Route = createFileRoute('/api/mcp/gw/$server')({
             accept: request.headers.get('accept') ?? 'application/json, text/event-stream',
             ...(request.headers.get('mcp-session-id') ? { 'mcp-session-id': request.headers.get('mcp-session-id')! } : {}),
             ...eff.upstreamHeaders,
+            // The builtin toolkit keeps per-agent identity: the caller's name
+            // travels through, authenticated by the fleet key.
+            ...(eff.server.builtin ? { 'X-Agent-Name': name, 'X-Api-Key': process.env.TALARIA_AGENT_KEY ?? '' } : {}),
           },
           body: bodyText,
           signal: AbortSignal.timeout((eff.server.timeoutSecs ?? 120) * 1000),
@@ -111,6 +114,7 @@ export const Route = createFileRoute('/api/mcp/gw/$server')({
             accept: request.headers.get('accept') ?? 'text/event-stream',
             ...(request.headers.get('mcp-session-id') ? { 'mcp-session-id': request.headers.get('mcp-session-id')! } : {}),
             ...eff.upstreamHeaders,
+            ...(eff.server.builtin ? { 'X-Agent-Name': name, 'X-Api-Key': process.env.TALARIA_AGENT_KEY ?? '' } : {}),
           },
         }).catch((e: Error) => e)
         if (upstream instanceof Error) return json({ error: `upstream unreachable: ${upstream.message}` }, { status: 502 })

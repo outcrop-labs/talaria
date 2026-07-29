@@ -170,6 +170,7 @@ const MIGRATIONS: string[] = [
     updated_at timestamptz not null default now()
   )`,
   `alter table mcp_servers add column if not exists required_headers jsonb not null default '[]'`,
+  `alter table mcp_servers add column if not exists builtin boolean not null default false`,
   `alter table mcp_servers add column if not exists oauth jsonb`,
   `create table if not exists mcp_oauth_states (
     state text primary key,

@@ -37,6 +37,7 @@ interface McpServerRow {
   enabled: boolean
   allAgents: boolean
   authMode: 'org' | 'per-user'
+  builtin: boolean
   oauthEnabled: boolean
   /** OAuth org connection state (null for header-auth servers). */
   orgConnected: boolean | null
@@ -226,7 +227,16 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
             <span className="truncate text-sm font-semibold text-fg">{s.label}</span>
-            {domain && <span className="truncate text-[11px] text-muted">{domain}</span>}
+            {s.builtin ? (
+              <span
+                className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted"
+                title="Talaria's own toolkit — every agent carries it. Govern who may use which tools below; identity and lifecycle are managed by the platform."
+              >
+                built-in
+              </span>
+            ) : (
+              domain && <span className="truncate text-[11px] text-muted">{domain}</span>
+            )}
           </div>
           {s.description && <div className="truncate font-sans text-xs text-muted">{s.description}</div>}
         </div>
@@ -241,14 +251,16 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
             Connect
           </button>
         )}
-        <button
-          type="button"
-          onClick={cardMenu}
-          title="Server actions"
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-fg"
-        >
-          <MoreHorizontal size={15} />
-        </button>
+        {!s.builtin && (
+          <button
+            type="button"
+            onClick={cardMenu}
+            title="Server actions"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-fg"
+          >
+            <MoreHorizontal size={15} />
+          </button>
+        )}
       </div>
 
       {s.oauthEnabled && s.oauthMeta && !s.oauthMeta.dcr && !s.oauthMeta.clientSet && (
@@ -293,31 +305,36 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
         <div>
           <div className="flex items-center gap-3 pb-1">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-muted/80">Agents</span>
-            <label className="flex items-center gap-1.5 text-xs text-muted" title="Every enabled agent carries this server; per-agent rows below are replaced">
-              <input
-                type="checkbox"
-                checked={s.allAgents}
-                onChange={(e) => void patch({ allAgents: e.target.checked })}
-                className="accent-[var(--theme-accent)]"
-              />
-              all agents
-            </label>
-            <span className="flex-1" />
-            {!s.allAgents && (
-              <AddPickerButton
-                title="Add an agent"
-                placeholder="Search agents"
-                options={agentOptions.filter((o) => !s.assignments.some((a) => a.agentModel === o.value))}
-                onPick={(m) => void patch({ assign: { agentModel: m, tools: null } })}
-              />
+            {s.builtin ? (
+              <span className="text-xs text-muted">every agent — rows below narrow individual agents</span>
+            ) : (
+              <label className="flex items-center gap-1.5 text-xs text-muted" title="Every enabled agent carries this server; rows below become per-agent tool overrides">
+                <input
+                  type="checkbox"
+                  checked={s.allAgents}
+                  onChange={(e) => void patch({ allAgents: e.target.checked })}
+                  className="accent-[var(--theme-accent)]"
+                />
+                all agents
+              </label>
             )}
+            <span className="flex-1" />
+            <AddPickerButton
+              title={s.allAgents ? 'Add a per-agent tool override' : 'Add an agent'}
+              placeholder="Search agents"
+              options={agentOptions.filter((o) => !s.assignments.some((a) => a.agentModel === o.value))}
+              onPick={(m) => void patch({ assign: { agentModel: m, tools: null } })}
+            />
           </div>
-          {s.allAgents ? (
-            <div className="px-1.5 py-1 text-xs text-muted">Every enabled agent carries this server.</div>
-          ) : s.assignments.length === 0 ? (
-            <div className="px-1.5 py-1 text-xs text-muted/70">No agents yet — add one, or check “all agents”.</div>
+          {s.assignments.length === 0 ? (
+            <div className="px-1.5 py-1 text-xs text-muted/70">
+              {s.allAgents ? 'Every enabled agent, every tool. Add a row to narrow one agent.' : 'No agents yet — add one, or check “all agents”.'}
+            </div>
           ) : (
             <div className="space-y-0.5">
+              {s.allAgents && (
+                <div className="px-1.5 pb-0.5 text-[11px] text-muted/70">Every enabled agent carries this server; these rows narrow individual agents.</div>
+              )}
               {s.assignments.map((a) => (
                 <AccessRow
                   key={a.agentModel}
