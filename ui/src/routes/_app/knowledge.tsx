@@ -1,10 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Plus, FileText, Bot, Globe, Lock, Users, Star, Trash2, History,
   ChevronRight, Search, Link2, ListTree, X, Maximize2, Minimize2, MoreHorizontal, Paperclip,
+  MessageSquareText, Sparkles, CheckCircle2, CornerDownRight, Pencil,
   type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -24,12 +25,72 @@ import { useArtifacts, useTargetArtifacts, attachArtifact, detachArtifact } from
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
+import { Avatar } from '@/components/ui/avatar'
+import { Textarea } from '@/components/ui/textarea'
+import { streamMuse } from '@/lib/muse'
 import { BrainRoutingSelect } from '@/components/kb/brain-select'
 import {
   createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, saveDoc, searchKb, updateSpace, useBacklinks,
   useDoc, useDocs, useSpace, useSpaces,
   type KbDocMeta, type KbSearchHit, type KbSpace,
 } from '@/lib/kb'
+
+interface DocPresence {
+  userId: string
+  name: string
+  mode: 'view' | 'edit'
+}
+
+/** The doc's multiplayer heartbeat: announce presence (view/edit) while
+ *  mounted, poll who else is here. */
+function useDocLive(docId: string, mode: 'read' | 'edit') {
+  const beat = mode === 'edit' ? 'edit' : 'view'
+  useEffect(() => {
+    const ping = () =>
+      fetch(`/api/kb/docs/${docId}/live`, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: beat }),
+      }).catch(() => {})
+    void ping()
+    const t = setInterval(() => void ping(), 25_000)
+    return () => clearInterval(t)
+  }, [docId, beat])
+  return useQuery({
+    queryKey: ['kb-live', docId],
+    queryFn: async (): Promise<DocPresence[]> => {
+      const r = await fetch(`/api/kb/docs/${docId}/live`, { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { active: DocPresence[] }).active
+    },
+    refetchInterval: 15_000,
+  })
+}
+
+interface KbComment {
+  id: string
+  docId: string
+  parentId: string | null
+  authorUserId: string | null
+  author: string
+  quote: string | null
+  content: string
+  resolved: boolean
+  createdAt: string
+}
+
+function useDocComments(docId: string) {
+  return useQuery({
+    queryKey: ['kb-comments', docId],
+    queryFn: async (): Promise<KbComment[]> => {
+      const r = await fetch(`/api/kb/docs/${docId}/comments`, { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { comments: KbComment[] }).comments
+    },
+    refetchInterval: 20_000,
+  })
+}
 
 // True when the signed-in user owns this doc/space (only owners can re-share).
 function useIsOwner(item: { ownerUserId: string | null; createdBy: string | null } | null | undefined): boolean {
@@ -861,6 +922,13 @@ function DocEditor({
   const isOwner = useIsOwner(doc)
   // Authored docs open in read mode (like tickets); empty ones open in edit.
   const [mode, setMode] = useState<'read' | 'edit'>('read')
+  const [showComments, setShowComments] = useState(false)
+  const [pendingQuote, setPendingQuote] = useState<string | null>(null)
+  const [selPop, setSelPop] = useState<{ x: number; y: number; quote: string } | null>(null)
+  const { data: presence = [] } = useDocLive(docId, mode)
+  const { data: comments = [] } = useDocComments(docId)
+  const openThreads = comments.filter((c) => !c.parentId && !c.resolved).length
+  const otherEditors = presence.filter((p) => p.userId !== me?.id && p.mode === 'edit')
   const initMode = useRef(false)
   useEffect(() => {
     if (doc) setTitle(doc.title)
@@ -869,6 +937,14 @@ function DocEditor({
       setMode(doc.body.trim() ? 'read' : 'edit')
     }
   }, [doc])
+
+  // Multiplayer read freshness: while others are here, the rendered doc
+  // follows their saves (edit mode never yanks your buffer).
+  useEffect(() => {
+    if (mode !== 'read' || presence.length <= 1) return
+    const t = setInterval(() => void qc.invalidateQueries({ queryKey: ['kb-doc', docId] }), 10_000)
+    return () => clearInterval(t)
+  }, [mode, presence.length, docId, qc])
 
   // Esc leaves fullscreen (unless a menu/popup is open and swallows it first).
   useEffect(() => {
@@ -973,6 +1049,40 @@ function DocEditor({
           <h1 className="min-w-0 flex-1 truncate font-sans text-lg font-semibold text-fg">{doc.title}</h1>
         )}
         {doc.kind === 'agent' && <span className="shrink-0 rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">OKF</span>}
+        {/* Who's here: green ring = editing right now. */}
+        {presence.length > 1 && (
+          <div className="flex shrink-0 -space-x-1.5">
+            {presence.slice(0, 5).map((p) => (
+              <span key={p.userId} className="relative" title={`${p.name}${p.mode === 'edit' ? ' — editing' : ''}`}>
+                <Avatar
+                  name={p.name}
+                  className={cn('h-6 w-6 text-[10px] ring-2 ring-surface', p.mode === 'edit' && 'ring-[color:var(--theme-success)]')}
+                />
+                {p.mode === 'edit' && (
+                  <Pencil size={8} className="absolute -bottom-0.5 -right-0.5 rounded-full bg-surface text-[color:var(--theme-success)]" />
+                )}
+              </span>
+            ))}
+          </div>
+        )}
+        {mode === 'edit' && otherEditors.length > 0 && (
+          <span
+            className="shrink-0 rounded-full bg-[color:var(--theme-warning)]/15 px-2 py-0.5 text-[11px] text-[color:var(--theme-warning)]"
+            title="Someone else is editing too — last save wins, so coordinate or take turns"
+          >
+            also editing: {otherEditors.map((p) => p.name).join(', ')}
+          </span>
+        )}
+        <Button
+          variant={showComments ? 'outline' : 'ghost'}
+          size="sm"
+          className="shrink-0"
+          title="Comments"
+          onClick={() => setShowComments((v) => !v)}
+        >
+          <MessageSquareText size={14} />
+          {openThreads > 0 && <span className="ml-1 text-[11px] text-accent">{openThreads}</span>}
+        </Button>
         {/* Read / Edit toggle — authored docs open in read mode. */}
         <div className="flex shrink-0 rounded-md border border-line p-0.5">
           {(['read', 'edit'] as const).map((m) => (
@@ -1037,23 +1147,63 @@ function DocEditor({
         {mode === 'edit' ? (
           // Flush page surface: the editor fills the panel, text wraps to a
           // comfortable centered measure, and it autosaves as you type.
-          <RichEditor
-            key={`${docId}-${seed}`}
-            ref={editorRef}
-            value={doc.body}
-            docSearch={docSearch}
-            slash
-            prose
-            autosave
-            onSave={() => void saveBody()}
-            placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents' : 'Write'}
-            fill
-            className="min-w-0 flex-1"
-          />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <RichEditor
+              key={`${docId}-${seed}`}
+              ref={editorRef}
+              value={doc.body}
+              docSearch={docSearch}
+              slash
+              prose
+              autosave
+              onSave={() => void saveBody()}
+              placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents' : 'Write'}
+              fill
+              className="min-w-0 flex-1"
+            />
+            <MuseBar
+              context={`Knowledge document “${title || doc.title}”${folderName ? ` in the “${folderName}” space` : ''}.`}
+              currentText={() => editorRef.current?.getMarkdown() ?? doc.body}
+              onAccept={async (md) => {
+                await save({ title, body: md })
+                setSeed((v) => v + 1)
+              }}
+            />
+          </div>
         ) : (
           // Read mode: rendered markdown with the identical measure/typography as
           // the editor (both use .re-prose), so switching modes doesn't reflow.
-          <div className="re-prose min-w-0 flex-1 overflow-y-auto">
+          <div
+            className="re-prose relative min-w-0 flex-1 overflow-y-auto"
+            onMouseUp={() => {
+              const sel = window.getSelection()
+              const text = sel?.toString().trim() ?? ''
+              if (!text || text.length > 500 || !sel || sel.rangeCount === 0) {
+                setSelPop(null)
+                return
+              }
+              const rect = sel.getRangeAt(0).getBoundingClientRect()
+              const host = bodyRef.current?.getBoundingClientRect()
+              if (!host) return
+              setSelPop({ x: rect.left - host.left + rect.width / 2, y: rect.top - host.top - 8, quote: text })
+            }}
+          >
+            {selPop && (
+              <button
+                type="button"
+                style={{ left: selPop.x, top: Math.max(selPop.y, 4) }}
+                className="absolute z-20 -translate-x-1/2 -translate-y-full rounded-lg border border-line bg-card px-2 py-1 text-xs text-fg shadow-lg transition-colors hover:border-accent"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  setPendingQuote(selPop.quote)
+                  setShowComments(true)
+                  setSelPop(null)
+                  window.getSelection()?.removeAllRanges()
+                }}
+              >
+                <MessageSquareText size={12} className="mr-1 inline" /> Comment
+              </button>
+            )}
             {doc.body.trim() ? (
               <Markdown className="tiptap">{doc.body}</Markdown>
             ) : (
@@ -1100,6 +1250,17 @@ function DocEditor({
           </div>
         )}
 
+        {showComments && (
+          <CommentsPanel
+            docId={docId}
+            comments={comments}
+            meId={me?.id ?? null}
+            docOwnerId={doc.ownerUserId}
+            pendingQuote={pendingQuote}
+            onQuoteConsumed={() => setPendingQuote(null)}
+            onClose={() => setShowComments(false)}
+          />
+        )}
         {showToc && (
           <div className="w-56 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
             <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-muted">
@@ -1313,6 +1474,306 @@ function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb
           {preview && <Markdown>{preview.content}</Markdown>}
         </div>
       </Modal>
+    </div>
+  )
+}
+
+/** Notion-shaped comment threads: roots (optionally anchored to a quote),
+ *  replies, resolve. Lives as a side panel beside the doc body. */
+function CommentsPanel({
+  docId,
+  comments,
+  meId,
+  docOwnerId,
+  pendingQuote,
+  onQuoteConsumed,
+  onClose,
+}: {
+  docId: string
+  comments: KbComment[]
+  meId: string | null
+  docOwnerId: string | null
+  pendingQuote: string | null
+  onQuoteConsumed: () => void
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  const [draft, setDraft] = useState('')
+  const [replyTo, setReplyTo] = useState<string | null>(null)
+  const [replyDraft, setReplyDraft] = useState('')
+  const [showResolved, setShowResolved] = useState(false)
+  const refresh = () => qc.invalidateQueries({ queryKey: ['kb-comments', docId] })
+
+  const post = async (content: string, parentId: string | null, quote: string | null) => {
+    if (!content.trim()) return
+    await fetch(`/api/kb/docs/${docId}/comments`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: content.trim(), parentId, quote }),
+    })
+    await refresh()
+  }
+  const setResolved = async (id: string, resolved: boolean) => {
+    await fetch(`/api/kb/comments/${id}`, {
+      method: 'PATCH',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ resolved }),
+    })
+    await refresh()
+  }
+  const remove = async (id: string) => {
+    await fetch(`/api/kb/comments/${id}`, { method: 'DELETE', credentials: 'same-origin' })
+    await refresh()
+  }
+
+  const roots = comments.filter((c) => !c.parentId)
+  const open = roots.filter((c) => !c.resolved)
+  const resolved = roots.filter((c) => c.resolved)
+  const repliesOf = (id: string) => comments.filter((c) => c.parentId === id)
+
+  const Thread = ({ root }: { root: KbComment }) => (
+    <div className={cn('space-y-2 rounded-xl border border-line-subtle/70 p-2.5', root.resolved && 'opacity-60')}>
+      {root.quote && (
+        <div className="border-l-2 border-accent/50 pl-2 font-sans text-[11px] italic text-muted line-clamp-2">“{root.quote}”</div>
+      )}
+      <CommentBody c={root} meId={meId} onDelete={() => void remove(root.id)} />
+      {repliesOf(root.id).map((r) => (
+        <div key={r.id} className="flex gap-1.5 pl-3">
+          <CornerDownRight size={11} className="mt-1 shrink-0 text-muted/60" />
+          <div className="min-w-0 flex-1">
+            <CommentBody c={r} meId={meId} onDelete={() => void remove(r.id)} />
+          </div>
+        </div>
+      ))}
+      <div className="flex items-center gap-2 pl-3">
+        {replyTo === root.id ? (
+          <Textarea
+            autoFocus
+            autoGrow
+            rows={1}
+            value={replyDraft}
+            onChange={(e) => setReplyDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                void post(replyDraft, root.id, null).then(() => {
+                  setReplyDraft('')
+                  setReplyTo(null)
+                })
+              } else if (e.key === 'Escape') {
+                setReplyTo(null)
+              }
+            }}
+            placeholder="Reply"
+            className="min-h-0 flex-1 text-xs"
+          />
+        ) : (
+          <button type="button" onClick={() => setReplyTo(root.id)} className="text-[11px] text-muted hover:text-accent">
+            Reply
+          </button>
+        )}
+        {(root.authorUserId === meId || docOwnerId === meId) && (
+          <button
+            type="button"
+            onClick={() => void setResolved(root.id, !root.resolved)}
+            className="ml-auto flex items-center gap-1 text-[11px] text-muted hover:text-[color:var(--theme-success)]"
+            title={root.resolved ? 'Reopen this thread' : 'Resolve this thread'}
+          >
+            <CheckCircle2 size={12} /> {root.resolved ? 'Reopen' : 'Resolve'}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+
+  return (
+    <aside className="flex w-80 shrink-0 flex-col border-l border-line-subtle">
+      <div className="flex items-center gap-2 border-b border-line-subtle px-3 py-2">
+        <MessageSquareText size={13} className="text-muted" />
+        <span className="text-sm font-semibold text-fg">Comments</span>
+        <span className="flex-1" />
+        {resolved.length > 0 && (
+          <button type="button" onClick={() => setShowResolved((v) => !v)} className="text-[11px] text-muted hover:text-fg">
+            {showResolved ? 'Hide resolved' : `Resolved (${resolved.length})`}
+          </button>
+        )}
+        <button type="button" onClick={onClose} className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-card hover:text-fg">
+          <X size={13} />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3">
+        {open.length === 0 && !showResolved && <div className="font-sans text-xs text-muted">No open threads. Select text in the doc to comment on it.</div>}
+        {open.map((c) => (
+          <Thread key={c.id} root={c} />
+        ))}
+        {showResolved && resolved.map((c) => <Thread key={c.id} root={c} />)}
+      </div>
+      <div className="border-t border-line-subtle p-3">
+        {pendingQuote && (
+          <div className="mb-1.5 flex items-start gap-1.5 border-l-2 border-accent/50 pl-2 font-sans text-[11px] italic text-muted">
+            <span className="min-w-0 flex-1 line-clamp-2">“{pendingQuote}”</span>
+            <button type="button" onClick={onQuoteConsumed} className="shrink-0 text-muted hover:text-fg">
+              <X size={11} />
+            </button>
+          </div>
+        )}
+        <Textarea
+          autoGrow
+          rows={1}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              void post(draft, null, pendingQuote).then(() => {
+                setDraft('')
+                onQuoteConsumed()
+              })
+            }
+          }}
+          placeholder={pendingQuote ? 'Comment on the selection' : 'Start a thread'}
+          className="text-sm"
+        />
+      </div>
+    </aside>
+  )
+}
+
+function CommentBody({ c, meId, onDelete }: { c: KbComment; meId: string | null; onDelete: () => void }) {
+  return (
+    <div className="group/comment">
+      <div className="flex items-baseline gap-1.5">
+        <Avatar name={c.author} className="h-4 w-4 self-center text-[8px]" />
+        <span className="text-xs font-medium text-fg">{c.author}</span>
+        <span className="text-[10px] text-muted">{relativeTime(c.createdAt)}</span>
+        {c.authorUserId === meId && (
+          <button
+            type="button"
+            onClick={onDelete}
+            className="ml-auto text-muted opacity-0 transition-opacity hover:text-[color:var(--theme-danger)] group-hover/comment:opacity-100"
+            title="Delete your comment"
+          >
+            <Trash2 size={11} />
+          </button>
+        )}
+      </div>
+      <div className="whitespace-pre-wrap pl-5 font-sans text-xs leading-relaxed text-fg">{c.content}</div>
+    </div>
+  )
+}
+
+/** Muse as the knowledge worker — the same drafting harness the internal
+ *  editors use, docked under the doc editor: describe the change, watch the
+ *  proposal stream, accept to replace the doc (a version snapshot lands via
+ *  the normal save path). Refinements keep short chat memory. */
+function MuseBar({
+  context,
+  currentText,
+  onAccept,
+}: {
+  context: string
+  currentText: () => string
+  onAccept: (markdown: string) => Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [instruction, setInstruction] = useState('')
+  const [proposal, setProposal] = useState<string | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [chat, setChat] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+  const abortRef = useRef<AbortController | null>(null)
+  useEffect(() => () => abortRef.current?.abort(), [])
+
+  const generate = async () => {
+    const instr = instruction.trim()
+    if (!instr || generating) return
+    setGenerating(true)
+    setError(null)
+    setProposal('')
+    const ac = new AbortController()
+    abortRef.current = ac
+    try {
+      const full = await streamMuse(
+        { kind: 'document', context, current: proposal ?? currentText(), instruction: instr, chat },
+        (piece) => setProposal((prev) => (prev ?? '') + piece),
+        ac.signal,
+      )
+      setChat((c) => [...c.slice(-10), { role: 'user', content: instr }, { role: 'assistant', content: full }])
+      setInstruction('')
+    } catch (e) {
+      if (!ac.signal.aborted) {
+        setError((e as Error).message)
+        setProposal(null)
+      }
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <div className="flex justify-end border-t border-line-subtle px-4 py-1.5">
+        <Button variant="ghost" size="sm" onClick={() => setOpen(true)} title="Draft with AI — uses your preferred model (Settings)">
+          <Sparkles size={13} className="mr-1.5" /> Muse
+        </Button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2 border-t border-line-subtle px-4 py-2.5">
+      {proposal !== null && (
+        <div className="max-h-56 overflow-y-auto rounded-xl border border-accent/30 bg-card/40 p-3">
+          <Markdown className="tiptap text-sm">{proposal}</Markdown>
+        </div>
+      )}
+      {error && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{error}</div>}
+      <div className="flex items-end gap-2">
+        <Sparkles size={14} className="mb-2.5 shrink-0 text-accent" />
+        <Textarea
+          autoFocus
+          autoGrow
+          rows={1}
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              void generate()
+            } else if (e.key === 'Escape' && !generating) {
+              setOpen(false)
+              setProposal(null)
+            }
+          }}
+          placeholder={proposal !== null ? 'Refine the proposal, e.g. “tighter, and add a checklist”' : 'Describe the change — Muse drafts from the current document'}
+          className="max-h-32 text-sm"
+        />
+        <Button size="sm" className="shrink-0" onClick={() => void generate()} disabled={generating || !instruction.trim()}>
+          {generating ? 'Drafting' : proposal !== null ? 'Refine' : 'Draft'}
+        </Button>
+        {proposal !== null && !generating && (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              className="shrink-0"
+              onClick={() => {
+                const md = proposal
+                setProposal(null)
+                setOpen(false)
+                void onAccept(md)
+              }}
+            >
+              Accept
+            </Button>
+            <Button size="sm" variant="ghost" className="shrink-0" onClick={() => setProposal(null)}>
+              Discard
+            </Button>
+          </>
+        )}
+      </div>
     </div>
   )
 }

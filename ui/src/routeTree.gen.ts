@@ -133,6 +133,7 @@ import { Route as ApiLlmV1ModelsRouteImport } from './routes/api/llm.v1.models'
 import { Route as ApiKbSpacesIdRouteImport } from './routes/api/kb.spaces.$id'
 import { Route as ApiKbPublicSlugRouteImport } from './routes/api/kb.public.$slug'
 import { Route as ApiKbDocsIdRouteImport } from './routes/api/kb.docs.$id'
+import { Route as ApiKbCommentsIdRouteImport } from './routes/api/kb.comments.$id'
 import { Route as ApiIntegrationsGooglePendingRouteImport } from './routes/api/integrations/google.pending'
 import { Route as ApiIntegrationsGoogleOrgRouteImport } from './routes/api/integrations/google.org'
 import { Route as ApiIntegrationsGoogleConnectRouteImport } from './routes/api/integrations/google.connect'
@@ -161,6 +162,8 @@ import { Route as ApiLlmV1ChatCompletionsRouteImport } from './routes/api/llm.v1
 import { Route as ApiKbSpacesIdDocsRouteImport } from './routes/api/kb.spaces.$id.docs'
 import { Route as ApiKbPublicSpaceSlugRouteImport } from './routes/api/kb.public.space.$slug'
 import { Route as ApiKbDocsIdMoveRouteImport } from './routes/api/kb.docs.$id.move'
+import { Route as ApiKbDocsIdLiveRouteImport } from './routes/api/kb.docs.$id.live'
+import { Route as ApiKbDocsIdCommentsRouteImport } from './routes/api/kb.docs.$id.comments'
 import { Route as ApiKbDocsIdBacklinksRouteImport } from './routes/api/kb.docs.$id.backlinks'
 import { Route as ApiIntegrationsGooglePendingIdRouteImport } from './routes/api/integrations/google.pending.$id'
 import { Route as ApiIntegrationsGoogleOrgConnectRouteImport } from './routes/api/integrations/google.org.connect'
@@ -804,6 +807,11 @@ const ApiKbDocsIdRoute = ApiKbDocsIdRouteImport.update({
   path: '/api/kb/docs/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiKbCommentsIdRoute = ApiKbCommentsIdRouteImport.update({
+  id: '/api/kb/comments/$id',
+  path: '/api/kb/comments/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiIntegrationsGooglePendingRoute =
   ApiIntegrationsGooglePendingRouteImport.update({
     id: '/pending',
@@ -946,6 +954,16 @@ const ApiKbPublicSpaceSlugRoute = ApiKbPublicSpaceSlugRouteImport.update({
 const ApiKbDocsIdMoveRoute = ApiKbDocsIdMoveRouteImport.update({
   id: '/move',
   path: '/move',
+  getParentRoute: () => ApiKbDocsIdRoute,
+} as any)
+const ApiKbDocsIdLiveRoute = ApiKbDocsIdLiveRouteImport.update({
+  id: '/live',
+  path: '/live',
+  getParentRoute: () => ApiKbDocsIdRoute,
+} as any)
+const ApiKbDocsIdCommentsRoute = ApiKbDocsIdCommentsRouteImport.update({
+  id: '/comments',
+  path: '/comments',
   getParentRoute: () => ApiKbDocsIdRoute,
 } as any)
 const ApiKbDocsIdBacklinksRoute = ApiKbDocsIdBacklinksRouteImport.update({
@@ -1207,6 +1225,7 @@ export interface FileRoutesByFullPath {
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
   '/api/integrations/google/pending': typeof ApiIntegrationsGooglePendingRouteWithChildren
+  '/api/kb/comments/$id': typeof ApiKbCommentsIdRoute
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -1249,6 +1268,8 @@ export interface FileRoutesByFullPath {
   '/api/integrations/google/org/connect': typeof ApiIntegrationsGoogleOrgConnectRoute
   '/api/integrations/google/pending/$id': typeof ApiIntegrationsGooglePendingIdRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
+  '/api/kb/docs/$id/comments': typeof ApiKbDocsIdCommentsRoute
+  '/api/kb/docs/$id/live': typeof ApiKbDocsIdLiveRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
@@ -1383,6 +1404,7 @@ export interface FileRoutesByTo {
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
   '/api/integrations/google/pending': typeof ApiIntegrationsGooglePendingRouteWithChildren
+  '/api/kb/comments/$id': typeof ApiKbCommentsIdRoute
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -1425,6 +1447,8 @@ export interface FileRoutesByTo {
   '/api/integrations/google/org/connect': typeof ApiIntegrationsGoogleOrgConnectRoute
   '/api/integrations/google/pending/$id': typeof ApiIntegrationsGooglePendingIdRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
+  '/api/kb/docs/$id/comments': typeof ApiKbDocsIdCommentsRoute
+  '/api/kb/docs/$id/live': typeof ApiKbDocsIdLiveRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
@@ -1561,6 +1585,7 @@ export interface FileRoutesById {
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
   '/api/integrations/google/pending': typeof ApiIntegrationsGooglePendingRouteWithChildren
+  '/api/kb/comments/$id': typeof ApiKbCommentsIdRoute
   '/api/kb/docs/$id': typeof ApiKbDocsIdRouteWithChildren
   '/api/kb/public/$slug': typeof ApiKbPublicSlugRoute
   '/api/kb/spaces/$id': typeof ApiKbSpacesIdRouteWithChildren
@@ -1603,6 +1628,8 @@ export interface FileRoutesById {
   '/api/integrations/google/org/connect': typeof ApiIntegrationsGoogleOrgConnectRoute
   '/api/integrations/google/pending/$id': typeof ApiIntegrationsGooglePendingIdRoute
   '/api/kb/docs/$id/backlinks': typeof ApiKbDocsIdBacklinksRoute
+  '/api/kb/docs/$id/comments': typeof ApiKbDocsIdCommentsRoute
+  '/api/kb/docs/$id/live': typeof ApiKbDocsIdLiveRoute
   '/api/kb/docs/$id/move': typeof ApiKbDocsIdMoveRoute
   '/api/kb/public/space/$slug': typeof ApiKbPublicSpaceSlugRoute
   '/api/kb/spaces/$id/docs': typeof ApiKbSpacesIdDocsRoute
@@ -1739,6 +1766,7 @@ export interface FileRouteTypes {
     | '/api/integrations/google/connect'
     | '/api/integrations/google/org'
     | '/api/integrations/google/pending'
+    | '/api/kb/comments/$id'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1781,6 +1809,8 @@ export interface FileRouteTypes {
     | '/api/integrations/google/org/connect'
     | '/api/integrations/google/pending/$id'
     | '/api/kb/docs/$id/backlinks'
+    | '/api/kb/docs/$id/comments'
+    | '/api/kb/docs/$id/live'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
@@ -1915,6 +1945,7 @@ export interface FileRouteTypes {
     | '/api/integrations/google/connect'
     | '/api/integrations/google/org'
     | '/api/integrations/google/pending'
+    | '/api/kb/comments/$id'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -1957,6 +1988,8 @@ export interface FileRouteTypes {
     | '/api/integrations/google/org/connect'
     | '/api/integrations/google/pending/$id'
     | '/api/kb/docs/$id/backlinks'
+    | '/api/kb/docs/$id/comments'
+    | '/api/kb/docs/$id/live'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
@@ -2092,6 +2125,7 @@ export interface FileRouteTypes {
     | '/api/integrations/google/connect'
     | '/api/integrations/google/org'
     | '/api/integrations/google/pending'
+    | '/api/kb/comments/$id'
     | '/api/kb/docs/$id'
     | '/api/kb/public/$slug'
     | '/api/kb/spaces/$id'
@@ -2134,6 +2168,8 @@ export interface FileRouteTypes {
     | '/api/integrations/google/org/connect'
     | '/api/integrations/google/pending/$id'
     | '/api/kb/docs/$id/backlinks'
+    | '/api/kb/docs/$id/comments'
+    | '/api/kb/docs/$id/live'
     | '/api/kb/docs/$id/move'
     | '/api/kb/public/space/$slug'
     | '/api/kb/spaces/$id/docs'
@@ -2204,6 +2240,7 @@ export interface RootRouteChildren {
   ApiRagSearchRoute: typeof ApiRagSearchRoute
   ApiTasksIdRoute: typeof ApiTasksIdRouteWithChildren
   KbSpaceSlugRoute: typeof KbSpaceSlugRoute
+  ApiKbCommentsIdRoute: typeof ApiKbCommentsIdRoute
   ApiKbDocsIdRoute: typeof ApiKbDocsIdRouteWithChildren
   ApiKbPublicSlugRoute: typeof ApiKbPublicSlugRoute
   ApiLlmV1ModelsRoute: typeof ApiLlmV1ModelsRoute
@@ -3084,6 +3121,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKbDocsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/kb/comments/$id': {
+      id: '/api/kb/comments/$id'
+      path: '/api/kb/comments/$id'
+      fullPath: '/api/kb/comments/$id'
+      preLoaderRoute: typeof ApiKbCommentsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/integrations/google/pending': {
       id: '/api/integrations/google/pending'
       path: '/pending'
@@ -3278,6 +3322,20 @@ declare module '@tanstack/react-router' {
       path: '/move'
       fullPath: '/api/kb/docs/$id/move'
       preLoaderRoute: typeof ApiKbDocsIdMoveRouteImport
+      parentRoute: typeof ApiKbDocsIdRoute
+    }
+    '/api/kb/docs/$id/live': {
+      id: '/api/kb/docs/$id/live'
+      path: '/live'
+      fullPath: '/api/kb/docs/$id/live'
+      preLoaderRoute: typeof ApiKbDocsIdLiveRouteImport
+      parentRoute: typeof ApiKbDocsIdRoute
+    }
+    '/api/kb/docs/$id/comments': {
+      id: '/api/kb/docs/$id/comments'
+      path: '/comments'
+      fullPath: '/api/kb/docs/$id/comments'
+      preLoaderRoute: typeof ApiKbDocsIdCommentsRouteImport
       parentRoute: typeof ApiKbDocsIdRoute
     }
     '/api/kb/docs/$id/backlinks': {
@@ -4050,11 +4108,15 @@ const ApiTasksIdRouteWithChildren = ApiTasksIdRoute._addFileChildren(
 
 interface ApiKbDocsIdRouteChildren {
   ApiKbDocsIdBacklinksRoute: typeof ApiKbDocsIdBacklinksRoute
+  ApiKbDocsIdCommentsRoute: typeof ApiKbDocsIdCommentsRoute
+  ApiKbDocsIdLiveRoute: typeof ApiKbDocsIdLiveRoute
   ApiKbDocsIdMoveRoute: typeof ApiKbDocsIdMoveRoute
 }
 
 const ApiKbDocsIdRouteChildren: ApiKbDocsIdRouteChildren = {
   ApiKbDocsIdBacklinksRoute: ApiKbDocsIdBacklinksRoute,
+  ApiKbDocsIdCommentsRoute: ApiKbDocsIdCommentsRoute,
+  ApiKbDocsIdLiveRoute: ApiKbDocsIdLiveRoute,
   ApiKbDocsIdMoveRoute: ApiKbDocsIdMoveRoute,
 }
 
@@ -4124,6 +4186,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiRagSearchRoute: ApiRagSearchRoute,
   ApiTasksIdRoute: ApiTasksIdRouteWithChildren,
   KbSpaceSlugRoute: KbSpaceSlugRoute,
+  ApiKbCommentsIdRoute: ApiKbCommentsIdRoute,
   ApiKbDocsIdRoute: ApiKbDocsIdRouteWithChildren,
   ApiKbPublicSlugRoute: ApiKbPublicSlugRoute,
   ApiLlmV1ModelsRoute: ApiLlmV1ModelsRoute,
