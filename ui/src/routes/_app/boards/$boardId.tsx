@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate, Outlet } from '@tanstack/react-router'
 import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { CalendarRange, Layers, LayoutGrid, List, Plus } from 'lucide-react'
 import { BoardHeader } from '@/components/board/board-header'
 import { Kanban } from '@/components/board/kanban'
@@ -29,7 +29,7 @@ import {
   type BoardViewConfig,
 } from '@/lib/boards'
 import { useQueryClient } from '@tanstack/react-query'
-import { useContextMenu, DropdownMenu } from '@/components/ui/context-menu'
+import { useContextMenu, DropdownMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { confirm, prompt } from '@/components/ui/confirm'
 import { useSession } from '@/lib/session'
 import type { Task } from '@/lib/task-const'
@@ -117,6 +117,26 @@ function BoardPage() {
   useBoardLive(board ? boardId : null)
 
   const qc = useQueryClient()
+  // Per-user preference (localStorage): render every status/priority group
+  // in list mode, empty ones included, as drop lanes.
+  const [showEmptyGroups, setShowEmptyGroups] = useState(false)
+  useEffect(() => {
+    try {
+      setShowEmptyGroups(localStorage.getItem('talaria:list-empty-groups') === '1')
+    } catch {
+      /* ignore */
+    }
+  }, [])
+  const toggleEmptyGroups = () => {
+    setShowEmptyGroups((v) => {
+      try {
+        localStorage.setItem('talaria:list-empty-groups', v ? '0' : '1')
+      } catch {
+        /* ignore */
+      }
+      return !v
+    })
+  }
   const { data: savedViews = [] } = useBoardViews(board ? boardId : null)
   const { openMenu, menu: viewTabMenu } = useContextMenu()
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -341,11 +361,19 @@ function BoardPage() {
                   {groupBy === 'none' ? 'No grouping' : `Group: ${groupBy}`}
                 </FieldPill>
               )}
-              items={(['status', 'priority', 'assignee', 'label', 'none'] as GroupByKey[]).map((g) => ({
-                label: g === 'none' ? 'No grouping' : g,
-                checked: groupBy === g,
-                onSelect: () => setSearch({ group: g }),
-              }))}
+              items={[
+                ...(['status', 'priority', 'assignee', 'label', 'none'] as GroupByKey[]).map((g) => ({
+                  label: g === 'none' ? 'No grouping' : g,
+                  checked: groupBy === g,
+                  onSelect: () => setSearch({ group: g }),
+                })),
+                ...(groupBy === 'status' || groupBy === 'priority'
+                  ? ([
+                      'sep',
+                      { label: 'Show empty groups', checked: showEmptyGroups, keepOpen: true, onSelect: toggleEmptyGroups },
+                    ] as ContextMenuEntry[])
+                  : []),
+              ]}
             />
           )}
           <Chip onSelect={() => setSearch({ archived: !showArchived })} selected={showArchived} title="Include archived tickets">
@@ -360,7 +388,7 @@ function BoardPage() {
         ) : view === 'gantt' ? (
           <Gantt board={board} tasks={tasks} onOpen={openTicket} />
         ) : (
-          <BoardList tasks={tasks} onOpen={openTicket} boardId={boardId} members={members} canEdit={canEdit} groupBy={groupBy} />
+          <BoardList tasks={tasks} onOpen={openTicket} boardId={boardId} members={members} canEdit={canEdit} groupBy={groupBy} showEmptyGroups={showEmptyGroups} />
         )}
       </div>
 

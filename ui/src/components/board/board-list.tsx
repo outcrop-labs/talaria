@@ -127,6 +127,7 @@ export function BoardList({
   members = [],
   canEdit = false,
   groupBy = 'status',
+  showEmptyGroups = false,
 }: {
   tasks: Task[]
   onOpen: (id: string) => void
@@ -134,6 +135,8 @@ export function BoardList({
   members?: BoardMember[]
   canEdit?: boolean
   groupBy?: GroupByKey
+  /** Status/priority grouping: render EVERY group (drop lanes included). */
+  showEmptyGroups?: boolean
 }) {
   const qc = useQueryClient()
   const { openMenu, menu } = useContextMenu()
@@ -253,14 +256,16 @@ export function BoardList({
       const order = [...TASK_STATUSES, 'failed', 'cancelled'] as TaskStatus[]
       return order
         .map((st) => ({ key: st, label: STATUS_LABEL[st] ?? st, dot: STATUS_COLOR[st], tasks: sorted.filter((t) => t.status === st) }))
-        .filter((g) => g.tasks.length > 0)
+        // Core statuses always show when empty-groups is on (drop lanes);
+        // failed/cancelled only when occupied.
+        .filter((g) => g.tasks.length > 0 || (showEmptyGroups && (TASK_STATUSES as readonly string[]).includes(g.key)))
         .map((g) => ({ ...g, hours: sum(g.tasks) }))
     }
     if (groupBy === 'priority') {
       return [...PRIORITIES]
         .reverse()
         .map((p) => ({ key: p, label: p, dot: PRIORITY_COLOR[p], tasks: sorted.filter((t) => t.priority === p) }))
-        .filter((g) => g.tasks.length > 0)
+        .filter((g) => g.tasks.length > 0 || showEmptyGroups)
         .map((g) => ({ ...g, hours: sum(g.tasks) }))
     }
     if (groupBy === 'assignee') {
@@ -293,7 +298,7 @@ export function BoardList({
       }))
       .sort((a, b) => (a.key === '__none' ? 1 : b.key === '__none' ? -1 : a.label.localeCompare(b.label)))
       .map((g) => ({ ...g, hours: sum(g.tasks) }))
-  }, [sorted, groupBy, fleet, members, boardLabels])
+  }, [sorted, groupBy, fleet, members, boardLabels, showEmptyGroups])
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const toggleGroup = (k: string) =>
@@ -457,6 +462,13 @@ export function BoardList({
                           <span className="text-muted">{g.tasks.length}</span>
                           {g.hours > 0 && <span className="text-[10px] text-muted">Σ {g.hours}h</span>}
                         </span>
+                      </td>
+                    </tr>
+                  )}
+                  {open && g.tasks.length === 0 && (
+                    <tr>
+                      <td colSpan={cols.length + 2} className={cn('px-4 py-2 text-xs italic text-muted/70', dragOverGroup === g.key && dragRow && 'text-accent')}>
+                        {dragRow ? 'Drop here' : 'No tickets'}
                       </td>
                     </tr>
                   )}
