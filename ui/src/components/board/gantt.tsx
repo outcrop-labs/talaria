@@ -64,7 +64,10 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
       e.preventDefault()
       const cursorX = e.clientX - el.getBoundingClientRect().left
       setDayW((w) => {
-        const next = Math.min(MAX_W, Math.max(MIN_W, w * (e.deltaY < 0 ? 1.12 : 1 / 1.12)))
+        // Proportional to wheel delta (clamped) — gentle on fine-grained
+        // trackpads, controlled on notchy mouse wheels.
+        const factor = Math.exp(-Math.max(-100, Math.min(100, e.deltaY)) * 0.0012)
+        const next = Math.min(MAX_W, Math.max(MIN_W, w * factor))
         if (next !== w) {
           const day = (el.scrollLeft + cursorX - 220) / w
           requestAnimationFrame(() => {
