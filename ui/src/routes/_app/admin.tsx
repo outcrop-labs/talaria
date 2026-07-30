@@ -1629,8 +1629,9 @@ function GithubPanel() {
     configured: boolean
     account: string | null
     error: string | null
-    app: { appId: string; installationId: string; keySet: boolean }
+    app: { appId: string; installationIds: string[]; keySet: boolean }
     patSet: boolean
+    repoCreationOrgs?: string[]
   }
   const { data: status, isPending } = useQuery({
     queryKey: ['github-status'],
@@ -1752,17 +1753,39 @@ function GithubPanel() {
                   Save
                 </Button>
               </div>
-              <div className="flex items-center gap-3">
-                <label className="w-20 shrink-0 text-[11px] uppercase tracking-wide text-muted">Installed on</label>
-                <Select size="sm" value={status?.app.installationId ?? ''} disabled={!status?.app.keySet} onChange={(e) => void save({ mode: 'app', app: { installationId: e.target.value } })} className="w-64">
-                  <option value="">pick an installation…</option>
-                  {installations.map((i) => (
-                    <option key={i.id} value={String(i.id)}>
-                      {i.account} (#{i.id})
-                    </option>
-                  ))}
-                </Select>
-                {status?.app.keySet && installations.length === 0 && <span className="text-xs text-muted">install the app on GitHub first — the guide's step 3</span>}
+              <div className="flex items-start gap-3">
+                <label className="w-20 shrink-0 pt-1 text-[11px] uppercase tracking-wide text-muted">Installed on</label>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {installations.map((i) => {
+                    const selected = (status?.app.installationIds ?? []).includes(String(i.id))
+                    return (
+                      <button
+                        key={i.id}
+                        type="button"
+                        disabled={!status?.app.keySet}
+                        onClick={() =>
+                          void save({
+                            mode: 'app',
+                            app: {
+                              installationIds: selected
+                                ? (status?.app.installationIds ?? []).filter((x) => x !== String(i.id))
+                                : [...(status?.app.installationIds ?? []), String(i.id)],
+                            },
+                          })
+                        }
+                        className={cn(
+                          'rounded-full border px-2.5 py-0.5 text-xs transition-colors',
+                          selected ? 'border-[var(--theme-accent-border)] text-fg' : 'border-line-subtle text-muted hover:text-fg',
+                        )}
+                      >
+                        {i.account} (#{i.id})
+                      </button>
+                    )
+                  })}
+                  {status?.app.keySet && installations.length === 0 && <span className="text-xs text-muted">install the app on GitHub first — the guide's step 3</span>}
+                  {!status?.app.keySet && <span className="text-xs text-muted">save the App ID + key first</span>}
+                  {(status?.app.installationIds?.length ?? 0) > 1 && <span className="text-xs text-muted">repos pool across all selected orgs</span>}
+                </div>
               </div>
             </>
           ) : (
@@ -1777,7 +1800,12 @@ function GithubPanel() {
           {error && <div className="text-xs text-[color:var(--theme-danger)]">{error}</div>}
         </div>
 
-        {status?.configured && <RepoFlowSection />}
+        {status?.configured && (
+          <>
+            <RepoCreationSection status={status} save={save} />
+            <RepoFlowSection />
+          </>
+        )}
       </div>
 
       <GithubGuideModal open={guideOpen} onClose={() => setGuideOpen(false)} mode={effMode === 'pat' ? 'pat' : 'app'} />
@@ -1902,6 +1930,84 @@ function GhFields({ rows }: { rows: Array<[string, string]> }) {
           <span className="min-w-0 flex-1 text-xs text-fg">{value}</span>
         </div>
       ))}
+    </div>
+  )
+}
+
+/** Agent repo creation: which orgs allow it, and the pending request queue
+ *  (agents propose, THIS is where humans ratify — approval creates the repo
+ *  and grants it to the requester). */
+function RepoCreationSection({
+  status,
+  save,
+}: {
+  status: { repoCreationOrgs?: string[] }
+  save: (body: unknown) => Promise<void>
+}) {
+  const qc = useQueryClient()
+  const cfgOrgs = status.repoCreationOrgs ?? []
+  const [orgs, setOrgs] = useState(cfgOrgs.join(', '))
+  interface RepoReq {
+    id: string
+    agentModel: string
+    org: string
+    name: string
+    why: string
+    createdAt: string
+  }
+  const { data: requests = [] } = useQuery({
+    queryKey: ['repo-requests'],
+    queryFn: async (): Promise<RepoReq[]> => {
+      const r = await fetch('/api/workbench/repo-requests', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { requests: RepoReq[] }).requests
+    },
+    refetchInterval: 60_000,
+  })
+  const [decideError, setDecideError] = useState<string | null>(null)
+  const decide = async (id: string, action: 'approve' | 'reject') => {
+    setDecideError(null)
+    const r = await fetch('/api/workbench/repo-requests', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, action }),
+    })
+    if (!r.ok) setDecideError(((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed')
+    await qc.invalidateQueries({ queryKey: ['repo-requests'] })
+    await qc.invalidateQueries({ queryKey: ['workbench-flow'] })
+  }
+  return (
+    <div className="space-y-2 border-t border-line-subtle pt-3">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[11px] uppercase tracking-wide text-muted">Agent repo creation</span>
+        <span className="text-xs text-muted">agents may REQUEST new repos in these orgs; you approve each one</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <Input
+          size="sm"
+          value={orgs}
+          onChange={(e) => setOrgs(e.target.value)}
+          onBlur={() => {
+            const list = orgs.split(',').map((o) => o.trim()).filter(Boolean)
+            if (list.join(',') !== cfgOrgs.join(',')) void save({ repoCreationOrgs: list })
+          }}
+          placeholder="approved orgs, comma-separated (empty = off)"
+          className="max-w-md"
+        />
+        <span className="text-xs text-muted">needs the App's org Administration permission to create</span>
+      </div>
+      {requests.map((r) => (
+        <div key={r.id} className="flex items-center gap-2 rounded-lg border border-[color:var(--theme-warning)]/30 px-3 py-2 text-sm">
+          <span className="min-w-0 flex-1 truncate">
+            <span className="text-fg">{r.org}/{r.name}</span>
+            <span className="text-muted"> — {r.agentModel}: {r.why}</span>
+          </span>
+          <Button size="sm" onClick={() => void decide(r.id, 'approve')}>Create + grant</Button>
+          <Button size="sm" variant="ghost" onClick={() => void decide(r.id, 'reject')}>Reject</Button>
+        </div>
+      ))}
+      {decideError && <div className="text-xs text-[color:var(--theme-danger)]">{decideError}</div>}
     </div>
   )
 }

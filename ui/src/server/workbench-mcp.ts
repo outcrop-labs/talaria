@@ -14,7 +14,7 @@ import { db } from './db/pg'
 import { branchAhead, cloneUrl, createBranch, createPullRequest, effectiveBase, grantedRepos, mergeInto, repoFlow } from './github'
 import { resolveWorkbench } from './workbench'
 import { effortModel, effortModels, harnessModelArg, listHarnessDefs, type Effort } from './workbench-harnesses'
-import { githubStatus } from './github'
+import { getGithubConfig, githubStatus } from './github'
 
 export interface WorkbenchJob {
   id: string
@@ -85,6 +85,22 @@ export const WORKBENCH_TOOLS = [
     description:
       "Merge a job's branch into the repo's TESTING branch for integration testing (only when the repo has one configured). The PR to the base branch stays open and unmerged — testing is a sideline, never the way work ships.",
     inputSchema: { type: 'object', properties: { jobId: { type: 'string' } }, required: ['jobId'] },
+  },
+  {
+    name: 'request_repo',
+    description:
+      'Request a NEW repository in an approved org — a human approves before anything is created (you will see it in list_repos once granted). Use only when the work genuinely needs a fresh repo; explain why.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        org: { type: 'string', description: 'The GitHub org — must be on the approved list (doctor shows it)' },
+        name: { type: 'string', description: 'Repo name (lowercase, dashes)' },
+        description: { type: 'string', description: 'One-line repo description' },
+        why: { type: 'string', description: 'Why this work needs a new repo' },
+        taskId: { type: 'string', description: 'The ticket that motivated it' },
+      },
+      required: ['org', 'name', 'why'],
+    },
   },
   {
     name: 'finish_job',
@@ -316,6 +332,39 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const r = await mergeJobToTesting(job, agent.model)
       if (!r.ok) return { ok: false, error: r.error }
       return { ok: true, value: { merged: true, testingBranch: r.testingBranch, note: 'Testing merge only — the PR still ships through review.' } }
+    }
+
+    case 'request_repo': {
+      const cfg = await getGithubConfig()
+      const org = String(args.org ?? '').trim()
+      const repoName = String(args.name ?? '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').slice(0, 100)
+      if (!cfg.repoCreationOrgs.length) return { ok: false, error: 'repo creation is not enabled — an admin can approve orgs on the GitHub panel' }
+      if (!cfg.repoCreationOrgs.includes(org)) return { ok: false, error: `org "${org}" is not approved for repo creation (approved: ${cfg.repoCreationOrgs.join(', ')})` }
+      if (!repoName) return { ok: false, error: 'name required' }
+      const taskId = typeof args.taskId === 'string' && args.taskId ? args.taskId : null
+      const dup = await sql`
+        select 1 from workbench_repo_requests where agent_id = ${agent.id} and org = ${org} and name = ${repoName} and status = 'pending' limit 1
+      `
+      if (dup.length) return { ok: false, error: 'you already have a pending request for this repo — a human will decide' }
+      await sql`
+        insert into workbench_repo_requests (agent_id, agent_model, org, name, description, why, task_id)
+        values (${agent.id}, ${agent.model}, ${org}, ${repoName}, ${String(args.description ?? '').slice(0, 300)}, ${String(args.why ?? '').slice(0, 1000)}, ${taskId})
+      `
+      await logTicket(taskId, agent.model, `requested a new repo: ${org}/${repoName} — awaiting human approval`)
+      // Admins hear about it once, through the inbox — not per retry.
+      void (async () => {
+        const { addNotification } = await import('./notifications')
+        const admins = (await sql`select id from users where role = 'admin'`) as unknown as Array<{ id: string }>
+        for (const a of admins) {
+          await addNotification(a.id, {
+            kind: 'workbench-repo-request',
+            title: `${agent.displayName} requests a new repo`,
+            body: `${org}/${repoName} — ${String(args.why ?? '').slice(0, 120)}`,
+            href: '/admin?tab=org',
+          }).catch(() => {})
+        }
+      })().catch(() => {})
+      return { ok: true, value: { status: 'pending', note: 'Request filed — a human decides. Continue other work; the repo appears in list_repos if approved.' } }
     }
 
     case 'finish_job': {

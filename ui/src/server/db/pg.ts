@@ -1048,6 +1048,23 @@ const MIGRATIONS: string[] = [
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now()
   )`,
+  // Agent repo-creation requests — agents propose, humans ratify. Approval
+  // creates the repo via the App (needs org Administration permission),
+  // auto-grants it to the requester, and audits everything.
+  `create table if not exists workbench_repo_requests (
+    id uuid primary key default gen_random_uuid(),
+    agent_id uuid not null references agent_defs(id) on delete cascade,
+    agent_model text not null,
+    org text not null,
+    name text not null,
+    description text not null default '',
+    why text not null default '',
+    task_id uuid references tasks(id) on delete set null,
+    status text not null default 'pending',
+    decided_by text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
   // Persistent skill summaries — one generated line per skill, keyed to a
   // hash of its SKILL.md so it only regenerates when the content changes.
   `create table if not exists skill_summaries (

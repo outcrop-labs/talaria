@@ -11,10 +11,11 @@ const Body = z.object({
   app: z
     .object({
       appId: z.string().max(40).optional(),
-      installationId: z.string().max(40).optional(),
+      installationIds: z.array(z.string().max(40)).max(20).optional(),
       privateKey: z.string().max(20_000).nullable().optional(),
     })
     .optional(),
+  repoCreationOrgs: z.array(z.string().min(1).max(100)).max(10).optional(),
 })
 
 // The Workbench's GitHub connection. Deliberately requireAdmin (not
@@ -46,7 +47,7 @@ export const Route = createFileRoute('/api/workbench/github')({
         const user = await requireAdmin(request)
         if (user instanceof Response) return user
         const cur = await getGithubConfig()
-        await setGithubConfig({ mode: null, pat: { token: null }, app: { appId: '', installationId: '', privateKey: null } })
+        await setGithubConfig({ mode: null, pat: { token: null }, app: { appId: '', installationIds: [], privateKey: null } })
         void logAudit({ actor: actorOf(user), action: 'workbench.github_disconnect', targetType: 'workbench', targetId: cur.mode ?? 'none' })
         return json({ ok: true })
       },
