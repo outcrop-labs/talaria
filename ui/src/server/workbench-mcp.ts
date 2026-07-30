@@ -50,7 +50,7 @@ export const WORKBENCH_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string', description: 'The ticket this job implements' },
+        taskId: { type: 'string', description: 'The ticket this job implements — ALWAYS pass it when the work came from a ticket; it links the branch, audit trail, plan gate, and PR to the ticket.' },
         repo: { type: 'string', description: 'owner/name — must be one of your granted repos' },
         effort: { type: 'string', enum: ['light', 'standard', 'heavy'], description: 'How hard this work is — routes tooling and review weight' },
         plan: { type: 'string', description: 'Your implementation plan: approach, files touched, test strategy. Required for standard/heavy.' },
@@ -145,7 +145,10 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       let ref = ''
       let title = ''
       if (taskId) {
-        const rows = (await sql`select ticket_ref as "ticketRef", title from tasks where id = ${taskId}`) as unknown as Array<{ ticketRef: string | null; title: string }>
+        const rows = (await sql`
+          select case when t.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end as "ticketRef", t.title
+          from tasks t join boards b on b.id = t.board_id where t.id = ${taskId}
+        `) as unknown as Array<{ ticketRef: string | null; title: string }>
         ref = rows[0]?.ticketRef ?? ''
         title = rows[0]?.title ?? ''
       }
@@ -249,15 +252,18 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const ahead = await branchAhead(job.repo, base, job.branch)
       if (ahead === 0) return { ok: false, error: 'the branch has no commits yet — push your work first (or finish with abandon:true)' }
       let ticketLine = ''
+      let t: Array<{ ticketRef: string | null; title: string }> = []
       if (job.taskId) {
-        const t = (await sql`select ticket_ref as "ticketRef", title from tasks where id = ${job.taskId}`) as unknown as Array<{ ticketRef: string | null; title: string }>
+        t = (await sql`
+          select case when tk.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || tk.ticket_no end as "ticketRef", tk.title
+          from tasks tk join boards b on b.id = tk.board_id where tk.id = ${job.taskId}
+        `) as unknown as Array<{ ticketRef: string | null; title: string }>
         if (t[0]) ticketLine = `Ticket: ${t[0].ticketRef ?? job.taskId} — ${t[0].title}\n\n`
       }
       const body =
         `${ticketLine}${summary || '(no summary provided)'}` +
         (job.plan ? `\n\n## Plan\n\n${job.plan}` : '') +
         `\n\n---\n🔧 Opened by **${agent.displayName}** (\`${agent.model}\`) via the Talaria workbench (${job.effort} effort). Commits on this branch are authored by the agent.`
-      const t = (await sql`select ticket_ref as "ticketRef", title from tasks where id = ${job.taskId}`) as unknown as Array<{ ticketRef: string | null; title: string }>
       const title = t[0] ? `${t[0].ticketRef ? `[${t[0].ticketRef}] ` : ''}${t[0].title}`.slice(0, 100) : `Workbench: ${job.branch}`
       const pr = await createPullRequest(job.repo, { head: job.branch, base, title, body })
       await sql`update workbench_jobs set status = 'pr_open', pr_url = ${pr.url}, summary = ${summary}, updated_at = now() where id = ${job.id}`
