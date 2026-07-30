@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -198,6 +198,8 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                       <Button variant="outline" size="sm" onClick={async () => { await reviewTask(taskId, 'rejected'); refresh() }}>Request changes</Button>
                     </div>
                   )}
+
+                  <WorkbenchJobsStrip taskId={taskId} canEdit={canEdit} />
 
                   <DescriptionSection
                     editorRef={descMuseRef}
@@ -1004,6 +1006,83 @@ function TicketMuseBar({
           className="flex-1"
         />
       </div>
+    </div>
+  )
+}
+
+
+interface WbJob {
+  id: string
+  agentModel: string
+  repo: string
+  branch: string
+  effort: string
+  plan: string
+  status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned'
+  prUrl: string | null
+}
+
+/** Workbench jobs on this ticket — the plan-approval gate and PR links live
+ *  here, next to the work they govern. Hidden when there are none. */
+function WorkbenchJobsStrip({ taskId, canEdit }: { taskId: string; canEdit: boolean }) {
+  const qc = useQueryClient()
+  const { data: jobs = [] } = useQuery({
+    queryKey: ['workbench-jobs', taskId],
+    queryFn: async (): Promise<WbJob[]> => {
+      const r = await fetch(`/api/workbench/jobs?taskId=${taskId}`, { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { jobs: WbJob[] }).jobs
+    },
+    refetchInterval: 30_000,
+  })
+  const act = async (jobId: string, action: 'approve' | 'reject') => {
+    await fetch('/api/workbench/jobs', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jobId, action }),
+    })
+    await qc.invalidateQueries({ queryKey: ['workbench-jobs', taskId] })
+  }
+  const live = jobs.filter((j) => j.status !== 'abandoned')
+  if (!live.length) return null
+  return (
+    <div className="mb-3 space-y-2">
+      {live.map((j) => (
+        <div
+          key={j.id}
+          className={cn(
+            'rounded-xl border px-4 py-2.5 text-sm',
+            j.status === 'awaiting_approval' ? 'border-[color:var(--theme-warning)]/40 bg-[color:var(--theme-warning)]/5' : 'border-line-subtle bg-card/40',
+          )}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-fg">
+              {j.status === 'awaiting_approval' && `${j.agentModel} plans ${j.effort}-effort work on ${j.repo} — approve to build`}
+              {j.status === 'started' && `${j.agentModel} is building on ${j.repo} @ ${j.branch}`}
+              {j.status === 'pr_open' && `${j.agentModel} opened a PR from ${j.branch}`}
+            </span>
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              {j.status === 'awaiting_approval' && canEdit && (
+                <>
+                  <Button size="sm" onClick={() => void act(j.id, 'approve')}>
+                    Approve plan
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => void act(j.id, 'reject')}>
+                    Reject
+                  </Button>
+                </>
+              )}
+              {j.prUrl && (
+                <a href={j.prUrl} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
+                  View PR
+                </a>
+              )}
+            </span>
+          </div>
+          {j.status === 'awaiting_approval' && j.plan && <p className="mt-1.5 line-clamp-4 whitespace-pre-wrap text-xs text-muted">{j.plan}</p>}
+        </div>
+      ))}
     </div>
   )
 }

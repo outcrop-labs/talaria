@@ -24,7 +24,7 @@ export interface WorkbenchJob {
   branch: string
   effort: string
   plan: string
-  status: 'started' | 'pr_open' | 'abandoned'
+  status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned'
   prUrl: string | null
   summary: string
   createdAt: string
@@ -146,13 +146,29 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const { base, created } = await createBranch(repo, branch).catch((e: Error) => {
         throw new Error(e.message)
       })
+      // Plan-first, gated by effort: light auto-proceeds; standard proceeds
+      // with the plan posted to the ticket (audit trail); heavy WAITS for a
+      // human to approve the plan from the ticket before any clone URL exists.
+      const gated = effort === 'heavy' && !!taskId
       const rows = (await sql`
-        insert into workbench_jobs (agent_id, agent_model, task_id, repo, branch, effort, plan)
-        values (${agent.id}, ${agent.model}, ${taskId}, ${repo}, ${branch}, ${effort}, ${plan})
+        insert into workbench_jobs (agent_id, agent_model, task_id, repo, branch, effort, plan, status)
+        values (${agent.id}, ${agent.model}, ${taskId}, ${repo}, ${branch}, ${effort}, ${plan}, ${gated ? 'awaiting_approval' : 'started'})
         returning ${sql.unsafe(JOB_ROW)}
       `) as unknown as WorkbenchJob[]
       const job = rows[0]!
-      await logTicket(taskId, agent.model, `workbench job started: ${repo} @ ${branch} (${effort})${plan ? ' — plan recorded' : ''}`)
+      if (taskId && plan.trim()) {
+        await sql`
+          insert into task_comments (task_id, author, content)
+          values (${taskId}, ${agent.model}, ${`**Workbench plan** (${effort} effort · ${repo}):\n\n${plan}`})
+        `.catch(() => {})
+      }
+      await logTicket(
+        taskId,
+        agent.model,
+        gated
+          ? `workbench job awaiting plan approval: ${repo} @ ${branch} (heavy)`
+          : `workbench job started: ${repo} @ ${branch} (${effort})${plan ? ' — plan recorded' : ''}`,
+      )
       // Effort → model is Talaria's call: the agent picked the effort, the
       // platform resolves which model that means today. Invocation hints come
       // from the profile's harness adapters with the model slotted in.
@@ -169,11 +185,14 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           branch,
           base,
           resumed: !created,
-          cloneUrl: await cloneUrl(repo),
+          status: job.status,
+          ...(gated ? {} : { cloneUrl: await cloneUrl(repo) }),
           effort,
           model,
           harnesses,
-          rules: `Clone with the URL above (token is short-lived — clone now). Work ONLY on ${branch}; commit and push to it as you go. Never touch ${base} directly. Use the ${effort}-effort model shown — escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
+          rules: gated
+            ? `Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved it returns the clone URL. Do NOT begin building.`
+            : `Clone with the URL above (token is short-lived — clone now). Work ONLY on ${branch}; commit and push to it as you go. Never touch ${base} directly. Use the ${effort}-effort model shown — escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
         },
       }
     }
@@ -183,7 +202,12 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const rows = jobId
         ? ((await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where id = $1 and agent_id = $2`, [jobId, agent.id])) as unknown as WorkbenchJob[])
         : ((await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where agent_id = $1 order by created_at desc limit 10`, [agent.id])) as unknown as WorkbenchJob[])
-      return { ok: true, value: { jobs: rows.map(({ plan: _p, ...j }) => j) } }
+      // Running jobs get a FRESH clone URL each poll (app tokens expire ~1h);
+      // gated jobs stay locked until a human approves from the ticket.
+      const jobs = await Promise.all(
+        rows.map(async ({ plan: _p, ...j }) => (j.status === 'started' ? { ...j, cloneUrl: await cloneUrl(j.repo) } : j)),
+      )
+      return { ok: true, value: { jobs } }
     }
 
     case 'finish_job': {
@@ -191,6 +215,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const rows = (await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where id = $1 and agent_id = $2`, [jobId, agent.id])) as unknown as WorkbenchJob[]
       const job = rows[0]
       if (!job) return { ok: false, error: 'unknown job' }
+      if (job.status === 'awaiting_approval') return { ok: false, error: 'the plan has not been approved yet — poll job_status' }
       if (job.status !== 'started') return { ok: false, error: `job is already ${job.status}` }
       if (args.abandon === true) {
         await sql`update workbench_jobs set status = 'abandoned', updated_at = now() where id = ${job.id}`
