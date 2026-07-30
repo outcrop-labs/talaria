@@ -340,10 +340,10 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
         workbenchProfile: (def as unknown as { workbenchProfile?: string | null }).workbenchProfile ?? null,
       }).catch(() => null)
       if (wbc?.image) {
-        const { HARNESSES } = await import('./workbench-harnesses')
+        const { listHarnessDefs } = await import('./workbench-harnesses')
         const pick = (def as unknown as { workbenchHarness?: string | null }).workbenchHarness
         const chosen = pick && wbc.harnesses.includes(pick) ? pick : wbc.harnesses[0]
-        const h = HARNESSES.find((x) => x.slug === chosen)
+        const h = (await listHarnessDefs()).find((x) => x.slug === chosen)
         if (h?.mcpServe) {
           ;(routed.mcp_servers as Record<string, unknown>)[h.slug] = { command: h.mcpServe.command, args: h.mcpServe.args }
         }
@@ -449,16 +449,17 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       env.GIT_AUTHOR_EMAIL = agentEmail
       env.GIT_COMMITTER_NAME = agentLabel
       env.GIT_COMMITTER_EMAIL = agentEmail
-      const { HARNESSES } = await import('./workbench-harnesses')
+      const { listHarnessDefs: harnessRegistry } = await import('./workbench-harnesses')
+      const registry = await harnessRegistry()
       const sqlc = await db()
       const endpoints = (await sqlc`select provider, api_key_env as "apiKeyEnv" from llm_endpoints where api_key_env is not null`) as unknown as Array<{ provider: string; apiKeyEnv: string }>
       for (const slug of wb.harnesses) {
-        const h = HARNESSES.find((x) => x.slug === slug)
+        const h = registry.find((x) => x.slug === slug)
         if (!h) continue
-        for (const [k, v] of Object.entries(h.gatewayEnv)) env[k] = v
-        if (h.auth === 'native' && h.native) {
-          const ep = endpoints.find((e) => e.provider === h.native!.provider)
-          if (ep) env[h.native.envVar] = '${' + ep.apiKeyEnv + '}'
+        for (const [k, v] of Object.entries(h.fullEnv)) env[k] = v
+        if (h.auth !== 'gateway') {
+          const ep = endpoints.find((e) => e.provider === (h.auth as { provider: string }).provider)
+          if (ep) env[(h.auth as { envVar: string }).envVar] = '${' + ep.apiKeyEnv + '}'
         }
       }
     }
@@ -481,33 +482,35 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       const gwUrl = (n: string) => `${MCP_GW_BASE()}/${n}`
       const wbDir = join(agentDir, 'workbench')
       await mkdir(wbDir, { recursive: true })
-      // Claude Code (.mcp.json) — ${VAR} expands from the container env.
-      await writeFile(
-        join(wbDir, 'mcp.json'),
-        JSON.stringify(
-          {
-            mcpServers: Object.fromEntries(
-              uniq.map((n) => [n, { type: 'http', url: gwUrl(n), headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '${TALARIA_AGENT_KEY}' } }]),
-            ),
-          },
-          null,
-          2,
-        ),
-      )
-      // opencode — {env:VAR} is its env-substitution syntax.
-      await writeFile(
-        join(wbDir, 'opencode.json'),
-        JSON.stringify(
-          {
-            $schema: 'https://opencode.ai/config.json',
-            mcp: Object.fromEntries(
-              uniq.map((n) => [n, { type: 'remote', url: gwUrl(n), headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '{env:TALARIA_AGENT_KEY}' }, enabled: true }]),
-            ),
-          },
-          null,
-          2,
-        ),
-      )
+      // Every profile harness that consumes MCP gets the agent's grants in
+      // ITS OWN format — the registry (builtin + app-shipped + custom) says
+      // which file and which shape.
+      const { listHarnessDefs: passthroughRegistry } = await import('./workbench-harnesses')
+      const passDefs = await passthroughRegistry()
+      const renderers: Record<string, () => unknown> = {
+        // ${VAR} expands from the container env.
+        'claude-json': () => ({
+          mcpServers: Object.fromEntries(
+            uniq.map((n) => [n, { type: 'http', url: gwUrl(n), headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '${TALARIA_AGENT_KEY}' } }]),
+          ),
+        }),
+        // {env:VAR} is opencode's env-substitution syntax.
+        'opencode-json': () => ({
+          $schema: 'https://opencode.ai/config.json',
+          mcp: Object.fromEntries(
+            uniq.map((n) => [n, { type: 'remote', url: gwUrl(n), headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '{env:TALARIA_AGENT_KEY}' }, enabled: true }]),
+          ),
+        }),
+      }
+      const written = new Set<string>()
+      for (const slug of wb.harnesses) {
+        const h = passDefs.find((x) => x.slug === slug)
+        if (!h?.mcpConfig || written.has(h.mcpConfig.filename)) continue
+        const render = renderers[h.mcpConfig.format]
+        if (!render) continue
+        await writeFile(join(wbDir, h.mcpConfig.filename), JSON.stringify(render(), null, 2))
+        written.add(h.mcpConfig.filename)
+      }
     }
     const wbMounts = wb?.mounts ?? []
     svc.volumes = [

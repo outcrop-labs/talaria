@@ -13,7 +13,7 @@
 import { db } from './db/pg'
 import { branchAhead, cloneUrl, createBranch, createPullRequest, effectiveBase, grantedRepos, mergeInto, repoFlow } from './github'
 import { resolveWorkbench } from './workbench'
-import { effortModel, effortModels, harness, harnessModelArg, type Effort } from './workbench-harnesses'
+import { effortModel, effortModels, harnessModelArg, listHarnessDefs, type Effort } from './workbench-harnesses'
 
 export interface WorkbenchJob {
   id: string
@@ -212,8 +212,9 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       // first); its invocation line carries the model in the harness's own
       // syntax, so it's directly runnable.
       const chosenSlug = agent.workbenchHarness && profile.harnesses.includes(agent.workbenchHarness) ? agent.workbenchHarness : profile.harnesses[0]
+      const registry = await listHarnessDefs()
       const harnesses = profile.harnesses
-        .map((slug) => harness(slug))
+        .map((slug) => registry.find((h) => h.slug === slug))
         .filter((h): h is NonNullable<typeof h> => !!h)
         .sort((a, b) => (a.slug === chosenSlug ? -1 : b.slug === chosenSlug ? 1 : 0))
         .map((h) => ({

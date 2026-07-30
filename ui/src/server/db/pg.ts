@@ -1037,6 +1037,17 @@ const MIGRATIONS: string[] = [
     updated_at timestamptz not null default now()
   )`,
   `alter table workbench_jobs add column if not exists merged_testing_at timestamptz`,
+  // Admin-registered custom workbench harnesses (declarative JSON matching
+  // the SDK HarnessDefinition — no code). Merged over builtin + app-shipped
+  // definitions by slug.
+  `create table if not exists workbench_harness_defs (
+    slug text primary key,
+    definition jsonb not null,
+    enabled boolean not null default true,
+    created_by text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
   // Persistent skill summaries — one generated line per skill, keyed to a
   // hash of its SKILL.md so it only regenerates when the content changes.
   `create table if not exists skill_summaries (

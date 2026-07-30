@@ -69,6 +69,7 @@ import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as KbSpaceSlugRouteImport } from './routes/kb.space.$slug'
 import { Route as ApiWorkflowsIdRouteImport } from './routes/api/workflows.$id'
 import { Route as ApiWorkbenchJobsRouteImport } from './routes/api/workbench.jobs'
+import { Route as ApiWorkbenchHarnessesRouteImport } from './routes/api/workbench.harnesses'
 import { Route as ApiWorkbenchGithubRouteImport } from './routes/api/workbench.github'
 import { Route as ApiWorkbenchFlowRouteImport } from './routes/api/workbench.flow'
 import { Route as ApiWellKnownTalariaInstanceRouteImport } from './routes/api/well-known.talaria-instance'
@@ -512,6 +513,11 @@ const ApiWorkflowsIdRoute = ApiWorkflowsIdRouteImport.update({
 const ApiWorkbenchJobsRoute = ApiWorkbenchJobsRouteImport.update({
   id: '/jobs',
   path: '/jobs',
+  getParentRoute: () => ApiWorkbenchRoute,
+} as any)
+const ApiWorkbenchHarnessesRoute = ApiWorkbenchHarnessesRouteImport.update({
+  id: '/harnesses',
+  path: '/harnesses',
   getParentRoute: () => ApiWorkbenchRoute,
 } as any)
 const ApiWorkbenchGithubRoute = ApiWorkbenchGithubRouteImport.update({
@@ -1381,6 +1387,7 @@ export interface FileRoutesByFullPath {
   '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
   '/api/workbench/flow': typeof ApiWorkbenchFlowRoute
   '/api/workbench/github': typeof ApiWorkbenchGithubRoute
+  '/api/workbench/harnesses': typeof ApiWorkbenchHarnessesRoute
   '/api/workbench/jobs': typeof ApiWorkbenchJobsRoute
   '/api/workflows/$id': typeof ApiWorkflowsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
@@ -1587,6 +1594,7 @@ export interface FileRoutesByTo {
   '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
   '/api/workbench/flow': typeof ApiWorkbenchFlowRoute
   '/api/workbench/github': typeof ApiWorkbenchGithubRoute
+  '/api/workbench/harnesses': typeof ApiWorkbenchHarnessesRoute
   '/api/workbench/jobs': typeof ApiWorkbenchJobsRoute
   '/api/workflows/$id': typeof ApiWorkflowsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
@@ -1795,6 +1803,7 @@ export interface FileRoutesById {
   '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
   '/api/workbench/flow': typeof ApiWorkbenchFlowRoute
   '/api/workbench/github': typeof ApiWorkbenchGithubRoute
+  '/api/workbench/harnesses': typeof ApiWorkbenchHarnessesRoute
   '/api/workbench/jobs': typeof ApiWorkbenchJobsRoute
   '/api/workflows/$id': typeof ApiWorkflowsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
@@ -2003,6 +2012,7 @@ export interface FileRouteTypes {
     | '/api/well-known/talaria-instance'
     | '/api/workbench/flow'
     | '/api/workbench/github'
+    | '/api/workbench/harnesses'
     | '/api/workbench/jobs'
     | '/api/workflows/$id'
     | '/kb/space/$slug'
@@ -2209,6 +2219,7 @@ export interface FileRouteTypes {
     | '/api/well-known/talaria-instance'
     | '/api/workbench/flow'
     | '/api/workbench/github'
+    | '/api/workbench/harnesses'
     | '/api/workbench/jobs'
     | '/api/workflows/$id'
     | '/kb/space/$slug'
@@ -2416,6 +2427,7 @@ export interface FileRouteTypes {
     | '/api/well-known/talaria-instance'
     | '/api/workbench/flow'
     | '/api/workbench/github'
+    | '/api/workbench/harnesses'
     | '/api/workbench/jobs'
     | '/api/workflows/$id'
     | '/kb/space/$slug'
@@ -3010,6 +3022,13 @@ declare module '@tanstack/react-router' {
       path: '/jobs'
       fullPath: '/api/workbench/jobs'
       preLoaderRoute: typeof ApiWorkbenchJobsRouteImport
+      parentRoute: typeof ApiWorkbenchRoute
+    }
+    '/api/workbench/harnesses': {
+      id: '/api/workbench/harnesses'
+      path: '/harnesses'
+      fullPath: '/api/workbench/harnesses'
+      preLoaderRoute: typeof ApiWorkbenchHarnessesRouteImport
       parentRoute: typeof ApiWorkbenchRoute
     }
     '/api/workbench/github': {
@@ -4515,6 +4534,7 @@ const ApiUploadsRouteWithChildren = ApiUploadsRoute._addFileChildren(
 interface ApiWorkbenchRouteChildren {
   ApiWorkbenchFlowRoute: typeof ApiWorkbenchFlowRoute
   ApiWorkbenchGithubRoute: typeof ApiWorkbenchGithubRoute
+  ApiWorkbenchHarnessesRoute: typeof ApiWorkbenchHarnessesRoute
   ApiWorkbenchJobsRoute: typeof ApiWorkbenchJobsRoute
   ApiWorkbenchReposAgentIdRoute: typeof ApiWorkbenchReposAgentIdRoute
 }
@@ -4522,6 +4542,7 @@ interface ApiWorkbenchRouteChildren {
 const ApiWorkbenchRouteChildren: ApiWorkbenchRouteChildren = {
   ApiWorkbenchFlowRoute: ApiWorkbenchFlowRoute,
   ApiWorkbenchGithubRoute: ApiWorkbenchGithubRoute,
+  ApiWorkbenchHarnessesRoute: ApiWorkbenchHarnessesRoute,
   ApiWorkbenchJobsRoute: ApiWorkbenchJobsRoute,
   ApiWorkbenchReposAgentIdRoute: ApiWorkbenchReposAgentIdRoute,
 }
