@@ -7,7 +7,7 @@ import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '
 import { estimateTokens } from '@/server/usage'
 
 const Body = z.object({
-  kind: z.enum(['soul', 'personality', 'skill', 'memory', 'cron', 'agent', 'document', 'template']),
+  kind: z.enum(['soul', 'personality', 'skill', 'memory', 'cron', 'agent', 'document', 'template', 'ticket']),
   instruction: z.string().trim().min(1).max(8_000),
   current: z.string().max(300_000).optional(),
   context: z.string().max(2_000).optional(),

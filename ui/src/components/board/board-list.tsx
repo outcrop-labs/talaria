@@ -36,7 +36,7 @@ const LIST_COLUMNS: ListColumn[] = [
   { key: 'assignees', label: 'Assignees', default: true },
   { key: 'due', label: 'Due' },
   { key: 'time', label: 'Time', align: 'right' },
-  { key: 'labels', label: 'Labels' },
+  { key: 'labels', label: 'Labels', default: true },
   { key: 'updated', label: 'Updated', align: 'right', default: true },
   { key: 'created', label: 'Created', align: 'right' },
 ]
@@ -304,6 +304,19 @@ export function BoardList({
       return next
     })
 
+  // ── Drag rows between groups (status/priority groups are droppable) ─────
+  const [dragRow, setDragRow] = useState<string | null>(null)
+  const [dragOverGroup, setDragOverGroup] = useState<string | null>(null)
+  const groupDroppable = canEdit && (groupBy === 'status' || groupBy === 'priority')
+  const dropOnGroup = (g: RowGroup) => {
+    const id = dragRow
+    setDragRow(null)
+    setDragOverGroup(null)
+    if (!id || !groupDroppable) return
+    if (groupBy === 'status') void patch(id, { status: g.key as TaskStatus })
+    else void patch(id, { priority: g.key as Priority })
+  }
+
   // ── Bulk selection ───────────────────────────────────────────────────────
   const [sel, setSel] = useState<Set<string>>(new Set())
   useEffect(() => setSel(new Set()), [boardId, groupBy])
@@ -417,9 +430,25 @@ export function BoardList({
             {groups.map((g) => {
               const open = !collapsed.has(g.key)
               return (
-                <tbody key={g.key} className="divide-y divide-line-subtle">
+                <tbody
+                  key={g.key}
+                  className={cn('divide-y divide-line-subtle', dragOverGroup === g.key && dragRow && 'bg-accent/5')}
+                  onDragOver={
+                    groupDroppable
+                      ? (e) => {
+                          e.preventDefault()
+                          setDragOverGroup(g.key)
+                        }
+                      : undefined
+                  }
+                  onDragLeave={() => setDragOverGroup((d) => (d === g.key ? null : d))}
+                  onDrop={groupDroppable ? (e) => { e.preventDefault(); dropOnGroup(g) } : undefined}
+                >
                   {groupBy !== 'none' && (
-                    <tr className="cursor-pointer select-none bg-sidebar/60" onClick={() => toggleGroup(g.key)}>
+                    <tr
+                      className={cn('cursor-pointer select-none bg-sidebar/60', dragOverGroup === g.key && dragRow && 'ring-1 ring-inset ring-[color:var(--theme-accent)]')}
+                      onClick={() => toggleGroup(g.key)}
+                    >
                       <td colSpan={cols.length + 2} className="px-2 py-1.5">
                         <span className="flex items-center gap-2 text-xs">
                           <span className="text-muted">{open ? '▾' : '▸'}</span>
@@ -435,9 +464,19 @@ export function BoardList({
                     g.tasks.map((t) => (
                       <tr
                         key={`${g.key}:${t.id}`}
+                        draggable={groupDroppable}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/task', t.id)
+                          e.dataTransfer.effectAllowed = 'move'
+                          setDragRow(t.id)
+                        }}
+                        onDragEnd={() => {
+                          setDragRow(null)
+                          setDragOverGroup(null)
+                        }}
                         onClick={() => onOpen(t.id)}
                         onContextMenu={(e) => rowMenu(e, t)}
-                        className={cn('group cursor-pointer transition-colors hover:bg-card', sel.has(t.id) && 'bg-card/70')}
+                        className={cn('group cursor-pointer transition-colors hover:bg-card', sel.has(t.id) && 'bg-card/70', dragRow === t.id && 'opacity-40')}
                       >
                         <td className="pl-2" onClick={(e) => e.stopPropagation()}>
                           {canEdit ? (

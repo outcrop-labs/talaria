@@ -129,7 +129,9 @@ export interface BoardView {
   updatedAt: string
 }
 
-export type LabelColor = 'slate' | 'bronze' | 'green' | 'amber' | 'red' | 'blue' | 'purple' | 'teal'
+export type LabelColor =
+  | 'slate' | 'bronze' | 'green' | 'amber' | 'red' | 'blue' | 'purple' | 'teal'
+  | 'pink' | 'orange' | 'lime' | 'cyan' | 'indigo' | 'magenta' | 'olive' | 'brown'
 export interface BoardLabel {
   id: string
   boardId: string

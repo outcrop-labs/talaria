@@ -9,7 +9,7 @@ export type Priority = (typeof PRIORITIES)[number]
 
 // Agent-appropriate effort sizing (t-shirt sizes) — estimates in hours are silly
 // for agents, so effort is a relative complexity signal instead.
-export const TICKET_COLORS = ['slate', 'bronze', 'green', 'amber', 'red', 'blue', 'purple', 'teal'] as const
+export const TICKET_COLORS = ['slate', 'bronze', 'green', 'amber', 'red', 'blue', 'purple', 'teal', 'pink', 'orange', 'lime', 'cyan', 'indigo', 'magenta', 'olive', 'brown'] as const
 export type TicketColor = (typeof TICKET_COLORS)[number]
 
 export const EFFORTS = ['xs', 's', 'm', 'l', 'xl'] as const

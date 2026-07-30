@@ -41,6 +41,14 @@ export const LABEL_CSS: Record<LabelColor, string> = {
   blue: '#6b9bd1',
   purple: '#a78bda',
   teal: '#5fb8ad',
+  pink: '#d189a8',
+  orange: '#d4884f',
+  lime: '#a2c05b',
+  cyan: '#5fb6d4',
+  indigo: '#7a86d9',
+  magenta: '#c069c9',
+  olive: '#a8a45e',
+  brown: '#a8795a',
 }
 
 export const labelColor = (name: string, labels: BoardLabel[]): string =>
@@ -185,7 +193,7 @@ export function DuePill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; c
             ghost && !t.dueDate && !open && 'opacity-0 transition-opacity group-hover:opacity-100',
           )}
         >
-          {label}
+          {ghost && !t.dueDate ? '' : label}
         </FieldPill>
       )}
       items={[
@@ -230,7 +238,7 @@ export function EstimatePill({ t, ctx, className, ghost }: { t: Task; ctx: PillC
           title="Set estimate (hours)"
           className={cn(ghost && t.estimatedHours == null && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
         >
-          {label}
+          {ghost && t.estimatedHours == null ? '' : label}
         </FieldPill>
       )}
       items={[0.5, 1, 2, 4, 8].map((h) => ({
@@ -296,7 +304,7 @@ export function AssigneesPill({ t, ctx, className, ghost }: { t: Task; ctx: Pill
           title="Assign teammates or agents"
           className={cn(ghost && infos.length === 0 && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
         >
-          {avatars}
+          {ghost && infos.length === 0 ? '' : avatars}
         </FieldPill>
       )}
       items={() => [
@@ -351,7 +359,7 @@ export function LabelsPill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx
           className={cn(ghost && t.tags.length === 0 && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
         >
           {t.tags.length === 0 ? (
-            'Label'
+            ghost ? '' : 'Label'
           ) : (
             <span className="flex items-center gap-1">
               {shown.map((n) => (
@@ -430,7 +438,7 @@ export function ColorPill({
           icon={value ? undefined : <Palette size={11} />}
           title="Color-code this ticket"
         >
-          {value ?? 'Color'}
+          {value ? '' : 'Color'}
         </FieldPill>
       )}
       items={[]}

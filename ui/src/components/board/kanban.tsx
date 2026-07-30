@@ -225,7 +225,7 @@ function Card({
         {/* Property pills — one quiet line. Set values always show; unset
             pills are ghosts that surface on hover (one click to fill).
             Indicators + labels sit right, so every card aligns the same. */}
-        <div className="mt-2.5 flex items-center gap-1 overflow-hidden">
+        <div className="mt-2.5 flex flex-wrap items-center gap-1">
           <AssigneesPill t={task} ctx={pillCtx} ghost />
           <DuePill t={task} ctx={pillCtx} ghost />
           <EstimatePill t={task} ctx={pillCtx} ghost />

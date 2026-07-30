@@ -132,12 +132,16 @@ function BoardPage() {
   }
 
   // User picks PUSH (back walks them); typing REPLACEs (no history spam).
+  const VIEW_KEYS: Array<keyof BoardSearch> = ['view', 'group', 'q', 'status', 'assignee', 'priority', 'label', 'due']
   const setSearch = (patch: Partial<BoardSearch>, replace = false) =>
     void navigate({
       to: '/boards/$boardId',
       params: { boardId },
       search: (prev: BoardSearch) => {
         const next = { ...prev, ...patch }
+        // Manually changing any view/filter detaches from the saved view —
+        // the tab un-highlights the moment the state stops being that view.
+        if (patch.v === undefined && VIEW_KEYS.some((k) => k in patch)) delete next.v
         for (const k of Object.keys(next) as Array<keyof BoardSearch>) {
           if (next[k] === '' || next[k] === false || next[k] === undefined) delete next[k]
         }

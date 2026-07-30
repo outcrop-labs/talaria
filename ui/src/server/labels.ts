@@ -6,7 +6,7 @@
 import { db } from './db/pg'
 import { publishBoard } from './realtime'
 
-export const LABEL_COLOR_KEYS = ['slate', 'bronze', 'green', 'amber', 'red', 'blue', 'purple', 'teal'] as const
+export const LABEL_COLOR_KEYS = ['slate', 'bronze', 'green', 'amber', 'red', 'blue', 'purple', 'teal', 'pink', 'orange', 'lime', 'cyan', 'indigo', 'magenta', 'olive', 'brown'] as const
 export type LabelColor = (typeof LABEL_COLOR_KEYS)[number]
 
 export interface BoardLabel {

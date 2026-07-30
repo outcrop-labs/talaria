@@ -11,7 +11,7 @@ import { platformAgentModel } from './platform-agents'
 import { orgLine, orgProfile } from './org'
 import { getPreferredModel, getUserRole } from './users'
 
-export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template'
+export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template' | 'ticket'
 
 const DOC_RULES =
   'Return ONLY the complete revised document — no commentary, no preamble, no code fences. ' +
@@ -49,6 +49,16 @@ const SYSTEM: Record<MuseKind, string> = {
     'Include 0–3 skills, only ones clearly implied by the purpose (each a # title, a when-to-use line, concrete numbered steps). ' +
     'When a current draft is given, revise it per the request instead of starting over — keep everything not asked about.',
   document: 'You help edit a markdown document. ' + DOC_RULES,
+  ticket:
+    'You make fast edits to a project TICKET from a natural-language instruction. The current ticket is given as JSON.\n' +
+    'Reply with ONLY a JSON object — no prose, no code fence — containing exactly the fields to CHANGE:\n' +
+    '{ "title"?: string, "description"?: markdown string (the FULL replacement), "priority"?: "low"|"medium"|"high"|"urgent", ' +
+    '"effort"?: "xs"|"s"|"m"|"l"|"xl"|null, "estimatedHours"?: number|null, "dueDate"?: ISO datetime|null, "startDate"?: ISO datetime|null, ' +
+    '"color"?: "slate"|"bronze"|"green"|"amber"|"red"|"blue"|"purple"|"teal"|"pink"|"orange"|"lime"|"cyan"|"indigo"|"magenta"|"olive"|"brown"|null, ' +
+    '"tags"?: string[] (the FULL replacement label set), "status"?: "inbox"|"assigned"|"in_progress"|"blocked"|"quality_review"|"done" }\n' +
+    'Rules: include ONLY fields the instruction asks to change; omit everything else. Relative dates resolve against the "now" timestamp in the context. ' +
+    'Rewriting or extending the description: return the complete new markdown in "description", preserving everything not asked about. ' +
+    'If the instruction is unclear or asks for something outside these fields, return {"error": "<one short sentence why>"}.',
   template:
     'You write TEMPLATES for Talaria — the markdown skeleton a ticket description or plan document STARTS from. A template is scaffolding, never a finished document.\n' +
     'Hard rules:\n' +
