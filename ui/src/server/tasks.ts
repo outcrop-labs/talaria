@@ -7,6 +7,7 @@ import { publishBoard } from './realtime'
 import { taskUsage, type TaskUsage } from './usage'
 import { listJudgeReviews, type JudgeReview } from './judge'
 import { ensureLabels } from './labels'
+import { statusMeta } from './statuses'
 import type { Effort, Priority, QualityReview, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
 
 async function taskBoardId(id: string): Promise<string | null> {
@@ -140,7 +141,8 @@ export async function createTask(input: {
 }): Promise<Task> {
   const sql = await db()
   const assignees = input.assignees ?? []
-  const status = assignees.length > 0 ? 'assigned' : 'inbox'
+  const meta = await statusMeta(input.boardId)
+  const status = assignees.length > 0 ? meta.assignedKey : meta.defaultKey
   if (input.parentId) await assertValidParent(null, input.parentId, input.boardId)
   if (input.tags?.length) await ensureLabels(input.boardId, input.tags)
   const id = await sql.begin(async (tx) => {
@@ -202,6 +204,10 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
   const pick = <T>(v: T | undefined, fallback: T): T => (v === undefined ? fallback : v)
   const assignees = patch.assignees ?? cur.assignees
   const attachments = patch.attachments ?? cur.attachments
+  const meta = await statusMeta(cur.boardId)
+  if (patch.status && ![...meta.keys, 'failed', 'cancelled'].includes(patch.status)) {
+    throw new Error(`"${patch.status}" is not a status on this board`)
+  }
   if (patch.parentId) await assertValidParent(id, patch.parentId, cur.boardId)
   if (patch.tags?.length) await ensureLabels(cur.boardId, patch.tags)
   const next = {
@@ -218,9 +224,9 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
     outcome: pick(patch.outcome, cur.outcome),
     resolution: pick(patch.resolution, cur.resolution),
     errorMessage: pick(patch.errorMessage, cur.errorMessage),
-    status: (patch.status ?? (assignees.length && cur.status === 'inbox' ? 'assigned' : cur.status)) as TaskStatus,
+    status: (patch.status ?? (assignees.length && cur.status === meta.defaultKey ? meta.assignedKey : cur.status)) as TaskStatus,
   }
-  const completedAt = next.status === 'done' ? (cur.completedAt ?? new Date().toISOString()) : null
+  const completedAt = meta.doneKeys.includes(next.status) ? (cur.completedAt ?? new Date().toISOString()) : null
   const archivedAt =
     patch.archived === undefined ? cur.archivedAt : patch.archived ? (cur.archivedAt ?? new Date().toISOString()) : null
   const addSeconds = Math.max(0, Math.round(patch.addTimeSpentSeconds ?? 0))
@@ -387,10 +393,19 @@ export async function listActivity(taskId: string): Promise<TaskActivity[]> {
 /** Work assigned to an agent (by name), across all boards — for heartbeat. */
 export async function assignedWork(agentName: string): Promise<Array<{ id: string; title: string; description: string | null }>> {
   const sql = await db()
+  // Custom-status boards: pickup = statuses flagged agent_start. Boards
+  // without rows keep the classic ('assigned','in_progress') semantics.
   const rows = await sql`
-    select id, title, description from tasks
-    where assignees @> ${sql.json([agentName])}::jsonb and status in ('assigned', 'in_progress')
-    order by created_at asc
+    select t.id, t.title, t.description from tasks t
+    where t.assignees @> ${sql.json([agentName])}::jsonb
+      and (
+        t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.agent_start)
+        or (
+          not exists (select 1 from board_statuses bs where bs.board_id = t.board_id)
+          and t.status in ('assigned', 'in_progress')
+        )
+      )
+    order by t.created_at asc
   `
   return rows as unknown as Array<{ id: string; title: string; description: string | null }>
 }

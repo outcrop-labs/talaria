@@ -11,6 +11,7 @@ import { useAgents } from '@/lib/agents'
 import { archiveTask, createTask, updateTask, useBoardLabels, type Board, type BoardMember } from '@/lib/boards'
 import { plainText } from '@/lib/plain-text'
 import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task, type TaskStatus } from '@/lib/task-const'
+import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
 import { useSession } from '@/lib/session'
 
 const COL_ACCENT: Record<string, string> = {
@@ -42,6 +43,17 @@ export function Kanban({
   const { data: fleet } = useAgents()
   const { data: me } = useSession()
   const { data: boardLabels = [] } = useBoardLabels(board.id)
+  const { data: boardStatuses = [] } = useBoardStatuses(board.id)
+  // Columns: the board's status set (custom or defaults), plus the legacy
+  // terminal extras only when occupied.
+  const columns = boardStatuses.length
+    ? [
+        ...boardStatuses.map((st) => ({ key: st.key, label: st.label, color: statusColorOf(st.key, boardStatuses) })),
+        ...(['failed', 'cancelled'] as const)
+          .filter((k) => tasks.some((t) => t.status === k))
+          .map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: COL_ACCENT[k] ?? 'var(--theme-muted)' })),
+      ]
+    : TASK_STATUSES.map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: COL_ACCENT[k] ?? 'var(--theme-muted)' }))
   const agents = fleet?.agents ?? []
   const canEdit = board.role === 'owner' || board.role === 'editor'
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
@@ -72,6 +84,7 @@ export function Kanban({
       ticketMenuEntries(t, {
         canEdit,
         meId: me?.id,
+        statuses: boardStatuses,
         onOpen: () => onOpen(t.id),
         onPatch: (p) => void patch(t.id, p),
         onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
@@ -79,8 +92,8 @@ export function Kanban({
     )
 
   const addTo = async (status: TaskStatus, title: string) => {
-    const { task } = await createTask(board.id, { title })
-    if (status !== 'inbox') await updateTask(task.id, { status })
+    const { task } = (await createTask(board.id, { title })) as { task: Task }
+    if (task.status !== status) await updateTask(task.id, { status })
     invalidate()
   }
   const move = async (taskId: string, status: TaskStatus) => {
@@ -90,33 +103,33 @@ export function Kanban({
 
   return (
     <div className="flex h-full gap-3 overflow-x-auto p-4">
-      {TASK_STATUSES.map((col) => {
-        const colTasks = tasks.filter((t) => t.status === col)
+      {columns.map((col) => {
+        const colTasks = tasks.filter((t) => t.status === col.key)
         // Column estimate rollup — visible planning weight per column.
         const colHours = colTasks.reduce((s, t) => s + (t.estimatedHours ?? 0), 0)
         return (
           <div
-            key={col}
-            onDragOver={canEdit ? (e) => { e.preventDefault(); setDragOver(col) } : undefined}
-            onDragLeave={() => setDragOver((d) => (d === col ? null : d))}
+            key={col.key}
+            onDragOver={canEdit ? (e) => { e.preventDefault(); setDragOver(col.key) } : undefined}
+            onDragLeave={() => setDragOver((d) => (d === col.key ? null : d))}
             onDrop={
               canEdit
                 ? (e) => {
                     e.preventDefault()
                     const id = e.dataTransfer.getData('text/task')
                     setDragOver(null)
-                    if (id) void move(id, col)
+                    if (id) void move(id, col.key as TaskStatus)
                   }
                 : undefined
             }
             className={cn(
               'flex w-80 shrink-0 flex-col rounded-xl bg-sidebar/60 ring-1 ring-transparent transition-shadow',
-              dragOver === col && 'ring-[color:var(--theme-accent)]',
+              dragOver === col.key && 'ring-[color:var(--theme-accent)]',
             )}
           >
             <div className="flex items-center gap-2 px-3 py-2">
-              <span className="h-2 w-2 rounded-full" style={{ background: COL_ACCENT[col] }} />
-              <span className="text-xs font-semibold uppercase tracking-wide text-fg">{STATUS_LABEL[col]}</span>
+              <span className="h-2 w-2 rounded-full" style={{ background: col.color }} />
+              <span className="text-xs font-semibold uppercase tracking-wide text-fg">{col.label}</span>
               <span className="text-xs text-muted">{colTasks.length}</span>
               {colHours > 0 && (
                 <span className="ml-auto text-[10px] text-muted" title="Total estimated hours in this column">
@@ -129,7 +142,7 @@ export function Kanban({
                 <Card
                   key={t.id}
                   task={t}
-                  pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, boardId: board.id }}
+                  pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, statuses: boardStatuses, boardId: board.id }}
                   subtasks={childrenOf.get(t.id) ?? []}
                   parentRef={parentRef(t)}
                   draggable={canEdit}
@@ -144,7 +157,7 @@ export function Kanban({
                   onContextMenu={(e) => cardMenu(e, t)}
                 />
               ))}
-              {canEdit && <AddCard onAdd={(title) => addTo(col, title)} />}
+              {canEdit && <AddCard onAdd={(title) => addTo(col.key as TaskStatus, title)} />}
             </div>
           </div>
         )
@@ -222,14 +235,13 @@ function Card({
             {task.description && <div className="mt-1 line-clamp-3 font-sans text-xs leading-relaxed text-muted">{plainText(task.description)}</div>}
           </div>
         </div>
-        {/* Property pills — one quiet line. Set values always show; unset
-            pills are ghosts that surface on hover (one click to fill).
-            Indicators + labels sit right, so every card aligns the same. */}
+        {/* Property pills — PERSISTENT controls: bordered, labeled, chevroned.
+            What you can change is never a mystery. */}
         <div className="mt-2.5 flex flex-wrap items-center gap-1">
-          <AssigneesPill t={task} ctx={pillCtx} ghost />
-          <DuePill t={task} ctx={pillCtx} ghost />
-          <EstimatePill t={task} ctx={pillCtx} ghost />
-          <LabelsPill t={task} ctx={pillCtx} ghost />
+          <AssigneesPill t={task} ctx={pillCtx} persistent />
+          <DuePill t={task} ctx={pillCtx} persistent />
+          <EstimatePill t={task} ctx={pillCtx} persistent />
+          <LabelsPill t={task} ctx={pillCtx} persistent />
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
             {subtasks.length > 0 && (
               <span

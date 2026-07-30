@@ -17,9 +17,12 @@ export const FieldPill = forwardRef<
     active?: boolean
     /** Muted placeholder styling when the field is unset. */
     empty?: boolean
+    /** Always look like a control: visible border + chevron at rest. Use on
+     *  cards, where hover-reveal made editability a mystery. */
+    persistent?: boolean
     children: React.ReactNode
   }
->(function FieldPill({ dot, icon, active, empty, className, children, onClick, ...rest }, ref) {
+>(function FieldPill({ dot, icon, active, empty, persistent, className, children, onClick, ...rest }, ref) {
   return (
     <button
       ref={ref}
@@ -33,7 +36,9 @@ export const FieldPill = forwardRef<
         'group/pill inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-left text-[11px] transition-colors',
         active
           ? 'border-line bg-card text-fg'
-          : 'border-transparent text-muted hover:border-line hover:bg-card hover:text-fg',
+          : persistent
+            ? 'border-line-subtle bg-card/40 text-muted hover:border-line hover:bg-card hover:text-fg'
+            : 'border-transparent text-muted hover:border-line hover:bg-card hover:text-fg',
         empty && 'italic',
         className,
       )}
@@ -44,7 +49,10 @@ export const FieldPill = forwardRef<
       <span className="min-w-0 truncate">{children}</span>
       <ChevronDown
         size={11}
-        className={cn('shrink-0 transition-opacity', active ? 'opacity-100' : 'opacity-0 group-hover/pill:opacity-100')}
+        className={cn(
+          'shrink-0 transition-opacity',
+          active ? 'opacity-100' : persistent ? 'opacity-50 group-hover/pill:opacity-100' : 'opacity-0 group-hover/pill:opacity-100',
+        )}
       />
     </button>
   )

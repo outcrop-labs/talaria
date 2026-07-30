@@ -2,22 +2,22 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { TICKET_COLORS } from '@/lib/task-const'
+import { statusMeta } from '@/server/statuses'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit, invalidAssignee, listMembers } from '@/server/boards'
 import { notifyMentions } from '@/server/mentions'
 import { describeAgent } from '@/server/gateway'
-import { deleteTask, getTask, getTaskFull, listComments, EFFORTS, PRIORITIES, TASK_STATUSES, updateTask, type TaskPatch } from '@/server/tasks'
+import { deleteTask, getTask, getTaskFull, listComments, EFFORTS, PRIORITIES, updateTask, type TaskPatch } from '@/server/tasks'
 import { resolveAttachments } from '@/server/uploads'
 import { resolveRefs } from '@/server/refs'
 import { indexTicket, unindexActivity } from '@/server/retrieval/sources'
 import { runJudgeForTask } from '@/server/judge'
 
-const AllStatuses = [...TASK_STATUSES, 'failed', 'cancelled'] as const
 const Patch = z.object({
   title: z.string().min(1).max(300).optional(),
   description: z.string().max(20_000).nullish(),
-  status: z.enum(AllStatuses).optional(),
+  status: z.string().max(40).optional(), // validated against the BOARD's status set in updateTask
   priority: z.enum(PRIORITIES).optional(),
   effort: z.enum(EFFORTS).nullish(),
   assignees: z.array(z.string().max(200)).max(20).optional(),
@@ -85,8 +85,17 @@ export const Route = createFileRoute('/api/tasks/$id')({
         // effort, labels, description, status → in_progress/blocked/quality_review)
         // but cannot assign work or sign off. Assignment + done stay human.
         if (agent) {
-          if (parsed.data.status === 'assigned') return json({ error: 'agents cannot assign tickets' }, { status: 403 })
-          if (parsed.data.status === 'done') parsed.data.status = 'quality_review'
+          // Board-aware guardrails: agent-start statuses ARE assignment (a
+          // human approval), so agents can never move work into them; a
+          // terminal status redirects to the board's review catch — sign-off
+          // stays a person's call.
+          if (parsed.data.status) {
+            const meta = await statusMeta(task.boardId)
+            if (meta.agentStartKeys.includes(parsed.data.status)) {
+              return json({ error: 'agents cannot assign tickets' }, { status: 403 })
+            }
+            if (meta.doneKeys.includes(parsed.data.status)) parsed.data.status = meta.reviewKey as typeof parsed.data.status
+          }
           parsed.data.assignees = undefined
           // Planning fields stay human: estimates and sub-task structure.
           parsed.data.estimatedHours = undefined
@@ -107,7 +116,7 @@ export const Route = createFileRoute('/api/tasks/$id')({
         }
         let updated
         try {
-          updated = await updateTask(params.id, patch, actor)
+          updated = await updateTask(params.id, patch as TaskPatch, actor)
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })
         }

@@ -945,6 +945,23 @@ const MIGRATIONS: string[] = [
   `alter table tasks add column if not exists start_date timestamptz`,
   // Ticket color-coding (palette key; null = status/priority defaults).
   `alter table tasks add column if not exists color text`,
+  // Custom board statuses. category carries the workflow semantics: open
+  // (intake), active (working), review (the agent-review catch), done
+  // (terminal). agent_start marks columns that constitute assignment approval
+  // for agents (heartbeat pickup). BLOCKED is a system status — always
+  // present, never stored here. No rows = the shipped default set.
+  `create table if not exists board_statuses (
+    id uuid primary key default gen_random_uuid(),
+    board_id uuid not null references boards(id) on delete cascade,
+    key text not null,
+    label text not null,
+    color text not null default 'slate',
+    category text not null default 'active',
+    agent_start boolean not null default false,
+    position int not null default 0,
+    created_at timestamptz not null default now(),
+    unique (board_id, key)
+  )`,
   // First-class board labels: named + colored, scoped to a board. Task.tags
   // stays a string array of label NAMES (existing data keeps working); the
   // registry makes them colorable and manageable. Backfilled from live tags.

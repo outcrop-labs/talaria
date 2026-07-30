@@ -34,8 +34,16 @@ import {
   type LabelColor,
 } from '@/lib/boards'
 import { LABEL_CSS } from '@/components/board/field-pills'
+import {
+  useBoardStatuses,
+  createBoardStatus,
+  updateBoardStatus,
+  reorderBoardStatuses,
+  deleteBoardStatus,
+  type BoardStatus,
+} from '@/lib/statuses'
 
-type Tab = 'general' | 'labels' | 'people' | 'agents'
+type Tab = 'general' | 'statuses' | 'labels' | 'people' | 'agents'
 
 // One place for everything about a board: rename, sharing, agent policy, and the
 // danger zone (archive / delete). Keeps the board header uncluttered.
@@ -58,7 +66,7 @@ export function BoardSettingsModal({
   return (
     <Modal open={open} onClose={onClose} title="Board settings" width="max-w-xl">
       <div className="mb-4 flex gap-1 rounded-lg border border-line p-0.5">
-        {(['general', 'labels', 'people', 'agents'] as const).map((t) => (
+        {(['general', 'statuses', 'labels', 'people', 'agents'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -75,6 +83,7 @@ export function BoardSettingsModal({
       {tab === 'general' && (
         <GeneralTab board={board} isOwner={isOwner} onClose={onClose} onArchived={onArchived} onDeleted={onDeleted} />
       )}
+      {tab === 'statuses' && <StatusesTab board={board} />}
       {tab === 'labels' && <LabelsTab board={board} />}
       {tab === 'people' && <PeopleTab board={board} />}
       {tab === 'agents' && <AgentsTab board={board} />}
@@ -492,6 +501,163 @@ function LabelsTab({ board }: { board: Board }) {
                 refresh()
               })
             }
+          >
+            Add
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Statuses: the board's workflow columns. Order = column order; category
+//    carries the semantics; agentStart = "agents may pick up work here".
+//    Blocked is system — pinned, not editable. ─────────────────────────────
+function StatusesTab({ board }: { board: Board }) {
+  const qc = useQueryClient()
+  const { data: statuses = [] } = useBoardStatuses(board.id)
+  const canEdit = board.role === 'owner' || board.role === 'editor'
+  const [draft, setDraft] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: ['board-statuses', board.id] })
+    void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
+  }
+  const editable = statuses.filter((st) => !st.system)
+  const run = (fn: () => Promise<unknown>) => {
+    setErr(null)
+    void fn()
+      .then(refresh)
+      .catch((e: Error) => setErr(e.message))
+  }
+  const moveStatus = (st: BoardStatus, dir: -1 | 1) => {
+    const ids = editable.map((x) => x.id!).filter(Boolean)
+    const i = ids.indexOf(st.id!)
+    const j = i + dir
+    if (i < 0 || j < 0 || j >= ids.length) return
+    const next = [...ids]
+    ;[next[i], next[j]] = [next[j]!, next[i]!]
+    run(() => reorderBoardStatuses(board.id, next))
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="font-sans text-xs text-muted">
+        Columns and their meaning. <strong>Category</strong> drives the workflow: intake statuses receive new tickets,
+        review is where agent work lands for sign-off, done completes. <strong>Agent start</strong> marks the columns
+        where assignment counts as approval — agents only pick up work sitting there. Blocked is always present.
+      </p>
+      {err && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
+      <ul className="divide-y divide-line-subtle">
+        {statuses.map((st) => (
+          <li key={st.key} className={cn('flex items-center gap-2 py-2', st.system && 'opacity-70')}>
+            <div className="flex flex-col">
+              <button disabled={!canEdit || st.system} onClick={() => moveStatus(st, -1)} className="text-[9px] text-muted hover:text-fg disabled:opacity-30">▲</button>
+              <button disabled={!canEdit || st.system} onClick={() => moveStatus(st, 1)} className="text-[9px] text-muted hover:text-fg disabled:opacity-30">▼</button>
+            </div>
+            <DropdownMenu
+              align="left"
+              trigger={(open) => (
+                <button
+                  title="Color"
+                  disabled={!canEdit || st.system}
+                  className={cn('h-4 w-4 shrink-0 rounded-full ring-2 transition-shadow', open ? 'ring-[var(--theme-accent-border)]' : 'ring-transparent')}
+                  style={{ background: LABEL_CSS[st.color as keyof typeof LABEL_CSS] ?? 'var(--theme-muted)' }}
+                />
+              )}
+              items={(Object.keys(LABEL_CSS) as Array<keyof typeof LABEL_CSS>).map((c) => ({
+                label: c,
+                icon: <span className="h-2.5 w-2.5 rounded-full" style={{ background: LABEL_CSS[c] }} />,
+                checked: st.color === c,
+                onSelect: () => run(() => updateBoardStatus(board.id, st.id!, { color: c })),
+              }))}
+            />
+            {st.system ? (
+              <span className="flex-1 text-sm text-fg">Blocked <span className="ml-1 text-[10px] uppercase tracking-wide text-muted">system</span></span>
+            ) : (
+              <Input
+                size="sm"
+                defaultValue={st.label}
+                key={`${st.key}-${st.label}`}
+                disabled={!canEdit}
+                onBlur={(e) => {
+                  const v = e.target.value.trim()
+                  if (v && v !== st.label) run(() => updateBoardStatus(board.id, st.id!, { label: v }))
+                }}
+                onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+                className="flex-1"
+              />
+            )}
+            {!st.system && (
+              <>
+                <Select
+                  size="sm"
+                  value={st.category}
+                  disabled={!canEdit}
+                  title="Workflow category"
+                  onChange={(e) => run(() => updateBoardStatus(board.id, st.id!, { category: e.target.value }))}
+                  className="w-28 shrink-0"
+                >
+                  <option value="open">intake</option>
+                  <option value="active">active</option>
+                  <option value="review">review</option>
+                  <option value="done">done</option>
+                </Select>
+                <label
+                  title="Agents may pick up work in this column (assignment here = approval to start)"
+                  className="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] uppercase tracking-wide text-muted"
+                >
+                  <input
+                    type="checkbox"
+                    checked={st.agentStart}
+                    disabled={!canEdit}
+                    onChange={(e) => run(() => updateBoardStatus(board.id, st.id!, { agentStart: e.target.checked }))}
+                    className="accent-[var(--theme-accent)]"
+                  />
+                  agent start
+                </label>
+                {canEdit && (
+                  <DropdownMenu
+                    align="right"
+                    trigger={() => (
+                      <button title="Delete status (tickets move to another column)" className="shrink-0 text-muted transition-colors hover:text-[color:var(--theme-danger)]">
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                    items={statuses
+                      .filter((o) => o.key !== st.key && !o.system)
+                      .map((o) => ({
+                        label: `Move tickets to ${o.label}`,
+                        onSelect: () => run(() => deleteBoardStatus(board.id, st.id!, o.key)),
+                      }))}
+                  />
+                )}
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+      {canEdit && (
+        <div className="flex gap-2">
+          <Input
+            size="sm"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="New status"
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' || !draft.trim()) return
+              run(() => createBoardStatus(board.id, { label: draft.trim() }))
+              setDraft('')
+            }}
+            className="flex-1"
+          />
+          <Button
+            size="sm"
+            disabled={!draft.trim()}
+            onClick={() => {
+              run(() => createBoardStatus(board.id, { label: draft.trim() }))
+              setDraft('')
+            }}
           >
             Add
           </Button>

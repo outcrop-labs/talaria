@@ -7,9 +7,10 @@ import { DropdownMenu, type ContextMenuEntry } from '@/components/ui/context-men
 import { FieldPill } from '@/components/ui/field-pill'
 import { userAssignee } from '@/lib/assignees'
 import type { BoardMember } from '@/lib/boards'
-import { PRIORITIES, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES } from '@/lib/task-const'
+import { PRIORITIES, PRIORITY_COLOR, TASK_STATUSES } from '@/lib/task-const'
 import type { BoardLabel } from '@/lib/boards'
 import { LABEL_CSS, STATUS_COLOR } from './field-pills'
+import { statusColorOf, statusLabelOf, type BoardStatus } from '@/lib/statuses'
 
 export interface BoardFilters {
   statuses: string[]
@@ -62,6 +63,7 @@ export function FilterBar({
   members,
   agents,
   labels,
+  statuses,
   meId,
 }: {
   value: BoardFilters
@@ -69,6 +71,7 @@ export function FilterBar({
   members: BoardMember[]
   agents: Array<{ id: string; label: string }>
   labels: BoardLabel[]
+  statuses?: BoardStatus[]
   meId?: string | null
 }) {
   const toggle = (facet: 'statuses' | 'assignees' | 'priorities' | 'labels', v: string) => {
@@ -82,9 +85,14 @@ export function FilterBar({
         icon={<span className="h-2 w-2 rounded-full bg-[color:var(--theme-accent)]" />}
         label="Status"
         count={value.statuses.length}
-        items={[...TASK_STATUSES, 'failed', 'cancelled'].map((s) => ({
-          label: STATUS_LABEL[s as keyof typeof STATUS_LABEL] ?? s,
-          icon: <span className="h-2 w-2 rounded-full" style={{ background: STATUS_COLOR[s] }} />,
+        items={[...(statuses?.length ? statuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])), 'failed', 'cancelled'].map((s) => ({
+          label: statusLabelOf(s, statuses ?? []),
+          icon: (
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ background: statuses?.length ? statusColorOf(s, statuses) : STATUS_COLOR[s] ?? 'var(--theme-muted)' }}
+            />
+          ),
           checked: value.statuses.includes(s),
           keepOpen: true,
           onSelect: () => toggle('statuses', s),

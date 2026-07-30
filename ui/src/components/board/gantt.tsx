@@ -9,7 +9,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Minus, Plus } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { updateTask, type Board } from '@/lib/boards'
-import { LABEL_CSS, STATUS_COLOR, isOverdueTask } from '@/components/board/field-pills'
+import { LABEL_CSS, isOverdueTask } from '@/components/board/field-pills'
+import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
 import type { Task } from '@/lib/task-const'
 
 const DAY = 24 * 60 * 60 * 1000
@@ -43,6 +44,7 @@ interface Span {
 export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; onOpen: (id: string) => void }) {
   const qc = useQueryClient()
   const canEdit = board.role === 'owner' || board.role === 'editor'
+  const { data: boardStatuses = [] } = useBoardStatuses(board.id)
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
   const [dayW, setDayW] = useState(26)
 
@@ -282,7 +284,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
               const p = preview?.id === r.task.id ? preview : null
               const s = p?.s ?? r.start
               const e = p?.e ?? r.end
-              const late = isOverdueTask(r.task)
+              const late = isOverdueTask(r.task, boardStatuses)
               return (
                 <div key={r.task.id} className="group flex h-12 items-center border-b border-line-subtle/60 hover:bg-card/40">
                   <button
@@ -312,7 +314,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                       className={cn('absolute top-2 flex h-8 touch-none select-none items-center gap-1 rounded-md border px-2.5 text-[11px] text-fg', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer', late && 'ring-1 ring-[color:var(--theme-danger)]')}
                       style={(() => {
                         // Ticket color wins; status tint is the fallback.
-                        const c = r.task.color ? LABEL_CSS[r.task.color] : STATUS_COLOR[r.task.status]
+                        const c = r.task.color ? LABEL_CSS[r.task.color] : statusColorOf(r.task.status, boardStatuses)
                         return {
                           left: x(s),
                           width: Math.max(dayW, x(e) - x(s) + dayW),
@@ -372,7 +374,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                 onClick={() => onOpen(t.id)}
                 className={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-card', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer')}
               >
-                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.color ? LABEL_CSS[t.color] : STATUS_COLOR[t.status] }} />
+                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.color ? LABEL_CSS[t.color] : statusColorOf(t.status, boardStatuses) }} />
                 {t.ticketRef && <span className="shrink-0 font-[var(--font-mono)] text-[10px] text-muted">{t.ticketRef}</span>}
                 <span className="min-w-0 flex-1 truncate font-sans text-fg">{t.title}</span>
                 {t.estimatedHours != null && <span className="shrink-0 text-[10px] text-muted">{t.estimatedHours}h</span>}

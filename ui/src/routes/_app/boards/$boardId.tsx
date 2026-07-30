@@ -32,6 +32,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useContextMenu, DropdownMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { confirm, prompt } from '@/components/ui/confirm'
 import { useSession } from '@/lib/session'
+import { useBoardStatuses, type BoardStatus } from '@/lib/statuses'
 import type { Task } from '@/lib/task-const'
 
 // All view state lives in the URL (deep-link convention): view, group, q, and
@@ -80,9 +81,10 @@ const dayEnd = (offsetDays: number) => {
   return d.getTime()
 }
 
-function matchesDue(t: Task, due: BoardSearch['due']): boolean {
+function matchesDue(t: Task, due: BoardSearch['due'], statuses: BoardStatus[]): boolean {
   if (!due) return true
-  const open = !['done', 'cancelled'].includes(t.status)
+  const closed = statuses.find((s) => s.key === t.status)?.category === 'done' || ['done', 'cancelled', 'failed'].includes(t.status)
+  const open = !closed
   switch (due) {
     case 'none':
       return !t.dueDate
@@ -110,6 +112,7 @@ function BoardPage() {
   const { data: boardCfg, isLoading: cfgLoading } = useBoardAgents(board ? boardId : null)
   const { data: members = [] } = useBoardMembers(board ? boardId : null)
   const { data: registryLabels = [] } = useBoardLabels(board ? boardId : null)
+  const { data: boardStatuses = [] } = useBoardStatuses(board ? boardId : null)
   // Only agents allowed on this board are assignable/filterable here.
   const boardAgents = boardCfg?.allowAll
     ? fleet?.agents ?? []
@@ -244,10 +247,10 @@ function BoardPage() {
           filters.assignees.some((a) => (a === '__none' ? t.assignees.length === 0 : t.assignees.includes(a)))) &&
         (!filters.priorities.length || filters.priorities.includes(t.priority)) &&
         (!filters.labels.length || filters.labels.some((l) => t.tags.includes(l))) &&
-        matchesDue(t, filters.due || undefined),
+        matchesDue(t, filters.due || undefined, boardStatuses),
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allTasks, q, search.status, search.assignee, search.priority, search.label, search.due])
+  }, [allTasks, q, search.status, search.assignee, search.priority, search.label, search.due, boardStatuses])
 
   // One continuous skeleton across the serial fetch (boards → tasks): the board
   // must not paint with empty columns while its tasks are still in flight.
@@ -350,7 +353,7 @@ function BoardPage() {
         {fleetLoading || cfgLoading ? (
           <Skeleton className="h-9 w-64" />
         ) : (
-          <FilterBar value={filters} onChange={setFilters} members={members} agents={boardAgents} labels={boardLabels} meId={me?.id} />
+          <FilterBar value={filters} onChange={setFilters} members={members} agents={boardAgents} labels={boardLabels} statuses={boardStatuses} meId={me?.id} />
         )}
         <span className="ml-auto flex items-center gap-1.5">
           {view === 'list' && (

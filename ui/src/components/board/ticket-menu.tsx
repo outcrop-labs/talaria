@@ -5,11 +5,13 @@ import { Archive, ArrowRight, CalendarDays, ExternalLink, Flag, Hash, Link as Li
 import { copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { userAssignee } from '@/lib/assignees'
 import { PRIORITIES, STATUS_LABEL, TASK_STATUSES, TICKET_COLORS, type Task, type TaskStatus, type Priority, type TicketColor } from '@/lib/task-const'
+import { statusColorOf, type BoardStatus } from '@/lib/statuses'
 import { LABEL_CSS } from '@/components/board/field-pills'
 
 export interface TicketMenuOpts {
   canEdit: boolean
   meId?: string | null
+  statuses?: BoardStatus[]
   onOpen: () => void
   onPatch: (p: { status?: TaskStatus; priority?: Priority; dueDate?: string | null; assignees?: string[]; color?: TicketColor | null }) => void
   onArchive: () => void
@@ -37,10 +39,14 @@ export function ticketMenuEntries(t: Task, o: TicketMenuOpts): ContextMenuEntry[
       {
         label: 'Move to',
         icon: <ArrowRight size={14} />,
-        children: TASK_STATUSES.map((s) => ({
-          label: STATUS_LABEL[s] ?? s,
-          checked: t.status === s,
-          onSelect: () => o.onPatch({ status: s }),
+        children: (o.statuses?.length
+          ? o.statuses.map((st) => ({ key: st.key, label: st.label, color: statusColorOf(st.key, o.statuses!) }))
+          : TASK_STATUSES.map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: undefined as string | undefined }))
+        ).map((st) => ({
+          label: st.label,
+          icon: st.color ? <span className="h-2 w-2 rounded-full" style={{ background: st.color }} /> : undefined,
+          checked: t.status === st.key,
+          onSelect: () => o.onPatch({ status: st.key as TaskStatus }),
         })),
       },
       {

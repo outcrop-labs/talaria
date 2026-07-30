@@ -52,6 +52,7 @@ import {
 } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
 import { parseTicketPatch, streamMuse, type TicketMusePatch } from '@/lib/muse'
+import { statusLabelOf, useBoardStatuses } from '@/lib/statuses'
 import { Sparkles } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { Link } from '@tanstack/react-router'
@@ -80,6 +81,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
   // notifies (tasks comment/description paths). Tokens mirror the server's.
   const { data: boardMembers = [] } = useBoardMembers(board.id)
   const { data: boardLabels = [] } = useBoardLabels(board.id)
+  const { data: boardStatuses = [] } = useBoardStatuses(board.id)
   const mentionables = boardMembers
     .map((m) => ({ insert: userMentionInsert(m), label: m.name ?? m.email ?? m.userId, sub: m.email ?? undefined }))
     .filter((m) => m.insert)
@@ -308,7 +310,14 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                 <CloseButton onClick={onClose} className="-mr-1 ml-auto" />
                 <Prop label="Status">
                   <Select value={t.status} disabled={!canEdit} onChange={(e) => save({ status: e.target.value as TaskStatus })} size="sm" className="w-full">
-                    {MOVE.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+                    {(boardStatuses.length
+                      ? [...boardStatuses.map((st) => st.key), 'failed', 'cancelled']
+                      : MOVE
+                    ).map((k) => (
+                      <option key={k} value={k}>
+                        {statusLabelOf(k, boardStatuses)}
+                      </option>
+                    ))}
                   </Select>
                 </Prop>
                 <Prop label="Priority">

@@ -12,6 +12,7 @@ import { FieldPill } from '@/components/ui/field-pill'
 import { cn } from '@/lib/cn'
 import { assigneeInfo, userAssignee } from '@/lib/assignees'
 import { createBoardLabel, type BoardLabel, type BoardMember, type LabelColor } from '@/lib/boards'
+import { statusColorOf, statusLabelOf, type BoardStatus } from '@/lib/statuses'
 import {
   PRIORITIES,
   PRIORITY_COLOR,
@@ -79,6 +80,8 @@ export interface PillCtx {
   meId?: string | null
   /** The board's label registry — powers LabelsPill + tinted chips. */
   labels?: BoardLabel[]
+  /** The board's status set — powers StatusPill options + closed checks. */
+  statuses?: BoardStatus[]
   boardId?: string
 }
 
@@ -93,8 +96,12 @@ export const STATUS_COLOR: Record<string, string> = {
   cancelled: 'var(--theme-muted)',
 }
 
-export const isOverdueTask = (t: Pick<Task, 'dueDate' | 'status'>) =>
-  !!t.dueDate && new Date(t.dueDate).getTime() < Date.now() && !['done', 'cancelled'].includes(t.status)
+/** Closed = done-category on this board (or the legacy terminal keys). */
+export const isClosedStatus = (key: string, statuses?: BoardStatus[]): boolean =>
+  statuses?.find((s) => s.key === key)?.category === 'done' || ['done', 'cancelled', 'failed'].includes(key)
+
+export const isOverdueTask = (t: Pick<Task, 'dueDate' | 'status'>, statuses?: BoardStatus[]) =>
+  !!t.dueDate && new Date(t.dueDate).getTime() < Date.now() && !isClosedStatus(t.status, statuses)
 
 const fmtDue = (iso: string) => {
   const d = new Date(iso)
@@ -111,27 +118,33 @@ const dueIso = (days: number) => {
 }
 
 export function StatusPill({ t, ctx, className }: { t: Task; ctx: PillCtx; className?: string }) {
-  const label = STATUS_LABEL[t.status] ?? t.status
+  const sts = ctx.statuses ?? []
+  const label = statusLabelOf(t.status, sts)
+  const dot = sts.length ? statusColorOf(t.status, sts) : STATUS_COLOR[t.status]
   if (!ctx.canEdit)
     return (
       <span className={cn('inline-flex items-center gap-1.5 text-[11px] text-muted', className)}>
-        <span className="h-2 w-2 rounded-full" style={{ background: STATUS_COLOR[t.status] }} />
+        <span className="h-2 w-2 rounded-full" style={{ background: dot }} />
         {label}
       </span>
     )
+  const options = sts.length
+    ? sts.map((st) => ({ key: st.key, label: st.label, color: statusColorOf(st.key, sts) }))
+    : TASK_STATUSES.map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: STATUS_COLOR[k] ?? 'var(--theme-muted)' }))
   return (
     <DropdownMenu
       align="left"
       className={className}
       trigger={(open) => (
-        <FieldPill dot={STATUS_COLOR[t.status]} active={open} title="Change status">
+        <FieldPill dot={dot} active={open} title="Change status">
           {label}
         </FieldPill>
       )}
-      items={TASK_STATUSES.map((s) => ({
-        label: STATUS_LABEL[s] ?? s,
-        checked: t.status === s,
-        onSelect: () => ctx.onPatch({ status: s }),
+      items={options.map((o) => ({
+        label: o.label,
+        icon: <span className="h-2 w-2 rounded-full" style={{ background: o.color }} />,
+        checked: t.status === o.key,
+        onSelect: () => ctx.onPatch({ status: o.key as Task['status'] }),
       }))}
     />
   )
@@ -165,8 +178,8 @@ export function PriorityPill({ t, ctx, className }: { t: Task; ctx: PillCtx; cla
   )
 }
 
-export function DuePill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean }) {
-  const late = isOverdueTask(t)
+export function DuePill({ t, ctx, className, ghost, persistent }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean; persistent?: boolean }) {
+  const late = isOverdueTask(t, ctx.statuses)
   const label = t.dueDate ? fmtDue(t.dueDate) : 'Due'
   if (!ctx.canEdit) {
     if (!t.dueDate) return null
@@ -182,6 +195,7 @@ export function DuePill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; c
       className={className}
       trigger={(open) => (
         <FieldPill
+          persistent={persistent}
           icon={<CalendarDays size={11} />}
           active={open}
           empty={!t.dueDate}
@@ -190,10 +204,10 @@ export function DuePill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; c
             late && 'font-medium !text-[color:var(--theme-danger)]',
             // Ghost: an unset property stays invisible until the card is
             // hovered (or its picker is open) — quiet cards, one-click set.
-            ghost && !t.dueDate && !open && 'opacity-0 transition-opacity group-hover:opacity-100',
+            ghost && !persistent && !t.dueDate && !open && 'opacity-0 transition-opacity group-hover:opacity-100',
           )}
         >
-          {ghost && !t.dueDate ? '' : label}
+          {ghost && !persistent && !t.dueDate ? '' : label}
         </FieldPill>
       )}
       items={[
@@ -220,7 +234,7 @@ export function DuePill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; c
   )
 }
 
-export function EstimatePill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean }) {
+export function EstimatePill({ t, ctx, className, ghost, persistent }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean; persistent?: boolean }) {
   const label = t.estimatedHours != null ? `${t.estimatedHours}h` : 'Estimate'
   if (!ctx.canEdit) {
     if (t.estimatedHours == null) return null
@@ -232,13 +246,14 @@ export function EstimatePill({ t, ctx, className, ghost }: { t: Task; ctx: PillC
       className={className}
       trigger={(open) => (
         <FieldPill
+          persistent={persistent}
           icon={<Timer size={11} />}
           active={open}
           empty={t.estimatedHours == null}
           title="Set estimate (hours)"
-          className={cn(ghost && t.estimatedHours == null && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
+          className={cn(ghost && !persistent && t.estimatedHours == null && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
         >
-          {ghost && t.estimatedHours == null ? '' : label}
+          {ghost && !persistent && t.estimatedHours == null ? '' : label}
         </FieldPill>
       )}
       items={[0.5, 1, 2, 4, 8].map((h) => ({
@@ -270,7 +285,7 @@ export function EstimatePill({ t, ctx, className, ghost }: { t: Task; ctx: PillC
   )
 }
 
-export function AssigneesPill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean }) {
+export function AssigneesPill({ t, ctx, className, ghost, persistent }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean; persistent?: boolean }) {
   const infos = t.assignees.map((a) => assigneeInfo(a, ctx.agents, ctx.members))
   const summary =
     infos.length === 0 ? 'Assign' : infos.length === 1 ? infos[0]!.label : `${infos.length} assignees`
@@ -298,13 +313,14 @@ export function AssigneesPill({ t, ctx, className, ghost }: { t: Task; ctx: Pill
       className={className}
       trigger={(open) => (
         <FieldPill
+          persistent={persistent}
           active={open}
           empty={infos.length === 0}
           icon={infos.length === 0 ? <UserRound size={11} /> : undefined}
           title="Assign teammates or agents"
-          className={cn(ghost && infos.length === 0 && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
+          className={cn(ghost && !persistent && infos.length === 0 && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
         >
-          {ghost && infos.length === 0 ? '' : avatars}
+          {ghost && !persistent && infos.length === 0 ? '' : avatars}
         </FieldPill>
       )}
       items={() => [
@@ -329,7 +345,7 @@ export function AssigneesPill({ t, ctx, className, ghost }: { t: Task; ctx: Pill
   )
 }
 
-export function LabelsPill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean }) {
+export function LabelsPill({ t, ctx, className, ghost, persistent }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean; persistent?: boolean }) {
   const qc = useQueryClient()
   const labels = ctx.labels ?? []
   const shown = t.tags.slice(0, 2)
@@ -352,14 +368,15 @@ export function LabelsPill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx
       className={className}
       trigger={(open) => (
         <FieldPill
+          persistent={persistent}
           active={open}
           empty={t.tags.length === 0}
           icon={t.tags.length === 0 ? <Tag size={11} /> : undefined}
           title="Labels"
-          className={cn(ghost && t.tags.length === 0 && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
+          className={cn(ghost && !persistent && t.tags.length === 0 && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
         >
           {t.tags.length === 0 ? (
-            ghost ? '' : 'Label'
+            ghost && !persistent ? '' : 'Label'
           ) : (
             <span className="flex items-center gap-1">
               {shown.map((n) => (

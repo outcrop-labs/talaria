@@ -161,6 +161,7 @@ import { Route as ApiChannelsIdAgentsRouteImport } from './routes/api/channels.$
 import { Route as ApiBoardsIdViewsRouteImport } from './routes/api/boards.$id.views'
 import { Route as ApiBoardsIdTemplatesRouteImport } from './routes/api/boards.$id.templates'
 import { Route as ApiBoardsIdTasksRouteImport } from './routes/api/boards.$id.tasks'
+import { Route as ApiBoardsIdStatusesRouteImport } from './routes/api/boards.$id.statuses'
 import { Route as ApiBoardsIdMembersRouteImport } from './routes/api/boards.$id.members'
 import { Route as ApiBoardsIdLabelsRouteImport } from './routes/api/boards.$id.labels'
 import { Route as ApiBoardsIdEventsRouteImport } from './routes/api/boards.$id.events'
@@ -967,6 +968,11 @@ const ApiBoardsIdTasksRoute = ApiBoardsIdTasksRouteImport.update({
   path: '/tasks',
   getParentRoute: () => ApiBoardsIdRoute,
 } as any)
+const ApiBoardsIdStatusesRoute = ApiBoardsIdStatusesRouteImport.update({
+  id: '/statuses',
+  path: '/statuses',
+  getParentRoute: () => ApiBoardsIdRoute,
+} as any)
 const ApiBoardsIdMembersRoute = ApiBoardsIdMembersRouteImport.update({
   id: '/members',
   path: '/members',
@@ -1314,6 +1320,7 @@ export interface FileRoutesByFullPath {
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
   '/api/boards/$id/labels': typeof ApiBoardsIdLabelsRoute
   '/api/boards/$id/members': typeof ApiBoardsIdMembersRoute
+  '/api/boards/$id/statuses': typeof ApiBoardsIdStatusesRoute
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
   '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
   '/api/boards/$id/views': typeof ApiBoardsIdViewsRoute
@@ -1508,6 +1515,7 @@ export interface FileRoutesByTo {
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
   '/api/boards/$id/labels': typeof ApiBoardsIdLabelsRoute
   '/api/boards/$id/members': typeof ApiBoardsIdMembersRoute
+  '/api/boards/$id/statuses': typeof ApiBoardsIdStatusesRoute
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
   '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
   '/api/boards/$id/views': typeof ApiBoardsIdViewsRoute
@@ -1704,6 +1712,7 @@ export interface FileRoutesById {
   '/api/boards/$id/events': typeof ApiBoardsIdEventsRoute
   '/api/boards/$id/labels': typeof ApiBoardsIdLabelsRoute
   '/api/boards/$id/members': typeof ApiBoardsIdMembersRoute
+  '/api/boards/$id/statuses': typeof ApiBoardsIdStatusesRoute
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
   '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
   '/api/boards/$id/views': typeof ApiBoardsIdViewsRoute
@@ -1900,6 +1909,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/events'
     | '/api/boards/$id/labels'
     | '/api/boards/$id/members'
+    | '/api/boards/$id/statuses'
     | '/api/boards/$id/tasks'
     | '/api/boards/$id/templates'
     | '/api/boards/$id/views'
@@ -2094,6 +2104,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/events'
     | '/api/boards/$id/labels'
     | '/api/boards/$id/members'
+    | '/api/boards/$id/statuses'
     | '/api/boards/$id/tasks'
     | '/api/boards/$id/templates'
     | '/api/boards/$id/views'
@@ -2289,6 +2300,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/events'
     | '/api/boards/$id/labels'
     | '/api/boards/$id/members'
+    | '/api/boards/$id/statuses'
     | '/api/boards/$id/tasks'
     | '/api/boards/$id/templates'
     | '/api/boards/$id/views'
@@ -3507,6 +3519,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBoardsIdTasksRouteImport
       parentRoute: typeof ApiBoardsIdRoute
     }
+    '/api/boards/$id/statuses': {
+      id: '/api/boards/$id/statuses'
+      path: '/statuses'
+      fullPath: '/api/boards/$id/statuses'
+      preLoaderRoute: typeof ApiBoardsIdStatusesRouteImport
+      parentRoute: typeof ApiBoardsIdRoute
+    }
     '/api/boards/$id/members': {
       id: '/api/boards/$id/members'
       path: '/members'
@@ -3945,6 +3964,7 @@ interface ApiBoardsIdRouteChildren {
   ApiBoardsIdEventsRoute: typeof ApiBoardsIdEventsRoute
   ApiBoardsIdLabelsRoute: typeof ApiBoardsIdLabelsRoute
   ApiBoardsIdMembersRoute: typeof ApiBoardsIdMembersRoute
+  ApiBoardsIdStatusesRoute: typeof ApiBoardsIdStatusesRoute
   ApiBoardsIdTasksRoute: typeof ApiBoardsIdTasksRoute
   ApiBoardsIdTemplatesRoute: typeof ApiBoardsIdTemplatesRoute
   ApiBoardsIdViewsRoute: typeof ApiBoardsIdViewsRoute
@@ -3955,6 +3975,7 @@ const ApiBoardsIdRouteChildren: ApiBoardsIdRouteChildren = {
   ApiBoardsIdEventsRoute: ApiBoardsIdEventsRoute,
   ApiBoardsIdLabelsRoute: ApiBoardsIdLabelsRoute,
   ApiBoardsIdMembersRoute: ApiBoardsIdMembersRoute,
+  ApiBoardsIdStatusesRoute: ApiBoardsIdStatusesRoute,
   ApiBoardsIdTasksRoute: ApiBoardsIdTasksRoute,
   ApiBoardsIdTemplatesRoute: ApiBoardsIdTemplatesRoute,
   ApiBoardsIdViewsRoute: ApiBoardsIdViewsRoute,

@@ -6,7 +6,8 @@ import { useAgents } from '@/lib/agents'
 import { archiveTask, updateTask, useBoardLabels, type BoardMember } from '@/lib/boards'
 import { assigneeInfo } from '@/lib/assignees'
 import { ticketMenuEntries } from '@/components/board/ticket-menu'
-import { AssigneesPill, DuePill, EstimatePill, LabelsPill, PriorityPill, StatusPill, LABEL_CSS, STATUS_COLOR } from '@/components/board/field-pills'
+import { AssigneesPill, DuePill, EstimatePill, LabelsPill, PriorityPill, StatusPill, LABEL_CSS } from '@/components/board/field-pills'
+import { statusColorOf, statusLabelOf, useBoardStatuses } from '@/lib/statuses'
 import { FieldPill } from '@/components/ui/field-pill'
 import { useSession } from '@/lib/session'
 import { userAssignee } from '@/lib/assignees'
@@ -14,7 +15,7 @@ import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { useContextMenu, DropdownMenu } from '@/components/ui/context-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
-import { EFFORT_LABEL, PRIORITIES, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
+import { EFFORT_LABEL, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
 
 type ColumnKey = 'ticket' | 'title' | 'status' | 'priority' | 'effort' | 'estimate' | 'assignees' | 'due' | 'time' | 'labels' | 'updated' | 'created'
@@ -143,6 +144,7 @@ export function BoardList({
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   const { data: me } = useSession()
   const { data: boardLabels = [] } = useBoardLabels(boardId)
+  const { data: boardStatuses = [] } = useBoardStatuses(boardId)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', boardId] })
   const patch = async (taskId: string, p: Parameters<typeof updateTask>[1]) => {
@@ -157,6 +159,7 @@ export function BoardList({
       ticketMenuEntries(t, {
         canEdit,
         meId: me?.id,
+        statuses: boardStatuses,
         onOpen: () => onOpen(t.id),
         onPatch: (p) => void patch(t.id, p),
         onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
@@ -211,8 +214,10 @@ export function BoardList({
         return Number(t.ticketRef?.match(/(\d+)\s*$/)?.[1] ?? 0)
       case 'title':
         return t.title.toLowerCase()
-      case 'status':
-        return TASK_STATUSES.indexOf(t.status as (typeof TASK_STATUSES)[number])
+      case 'status': {
+        const keys = boardStatuses.length ? boardStatuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])
+        return keys.indexOf(t.status)
+      }
       case 'priority':
         return PRIORITY_RANK[t.priority] ?? 0
       case 'effort':
@@ -253,12 +258,18 @@ export function BoardList({
     const sum = (ts: Task[]) => Math.round(ts.reduce((s, t) => s + (t.estimatedHours ?? 0), 0) * 10) / 10
     if (groupBy === 'none') return [{ key: 'all', label: '', hours: 0, tasks: sorted }]
     if (groupBy === 'status') {
-      const order = [...TASK_STATUSES, 'failed', 'cancelled'] as TaskStatus[]
+      const boardKeys = boardStatuses.length ? boardStatuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])
+      const order = [...boardKeys, 'failed', 'cancelled']
       return order
-        .map((st) => ({ key: st, label: STATUS_LABEL[st] ?? st, dot: STATUS_COLOR[st], tasks: sorted.filter((t) => t.status === st) }))
-        // Core statuses always show when empty-groups is on (drop lanes);
+        .map((st) => ({
+          key: st,
+          label: statusLabelOf(st, boardStatuses),
+          dot: statusColorOf(st, boardStatuses),
+          tasks: sorted.filter((t) => t.status === st),
+        }))
+        // Board statuses always show when empty-groups is on (drop lanes);
         // failed/cancelled only when occupied.
-        .filter((g) => g.tasks.length > 0 || (showEmptyGroups && (TASK_STATUSES as readonly string[]).includes(g.key)))
+        .filter((g) => g.tasks.length > 0 || (showEmptyGroups && boardKeys.includes(g.key)))
         .map((g) => ({ ...g, hours: sum(g.tasks) }))
     }
     if (groupBy === 'priority') {
@@ -298,7 +309,7 @@ export function BoardList({
       }))
       .sort((a, b) => (a.key === '__none' ? 1 : b.key === '__none' ? -1 : a.label.localeCompare(b.label)))
       .map((g) => ({ ...g, hours: sum(g.tasks) }))
-  }, [sorted, groupBy, fleet, members, boardLabels, showEmptyGroups])
+  }, [sorted, groupBy, fleet, members, boardLabels, boardStatuses, showEmptyGroups])
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const toggleGroup = (k: string) =>
@@ -357,6 +368,7 @@ export function BoardList({
     members,
     meId: me?.id,
     labels: boardLabels,
+    statuses: boardStatuses,
     boardId,
   })
 
@@ -531,9 +543,10 @@ export function BoardList({
                   Move to
                 </FieldPill>
               )}
-              items={TASK_STATUSES.map((st) => ({
-                label: STATUS_LABEL[st] ?? st,
-                onSelect: () => void bulk({ status: st }),
+              items={(boardStatuses.length ? boardStatuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])).map((st) => ({
+                label: statusLabelOf(st, boardStatuses),
+                icon: <span className="h-2 w-2 rounded-full" style={{ background: statusColorOf(st, boardStatuses) }} />,
+                onSelect: () => void bulk({ status: st as TaskStatus }),
               }))}
             />
             <DropdownMenu
