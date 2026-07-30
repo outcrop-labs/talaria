@@ -269,6 +269,7 @@ export const createTask = (
     assignees?: string[]
     dueDate?: string | null
     startDate?: string | null
+    color?: string | null
     estimatedHours?: number | null
     parentId?: string | null
   },
@@ -310,6 +311,7 @@ export const updateTask = (
     assignees?: string[]
     dueDate?: string | null
     startDate?: string | null
+    color?: string | null
     tags?: string[]
     outcome?: string | null
     resolution?: string | null

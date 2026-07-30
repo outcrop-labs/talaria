@@ -1,16 +1,17 @@
 // The one right-click menu for a ticket — kanban cards and list rows serve
 // the SAME entries: open/copy shortcuts, then quick controls (move, priority,
 // due presets, assign-to-me), then archive. Callers own the actual mutations.
-import { Archive, ArrowRight, CalendarDays, ExternalLink, Flag, Hash, Link as LinkIcon, UserRound } from 'lucide-react'
+import { Archive, ArrowRight, CalendarDays, ExternalLink, Flag, Hash, Link as LinkIcon, Palette, UserRound } from 'lucide-react'
 import { copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { userAssignee } from '@/lib/assignees'
-import { PRIORITIES, STATUS_LABEL, TASK_STATUSES, type Task, type TaskStatus, type Priority } from '@/lib/task-const'
+import { PRIORITIES, STATUS_LABEL, TASK_STATUSES, TICKET_COLORS, type Task, type TaskStatus, type Priority, type TicketColor } from '@/lib/task-const'
+import { LABEL_CSS } from '@/components/board/field-pills'
 
 export interface TicketMenuOpts {
   canEdit: boolean
   meId?: string | null
   onOpen: () => void
-  onPatch: (p: { status?: TaskStatus; priority?: Priority; dueDate?: string | null; assignees?: string[] }) => void
+  onPatch: (p: { status?: TaskStatus; priority?: Priority; dueDate?: string | null; assignees?: string[]; color?: TicketColor | null }) => void
   onArchive: () => void
 }
 
@@ -50,6 +51,19 @@ export function ticketMenuEntries(t: Task, o: TicketMenuOpts): ContextMenuEntry[
           checked: t.priority === p,
           onSelect: () => o.onPatch({ priority: p }),
         })),
+      },
+      {
+        label: 'Color',
+        icon: <Palette size={14} />,
+        children: [
+          ...TICKET_COLORS.map((c) => ({
+            label: c,
+            icon: <span className="h-2.5 w-2.5 rounded-full" style={{ background: LABEL_CSS[c] }} />,
+            checked: t.color === c,
+            onSelect: () => o.onPatch({ color: c }),
+          })),
+          ...(t.color ? (['sep', { label: 'Clear color', danger: true, onSelect: () => o.onPatch({ color: null }) }] as ContextMenuEntry[]) : []),
+        ],
       },
       {
         label: 'Due',

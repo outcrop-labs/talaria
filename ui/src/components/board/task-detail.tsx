@@ -38,9 +38,11 @@ import {
 import { useNavigate } from '@tanstack/react-router'
 import { userAssignee } from '@/lib/assignees'
 import { userMentionInsert, type Mentionable } from '@/components/chat/mentions'
+import { LABEL_CSS } from '@/components/board/field-pills'
 import {
   EFFORTS,
   EFFORT_LABEL,
+  TICKET_COLORS,
   PRIORITIES,
   PRIORITY_ICON,
   STATUS_LABEL,
@@ -297,6 +299,20 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                   <Select value={t.priority} disabled={!canEdit} onChange={(e) => save({ priority: e.target.value as Priority })} size="sm" className="w-full">
                     {PRIORITIES.map((p) => <option key={p} value={p}>{PRIORITY_ICON[p]} {p}</option>)}
                   </Select>
+                </Prop>
+                <Prop label="Color">
+                  <div className="flex flex-wrap items-center gap-1.5 py-1">
+                    {TICKET_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        title={c}
+                        disabled={!canEdit}
+                        onClick={() => save({ color: t.color === c ? null : c })}
+                        className={cn('h-4 w-4 rounded-full ring-2 transition-shadow', t.color === c ? 'ring-[var(--theme-accent-border)]' : 'ring-transparent hover:ring-line')}
+                        style={{ background: LABEL_CSS[c] }}
+                      />
+                    ))}
+                  </div>
                 </Prop>
                 <Prop label="Assignees">
                   <Combobox

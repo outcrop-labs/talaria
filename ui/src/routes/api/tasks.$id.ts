@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
+import { TICKET_COLORS } from '@/lib/task-const'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit, invalidAssignee, listMembers } from '@/server/boards'
@@ -22,6 +23,7 @@ const Patch = z.object({
   assignees: z.array(z.string().max(200)).max(20).optional(),
   dueDate: z.string().datetime().nullish(),
   startDate: z.string().datetime().nullish(),
+  color: z.enum(TICKET_COLORS).nullish(),
   tags: z.array(z.string().max(40)).max(20).optional(),
   outcome: z.string().max(50_000).nullish(),
   resolution: z.string().max(50_000).nullish(),

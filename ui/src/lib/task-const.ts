@@ -9,6 +9,9 @@ export type Priority = (typeof PRIORITIES)[number]
 
 // Agent-appropriate effort sizing (t-shirt sizes) — estimates in hours are silly
 // for agents, so effort is a relative complexity signal instead.
+export const TICKET_COLORS = ['slate', 'bronze', 'green', 'amber', 'red', 'blue', 'purple', 'teal'] as const
+export type TicketColor = (typeof TICKET_COLORS)[number]
+
 export const EFFORTS = ['xs', 's', 'm', 'l', 'xl'] as const
 export type Effort = (typeof EFFORTS)[number]
 export const EFFORT_LABEL: Record<Effort, string> = { xs: 'XS', s: 'S', m: 'M', l: 'L', xl: 'XL' }
@@ -31,6 +34,8 @@ export interface Task {
   dueDate: string | null
   /** Gantt scheduling: bars run startDate → dueDate. */
   startDate: string | null
+  /** Color-coding (palette key); null = status/priority defaults. */
+  color: TicketColor | null
   tags: string[]
   attachments: Attachment[]
   timeSpentSeconds: number

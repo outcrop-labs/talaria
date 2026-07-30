@@ -5,7 +5,7 @@ import { ticketMenuEntries } from '@/components/board/ticket-menu'
 import { Input } from '@/components/ui/input'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { useContextMenu } from '@/components/ui/context-menu'
-import { AssigneesPill, DuePill, EstimatePill, LabelsPill, type PillCtx } from '@/components/board/field-pills'
+import { AssigneesPill, DuePill, EstimatePill, LabelsPill, LABEL_CSS, type PillCtx } from '@/components/board/field-pills'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
 import { archiveTask, createTask, updateTask, useBoardLabels, type Board, type BoardMember } from '@/lib/boards'
@@ -196,8 +196,10 @@ function Card({
         tabIndex={0}
         onClick={onOpen}
         onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && onOpen()}
-        className={cn('mercury-panel w-full cursor-pointer rounded-xl p-4 text-left transition-shadow hover:shadow-[var(--theme-shadow-3)]', task.archivedAt && 'opacity-60')}
+        className={cn('mercury-panel relative w-full cursor-pointer overflow-hidden rounded-xl p-4 text-left transition-shadow hover:shadow-[var(--theme-shadow-3)]', task.archivedAt && 'opacity-60')}
       >
+        {/* Color-code stripe (ticket color, when set). */}
+        {task.color && <span className="absolute inset-y-0 left-0 w-1" style={{ background: LABEL_CSS[task.color] }} />}
         <div className="flex items-start gap-2.5">
           <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: PRIORITY_COLOR[task.priority] }} />
           <div className="min-w-0 flex-1">

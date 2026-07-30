@@ -943,6 +943,8 @@ const MIGRATIONS: string[] = [
   `create index if not exists tasks_parent_idx on tasks(parent_id)`,
   // Gantt scheduling: optional start (bars run start → due).
   `alter table tasks add column if not exists start_date timestamptz`,
+  // Ticket color-coding (palette key; null = status/priority defaults).
+  `alter table tasks add column if not exists color text`,
   // First-class board labels: named + colored, scoped to a board. Task.tags
   // stays a string array of label NAMES (existing data keeps working); the
   // registry makes them colorable and manageable. Backfilled from live tags.

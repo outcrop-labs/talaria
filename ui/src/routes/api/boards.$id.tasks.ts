@@ -5,6 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit, invalidAssignee, listMembers } from '@/server/boards'
 import { createTask, listBoardTasks, EFFORTS, PRIORITIES } from '@/server/tasks'
+import { TICKET_COLORS } from '@/lib/task-const'
 import { notifyMentions } from '@/server/mentions'
 import { describeAgent } from '@/server/gateway'
 import { indexTicket } from '@/server/retrieval/sources'
@@ -55,6 +56,7 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
             assignees: z.array(z.string().max(200)).max(20).optional(),
             dueDate: z.string().datetime().nullish(),
             startDate: z.string().datetime().nullish(),
+            color: z.enum(TICKET_COLORS).nullish(),
             estimatedHours: z.number().min(0).max(999).nullish(),
             parentId: z.string().uuid().nullish(),
             tags: z.array(z.string().max(40)).max(20).optional(),
@@ -91,6 +93,7 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
             assignees: parsed.data.assignees ?? [],
             dueDate: parsed.data.dueDate ?? null,
             startDate: parsed.data.startDate ?? null,
+            color: parsed.data.color ?? null,
             estimatedHours: parsed.data.estimatedHours ?? null,
             parentId: parsed.data.parentId ?? null,
             tags: parsed.data.tags,
