@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { SlidersHorizontal, ChevronUp, ChevronDown, GripVertical, Archive, ExternalLink, Hash, Link as LinkIcon } from 'lucide-react'
 import { useAgents } from '@/lib/agents'
-import { archiveTask } from '@/lib/boards'
+import { archiveTask, type BoardMember } from '@/lib/boards'
+import { assigneeInfo } from '@/lib/assignees'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -10,7 +11,7 @@ import { cn } from '@/lib/cn'
 import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
 
-type ColumnKey = 'ticket' | 'title' | 'status' | 'priority' | 'effort' | 'assignees' | 'due' | 'time' | 'labels' | 'updated' | 'created'
+type ColumnKey = 'ticket' | 'title' | 'status' | 'priority' | 'effort' | 'estimate' | 'assignees' | 'due' | 'time' | 'labels' | 'updated' | 'created'
 interface ListColumn {
   key: ColumnKey
   label: string
@@ -25,6 +26,7 @@ const LIST_COLUMNS: ListColumn[] = [
   { key: 'status', label: 'Status', default: true },
   { key: 'priority', label: 'Priority', default: true },
   { key: 'effort', label: 'Effort' },
+  { key: 'estimate', label: 'Est.', align: 'right' },
   { key: 'assignees', label: 'Assignees', default: true },
   { key: 'due', label: 'Due' },
   { key: 'time', label: 'Time', align: 'right' },
@@ -100,7 +102,17 @@ function fmtTime(s: number): string {
 }
 
 // List view of a board's tasks with configurable columns (persisted per board).
-export function BoardList({ tasks, onOpen, boardId }: { tasks: Task[]; onOpen: (id: string) => void; boardId: string }) {
+export function BoardList({
+  tasks,
+  onOpen,
+  boardId,
+  members = [],
+}: {
+  tasks: Task[]
+  onOpen: (id: string) => void
+  boardId: string
+  members?: BoardMember[]
+}) {
   const qc = useQueryClient()
   const { openMenu, menu } = useContextMenu()
   const { data: fleet, isLoading: agentsLoading } = useAgents()
@@ -125,7 +137,7 @@ export function BoardList({ tasks, onOpen, boardId }: { tasks: Task[]; onOpen: (
     })
     openMenu(e, items)
   }
-  const label = (id: string) => fleet?.agents.find((a) => a.id === id)?.label ?? id
+  const label = (id: string) => assigneeInfo(id, fleet?.agents ?? [], members).label
   const assigneeText = (ids: string[]) => (ids.length ? ids.map(label).join(', ') : '—')
 
   // Init to defaults (SSR-safe), then hydrate from localStorage on the client.
@@ -180,6 +192,8 @@ export function BoardList({ tasks, onOpen, boardId }: { tasks: Task[]; onOpen: (
         return PRIORITY_RANK[t.priority] ?? 0
       case 'effort':
         return t.effort ? EFFORT_RANK[t.effort] ?? 0 : -1
+      case 'estimate':
+        return t.estimatedHours ?? -1
       case 'assignees':
         return assigneeText(t.assignees).toLowerCase()
       case 'due':
@@ -225,6 +239,8 @@ export function BoardList({ tasks, onOpen, boardId }: { tasks: Task[]; onOpen: (
         )
       case 'effort':
         return <span className="text-muted">{t.effort ? EFFORT_LABEL[t.effort] : '—'}</span>
+      case 'estimate':
+        return <span className="text-muted">{t.estimatedHours != null ? `${t.estimatedHours}h` : '—'}</span>
       case 'assignees':
         // Raw model ids would flash then swap to labels (jumping the column
         // width) — hold the cell with a short bar until the fleet resolves.

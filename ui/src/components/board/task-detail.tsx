@@ -20,6 +20,7 @@ import {
   addComment,
   addDependency,
   archiveTask,
+  createTask,
   deleteTask,
   removeDependency,
   reviewTask,
@@ -33,6 +34,8 @@ import {
   type Board,
   type JudgeReview,
 } from '@/lib/boards'
+import { useNavigate } from '@tanstack/react-router'
+import { userAssignee } from '@/lib/assignees'
 import { userMentionInsert, type Mentionable } from '@/components/chat/mentions'
 import {
   EFFORTS,
@@ -66,7 +69,6 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
   // Restrict the assignee list to the board's agent policy (allow-all or list).
   const agents = boardCfg?.allowAll ? allAgents : allAgents.filter((a) => boardCfg?.models.includes(a.id))
   const canEdit = board.role === 'owner' || board.role === 'editor'
-  const assigneeOptions = agents.map((a) => ({ value: a.id, label: a.label, sub: a.role }))
   const me = user?.email ?? user?.name ?? ''
   // Board tickets for the dependency picker (exclude self + already-linked).
   const { data: boardTasks = [] } = useBoardTasks(board.id)
@@ -76,10 +78,23 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
   const mentionables = boardMembers
     .map((m) => ({ insert: userMentionInsert(m), label: m.name ?? m.email ?? m.userId, sub: m.email ?? undefined }))
     .filter((m) => m.insert)
+  // Assignees mix humans (board members, `user:<id>`) and the board's agents.
+  const assigneeOptions = [
+    ...boardMembers.map((m) => ({
+      value: userAssignee(m.userId),
+      label: (m.name ?? m.email ?? 'teammate') + (m.userId === user?.id ? ' (me)' : ''),
+      sub: 'teammate',
+    })),
+    ...agents.map((a) => ({ value: a.id, label: a.label, sub: a.role })),
+  ]
 
   const [title, setTitle] = useState('')
   const [tab, setTab] = useState<'comments' | 'activity'>('comments')
   const commentRef = useRef<RichEditorHandle>(null)
+  const navigate = useNavigate()
+  // Jump to a sibling ticket (parent/sub-task links) — same overlay route.
+  const openTask = (id: string) =>
+    void navigate({ to: '/boards/$boardId/$taskId', params: { boardId: board.id, taskId: id } })
 
   // Initialise editable fields ONCE per task (not on every refetch) so live
   // updates behind the modal don't reset what the user is typing.
@@ -296,6 +311,27 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                       {EFFORTS.map((ef) => <option key={ef} value={ef}>{EFFORT_LABEL[ef]}</option>)}
                     </Select>
                   </Prop>
+                  <Prop label="Estimate (h)">
+                    <Input
+                      type="number"
+                      min={0}
+                      max={999}
+                      step={0.5}
+                      size="sm"
+                      disabled={!canEdit}
+                      defaultValue={t.estimatedHours ?? ''}
+                      key={`est-${t.id}-${t.estimatedHours ?? ''}`}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim()
+                        const n = v === '' ? null : Number(v)
+                        if (n !== t.estimatedHours && (n === null || (!Number.isNaN(n) && n >= 0))) save({ estimatedHours: n })
+                      }}
+                      placeholder="—"
+                      className="w-full"
+                    />
+                  </Prop>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
                   <Prop label="Time spent">
                     <div className="flex h-9 items-center text-sm text-fg">{formatDuration(t.timeSpentSeconds)}</div>
                   </Prop>
@@ -323,6 +359,73 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     onChange={(e) => save({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
                     size="sm" className="w-full" />
                 </Prop>
+                {/* Sub-tasks: one level deep. Children list + inline add on a
+                    parent; a child shows its parent with a promote control. */}
+                {t.parentId ? (
+                  <Prop label="Parent">
+                    <div className="flex items-center gap-1 text-xs">
+                      <button
+                        onClick={() => {
+                          const p = boardTasks.find((bt) => bt.id === t.parentId)
+                          if (p) openTask(p.id)
+                        }}
+                        className="min-w-0 flex-1 truncate text-left text-muted transition-colors hover:text-fg"
+                      >
+                        {(() => {
+                          const p = boardTasks.find((bt) => bt.id === t.parentId)
+                          return p ? (
+                            <>
+                              {p.ticketRef && <span className="font-[var(--font-mono)]">{p.ticketRef} </span>}
+                              {p.title}
+                            </>
+                          ) : (
+                            'parent ticket'
+                          )
+                        })()}
+                      </button>
+                      {canEdit && (
+                        <button
+                          onClick={() => save({ parentId: null })}
+                          title="Promote to top level"
+                          className="shrink-0 text-muted hover:text-fg"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </Prop>
+                ) : (
+                  <Prop label={`Sub-tasks (${boardTasks.filter((bt) => bt.parentId === t.id).length})`}>
+                    <div className="space-y-1">
+                      {boardTasks
+                        .filter((bt) => bt.parentId === t.id)
+                        .map((st) => (
+                          <div key={st.id} className="flex items-center gap-1.5 text-xs">
+                            <span
+                              className="h-1.5 w-1.5 shrink-0 rounded-full"
+                              style={{ background: st.status === 'done' ? 'var(--theme-success)' : 'var(--theme-line)' }}
+                            />
+                            <button
+                              onClick={() => openTask(st.id)}
+                              className={cn('min-w-0 flex-1 truncate text-left transition-colors hover:text-fg', st.status === 'done' ? 'text-muted line-through' : 'text-muted')}
+                            >
+                              {st.ticketRef && <span className="font-[var(--font-mono)]">{st.ticketRef} </span>}
+                              {st.title}
+                            </button>
+                          </div>
+                        ))}
+                      {canEdit && (
+                        <SubtaskAdd
+                          onAdd={async (title) => {
+                            await createTask(board.id, { title, parentId: t.id })
+                            qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
+                            refresh()
+                          }}
+                        />
+                      )}
+                    </div>
+                  </Prop>
+                )}
                 <Prop label={`Blocked by (${data!.blockedBy.length})`}>
                   <div className="space-y-1">
                     {data!.blockedBy.map((d) => (
@@ -610,6 +713,41 @@ function Section({ label, children }: { label: string; children: React.ReactNode
     </div>
   )
 }
+/** Inline add for sub-tasks — quiet trigger, Enter creates, Esc closes. */
+function SubtaskAdd({ onAdd }: { onAdd: (title: string) => Promise<void> | void }) {
+  const [open, setOpen] = useState(false)
+  const [title, setTitle] = useState('')
+  const submit = () => {
+    const v = title.trim()
+    if (!v) return setOpen(false)
+    setTitle('')
+    setOpen(false)
+    void onAdd(v)
+  }
+  if (!open)
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full rounded-md px-1 py-0.5 text-left text-xs text-muted transition-colors hover:text-accent"
+      >
+        + Add sub-task
+      </button>
+    )
+  return (
+    <Input
+      autoFocus
+      value={title}
+      onChange={(e) => setTitle(e.target.value)}
+      onKeyDown={(e) => (e.key === 'Enter' ? submit() : e.key === 'Escape' ? setOpen(false) : null)}
+      onBlur={submit}
+      placeholder="Sub-task title"
+      size="sm"
+      className="w-full"
+    />
+  )
+}
+
 function Prop({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>

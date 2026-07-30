@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { boardAllowsAgent, boardRole, canEdit, listMembers } from '@/server/boards'
+import { boardAllowsAgent, boardRole, canEdit, invalidAssignee, listMembers } from '@/server/boards'
 import { createTask, listBoardTasks, EFFORTS, PRIORITIES } from '@/server/tasks'
 import { notifyMentions } from '@/server/mentions'
 import { describeAgent } from '@/server/gateway'
@@ -54,6 +54,8 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
             effort: z.enum(EFFORTS).nullish(),
             assignees: z.array(z.string().max(200)).max(20).optional(),
             dueDate: z.string().datetime().nullish(),
+            estimatedHours: z.number().min(0).max(999).nullish(),
+            parentId: z.string().uuid().nullish(),
           })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
@@ -61,11 +63,10 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
         if (who.agent && parsed.data.assignees?.length) {
           return json({ error: 'agents cannot assign tickets' }, { status: 403 })
         }
-        for (const a of parsed.data.assignees ?? []) {
-          if (!(await boardAllowsAgent(params.id, a))) {
-            return json({ error: `agent "${a}" is not allowed on this board` }, { status: 400 })
-          }
-        }
+        // Mixed assignees: `user:<uuid>` must be a board member; bare strings
+        // are agents and must pass the board's agent policy.
+        const bad = await invalidAssignee(params.id, parsed.data.assignees ?? [])
+        if (bad) return json({ error: bad }, { status: 400 })
         // Templatize bare tickets: an empty description is seeded from the
         // resolved ticket template (creating agent's binding → board default),
         // so every creation surface — quick-add, agent tools — gets the format.
@@ -77,16 +78,23 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
           })
           if (template?.body.trim()) description = template.body
         }
-        const task = await createTask({
-          boardId: params.id,
-          title: parsed.data.title,
-          description,
-          priority: parsed.data.priority,
-          effort: parsed.data.effort ?? null,
-          assignees: parsed.data.assignees ?? [],
-          dueDate: parsed.data.dueDate ?? null,
-          createdBy: who.actor,
-        })
+        let task
+        try {
+          task = await createTask({
+            boardId: params.id,
+            title: parsed.data.title,
+            description,
+            priority: parsed.data.priority,
+            effort: parsed.data.effort ?? null,
+            assignees: parsed.data.assignees ?? [],
+            dueDate: parsed.data.dueDate ?? null,
+            estimatedHours: parsed.data.estimatedHours ?? null,
+            parentId: parsed.data.parentId ?? null,
+            createdBy: who.actor,
+          })
+        } catch (e) {
+          return json({ error: (e as Error).message }, { status: 400 })
+        }
         // Index into the ambient activity brain (board-scoped; retrieval on demand).
         void indexTicket(task).catch(() => {})
         // A description born with an @mention notifies board members — same

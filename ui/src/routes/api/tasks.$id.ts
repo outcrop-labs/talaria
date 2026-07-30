@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { boardAllowsAgent, boardRole, canEdit, listMembers } from '@/server/boards'
+import { boardAllowsAgent, boardRole, canEdit, invalidAssignee, listMembers } from '@/server/boards'
 import { notifyMentions } from '@/server/mentions'
 import { describeAgent } from '@/server/gateway'
 import { deleteTask, getTask, getTaskFull, listComments, EFFORTS, PRIORITIES, TASK_STATUSES, updateTask, type TaskPatch } from '@/server/tasks'
@@ -26,6 +26,8 @@ const Patch = z.object({
   resolution: z.string().max(50_000).nullish(),
   errorMessage: z.string().max(50_000).nullish(),
   archived: z.boolean().optional(),
+  estimatedHours: z.number().min(0).max(999).nullish(),
+  parentId: z.string().uuid().nullish(),
   addTimeSpentSeconds: z.number().min(0).max(86_400 * 30).optional(),
   // Full replacement list, same contract as chat messages: upload ids +
   // knowledge/artifact refs. Omit both to leave attachments unchanged.
@@ -83,12 +85,14 @@ export const Route = createFileRoute('/api/tasks/$id')({
           if (parsed.data.status === 'assigned') return json({ error: 'agents cannot assign tickets' }, { status: 403 })
           if (parsed.data.status === 'done') parsed.data.status = 'quality_review'
           parsed.data.assignees = undefined
+          // Planning fields stay human: estimates and sub-task structure.
+          parsed.data.estimatedHours = undefined
+          parsed.data.parentId = undefined
         }
-        for (const a of parsed.data.assignees ?? []) {
-          if (!(await boardAllowsAgent(task.boardId, a))) {
-            return json({ error: `agent "${a}" is not allowed on this board` }, { status: 400 })
-          }
-        }
+        // Mixed assignees: humans as `user:<uuid>` (board members), agents by
+        // model id (board agent policy).
+        const bad = await invalidAssignee(task.boardId, parsed.data.assignees ?? [])
+        if (bad) return json({ error: bad }, { status: 400 })
         const { attachmentIds, refs, ...patch } = parsed.data
         if (attachmentIds !== undefined || refs !== undefined) {
           // Resolve to canonical chips server-side (never trust client metadata).
@@ -98,7 +102,12 @@ export const Route = createFileRoute('/api/tasks/$id')({
           const chips = sessionUser ? await resolveRefs(sessionUser, refs ?? []) : []
           ;(patch as TaskPatch).attachments = [...uploads, ...chips]
         }
-        const updated = await updateTask(params.id, patch, actor)
+        let updated
+        try {
+          updated = await updateTask(params.id, patch, actor)
+        } catch (e) {
+          return json({ error: (e as Error).message }, { status: 400 })
+        }
         // Keep the activity brain fresh when the ticket's text changed.
         if (updated && (parsed.data.title !== undefined || parsed.data.description !== undefined)) {
           void indexTicket(updated).catch(() => {})

@@ -937,6 +937,10 @@ const MIGRATIONS: string[] = [
   `alter table rag_collections add column if not exists schema_version integer not null default 1`,
   // Ticket attachments: same shape as message attachments (uploads + ref chips).
   `alter table tasks add column if not exists attachments jsonb not null default '[]'`,
+  // Sub-tasks: one level deep (a parent cannot itself be a child — enforced in
+  // code). Deleting a parent releases its children back to top level.
+  `alter table tasks add column if not exists parent_id uuid references tasks(id) on delete set null`,
+  `create index if not exists tasks_parent_idx on tasks(parent_id)`,
   // Explicit per-plan template pick (mirrors agent_defs.plan_template_id, which
   // is the fallback). Set at creation; resolveTemplate treats it as the highest
   // link. Dead refs degrade to the agent binding via on-delete-set-null.

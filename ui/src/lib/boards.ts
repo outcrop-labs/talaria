@@ -180,6 +180,8 @@ export const createTask = (
     effort?: Effort | null
     assignees?: string[]
     dueDate?: string | null
+    estimatedHours?: number | null
+    parentId?: string | null
   },
 ) => post(`/api/boards/${boardId}/tasks`, input).then(j)
 
@@ -223,6 +225,8 @@ export const updateTask = (
     resolution?: string | null
     errorMessage?: string | null
     archived?: boolean
+    estimatedHours?: number | null
+    parentId?: string | null
     addTimeSpentSeconds?: number
     attachmentIds?: string[]
     refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
