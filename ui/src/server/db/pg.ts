@@ -972,6 +972,28 @@ const MIGRATIONS: string[] = [
   // assigned work properly reports the gap ONCE per work-shape (signature);
   // repeats only bump seen_count (frequency = ranking, never re-notification).
   // The Studio's Suggested queue turns open gaps into skill/workflow drafts.
+  // Workbench runtime profiles — the role-agnostic sandbox methodology.
+  // A profile is a chassis overlay: image + env + mounts + the harnesses it
+  // preinstalls, plus autoAttach fit rules (departments/roles/toolkits) and
+  // room for the later phases (creds scoping, toolkit, effort routing) in
+  // config. 'dev' ships seeded; designer/data/marketing ride the same table.
+  `create table if not exists workbench_profiles (
+    slug text primary key,
+    name text not null,
+    description text not null default '',
+    image text not null default '',
+    env jsonb not null default '{}',
+    mounts jsonb not null default '[]',
+    harnesses jsonb not null default '[]',
+    auto_attach jsonb not null default '{}',
+    config jsonb not null default '{}',
+    enabled boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
+  // Per-agent workbench control — THE simple setting: off | auto | on.
+  `alter table agent_defs add column if not exists workbench text not null default 'auto'`,
+  `alter table agent_defs add column if not exists workbench_profile text`,
   // Persistent skill summaries — one generated line per skill, keyed to a
   // hash of its SKILL.md so it only regenerates when the content changes.
   `create table if not exists skill_summaries (

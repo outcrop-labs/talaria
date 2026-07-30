@@ -19,6 +19,7 @@ import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promi
 import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
+import { resolveWorkbench, type WorkbenchProfile } from './workbench'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
 import { ensureMcpService } from './mcp-service'
@@ -176,6 +177,7 @@ async function managedAgents(): Promise<RenderTarget[]> {
   const sql = await db()
   const rows = (await sql`
     select d.id, d.slug, d.department, d.model, d.display_name as "displayName", d.enabled, d.managed, d.source,
+           d.role, d.workbench, d.workbench_profile as "workbenchProfile",
            d.active_slot as "activeSlot",
            d.current_version as "currentVersion", d.created_at as "createdAt", d.updated_at as "updatedAt",
            v.id as vid, v.version, v.soul, v.config, v.note, v.created_by as "createdBy", v.created_at as vcreated
@@ -390,6 +392,22 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     // chassis default was 0 (OFF) — which silently disabled ticket pickup
     // fleet-wide. 45s default, host env still overrides.
     env.TALARIA_HEARTBEAT_SECONDS = '${TALARIA_HEARTBEAT_SECONDS:-45}'
+
+    // Workbench overlay — the agent's runtime profile (sandbox tools for its
+    // role), resolved from THE setting (off/auto/on + fit rules). A profile
+    // may override the image, add env, and mount extra volumes; everything
+    // else about the chassis stays identical.
+    const wb = await resolveWorkbench({
+      department: def.department,
+      role: (def as unknown as { role?: string | null }).role ?? null,
+      workbench: ((def as unknown as { workbench?: string }).workbench ?? 'auto') as 'off' | 'auto' | 'on',
+      workbenchProfile: (def as unknown as { workbenchProfile?: string | null }).workbenchProfile ?? null,
+    }).catch(() => null as WorkbenchProfile | null)
+    if (wb) {
+      if (wb.image) svc.image = wb.image
+      for (const [k, v] of Object.entries(wb.env)) env[k] = v
+      env.TALARIA_WORKBENCH_PROFILE = wb.slug
+    }
     svc.environment = env
 
     // Per-agent state volume: imported agents keep their pre-Talaria volume
@@ -398,7 +416,9 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     const stateVolume = `hermes-${def.department}`
     volumes[stateVolume] = imported ? { external: true, name: `${LEGACY_DOCKER_PROJECT}_${stateVolume}` } : {}
 
+    const wbMounts = wb?.mounts ?? []
     svc.volumes = [
+      ...wbMounts,
       `${stateVolume}:/opt/data`,
       `${join(agentDir, 'config.yaml')}:/opt/data/config.yaml:ro`,
       `${join(agentDir, 'SOUL.md')}:/opt/data/SOUL.md:ro`,

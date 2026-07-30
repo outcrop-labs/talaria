@@ -15,6 +15,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as KbSlugRouteImport } from './routes/kb.$slug'
 import { Route as ApiWorkflowsRouteImport } from './routes/api/workflows'
+import { Route as ApiWorkbenchRouteImport } from './routes/api/workbench'
 import { Route as ApiUsersRouteImport } from './routes/api/users'
 import { Route as ApiUploadsRouteImport } from './routes/api/uploads'
 import { Route as ApiTemplatesRouteImport } from './routes/api/templates'
@@ -237,6 +238,11 @@ const KbSlugRoute = KbSlugRouteImport.update({
 const ApiWorkflowsRoute = ApiWorkflowsRouteImport.update({
   id: '/api/workflows',
   path: '/api/workflows',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiWorkbenchRoute = ApiWorkbenchRouteImport.update({
+  id: '/api/workbench',
+  path: '/api/workbench',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiUsersRoute = ApiUsersRouteImport.update({
@@ -1284,6 +1290,7 @@ export interface FileRoutesByFullPath {
   '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
+  '/api/workbench': typeof ApiWorkbenchRoute
   '/api/workflows': typeof ApiWorkflowsRouteWithChildren
   '/kb/$slug': typeof KbSlugRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
@@ -1484,6 +1491,7 @@ export interface FileRoutesByTo {
   '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
+  '/api/workbench': typeof ApiWorkbenchRoute
   '/api/workflows': typeof ApiWorkflowsRouteWithChildren
   '/kb/$slug': typeof KbSlugRoute
   '/': typeof AppIndexRoute
@@ -1687,6 +1695,7 @@ export interface FileRoutesById {
   '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
+  '/api/workbench': typeof ApiWorkbenchRoute
   '/api/workflows': typeof ApiWorkflowsRouteWithChildren
   '/kb/$slug': typeof KbSlugRoute
   '/_app/': typeof AppIndexRoute
@@ -1891,6 +1900,7 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/api/uploads'
     | '/api/users'
+    | '/api/workbench'
     | '/api/workflows'
     | '/kb/$slug'
     | '/boards/$boardId'
@@ -2091,6 +2101,7 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/api/uploads'
     | '/api/users'
+    | '/api/workbench'
     | '/api/workflows'
     | '/kb/$slug'
     | '/'
@@ -2293,6 +2304,7 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/api/uploads'
     | '/api/users'
+    | '/api/workbench'
     | '/api/workflows'
     | '/kb/$slug'
     | '/_app/'
@@ -2478,6 +2490,7 @@ export interface RootRouteChildren {
   ApiTemplatesRoute: typeof ApiTemplatesRouteWithChildren
   ApiUploadsRoute: typeof ApiUploadsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
+  ApiWorkbenchRoute: typeof ApiWorkbenchRoute
   ApiWorkflowsRoute: typeof ApiWorkflowsRouteWithChildren
   KbSlugRoute: typeof KbSlugRoute
   ApiAdminAppsRoute: typeof ApiAdminAppsRoute
@@ -2570,6 +2583,13 @@ declare module '@tanstack/react-router' {
       path: '/api/workflows'
       fullPath: '/api/workflows'
       preLoaderRoute: typeof ApiWorkflowsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/workbench': {
+      id: '/api/workbench'
+      path: '/api/workbench'
+      fullPath: '/api/workbench'
+      preLoaderRoute: typeof ApiWorkbenchRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/users': {
@@ -4638,6 +4658,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiTemplatesRoute: ApiTemplatesRouteWithChildren,
   ApiUploadsRoute: ApiUploadsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
+  ApiWorkbenchRoute: ApiWorkbenchRoute,
   ApiWorkflowsRoute: ApiWorkflowsRouteWithChildren,
   KbSlugRoute: KbSlugRoute,
   ApiAdminAppsRoute: ApiAdminAppsRoute,
