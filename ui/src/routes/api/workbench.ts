@@ -33,7 +33,7 @@ export const Route = createFileRoute('/api/workbench')({
         const body = await parseBody(request, Patch)
         if (body instanceof Response) return body
         const { slug, ...patch } = body
-        await updateProfile(slug, patch)
+        if (!(await updateProfile(slug, patch))) return json({ error: 'unknown profile' }, { status: 404 })
         return json({ ok: true })
       },
     },

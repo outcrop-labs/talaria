@@ -105,7 +105,8 @@ export interface HarnessDefinition {
   probe?: string
   /** What a driving agent should understand: sessions, resume, results. */
   guide: string
-  /** Image-build layer hints (consumed by the workbench image pipeline). */
+  /** RESERVED: image-build layer hints — declared and validated now, consumed
+   *  when the workbench image pipeline lands. */
   install?: { npm?: string[]; commands?: string[]; notes?: string }
 }
 

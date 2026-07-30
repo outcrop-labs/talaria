@@ -112,10 +112,6 @@ export async function listHarnessDefs(): Promise<ResolvedHarness[]> {
   return [...bySlug.values()]
 }
 
-export async function getHarness(slug: string): Promise<ResolvedHarness | undefined> {
-  return (await listHarnessDefs()).find((h) => h.slug === slug)
-}
-
 /** Admin-custom definitions (declarative only — no code runs from these). */
 export async function upsertCustomHarness(slug: string, definition: HarnessDefinition, createdBy: string): Promise<void> {
   const sql = await db()

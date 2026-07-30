@@ -26,7 +26,10 @@ async function agentSkillNames(agentModel: string): Promise<Set<string>> {
   return names
 }
 
-/** Session guard — one live work session per ticket+agent. */
+/** Session guard — one live work session per ticket+agent.
+ *  TODO(multi-instance): this is process-local; running several app
+ *  instances (or restarting mid-session) can double-run a session. Move to
+ *  a DB claim (insert … on conflict do nothing) when we scale out. */
 const liveSessions = new Set<string>()
 
 /** Turn budget: generous enough for real feature work, finite enough that a

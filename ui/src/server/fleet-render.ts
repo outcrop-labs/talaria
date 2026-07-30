@@ -337,13 +337,13 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     {
       const wbc = await resolveWorkbench({
         department: def.department,
-        role: (def as unknown as { role?: string | null }).role ?? null,
-        workbench: ((def as unknown as { workbench?: string }).workbench ?? 'auto') as 'off' | 'auto' | 'on',
-        workbenchProfile: (def as unknown as { workbenchProfile?: string | null }).workbenchProfile ?? null,
+        role: def.role ?? null,
+        workbench: def.workbench ?? 'auto',
+        workbenchProfile: def.workbenchProfile ?? null,
       }).catch(() => null)
       if (wbc) {
         const { listHarnessDefs } = await import('./workbench-harnesses')
-        const pick = (def as unknown as { workbenchHarness?: string | null }).workbenchHarness
+        const pick = def.workbenchHarness
         const chosen = pick && wbc.harnesses.includes(pick) ? pick : wbc.harnesses[0]
         const h = (await listHarnessDefs()).find((x) => x.slug === chosen)
         if (h?.mcpServe) {
@@ -421,9 +421,9 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     // else about the chassis stays identical.
     const wb = await resolveWorkbench({
       department: def.department,
-      role: (def as unknown as { role?: string | null }).role ?? null,
-      workbench: ((def as unknown as { workbench?: string }).workbench ?? 'auto') as 'off' | 'auto' | 'on',
-      workbenchProfile: (def as unknown as { workbenchProfile?: string | null }).workbenchProfile ?? null,
+      role: def.role ?? null,
+      workbench: def.workbench ?? 'auto',
+      workbenchProfile: def.workbenchProfile ?? null,
     }).catch(() => null as WorkbenchProfile | null)
     if (wb) {
       if (wb.image) svc.image = wb.image
