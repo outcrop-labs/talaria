@@ -45,8 +45,8 @@ import { Route as ApiAlertsRouteImport } from './routes/api/alerts'
 import { Route as ApiAgentsRouteImport } from './routes/api/agents'
 import { Route as ApiActivityRouteImport } from './routes/api/activity'
 import { Route as ASlugRouteImport } from './routes/a.$slug'
-import { Route as AppWorkflowsRouteImport } from './routes/_app/workflows'
 import { Route as AppTemplatesRouteImport } from './routes/_app/templates'
+import { Route as AppStudioRouteImport } from './routes/_app/studio'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppResearchRouteImport } from './routes/_app/research'
 import { Route as AppPlanRouteImport } from './routes/_app/plan'
@@ -386,14 +386,14 @@ const ASlugRoute = ASlugRouteImport.update({
   path: '/a/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AppWorkflowsRoute = AppWorkflowsRouteImport.update({
-  id: '/workflows',
-  path: '/workflows',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppTemplatesRoute = AppTemplatesRouteImport.update({
   id: '/templates',
   path: '/templates',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppStudioRoute = AppStudioRouteImport.update({
+  id: '/studio',
+  path: '/studio',
   getParentRoute: () => AppRoute,
 } as any)
 const AppSettingsRoute = AppSettingsRouteImport.update({
@@ -1233,8 +1233,8 @@ export interface FileRoutesByFullPath {
   '/plan': typeof AppPlanRoute
   '/research': typeof AppResearchRoute
   '/settings': typeof AppSettingsRoute
+  '/studio': typeof AppStudioRoute
   '/templates': typeof AppTemplatesRoute
-  '/workflows': typeof AppWorkflowsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1430,8 +1430,8 @@ export interface FileRoutesByTo {
   '/plan': typeof AppPlanRoute
   '/research': typeof AppResearchRoute
   '/settings': typeof AppSettingsRoute
+  '/studio': typeof AppStudioRoute
   '/templates': typeof AppTemplatesRoute
-  '/workflows': typeof AppWorkflowsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1630,8 +1630,8 @@ export interface FileRoutesById {
   '/_app/plan': typeof AppPlanRoute
   '/_app/research': typeof AppResearchRoute
   '/_app/settings': typeof AppSettingsRoute
+  '/_app/studio': typeof AppStudioRoute
   '/_app/templates': typeof AppTemplatesRoute
-  '/_app/workflows': typeof AppWorkflowsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1831,8 +1831,8 @@ export interface FileRouteTypes {
     | '/plan'
     | '/research'
     | '/settings'
+    | '/studio'
     | '/templates'
-    | '/workflows'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -2028,8 +2028,8 @@ export interface FileRouteTypes {
     | '/plan'
     | '/research'
     | '/settings'
+    | '/studio'
     | '/templates'
-    | '/workflows'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -2227,8 +2227,8 @@ export interface FileRouteTypes {
     | '/_app/plan'
     | '/_app/research'
     | '/_app/settings'
+    | '/_app/studio'
     | '/_app/templates'
-    | '/_app/workflows'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -2744,18 +2744,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ASlugRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_app/workflows': {
-      id: '/_app/workflows'
-      path: '/workflows'
-      fullPath: '/workflows'
-      preLoaderRoute: typeof AppWorkflowsRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/templates': {
       id: '/_app/templates'
       path: '/templates'
       fullPath: '/templates'
       preLoaderRoute: typeof AppTemplatesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/studio': {
+      id: '/_app/studio'
+      path: '/studio'
+      fullPath: '/studio'
+      preLoaderRoute: typeof AppStudioRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/settings': {
@@ -3902,8 +3902,8 @@ interface AppRouteChildren {
   AppPlanRoute: typeof AppPlanRoute
   AppResearchRoute: typeof AppResearchRoute
   AppSettingsRoute: typeof AppSettingsRoute
+  AppStudioRoute: typeof AppStudioRoute
   AppTemplatesRoute: typeof AppTemplatesRoute
-  AppWorkflowsRoute: typeof AppWorkflowsRoute
   AppIndexRoute: typeof AppIndexRoute
   AppBoardsBoardIdRoute: typeof AppBoardsBoardIdRouteWithChildren
   AppBoardsIndexRoute: typeof AppBoardsIndexRoute
@@ -3928,8 +3928,8 @@ const AppRouteChildren: AppRouteChildren = {
   AppPlanRoute: AppPlanRoute,
   AppResearchRoute: AppResearchRoute,
   AppSettingsRoute: AppSettingsRoute,
+  AppStudioRoute: AppStudioRoute,
   AppTemplatesRoute: AppTemplatesRoute,
-  AppWorkflowsRoute: AppWorkflowsRoute,
   AppIndexRoute: AppIndexRoute,
   AppBoardsBoardIdRoute: AppBoardsBoardIdRouteWithChildren,
   AppBoardsIndexRoute: AppBoardsIndexRoute,

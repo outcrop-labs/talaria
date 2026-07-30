@@ -22,11 +22,13 @@ export interface TaskWorkflow {
 export interface SkillLibraryOwner {
   owner: string // 'shared' or an agent slug
   label: string
+  /** Whether THIS user may edit this owner's skills (server-computed). */
+  canEdit: boolean
   skills: Array<{ name: string; description: string }>
 }
 
-/** The fleet skill library (shared + per-agent) — what workflows bind to.
- *  Gated like the agents view; the picker is an editor-only surface. */
+/** The fleet skill library (shared + per-agent) — what workflows bind to
+ *  and what the Studio manages. Any member reads. */
 export function useSkillLibrary() {
   return useQuery({
     queryKey: ['skill-library'],

@@ -19,23 +19,32 @@ interface OwnerInfo {
   label: string
   root: string
   source: 'shared' | 'imported' | 'created'
+  /** The agent's model id (absent for the shared root) — what
+   *  user_agent_access grants reference. */
+  model?: string
 }
 
 async function owners(): Promise<OwnerInfo[]> {
   const sql = await db()
   const defs = (await sql`
-    select slug, department, display_name as "displayName", source
+    select slug, model, department, display_name as "displayName", source
     from agent_defs where enabled order by slug
-  `) as unknown as Array<{ slug: string; department: string; displayName: string; source: string }>
+  `) as unknown as Array<{ slug: string; model: string; department: string; displayName: string; source: string }>
   return [
     { owner: SHARED, label: 'Shared (all agents)', root: join(FLEET_DIR(), 'skills'), source: 'shared' as const },
     ...defs.map((d) => ({
       owner: d.slug,
       label: d.displayName,
       source: d.source as 'imported' | 'created',
+      model: d.model,
       root: join(FLEET_DIR(), 'agents', d.slug, 'skills'),
     })),
   ]
+}
+
+/** The agent model behind an owner slug (undefined for 'shared'/unknown). */
+export async function ownerModel(owner: string): Promise<string | undefined> {
+  return (await owners()).find((o) => o.owner === owner)?.model
 }
 
 async function ownerRoot(owner: string): Promise<OwnerInfo> {
@@ -63,6 +72,7 @@ export interface OwnerSkills {
   owner: string
   label: string
   source: 'shared' | 'imported' | 'created'
+  model?: string
   skills: SkillSummary[]
 }
 
@@ -89,7 +99,7 @@ export async function listAllSkills(): Promise<OwnerSkills[]> {
       const md = await readFile(join(dir, 'SKILL.md'), 'utf8').catch(() => '')
       skills.push({ name: e.name, description: summarize(md), files })
     }
-    out.push({ owner: o.owner, label: o.label, source: o.source, skills: skills.sort((a, b) => a.name.localeCompare(b.name)) })
+    out.push({ owner: o.owner, label: o.label, source: o.source, model: o.model, skills: skills.sort((a, b) => a.name.localeCompare(b.name)) })
   }
   return out
 }

@@ -31,7 +31,7 @@ export const MANAGE_VIEWS: { to: string; label: string }[] = [
   { to: '/models', label: 'Models' },
   { to: '/mcp', label: 'MCP' },
   { to: '/templates', label: 'Templates' },
-  { to: '/workflows', label: 'Workflows' },
+  { to: '/studio', label: 'Studio' },
   { to: '/observability', label: 'Observability' },
   { to: '/apps', label: 'Apps' },
 ]
@@ -65,7 +65,7 @@ export const NAV: NavSection[] = [
       { to: '/models', label: 'Models', icon: '▤' },
       { to: '/mcp', label: 'MCP', icon: '⌁' },
       { to: '/templates', label: 'Templates', icon: '▣' },
-      { to: '/workflows', label: 'Workflows', icon: '⚙' },
+      { to: '/studio', label: 'Studio', icon: '⚙' },
       { to: '/observability', label: 'Observability', icon: '◉' },
       { to: '/apps', label: 'Apps', icon: '⬡' },
     ],
