@@ -48,7 +48,9 @@ function TokenInput({ value, onChange, placeholder }: { value: string[]; onChang
 
 export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: TaskWorkflow; onChanged: () => void; onDelete: () => void }) {
   const { data: boards = [] } = useBoards()
-  const { data: skillOwners = [] } = useSkillLibrary()
+  const { data: rawSkillOwners = [] } = useSkillLibrary()
+  // Platform plumbing skills aren't bindable flow content — hide them here too.
+  const skillOwners = rawSkillOwners.map((o) => ({ ...o, skills: o.skills.filter((sk) => !sk.platform) }))
   const [name, setName] = useState(workflow.name)
   const [description, setDescription] = useState(workflow.description)
   const [toolkitsText, setToolkitsText] = useState(

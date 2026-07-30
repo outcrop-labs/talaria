@@ -972,6 +972,16 @@ const MIGRATIONS: string[] = [
   // assigned work properly reports the gap ONCE per work-shape (signature);
   // repeats only bump seen_count (frequency = ranking, never re-notification).
   // The Studio's Suggested queue turns open gaps into skill/workflow drafts.
+  // Persistent skill summaries — one generated line per skill, keyed to a
+  // hash of its SKILL.md so it only regenerates when the content changes.
+  `create table if not exists skill_summaries (
+    owner text not null,
+    name text not null,
+    hash text not null,
+    summary text not null,
+    updated_at timestamptz not null default now(),
+    primary key (owner, name)
+  )`,
   `create table if not exists capability_gaps (
     id uuid primary key default gen_random_uuid(),
     signature text not null unique,

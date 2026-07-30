@@ -26,7 +26,7 @@ export interface SkillLibraryOwner {
   model?: string
   /** Whether THIS user may edit this owner's skills (server-computed). */
   canEdit: boolean
-  skills: Array<{ name: string; description: string }>
+  skills: Array<{ name: string; description: string; platform?: boolean }>
 }
 
 /** The fleet skill library (shared + per-agent) — what workflows bind to
@@ -73,6 +73,19 @@ export const updateWorkflow = (
 ) => send(`/api/workflows/${id}`, 'PUT', patch)
 
 export const deleteWorkflow = (id: string) => send(`/api/workflows/${id}`, 'DELETE')
+
+// ── Skill structural ops (Studio row controls) ──────────────────────────────
+
+export const renameSkill = (owner: string, name: string, toName: string) =>
+  send(`/api/skills/${owner}/${name}`, 'POST', { op: 'rename', toName })
+
+export const copySkillTo = (owner: string, name: string, toOwner: string) =>
+  send(`/api/skills/${owner}/${name}`, 'POST', { op: 'copy', toOwner })
+
+export const moveSkillTo = (owner: string, name: string, toOwner: string) =>
+  send(`/api/skills/${owner}/${name}`, 'POST', { op: 'move', toOwner })
+
+export const deleteSkillReq = (owner: string, name: string) => send(`/api/skills/${owner}/${name}`, 'DELETE')
 
 // ── Capability gaps (the Studio's Suggested queue) ──────────────────────────
 

@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Plus, Lock } from 'lucide-react'
+import { MoreHorizontal, Plus, Lock } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Panel } from '@/components/ui/panel'
@@ -10,15 +10,21 @@ import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { InfoTip } from '@/components/ui/info-tip'
 import { SkeletonRows } from '@/components/ui/skeleton'
-import { confirm } from '@/components/ui/confirm'
+import { confirm, prompt } from '@/components/ui/confirm'
+import { DropdownMenu } from '@/components/ui/context-menu'
 import { WorkflowDetail } from '@/components/workflows/workflow-detail'
 import { StudioSkillEditor } from '@/components/workflows/skill-editor'
 import { StudioGuide, type GuidePrefill } from '@/components/workflows/studio-guide'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
+import { useSession } from '@/lib/session'
 import { useBoards } from '@/lib/boards'
 import {
+  copySkillTo,
+  deleteSkillReq,
   deleteWorkflow,
+  moveSkillTo,
+  renameSkill,
   setGapStatus,
   useGaps,
   useSkillLibrary,
@@ -51,11 +57,16 @@ function StudioPage() {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const qc = useQueryClient()
-  const { data: owners = [], isLoading } = useSkillLibrary()
+  const { data: rawOwners = [], isLoading } = useSkillLibrary()
+  // PLATFORM skills (talaria-toolkit and friends) are plumbing, not
+  // teachable know-how — the Studio doesn't show them at all.
+  const owners = rawOwners.map((o) => ({ ...o, skills: o.skills.filter((sk) => !sk.platform) }))
   const { data: workflows = [] } = useWorkflows()
   const { data: gaps = [] } = useGaps()
   const { data: agentsData } = useAgents()
   const { data: boards = [] } = useBoards()
+  const { data: session } = useSession()
+  const isAdmin = session?.role === 'admin'
   const [guide, setGuide] = useState<(GuidePrefill & { gapId?: string; owner?: string }) | null>(null)
 
   const agents = owners.filter((o) => o.owner !== 'shared')
@@ -269,8 +280,10 @@ function StudioPage() {
                       {selected.skills.map((s) => (
                         <SkillRow
                           key={s.name}
-                          name={s.name}
-                          description={s.description}
+                          owner={selected.owner}
+                          skill={s}
+                          owners={owners}
+                          canEdit={selected.canEdit && (!s.platform || isAdmin)}
                           onOpen={() => void navigate({ search: { a: selectedKey, sk: `${selected.owner}/${s.name}` } })}
                         />
                       ))}
@@ -278,9 +291,11 @@ function StudioPage() {
                         (shared?.skills ?? []).map((s) => (
                           <SkillRow
                             key={`shared/${s.name}`}
-                            name={s.name}
-                            description={s.description}
+                            owner="shared"
+                            skill={s}
+                            owners={owners}
                             sharedBadge
+                            canEdit={(shared?.canEdit ?? false) && (!s.platform || isAdmin)}
                             onOpen={() => void navigate({ search: { a: selectedKey, sk: `shared/${s.name}` } })}
                           />
                         ))}
@@ -331,7 +346,13 @@ function StudioPage() {
 
       {/* Overlays */}
       {skOwner && skName && skOwnerInfo && (
-        <StudioSkillEditor owner={skOwner} ownerLabel={skOwnerInfo.label} name={skName} canEdit={skOwnerInfo.canEdit} onClose={closeOverlay} />
+        <StudioSkillEditor
+          owner={skOwner}
+          ownerLabel={skOwnerInfo.label}
+          name={skName}
+          canEdit={skOwnerInfo.canEdit && (!skOwnerInfo.skills.find((x) => x.name === skName)?.platform || isAdmin)}
+          onClose={closeOverlay}
+        />
       )}
       {openWorkflow && (
         <Modal open onClose={closeOverlay} width="max-w-2xl" title={openWorkflow.name}>
@@ -370,12 +391,86 @@ function SectionTitle({ title, hint, action }: { title: string; hint: string; ac
   )
 }
 
-function SkillRow({ name, description, sharedBadge, onOpen }: { name: string; description: string; sharedBadge?: boolean; onOpen: () => void }) {
+function SkillRow({
+  owner,
+  skill,
+  owners,
+  sharedBadge,
+  canEdit,
+  onOpen,
+}: {
+  owner: string
+  skill: { name: string; description: string; platform?: boolean }
+  owners: SkillLibraryOwner[]
+  sharedBadge?: boolean
+  canEdit: boolean
+  onOpen: () => void
+}) {
+  const qc = useQueryClient()
+  const refresh = () => qc.invalidateQueries({ queryKey: ['skill-library'] })
+  const editableTargets = owners.filter((o) => o.canEdit && o.owner !== owner)
+  const fail = (e: unknown) => void confirm({ title: 'That didn’t work', message: (e as Error).message, confirmLabel: 'OK' })
+
+  const doRename = async () => {
+    const to = await prompt({ title: 'Rename skill', message: 'Lowercase, dashes for spaces — agents load it by this name.', confirmLabel: 'Rename' })
+    const name = to?.trim().toLowerCase().replace(/\s+/g, '-')
+    if (!name || name === skill.name) return
+    await renameSkill(owner, skill.name, name).then(refresh).catch(fail)
+  }
+  const doDelete = async () => {
+    if (!(await confirm({ title: 'Delete skill', message: `Delete "${skill.name}"? Workflows bound to it will flag it as missing.`, confirmLabel: 'Delete', danger: true }))) return
+    await deleteSkillReq(owner, skill.name).then(refresh).catch(fail)
+  }
+
   return (
-    <button type="button" onClick={onOpen} className="flex w-full items-baseline gap-3 px-5 py-3 text-left transition-colors hover:bg-card/40">
-      <span className="shrink-0 text-sm font-medium text-fg">{name}</span>
-      <span className="min-w-0 flex-1 truncate text-sm text-muted">{description}</span>
-      {sharedBadge && <Chip className="shrink-0">shared</Chip>}
-    </button>
+    <div className="group flex w-full items-center gap-3 px-5 py-3 transition-colors hover:bg-card/40">
+      <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
+        <span className="flex items-center gap-2">
+          <span className="truncate text-sm font-medium text-fg">{skill.name}</span>
+          {skill.platform && (
+            <Chip title="Platform skill — essential plumbing, admins only" className="shrink-0">
+              <Lock size={9} className="mr-0.5 inline" />
+              platform
+            </Chip>
+          )}
+          {sharedBadge && <Chip className="shrink-0">shared</Chip>}
+        </span>
+        <span className="block truncate text-sm text-muted">{skill.description || '…'}</span>
+      </button>
+      {canEdit && (
+        <DropdownMenu
+          trigger={(open) => (
+            <span
+              className={cn(
+                'rounded-md p-1 text-muted transition-opacity hover:text-fg',
+                open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+              )}
+            >
+              <MoreHorizontal size={16} />
+            </span>
+          )}
+          items={[
+            { label: 'Open', onSelect: onOpen },
+            { label: 'Rename…', onSelect: () => void doRename() },
+            ...(editableTargets.length
+              ? [
+                  {
+                    label: 'Copy to',
+                    children: editableTargets.map((o) => ({
+                      label: o.owner === 'shared' ? 'Every agent' : o.label,
+                      onSelect: () => void copySkillTo(owner, skill.name, o.owner).then(refresh).catch(fail),
+                    })),
+                  },
+                ]
+              : []),
+            ...(owner !== 'shared' && editableTargets.some((o) => o.owner === 'shared')
+              ? [{ label: 'Promote to every agent', onSelect: () => void moveSkillTo(owner, skill.name, 'shared').then(refresh).catch(fail) }]
+              : []),
+            'sep' as const,
+            { label: 'Delete', danger: true, onSelect: () => void doDelete() },
+          ]}
+        />
+      )}
+    </div>
   )
 }

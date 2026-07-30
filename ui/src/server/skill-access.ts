@@ -5,7 +5,7 @@
 import { hasPerm } from './permissions'
 import { ownsAgent } from './personal-agent'
 import { allowedAgents } from './users'
-import { ownerModel, SHARED } from './agent-skills'
+import { ownerModel, platformSkillNames, SHARED } from './agent-skills'
 
 export async function canEditSkills(user: { id: string; role: 'admin' | 'member' }, owner: string): Promise<boolean> {
   if (user.role === 'admin') return true
@@ -18,4 +18,16 @@ export async function canEditSkills(user: { id: string; role: 'admin' | 'member'
   // Only an EXPLICIT grant confers tailoring — 'all' is the unrestricted-use
   // default, not a statement of trust over every agent's behavior.
   return access !== 'all' && access.includes(model)
+}
+
+/** Per-skill check: PLATFORM skills (the canonical seeded set in the shared
+ *  root — talaria-toolkit and friends) are essential plumbing and stay
+ *  admin-only no matter what grants a member holds. */
+export async function canEditSkill(
+  user: { id: string; role: 'admin' | 'member' },
+  owner: string,
+  name: string,
+): Promise<boolean> {
+  if (owner === SHARED && user.role !== 'admin' && (await platformSkillNames()).has(name)) return false
+  return canEditSkills(user, owner)
 }
