@@ -214,6 +214,7 @@ export function DropdownMenu({
   up = false,
   className,
   footer,
+  content,
 }: {
   /** Renders the trigger; `open` lets it style its active state. */
   trigger: (open: boolean) => ReactNode
@@ -224,6 +225,9 @@ export function DropdownMenu({
   className?: string
   /** Rendered under the items (e.g. a date input) — clicks inside stay open. */
   footer?: (close: () => void) => ReactNode
+  /** Replaces the item list entirely — custom panel bodies (swatch grids,
+   *  small forms). Items/footer are ignored when set. */
+  content?: (close: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -292,6 +296,9 @@ export function DropdownMenu({
             onClick={(e) => e.stopPropagation()}
             className="min-w-44 max-w-72 rounded-xl border border-line bg-card p-1 shadow-lg"
           >
+            {content ? (
+              <div className="p-1">{content(() => setOpen(false))}</div>
+            ) : (
             <div className="max-h-80 overflow-y-auto">
               {entries.map((item, i) => {
                 if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
@@ -326,7 +333,8 @@ export function DropdownMenu({
                 )
               })}
             </div>
-            {footer && <div className="mt-1 border-t border-line-subtle px-2 pb-1 pt-2">{footer(() => setOpen(false))}</div>}
+            )}
+            {!content && footer && <div className="mt-1 border-t border-line-subtle px-2 pb-1 pt-2">{footer(() => setOpen(false))}</div>}
           </div>,
           document.body,
         )}

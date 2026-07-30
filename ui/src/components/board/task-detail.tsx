@@ -38,11 +38,10 @@ import {
 import { useNavigate } from '@tanstack/react-router'
 import { userAssignee } from '@/lib/assignees'
 import { userMentionInsert, type Mentionable } from '@/components/chat/mentions'
-import { LABEL_CSS } from '@/components/board/field-pills'
+import { ColorPill } from '@/components/board/field-pills'
 import {
   EFFORTS,
   EFFORT_LABEL,
-  TICKET_COLORS,
   PRIORITIES,
   PRIORITY_ICON,
   STATUS_LABEL,
@@ -301,27 +300,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                   </Select>
                 </Prop>
                 <Prop label="Color">
-                  <div className="flex flex-wrap items-center gap-2 py-1">
-                    {TICKET_COLORS.map((c) => {
-                      const active = t.color === c
-                      return (
-                        <button
-                          key={c}
-                          title={active ? `${c} — click to clear` : c}
-                          disabled={!canEdit}
-                          onClick={() => save({ color: active ? null : c })}
-                          className={cn(
-                            'grid h-5 w-5 place-items-center rounded-full transition-all',
-                            // Clear but calm: a quiet offset ring marks the pick.
-                            active
-                              ? 'ring-1 ring-[color:var(--theme-fg)]/60 ring-offset-2 ring-offset-[color:var(--theme-panel)]'
-                              : 'ring-1 ring-transparent hover:ring-line',
-                          )}
-                          style={{ background: LABEL_CSS[c] }}
-                        />
-                      )
-                    })}
-                  </div>
+                  <ColorPill value={t.color} onChange={(c) => save({ color: c as Parameters<typeof save>[0]['color'] })} disabled={!canEdit} />
                 </Prop>
                 <Prop label="Assignees">
                   <Combobox

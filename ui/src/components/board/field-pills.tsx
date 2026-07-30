@@ -5,7 +5,7 @@
 // surface manipulates tickets identically. All pickers stop propagation —
 // the row/card click still opens the ticket.
 import { useQueryClient } from '@tanstack/react-query'
-import { CalendarDays, Flag, Tag, Timer, UserRound } from 'lucide-react'
+import { CalendarDays, Flag, Palette, Tag, Timer, UserRound } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { DropdownMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { FieldPill } from '@/components/ui/field-pill'
@@ -389,6 +389,82 @@ export function LabelsPill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx
           }}
           className="w-full bg-transparent text-xs text-fg placeholder:text-muted focus:outline-none"
         />
+      )}
+    />
+  )
+}
+
+/** Color picker as a dropdown swatch GRID — same pill grammar as every other
+ *  property. Standalone (value/onChange) so the detail rail and any future
+ *  surface can use it without a full PillCtx. */
+export function ColorPill({
+  value,
+  onChange,
+  disabled,
+  className,
+}: {
+  value: string | null
+  onChange: (c: string | null) => void
+  disabled?: boolean
+  className?: string
+}) {
+  const colors = Object.keys(LABEL_CSS) as Array<keyof typeof LABEL_CSS>
+  if (disabled) {
+    if (!value) return null
+    return (
+      <span className={cn('inline-flex items-center gap-1.5 text-[11px] text-muted', className)}>
+        <span className="h-2.5 w-2.5 rounded-full" style={{ background: LABEL_CSS[value as keyof typeof LABEL_CSS] }} />
+        {value}
+      </span>
+    )
+  }
+  return (
+    <DropdownMenu
+      align="left"
+      className={className}
+      trigger={(open) => (
+        <FieldPill
+          active={open}
+          empty={!value}
+          dot={value ? LABEL_CSS[value as keyof typeof LABEL_CSS] : undefined}
+          icon={value ? undefined : <Palette size={11} />}
+          title="Color-code this ticket"
+        >
+          {value ?? 'Color'}
+        </FieldPill>
+      )}
+      items={[]}
+      content={(close) => (
+        <div className="p-1">
+          <div className="grid grid-cols-4 gap-2 p-1">
+            {colors.map((c) => (
+              <button
+                key={c}
+                title={c}
+                onClick={() => {
+                  onChange(value === c ? null : c)
+                  close()
+                }}
+                className={cn(
+                  'grid h-6 w-6 place-items-center rounded-full transition-all',
+                  value === c ? 'ring-1 ring-[color:var(--theme-fg)]/60 ring-offset-2 ring-offset-[color:var(--theme-panel)]' : 'hover:ring-1 hover:ring-line',
+                )}
+                style={{ background: LABEL_CSS[c] }}
+              />
+            ))}
+          </div>
+          {value && (
+            <button
+              onClick={() => {
+                onChange(null)
+                close()
+              }}
+              className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-sidebar hover:text-[color:var(--theme-danger)]"
+            >
+              Clear color
+            </button>
+          )}
+        </div>
       )}
     />
   )
