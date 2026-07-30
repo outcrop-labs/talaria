@@ -83,3 +83,38 @@ rebuilding (managed update flows are on the roadmap).
   (no probe), and they cannot be deleted or re-pointed there — lifecycle belongs to Manage → Apps.
 - Everything an app's users do runs under their own session: platform permissions, resource ACLs,
   and the audit log apply exactly as in core surfaces.
+
+
+## Shipping a harness
+
+Apps can extend the **Workbench** — the sandboxed execution layer Hermes agents drive real work through — by shipping a harness definition:
+
+```
+apps/<slug>/harness.ts
+```
+
+```ts
+import { defineHarness } from '@talaria/sdk'
+
+export default defineHarness({
+  slug: 'aider',
+  label: 'Aider',
+  auth: 'gateway', // OpenAI-compatible → pointed at Talaria's gateway (metered, attributed)
+  invoke: 'aider --model <model> --message "<task>"',
+  jsonInvoke: 'aider --model <model> --message "<task>" --yes --no-pretty',
+  mcpConfig: { format: 'claude-json', filename: 'aider-mcp.json' },
+  guide: 'Aider works in git-aware sessions; read its structured output and verify diffs yourself.',
+  install: { commands: ['pip install aider-chat'] },
+})
+```
+
+The definition is **declarative — no host code runs from it**. The host merges harnesses from three layers by slug (later wins): Talaria's builtins (opencode, Claude Code, Codex CLI, Oh My Pi) ← app-shipped (enabled apps only) ← admin-registered custom JSON (`PUT /api/workbench/harnesses`, `agents.manage`).
+
+A registered harness plugs into the whole workbench machinery automatically:
+
+- selectable per agent (the Harness dropdown on the agent's Workbench control), effort→model routing included, with the model rendered in the harness's own syntax (`modelPrefix`);
+- `auth: 'gateway'` provisions Talaria's gateway env into the sandbox; `auth: { provider, envVar }` interpolates that provider's key from the org's endpoint registry — scoped, never pasted;
+- `mcpConfig` gets the agent's existing MCP grants written in the harness's native config format at render time (zero in-sandbox reconnection);
+- `mcpServe` registers the harness as a stdio MCP server on the agent's own Hermes config once the workbench image carries its binary — agents drive it with tools, not stdout;
+- `install` hints feed the workbench image pipeline;
+- jobs, branches, PRs, plan gates, per-job workspaces, and shared session history all behave identically — the harness is just the tool inside the flow.

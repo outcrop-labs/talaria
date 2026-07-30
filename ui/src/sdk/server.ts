@@ -61,3 +61,44 @@ export interface AppMcp {
 }
 
 export const defineAppMcp = (mcp: AppMcp): AppMcp => mcp
+
+// apps/<slug>/harness.ts default-exports defineHarness(...): a coding/work
+// harness Hermes agents can drive through their WORKBENCH. The host merges it
+// into the harness registry (builtin < app-shipped < admin-custom, by slug):
+// it becomes selectable per agent, its auth/env provision into the sandbox at
+// render time, its MCP pass-through config is written in its own format, and
+// — where it can serve MCP — it registers on the agent's Hermes config as
+// stdio tools. Declarative only: no host code runs from the definition.
+
+export interface HarnessDefinition {
+  /** Stable id — what profiles and per-agent picks reference. */
+  slug: string
+  label: string
+  description?: string
+  /** 'gateway' = OpenAI-compatible; the host points it at Talaria's gateway
+   *  (metered, attributed). Otherwise name the provider whose key the org's
+   *  endpoint registry provisions, and the env var the harness reads. */
+  auth: 'gateway' | { provider: string; envVar: string }
+  /** Extra container env (compose-interpolated; merged over the auth env). */
+  env?: Record<string, string>
+  /** Prefix model ids need for this harness's CLI (e.g. "openai/"). */
+  modelPrefix?: string
+  /** Invocation template — <model> and <task> placeholders. */
+  invoke: string
+  /** Structured-output form — REQUIRED for good drivers; agents are taught
+   *  to read structured results, never scrape logs. */
+  jsonInvoke?: string
+  /** How to run the harness AS an MCP server (stdio) — the preferred
+   *  integration: agents drive it with tools. */
+  mcpServe?: { command: string; args: string[] }
+  /** MCP pass-through config the harness reads: written per agent in this
+   *  format at render time ('claude-json' = .mcp.json-style, 'opencode-json'
+   *  = opencode config). Omit if the harness has no MCP client. */
+  mcpConfig?: { format: 'claude-json' | 'opencode-json'; filename: string }
+  /** What a driving agent should understand: sessions, resume, results. */
+  guide: string
+  /** Image-build layer hints (consumed by the workbench image pipeline). */
+  install?: { npm?: string[]; commands?: string[]; notes?: string }
+}
+
+export const defineHarness = (h: HarnessDefinition): HarnessDefinition => h

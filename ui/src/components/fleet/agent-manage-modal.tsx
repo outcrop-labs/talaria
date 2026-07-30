@@ -715,12 +715,6 @@ interface WorkbenchProfileLite {
   enabled: boolean
 }
 
-const HARNESS_LABELS: Record<string, string> = {
-  opencode: 'opencode',
-  'claude-code': 'Claude Code',
-  codex: 'Codex CLI',
-  'oh-my-pi': 'Oh My Pi',
-}
 const EFFORTS = [
   ['light', 'Low'],
   ['standard', 'Medium'],
@@ -818,16 +812,26 @@ function WorkbenchTuning({
 }) {
   const { data: modelsData } = useModels()
   const models = Array.isArray(modelsData) ? [] : (modelsData?.models ?? [])
+  // Labels come from the harness REGISTRY (builtin + app-shipped + custom).
+  const { data: registry = [] } = useQuery({
+    queryKey: ['workbench-harnesses'],
+    queryFn: async (): Promise<Array<{ slug: string; label: string }>> => {
+      const r = await fetch('/api/workbench/harnesses', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { harnesses: Array<{ slug: string; label: string }> }).harnesses
+    },
+  })
+  const labelOf = (slug: string) => registry.find((h) => h.slug === slug)?.label ?? slug
   const chosen = def.workbenchHarness && profile.harnesses.includes(def.workbenchHarness) ? def.workbenchHarness : ''
   return (
     <div className="mt-2 space-y-1.5">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[11px] uppercase tracking-wide text-muted">Harness</span>
         <Select size="sm" value={chosen} onChange={(e) => void save({ workbenchHarness: e.target.value || null })} className="w-40">
-          <option value="">Auto ({HARNESS_LABELS[profile.harnesses[0] ?? ''] ?? profile.harnesses[0] ?? 'none'})</option>
+          <option value="">Auto ({profile.harnesses[0] ? labelOf(profile.harnesses[0]) : 'none'})</option>
           {profile.harnesses.map((h) => (
             <option key={h} value={h}>
-              {HARNESS_LABELS[h] ?? h}
+              {labelOf(h)}
             </option>
           ))}
         </Select>

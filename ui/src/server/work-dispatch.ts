@@ -1,10 +1,11 @@
-// Work dispatch — the missing link between "a human assigned a ticket" and
-// "the agent actually starts". When a ticket sits in an agent-start column
-// with agent assignees, Talaria PUSHES the work into each agent's own persona
-// gateway (the same governed path outreach uses): the agent acknowledges,
-// works through its normal talaria MCP tools, and reports to review. Matched
-// task WORKFLOWS ride along — the flow/instructions for this kind of work.
-// The plugin heartbeat remains the pull-side safety net.
+// Work dispatch + WORK SESSIONS. When a ticket enters an agent-start column
+// with agent assignees, Talaria pushes the work into the agent's own persona
+// gateway — and then KEEPS THE SESSION GOING: turn after turn, the agent
+// drives its tools/harness like a developer at a desk (run, read, steer,
+// test, repeat), until the ticket reaches review/blocked/done, the agent
+// stops progressing, or the turn cap lands. One turn is never the budget for
+// real work. Matched task WORKFLOWS ride along; the plugin heartbeat remains
+// the pull-side safety net.
 import { proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
 import { estimateTokens, recordUsage } from './usage'
@@ -25,8 +26,40 @@ async function agentSkillNames(agentModel: string): Promise<Set<string>> {
   return names
 }
 
-/** Push one ticket to one agent. Fire-and-forget from task mutations. */
+/** Session guard — one live work session per ticket+agent. */
+const liveSessions = new Set<string>()
+
+/** Turn budget: generous enough for real feature work, finite enough that a
+ *  looping agent can't burn unbounded tokens. The session also ends the
+ *  moment the ticket leaves the working statuses. */
+const MAX_SESSION_TURNS = 12
+const TURN_WAIT_MS = 600_000
+
+/** Where the ticket is now — the session's continue/stop signal. */
+async function ticketState(taskId: string, agentModel: string): Promise<{ status: string; assigned: boolean; terminal: boolean } | null> {
+  const { getTask } = await import('./tasks')
+  const t = await getTask(taskId)
+  if (!t) return null
+  const meta = await statusMeta(t.boardId)
+  const working = new Set([...meta.agentStartKeys, ...(await listStatuses(t.boardId)).filter((s) => s.category === 'active').map((s) => s.key)])
+  const assigned = t.assignees.includes(agentModel)
+  return { status: t.status, assigned, terminal: !assigned || !working.has(t.status) }
+}
+
+/** Drive one ticket with one agent as a SESSION. Fire-and-forget from task
+ *  mutations; re-entry for the same ticket+agent is a no-op. */
 export async function dispatchTicketWork(task: Task, agentModel: string, boardName?: string): Promise<void> {
+  const key = `${task.id}:${agentModel}`
+  if (liveSessions.has(key)) return
+  liveSessions.add(key)
+  try {
+    await runWorkSession(task, agentModel, boardName)
+  } finally {
+    liveSessions.delete(key)
+  }
+}
+
+async function runWorkSession(task: Task, agentModel: string, boardName?: string): Promise<void> {
   const { logActivity } = await import('./tasks')
   try {
     const statuses = await listStatuses(task.boardId)
@@ -69,33 +102,64 @@ export async function dispatchTicketWork(task: Task, agentModel: string, boardNa
       `Ticket ${task.ticketRef ?? task.id}: "${task.title}"${boardName ? ` (board: ${boardName})` : ''}\n` +
       `${task.description ? `\n${task.description}\n` : ''}` +
       workflowBlock +
-      `\n\nWork it now, through your talaria tools:\n` +
+      `\n\nThis is a WORK SESSION, not a single exchange — Talaria keeps this conversation going until the work is done. Work like a developer at a desk: act, read the result, steer, act again.\n` +
       `1. get_ticket ${task.id} for full context (comments, attachments, dependencies).\n` +
       `2. comment a one-line acknowledgment, and triage_ticket to status "${activeHint ?? 'in_progress'}" while you work.\n` +
-      `3. Do the work. If you are blocked, set status "blocked" and comment why.\n` +
-      `4. report_outcome when finished — a human signs off from review.\n` +
-      `\nMost tickets need no special flow — use your own judgment and just do the work. But be honest about capability: if you genuinely can't do this properly (a tool or access you're missing, an org-specific process you'd be guessing at), don't improvise a process — report_gap once with what a flow would need, then set "blocked" with a comment. Never report a gap for work you can simply do.\n` +
-      `Reply here with ONE short line: what you did or what blocks you.`
-    const upstream = await proxyChat({ model: agentModel, messages: [{ role: 'user', content: prompt }] }, { waitMs: 120_000 })
-    if (!upstream.ok || !upstream.body) throw new Error(`gateway ${upstream.status}`)
-    let text = ''
-    let usage: { promptTokens: number; completionTokens: number } | null = null
-    for await (const ev of parseAgentStream(upstream.body)) {
-      if (ev.type === 'content') text += ev.text
-      else if (ev.type === 'usage') usage = ev
+      `3. Do the work in as many steps as it takes — iterate with your tools and (if you have one) your workbench harness: run it, read its structured result, respond to it, verify with tests, repeat.\n` +
+      `4. report_outcome when genuinely finished — a human signs off from review. If blocked, set status "blocked" and comment why. Either of those ends the session.\n` +
+      `\nBe honest about capability: if you genuinely can't do this properly (a tool or access you're missing, an org-specific process you'd be guessing at), don't improvise — report_gap once with what a flow would need, then block. Never report a gap for work you can simply do.\n` +
+      `End each reply with a short status line: what you just did and what you'll do next (or DONE / BLOCKED).`
+    const sendTurn = async (content: string): Promise<string> => {
+      const upstream = await proxyChat({ model: agentModel, messages: [{ role: 'user', content }] }, { waitMs: TURN_WAIT_MS })
+      if (!upstream.ok || !upstream.body) throw new Error(`gateway ${upstream.status}`)
+      let text = ''
+      let usage: { promptTokens: number; completionTokens: number } | null = null
+      for await (const ev of parseAgentStream(upstream.body)) {
+        if (ev.type === 'content') text += ev.text
+        else if (ev.type === 'usage') usage = ev
+      }
+      void recordUsage({
+        agentModel,
+        source: 'chat',
+        refId: task.id,
+        tier: null,
+        promptTokens: usage?.promptTokens ?? estimateTokens(content.length),
+        completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
+        estimated: !usage,
+      }).catch(() => {})
+      return text.trim()
     }
-    void recordUsage({
-      agentModel,
-      source: 'chat',
-      refId: task.id,
-      tier: null,
-      promptTokens: usage?.promptTokens ?? estimateTokens(prompt.length),
-      completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
-      estimated: !usage,
-    }).catch(() => {})
-    await logActivity(task.id, agentModel, 'dispatch', `picked up: ${text.trim().slice(0, 300) || '(no reply)'}`)
+
+    let reply = await sendTurn(prompt)
+    await logActivity(task.id, agentModel, 'dispatch', `picked up: ${reply.slice(0, 300) || '(no reply)'}`)
+
+    // The session: keep the agent working until the ticket leaves the working
+    // statuses (review/blocked/done/unassigned), it declares DONE/BLOCKED, or
+    // the turn cap lands. Every continuation carries the live ticket state so
+    // the agent never works a stale picture.
+    for (let turn = 2; turn <= MAX_SESSION_TURNS; turn++) {
+      const state = await ticketState(task.id, agentModel)
+      if (!state || state.terminal) {
+        await logActivity(task.id, 'talaria', 'dispatch', `work session ended after ${turn - 1} turn${turn > 2 ? 's' : ''} (ticket ${state ? state.status : 'gone'})`).catch(() => {})
+        return
+      }
+      if (/\b(DONE|BLOCKED)\b/.test(reply.slice(-200))) {
+        // The agent says it's finished but the ticket disagrees — one nudge to
+        // reconcile (report_outcome / set blocked), then stop pushing.
+        reply = await sendTurn(
+          `[Work session — reconcile] You said DONE/BLOCKED but the ticket is still "${state.status}". If finished: report_outcome now. If blocked: set status "blocked" with a comment. If neither, keep working.`,
+        )
+        await logActivity(task.id, agentModel, 'dispatch', `session reconcile: ${reply.slice(0, 200) || '(no reply)'}`).catch(() => {})
+        continue
+      }
+      reply = await sendTurn(
+        `[Work session — turn ${turn}/${MAX_SESSION_TURNS}] You're mid-work on this ticket (status: "${state.status}"). Continue like a developer: next step, run it, read the result, adjust. Verify before you finish — tests, your own diff, and for UI work drive it in a real browser (Playwright) and attach evidence. When genuinely done: report_outcome. If stuck: status "blocked" + comment. End with your status line.`,
+      )
+      await logActivity(task.id, agentModel, 'dispatch', `session turn ${turn}: ${reply.slice(0, 250) || '(no reply)'}`).catch(() => {})
+    }
+    await logActivity(task.id, 'talaria', 'dispatch', `work session hit the ${MAX_SESSION_TURNS}-turn cap — leaving the ticket to the agent/heartbeat`).catch(() => {})
   } catch (e) {
-    await logActivity(task.id, 'talaria', 'dispatch', `dispatch to ${agentModel} failed: ${(e as Error).message.slice(0, 200)}`).catch(() => {})
+    await logActivity(task.id, 'talaria', 'dispatch', `work session with ${agentModel} failed: ${(e as Error).message.slice(0, 200)}`).catch(() => {})
   }
 }
 
