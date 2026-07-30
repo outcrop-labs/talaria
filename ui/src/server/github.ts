@@ -13,25 +13,40 @@ import { db } from './db/pg'
 export interface GithubConfig {
   mode: 'app' | 'pat' | null
   pat: { tokenEnc: string | null }
-  app: { appId: string; installationId: string; privateKeyEnc: string | null }
+  app: {
+    appId: string
+    /** Selected installations — the App can serve several orgs at once. */
+    installationIds: string[]
+    privateKeyEnc: string | null
+  }
+  /** Orgs where agents may REQUEST new repos (human approval creates them).
+   *  Empty = the feature is off. Requires the App's org Administration
+   *  permission to actually create. */
+  repoCreationOrgs: string[]
 }
 
 const KEY = 'github_config'
 const DEFAULTS: GithubConfig = {
   mode: null,
   pat: { tokenEnc: null },
-  app: { appId: '', installationId: '', privateKeyEnc: null },
+  app: { appId: '', installationIds: [], privateKeyEnc: null },
+  repoCreationOrgs: [],
 }
 
-export const getGithubConfig = async (): Promise<GithubConfig> => ({
-  ...DEFAULTS,
-  ...(await getSetting<Partial<GithubConfig>>(KEY, {})),
-})
+export const getGithubConfig = async (): Promise<GithubConfig> => {
+  const raw = await getSetting<Partial<GithubConfig> & { app?: { installationId?: string } }>(KEY, {})
+  const cfg: GithubConfig = { ...DEFAULTS, ...raw, app: { ...DEFAULTS.app, ...(raw.app ?? {}) } }
+  // Legacy single-installation config migrates transparently on read.
+  const legacy = (raw.app as { installationId?: string } | undefined)?.installationId
+  if (legacy && !cfg.app.installationIds.length) cfg.app.installationIds = [legacy]
+  return cfg
+}
 
 export async function setGithubConfig(patch: {
   mode?: 'app' | 'pat' | null
   pat?: { token?: string | null }
-  app?: { appId?: string; installationId?: string; privateKey?: string | null }
+  app?: { appId?: string; installationIds?: string[]; privateKey?: string | null }
+  repoCreationOrgs?: string[]
 }): Promise<void> {
   const cur = await getGithubConfig()
   const next: GithubConfig = {
@@ -39,14 +54,16 @@ export async function setGithubConfig(patch: {
     pat: { tokenEnc: patch.pat?.token !== undefined ? (patch.pat.token ? seal(patch.pat.token) : null) : cur.pat.tokenEnc },
     app: {
       appId: patch.app?.appId ?? cur.app.appId,
-      installationId: patch.app?.installationId ?? cur.app.installationId,
+      installationIds: patch.app?.installationIds ?? cur.app.installationIds,
       privateKeyEnc:
         patch.app?.privateKey !== undefined ? (patch.app.privateKey ? seal(patch.app.privateKey) : null) : cur.app.privateKeyEnc,
     },
+    repoCreationOrgs: patch.repoCreationOrgs ?? cur.repoCreationOrgs,
   }
   await setSetting(KEY, next)
-  // Credentials changed — a cached installation token must never outlive them.
-  cachedInstallToken = null
+  // Credentials changed — cached tokens/routing must never outlive them.
+  cachedInstallTokens = new Map()
+  repoInstallCache = null
 }
 
 const GH = 'https://api.github.com'
@@ -65,21 +82,34 @@ function appJwt(appId: string, privateKeyPem: string): string {
   return `${unsigned}.${sig}`
 }
 
-let cachedInstallToken: { token: string; expiresAt: number } | null = null
+let cachedInstallTokens = new Map<string, { token: string; expiresAt: number }>()
+/** repo full_name → installation id, learned from listing; refreshed lazily. */
+let repoInstallCache: { map: Map<string, string>; at: number } | null = null
 
-/** A usable token for repo operations, whatever the mode. App tokens are
- *  minted per ~hour and cached; PATs pass through. Null = not configured. */
-export async function githubToken(): Promise<string | null> {
-  const cfg = await getGithubConfig()
-  if (cfg.mode === 'pat') return cfg.pat.tokenEnc ? open(cfg.pat.tokenEnc) : null
-  if (cfg.mode !== 'app' || !cfg.app.appId || !cfg.app.installationId || !cfg.app.privateKeyEnc) return null
-  if (cachedInstallToken && cachedInstallToken.expiresAt > Date.now() + 60_000) return cachedInstallToken.token
-  const jwt = appJwt(cfg.app.appId, open(cfg.app.privateKeyEnc))
-  const res = await gh(`/app/installations/${cfg.app.installationId}/access_tokens`, jwt, { method: 'POST' })
+async function installationToken(cfg: GithubConfig, installationId: string): Promise<string> {
+  const hit = cachedInstallTokens.get(installationId)
+  if (hit && hit.expiresAt > Date.now() + 60_000) return hit.token
+  const jwt = appJwt(cfg.app.appId, open(cfg.app.privateKeyEnc!))
+  const res = await gh(`/app/installations/${installationId}/access_tokens`, jwt, { method: 'POST' })
   if (!res.ok) throw new Error(`GitHub installation token failed (${res.status})`)
   const j = (await res.json()) as { token: string; expires_at: string }
-  cachedInstallToken = { token: j.token, expiresAt: Date.parse(j.expires_at) }
+  cachedInstallTokens.set(installationId, { token: j.token, expiresAt: Date.parse(j.expires_at) })
   return j.token
+}
+
+/** A usable token for repo operations. PAT passes through; App mode mints a
+ *  per-installation token — pass `repo` so multi-org setups route to the
+ *  installation that owns it (defaults to the first installation). */
+export async function githubToken(repo?: string): Promise<string | null> {
+  const cfg = await getGithubConfig()
+  if (cfg.mode === 'pat') return cfg.pat.tokenEnc ? open(cfg.pat.tokenEnc) : null
+  if (cfg.mode !== 'app' || !cfg.app.appId || !cfg.app.installationIds.length || !cfg.app.privateKeyEnc) return null
+  let installationId = cfg.app.installationIds[0]!
+  if (repo && cfg.app.installationIds.length > 1) {
+    if (!repoInstallCache || Date.now() - repoInstallCache.at > 10 * 60_000) await listReachableRepos()
+    installationId = repoInstallCache?.map.get(repo) ?? installationId
+  }
+  return installationToken(cfg, installationId)
 }
 
 export interface GithubStatus {
@@ -88,8 +118,9 @@ export interface GithubStatus {
   /** Who the connection acts as — PAT login or App name — when verifiable. */
   account: string | null
   error: string | null
-  app: { appId: string; installationId: string; keySet: boolean }
+  app: { appId: string; installationIds: string[]; keySet: boolean }
   patSet: boolean
+  repoCreationOrgs: string[]
 }
 
 /** Redacted status for the admin panel — verifies live, never leaks secrets. */
@@ -97,8 +128,9 @@ export async function githubStatus(): Promise<GithubStatus> {
   const cfg = await getGithubConfig()
   const base = {
     mode: cfg.mode,
-    app: { appId: cfg.app.appId, installationId: cfg.app.installationId, keySet: !!cfg.app.privateKeyEnc },
+    app: { appId: cfg.app.appId, installationIds: cfg.app.installationIds, keySet: !!cfg.app.privateKeyEnc },
     patSet: !!cfg.pat.tokenEnc,
+    repoCreationOrgs: cfg.repoCreationOrgs,
   }
   try {
     if (cfg.mode === 'pat' && cfg.pat.tokenEnc) {
@@ -112,7 +144,7 @@ export async function githubStatus(): Promise<GithubStatus> {
       const res = await gh('/app', jwt)
       if (!res.ok) return { ...base, configured: true, account: null, error: `app credentials rejected (${res.status})` }
       const j = (await res.json()) as { name: string }
-      if (!cfg.app.installationId) return { ...base, configured: false, account: j.name, error: 'pick an installation' }
+      if (!cfg.app.installationIds.length) return { ...base, configured: false, account: j.name, error: 'pick at least one installation' }
       return { ...base, configured: true, account: j.name, error: null }
     }
   } catch (e) {
@@ -133,14 +165,9 @@ export async function listInstallations(): Promise<Array<{ id: number; account: 
   return j.map((i) => ({ id: i.id, account: i.account.login }))
 }
 
-/** Repos the connection can reach — the pool agent grants pick from.
- *  Paginated (Link: rel="next"), capped at 5 pages / 500 repos. */
-export async function listReachableRepos(): Promise<string[]> {
-  const cfg = await getGithubConfig()
-  const token = await githubToken()
-  if (!token) return []
+async function pagedRepos(token: string, firstPath: string): Promise<string[]> {
   const out: string[] = []
-  let path = cfg.mode === 'app' ? '/installation/repositories?per_page=100' : '/user/repos?per_page=100&sort=pushed'
+  let path = firstPath
   for (let page = 0; page < 5 && path; page++) {
     const res = await gh(path, token)
     if (!res.ok) break
@@ -150,6 +177,33 @@ export async function listReachableRepos(): Promise<string[]> {
     const next = /<https:\/\/api\.github\.com([^>]+)>;\s*rel="next"/.exec(res.headers.get('link') ?? '')
     path = next?.[1] ?? ''
   }
+  return out
+}
+
+/** Repos the connection can reach — the pool agent grants pick from. App
+ *  mode is the UNION across all selected installations (multi-org), and the
+ *  listing doubles as the repo→installation routing table for token minting.
+ *  Paginated per source, capped at 5 pages each. */
+export async function listReachableRepos(): Promise<string[]> {
+  const cfg = await getGithubConfig()
+  if (cfg.mode === 'pat') {
+    const token = await githubToken()
+    return token ? pagedRepos(token, '/user/repos?per_page=100&sort=pushed') : []
+  }
+  if (cfg.mode !== 'app' || !cfg.app.installationIds.length) return []
+  const map = new Map<string, string>()
+  const out: string[] = []
+  for (const inst of cfg.app.installationIds) {
+    const token = await installationToken(cfg, inst).catch(() => null)
+    if (!token) continue
+    for (const repo of await pagedRepos(token, '/installation/repositories?per_page=100')) {
+      if (!map.has(repo)) {
+        map.set(repo, inst)
+        out.push(repo)
+      }
+    }
+  }
+  repoInstallCache = { map, at: Date.now() }
   return out
 }
 
@@ -200,7 +254,7 @@ export async function effectiveBase(repo: string): Promise<string> {
 /** Merge head into base via GitHub's merge API (e.g. feature → testing).
  *  Ensures the target exists (created from the effective base if missing). */
 export async function mergeInto(repo: string, targetBranch: string, head: string): Promise<{ merged: boolean; reason?: string }> {
-  const token = await githubToken()
+  const token = await githubToken(repo)
   if (!token) throw new Error('GitHub is not connected')
   const existing = await gh(`/repos/${repo}/git/ref/heads/${encodeURIComponent(targetBranch)}`, token)
   if (!existing.ok) {
@@ -221,6 +275,28 @@ export async function mergeInto(repo: string, targetBranch: string, head: string
   if (res.status === 204) return { merged: true, reason: 'already up to date' }
   if (res.status === 409) return { merged: false, reason: 'merge conflict — resolve on the branch first' }
   return { merged: false, reason: `GitHub merge failed (${res.status})` }
+}
+
+/** Create a repo in an org (App must hold org Administration permission).
+ *  Token routes to the installation on that org when multi-install. */
+export async function createRepo(org: string, name: string, description: string): Promise<{ fullName: string; url: string }> {
+  const cfg = await getGithubConfig()
+  if (cfg.mode !== 'app') throw new Error('repo creation requires the GitHub App connection')
+  // Route by any repo we know in that org, else first installation.
+  const known = repoInstallCache?.map ?? new Map<string, string>()
+  const inOrg = [...known.entries()].find(([r]) => r.startsWith(`${org}/`))
+  const token = inOrg ? await installationToken(cfg, inOrg[1]) : await githubToken()
+  if (!token) throw new Error('GitHub is not connected')
+  const res = await gh(`/orgs/${org}/repos`, token, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, description: description.slice(0, 300), private: true, auto_init: true }),
+  })
+  if (res.status === 403) throw new Error("the App lacks the org's Administration permission — grant it in the App settings, then re-approve")
+  if (!res.ok) throw new Error(`GitHub repo creation failed (${res.status}): ${(await res.text()).slice(0, 200)}`)
+  const j = (await res.json()) as { full_name: string; html_url: string }
+  repoInstallCache = null // pool changed
+  return { fullName: j.full_name, url: j.html_url }
 }
 
 // ── Per-agent repo grants — explicit, like MCP assignment ────────────────────
@@ -252,7 +328,7 @@ async function ghJson<T>(path: string, token: string, init: RequestInit = {}): P
 }
 
 export async function defaultBranch(repo: string): Promise<string> {
-  const token = await githubToken()
+  const token = await githubToken(repo)
   if (!token) throw new Error('GitHub is not connected')
   return (await ghJson<{ default_branch: string }>(`/repos/${repo}`, token)).default_branch
 }
@@ -260,7 +336,7 @@ export async function defaultBranch(repo: string): Promise<string> {
 /** Cut a branch from the default branch's head. Idempotent-ish: an existing
  *  branch of the same name is left alone (the job resumes on it). */
 export async function createBranch(repo: string, branch: string, baseOverride?: string): Promise<{ base: string; created: boolean }> {
-  const token = await githubToken()
+  const token = await githubToken(repo)
   if (!token) throw new Error('GitHub is not connected')
   const base = baseOverride ?? (await effectiveBase(repo))
   const existing = await gh(`/repos/${repo}/git/ref/heads/${encodeURIComponent(branch)}`, token)
@@ -275,7 +351,7 @@ export async function createBranch(repo: string, branch: string, baseOverride?: 
 }
 
 export async function branchAhead(repo: string, base: string, branch: string): Promise<number> {
-  const token = await githubToken()
+  const token = await githubToken(repo)
   if (!token) throw new Error('GitHub is not connected')
   const cmp = await ghJson<{ ahead_by: number }>(`/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}`, token)
   return cmp.ahead_by
@@ -285,7 +361,7 @@ export async function createPullRequest(
   repo: string,
   input: { head: string; base: string; title: string; body: string; draft?: boolean },
 ): Promise<{ url: string; number: number }> {
-  const token = await githubToken()
+  const token = await githubToken(repo)
   if (!token) throw new Error('GitHub is not connected')
   const pr = await ghJson<{ html_url: string; number: number }>(`/repos/${repo}/pulls`, token, {
     method: 'POST',
@@ -298,6 +374,6 @@ export async function createPullRequest(
 /** An authenticated clone URL for the sandbox harness — app tokens expire in
  *  ~an hour by design; PATs are the org's own choice of blast radius. */
 export async function cloneUrl(repo: string): Promise<string | null> {
-  const token = await githubToken()
+  const token = await githubToken(repo)
   return token ? `https://x-access-token:${token}@github.com/${repo}.git` : null
 }

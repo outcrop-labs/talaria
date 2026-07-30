@@ -115,12 +115,29 @@ async function seedSharedSkills(): Promise<void> {
 }
 
 async function ensureFleetEnvKey(): Promise<void> {
-  const key = process.env.TALARIA_AGENT_KEY
-  if (!key) return
   const envPath = FLEET_ENV()
-  const current = await readFile(envPath, 'utf8').catch(() => '')
-  if (/^TALARIA_AGENT_KEY=/m.test(current)) return
-  await writeFile(envPath, `${current.replace(/\n?$/, '\n')}TALARIA_AGENT_KEY=${key}\n`)
+  let current = await readFile(envPath, 'utf8').catch(() => '')
+  const append: string[] = []
+  const need = (name: string, value: string | undefined) => {
+    if (value && !new RegExp(`^${name}=`, 'm').test(current)) append.push(`${name}=${value}`)
+  }
+  need('TALARIA_AGENT_KEY', process.env.TALARIA_AGENT_KEY)
+  // Native-auth harness keys: any provider key a registry harness references
+  // must reach compose interpolation — provisioned from the server env when
+  // present; absent keys stay absent (doctor/auth surfaces tell the agent).
+  try {
+    const [{ listHarnessDefs }, sqlc] = await Promise.all([import('./workbench-harnesses'), db()])
+    const endpoints = (await sqlc`select provider, api_key_env as "apiKeyEnv" from llm_endpoints where api_key_env is not null`) as unknown as Array<{ provider: string; apiKeyEnv: string }>
+    for (const h of await listHarnessDefs()) {
+      if (h.auth === 'gateway') continue
+      const ep = endpoints.find((e) => e.provider === (h.auth as { provider: string }).provider)
+      if (ep) need(ep.apiKeyEnv, process.env[ep.apiKeyEnv])
+    }
+  } catch {
+    /* registry unavailable — agent key provisioning above still holds */
+  }
+  if (!append.length) return
+  await writeFile(envPath, `${current.replace(/\n?$/, '\n')}${append.join('\n')}\n`)
 }
 
 /** The EXTERNAL docker network the whole fleet joins (compose never creates
