@@ -13,6 +13,7 @@
 import { db } from './db/pg'
 import { branchAhead, cloneUrl, createBranch, createPullRequest, grantedRepos } from './github'
 import { resolveWorkbench } from './workbench'
+import { effortModel, effortModels, harness, type Effort } from './workbench-harnesses'
 
 export interface WorkbenchJob {
   id: string
@@ -113,7 +114,14 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
 
   switch (name) {
     case 'list_repos':
-      return { ok: true, value: { repos: await grantedRepos(agent.id) } }
+      return {
+        ok: true,
+        value: {
+          repos: await grantedRepos(agent.id),
+          efforts: await effortModels(),
+          note: 'Pick effort by the work, not the model: light = quick fixes, standard = regular features (plan required), heavy = hard cross-cutting work (plan required, used sparingly).',
+        },
+      }
 
     case 'start_job': {
       const repo = String(args.repo ?? '')
@@ -145,6 +153,14 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       `) as unknown as WorkbenchJob[]
       const job = rows[0]!
       await logTicket(taskId, agent.model, `workbench job started: ${repo} @ ${branch} (${effort})${plan ? ' — plan recorded' : ''}`)
+      // Effort → model is Talaria's call: the agent picked the effort, the
+      // platform resolves which model that means today. Invocation hints come
+      // from the profile's harness adapters with the model slotted in.
+      const model = await effortModel(effort as Effort)
+      const harnesses = profile.harnesses
+        .map((slug) => harness(slug))
+        .filter((h): h is NonNullable<typeof h> => !!h)
+        .map((h) => ({ harness: h.slug, run: model ? h.invoke.replace('<model>', model) : h.invoke }))
       return {
         ok: true,
         value: {
@@ -154,7 +170,10 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           base,
           resumed: !created,
           cloneUrl: await cloneUrl(repo),
-          rules: `Clone with the URL above (token is short-lived — clone now). Work ONLY on ${branch}; commit and push to it as you go. Never touch ${base} directly. When done, call finish_job — Talaria opens the PR.`,
+          effort,
+          model,
+          harnesses,
+          rules: `Clone with the URL above (token is short-lived — clone now). Work ONLY on ${branch}; commit and push to it as you go. Never touch ${base} directly. Use the ${effort}-effort model shown — escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
         },
       }
     }

@@ -15,6 +15,9 @@ export type ModelRole =
   | 'research-brief'
   | 'research-expedition'
   | 'utility'
+  | 'code-light'
+  | 'code-standard'
+  | 'code-heavy'
   | 'vision'
   | 'image-generation'
   | 'embedding'
@@ -49,6 +52,24 @@ export const MODEL_ROLES: Array<{
     role: 'utility',
     label: 'Utility',
     hint: 'Background chores: catalog blurbs, chat distills, summaries, Muse fallback. A fast, cheap model is ideal. Auto: env default → pl-main → first routable.',
+    wired: true,
+  },
+  {
+    role: 'code-light',
+    label: 'Workbench · Light effort',
+    hint: 'Coding-harness runs for quick fixes and mechanical changes — agents pick the effort, this picks the model. A fast, cheap coder is ideal. Auto: utility chain.',
+    wired: true,
+  },
+  {
+    role: 'code-standard',
+    label: 'Workbench · Standard effort',
+    hint: 'The default coding-harness model for regular feature work. Auto: the light model, else the utility chain.',
+    wired: true,
+  },
+  {
+    role: 'code-heavy',
+    label: 'Workbench · Heavy effort',
+    hint: 'The strongest coder for hard, cross-cutting work — used sparingly by design. Auto: the standard model.',
     wired: true,
   },
   {

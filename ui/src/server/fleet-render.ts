@@ -407,6 +407,22 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       if (wb.image) svc.image = wb.image
       for (const [k, v] of Object.entries(wb.env)) env[k] = v
       env.TALARIA_WORKBENCH_PROFILE = wb.slug
+      // Harness auth, gateway-first: OpenAI-compatible harnesses point at
+      // Talaria's gateway (same creds the persona already uses — metered,
+      // attributed); native harnesses get their provider's key interpolated
+      // from the endpoint registry's env contract, scoped to this container.
+      const { HARNESSES } = await import('./workbench-harnesses')
+      const sqlc = await db()
+      const endpoints = (await sqlc`select provider, api_key_env as "apiKeyEnv" from llm_endpoints where api_key_env is not null`) as unknown as Array<{ provider: string; apiKeyEnv: string }>
+      for (const slug of wb.harnesses) {
+        const h = HARNESSES.find((x) => x.slug === slug)
+        if (!h) continue
+        for (const [k, v] of Object.entries(h.gatewayEnv)) env[k] = v
+        if (h.auth === 'native' && h.native) {
+          const ep = endpoints.find((e) => e.provider === h.native!.provider)
+          if (ep) env[h.native.envVar] = '${' + ep.apiKeyEnv + '}'
+        }
+      }
     }
     svc.environment = env
 
