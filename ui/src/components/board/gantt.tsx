@@ -56,7 +56,29 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
     const ro = new ResizeObserver(() => setContainerW(el.clientWidth))
     ro.observe(el)
     setContainerW(el.clientWidth)
-    return () => ro.disconnect()
+    // Wheel = navigation: vertical zooms (anchored at the cursor so the day
+    // under it stays put), horizontal pans natively. Native listener with
+    // passive:false — preventDefault must actually work.
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return // horizontal: let it pan
+      e.preventDefault()
+      const cursorX = e.clientX - el.getBoundingClientRect().left
+      setDayW((w) => {
+        const next = Math.min(MAX_W, Math.max(MIN_W, w * (e.deltaY < 0 ? 1.12 : 1 / 1.12)))
+        if (next !== w) {
+          const day = (el.scrollLeft + cursorX - 220) / w
+          requestAnimationFrame(() => {
+            el.scrollLeft = Math.max(0, day * next - (cursorX - 220))
+          })
+        }
+        return next
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      ro.disconnect()
+      el.removeEventListener('wheel', onWheel)
+    }
   }, [])
 
   const { spans, unscheduled, rangeStart, days } = useMemo(() => {
@@ -185,12 +207,12 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
     return out
   }, [rangeStart, days])
 
-  const zoom = (dir: 1 | -1) => setDayW((w) => Math.min(MAX_W, Math.max(MIN_W, Math.round(w * (dir === 1 ? 1.4 : 1 / 1.4)))))
+  const zoom = (dir: 1 | -1) => setDayW((w) => Math.min(MAX_W, Math.max(MIN_W, w * (dir === 1 ? 1.4 : 1 / 1.4))))
 
   return (
     <div className="flex h-full flex-col">
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
-        <div style={{ minWidth: labelW + days * dayW }}>
+        <div className="flex min-h-full flex-col" style={{ minWidth: labelW + days * dayW }}>
           {/* ── Header: months + day grid + zoom ── */}
           <div className="sticky top-0 z-10 flex border-b border-line bg-surface/95 backdrop-blur">
             <div style={{ width: labelW }} className="flex shrink-0 items-center gap-0.5 border-r border-line-subtle px-2">
@@ -224,7 +246,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                       style={{ width: dayW }}
                       className={cn('overflow-hidden py-0.5 text-center text-[9px]', wk ? 'bg-sidebar/70 text-muted/60' : 'text-muted', d.getTime() === today && 'font-bold text-accent')}
                     >
-                      {dayW >= 14 ? d.getDate() : dayW >= 10 && d.getDate() % 2 === 1 ? d.getDate() : ''}
+                      {dayW >= 14 ? d.getDate() : dayW >= 9 && d.getDate() % 2 === 1 ? d.getDate() : ''}
                     </div>
                   )
                 })}
@@ -233,7 +255,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
           </div>
 
           {/* ── Rows (also the drop target for scheduling) ── */}
-          <div ref={rowsRef} className="relative" onDragOver={onChartDragOver} onDragLeave={() => setDropDay(null)} onDrop={onChartDrop}>
+          <div ref={rowsRef} className="relative flex-1" onDragOver={onChartDragOver} onDragLeave={() => setDropDay(null)} onDrop={onChartDrop}>
             <div className="pointer-events-none absolute inset-y-0" style={{ left: labelW }}>
               {Array.from({ length: days }, (_, i) => {
                 const d = new Date(rangeStart + i * DAY)
