@@ -17,7 +17,9 @@ const Body = z.object({
     .optional(),
 })
 
-// The Workbench's GitHub connection (admin): GET → live-verified redacted
+// The Workbench's GitHub connection. Deliberately requireAdmin (not
+// agents.manage): this holds ORG CREDENTIALS (PAT / App private key) — a
+// grantable permission shouldn't reach them. GET → live-verified redacted
 // status (+ ?installations=1 lists where the App is installed, the easy-setup
 // picker); PUT → patch config (secrets sealed); DELETE → disconnect.
 export const Route = createFileRoute('/api/workbench/github')({

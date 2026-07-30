@@ -147,6 +147,10 @@ export default defineAppMcp({
 })
 ```
 
+## Workbench harnesses
+
+Apps can ship a **harness** — a coding tool agents drive through their workbench — as `apps/<slug>/harness.ts` default-exporting `defineHarness(...)`. Declarative only; see "Shipping a harness" in [`APPS.md`](./APPS.md) and [`WORKBENCH.md`](./WORKBENCH.md) for the contract (auth, invocation templates, MCP serve/consume, custom config renderers, probes).
+
 ## Security model
 
 Apps compile into the deployment and run **fully trusted**, like platform code — admins install only

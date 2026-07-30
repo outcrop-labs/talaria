@@ -737,12 +737,14 @@ function WorkbenchControl({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
   const fits = (p: WorkbenchProfileLite) =>
     (p.autoAttach.departments ?? []).some((d) => d.toLowerCase() === def.department.toLowerCase()) ||
     (!!def.role && (p.autoAttach.roles ?? []).some((r) => (def.role ?? '').toLowerCase().includes(r.toLowerCase())))
+  // Mirrors server resolveWorkbench (enabled profiles only) — keep in sync.
+  const live = profiles.filter((p) => p.enabled)
   const resolved =
     mode === 'off'
       ? null
       : mode === 'on'
-        ? (profiles.find((p) => p.slug === def.workbenchProfile) ?? profiles.find(fits) ?? profiles.find((p) => p.slug === 'dev') ?? null)
-        : (profiles.find((p) => p.slug === def.workbenchProfile) ?? profiles.find(fits) ?? null)
+        ? (live.find((p) => p.slug === def.workbenchProfile) ?? live.find(fits) ?? live.find((p) => p.slug === 'dev') ?? null)
+        : (live.find((p) => p.slug === def.workbenchProfile) ?? live.find(fits) ?? null)
 
   const save = async (patch: { workbench?: 'off' | 'auto' | 'on'; workbenchProfile?: string | null }) => {
     await patchAgentMeta(def.id, patch)
@@ -772,7 +774,7 @@ function WorkbenchControl({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
               value={def.workbenchProfile ?? ''}
               onChange={(e) => void save({ workbenchProfile: e.target.value || null })}
             >
-              <option value="">{mode === 'auto' ? 'best fit' : 'best fit'}</option>
+              <option value="">best fit</option>
               {profiles
                 .filter((p) => p.enabled)
                 .map((p) => (

@@ -337,13 +337,13 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     {
       const wbc = await resolveWorkbench({
         department: def.department,
-        role: (def as unknown as { role?: string | null }).role ?? null,
-        workbench: ((def as unknown as { workbench?: string }).workbench ?? 'auto') as 'off' | 'auto' | 'on',
-        workbenchProfile: (def as unknown as { workbenchProfile?: string | null }).workbenchProfile ?? null,
+        role: def.role ?? null,
+        workbench: def.workbench ?? 'auto',
+        workbenchProfile: def.workbenchProfile ?? null,
       }).catch(() => null)
       if (wbc) {
         const { listHarnessDefs } = await import('./workbench-harnesses')
-        const pick = (def as unknown as { workbenchHarness?: string | null }).workbenchHarness
+        const pick = def.workbenchHarness
         const chosen = pick && wbc.harnesses.includes(pick) ? pick : wbc.harnesses[0]
         const h = (await listHarnessDefs()).find((x) => x.slug === chosen)
         if (h?.mcpServe) {
@@ -421,9 +421,9 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     // else about the chassis stays identical.
     const wb = await resolveWorkbench({
       department: def.department,
-      role: (def as unknown as { role?: string | null }).role ?? null,
-      workbench: ((def as unknown as { workbench?: string }).workbench ?? 'auto') as 'off' | 'auto' | 'on',
-      workbenchProfile: (def as unknown as { workbenchProfile?: string | null }).workbenchProfile ?? null,
+      role: def.role ?? null,
+      workbench: def.workbench ?? 'auto',
+      workbenchProfile: def.workbenchProfile ?? null,
     }).catch(() => null as WorkbenchProfile | null)
     if (wb) {
       if (wb.image) svc.image = wb.image
@@ -513,9 +513,18 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       for (const slug of wb.harnesses) {
         const h = passDefs.find((x) => x.slug === slug)
         if (!h?.mcpConfig || written.has(h.mcpConfig.filename)) continue
-        const render = renderers[h.mcpConfig.format]
-        if (!render) continue
-        await writeFile(join(wbDir, h.mcpConfig.filename), JSON.stringify(render(), null, 2))
+        // 'custom' hands rendering to the harness's own code (app-shipped
+        // only — admin JSON can't carry functions); it owns its env syntax.
+        const body =
+          h.mcpConfig.format === 'custom'
+            ? h.renderMcpConfig?.({
+                agentModel: def.model,
+                servers: uniq.map((n) => ({ name: n, url: gwUrl(n) })),
+                apiKeyEnvVar: 'TALARIA_AGENT_KEY',
+              })
+            : renderers[h.mcpConfig.format]?.()
+        if (body === undefined) continue
+        await writeFile(join(wbDir, h.mcpConfig.filename), JSON.stringify(body, null, 2))
         written.add(h.mcpConfig.filename)
       }
     }

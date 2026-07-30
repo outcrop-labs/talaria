@@ -70,3 +70,8 @@ The agent-facing toolkit still enforces the protocol-layer rules ([PRODUCT.md](.
 no assign tool, no complete tool — agents report up to quality review and a human closes. MCP
 governance adds the *external-tool* dimension: which outside capabilities each agent and person
 gets, with the same auditability as everything else (every registry mutation is audit-logged).
+
+
+## The workbench surface
+
+`workbench` is a Talaria-owned server in this same registry — in-process like app surfaces, **not** all-agents: access is an explicit per-agent grant. Its tools are the governed execution lifecycle (`doctor`, `list_repos`, `start_job`, `job_status`, `merge_to_testing`, `finish_job`) — see [`WORKBENCH.md`](./WORKBENCH.md). Chosen coding harnesses that can serve MCP (Claude Code, Codex) additionally register as stdio servers on the agent's own Hermes config, and the agent's grants from THIS registry are rendered into each harness's native MCP config at render time (the pass-through) — so a sandboxed harness sees exactly the same governed tool world the agent does, with zero in-sandbox reconnection.

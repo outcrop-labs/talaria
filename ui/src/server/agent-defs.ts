@@ -32,6 +32,11 @@ export interface LlmEndpoint {
 }
 
 export interface AgentDef {
+  /** Workbench: THE setting + per-agent tuning (see server/workbench.ts). */
+  workbench?: 'off' | 'auto' | 'on'
+  workbenchProfile?: string | null
+  workbenchHarness?: string | null
+  workbenchModels?: Partial<Record<'light' | 'standard' | 'heavy', string>>
   id: string
   slug: string
   department: string

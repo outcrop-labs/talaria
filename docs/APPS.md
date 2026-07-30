@@ -116,5 +116,6 @@ A registered harness plugs into the whole workbench machinery automatically:
 - `auth: 'gateway'` provisions Talaria's gateway env into the sandbox; `auth: { provider, envVar }` interpolates that provider's key from the org's endpoint registry — scoped, never pasted;
 - `mcpConfig` gets the agent's existing MCP grants written in the harness's native config format at render time (zero in-sandbox reconnection);
 - `mcpServe` registers the harness as a stdio MCP server on the agent's own Hermes config once the workbench image carries its binary — agents drive it with tools, not stdout;
-- `install` hints feed the workbench image pipeline;
+- `install` hints feed the workbench image pipeline; `probe` (a cheap version command) is surfaced by the workbench **doctor** tool so agents can self-verify your harness runs;
+- need a config format the built-ins don't cover? Set `mcpConfig.format: 'custom'` and export `renderMcpConfig(ctx)` — you get the agent's granted servers as per-agent gateway endpoints plus the API-key env var, and you return the JSON your harness reads, in your own env-substitution syntax (app-shipped harnesses only — admin JSON definitions can't carry code);
 - jobs, branches, PRs, plan gates, per-job workspaces, and shared session history all behave identically — the harness is just the tool inside the flow.

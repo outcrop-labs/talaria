@@ -34,6 +34,7 @@ const BUILTINS: HarnessDefinition[] = [
     modelPrefix: 'openai/',
     invoke: 'npx -y opencode-ai run --model <model> "<task>"',
     jsonInvoke: 'npx -y opencode-ai run --model <model> --format json "<task>"',
+    probe: 'npx -y opencode-ai --version',
     mcpConfig: { format: 'opencode-json', filename: 'opencode.json' },
     guide:
       'opencode is session-based: each run continues a project session. Use --format json and read the structured result (message, file edits) instead of scraping text. It reads OPENCODE_CONFIG for MCP servers — your Talaria tools are already wired in there.',
@@ -45,6 +46,7 @@ const BUILTINS: HarnessDefinition[] = [
     invoke: 'npx -y @anthropic-ai/claude-code -p "<task>" --model <model> --mcp-config /opt/workbench-config/mcp.json',
     jsonInvoke: 'npx -y @anthropic-ai/claude-code -p "<task>" --model <model> --output-format json --mcp-config /opt/workbench-config/mcp.json',
     mcpServe: { command: 'npx', args: ['-y', '@anthropic-ai/claude-code', 'mcp', 'serve'] },
+    probe: 'npx -y @anthropic-ai/claude-code --version',
     mcpConfig: { format: 'claude-json', filename: 'mcp.json' },
     guide:
       "Claude Code returns a structured result with --output-format json (result text, cost, session_id) — resume a session with --resume <session_id> to ask follow-ups instead of restarting. Prefer its MCP tools when registered on your config; otherwise use the JSON form and read the result object, never raw logs.",
@@ -54,6 +56,7 @@ const BUILTINS: HarnessDefinition[] = [
     label: 'Oh My Pi',
     auth: 'gateway',
     invoke: 'npx -y @oh-my-pi/pi-coding-agent "<task>" --model <model>',
+    probe: 'npx -y @oh-my-pi/pi-coding-agent --version',
     guide: 'Oh My Pi (omp) is a full terminal coding agent — hash-anchored edits, LSP, subagents, a browser. It inherits MCP/rules config from .claude/.codex-style dirs in the workspace, so your pass-through config reaches it via the repo. No first-party MCP server mode yet: drive it one-shot per task and verify its work yourself with git diff and tests.',
   },
   {
@@ -63,6 +66,7 @@ const BUILTINS: HarnessDefinition[] = [
     invoke: 'npx -y @openai/codex exec --model <model> "<task>"',
     jsonInvoke: 'npx -y @openai/codex exec --model <model> --json "<task>"',
     mcpServe: { command: 'npx', args: ['-y', '@openai/codex', 'mcp'] },
+    probe: 'npx -y @openai/codex --version',
     guide: 'Codex exec emits JSON events with --json — read the final result event. As an MCP server (codex mcp) it exposes tool-driven sessions; prefer that when registered on your config.',
   },
 ]
@@ -106,10 +110,6 @@ export async function listHarnessDefs(): Promise<ResolvedHarness[]> {
     if (def.invoke && def.guide) bySlug.set(r.slug, resolveDef(def, 'custom'))
   }
   return [...bySlug.values()]
-}
-
-export async function getHarness(slug: string): Promise<ResolvedHarness | undefined> {
-  return (await listHarnessDefs()).find((h) => h.slug === slug)
 }
 
 /** Admin-custom definitions (declarative only — no code runs from these). */

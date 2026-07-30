@@ -5,7 +5,8 @@ import { parseBody, requireUser, actorOf } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
 import { db } from '@/server/db/pg'
 import { getTask, logActivity } from '@/server/tasks'
-import { mergeInto, repoFlow } from '@/server/github'
+import { repoFlow } from '@/server/github'
+import { mergeJobToTesting, type WorkbenchJob } from '@/server/workbench-mcp'
 
 const JOB_ROW = `id, agent_model as "agentModel", task_id as "taskId", repo, branch, effort, plan, status,
   pr_url as "prUrl", summary, merged_testing_at as "mergedTestingAt", created_at as "createdAt", updated_at as "updatedAt"`
@@ -49,13 +50,8 @@ export const Route = createFileRoute('/api/workbench/jobs')({
         if (!task || !canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
         const actor = actorOf(user)
         if (body.action === 'merge_testing') {
-          if (job.status !== 'started' && job.status !== 'pr_open') return json({ error: `job is ${job.status}` }, { status: 400 })
-          const flow = await repoFlow(job.repo)
-          if (!flow.testingBranch) return json({ error: 'no testing branch configured for this repo' }, { status: 400 })
-          const r = await mergeInto(job.repo, flow.testingBranch, job.branch).catch((e: Error) => ({ merged: false, reason: e.message }))
-          if (!r.merged) return json({ error: r.reason ?? 'merge failed' }, { status: 400 })
-          await sql`update workbench_jobs set merged_testing_at = now(), updated_at = now() where id = ${job.id}`
-          await logActivity(task.id, actor, 'workbench', `merged ${job.branch} into ${flow.testingBranch} for testing`)
+          const r = await mergeJobToTesting(job as unknown as WorkbenchJob, actor).catch((e: Error) => ({ ok: false as const, error: e.message }))
+          if (!r.ok) return json({ error: r.error }, { status: 400 })
           return json({ ok: true })
         }
         if (job.status !== 'awaiting_approval') return json({ error: `job is ${job.status}` }, { status: 400 })

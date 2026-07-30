@@ -45,6 +45,8 @@ export async function setGithubConfig(patch: {
     },
   }
   await setSetting(KEY, next)
+  // Credentials changed — a cached installation token must never outlive them.
+  cachedInstallToken = null
 }
 
 const GH = 'https://api.github.com'
@@ -131,20 +133,24 @@ export async function listInstallations(): Promise<Array<{ id: number; account: 
   return j.map((i) => ({ id: i.id, account: i.account.login }))
 }
 
-/** Repos the connection can reach — the pool agent grants pick from. */
+/** Repos the connection can reach — the pool agent grants pick from.
+ *  Paginated (Link: rel="next"), capped at 5 pages / 500 repos. */
 export async function listReachableRepos(): Promise<string[]> {
   const cfg = await getGithubConfig()
   const token = await githubToken()
   if (!token) return []
-  if (cfg.mode === 'app') {
-    const res = await gh('/installation/repositories?per_page=100', token)
-    if (!res.ok) return []
-    const j = (await res.json()) as { repositories: Array<{ full_name: string }> }
-    return j.repositories.map((r) => r.full_name)
+  const out: string[] = []
+  let path = cfg.mode === 'app' ? '/installation/repositories?per_page=100' : '/user/repos?per_page=100&sort=pushed'
+  for (let page = 0; page < 5 && path; page++) {
+    const res = await gh(path, token)
+    if (!res.ok) break
+    const j = (await res.json()) as { repositories?: Array<{ full_name: string }> } | Array<{ full_name: string }>
+    const repos = Array.isArray(j) ? j : (j.repositories ?? [])
+    out.push(...repos.map((r) => r.full_name))
+    const next = /<https:\/\/api\.github\.com([^>]+)>;\s*rel="next"/.exec(res.headers.get('link') ?? '')
+    path = next?.[1] ?? ''
   }
-  const res = await gh('/user/repos?per_page=100&sort=pushed', token)
-  if (!res.ok) return []
-  return ((await res.json()) as Array<{ full_name: string }>).map((r) => r.full_name)
+  return out
 }
 
 // ── Per-repo git flow (PR target + optional testing branch) ──────────────────
@@ -227,10 +233,14 @@ export async function grantedRepos(agentId: string): Promise<string[]> {
 
 export async function setGrantedRepos(agentId: string, repos: string[]): Promise<void> {
   const sql = await db()
-  await sql`delete from workbench_repos where agent_id = ${agentId}`
-  for (const repo of repos.slice(0, 100)) {
-    await sql`insert into workbench_repos (agent_id, repo) values (${agentId}, ${repo}) on conflict do nothing`
-  }
+  const keep = repos.slice(0, 100)
+  // Atomic replace — a crash can never leave the agent grantless by accident.
+  await sql.begin(async (tx) => {
+    await tx`delete from workbench_repos where agent_id = ${agentId}`
+    if (keep.length) {
+      await tx`insert into workbench_repos (agent_id, repo) select ${agentId}, unnest(${keep}::text[]) on conflict do nothing`
+    }
+  })
 }
 
 // ── Repo operations (the platform-owned git flow) ────────────────────────────

@@ -1619,8 +1619,6 @@ function OrgGoogleTargets({ targets }: { targets: OrgGoogle['targets'] }) {
 }
 
 
-/** The Workbench's GitHub connection — App or PAT, whichever the org prefers,
- *  with the setup steps inline. Secrets seal on save and never render back. */
 /** The Workbench's GitHub connection — one calm panel: status, the minimal
  *  connect controls, repo flow. The full field-by-field walkthrough lives in
  *  a setup-guide modal so the panel itself stays readable. */

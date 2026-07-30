@@ -65,21 +65,24 @@ export async function listProfiles(): Promise<WorkbenchProfile[]> {
 export async function updateProfile(
   slug: string,
   patch: Partial<Pick<WorkbenchProfile, 'name' | 'description' | 'image' | 'env' | 'mounts' | 'harnesses' | 'autoAttach' | 'config' | 'enabled'>>,
-): Promise<void> {
+): Promise<boolean> {
   const sql = await db()
-  const sets: Array<[string, unknown]> = []
-  if (patch.name !== undefined) sets.push(['name', patch.name])
-  if (patch.description !== undefined) sets.push(['description', patch.description])
-  if (patch.image !== undefined) sets.push(['image', patch.image])
-  if (patch.enabled !== undefined) sets.push(['enabled', patch.enabled])
-  for (const [col, val] of sets) {
-    await sql.unsafe(`update workbench_profiles set ${col} = $1, updated_at = now() where slug = $2`, [val as never, slug])
-  }
-  if (patch.env !== undefined) await sql`update workbench_profiles set env = ${sql.json(patch.env)}, updated_at = now() where slug = ${slug}`
-  if (patch.mounts !== undefined) await sql`update workbench_profiles set mounts = ${sql.json(patch.mounts)}, updated_at = now() where slug = ${slug}`
-  if (patch.harnesses !== undefined) await sql`update workbench_profiles set harnesses = ${sql.json(patch.harnesses)}, updated_at = now() where slug = ${slug}`
-  if (patch.autoAttach !== undefined) await sql`update workbench_profiles set auto_attach = ${sql.json(patch.autoAttach)}, updated_at = now() where slug = ${slug}`
-  if (patch.config !== undefined) await sql`update workbench_profiles set config = ${sql.json(patch.config as Record<string, string>)}, updated_at = now() where slug = ${slug}`
+  const rows = await sql`
+    update workbench_profiles set
+      name = coalesce(${patch.name ?? null}, name),
+      description = coalesce(${patch.description ?? null}, description),
+      image = coalesce(${patch.image ?? null}, image),
+      enabled = coalesce(${patch.enabled ?? null}, enabled),
+      env = coalesce(${patch.env !== undefined ? sql.json(patch.env) : null}, env),
+      mounts = coalesce(${patch.mounts !== undefined ? sql.json(patch.mounts) : null}, mounts),
+      harnesses = coalesce(${patch.harnesses !== undefined ? sql.json(patch.harnesses) : null}, harnesses),
+      auto_attach = coalesce(${patch.autoAttach !== undefined ? sql.json(patch.autoAttach) : null}, auto_attach),
+      config = coalesce(${patch.config !== undefined ? sql.json(patch.config as Record<string, string>) : null}, config),
+      updated_at = now()
+    where slug = ${slug}
+    returning slug
+  `
+  return rows.length > 0
 }
 
 const fits = (p: WorkbenchProfile, agent: { department: string; role: string | null }): boolean =>
@@ -104,7 +107,8 @@ export async function resolveWorkbench(agent: {
       null
     )
   }
-  // auto: explicit pick still wins when it fits the agent's needs; else rules.
+  // auto: an explicit profile pick wins outright (the admin chose it); with
+  // no pick, the autoAttach fit rules decide.
   if (agent.workbenchProfile) {
     const picked = profiles.find((p) => p.slug === agent.workbenchProfile)
     if (picked) return picked

@@ -14,6 +14,7 @@ import { db } from './db/pg'
 import { branchAhead, cloneUrl, createBranch, createPullRequest, effectiveBase, grantedRepos, mergeInto, repoFlow } from './github'
 import { resolveWorkbench } from './workbench'
 import { effortModel, effortModels, harnessModelArg, listHarnessDefs, type Effort } from './workbench-harnesses'
+import { githubStatus } from './github'
 
 export interface WorkbenchJob {
   id: string
@@ -22,7 +23,7 @@ export interface WorkbenchJob {
   taskId: string | null
   repo: string
   branch: string
-  effort: string
+  effort: Effort
   plan: string
   status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned'
   prUrl: string | null
@@ -37,7 +38,23 @@ const JOB_ROW = `id, agent_id as "agentId", agent_model as "agentModel", task_id
 const slugify = (v: string) =>
   v.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
 
+/** Ticket ref + title (refs are computed: board prefix + ticket_no). */
+async function ticketRefOf(taskId: string): Promise<{ ref: string; title: string } | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select case when t.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end as "ticketRef", t.title
+    from tasks t join boards b on b.id = t.board_id where t.id = ${taskId}
+  `) as unknown as Array<{ ticketRef: string | null; title: string }>
+  return rows[0] ? { ref: rows[0].ticketRef ?? '', title: rows[0].title } : null
+}
+
 export const WORKBENCH_TOOLS = [
+  {
+    name: 'doctor',
+    description:
+      'Diagnose YOUR workbench end to end: profile, chosen harness (with a probe command to run in your shell), auth, GitHub connection, repo grants, effort→model map, and pass-through config locations. Run this first when anything about your workbench misbehaves — or before your first job.',
+    inputSchema: { type: 'object', properties: {} },
+  },
   {
     name: 'list_repos',
     description: 'The repositories YOUR workbench is granted. Work only these — anything else is out of bounds.',
@@ -123,6 +140,41 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
   const sql = await db()
 
   switch (name) {
+    case 'doctor': {
+      const registry = await listHarnessDefs()
+      const chosenSlug = agent.workbenchHarness && profile.harnesses.includes(agent.workbenchHarness) ? agent.workbenchHarness : profile.harnesses[0]
+      const h = registry.find((x) => x.slug === chosenSlug)
+      const gh = await githubStatus().catch(() => null)
+      const repos = await grantedRepos(agent.id)
+      const checks: string[] = []
+      checks.push(`profile: ${profile.name} (${profile.slug}) — attached`)
+      checks.push(h ? `harness: ${h.label} (${h.slug}, ${h.source}) — chosen` : `harness: "${chosenSlug}" NOT in the registry — pick another or ask an admin`)
+      if (h) checks.push(h.auth === 'gateway' ? 'auth: Talaria gateway (no key needed on your side)' : `auth: native ${(h.auth as { provider: string }).provider} key expected in ${(h.auth as { envVar: string }).envVar}`)
+      checks.push(gh?.configured ? `github: connected${gh.account ? ` as ${gh.account}` : ''}` : 'github: NOT connected — jobs cannot start (an admin connects it in Admin → Org)')
+      checks.push(repos.length ? `repos: ${repos.join(', ')}` : 'repos: none granted — ask an admin to grant repos on your agent settings')
+      return {
+        ok: true,
+        value: {
+          checks,
+          harness: h
+            ? {
+                slug: h.slug,
+                guide: h.guide,
+                probe: h.probe ?? null,
+                mcpTools: h.mcpServe ? 'registered on your config when this harness is chosen' : 'none — drive it via jsonRun',
+                passthroughConfig: h.mcpConfig ? `/opt/workbench-config/${h.mcpConfig.filename}` : null,
+              }
+            : null,
+          efforts: await effortModels(agent.workbenchModels),
+          workspaceRoot: '/opt/data/workbench/jobs/<jobId>',
+          sessionHistory: '/opt/data/workbench/harness (persistent, shared with your department)',
+          next: h?.probe
+            ? `Run the probe in your shell to verify the harness binary: ${h.probe}`
+            : 'No probe declared — try the harness directly on your first job.',
+        },
+      }
+    }
+
     case 'list_repos':
       return {
         ok: true,
@@ -135,7 +187,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
 
     case 'start_job': {
       const repo = String(args.repo ?? '')
-      const effort = ['light', 'standard', 'heavy'].includes(String(args.effort)) ? String(args.effort) : 'standard'
+      const effort: Effort = args.effort === 'light' || args.effort === 'heavy' ? args.effort : 'standard'
       const plan = String(args.plan ?? '').slice(0, 20_000)
       const taskId = typeof args.taskId === 'string' && args.taskId ? args.taskId : null
       if (!(await grantedRepos(agent.id)).includes(repo)) return { ok: false, error: `repo "${repo}" is not granted to you — list_repos shows yours` }
@@ -145,20 +197,13 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
         const dup = await sql`select 1 from workbench_jobs where task_id = ${taskId} and status = 'started' limit 1`
         if (dup.length) return { ok: false, error: 'a job is already running for this ticket — job_status shows it; finish or abandon it first' }
       }
-      let ref = ''
-      let title = ''
-      if (taskId) {
-        const rows = (await sql`
-          select case when t.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end as "ticketRef", t.title
-          from tasks t join boards b on b.id = t.board_id where t.id = ${taskId}
-        `) as unknown as Array<{ ticketRef: string | null; title: string }>
-        ref = rows[0]?.ticketRef ?? ''
-        title = rows[0]?.title ?? ''
-      }
-      const branch = `talaria/${ref ? ref.toLowerCase() : 'job'}-${slugify(title || String(args.repo)) || 'work'}`.slice(0, 80)
-      const { base, created } = await createBranch(repo, branch).catch((e: Error) => {
-        throw new Error(e.message)
-      })
+      const tRef = taskId ? await ticketRefOf(taskId) : null
+      const ref = tRef?.ref ?? ''
+      const title = tRef?.title ?? ''
+      const branch = ref
+        ? `talaria/${ref.toLowerCase()}-${slugify(title) || 'work'}`.slice(0, 80)
+        : `talaria/job-${slugify(String(args.repo))}-${Math.random().toString(36).slice(2, 8)}`.slice(0, 80)
+      const { base, created } = await createBranch(repo, branch)
       // Plan-first, gated by effort: light auto-proceeds; standard proceeds
       // with the plan posted to the ticket (audit trail); heavy WAITS for a
       // human to approve the plan from the ticket before any clone URL exists.
@@ -193,7 +238,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           const [cur] = (await sql`select attachments from tasks where id = ${taskId}`) as unknown as Array<{ attachments: unknown[] }>
           const have = Array.isArray(cur?.attachments) ? cur.attachments : []
           if (!have.some((a) => (a as { id?: string }).id === artifact.id)) {
-            await sql`update tasks set attachments = ${sql.json(JSON.parse(JSON.stringify([...have, chip])) as never)}, updated_at = now() where id = ${taskId}`
+            await sql`update tasks set attachments = ${sql.json([...have, chip] as never)}, updated_at = now() where id = ${taskId}`
           }
         })().catch(() => {})
       }
@@ -207,7 +252,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       // Effort → model is Talaria's call: the agent picked the effort, the
       // platform resolves which model that means today. Invocation hints come
       // from the profile's harness adapters with the model slotted in.
-      const model = await effortModel(effort as Effort, agent.workbenchModels)
+      const model = await effortModel(effort, agent.workbenchModels)
       // The agent's chosen harness leads (falling back to the profile's
       // first); its invocation line carries the model in the harness's own
       // syntax, so it's directly runnable.
@@ -268,14 +313,9 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const rows = (await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where id = $1 and agent_id = $2`, [jobId, agent.id])) as unknown as WorkbenchJob[]
       const job = rows[0]
       if (!job) return { ok: false, error: 'unknown job' }
-      if (job.status !== 'started' && job.status !== 'pr_open') return { ok: false, error: `job is ${job.status}` }
-      const flow = await repoFlow(job.repo)
-      if (!flow.testingBranch) return { ok: false, error: 'this repo has no testing branch configured — an admin can set one on the GitHub panel' }
-      const r = await mergeInto(job.repo, flow.testingBranch, job.branch)
-      if (!r.merged) return { ok: false, error: r.reason ?? 'merge failed' }
-      await sql`update workbench_jobs set merged_testing_at = now(), updated_at = now() where id = ${job.id}`
-      await logTicket(job.taskId, agent.model, `workbench: merged ${job.branch} into ${flow.testingBranch} for testing${r.reason ? ` (${r.reason})` : ''}`)
-      return { ok: true, value: { merged: true, testingBranch: flow.testingBranch, note: 'Testing merge only — the PR still ships through review.' } }
+      const r = await mergeJobToTesting(job, agent.model)
+      if (!r.ok) return { ok: false, error: r.error }
+      return { ok: true, value: { merged: true, testingBranch: r.testingBranch, note: 'Testing merge only — the PR still ships through review.' } }
     }
 
     case 'finish_job': {
@@ -316,6 +356,23 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
     }
   }
   return { ok: false, error: `unknown tool "${name}"` }
+}
+
+/** Merge a job's branch into the repo's testing branch — ONE implementation
+ *  for both the agent verb and the human ticket-strip action. */
+export async function mergeJobToTesting(
+  job: Pick<WorkbenchJob, 'id' | 'repo' | 'branch' | 'status' | 'taskId'>,
+  actor: string,
+): Promise<{ ok: true; testingBranch: string } | { ok: false; error: string }> {
+  if (job.status !== 'started' && job.status !== 'pr_open') return { ok: false, error: `job is ${job.status}` }
+  const flow = await repoFlow(job.repo)
+  if (!flow.testingBranch) return { ok: false, error: 'this repo has no testing branch configured — an admin can set one on the GitHub panel' }
+  const r = await mergeInto(job.repo, flow.testingBranch, job.branch)
+  if (!r.merged) return { ok: false, error: r.reason ?? 'merge failed' }
+  const sql = await db()
+  await sql`update workbench_jobs set merged_testing_at = now(), updated_at = now() where id = ${job.id}`
+  await logTicket(job.taskId, actor, `workbench: merged ${job.branch} into ${flow.testingBranch} for testing${r.reason ? ` (${r.reason})` : ''}`)
+  return { ok: true, testingBranch: flow.testingBranch }
 }
 
 // ── JSON-RPC surface (same shape as the app dispatcher) ──────────────────────

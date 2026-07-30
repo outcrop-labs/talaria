@@ -93,12 +93,32 @@ export interface HarnessDefinition {
   mcpServe?: { command: string; args: string[] }
   /** MCP pass-through config the harness reads: written per agent in this
    *  format at render time ('claude-json' = .mcp.json-style, 'opencode-json'
-   *  = opencode config). Omit if the harness has no MCP client. */
-  mcpConfig?: { format: 'claude-json' | 'opencode-json'; filename: string }
+   *  = opencode config, 'custom' = your renderMcpConfig below — app-shipped
+   *  harnesses only). Omit if the harness has no MCP client. */
+  mcpConfig?: { format: 'claude-json' | 'opencode-json' | 'custom'; filename: string }
+  /** Custom pass-through renderer (format: 'custom'; app-shipped only —
+   *  admin-JSON definitions can't carry code). Return the JSON-serializable
+   *  config your harness reads; you own env-substitution syntax. */
+  renderMcpConfig?: (ctx: HarnessMcpRenderContext) => unknown
+  /** A cheap command that proves the harness runs in a sandbox (version
+   *  check) — surfaced by the workbench doctor for agents to self-verify. */
+  probe?: string
   /** What a driving agent should understand: sessions, resume, results. */
   guide: string
-  /** Image-build layer hints (consumed by the workbench image pipeline). */
+  /** RESERVED: image-build layer hints — declared and validated now, consumed
+   *  when the workbench image pipeline lands. */
   install?: { npm?: string[]; commands?: string[]; notes?: string }
+}
+
+export interface HarnessMcpRenderContext {
+  /** The agent this config is rendered for (its fleet model id). */
+  agentModel: string
+  /** The agent's granted MCP servers, as per-agent gateway endpoints. */
+  servers: Array<{ name: string; url: string }>
+  /** Env var (set in the container) holding the fleet API key — use your
+   *  harness's own env-substitution syntax to reference it in headers,
+   *  together with an X-Agent-Name: <agentModel> header. */
+  apiKeyEnvVar: string
 }
 
 export const defineHarness = (h: HarnessDefinition): HarnessDefinition => h
