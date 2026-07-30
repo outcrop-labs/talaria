@@ -1,14 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { SlidersHorizontal, ChevronUp, ChevronDown, GripVertical, Archive, ExternalLink, Hash, Link as LinkIcon } from 'lucide-react'
+import { SlidersHorizontal, ChevronUp, ChevronDown, GripVertical } from 'lucide-react'
 import { useAgents } from '@/lib/agents'
-import { archiveTask, type BoardMember } from '@/lib/boards'
+import { archiveTask, updateTask, useBoardLabels, type BoardMember } from '@/lib/boards'
 import { assigneeInfo } from '@/lib/assignees'
+import { ticketMenuEntries } from '@/components/board/ticket-menu'
+import { AssigneesPill, DuePill, EstimatePill, LabelsPill, PriorityPill, StatusPill, LABEL_CSS } from '@/components/board/field-pills'
+import { statusColorOf, statusLabelOf, useBoardStatuses } from '@/lib/statuses'
+import { FieldPill } from '@/components/ui/field-pill'
+import { useSession } from '@/lib/session'
+import { userAssignee } from '@/lib/assignees'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
-import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
+import { useContextMenu, DropdownMenu } from '@/components/ui/context-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
-import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task } from '@/lib/task-const'
+import { EFFORT_LABEL, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
 
 type ColumnKey = 'ticket' | 'title' | 'status' | 'priority' | 'effort' | 'estimate' | 'assignees' | 'due' | 'time' | 'labels' | 'updated' | 'created'
@@ -30,7 +37,7 @@ const LIST_COLUMNS: ListColumn[] = [
   { key: 'assignees', label: 'Assignees', default: true },
   { key: 'due', label: 'Due' },
   { key: 'time', label: 'Time', align: 'right' },
-  { key: 'labels', label: 'Labels' },
+  { key: 'labels', label: 'Labels', default: true },
   { key: 'updated', label: 'Updated', align: 'right', default: true },
   { key: 'created', label: 'Created', align: 'right' },
 ]
@@ -101,42 +108,63 @@ function fmtTime(s: number): string {
   return `${s}s`
 }
 
-// List view of a board's tasks with configurable columns (persisted per board).
+export type GroupByKey = 'status' | 'priority' | 'assignee' | 'label' | 'none'
+
+interface RowGroup {
+  key: string
+  label: string
+  dot?: string
+  hours: number
+  tasks: Task[]
+}
+
+// List view of a board's tasks: grouped (ClickUp-style collapsible sections),
+// configurable columns (persisted per board), inline property pills, and
+// bulk selection with a floating action bar.
 export function BoardList({
   tasks,
   onOpen,
   boardId,
   members = [],
+  canEdit = false,
+  groupBy = 'status',
+  showEmptyGroups = false,
 }: {
   tasks: Task[]
   onOpen: (id: string) => void
   boardId: string
   members?: BoardMember[]
+  canEdit?: boolean
+  groupBy?: GroupByKey
+  /** Status/priority grouping: render EVERY group (drop lanes included). */
+  showEmptyGroups?: boolean
 }) {
   const qc = useQueryClient()
   const { openMenu, menu } = useContextMenu()
   const { data: fleet, isLoading: agentsLoading } = useAgents()
+  const { data: me } = useSession()
+  const { data: boardLabels = [] } = useBoardLabels(boardId)
+  const { data: boardStatuses = [] } = useBoardStatuses(boardId)
 
-  // Right-click a row — shortcuts to actions the board already offers.
-  const rowMenu = (e: React.MouseEvent, t: Task) => {
-    const items: ContextMenuEntry[] = [
-      { label: 'Open', icon: <ExternalLink size={14} />, onSelect: () => onOpen(t.id) },
-      { label: 'Copy link', icon: <LinkIcon size={14} />, onSelect: () => copyAppLink(`/boards/${t.boardId}/${t.id}`) },
-    ]
-    if (t.ticketRef) {
-      const ref = t.ticketRef
-      items.push({ label: 'Copy ticket ref', icon: <Hash size={14} />, onSelect: () => void navigator.clipboard.writeText(ref) })
-    }
-    items.push('sep', {
-      label: t.archivedAt ? 'Unarchive' : 'Archive',
-      icon: <Archive size={14} />,
-      danger: !t.archivedAt,
-      onSelect: () => {
-        void archiveTask(t.id, !t.archivedAt).then(() => qc.invalidateQueries({ queryKey: ['board-tasks', boardId] }))
-      },
-    })
-    openMenu(e, items)
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', boardId] })
+  const patch = async (taskId: string, p: Parameters<typeof updateTask>[1]) => {
+    await updateTask(taskId, p)
+    invalidate()
   }
+
+  // Right-click a row — the SAME quick-control menu the kanban cards serve.
+  const rowMenu = (e: React.MouseEvent, t: Task) =>
+    openMenu(
+      e,
+      ticketMenuEntries(t, {
+        canEdit,
+        meId: me?.id,
+        statuses: boardStatuses,
+        onOpen: () => onOpen(t.id),
+        onPatch: (p) => void patch(t.id, p),
+        onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
+      }),
+    )
   const label = (id: string) => assigneeInfo(id, fleet?.agents ?? [], members).label
   const assigneeText = (ids: string[]) => (ids.length ? ids.map(label).join(', ') : '—')
 
@@ -186,8 +214,10 @@ export function BoardList({
         return Number(t.ticketRef?.match(/(\d+)\s*$/)?.[1] ?? 0)
       case 'title':
         return t.title.toLowerCase()
-      case 'status':
-        return TASK_STATUSES.indexOf(t.status as (typeof TASK_STATUSES)[number])
+      case 'status': {
+        const keys = boardStatuses.length ? boardStatuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])
+        return keys.indexOf(t.status)
+      }
       case 'priority':
         return PRIORITY_RANK[t.priority] ?? 0
       case 'effort':
@@ -222,6 +252,126 @@ export function BoardList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, sort, fleet])
 
+  // ── Grouping (ClickUp-style sections; a multi-assignee/multi-label ticket
+  //    appears in each of its groups) ──────────────────────────────────────
+  const groups = useMemo<RowGroup[]>(() => {
+    const sum = (ts: Task[]) => Math.round(ts.reduce((s, t) => s + (t.estimatedHours ?? 0), 0) * 10) / 10
+    if (groupBy === 'none') return [{ key: 'all', label: '', hours: 0, tasks: sorted }]
+    if (groupBy === 'status') {
+      const boardKeys = boardStatuses.length ? boardStatuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])
+      const order = [...boardKeys, 'failed', 'cancelled']
+      return order
+        .map((st) => ({
+          key: st,
+          label: statusLabelOf(st, boardStatuses),
+          dot: statusColorOf(st, boardStatuses),
+          tasks: sorted.filter((t) => t.status === st),
+        }))
+        // Board statuses always show when empty-groups is on (drop lanes);
+        // failed/cancelled only when occupied.
+        .filter((g) => g.tasks.length > 0 || (showEmptyGroups && boardKeys.includes(g.key)))
+        .map((g) => ({ ...g, hours: sum(g.tasks) }))
+    }
+    if (groupBy === 'priority') {
+      return [...PRIORITIES]
+        .reverse()
+        .map((p) => ({ key: p, label: p, dot: PRIORITY_COLOR[p], tasks: sorted.filter((t) => t.priority === p) }))
+        .filter((g) => g.tasks.length > 0 || showEmptyGroups)
+        .map((g) => ({ ...g, hours: sum(g.tasks) }))
+    }
+    if (groupBy === 'assignee') {
+      const byKey = new Map<string, Task[]>()
+      for (const t of sorted) {
+        const keys = t.assignees.length ? t.assignees : ['__none']
+        for (const k of keys) byKey.set(k, [...(byKey.get(k) ?? []), t])
+      }
+      return [...byKey.entries()]
+        .map(([k, ts]) => ({
+          key: k,
+          label: k === '__none' ? 'Unassigned' : assigneeInfo(k, fleet?.agents ?? [], members).label,
+          tasks: ts,
+        }))
+        .sort((a, b) => (a.key === '__none' ? 1 : b.key === '__none' ? -1 : a.label.localeCompare(b.label)))
+        .map((g) => ({ ...g, hours: sum(g.tasks) }))
+    }
+    // label
+    const byTag = new Map<string, Task[]>()
+    for (const t of sorted) {
+      const keys = t.tags.length ? t.tags : ['__none']
+      for (const k of keys) byTag.set(k, [...(byTag.get(k) ?? []), t])
+    }
+    return [...byTag.entries()]
+      .map(([k, ts]) => ({
+        key: k,
+        label: k === '__none' ? 'No label' : k,
+        dot: k === '__none' ? undefined : LABEL_CSS[boardLabels.find((l) => l.name === k)?.color ?? 'slate'],
+        tasks: ts,
+      }))
+      .sort((a, b) => (a.key === '__none' ? 1 : b.key === '__none' ? -1 : a.label.localeCompare(b.label)))
+      .map((g) => ({ ...g, hours: sum(g.tasks) }))
+  }, [sorted, groupBy, fleet, members, boardLabels, boardStatuses, showEmptyGroups])
+
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const toggleGroup = (k: string) =>
+    setCollapsed((c) => {
+      const next = new Set(c)
+      if (next.has(k)) next.delete(k)
+      else next.add(k)
+      return next
+    })
+
+  // ── Drag rows between groups (status/priority groups are droppable) ─────
+  const [dragRow, setDragRow] = useState<string | null>(null)
+  const [dragOverGroup, setDragOverGroup] = useState<string | null>(null)
+  const groupDroppable = canEdit && (groupBy === 'status' || groupBy === 'priority')
+  const dropOnGroup = (g: RowGroup) => {
+    const id = dragRow
+    setDragRow(null)
+    setDragOverGroup(null)
+    if (!id || !groupDroppable) return
+    if (groupBy === 'status') void patch(id, { status: g.key as TaskStatus })
+    else void patch(id, { priority: g.key as Priority })
+  }
+
+  // ── Bulk selection ───────────────────────────────────────────────────────
+  const [sel, setSel] = useState<Set<string>>(new Set())
+  useEffect(() => setSel(new Set()), [boardId, groupBy])
+  const toggleSel = (id: string) =>
+    setSel((s) => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const bulk = async (action: { status?: TaskStatus; priority?: Priority; assignToMe?: boolean; archive?: boolean }) => {
+    for (const id of sel) {
+      if (action.archive) {
+        await archiveTask(id, true)
+      } else if (action.assignToMe && me) {
+        const t = tasks.find((x) => x.id === id)
+        const meKey = userAssignee(me.id)
+        if (t && !t.assignees.includes(meKey)) await updateTask(id, { assignees: [...t.assignees, meKey] })
+      } else {
+        await updateTask(id, action)
+      }
+    }
+    setSel(new Set())
+    invalidate()
+  }
+
+  // Property pills (FieldPill + DropdownMenu) — the shared clickable-inline
+  // affordance; pills own their clicks so row-click still opens the ticket.
+  const pctx = (t: Task) => ({
+    canEdit,
+    onPatch: (p: Parameters<typeof updateTask>[1]) => void patch(t.id, p),
+    agents: fleet?.agents ?? [],
+    members,
+    meId: me?.id,
+    labels: boardLabels,
+    statuses: boardStatuses,
+    boardId,
+  })
+
   const cell = (t: Task, key: ColumnKey) => {
     switch (key) {
       case 'ticket':
@@ -229,29 +379,24 @@ export function BoardList({
       case 'title':
         return <span className="font-sans text-fg">{t.title}</span>
       case 'status':
-        return <span className="text-muted">{STATUS_LABEL[t.status]}</span>
+        return <StatusPill t={t} ctx={pctx(t)} />
       case 'priority':
-        return (
-          <span className="inline-flex items-center gap-1.5 text-muted">
-            <span className="h-2 w-2 rounded-full" style={{ background: PRIORITY_COLOR[t.priority] }} />
-            {t.priority}
-          </span>
-        )
+        return <PriorityPill t={t} ctx={pctx(t)} />
       case 'effort':
         return <span className="text-muted">{t.effort ? EFFORT_LABEL[t.effort] : '—'}</span>
       case 'estimate':
-        return <span className="text-muted">{t.estimatedHours != null ? `${t.estimatedHours}h` : '—'}</span>
+        return <EstimatePill t={t} ctx={pctx(t)} />
       case 'assignees':
         // Raw model ids would flash then swap to labels (jumping the column
         // width) — hold the cell with a short bar until the fleet resolves.
         if (agentsLoading && t.assignees.length > 0) return <Skeleton className="h-2.5 w-16 rounded-full" />
-        return <span className="text-muted">{assigneeText(t.assignees)}</span>
+        return <AssigneesPill t={t} ctx={pctx(t)} />
       case 'due':
-        return <span className="text-muted">{t.dueDate ? t.dueDate.slice(0, 10) : '—'}</span>
+        return <DuePill t={t} ctx={pctx(t)} />
       case 'time':
         return <span className="text-muted">{fmtTime(t.timeSpentSeconds)}</span>
       case 'labels':
-        return <span className="text-muted">{t.tags.length ? t.tags.join(', ') : '—'}</span>
+        return <LabelsPill t={t} ctx={pctx(t)} />
       case 'updated':
         return <span className="text-muted">{relativeTime(t.updatedAt)}</span>
       case 'created':
@@ -261,18 +406,24 @@ export function BoardList({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-end border-b border-line-subtle px-4 py-2">
-        <ColumnsMenu visible={visible} order={order} onChangeVisible={updateCols} onChangeOrder={updateOrder} />
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="relative min-h-0 flex-1 overflow-auto p-4">
         {tasks.length === 0 ? (
           <div className="grid h-full place-items-center text-sm text-muted">No tasks match.</div>
         ) : (
           <table className="w-full text-sm">
             <thead className="border-b border-line text-xs uppercase tracking-wide text-muted">
               <tr>
-                <th className="w-6 py-2" />
+                <th className="w-7 py-2 pl-2">
+                  {canEdit && (
+                    <input
+                      type="checkbox"
+                      title="Select all"
+                      checked={sorted.length > 0 && sorted.every((t) => sel.has(t.id))}
+                      onChange={(e) => setSel(e.target.checked ? new Set(sorted.map((t) => t.id)) : new Set())}
+                      className="accent-[var(--theme-accent)]"
+                    />
+                  )}
+                </th>
                 {cols.map((c) => (
                   <th key={c.key} className={cn('px-3 py-2 font-semibold', c.align === 'right' ? 'text-right' : 'text-left')}>
                     <button
@@ -288,30 +439,144 @@ export function BoardList({
                     </button>
                   </th>
                 ))}
+                <th className="w-8 py-1 pr-2 text-right">
+                  <ColumnsMenu visible={visible} order={order} onChangeVisible={updateCols} onChangeOrder={updateOrder} />
+                </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-line-subtle">
-              {sorted.map((t) => (
-                <tr
-                  key={t.id}
-                  onClick={() => onOpen(t.id)}
-                  onContextMenu={(e) => rowMenu(e, t)}
-                  className="group cursor-pointer transition-colors hover:bg-card"
+            {groups.map((g) => {
+              const open = !collapsed.has(g.key)
+              return (
+                <tbody
+                  key={g.key}
+                  className={cn('divide-y divide-line-subtle', dragOverGroup === g.key && dragRow && 'bg-accent/5')}
+                  onDragOver={
+                    groupDroppable
+                      ? (e) => {
+                          e.preventDefault()
+                          setDragOverGroup(g.key)
+                        }
+                      : undefined
+                  }
+                  onDragLeave={() => setDragOverGroup((d) => (d === g.key ? null : d))}
+                  onDrop={groupDroppable ? (e) => { e.preventDefault(); dropOnGroup(g) } : undefined}
                 >
-                  <td className="pl-2">
-                    <CopyLinkButton path={`/boards/${t.boardId}/${t.id}`} className="opacity-0 group-hover:opacity-100" />
-                  </td>
-                  {cols.map((c) => (
-                    <td key={c.key} className={cn('px-3 py-2', c.align === 'right' && 'text-right')}>
-                      {cell(t, c.key)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
+                  {groupBy !== 'none' && (
+                    <tr
+                      className={cn('cursor-pointer select-none bg-sidebar/60', dragOverGroup === g.key && dragRow && 'ring-1 ring-inset ring-[color:var(--theme-accent)]')}
+                      onClick={() => toggleGroup(g.key)}
+                    >
+                      <td colSpan={cols.length + 2} className="px-2 py-1.5">
+                        <span className="flex items-center gap-2 text-xs">
+                          <span className="text-muted">{open ? '▾' : '▸'}</span>
+                          {g.dot && <span className="h-2 w-2 rounded-full" style={{ background: g.dot }} />}
+                          <span className="font-semibold uppercase tracking-wide text-fg">{g.label}</span>
+                          <span className="text-muted">{g.tasks.length}</span>
+                          {g.hours > 0 && <span className="text-[10px] text-muted">Σ {g.hours}h</span>}
+                        </span>
+                      </td>
+                    </tr>
+                  )}
+                  {open && g.tasks.length === 0 && (
+                    <tr>
+                      <td colSpan={cols.length + 2} className={cn('px-4 py-2 text-xs italic text-muted/70', dragOverGroup === g.key && dragRow && 'text-accent')}>
+                        {dragRow ? 'Drop here' : 'No tickets'}
+                      </td>
+                    </tr>
+                  )}
+                  {open &&
+                    g.tasks.map((t) => (
+                      <tr
+                        key={`${g.key}:${t.id}`}
+                        draggable={groupDroppable}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/task', t.id)
+                          e.dataTransfer.effectAllowed = 'move'
+                          setDragRow(t.id)
+                        }}
+                        onDragEnd={() => {
+                          setDragRow(null)
+                          setDragOverGroup(null)
+                        }}
+                        onClick={() => onOpen(t.id)}
+                        onContextMenu={(e) => rowMenu(e, t)}
+                        className={cn('group cursor-pointer transition-colors hover:bg-card', sel.has(t.id) && 'bg-card/70', dragRow === t.id && 'opacity-40')}
+                      >
+                        <td className="pl-2" onClick={(e) => e.stopPropagation()}>
+                          {canEdit ? (
+                            <input
+                              type="checkbox"
+                              checked={sel.has(t.id)}
+                              onChange={() => toggleSel(t.id)}
+                              className={cn('accent-[var(--theme-accent)] transition-opacity', sel.size === 0 && 'opacity-0 group-hover:opacity-100')}
+                            />
+                          ) : (
+                            <CopyLinkButton path={`/boards/${t.boardId}/${t.id}`} className="opacity-0 group-hover:opacity-100" />
+                          )}
+                        </td>
+                        {cols.map((c) => (
+                          <td key={c.key} className={cn('px-3 py-2', c.align === 'right' && 'text-right')}>
+                            {cell(t, c.key)}
+                          </td>
+                        ))}
+                        <td />
+                      </tr>
+                    ))}
+                </tbody>
+              )
+            })}
           </table>
         )}
       </div>
+
+      {/* Bulk action bar — appears with a selection, acts on every selected
+          ticket, then clears. */}
+      {sel.size > 0 && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex justify-center">
+          <div className="mercury-panel pointer-events-auto flex items-center gap-1 rounded-xl px-2 py-1.5 shadow-[var(--theme-shadow-3)]">
+            <span className="px-2 text-xs font-medium text-fg">{sel.size} selected</span>
+            <DropdownMenu
+              up
+              align="left"
+              trigger={(open) => (
+                <FieldPill active={open} className="text-xs">
+                  Move to
+                </FieldPill>
+              )}
+              items={(boardStatuses.length ? boardStatuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])).map((st) => ({
+                label: statusLabelOf(st, boardStatuses),
+                icon: <span className="h-2 w-2 rounded-full" style={{ background: statusColorOf(st, boardStatuses) }} />,
+                onSelect: () => void bulk({ status: st as TaskStatus }),
+              }))}
+            />
+            <DropdownMenu
+              up
+              align="left"
+              trigger={(open) => (
+                <FieldPill active={open} className="text-xs">
+                  Priority
+                </FieldPill>
+              )}
+              items={[...PRIORITIES].reverse().map((pr) => ({
+                label: pr,
+                icon: <span className="h-2 w-2 rounded-full" style={{ background: PRIORITY_COLOR[pr] }} />,
+                onSelect: () => void bulk({ priority: pr }),
+              }))}
+            />
+            {me && (
+              <button onClick={() => void bulk({ assignToMe: true })} className="rounded-md px-2 py-0.5 text-xs text-muted transition-colors hover:bg-card hover:text-fg">
+                Assign to me
+              </button>
+            )}
+            <button onClick={() => void bulk({ archive: true })} className="rounded-md px-2 py-0.5 text-xs text-muted transition-colors hover:bg-card hover:text-[color:var(--theme-danger)]">
+              Archive
+            </button>
+            <button onClick={() => setSel(new Set())} title="Clear selection" className="rounded-md px-1.5 py-0.5 text-xs text-muted transition-colors hover:text-fg">
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
       {menu}
     </div>
   )
@@ -333,10 +598,12 @@ function ColumnsMenu({
   const [overKey, setOverKey] = useState<ColumnKey | null>(null)
   const [overPos, setOverPos] = useState<'before' | 'after'>('before')
   const ref = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!open) return
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (ref.current && !ref.current.contains(t) && !panelRef.current?.contains(t)) setOpen(false)
     }
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
@@ -357,16 +624,31 @@ function ColumnsMenu({
     setOverKey(null)
   }
 
+  // Icon-only trigger living in the table's trailing header cell; the panel
+  // portals with fixed positioning so the scroll container can't clip it.
+  const [pos, setPos] = useState<React.CSSProperties | null>(null)
+  const openPanel = () => {
+    if (open) return setOpen(false)
+    const r = ref.current?.getBoundingClientRect()
+    if (!r) return
+    setPos({ position: 'fixed', zIndex: 80, top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) })
+    setOpen(true)
+  }
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative inline-block">
       <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs text-muted transition-colors hover:text-fg"
+        onClick={openPanel}
+        title="Columns — show, hide, reorder"
+        aria-label="Configure columns"
+        className={cn(
+          'grid h-6 w-6 place-items-center rounded-md transition-colors',
+          open ? 'bg-card text-fg' : 'text-muted hover:bg-card hover:text-fg',
+        )}
       >
-        <SlidersHorizontal size={14} /> Columns
+        <SlidersHorizontal size={13} />
       </button>
-      {open && (
-        <div className="mercury-panel absolute right-0 z-30 mt-1 w-48 rounded-xl p-1">
+      {open && pos && typeof document !== 'undefined' && createPortal(
+        <div ref={panelRef} style={pos} className="mercury-panel w-48 rounded-xl p-1">
           <div className="px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-muted">Drag to reorder</div>
           {order.map((key) => {
             const c = LIST_COLUMNS.find((x) => x.key === key)!
@@ -416,7 +698,8 @@ function ColumnsMenu({
               </div>
             )
           })}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

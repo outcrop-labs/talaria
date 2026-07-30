@@ -52,19 +52,34 @@ export async function homeSummary(userId: string, role: 'admin' | 'member' = 'me
   const rows = (await sql`
     select t.id, t.board_id as "boardId", b.name as board,
            case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') || '-' || t.ticket_no end as "ticketRef",
-           t.title, t.status, t.updated_at as "updatedAt"
+           t.title, t.status, t.updated_at as "updatedAt",
+           case
+             when t.status = 'blocked' then 'blocked'
+             when t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'review')
+               or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status = 'quality_review')
+               then 'review'
+             else 'triage'
+           end as "queue"
     from tasks t
     join boards b on b.id = t.board_id
     left join board_members m on m.board_id = b.id and m.user_id = ${userId}
     left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
     where (m.user_id is not null or tm.user_id is not null)
       and b.archived_at is null and t.archived_at is null
-      and t.status in ('inbox', 'quality_review', 'blocked')
+      and (
+        t.status = 'blocked'
+        or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'review')
+        or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'open' and not bs.agent_start)
+        or (
+          not exists (select 1 from board_statuses bs where bs.board_id = t.board_id)
+          and t.status in ('inbox', 'quality_review')
+        )
+      )
     order by t.updated_at desc
   `) as unknown as WorkItem[]
 
-  const bucket = (status: string): { count: number; items: WorkItem[] } => {
-    const items = rows.filter((r) => r.status === status)
+  const bucket = (queue: string): { count: number; items: WorkItem[] } => {
+    const items = (rows as Array<WorkItem & { queue: string }>).filter((r) => r.queue === queue)
     return { count: items.length, items: items.slice(0, WINDOW) }
   }
 
@@ -113,7 +128,7 @@ export async function homeSummary(userId: string, role: 'admin' | 'member' = 'me
         ? { tokens: cost.totals.today.prompt + cost.totals.today.completion, usd: cost.totals.today.cost }
         : null,
     },
-    queues: { triage: bucket('inbox'), review: bucket('quality_review'), blocked: bucket('blocked') },
+    queues: { triage: bucket('triage'), review: bucket('review'), blocked: bucket('blocked') },
     unread,
     boards,
     fleet: { online: managed.length - down.length, total: managed.length, down },

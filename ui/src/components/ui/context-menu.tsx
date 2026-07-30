@@ -24,7 +24,14 @@ export interface ContextMenuItem {
   icon?: ReactNode
   danger?: boolean
   disabled?: boolean
-  onSelect: () => void
+  /** Marks the current choice in a submenu (renders a leading check). */
+  checked?: boolean
+  /** Keep the menu open after selecting (multi-toggle pickers). */
+  keepOpen?: boolean
+  /** Submenu — hover opens a flyout of these entries. `onSelect` is ignored
+   *  on items that carry children. */
+  children?: ContextMenuEntry[]
+  onSelect?: () => void
 }
 export type ContextMenuEntry = ContextMenuItem | 'sep'
 
@@ -57,6 +64,7 @@ export function useContextMenu() {
 function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(-1)
+  const [openSub, setOpenSub] = useState<number | null>(null)
   const selectable = state.items.filter((i): i is ContextMenuItem => i !== 'sep' && !i.disabled)
 
   // Clamp inside the viewport once we know our size.
@@ -84,8 +92,11 @@ function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
         setActive((a) => (a - 1 + selectable.length) % selectable.length)
       } else if (e.key === 'Enter' && active >= 0) {
         e.preventDefault()
-        selectable[active]?.onSelect()
-        onClose()
+        const it = selectable[active]
+        if (it && !it.children?.length) {
+          it.onSelect?.()
+          onClose()
+        }
       }
     }
     const onScroll = () => onClose()
@@ -113,29 +124,76 @@ function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
         if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
         if (!item.disabled) selIdx += 1
         const idx = selIdx
+        const hasKids = !!item.children?.length
         return (
-          <button
-            key={`${item.label}${i}`}
-            type="button"
-            role="menuitem"
-            disabled={item.disabled}
-            onMouseEnter={() => !item.disabled && setActive(idx)}
-            onClick={() => {
-              item.onSelect()
-              onClose()
-            }}
-            className={cn(
-              'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
-              item.disabled
-                ? 'cursor-default text-muted opacity-50'
-                : item.danger
-                  ? cn('text-[color:var(--theme-danger)]', active === idx && 'bg-[color:var(--theme-danger)]/10')
-                  : cn('text-fg', active === idx && 'bg-sidebar'),
+          <div key={`${item.label}${i}`} className="relative" onMouseLeave={() => hasKids && setOpenSub((s) => (s === i ? null : s))}>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              aria-haspopup={hasKids || undefined}
+              onMouseEnter={() => {
+                if (item.disabled) return
+                setActive(idx)
+                setOpenSub(hasKids ? i : null)
+              }}
+              onClick={() => {
+                if (hasKids) return setOpenSub((s) => (s === i ? null : i))
+                item.onSelect?.()
+                onClose()
+              }}
+              className={cn(
+                'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                item.disabled
+                  ? 'cursor-default text-muted opacity-50'
+                  : item.danger
+                    ? cn('text-[color:var(--theme-danger)]', active === idx && 'bg-[color:var(--theme-danger)]/10')
+                    : cn('text-fg', (active === idx || openSub === i) && 'bg-sidebar'),
+              )}
+            >
+              {item.checked !== undefined ? (
+                <span className="grid w-4 shrink-0 place-items-center text-accent">{item.checked ? '✓' : ''}</span>
+              ) : (
+                item.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{item.icon}</span>
+              )}
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              {hasKids && <span className="shrink-0 text-xs text-muted">▸</span>}
+            </button>
+            {hasKids && openSub === i && (
+              <div className="absolute left-full top-0 z-10 -ml-0.5 min-w-40 rounded-xl border border-line bg-card p-1 shadow-lg">
+                {item.children!.map((kid, k) => {
+                  if (kid === 'sep') return <div key={`ks${k}`} className="mx-2 my-1 border-t border-line-subtle" />
+                  return (
+                    <button
+                      key={`${kid.label}${k}`}
+                      type="button"
+                      role="menuitem"
+                      disabled={kid.disabled}
+                      onClick={() => {
+                        kid.onSelect?.()
+                        onClose()
+                      }}
+                      className={cn(
+                        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                        kid.disabled
+                          ? 'cursor-default text-muted opacity-50'
+                          : kid.danger
+                            ? 'text-[color:var(--theme-danger)] hover:bg-[color:var(--theme-danger)]/10'
+                            : 'text-fg hover:bg-sidebar',
+                      )}
+                    >
+                      {kid.checked !== undefined ? (
+                        <span className="grid w-4 shrink-0 place-items-center text-accent">{kid.checked ? '✓' : ''}</span>
+                      ) : (
+                        kid.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{kid.icon}</span>
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{kid.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
             )}
-          >
-            {item.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{item.icon}</span>}
-            <span className="min-w-0 flex-1 truncate">{item.label}</span>
-          </button>
+          </div>
         )
       })}
     </div>,
@@ -153,68 +211,133 @@ export function DropdownMenu({
   trigger,
   items,
   align = 'right',
+  up = false,
   className,
+  footer,
+  content,
 }: {
   /** Renders the trigger; `open` lets it style its active state. */
   trigger: (open: boolean) => ReactNode
   items: ContextMenuEntry[] | (() => ContextMenuEntry[])
   align?: 'left' | 'right'
+  /** Open upward (triggers docked at the bottom of the viewport). */
+  up?: boolean
   className?: string
+  /** Rendered under the items (e.g. a date input) — clicks inside stay open. */
+  footer?: (close: () => void) => ReactNode
+  /** Replaces the item list entirely — custom panel bodies (swatch grids,
+   *  small forms). Items/footer are ignored when set. */
+  content?: (close: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  // Fixed-position style computed from the trigger at open time. The panel
+  // PORTALS to <body>: cards/panels carry backdrop-filter (a stacking
+  // context), so an absolutely-positioned sibling could never stack above
+  // neighboring cards, no z-index would save it.
+  const [pos, setPos] = useState<React.CSSProperties | null>(null)
+
+  const toggle = () => {
+    if (open) return setOpen(false)
+    const r = ref.current?.getBoundingClientRect()
+    if (!r) return
+    setPos({
+      position: 'fixed',
+      zIndex: 80,
+      ...(up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }),
+      ...(align === 'right' ? { right: Math.max(8, window.innerWidth - r.right) } : { left: Math.max(8, r.left) }),
+    })
+    setOpen(true)
+  }
 
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (!ref.current?.contains(t) && !panelRef.current?.contains(t)) setOpen(false)
     }
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    // Reposition-on-scroll is guesswork; closing matches the context menu.
+    const onScroll = (e: Event) => {
+      if (panelRef.current?.contains(e.target as Node)) return
+      setOpen(false)
+    }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
+    document.addEventListener('scroll', onScroll, true)
     return () => {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
+      document.removeEventListener('scroll', onScroll, true)
     }
   }, [open])
 
   const entries = typeof items === 'function' ? (open ? items() : []) : items
   return (
     <div ref={ref} className={cn('relative', className)}>
-      <span onClick={() => setOpen((o) => !o)}>{trigger(open)}</span>
-      {open && (
-        <div
-          role="menu"
-          className={cn('absolute top-full z-40 mt-1 min-w-44 rounded-xl border border-line bg-card p-1 shadow-lg', align === 'right' ? 'right-0' : 'left-0')}
-        >
-          {entries.map((item, i) => {
-            if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
-            return (
-              <button
-                key={`${item.label}${i}`}
-                type="button"
-                role="menuitem"
-                disabled={item.disabled}
-                onClick={() => {
-                  item.onSelect()
-                  setOpen(false)
-                }}
-                className={cn(
-                  'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
-                  item.disabled
-                    ? 'cursor-default text-muted opacity-50'
-                    : item.danger
-                      ? 'text-[color:var(--theme-danger)] hover:bg-[color:var(--theme-danger)]/10'
-                      : 'text-fg hover:bg-sidebar',
-                )}
-              >
-                {item.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{item.icon}</span>}
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
-              </button>
-            )
-          })}
-        </div>
-      )}
+      {/* The trigger click is the menu's — never the row/card underneath. */}
+      <span
+        onClick={(e) => {
+          e.stopPropagation()
+          toggle()
+        }}
+      >
+        {trigger(open)}
+      </span>
+      {open &&
+        pos &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            ref={panelRef}
+            role="menu"
+            style={pos}
+            onClick={(e) => e.stopPropagation()}
+            className="min-w-44 max-w-72 rounded-xl border border-line bg-card p-1 shadow-lg"
+          >
+            {content ? (
+              <div className="p-1">{content(() => setOpen(false))}</div>
+            ) : (
+            <div className="max-h-80 overflow-y-auto">
+              {entries.map((item, i) => {
+                if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
+                return (
+                  <button
+                    key={`${item.label}${i}`}
+                    type="button"
+                    role="menuitem"
+                    disabled={item.disabled}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      item.onSelect?.()
+                      if (!item.keepOpen) setOpen(false)
+                    }}
+                    className={cn(
+                      'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                      item.disabled
+                        ? 'cursor-default text-muted opacity-50'
+                        : item.danger
+                          ? 'text-[color:var(--theme-danger)] hover:bg-[color:var(--theme-danger)]/10'
+                          : cn('hover:bg-sidebar', item.checked === false ? 'text-muted' : 'text-fg'),
+                    )}
+                  >
+                    {/* checked state: leading ✓ slot (kept when unchecked so rows
+                        align); falls back to the icon slot otherwise. */}
+                    {item.checked !== undefined ? (
+                      <span className="grid w-4 shrink-0 place-items-center text-accent">{item.checked ? '✓' : ''}</span>
+                    ) : null}
+                    {item.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{item.icon}</span>}
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+            )}
+            {!content && footer && <div className="mt-1 border-t border-line-subtle px-2 pb-1 pt-2">{footer(() => setOpen(false))}</div>}
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

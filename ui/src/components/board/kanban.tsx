@@ -1,16 +1,18 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Archive, ExternalLink, Hash, Link as LinkIcon, MessageSquare, GitBranch } from 'lucide-react'
+import { MessageSquare, GitBranch } from 'lucide-react'
+import { ticketMenuEntries } from '@/components/board/ticket-menu'
 import { Input } from '@/components/ui/input'
-import { Avatar } from '@/components/ui/avatar'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
-import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
+import { useContextMenu } from '@/components/ui/context-menu'
+import { AssigneesPill, DuePill, EstimatePill, LabelsPill, LABEL_CSS, type PillCtx } from '@/components/board/field-pills'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
-import { archiveTask, createTask, updateTask, type Board, type BoardMember } from '@/lib/boards'
-import { assigneeInfo, type AssigneeInfo } from '@/lib/assignees'
+import { archiveTask, createTask, updateTask, useBoardLabels, type Board, type BoardMember } from '@/lib/boards'
 import { plainText } from '@/lib/plain-text'
 import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task, type TaskStatus } from '@/lib/task-const'
+import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
+import { useSession } from '@/lib/session'
 
 const COL_ACCENT: Record<string, string> = {
   inbox: 'var(--theme-muted)',
@@ -20,9 +22,6 @@ const COL_ACCENT: Record<string, string> = {
   quality_review: 'var(--theme-accent-secondary)',
   done: 'var(--theme-success)',
 }
-
-const overdue = (t: Task) =>
-  !!t.dueDate && new Date(t.dueDate).getTime() < Date.now() && !['done', 'cancelled'].includes(t.status)
 
 /** Compact "4h" / "2.5h" — estimates render short or not at all. */
 const fmtHours = (h: number) => `${Number.isInteger(h) ? h : h.toFixed(1)}h`
@@ -42,6 +41,19 @@ export function Kanban({
 }) {
   const qc = useQueryClient()
   const { data: fleet } = useAgents()
+  const { data: me } = useSession()
+  const { data: boardLabels = [] } = useBoardLabels(board.id)
+  const { data: boardStatuses = [] } = useBoardStatuses(board.id)
+  // Columns: the board's status set (custom or defaults), plus the legacy
+  // terminal extras only when occupied.
+  const columns = boardStatuses.length
+    ? [
+        ...boardStatuses.map((st) => ({ key: st.key, label: st.label, color: statusColorOf(st.key, boardStatuses) })),
+        ...(['failed', 'cancelled'] as const)
+          .filter((k) => tasks.some((t) => t.status === k))
+          .map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: COL_ACCENT[k] ?? 'var(--theme-muted)' })),
+      ]
+    : TASK_STATUSES.map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: COL_ACCENT[k] ?? 'var(--theme-muted)' }))
   const agents = fleet?.agents ?? []
   const canEdit = board.role === 'owner' || board.role === 'editor'
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
@@ -60,32 +72,28 @@ export function Kanban({
     return p ? (p.ticketRef ?? p.title) : null
   }
 
-  // Right-click a card — shortcuts to actions the card/board already offers.
-  const cardMenu = (e: React.MouseEvent, t: Task) => {
-    const items: ContextMenuEntry[] = [
-      { label: 'Open', icon: <ExternalLink size={14} />, onSelect: () => onOpen(t.id) },
-      { label: 'Copy link', icon: <LinkIcon size={14} />, onSelect: () => copyAppLink(`/boards/${t.boardId}/${t.id}`) },
-    ]
-    if (t.ticketRef) {
-      const ref = t.ticketRef
-      items.push({ label: 'Copy ticket ref', icon: <Hash size={14} />, onSelect: () => void navigator.clipboard.writeText(ref) })
-    }
-    if (canEdit) {
-      items.push('sep', {
-        label: t.archivedAt ? 'Unarchive' : 'Archive',
-        icon: <Archive size={14} />,
-        danger: !t.archivedAt,
-        onSelect: () => {
-          void archiveTask(t.id, !t.archivedAt).then(invalidate)
-        },
-      })
-    }
-    openMenu(e, items)
+  const patch = async (taskId: string, p: Parameters<typeof updateTask>[1]) => {
+    await updateTask(taskId, p)
+    invalidate()
   }
 
+  // Right-click a card — the shared ticket menu (quick controls + shortcuts).
+  const cardMenu = (e: React.MouseEvent, t: Task) =>
+    openMenu(
+      e,
+      ticketMenuEntries(t, {
+        canEdit,
+        meId: me?.id,
+        statuses: boardStatuses,
+        onOpen: () => onOpen(t.id),
+        onPatch: (p) => void patch(t.id, p),
+        onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
+      }),
+    )
+
   const addTo = async (status: TaskStatus, title: string) => {
-    const { task } = await createTask(board.id, { title })
-    if (status !== 'inbox') await updateTask(task.id, { status })
+    const { task } = (await createTask(board.id, { title })) as { task: Task }
+    if (task.status !== status) await updateTask(task.id, { status })
     invalidate()
   }
   const move = async (taskId: string, status: TaskStatus) => {
@@ -95,33 +103,33 @@ export function Kanban({
 
   return (
     <div className="flex h-full gap-3 overflow-x-auto p-4">
-      {TASK_STATUSES.map((col) => {
-        const colTasks = tasks.filter((t) => t.status === col)
+      {columns.map((col) => {
+        const colTasks = tasks.filter((t) => t.status === col.key)
         // Column estimate rollup — visible planning weight per column.
         const colHours = colTasks.reduce((s, t) => s + (t.estimatedHours ?? 0), 0)
         return (
           <div
-            key={col}
-            onDragOver={canEdit ? (e) => { e.preventDefault(); setDragOver(col) } : undefined}
-            onDragLeave={() => setDragOver((d) => (d === col ? null : d))}
+            key={col.key}
+            onDragOver={canEdit ? (e) => { e.preventDefault(); setDragOver(col.key) } : undefined}
+            onDragLeave={() => setDragOver((d) => (d === col.key ? null : d))}
             onDrop={
               canEdit
                 ? (e) => {
                     e.preventDefault()
                     const id = e.dataTransfer.getData('text/task')
                     setDragOver(null)
-                    if (id) void move(id, col)
+                    if (id) void move(id, col.key as TaskStatus)
                   }
                 : undefined
             }
             className={cn(
               'flex w-80 shrink-0 flex-col rounded-xl bg-sidebar/60 ring-1 ring-transparent transition-shadow',
-              dragOver === col && 'ring-[color:var(--theme-accent)]',
+              dragOver === col.key && 'ring-[color:var(--theme-accent)]',
             )}
           >
             <div className="flex items-center gap-2 px-3 py-2">
-              <span className="h-2 w-2 rounded-full" style={{ background: COL_ACCENT[col] }} />
-              <span className="text-xs font-semibold uppercase tracking-wide text-fg">{STATUS_LABEL[col]}</span>
+              <span className="h-2 w-2 rounded-full" style={{ background: col.color }} />
+              <span className="text-xs font-semibold uppercase tracking-wide text-fg">{col.label}</span>
               <span className="text-xs text-muted">{colTasks.length}</span>
               {colHours > 0 && (
                 <span className="ml-auto text-[10px] text-muted" title="Total estimated hours in this column">
@@ -134,7 +142,7 @@ export function Kanban({
                 <Card
                   key={t.id}
                   task={t}
-                  assignees={t.assignees.map((a) => assigneeInfo(a, agents, members))}
+                  pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, statuses: boardStatuses, boardId: board.id }}
                   subtasks={childrenOf.get(t.id) ?? []}
                   parentRef={parentRef(t)}
                   draggable={canEdit}
@@ -149,7 +157,7 @@ export function Kanban({
                   onContextMenu={(e) => cardMenu(e, t)}
                 />
               ))}
-              {canEdit && <AddCard onAdd={(title) => addTo(col, title)} />}
+              {canEdit && <AddCard onAdd={(title) => addTo(col.key as TaskStatus, title)} />}
             </div>
           </div>
         )
@@ -161,7 +169,7 @@ export function Kanban({
 
 function Card({
   task,
-  assignees,
+  pillCtx,
   subtasks,
   parentRef,
   draggable,
@@ -172,7 +180,7 @@ function Card({
   onContextMenu,
 }: {
   task: Task
-  assignees: AssigneeInfo[]
+  pillCtx: PillCtx
   subtasks: Task[]
   parentRef: string | null
   draggable: boolean
@@ -182,7 +190,6 @@ function Card({
   onOpen: () => void
   onContextMenu: (e: React.MouseEvent) => void
 }) {
-  const late = overdue(task)
   const doneKids = subtasks.filter((s) => s.status === 'done').length
   return (
     <div
@@ -196,7 +203,16 @@ function Card({
         path={`/boards/${task.boardId}/${task.id}`}
         className="absolute right-2 top-2 z-10 bg-card opacity-0 shadow-[var(--theme-shadow-1)] group-hover:opacity-100"
       />
-      <button type="button" onClick={onOpen} className={cn('mercury-panel w-full rounded-xl p-4 text-left transition-shadow hover:shadow-[var(--theme-shadow-3)]', task.archivedAt && 'opacity-60')}>
+      {/* div, not <button>: the pills inside are buttons themselves. */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onOpen}
+        onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && onOpen()}
+        className={cn('mercury-panel relative w-full cursor-pointer overflow-hidden rounded-xl p-4 text-left transition-shadow hover:shadow-[var(--theme-shadow-3)]', task.archivedAt && 'opacity-60')}
+      >
+        {/* Color-code stripe (ticket color, when set). */}
+        {task.color && <span className="absolute inset-y-0 left-0 w-1" style={{ background: LABEL_CSS[task.color] }} />}
         <div className="flex items-start gap-2.5">
           <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: PRIORITY_COLOR[task.priority] }} />
           <div className="min-w-0 flex-1">
@@ -219,30 +235,14 @@ function Card({
             {task.description && <div className="mt-1 line-clamp-3 font-sans text-xs leading-relaxed text-muted">{plainText(task.description)}</div>}
           </div>
         </div>
-        {(assignees.length > 0 || task.dueDate || task.tags.length > 0 || subtasks.length > 0 || task.commentCount > 0) && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {assignees.length > 0 && (
-              <span className="flex items-center gap-1.5 text-[11px] text-muted">
-                <span className="flex -space-x-1.5">
-                  {assignees.slice(0, 3).map((a) => (
-                    <Avatar key={a.key} name={a.label} className="h-5 w-5 ring-2 ring-[color:var(--theme-panel)]" />
-                  ))}
-                </span>
-                {assignees.length === 1
-                  ? assignees[0]!.label
-                  : assignees.length <= 3
-                    ? `${assignees.length} assignees`
-                    : `+${assignees.length - 3} · ${assignees.length} assignees`}
-              </span>
-            )}
-            {task.dueDate && (
-              <span
-                className={cn('text-[11px]', late ? 'font-medium text-[color:var(--theme-danger)]' : 'text-muted')}
-                title={late ? 'Past due' : 'Due date'}
-              >
-                · {task.dueDate.slice(0, 10)}
-              </span>
-            )}
+        {/* Property pills — PERSISTENT controls: bordered, labeled, chevroned.
+            What you can change is never a mystery. */}
+        <div className="mt-2.5 flex flex-wrap items-center gap-1">
+          <AssigneesPill t={task} ctx={pillCtx} persistent />
+          <DuePill t={task} ctx={pillCtx} persistent />
+          <EstimatePill t={task} ctx={pillCtx} persistent />
+          <LabelsPill t={task} ctx={pillCtx} persistent />
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
             {subtasks.length > 0 && (
               <span
                 className={cn('flex items-center gap-1 text-[11px]', doneKids === subtasks.length ? 'text-[color:var(--theme-success)]' : 'text-muted')}
@@ -256,15 +256,9 @@ function Card({
                 <MessageSquare size={11} /> {task.commentCount}
               </span>
             )}
-            {task.tags.slice(0, 2).map((tag) => (
-              <span key={tag} className="rounded-full border border-line-subtle px-1.5 py-0.5 text-[10px] text-muted">
-                {tag}
-              </span>
-            ))}
-            {task.tags.length > 2 && <span className="text-[10px] text-muted">+{task.tags.length - 2}</span>}
-          </div>
-        )}
-      </button>
+          </span>
+        </div>
+      </div>
     </div>
   )
 }

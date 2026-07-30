@@ -6,6 +6,8 @@ import { db } from './db/pg'
 import { publishBoard } from './realtime'
 import { taskUsage, type TaskUsage } from './usage'
 import { listJudgeReviews, type JudgeReview } from './judge'
+import { ensureLabels } from './labels'
+import { statusMeta } from './statuses'
 import type { Effort, Priority, QualityReview, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
 
 async function taskBoardId(id: string): Promise<string | null> {
@@ -21,7 +23,7 @@ export type { Effort, Priority, Task, TaskStatus } from '@/lib/task-const'
 const TASK_SELECT = `select t.id, t.board_id as "boardId",
   case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') || '-' || t.ticket_no end as "ticketRef",
   t.title, t.description, t.status, t.priority, t.effort, t.assignees, t.created_by as "createdBy",
-  t.due_date as "dueDate", t.tags, t.attachments, t.time_spent_seconds as "timeSpentSeconds",
+  t.due_date as "dueDate", t.start_date as "startDate", t.color, t.tags, t.attachments, t.time_spent_seconds as "timeSpentSeconds",
   t.estimated_hours as "estimatedHours", t.parent_id as "parentId",
   (select count(*)::int from task_comments c where c.task_id = t.id) as "commentCount",
   t.outcome, t.resolution, t.error_message as "errorMessage",
@@ -130,22 +132,27 @@ export async function createTask(input: {
   effort?: Effort | null
   assignees?: string[]
   dueDate?: string | null
+  startDate?: string | null
+  color?: string | null
   estimatedHours?: number | null
   parentId?: string | null
+  tags?: string[]
   createdBy: string
 }): Promise<Task> {
   const sql = await db()
   const assignees = input.assignees ?? []
-  const status = assignees.length > 0 ? 'assigned' : 'inbox'
+  const meta = await statusMeta(input.boardId)
+  const status = assignees.length > 0 ? meta.assignedKey : meta.defaultKey
   if (input.parentId) await assertValidParent(null, input.parentId, input.boardId)
+  if (input.tags?.length) await ensureLabels(input.boardId, input.tags)
   const id = await sql.begin(async (tx) => {
     const seq = await tx`update boards set ticket_seq = ticket_seq + 1, updated_at = now() where id = ${input.boardId} returning ticket_seq`
     const ticketNo = (seq[0] as { ticket_seq: number }).ticket_seq
     const rows = await tx`
-      insert into tasks (board_id, ticket_no, title, description, priority, effort, assignees, due_date, estimated_hours, parent_id, created_by, status)
+      insert into tasks (board_id, ticket_no, title, description, priority, effort, assignees, due_date, start_date, color, estimated_hours, parent_id, tags, created_by, status)
       values (${input.boardId}, ${ticketNo}, ${input.title}, ${input.description ?? null}, ${input.priority ?? 'medium'},
-              ${input.effort ?? null}, ${sql.json(assignees)}, ${input.dueDate ?? null}, ${input.estimatedHours ?? null},
-              ${input.parentId ?? null}, ${input.createdBy}, ${status})
+              ${input.effort ?? null}, ${sql.json(assignees)}, ${input.dueDate ?? null}, ${input.startDate ?? null}, ${input.color ?? null}, ${input.estimatedHours ?? null},
+              ${input.parentId ?? null}, ${sql.json(input.tags ?? [])}, ${input.createdBy}, ${status})
       returning id
     `
     return (rows[0] as { id: string }).id
@@ -153,6 +160,8 @@ export async function createTask(input: {
   await logActivity(id, input.createdBy, 'created', 'created this task')
   if (assignees.length) await logActivity(id, input.createdBy, 'assigned', `assigned to ${assignees.join(', ')}`)
   const task = (await getTask(id))!
+  // Born assigned into an agent-start column → push the work to the agents.
+  void import('./work-dispatch').then(({ maybeDispatchTicket }) => maybeDispatchTicket(task)).catch(() => {})
   void notifyTaskUsers(humanAssigneeIds(assignees), input.createdBy, {
     kind: 'task-assigned',
     title: `Assigned: ${input.title}`,
@@ -171,6 +180,8 @@ export interface TaskPatch {
   effort?: Effort | null
   assignees?: string[]
   dueDate?: string | null
+  startDate?: string | null
+  color?: string | null
   tags?: string[]
   outcome?: string | null
   resolution?: string | null
@@ -195,29 +206,36 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
   const pick = <T>(v: T | undefined, fallback: T): T => (v === undefined ? fallback : v)
   const assignees = patch.assignees ?? cur.assignees
   const attachments = patch.attachments ?? cur.attachments
+  const meta = await statusMeta(cur.boardId)
+  if (patch.status && ![...meta.keys, 'failed', 'cancelled'].includes(patch.status)) {
+    throw new Error(`"${patch.status}" is not a status on this board`)
+  }
   if (patch.parentId) await assertValidParent(id, patch.parentId, cur.boardId)
+  if (patch.tags?.length) await ensureLabels(cur.boardId, patch.tags)
   const next = {
     title: patch.title ?? cur.title,
     description: pick(patch.description, cur.description),
     effort: pick(patch.effort, cur.effort),
     priority: patch.priority ?? cur.priority,
     dueDate: pick(patch.dueDate, cur.dueDate),
+    startDate: pick(patch.startDate, cur.startDate),
+    color: pick(patch.color, cur.color),
     estimatedHours: pick(patch.estimatedHours, cur.estimatedHours),
     parentId: pick(patch.parentId, cur.parentId),
     tags: patch.tags ?? cur.tags,
     outcome: pick(patch.outcome, cur.outcome),
     resolution: pick(patch.resolution, cur.resolution),
     errorMessage: pick(patch.errorMessage, cur.errorMessage),
-    status: (patch.status ?? (assignees.length && cur.status === 'inbox' ? 'assigned' : cur.status)) as TaskStatus,
+    status: (patch.status ?? (assignees.length && cur.status === meta.defaultKey ? meta.assignedKey : cur.status)) as TaskStatus,
   }
-  const completedAt = next.status === 'done' ? (cur.completedAt ?? new Date().toISOString()) : null
+  const completedAt = meta.doneKeys.includes(next.status) ? (cur.completedAt ?? new Date().toISOString()) : null
   const archivedAt =
     patch.archived === undefined ? cur.archivedAt : patch.archived ? (cur.archivedAt ?? new Date().toISOString()) : null
   const addSeconds = Math.max(0, Math.round(patch.addTimeSpentSeconds ?? 0))
 
   await sql`
     update tasks set title=${next.title}, description=${next.description}, status=${next.status},
-      priority=${next.priority}, effort=${next.effort}, assignees=${sql.json(assignees)}, due_date=${next.dueDate},
+      priority=${next.priority}, effort=${next.effort}, assignees=${sql.json(assignees)}, due_date=${next.dueDate}, start_date=${next.startDate}, color=${next.color},
       estimated_hours=${next.estimatedHours}, parent_id=${next.parentId},
       tags=${sql.json(next.tags as unknown as Parameters<typeof sql.json>[0])},
       attachments=${sql.json(attachments as unknown as Parameters<typeof sql.json>[0])},
@@ -231,6 +249,14 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
 
   if (patch.status && patch.status !== cur.status) {
     await logActivity(id, actor, 'status', `moved to ${patch.status}`)
+    // Moving INTO an agent-start column re-dispatches to agent assignees
+    // (human approval by column move).
+    if (meta.agentStartKeys.includes(patch.status) && !meta.agentStartKeys.includes(cur.status)) {
+      void (async () => {
+        const fresh = await getTask(id)
+        if (fresh) await (await import('./work-dispatch')).maybeDispatchTicket(fresh)
+      })().catch(() => {})
+    }
     // Watchers + assigned humans hear about status moves (never the actor).
     const audience = [...(await watcherUserIds(id)), ...humanAssigneeIds(assignees)]
     void notifyTaskUsers(audience, actor, {
@@ -242,6 +268,14 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
   }
   if (patch.assignees !== undefined && assignees.join(',') !== cur.assignees.join(',')) {
     await logActivity(id, actor, 'assigned', assignees.length ? `assigned to ${assignees.join(', ')}` : 'unassigned')
+    // NEWLY added agents get the work pushed into their run loop.
+    const addedAgents = agentAssignees(assignees).filter((a) => !agentAssignees(cur.assignees).includes(a))
+    if (addedAgents.length) {
+      void (async () => {
+        const fresh = await getTask(id)
+        if (fresh) await (await import('./work-dispatch')).maybeDispatchTicket(fresh, addedAgents)
+      })().catch(() => {})
+    }
     // NEWLY added humans get an inbox nudge.
     const added = humanAssigneeIds(assignees).filter((uid) => !humanAssigneeIds(cur.assignees).includes(uid))
     void notifyTaskUsers(added, actor, {
@@ -375,12 +409,26 @@ export async function listActivity(taskId: string): Promise<TaskActivity[]> {
 }
 
 /** Work assigned to an agent (by name), across all boards — for heartbeat. */
-export async function assignedWork(agentName: string): Promise<Array<{ id: string; title: string; description: string | null }>> {
+export async function assignedWork(agentName: string): Promise<Array<{ id: string; title: string; description: string | null; workflows: unknown[] }>> {
   const sql = await db()
+  // Custom-status boards: pickup = statuses flagged agent_start. Boards
+  // without rows keep the classic ('assigned','in_progress') semantics.
   const rows = await sql`
-    select id, title, description from tasks
-    where assignees @> ${sql.json([agentName])}::jsonb and status in ('assigned', 'in_progress')
-    order by created_at asc
+    select t.id, t.title, t.description, t.tags, t.board_id as "boardId" from tasks t
+    where t.assignees @> ${sql.json([agentName])}::jsonb
+      and (
+        t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.agent_start)
+        or (
+          not exists (select 1 from board_statuses bs where bs.board_id = t.board_id)
+          and t.status in ('assigned', 'in_progress')
+        )
+      )
+    order by t.created_at asc
   `
-  return rows as unknown as Array<{ id: string; title: string; description: string | null }>
+  // Matched workflows ride with the pull channel too (plugin-side dispatch).
+  const { workflowsForTask } = await import('./workflows')
+  const items = rows as unknown as Array<{ id: string; title: string; description: string | null; tags: string[]; boardId: string }>
+  return Promise.all(
+    items.map(async (t) => ({ ...t, workflows: await workflowsForTask(t) })),
+  )
 }

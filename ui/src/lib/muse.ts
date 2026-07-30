@@ -1,7 +1,7 @@
 // Client for the drafting muse + model preferences.
 import { useQuery } from '@tanstack/react-query'
 
-export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template'
+export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template' | 'ticket'
 
 export interface MuseRequest {
   kind: MuseKind
@@ -136,6 +136,45 @@ export function parseAgentDraft(text: string): AgentDraft | null {
         .map((s) => ({ name: ident(String(s.name), true).replace(/^-+|-+$/g, ''), content: String(s.content) }))
         .filter((s) => s.name.length >= 2),
     }
+  } catch {
+    return null
+  }
+}
+
+/** Muse ticket mode returns a JSON patch — tolerant extraction of the first
+ *  {...} block (models sometimes wrap in fences despite instructions). */
+export interface TicketMusePatch {
+  title?: string
+  description?: string
+  priority?: string
+  effort?: string | null
+  estimatedHours?: number | null
+  dueDate?: string | null
+  startDate?: string | null
+  color?: string | null
+  tags?: string[]
+  status?: string
+  error?: string
+}
+
+export function parseTicketPatch(text: string): TicketMusePatch | null {
+  const m = /\{[\s\S]*\}/.exec(text)
+  if (!m) return null
+  try {
+    const j = JSON.parse(m[0]) as Record<string, unknown>
+    const out: TicketMusePatch = {}
+    if (typeof j.error === 'string') return { error: j.error }
+    if (typeof j.title === 'string') out.title = j.title
+    if (typeof j.description === 'string') out.description = j.description
+    if (typeof j.priority === 'string') out.priority = j.priority
+    if (typeof j.effort === 'string' || j.effort === null) out.effort = j.effort as string | null
+    if (typeof j.estimatedHours === 'number' || j.estimatedHours === null) out.estimatedHours = j.estimatedHours as number | null
+    if (typeof j.dueDate === 'string' || j.dueDate === null) out.dueDate = j.dueDate as string | null
+    if (typeof j.startDate === 'string' || j.startDate === null) out.startDate = j.startDate as string | null
+    if (typeof j.color === 'string' || j.color === null) out.color = j.color as string | null
+    if (Array.isArray(j.tags)) out.tags = j.tags.filter((t): t is string => typeof t === 'string')
+    if (typeof j.status === 'string') out.status = j.status
+    return Object.keys(out).length ? out : null
   } catch {
     return null
   }

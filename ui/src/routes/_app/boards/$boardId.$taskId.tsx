@@ -20,7 +20,7 @@ function TicketRoute() {
     <TaskDetail
       taskId={taskId}
       board={board}
-      onClose={() => void navigate({ to: '/boards/$boardId', params: { boardId } })}
+      onClose={() => void navigate({ to: '/boards/$boardId', params: { boardId }, search: (prev: Record<string, unknown>) => prev })}
     />
   )
 }

@@ -108,6 +108,96 @@ export const setBoardAgents = (boardId: string, allowAll: boolean, models: strin
     body: JSON.stringify({ allowAll, models }),
   }).then(j)
 
+export interface BoardViewConfig {
+  view?: 'board' | 'list' | 'gantt'
+  group?: string
+  q?: string
+  status?: string
+  assignee?: string
+  priority?: string
+  label?: string
+  due?: string
+}
+export interface BoardView {
+  id: string
+  boardId: string
+  name: string
+  config: BoardViewConfig
+  createdBy: string
+  position: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type LabelColor =
+  | 'slate' | 'bronze' | 'green' | 'amber' | 'red' | 'blue' | 'purple' | 'teal'
+  | 'pink' | 'orange' | 'lime' | 'cyan' | 'indigo' | 'magenta' | 'olive' | 'brown'
+export interface BoardLabel {
+  id: string
+  boardId: string
+  name: string
+  color: LabelColor
+  position: number
+}
+
+/** The board's label registry (first-class, colored, manageable). */
+export function useBoardLabels(boardId: string | null) {
+  return useQuery({
+    queryKey: ['board-labels', boardId],
+    enabled: !!boardId,
+    queryFn: async (): Promise<BoardLabel[]> => {
+      const r = await fetch(`/api/boards/${boardId}/labels`, { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return (await r.json()).labels
+    },
+  })
+}
+export const createBoardLabel = (boardId: string, name: string, color?: LabelColor) =>
+  post(`/api/boards/${boardId}/labels`, { name, color }).then(j)
+export const updateBoardLabel = (boardId: string, labelId: string, patch: { name?: string; color?: LabelColor }) =>
+  fetch(`/api/boards/${boardId}/labels`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ labelId, ...patch }),
+  }).then(j)
+export const deleteBoardLabel = (boardId: string, labelId: string) =>
+  fetch(`/api/boards/${boardId}/labels`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ labelId }),
+  }).then(j)
+
+/** Saved views: named filter/layout presets shared with the board. */
+export function useBoardViews(boardId: string | null) {
+  return useQuery({
+    queryKey: ['board-views', boardId],
+    enabled: !!boardId,
+    queryFn: async (): Promise<BoardView[]> => {
+      const r = await fetch(`/api/boards/${boardId}/views`, { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return (await r.json()).views
+    },
+  })
+}
+export const createBoardView = (boardId: string, name: string, config: BoardViewConfig) =>
+  post(`/api/boards/${boardId}/views`, { name, config }).then(j)
+export const updateBoardView = (boardId: string, viewId: string, patch: { name?: string; config?: BoardViewConfig }) =>
+  fetch(`/api/boards/${boardId}/views`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ viewId, ...patch }),
+  }).then(j)
+export const deleteBoardView = (boardId: string, viewId: string) =>
+  fetch(`/api/boards/${boardId}/views`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ viewId }),
+  }).then(j)
+
 export function useBoardMembers(boardId: string | null) {
   return useQuery({
     queryKey: ['board-members', boardId],
@@ -180,6 +270,8 @@ export const createTask = (
     effort?: Effort | null
     assignees?: string[]
     dueDate?: string | null
+    startDate?: string | null
+    color?: string | null
     estimatedHours?: number | null
     parentId?: string | null
   },
@@ -220,6 +312,8 @@ export const updateTask = (
     effort?: Effort | null
     assignees?: string[]
     dueDate?: string | null
+    startDate?: string | null
+    color?: string | null
     tags?: string[]
     outcome?: string | null
     resolution?: string | null

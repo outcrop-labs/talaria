@@ -48,7 +48,15 @@ async function attentionState(userId: string, isAdmin: boolean, scope: BriefingS
     left join team_members tm on tm.team_id = b.team_id and tm.user_id = ${userId}
     where (m.user_id is not null or tm.user_id is not null)
       and b.archived_at is null and t.archived_at is null
-      and t.status in ('inbox', 'quality_review', 'blocked', 'failed')
+      and (
+        t.status in ('blocked', 'failed')
+        or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'review')
+        or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'open' and not bs.agent_start)
+        or (
+          not exists (select 1 from board_statuses bs where bs.board_id = t.board_id)
+          and t.status in ('inbox', 'quality_review')
+        )
+      )
     order by t.updated_at desc limit 30
   `) as unknown as Array<{ id: string; title: string; status: string; board: string }>)
 

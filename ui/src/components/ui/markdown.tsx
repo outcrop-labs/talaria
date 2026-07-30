@@ -134,7 +134,7 @@ const components: Partial<Components> = {
 export const Markdown = memo(function Markdown({ children, className }: { children: string; className?: string }) {
   return (
     // Rendered prose is a READING surface — sans (code re-asserts mono).
-    <div className={cn('space-y-2 break-words font-sans', className)}>
+    <div className={cn('select-text space-y-2 break-words font-sans', className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks, remarkMentions]}
         rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}

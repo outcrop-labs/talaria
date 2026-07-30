@@ -1,26 +1,29 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
+import { TICKET_COLORS } from '@/lib/task-const'
+import { listStatuses, statusMeta } from '@/server/statuses'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit, invalidAssignee, listMembers } from '@/server/boards'
 import { notifyMentions } from '@/server/mentions'
 import { describeAgent } from '@/server/gateway'
-import { deleteTask, getTask, getTaskFull, listComments, EFFORTS, PRIORITIES, TASK_STATUSES, updateTask, type TaskPatch } from '@/server/tasks'
+import { deleteTask, getTask, getTaskFull, listComments, EFFORTS, PRIORITIES, updateTask, type TaskPatch } from '@/server/tasks'
 import { resolveAttachments } from '@/server/uploads'
 import { resolveRefs } from '@/server/refs'
 import { indexTicket, unindexActivity } from '@/server/retrieval/sources'
 import { runJudgeForTask } from '@/server/judge'
 
-const AllStatuses = [...TASK_STATUSES, 'failed', 'cancelled'] as const
 const Patch = z.object({
   title: z.string().min(1).max(300).optional(),
   description: z.string().max(20_000).nullish(),
-  status: z.enum(AllStatuses).optional(),
+  status: z.string().max(40).optional(), // validated against the BOARD's status set in updateTask
   priority: z.enum(PRIORITIES).optional(),
   effort: z.enum(EFFORTS).nullish(),
   assignees: z.array(z.string().max(200)).max(20).optional(),
   dueDate: z.string().datetime().nullish(),
+  startDate: z.string().datetime().nullish(),
+  color: z.enum(TICKET_COLORS).nullish(),
   tags: z.array(z.string().max(40)).max(20).optional(),
   outcome: z.string().max(50_000).nullish(),
   resolution: z.string().max(50_000).nullish(),
@@ -45,7 +48,8 @@ export const Route = createFileRoute('/api/tasks/$id')({
           const agent = agentName(request)
           if (!agent) return json({ error: 'x-agent-name required' }, { status: 400 })
           if (!(await boardAllowsAgent(full.task.boardId, agent))) return json({ error: 'forbidden' }, { status: 403 })
-          return json(full)
+          const { workflowsForTask } = await import('@/server/workflows')
+          return json({ ...full, workflows: await workflowsForTask(full.task) })
         }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
@@ -82,8 +86,22 @@ export const Route = createFileRoute('/api/tasks/$id')({
         // effort, labels, description, status → in_progress/blocked/quality_review)
         // but cannot assign work or sign off. Assignment + done stay human.
         if (agent) {
-          if (parsed.data.status === 'assigned') return json({ error: 'agents cannot assign tickets' }, { status: 403 })
-          if (parsed.data.status === 'done') parsed.data.status = 'quality_review'
+          // Board-aware guardrails: entering an agent-start column from
+          // intake IS assignment (a human approval), so agents can't do it —
+          // but a ticket already past that gate moves freely between working
+          // columns (assigned → in_progress, blocked → in_progress). A
+          // terminal status redirects to the board's review catch — sign-off
+          // stays a person's call.
+          if (parsed.data.status) {
+            const meta = await statusMeta(task.boardId)
+            if (meta.agentStartKeys.includes(parsed.data.status) && !meta.agentStartKeys.includes(task.status)) {
+              const cur = (await listStatuses(task.boardId)).find((s) => s.key === task.status)
+              if (!cur || cur.category === 'open') {
+                return json({ error: 'agents cannot assign tickets' }, { status: 403 })
+              }
+            }
+            if (meta.doneKeys.includes(parsed.data.status)) parsed.data.status = meta.reviewKey as typeof parsed.data.status
+          }
           parsed.data.assignees = undefined
           // Planning fields stay human: estimates and sub-task structure.
           parsed.data.estimatedHours = undefined
@@ -104,7 +122,7 @@ export const Route = createFileRoute('/api/tasks/$id')({
         }
         let updated
         try {
-          updated = await updateTask(params.id, patch, actor)
+          updated = await updateTask(params.id, patch as TaskPatch, actor)
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })
         }
@@ -127,10 +145,14 @@ export const Route = createFileRoute('/api/tasks/$id')({
             )
           })().catch(() => {})
         }
-        // Reliability gate: when work lands in quality_review, run the QA judge
-        // (advisory) in the background so the human reviewer gets a verdict.
-        if (updated && updated.status === 'quality_review' && task.status !== 'quality_review') {
-          void runJudgeForTask(params.id).catch(() => {})
+        // Reliability gate: when work lands in ANY review-category column, run
+        // the QA judge (advisory) in the background so the human reviewer gets
+        // a verdict. Custom review columns count — category is the contract.
+        if (updated && updated.status !== task.status) {
+          const meta2 = await statusMeta(task.boardId)
+          if (meta2.reviewKeys.includes(updated.status) && !meta2.reviewKeys.includes(task.status)) {
+            void runJudgeForTask(params.id).catch(() => {})
+          }
         }
         return json({ task: updated })
       },

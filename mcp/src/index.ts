@@ -81,17 +81,39 @@ server.registerTool(
 server.registerTool(
   'list_tickets',
   {
-    description: "List a board's tickets.",
-    inputSchema: { boardId: z.string().describe('Board id (from list_boards)') },
+    description:
+      "List a board's tickets. Each carries status, priority, assignees (agent ids and humans as user:<id>), labels, due date, human estimate (estimatedHours), sub-task parent (parentId), and comment count. Optional filters narrow the list.",
+    inputSchema: {
+      boardId: z.string().describe('Board id (from list_boards)'),
+      status: z.string().optional().describe('Only this status (inbox/assigned/in_progress/blocked/quality_review/done)'),
+      assignee: z.string().optional().describe('Only tickets assigned to this agent id or user:<id>'),
+      label: z.string().optional().describe('Only tickets carrying this label'),
+      overdue: z.boolean().optional().describe('Only tickets past their due date and not done'),
+      parentId: z.string().optional().describe('Only sub-tasks of this ticket'),
+    },
   },
-  async ({ boardId }) => ok(await api('GET', `/api/boards/${encodeURIComponent(boardId)}/tasks`)),
+  async ({ boardId, status, assignee, label, overdue, parentId }) => {
+    const res = (await api('GET', `/api/boards/${encodeURIComponent(boardId)}/tasks`)) as {
+      tasks: Array<{ status: string; assignees: string[]; tags: string[]; dueDate: string | null; parentId: string | null }>
+    }
+    const now = Date.now()
+    const tasks = res.tasks.filter(
+      (t) =>
+        (!status || t.status === status) &&
+        (!assignee || t.assignees.includes(assignee)) &&
+        (!label || t.tags.includes(label)) &&
+        (!parentId || t.parentId === parentId) &&
+        (!overdue || (!!t.dueDate && Date.parse(t.dueDate) < now && !['done', 'cancelled'].includes(t.status))),
+    )
+    return ok({ tasks })
+  },
 )
 
 server.registerTool(
   'get_ticket',
   {
     description:
-      'Get a ticket in full: fields, comments, activity, watchers, reviews, dependencies. Tickets may carry an `attachments` array (files + knowledge/artifact refs) — read a file with fetch_attachment.',
+      'Get a ticket in full: fields (incl. human estimate, sub-task parentId, mixed assignees — agents by id, humans as user:<id>), comments, activity, watchers, reviews, dependencies. May include `workflows` — how this kind of work is done here; follow their instructions. Tickets may carry an `attachments` array (files + knowledge/artifact refs) — read a file with fetch_attachment.',
     inputSchema: { taskId: z.string().describe('Ticket id') },
   },
   async ({ taskId }) => ok(await api('GET', `/api/tasks/${encodeURIComponent(taskId)}`)),
@@ -150,17 +172,23 @@ server.registerTool(
   'create_ticket',
   {
     description:
-      'Create a ticket on a board. It lands in the inbox for a human to assign — agents cannot assign work.',
+      'Create a ticket on a board. It lands in the inbox for a human to assign — agents cannot assign work, and hour estimates stay human too (use effort for your own sizing). Pass parentId to create it as a SUB-TASK of an existing ticket (work breakdown; one level deep).',
     inputSchema: {
       boardId: z.string().describe('Board id (from list_boards)'),
       title: z.string().min(1).max(300),
       description: z.string().max(20_000).optional().describe('Markdown description'),
       priority: z.enum(PRIORITIES).optional(),
       effort: z.enum(EFFORTS).optional().describe('T-shirt size estimate'),
+      tags: z.array(z.string().max(40)).max(20).optional().describe('Labels'),
+      dueDate: z.string().datetime().optional(),
+      startDate: z.string().datetime().optional().describe('When work should begin (Gantt bars run start → due)'),
+      color: z.enum(['slate', 'bronze', 'green', 'amber', 'red', 'blue', 'purple', 'teal', 'pink', 'orange', 'lime', 'cyan', 'indigo', 'magenta', 'olive', 'brown']).optional().describe('Color-code the ticket (shows on cards + gantt)'),
+      parentId: z.string().optional().describe('Create as a sub-task of this ticket (same board, one level deep)'),
     },
   },
   async ({ boardId, ...body }) => ok(await api('POST', `/api/boards/${encodeURIComponent(boardId)}/tasks`, body)),
 )
+
 
 server.registerTool(
   'triage_ticket',
@@ -175,6 +203,8 @@ server.registerTool(
       effort: z.enum(EFFORTS).optional(),
       tags: z.array(z.string().max(40)).max(20).optional().describe('Labels (replaces the set)'),
       dueDate: z.string().datetime().optional(),
+      startDate: z.string().datetime().optional().describe('When work begins (Gantt bars run start → due)'),
+      color: z.enum(['slate', 'bronze', 'green', 'amber', 'red', 'blue', 'purple', 'teal', 'pink', 'orange', 'lime', 'cyan', 'indigo', 'magenta', 'olive', 'brown']).optional().describe('Color-code the ticket (shows on cards + gantt)'),
       status: z.enum(AGENT_STATUSES).optional(),
     },
   },
