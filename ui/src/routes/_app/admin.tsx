@@ -1908,8 +1908,8 @@ function GhFields({ rows }: { rows: Array<[string, string]> }) {
   )
 }
 
-/** Per-repo git flow: which branch PRs target, and the optional testing
- *  branch features merge into for integration testing. */
+/** Per-repo git flow — every reachable repo is a row; blank fields mean the
+ *  defaults, so there is no separate "add" ceremony to learn. */
 function RepoFlowSection() {
   const qc = useQueryClient()
   interface FlowData {
@@ -1924,65 +1924,74 @@ function RepoFlowSection() {
       return (await r.json()) as FlowData
     },
   })
-  const [repo, setRepo] = useState('')
-  const [base, setBase] = useState('')
-  const [testing, setTesting] = useState('')
+  const { saved, flash } = useSavedFlash()
 
-  const save = async (body: { repo: string; baseBranch?: string | null; testingBranch?: string | null }) => {
+  const save = async (repo: string, patch: { baseBranch?: string | null; testingBranch?: string | null }) => {
+    const cur = data?.flows.find((f) => f.repo === repo)
     await fetch('/api/workbench/flow', {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        repo,
+        baseBranch: patch.baseBranch !== undefined ? patch.baseBranch : (cur?.baseBranch ?? null),
+        testingBranch: patch.testingBranch !== undefined ? patch.testingBranch : (cur?.testingBranch ?? null),
+      }),
     })
+    flash()
     await qc.invalidateQueries({ queryKey: ['workbench-flow'] })
   }
   if (!data) return null
-  const configured = new Set(data.flows.map((f) => f.repo))
+  // Every reachable repo is a row; configs for repos the connection lost
+  // access to still show (flagged) so they can be understood and cleared.
+  const rows = [...new Set([...data.repos, ...data.flows.map((f) => f.repo)])].sort()
   return (
     <div className="space-y-2 border-t border-line-subtle pt-3">
-      <div className="text-[11px] uppercase tracking-wide text-muted">Repository flow</div>
-      <p className="text-xs text-muted">
-        Where workbench PRs land per repo (blank = the repo's default branch), and an optional testing branch features can be merged into
-        before the PR ships. Unlisted repos use their defaults.
-      </p>
-      {data.flows.map((f) => (
-        <div key={f.repo} className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="w-56 truncate text-fg">{f.repo}</span>
-          <Input
-            size="sm"
-            defaultValue={f.baseBranch ?? ''}
-            placeholder="PRs → default"
-            className="w-36"
-            onBlur={(e) => e.target.value.trim() !== (f.baseBranch ?? '') && void save({ repo: f.repo, baseBranch: e.target.value.trim() || null, testingBranch: f.testingBranch })}
-          />
-          <Input
-            size="sm"
-            defaultValue={f.testingBranch ?? ''}
-            placeholder="testing branch (off)"
-            className="w-40"
-            onBlur={(e) => e.target.value.trim() !== (f.testingBranch ?? '') && void save({ repo: f.repo, baseBranch: f.baseBranch, testingBranch: e.target.value.trim() || null })}
-          />
-        </div>
-      ))}
-      <div className="flex flex-wrap items-center gap-2">
-        <Select size="sm" value={repo} onChange={(e) => setRepo(e.target.value)} className="w-56">
-          <option value="">configure a repo…</option>
-          {data.repos.filter((r) => !configured.has(r)).map((r) => (
-            <option key={r} value={r}>{r}</option>
-          ))}
-        </Select>
-        <Input size="sm" value={base} onChange={(e) => setBase(e.target.value)} placeholder="PR base (blank = default)" className="w-44" />
-        <Input size="sm" value={testing} onChange={(e) => setTesting(e.target.value)} placeholder="testing branch" className="w-40" />
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!repo}
-          onClick={() => void save({ repo, baseBranch: base.trim() || null, testingBranch: testing.trim() || null }).then(() => { setRepo(''); setBase(''); setTesting('') })}
-        >
-          Add
-        </Button>
+      <div className="flex items-baseline gap-2">
+        <span className="text-[11px] uppercase tracking-wide text-muted">Repository flow</span>
+        <span className="text-xs text-muted">how workbench branches and PRs move, per repo</span>
+        {saved && <span className="ml-auto text-xs text-[color:var(--theme-success)]">Saved</span>}
       </div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[36rem]">
+          <div className="grid grid-cols-[minmax(0,1fr)_11rem_11rem] gap-2 pb-1 text-[11px] uppercase tracking-wide text-muted">
+            <span>Repository</span>
+            <span>PRs land on</span>
+            <span>Testing branch</span>
+          </div>
+          <div className="space-y-1.5">
+            {rows.map((repo) => {
+              const f = data.flows.find((x) => x.repo === repo)
+              const unreachable = !data.repos.includes(repo)
+              return (
+                <div key={repo} className="grid grid-cols-[minmax(0,1fr)_11rem_11rem] items-center gap-2">
+                  <span className="min-w-0 truncate text-sm text-fg">
+                    {repo}
+                    {unreachable && <span className="ml-2 text-xs text-[color:var(--theme-warning)]">no longer reachable</span>}
+                  </span>
+                  <Input
+                    size="sm"
+                    defaultValue={f?.baseBranch ?? ''}
+                    placeholder="default branch"
+                    onBlur={(e) => e.target.value.trim() !== (f?.baseBranch ?? '') && void save(repo, { baseBranch: e.target.value.trim() || null })}
+                  />
+                  <Input
+                    size="sm"
+                    defaultValue={f?.testingBranch ?? ''}
+                    placeholder="none"
+                    onBlur={(e) => e.target.value.trim() !== (f?.testingBranch ?? '') && void save(repo, { testingBranch: e.target.value.trim() || null })}
+                  />
+                </div>
+              )
+            })}
+            {rows.length === 0 && <p className="text-xs text-muted">No repositories reachable yet — finish the install on GitHub.</p>}
+          </div>
+        </div>
+      </div>
+      <p className="text-[11px] text-muted">
+        <span className="text-fg">PRs land on</span> — the branch workbench jobs cut from and pull requests target; blank uses the repo's default branch.{' '}
+        <span className="text-fg">Testing branch</span> — optional integration branch a feature can be merged into (from the ticket or by the agent) before its PR ships; blank disables it. Testing merges never replace review — the PR still lands normally.
+      </p>
     </div>
   )
 }
