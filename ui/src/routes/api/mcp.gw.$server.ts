@@ -47,6 +47,14 @@ export const Route = createFileRoute('/api/mcp/gw/$server')({
           )
         }
 
+        // The Workbench surface dispatches IN-PROCESS with the caller's agent
+        // identity — grants resolved by the same gateway rules as any server.
+        if (eff.server.url.startsWith('talaria-workbench://')) {
+          const { dispatchWorkbenchMcp } = await import('@/server/workbench-mcp')
+          const r = await dispatchWorkbenchMcp(rpc ?? {}, name, eff.tools)
+          return r.body === null ? new Response(null, { status: r.status }) : json(r.body, { status: r.status })
+        }
+
         // App-published servers dispatch IN-PROCESS — same access resolution
         // as above, no HTTP hop, tool subset enforced again inside.
         if (eff.server.appSlug) {

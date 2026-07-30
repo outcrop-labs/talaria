@@ -1002,6 +1002,25 @@ const MIGRATIONS: string[] = [
     created_at timestamptz not null default now(),
     primary key (agent_id, repo)
   )`,
+  // Workbench jobs — the platform-owned execution lifecycle. One row per
+  // start_job: the branch is Talaria's (cut via API at start), the PR opens
+  // at finish with the templated ticket-linked body. Agents never touch
+  // origin outside this flow.
+  `create table if not exists workbench_jobs (
+    id uuid primary key default gen_random_uuid(),
+    agent_id uuid not null references agent_defs(id) on delete cascade,
+    agent_model text not null,
+    task_id uuid references tasks(id) on delete set null,
+    repo text not null,
+    branch text not null,
+    effort text not null default 'standard',
+    plan text not null default '',
+    status text not null default 'started',
+    pr_url text,
+    summary text not null default '',
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
   // Persistent skill summaries — one generated line per skill, keyed to a
   // hash of its SKILL.md so it only regenerates when the content changes.
   `create table if not exists skill_summaries (

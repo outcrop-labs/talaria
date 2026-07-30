@@ -70,6 +70,16 @@ export async function ensureBuiltinMcp(): Promise<void> {
             ${`http://127.0.0.1:${MCP_PORT()}/mcp`}, true, true, 'talaria')
     on conflict (name) do update set builtin = true, all_agents = true, enabled = true
   `
+  // The Workbench surface — in-process like app servers, but NOT all_agents:
+  // access is an explicit per-agent grant like any other governed capability.
+  const { WORKBENCH_TOOLS } = await import('./workbench-mcp')
+  const tools = WORKBENCH_TOOLS.map((t) => ({ name: t.name, description: t.description.slice(0, 300) }))
+  await sql`
+    insert into mcp_servers (name, label, description, url, all_agents, created_by, tools, tools_refreshed_at)
+    values ('workbench', 'Workbench', 'Sandboxed execution for granted agents — jobs, branches, and PRs under the platform-owned git flow.',
+            'talaria-workbench://core', false, 'talaria', ${sql.json(tools)}, now())
+    on conflict (name) do update set tools = ${sql.json(tools)}, tools_refreshed_at = now(), enabled = true
+  `
 }
 
 export async function listMcpServers(): Promise<McpServer[]> {

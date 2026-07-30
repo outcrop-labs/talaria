@@ -162,3 +162,62 @@ export async function setGrantedRepos(agentId: string, repos: string[]): Promise
     await sql`insert into workbench_repos (agent_id, repo) values (${agentId}, ${repo}) on conflict do nothing`
   }
 }
+
+// ── Repo operations (the platform-owned git flow) ────────────────────────────
+
+async function ghJson<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
+  const res = await gh(path, token, init)
+  if (!res.ok) throw new Error(`GitHub ${init.method ?? 'GET'} ${path} → ${res.status}: ${(await res.text()).slice(0, 200)}`)
+  return (await res.json()) as T
+}
+
+export async function defaultBranch(repo: string): Promise<string> {
+  const token = await githubToken()
+  if (!token) throw new Error('GitHub is not connected')
+  return (await ghJson<{ default_branch: string }>(`/repos/${repo}`, token)).default_branch
+}
+
+/** Cut a branch from the default branch's head. Idempotent-ish: an existing
+ *  branch of the same name is left alone (the job resumes on it). */
+export async function createBranch(repo: string, branch: string): Promise<{ base: string; created: boolean }> {
+  const token = await githubToken()
+  if (!token) throw new Error('GitHub is not connected')
+  const base = await defaultBranch(repo)
+  const existing = await gh(`/repos/${repo}/git/ref/heads/${encodeURIComponent(branch)}`, token)
+  if (existing.ok) return { base, created: false }
+  const head = await ghJson<{ object: { sha: string } }>(`/repos/${repo}/git/ref/heads/${encodeURIComponent(base)}`, token)
+  await ghJson(`/repos/${repo}/git/refs`, token, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: head.object.sha }),
+  })
+  return { base, created: true }
+}
+
+export async function branchAhead(repo: string, base: string, branch: string): Promise<number> {
+  const token = await githubToken()
+  if (!token) throw new Error('GitHub is not connected')
+  const cmp = await ghJson<{ ahead_by: number }>(`/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}`, token)
+  return cmp.ahead_by
+}
+
+export async function createPullRequest(
+  repo: string,
+  input: { head: string; base: string; title: string; body: string; draft?: boolean },
+): Promise<{ url: string; number: number }> {
+  const token = await githubToken()
+  if (!token) throw new Error('GitHub is not connected')
+  const pr = await ghJson<{ html_url: string; number: number }>(`/repos/${repo}/pulls`, token, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...input, draft: input.draft ?? false }),
+  })
+  return { url: pr.html_url, number: pr.number }
+}
+
+/** An authenticated clone URL for the sandbox harness — app tokens expire in
+ *  ~an hour by design; PATs are the org's own choice of blast radius. */
+export async function cloneUrl(repo: string): Promise<string | null> {
+  const token = await githubToken()
+  return token ? `https://x-access-token:${token}@github.com/${repo}.git` : null
+}
