@@ -44,19 +44,19 @@ export const Route = createFileRoute('/api/boards/$id/statuses')({
           request,
           z.union([
             z.object({
-              statusId: z.string().uuid(),
+              statusKey: z.string().min(1).max(40),
               label: z.string().min(1).max(40).optional(),
               color: z.string().max(20).optional(),
               category: Category.optional(),
               agentStart: z.boolean().optional(),
             }),
-            z.object({ order: z.array(z.string().uuid()).min(1).max(50) }),
+            z.object({ order: z.array(z.string().min(1).max(40)).min(1).max(50) }),
           ]),
         )
         if (body instanceof Response) return body
         try {
           if ('order' in body) await reorderStatuses(params.id, body.order)
-          else await updateStatus(params.id, body.statusId, body)
+          else await updateStatus(params.id, body.statusKey, body)
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })
@@ -66,10 +66,10 @@ export const Route = createFileRoute('/api/boards/$id/statuses')({
         const user = await requireUser(request)
         if (user instanceof Response) return user
         if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        const body = await parseBody(request, z.object({ statusId: z.string().uuid(), reassignTo: z.string().max(40) }))
+        const body = await parseBody(request, z.object({ statusKey: z.string().min(1).max(40), reassignTo: z.string().max(40) }))
         if (body instanceof Response) return body
         try {
-          await deleteStatus(params.id, body.statusId, body.reassignTo)
+          await deleteStatus(params.id, body.statusKey, body.reassignTo)
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })

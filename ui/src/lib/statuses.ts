@@ -62,9 +62,10 @@ export const createBoardStatus = (boardId: string, input: { label: string; color
   statusMutate(boardId, 'POST', input)
 export const updateBoardStatus = (
   boardId: string,
-  statusId: string,
+  statusKey: string,
   patch: { label?: string; color?: string; category?: string; agentStart?: boolean },
-) => statusMutate(boardId, 'PUT', { statusId, ...patch })
+) => statusMutate(boardId, 'PUT', { statusKey, ...patch })
+/** Order = status KEYS (stable across virtual defaults + materialized rows). */
 export const reorderBoardStatuses = (boardId: string, order: string[]) => statusMutate(boardId, 'PUT', { order })
-export const deleteBoardStatus = (boardId: string, statusId: string, reassignTo: string) =>
-  statusMutate(boardId, 'DELETE', { statusId, reassignTo })
+export const deleteBoardStatus = (boardId: string, statusKey: string, reassignTo: string) =>
+  statusMutate(boardId, 'DELETE', { statusKey, reassignTo })

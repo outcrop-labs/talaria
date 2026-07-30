@@ -128,27 +128,31 @@ export async function createStatus(
   return rows[0]!
 }
 
+/** Key-addressed: boards that never customized serve VIRTUAL defaults with
+ *  no row ids, so the stable handle is the status KEY — materialize() turns
+ *  the virtual set into rows on first touch, then the key resolves. */
 export async function updateStatus(
   boardId: string,
-  statusId: string,
+  key: string,
   patch: { label?: string; color?: string; category?: StatusCategory; agentStart?: boolean; position?: number },
 ): Promise<void> {
+  if (key === 'blocked') throw new Error('Blocked is a system status')
   await materialize(boardId)
   const sql = await db()
-  if (patch.label !== undefined) await sql`update board_statuses set label = ${patch.label.trim()} where id = ${statusId} and board_id = ${boardId}`
-  if (patch.color !== undefined) await sql`update board_statuses set color = ${patch.color} where id = ${statusId} and board_id = ${boardId}`
-  if (patch.category !== undefined) await sql`update board_statuses set category = ${patch.category} where id = ${statusId} and board_id = ${boardId}`
-  if (patch.agentStart !== undefined) await sql`update board_statuses set agent_start = ${patch.agentStart} where id = ${statusId} and board_id = ${boardId}`
-  if (patch.position !== undefined) await sql`update board_statuses set position = ${patch.position} where id = ${statusId} and board_id = ${boardId}`
+  if (patch.label !== undefined) await sql`update board_statuses set label = ${patch.label.trim()} where key = ${key} and board_id = ${boardId}`
+  if (patch.color !== undefined) await sql`update board_statuses set color = ${patch.color} where key = ${key} and board_id = ${boardId}`
+  if (patch.category !== undefined) await sql`update board_statuses set category = ${patch.category} where key = ${key} and board_id = ${boardId}`
+  if (patch.agentStart !== undefined) await sql`update board_statuses set agent_start = ${patch.agentStart} where key = ${key} and board_id = ${boardId}`
+  if (patch.position !== undefined) await sql`update board_statuses set position = ${patch.position} where key = ${key} and board_id = ${boardId}`
   publishBoard(boardId, { type: 'board' })
 }
 
-/** Replace the whole order (array of status ids in the new order). */
-export async function reorderStatuses(boardId: string, ids: string[]): Promise<void> {
+/** Replace the whole order (array of status KEYS in the new order). */
+export async function reorderStatuses(boardId: string, keys: string[]): Promise<void> {
   await materialize(boardId)
   const sql = await db()
-  for (let i = 0; i < ids.length; i++) {
-    await sql`update board_statuses set position = ${i} where id = ${ids[i]!} and board_id = ${boardId}`
+  for (let i = 0; i < keys.length; i++) {
+    await sql`update board_statuses set position = ${i} where key = ${keys[i]!} and board_id = ${boardId}`
   }
   publishBoard(boardId, { type: 'board' })
 }
@@ -156,23 +160,25 @@ export async function reorderStatuses(boardId: string, ids: string[]): Promise<v
 /** Delete a status; its tickets move to `reassignTo` (a status key). The last
  *  open-category status and the last review-category status are protected —
  *  the workflow needs an intake and a review catch. */
-export async function deleteStatus(boardId: string, statusId: string, reassignTo: string): Promise<void> {
+export async function deleteStatus(boardId: string, key: string, reassignTo: string): Promise<void> {
+  if (key === 'blocked') throw new Error('Blocked is a system status')
   await materialize(boardId)
   const sql = await db()
-  const [victim] = (await sql`select key, category from board_statuses where id = ${statusId} and board_id = ${boardId}`) as unknown as Array<{
+  const [victim] = (await sql`select id, key, category from board_statuses where key = ${key} and board_id = ${boardId}`) as unknown as Array<{
+    id: string
     key: string
     category: string
   }>
   if (!victim) return
   if (victim.category === 'open' || victim.category === 'review') {
     const others = await sql`
-      select 1 from board_statuses where board_id = ${boardId} and category = ${victim.category} and id <> ${statusId}
+      select 1 from board_statuses where board_id = ${boardId} and category = ${victim.category} and id <> ${victim.id}
     `
     if (!others.length) throw new Error(`the workflow needs at least one ${victim.category === 'open' ? 'intake' : 'review'} status`)
   }
   const meta = await statusMeta(boardId)
   if (!meta.keys.includes(reassignTo) || reassignTo === victim.key) throw new Error('pick a surviving status for its tickets')
   await sql`update tasks set status = ${reassignTo}, updated_at = now() where board_id = ${boardId} and status = ${victim.key}`
-  await sql`delete from board_statuses where id = ${statusId}`
+  await sql`delete from board_statuses where id = ${victim.id}`
   publishBoard(boardId, { type: 'board' })
 }

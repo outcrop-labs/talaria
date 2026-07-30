@@ -531,8 +531,8 @@ function StatusesTab({ board }: { board: Board }) {
       .catch((e: Error) => setErr(e.message))
   }
   const moveStatus = (st: BoardStatus, dir: -1 | 1) => {
-    const ids = editable.map((x) => x.id!).filter(Boolean)
-    const i = ids.indexOf(st.id!)
+    const ids = editable.map((x) => x.key)
+    const i = ids.indexOf(st.key)
     const j = i + dir
     if (i < 0 || j < 0 || j >= ids.length) return
     const next = [...ids]
@@ -569,7 +569,7 @@ function StatusesTab({ board }: { board: Board }) {
                 label: c,
                 icon: <span className="h-2.5 w-2.5 rounded-full" style={{ background: LABEL_CSS[c] }} />,
                 checked: st.color === c,
-                onSelect: () => run(() => updateBoardStatus(board.id, st.id!, { color: c })),
+                onSelect: () => run(() => updateBoardStatus(board.id, st.key, { color: c })),
               }))}
             />
             {st.system ? (
@@ -582,7 +582,7 @@ function StatusesTab({ board }: { board: Board }) {
                 disabled={!canEdit}
                 onBlur={(e) => {
                   const v = e.target.value.trim()
-                  if (v && v !== st.label) run(() => updateBoardStatus(board.id, st.id!, { label: v }))
+                  if (v && v !== st.label) run(() => updateBoardStatus(board.id, st.key, { label: v }))
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
                 className="flex-1"
@@ -595,7 +595,7 @@ function StatusesTab({ board }: { board: Board }) {
                   value={st.category}
                   disabled={!canEdit}
                   title="Workflow category"
-                  onChange={(e) => run(() => updateBoardStatus(board.id, st.id!, { category: e.target.value }))}
+                  onChange={(e) => run(() => updateBoardStatus(board.id, st.key, { category: e.target.value }))}
                   className="w-28 shrink-0"
                 >
                   <option value="open">intake</option>
@@ -611,7 +611,7 @@ function StatusesTab({ board }: { board: Board }) {
                     type="checkbox"
                     checked={st.agentStart}
                     disabled={!canEdit}
-                    onChange={(e) => run(() => updateBoardStatus(board.id, st.id!, { agentStart: e.target.checked }))}
+                    onChange={(e) => run(() => updateBoardStatus(board.id, st.key, { agentStart: e.target.checked }))}
                     className="accent-[var(--theme-accent)]"
                   />
                   agent start
@@ -628,7 +628,7 @@ function StatusesTab({ board }: { board: Board }) {
                       .filter((o) => o.key !== st.key && !o.system)
                       .map((o) => ({
                         label: `Move tickets to ${o.label}`,
-                        onSelect: () => run(() => deleteBoardStatus(board.id, st.id!, o.key)),
+                        onSelect: () => run(() => deleteBoardStatus(board.id, st.key, o.key)),
                       }))}
                   />
                 )}
