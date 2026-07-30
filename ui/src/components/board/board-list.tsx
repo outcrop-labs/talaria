@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { SlidersHorizontal, ChevronUp, ChevronDown, GripVertical } from 'lucide-react'
 import { useAgents } from '@/lib/agents'
@@ -367,10 +368,6 @@ export function BoardList({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-end border-b border-line-subtle px-4 py-2">
-        <ColumnsMenu visible={visible} order={order} onChangeVisible={updateCols} onChangeOrder={updateOrder} />
-      </div>
-
       <div className="relative min-h-0 flex-1 overflow-auto p-4">
         {tasks.length === 0 ? (
           <div className="grid h-full place-items-center text-sm text-muted">No tasks match.</div>
@@ -404,6 +401,9 @@ export function BoardList({
                     </button>
                   </th>
                 ))}
+                <th className="w-8 py-1 pr-2 text-right">
+                  <ColumnsMenu visible={visible} order={order} onChangeVisible={updateCols} onChangeOrder={updateOrder} />
+                </th>
               </tr>
             </thead>
             {groups.map((g) => {
@@ -412,7 +412,7 @@ export function BoardList({
                 <tbody key={g.key} className="divide-y divide-line-subtle">
                   {groupBy !== 'none' && (
                     <tr className="cursor-pointer select-none bg-sidebar/60" onClick={() => toggleGroup(g.key)}>
-                      <td colSpan={cols.length + 1} className="px-2 py-1.5">
+                      <td colSpan={cols.length + 2} className="px-2 py-1.5">
                         <span className="flex items-center gap-2 text-xs">
                           <span className="text-muted">{open ? '▾' : '▸'}</span>
                           {g.dot && <span className="h-2 w-2 rounded-full" style={{ background: g.dot }} />}
@@ -448,6 +448,7 @@ export function BoardList({
                             {cell(t, c.key)}
                           </td>
                         ))}
+                        <td />
                       </tr>
                     ))}
                 </tbody>
@@ -525,10 +526,12 @@ function ColumnsMenu({
   const [overKey, setOverKey] = useState<ColumnKey | null>(null)
   const [overPos, setOverPos] = useState<'before' | 'after'>('before')
   const ref = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!open) return
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (ref.current && !ref.current.contains(t) && !panelRef.current?.contains(t)) setOpen(false)
     }
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
@@ -549,16 +552,31 @@ function ColumnsMenu({
     setOverKey(null)
   }
 
+  // Icon-only trigger living in the table's trailing header cell; the panel
+  // portals with fixed positioning so the scroll container can't clip it.
+  const [pos, setPos] = useState<React.CSSProperties | null>(null)
+  const openPanel = () => {
+    if (open) return setOpen(false)
+    const r = ref.current?.getBoundingClientRect()
+    if (!r) return
+    setPos({ position: 'fixed', zIndex: 80, top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) })
+    setOpen(true)
+  }
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative inline-block">
       <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs text-muted transition-colors hover:text-fg"
+        onClick={openPanel}
+        title="Columns — show, hide, reorder"
+        aria-label="Configure columns"
+        className={cn(
+          'grid h-6 w-6 place-items-center rounded-md transition-colors',
+          open ? 'bg-card text-fg' : 'text-muted hover:bg-card hover:text-fg',
+        )}
       >
-        <SlidersHorizontal size={14} /> Columns
+        <SlidersHorizontal size={13} />
       </button>
-      {open && (
-        <div className="mercury-panel absolute right-0 z-30 mt-1 w-48 rounded-xl p-1">
+      {open && pos && typeof document !== 'undefined' && createPortal(
+        <div ref={panelRef} style={pos} className="mercury-panel w-48 rounded-xl p-1">
           <div className="px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-muted">Drag to reorder</div>
           {order.map((key) => {
             const c = LIST_COLUMNS.find((x) => x.key === key)!
@@ -608,7 +626,8 @@ function ColumnsMenu({
               </div>
             )
           })}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

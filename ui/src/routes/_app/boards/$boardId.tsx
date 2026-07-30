@@ -10,8 +10,8 @@ import { BoardSettingsModal } from '@/components/board/board-settings-modal'
 import { FilterBar, filtersActive, type BoardFilters } from '@/components/board/filter-bar'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
-import { Checkbox } from '@/components/ui/checkbox'
 import { FieldPill } from '@/components/ui/field-pill'
+import { Chip } from '@/components/ui/chip'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
 import {
@@ -251,7 +251,7 @@ function BoardPage() {
     <div className="flex h-full min-w-0 flex-col">
       <BoardHeader board={board} onSettings={() => setSettingsOpen(true)} />
 
-      {/* Toolbar: view toggle + search + filter facets (all URL-backed) */}
+      {/* Row 1 — the VIEW: mode toggle, saved views, save. */}
       <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-5 py-2">
         <div className="flex rounded-lg border border-line p-0.5">
           <button
@@ -279,64 +279,66 @@ function BoardPage() {
             <CalendarRange size={15} />
           </button>
         </div>
+        {savedViews.length > 0 && <div className="h-5 w-px bg-line-subtle" />}
+        {savedViews.map((sv) => (
+          <button
+            key={sv.id}
+            onClick={() => applyView(sv)}
+            onContextMenu={(e) => viewTabContextMenu(e, sv)}
+            className={cn(
+              'rounded-md border px-2 py-1 text-xs transition-colors',
+              search.v === sv.id
+                ? 'border-[var(--theme-accent-border)] bg-card text-fg'
+                : 'border-transparent text-muted hover:bg-card hover:text-fg',
+            )}
+          >
+            {sv.name}
+          </button>
+        ))}
+        {canEdit && (
+          <button
+            onClick={() => void saveCurrentAsView()}
+            title="Save the current layout, grouping, and filters as a named view"
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted transition-colors hover:text-accent"
+          >
+            <Plus size={12} /> Save view
+          </button>
+        )}
+        <span className="ml-auto text-xs text-muted">
+          {filtersActive(filters) || q ? `${tasks.length} of ${allTasks.length}` : `${allTasks.length} tickets`}
+        </span>
+        {viewTabMenu}
+      </div>
+
+      {/* Row 2 — the QUERY: search + filters left; display options right. */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-5 py-1.5">
         <Input value={q} onChange={(e) => setSearch({ q: e.target.value }, true)} placeholder="Search" size="sm" className="w-40" />
         {fleetLoading || cfgLoading ? (
           <Skeleton className="h-9 w-64" />
         ) : (
           <FilterBar value={filters} onChange={setFilters} members={members} agents={boardAgents} labels={boardLabels} meId={me?.id} />
         )}
-        {view === 'list' && (
-          <DropdownMenu
-            align="left"
-            trigger={(open) => (
-              <FieldPill icon={<Layers size={12} />} active={open || groupBy !== 'status'} className="h-9 rounded-lg px-2 text-xs" title="Group by">
-                {groupBy === 'none' ? 'No grouping' : `Group: ${groupBy}`}
-              </FieldPill>
-            )}
-            items={(['status', 'priority', 'assignee', 'label', 'none'] as GroupByKey[]).map((g) => ({
-              label: g === 'none' ? 'No grouping' : g,
-              checked: groupBy === g,
-              onSelect: () => setSearch({ group: g }),
-            }))}
-          />
-        )}
-        <Checkbox checked={showArchived} onChange={(v) => setSearch({ archived: v })} label="Archived" />
-        <span className="ml-auto text-xs text-muted">
-          {filtersActive(filters) || q ? `${tasks.length} of ${allTasks.length}` : `${allTasks.length}`}
+        <span className="ml-auto flex items-center gap-1.5">
+          {view === 'list' && (
+            <DropdownMenu
+              align="right"
+              trigger={(open) => (
+                <FieldPill icon={<Layers size={12} />} active={open || groupBy !== 'status'} className="h-9 rounded-lg px-2 text-xs" title="Group by">
+                  {groupBy === 'none' ? 'No grouping' : `Group: ${groupBy}`}
+                </FieldPill>
+              )}
+              items={(['status', 'priority', 'assignee', 'label', 'none'] as GroupByKey[]).map((g) => ({
+                label: g === 'none' ? 'No grouping' : g,
+                checked: groupBy === g,
+                onSelect: () => setSearch({ group: g }),
+              }))}
+            />
+          )}
+          <Chip onSelect={() => setSearch({ archived: !showArchived })} selected={showArchived} title="Include archived tickets">
+            archived
+          </Chip>
         </span>
       </div>
-
-      {/* Saved views: named presets shared with the board. Right-click a tab
-          to update/rename/delete. */}
-      {(savedViews.length > 0 || canEdit) && (
-        <div className="flex flex-wrap items-center gap-1 border-b border-line-subtle px-5 py-1.5">
-          {savedViews.map((sv) => (
-            <button
-              key={sv.id}
-              onClick={() => applyView(sv)}
-              onContextMenu={(e) => viewTabContextMenu(e, sv)}
-              className={cn(
-                'rounded-md border px-2 py-0.5 text-xs transition-colors',
-                search.v === sv.id
-                  ? 'border-[var(--theme-accent-border)] bg-card text-fg'
-                  : 'border-transparent text-muted hover:bg-card hover:text-fg',
-              )}
-            >
-              {sv.name}
-            </button>
-          ))}
-          {canEdit && (
-            <button
-              onClick={() => void saveCurrentAsView()}
-              title="Save the current layout, grouping, and filters as a named view"
-              className="flex items-center gap-1 rounded-md px-2 py-0.5 text-xs text-muted transition-colors hover:text-accent"
-            >
-              <Plus size={12} /> Save view
-            </button>
-          )}
-          {viewTabMenu}
-        </div>
-      )}
 
       <div className="relative min-h-0 min-w-0 flex-1">
         {view === 'board' ? (
