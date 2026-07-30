@@ -22,6 +22,8 @@ export interface TaskWorkflow {
 export interface SkillLibraryOwner {
   owner: string // 'shared' or an agent slug
   label: string
+  /** The agent's model id (absent for the shared root). */
+  model?: string
   /** Whether THIS user may edit this owner's skills (server-computed). */
   canEdit: boolean
   skills: Array<{ name: string; description: string }>

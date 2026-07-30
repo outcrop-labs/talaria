@@ -17,7 +17,7 @@ export const Route = createFileRoute('/api/skills')({
         if (user instanceof Response) return user
         const owners = await listAllSkills()
         const withEdit = await Promise.all(
-          owners.map(async (o) => ({ ...o, model: undefined, canEdit: await canEditSkills(user, o.owner) })),
+          owners.map(async (o) => ({ ...o, canEdit: await canEditSkills(user, o.owner) })),
         )
         return json({ owners: withEdit })
       },

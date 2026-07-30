@@ -22,6 +22,9 @@ export interface GuidePrefill {
   name?: string
   describe?: string
   boardIds?: string[]
+  /** Preselects who carries the skill (an owner slug or 'shared') — set when
+   *  the guide is launched from a specific agent's dashboard. */
+  owner?: string
 }
 
 const STEPS = ['The work', 'When it applies', 'How it’s done', 'Who does it'] as const
@@ -94,7 +97,7 @@ export function StudioGuide({
   const abortRef = useRef<AbortController | null>(null)
   // Step 4 — placement
   const editable = owners.filter((o) => o.canEdit)
-  const [ownerPick, setOwnerPick] = useState<string>('')
+  const [ownerPick, setOwnerPick] = useState<string>(prefill?.owner && owners.some((o) => o.owner === prefill.owner && o.canEdit) ? prefill.owner : '')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null) // skill ref when created

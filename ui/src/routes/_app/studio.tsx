@@ -1,22 +1,23 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Plus } from 'lucide-react'
+import { Plus, Lock } from 'lucide-react'
+import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Panel } from '@/components/ui/panel'
 import { Chip } from '@/components/ui/chip'
+import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { InfoTip } from '@/components/ui/info-tip'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { confirm } from '@/components/ui/confirm'
-import { useContextMenu, copyAppLink } from '@/components/ui/context-menu'
 import { WorkflowDetail } from '@/components/workflows/workflow-detail'
 import { StudioSkillEditor } from '@/components/workflows/skill-editor'
 import { StudioGuide, type GuidePrefill } from '@/components/workflows/studio-guide'
 import { cn } from '@/lib/cn'
+import { useAgents } from '@/lib/agents'
+import { useBoards } from '@/lib/boards'
 import {
-  createWorkflow,
   deleteWorkflow,
   setGapStatus,
   useGaps,
@@ -27,90 +28,321 @@ import {
   type TaskWorkflow,
 } from '@/lib/workflows'
 
-// The Studio — where people tailor how agents work. Two artifact kinds:
-//   Skills     the HOW: Hermes SKILL.md files agents mount and live-read,
-//              cross-agent view (shared + per-agent), Muse drafts from a
-//              plain description. Editable where you hold access: admins /
-//              agents.manage everywhere, explicit agent grants for that
-//              agent's own skills.
-//   Workflows  the WHICH: match rules classifying tickets, bound to the
-//              skills that kind of work follows + expected toolkits.
-//   Suggested  the honesty loop's queue: capability gaps agents reported,
-//              ranked by recurrence — one click turns a gap into a skill
-//              draft. Agents propose, humans ratify.
-type Tab = 'skills' | 'workflows' | 'suggested'
-
+// The Studio — build your agents, one at a time. The rail picks who you're
+// building for ("Every agent" = shared know-how, or one agent); the dashboard
+// is that agent's whole working world:
+//   Suggestions   what IT asked for (capability gaps, ranked by recurrence)
+//   Knows         its skills — own + inherited shared know-how
+//   Routed here   the workflows that steer ticket work onto it
+// "Teach" runs the guided flow (name → recognize → Muse-drafted skill → done)
+// with this agent already chosen. Skills/workflows stay Hermes-native
+// underneath — this surface only decides who learns what.
 export const Route = createFileRoute('/_app/studio')({
   component: StudioPage,
-  // /studio?tab=workflows&w=<id> · /studio?sk=<owner>/<name>
-  validateSearch: (search: Record<string, unknown>): { tab?: Tab; w?: string; sk?: string } => ({
-    ...(search.tab === 'workflows' || search.tab === 'suggested' ? { tab: search.tab as Tab } : {}),
-    ...(typeof search.w === 'string' && search.w ? { w: search.w } : {}),
+  // /studio?a=<owner> · &sk=<owner>/<name> opens a skill · &w=<id> a workflow
+  validateSearch: (search: Record<string, unknown>): { a?: string; sk?: string; w?: string } => ({
+    ...(typeof search.a === 'string' && search.a ? { a: search.a } : {}),
     ...(typeof search.sk === 'string' && search.sk ? { sk: search.sk } : {}),
+    ...(typeof search.w === 'string' && search.w ? { w: search.w } : {}),
   }),
 })
 
 function StudioPage() {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
-  const tab: Tab = search.tab ?? 'skills'
-  const { data: owners = [], isLoading: skillsLoading } = useSkillLibrary()
+  const qc = useQueryClient()
+  const { data: owners = [], isLoading } = useSkillLibrary()
   const { data: workflows = [] } = useWorkflows()
   const { data: gaps = [] } = useGaps()
-  const [guide, setGuide] = useState<(GuidePrefill & { gapId?: string }) | null>(null)
-  const canTeach = owners.some((o) => o.canEdit)
-  const qcTop = useQueryClient()
+  const { data: agentsData } = useAgents()
+  const { data: boards = [] } = useBoards()
+  const [guide, setGuide] = useState<(GuidePrefill & { gapId?: string; owner?: string }) | null>(null)
 
-  const setTab = (t: Tab) => void navigate({ search: t === 'skills' ? {} : { tab: t } })
-  const skillCount = owners.reduce((n, o) => n + o.skills.length, 0)
+  const agents = owners.filter((o) => o.owner !== 'shared')
+  const shared = owners.find((o) => o.owner === 'shared')
+  const selectedKey = search.a ?? agents.find((o) => o.canEdit)?.owner ?? agents[0]?.owner ?? 'shared'
+  const selected = owners.find((o) => o.owner === selectedKey) ?? shared ?? null
+  const select = (a: string) => void navigate({ search: { a } })
 
-  const TABS: { id: Tab; label: string; count: number }[] = [
-    { id: 'skills', label: 'Skills', count: skillCount },
-    { id: 'workflows', label: 'Workflows', count: workflows.length },
-    { id: 'suggested', label: 'Suggested', count: gaps.length },
-  ]
+  const sharedSkills = new Set(shared?.skills.map((s) => s.name) ?? [])
+  const boardName = (id: string) => boards.find((b) => b.id === id)?.name ?? 'a board'
+  const agentMeta = (o: SkillLibraryOwner) => agentsData?.agents.find((a) => a.id === o.model)
+  const firstName = (o: SkillLibraryOwner) => o.label.split(' ')[0]!
+
+  /** Workflows steering work onto this owner: any bound skill it carries.
+   *  The shared view also collects workflows whose skills nobody carries. */
+  const routedTo = (o: SkillLibraryOwner): TaskWorkflow[] => {
+    const own = new Set(o.skills.map((s) => s.name))
+    const carriedBySomeone = new Set(owners.flatMap((x) => x.skills.map((s) => s.name)))
+    return workflows.filter((w) => {
+      if (o.owner === 'shared') return w.skills.length === 0 || w.skills.some((sk) => sharedSkills.has(sk) || !carriedBySomeone.has(sk))
+      return w.skills.some((sk) => own.has(sk) || sharedSkills.has(sk))
+    })
+  }
+
+  /** Plain-English row for a workflow — what it does, not how it's stored. */
+  const describe = (w: TaskWorkflow): string => {
+    const where = [
+      w.match.boards?.length ? `on ${w.match.boards.map(boardName).join(' or ')}` : '',
+      w.match.labels?.length ? `labeled ${w.match.labels.map((l) => `“${l}”`).join(' or ')}` : '',
+      w.match.keywords?.length ? `mentioning ${w.match.keywords.map((k) => `“${k}”`).join(' or ')}` : '',
+    ]
+      .filter(Boolean)
+      .join(', ')
+    const flow = w.skills.length ? `follow ${w.skills.map((sk) => `“${sk}”`).join(' + ')}` : 'no skills bound yet'
+    return `Tickets ${where || '(no rules yet)'} → ${flow}`
+  }
+
+  const ownerGaps = (o: SkillLibraryOwner): CapabilityGap[] =>
+    o.owner === 'shared' ? gaps : gaps.filter((g) => g.agentModel === o.model)
+
+  // Overlays driven by URL params
+  const [skOwner, skName] = search.sk?.split('/', 2) ?? []
+  const skOwnerInfo = owners.find((o) => o.owner === skOwner)
+  const openWorkflow = workflows.find((w) => w.id === search.w) ?? null
+  const closeOverlay = () => void navigate({ search: { a: selectedKey } })
+
+  const removeWorkflow = async (w: TaskWorkflow) => {
+    if (!(await confirm({ title: 'Delete workflow', message: `Delete "${w.name}"? Matching tickets dispatch without its skills.`, confirmLabel: 'Delete', danger: true }))) return
+    await deleteWorkflow(w.id)
+    closeOverlay()
+    await qc.invalidateQueries({ queryKey: ['workflows'] })
+  }
+
+  if (isLoading)
+    return (
+      <div className="h-full overflow-y-auto p-8">
+        <div className="mx-auto max-w-6xl">
+          <SkeletonRows rows={8} avatar />
+        </div>
+      </div>
+    )
 
   return (
     <div className="h-full overflow-y-auto p-8">
-      <div className="mx-auto max-w-5xl space-y-6">
-        <div className="flex items-center gap-1.5">
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-6 flex items-center gap-1.5">
           <h1 className="mercury-text text-2xl font-semibold">Studio</h1>
-          <InfoTip text="Tailor how agents work. Skills are the how — the flow content agents load and follow, edited live. Workflows are the which — match rules that classify tickets and bind them to skills. You can edit skills for agents you've been granted; admins shape the fleet." />
-          {canTeach && (
-            <Button size="sm" className="ml-auto" onClick={() => setGuide({})}>
-              Teach your agents
-            </Button>
+          <InfoTip text="Build your agents, one at a time: what each one knows (skills), what work gets routed to it (workflows), and what it's asked for help with. Pick who you're building for on the left." />
+        </div>
+
+        <div className="grid gap-8 lg:grid-cols-[15rem_minmax(0,1fr)]">
+          {/* ── Who you're building for ── */}
+          <aside className="space-y-1">
+            <div className="mb-2 px-2.5 text-[11px] uppercase tracking-wide text-muted">Building for</div>
+            {agents.map((o) => {
+              const meta = agentMeta(o)
+              const openCount = ownerGaps(o).length
+              return (
+                <button
+                  key={o.owner}
+                  type="button"
+                  onClick={() => select(o.owner)}
+                  className={cn(
+                    'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors',
+                    selectedKey === o.owner ? 'bg-card' : 'hover:bg-card/50',
+                  )}
+                >
+                  <Avatar name={o.label} className="h-8 w-8 shrink-0 text-xs" />
+                  <span className="min-w-0 flex-1">
+                    <span className={cn('block truncate text-sm font-medium', selectedKey === o.owner ? 'text-fg' : 'text-muted')}>{o.label}</span>
+                    <span className="block truncate text-[11px] text-muted">{meta?.role ?? o.model ?? ''}</span>
+                  </span>
+                  {openCount > 0 && <Chip tone="warn">{openCount}</Chip>}
+                  {!o.canEdit && <Lock size={12} className="shrink-0 text-muted" />}
+                </button>
+              )
+            })}
+            <div className="my-2 border-t border-line-subtle" />
+            <button
+              type="button"
+              onClick={() => select('shared')}
+              className={cn(
+                'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors',
+                selectedKey === 'shared' ? 'bg-card' : 'hover:bg-card/50',
+              )}
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line-subtle text-sm text-muted">✦</span>
+              <span className="min-w-0 flex-1">
+                <span className={cn('block truncate text-sm font-medium', selectedKey === 'shared' ? 'text-fg' : 'text-muted')}>Every agent</span>
+                <span className="block text-[11px] text-muted">shared know-how</span>
+              </span>
+              {shared && !shared.canEdit && <Lock size={12} className="shrink-0 text-muted" />}
+            </button>
+          </aside>
+
+          {/* ── The selected agent's world ── */}
+          {selected ? (
+            <main className="min-w-0 space-y-8">
+              <div className="flex items-center gap-4">
+                {selected.owner === 'shared' ? (
+                  <span className="flex h-14 w-14 items-center justify-center rounded-2xl border border-line-subtle text-2xl text-muted">✦</span>
+                ) : (
+                  <Avatar name={selected.label} className="h-14 w-14 text-lg" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <h2 className="truncate text-xl font-semibold text-fg">{selected.owner === 'shared' ? 'Every agent' : selected.label}</h2>
+                  <p className="truncate text-sm text-muted">
+                    {selected.owner === 'shared'
+                      ? 'Know-how every agent in the fleet carries.'
+                      : (agentMeta(selected)?.role ?? selected.model ?? '')}
+                  </p>
+                </div>
+                {selected.canEdit && (
+                  <Button onClick={() => setGuide({ owner: selected.owner })}>
+                    Teach {selected.owner === 'shared' ? 'everyone' : firstName(selected)}
+                  </Button>
+                )}
+              </div>
+
+              {/* Suggestions — what the agent asked for */}
+              {ownerGaps(selected).length > 0 && (
+                <section>
+                  <SectionTitle
+                    title={selected.owner === 'shared' ? 'Agents asked for help with' : `${firstName(selected)} asked for help with`}
+                    hint="Work it hit and couldn't do properly — build the know-how and it won't happen again."
+                  />
+                  <div className="space-y-2">
+                    {ownerGaps(selected).map((g) => (
+                      <Panel key={g.id} className="border-[color:var(--theme-warning)]/25">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-fg">{g.kind.replace(/-/g, ' ')}</span>
+                          <Chip tone="warn">{g.seenCount}×</Chip>
+                          {selected.owner === 'shared' && <span className="text-xs text-muted">{g.agentModel}</span>}
+                          <div className="ml-auto flex items-center gap-1.5">
+                            {selected.canEdit && (
+                              <Button
+                                size="sm"
+                                onClick={() =>
+                                  setGuide({
+                                    owner: selected.owner,
+                                    gapId: g.id,
+                                    name: g.kind.replace(/-/g, ' '),
+                                    describe: `${g.missing}${g.needs ? `\n\nWhat the reporting agent said a flow would need:\n${g.needs}` : ''}`,
+                                    boardIds: g.boardId ? [g.boardId] : [],
+                                  })
+                                }
+                              >
+                                Build it
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => void setGapStatus(g.id, 'dismissed').then(() => qc.invalidateQueries({ queryKey: ['gaps', 'open'] }))}
+                            >
+                              Dismiss
+                            </Button>
+                          </div>
+                        </div>
+                        <p className="mt-1 text-sm text-muted">{g.missing}</p>
+                      </Panel>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Knows — skills */}
+              <section>
+                <SectionTitle
+                  title={selected.owner === 'shared' ? 'Everyone knows' : `${firstName(selected)} knows`}
+                  hint="Skills — the how. Agents read these live; edits apply on their next run."
+                  action={
+                    selected.canEdit ? (
+                      <Button size="sm" variant="outline" onClick={() => setGuide({ owner: selected.owner })}>
+                        <Plus size={14} />
+                      </Button>
+                    ) : undefined
+                  }
+                />
+                {selected.skills.length === 0 && (selected.owner === 'shared' || sharedSkills.size === 0) ? (
+                  <Panel>
+                    <EmptyState
+                      icon="✦"
+                      title="Nothing yet"
+                      hint={selected.canEdit ? '“Teach” walks you through the first one — name the work, explain it in plain words, Muse drafts the skill.' : 'Nothing taught yet.'}
+                    />
+                  </Panel>
+                ) : (
+                  <Panel className="p-0">
+                    <div className="divide-y divide-line-subtle">
+                      {selected.skills.map((s) => (
+                        <SkillRow
+                          key={s.name}
+                          name={s.name}
+                          description={s.description}
+                          onOpen={() => void navigate({ search: { a: selectedKey, sk: `${selected.owner}/${s.name}` } })}
+                        />
+                      ))}
+                      {selected.owner !== 'shared' &&
+                        (shared?.skills ?? []).map((s) => (
+                          <SkillRow
+                            key={`shared/${s.name}`}
+                            name={s.name}
+                            description={s.description}
+                            sharedBadge
+                            onOpen={() => void navigate({ search: { a: selectedKey, sk: `shared/${s.name}` } })}
+                          />
+                        ))}
+                    </div>
+                  </Panel>
+                )}
+              </section>
+
+              {/* Routed here — workflows */}
+              <section>
+                <SectionTitle
+                  title={selected.owner === 'shared' ? 'Routing everyone can serve' : `Work routed to ${firstName(selected)}`}
+                  hint="Workflows — the which. When a ticket matches, its skills ride along on dispatch."
+                />
+                {routedTo(selected).length === 0 ? (
+                  <Panel>
+                    <p className="py-1 text-sm text-muted">
+                      No routing yet.{selected.canEdit ? ' Add recognition rules in “Teach” and matching tickets will carry the flow automatically.' : ''}
+                    </p>
+                  </Panel>
+                ) : (
+                  <Panel className="p-0">
+                    <div className="divide-y divide-line-subtle">
+                      {routedTo(selected).map((w) => (
+                        <button
+                          key={w.id}
+                          type="button"
+                          onClick={() => void navigate({ search: { a: selectedKey, w: w.id } })}
+                          className="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-card/40"
+                        >
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-fg">{w.name}</span>
+                            <span className="block truncate text-sm text-muted">{describe(w)}</span>
+                          </span>
+                          {!w.enabled && <Chip>off</Chip>}
+                        </button>
+                      ))}
+                    </div>
+                  </Panel>
+                )}
+              </section>
+            </main>
+          ) : (
+            <EmptyState icon="◍" title="No agents yet" hint="The Studio lights up once the fleet has agents." />
           )}
         </div>
-
-        <div className="flex gap-1 border-b border-line-subtle">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn('relative flex items-center gap-1.5 px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
-            >
-              {t.label}
-              <span className="text-[10px] text-muted">{t.count}</span>
-              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
-            </button>
-          ))}
-        </div>
-
-        {tab === 'skills' ? (
-          <SkillsTab
-            owners={owners}
-            loading={skillsLoading}
-            openSkill={search.sk ?? null}
-            setOpenSkill={(sk) => void navigate({ search: { ...(sk ? { sk } : {}) } })}
-          />
-        ) : tab === 'workflows' ? (
-          <WorkflowsTab workflows={workflows} selectedId={search.w ?? null} select={(id) => void navigate({ search: { tab: 'workflows', ...(id ? { w: id } : {}) } })} />
-        ) : (
-          <SuggestedTab gaps={gaps} owners={owners} teach={(p) => setGuide(p)} />
-        )}
       </div>
+
+      {/* Overlays */}
+      {skOwner && skName && skOwnerInfo && (
+        <StudioSkillEditor owner={skOwner} ownerLabel={skOwnerInfo.label} name={skName} canEdit={skOwnerInfo.canEdit} onClose={closeOverlay} />
+      )}
+      {openWorkflow && (
+        <Modal open onClose={closeOverlay} width="max-w-2xl" title={openWorkflow.name}>
+          <WorkflowDetail
+            key={openWorkflow.id}
+            workflow={openWorkflow}
+            onChanged={() => void qc.invalidateQueries({ queryKey: ['workflows'] })}
+            onDelete={() => void removeWorkflow(openWorkflow)}
+          />
+        </Modal>
+      )}
       {guide && (
         <StudioGuide
           open
@@ -118,9 +350,9 @@ function StudioPage() {
           owners={owners}
           prefill={guide}
           onCreated={() => {
-            // A gap is resolved only once a human actually ratified a skill
-            // for it — cancelling the guide leaves the suggestion in place.
-            if (guide.gapId) void setGapStatus(guide.gapId, 'resolved').then(() => qcTop.invalidateQueries({ queryKey: ['gaps', 'open'] }))
+            // A gap resolves only once a human actually ratified a skill for
+            // it — cancelling the guide leaves the suggestion in place.
+            if (guide.gapId) void setGapStatus(guide.gapId, 'resolved').then(() => qc.invalidateQueries({ queryKey: ['gaps', 'open'] }))
           }}
         />
       )}
@@ -128,259 +360,22 @@ function StudioPage() {
   )
 }
 
-// ── Skills: the cross-agent library ─────────────────────────────────────────
-
-const SKILL_SKELETON = (name: string) =>
-  `# ${name}\n\nWhen to use: describe the situation this flow is for — or open Muse and draft it from a description.\n\n## Steps\n\n1. \n`
-
-function SkillsTab({
-  owners,
-  loading,
-  openSkill,
-  setOpenSkill,
-}: {
-  owners: SkillLibraryOwner[]
-  loading: boolean
-  openSkill: string | null
-  setOpenSkill: (sk: string | null) => void
-}) {
-  const qc = useQueryClient()
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
-
-  const create = async (owner: string) => {
-    const name = (drafts[owner] ?? '').trim().toLowerCase().replace(/\s+/g, '-')
-    if (!name) return
-    const r = await fetch(`/api/skills/${owner}/${name}`, {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content: SKILL_SKELETON(name) }),
-    })
-    if (!r.ok) return
-    setDrafts((d) => ({ ...d, [owner]: '' }))
-    await qc.invalidateQueries({ queryKey: ['skill-library'] })
-    setOpenSkill(`${owner}/${name}`)
-  }
-
-  const [openOwner, openName] = openSkill?.split('/', 2) ?? []
-  const openOwnerInfo = owners.find((o) => o.owner === openOwner)
-
-  if (loading) return <SkeletonRows rows={6} />
+function SectionTitle({ title, hint, action }: { title: string; hint: string; action?: React.ReactNode }) {
   return (
-    <div className="space-y-6">
-      {owners.map((o) => (
-        <Panel key={o.owner}>
-          <div className="mb-2 flex items-center gap-2">
-            <span className="text-sm font-semibold text-fg">{o.label}</span>
-            {o.owner === 'shared' && <Chip>every agent</Chip>}
-            {!o.canEdit && <span className="ml-auto text-[10px] uppercase tracking-wide text-muted">read-only</span>}
-          </div>
-          {o.skills.length ? (
-            <div className="divide-y divide-line-subtle">
-              {o.skills.map((s) => (
-                <button
-                  key={s.name}
-                  type="button"
-                  onClick={() => setOpenSkill(`${o.owner}/${s.name}`)}
-                  className="flex w-full items-baseline gap-3 py-2.5 text-left transition-colors hover:bg-card/40"
-                >
-                  <span className="shrink-0 text-sm font-medium text-fg">{s.name}</span>
-                  <span className="min-w-0 truncate text-sm text-muted">{s.description}</span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="py-2 text-xs text-muted">No skills yet.</p>
-          )}
-          {o.canEdit && (
-            <div className="mt-2 flex items-center gap-1.5 border-t border-line-subtle pt-3">
-              <Input
-                size="sm"
-                value={drafts[o.owner] ?? ''}
-                onChange={(e) => setDrafts((d) => ({ ...d, [o.owner]: e.target.value }))}
-                placeholder="new-skill-name"
-                className="w-56"
-                onKeyDown={(e) => e.key === 'Enter' && void create(o.owner)}
-              />
-              <Button size="sm" variant="outline" disabled={!(drafts[o.owner] ?? '').trim()} onClick={() => void create(o.owner)}>
-                <Plus size={14} />
-              </Button>
-              <span className="text-xs text-muted">Name it, then describe it to Muse in the editor.</span>
-            </div>
-          )}
-        </Panel>
-      ))}
-      {owners.length === 0 && <EmptyState icon="✦" title="No agents yet" hint="Skills appear here once the fleet has agents." />}
-      {owners.length > 0 && owners.every((o) => !o.skills.length) && (
-        <p className="text-center text-xs text-muted">Nothing taught yet — “Teach your agents” walks you through the first one.</p>
-      )}
-
-      {openOwner && openName && openOwnerInfo && (
-        <StudioSkillEditor
-          owner={openOwner}
-          ownerLabel={openOwnerInfo.label}
-          name={openName}
-          canEdit={openOwnerInfo.canEdit}
-          onClose={() => setOpenSkill(null)}
-        />
-      )}
+    <div className="mb-2 flex items-baseline gap-2">
+      <h3 className="text-sm font-semibold text-fg">{title}</h3>
+      <span className="min-w-0 truncate text-xs text-muted">{hint}</span>
+      {action && <span className="ml-auto">{action}</span>}
     </div>
   )
 }
 
-// ── Workflows: match rules → skills ─────────────────────────────────────────
-
-function WorkflowsTab({
-  workflows,
-  selectedId,
-  select,
-}: {
-  workflows: TaskWorkflow[]
-  selectedId: string | null
-  select: (id: string | null) => void
-}) {
-  const qc = useQueryClient()
-  const { openMenu, menu } = useContextMenu()
-  const [newName, setNewName] = useState('')
-  const selected = workflows.find((h) => h.id === selectedId) ?? null
-
-  const refresh = () => qc.invalidateQueries({ queryKey: ['workflows'] })
-  const create = async () => {
-    const name = newName.trim()
-    if (!name) return
-    setNewName('')
-    const { workflow } = await createWorkflow({ name })
-    await refresh()
-    if (workflow) select(workflow.id)
-  }
-  const remove = async (h: TaskWorkflow) => {
-    if (!(await confirm({ title: 'Delete workflow', message: `Delete "${h.name}"? Matching tickets dispatch without its skills.`, confirmLabel: 'Delete', danger: true }))) return
-    await deleteWorkflow(h.id)
-    if (selectedId === h.id) select(null)
-    await refresh()
-  }
-
+function SkillRow({ name, description, sharedBadge, onOpen }: { name: string; description: string; sharedBadge?: boolean; onOpen: () => void }) {
   return (
-    <div className="grid gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
-      <aside className="space-y-3">
-        <ul className="space-y-0.5">
-          {workflows.map((h) => (
-            <li key={h.id}>
-              <button
-                type="button"
-                onClick={() => select(h.id)}
-                onContextMenu={(e) =>
-                  openMenu(e, [
-                    { label: 'Open', onSelect: () => select(h.id) },
-                    { label: 'Copy link', onSelect: () => copyAppLink(`/studio?tab=workflows&w=${h.id}`) },
-                    'sep',
-                    { label: 'Delete', danger: true, onSelect: () => void remove(h) },
-                  ])
-                }
-                className={cn(
-                  'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors',
-                  selected?.id === h.id ? 'bg-card text-fg' : 'text-muted hover:bg-card hover:text-fg',
-                )}
-              >
-                <span className="min-w-0 flex-1 truncate font-sans">{h.name}</span>
-                {!h.enabled && <Chip>off</Chip>}
-              </button>
-            </li>
-          ))}
-          {workflows.length === 0 && <li className="px-2.5 py-2 text-xs text-muted">None yet.</li>}
-        </ul>
-        <div className="flex items-center gap-1.5 border-t border-line-subtle pt-3">
-          <Input size="sm" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New workflow" onKeyDown={(e) => e.key === 'Enter' && void create()} />
-          <Button size="sm" variant="outline" disabled={!newName.trim()} onClick={() => void create()}>
-            <Plus size={14} />
-          </Button>
-        </div>
-      </aside>
-
-      {selected ? (
-        <WorkflowDetail key={selected.id} workflow={selected} onChanged={refresh} onDelete={() => void remove(selected)} />
-      ) : (
-        <Panel>
-          <EmptyState
-            icon="⚙"
-            title="No workflow selected"
-            hint={workflows.length ? 'Pick one on the left, or create a new one.' : 'Create the first one on the left — e.g. "Development" matching your dev board, bound to the skills that kind of work follows.'}
-          />
-        </Panel>
-      )}
-      {menu}
-    </div>
-  )
-}
-
-// ── Suggested: the honesty loop's queue ─────────────────────────────────────
-
-function SuggestedTab({
-  gaps,
-  owners,
-  teach,
-}: {
-  gaps: CapabilityGap[]
-  owners: SkillLibraryOwner[]
-  teach: (p: GuidePrefill & { gapId?: string }) => void
-}) {
-  const qc = useQueryClient()
-  const editable = owners.filter((o) => o.canEdit)
-  const refresh = () => qc.invalidateQueries({ queryKey: ['gaps', 'open'] })
-
-  // "Build it" hands the gap to the guided flow, prefilled with the agent's
-  // own words; the gap resolves only when the human ratifies a skill for it.
-  const build = (gap: CapabilityGap) => {
-    teach({
-      name: gap.kind.replace(/-/g, ' '),
-      describe: `${gap.missing}${gap.needs ? `\n\nWhat the reporting agent said a flow would need:\n${gap.needs}` : ''}`,
-      boardIds: gap.boardId ? [gap.boardId] : [],
-      gapId: gap.id,
-    })
-  }
-  const dismiss = async (gap: CapabilityGap) => {
-    await setGapStatus(gap.id, 'dismissed')
-    refresh()
-  }
-
-  if (!gaps.length)
-    return (
-      <Panel>
-        <EmptyState
-          icon="✦"
-          title="Nothing suggested"
-          hint="When an agent hits work it genuinely can't do properly, the gap lands here — ranked by how often the shape recurs — ready to become a skill."
-        />
-      </Panel>
-    )
-  return (
-    <div className="space-y-3">
-      {gaps.map((g) => (
-        <Panel key={g.id}>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-fg">{g.kind}</span>
-            <Chip tone={g.seenCount > 2 ? 'warn' : 'neutral'}>{g.seenCount}×</Chip>
-            <span className="text-xs text-muted">reported by {g.agentModel}</span>
-            <div className="ml-auto flex items-center gap-1.5">
-              {editable.length > 0 && (
-                <Button size="sm" onClick={() => build(g)}>
-                  Build it
-                </Button>
-              )}
-              <Button size="sm" variant="ghost" onClick={() => void dismiss(g)}>
-                Dismiss
-              </Button>
-            </div>
-          </div>
-          <p className="mt-1.5 text-sm text-muted">{g.missing}</p>
-          {g.needs && <p className="mt-1 line-clamp-3 text-xs text-muted">{g.needs}</p>}
-          {g.exampleTaskId && (
-            <a href={`/boards?t=${g.exampleTaskId}`} className="mt-1.5 inline-block text-xs text-accent hover:underline">
-              Example ticket
-            </a>
-          )}
-        </Panel>
-      ))}
-    </div>
+    <button type="button" onClick={onOpen} className="flex w-full items-baseline gap-3 px-5 py-3 text-left transition-colors hover:bg-card/40">
+      <span className="shrink-0 text-sm font-medium text-fg">{name}</span>
+      <span className="min-w-0 flex-1 truncate text-sm text-muted">{description}</span>
+      {sharedBadge && <Chip className="shrink-0">shared</Chip>}
+    </button>
   )
 }
