@@ -20,9 +20,9 @@ export const Route = createFileRoute('/api/admin/judge')({
       PUT: async ({ request }) => {
         const user = await requireAdmin(request)
         if (user instanceof Response) return user
-        const body = await parseBody(request, z.object({ enabled: z.boolean(), model: z.string().max(200).nullish() }))
+        const body = await parseBody(request, z.object({ enabled: z.boolean(), model: z.string().max(200).nullish(), mode: z.enum(['advisory', 'enforcing']).optional() }))
         if (body instanceof Response) return body
-        const config = { enabled: body.enabled, model: body.model?.trim() || null }
+        const config = { enabled: body.enabled, model: body.model?.trim() || null, mode: body.mode ?? 'enforcing' }
         await setJudgeConfig(config)
         void logAudit({ actor: actorOf(user), action: 'settings.judge', targetType: 'settings', after: config })
         return json({ config })

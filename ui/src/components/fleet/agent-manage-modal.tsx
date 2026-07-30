@@ -16,6 +16,7 @@ import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { InfoTip } from '@/components/ui/info-tip'
 import { cn } from '@/lib/cn'
 import { relativeTime, useFleet } from '@/lib/fleet'
+import { Segmented } from '@/components/ui/segmented'
 import { AgentConfigForm } from '@/components/fleet/agent-editor'
 import { CronsPanel } from '@/components/fleet/agent-crons'
 import { SecretsTab } from '@/components/fleet/agent-secrets-tab'
@@ -129,6 +130,8 @@ function SummaryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
           <div className="text-fg">{def.role ?? '—'}</div>
         )}
       </div>
+      {/* Workbench — THE sandbox setting: off / auto (fit rules) / on. */}
+      <WorkbenchControl def={def} isAdmin={isAdmin} />
       <div className="grid grid-cols-2 gap-3">
         <Stat label="Model id" value={def.model} />
         <Stat label="Department" value={def.department} />
@@ -697,6 +700,143 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
           {v.version === def.currentVersion && <span className="shrink-0 text-xs" style={{ color: 'var(--theme-success)' }}>current</span>}
         </div>
       ))}
+    </div>
+  )
+}
+
+
+interface WorkbenchProfileLite {
+  slug: string
+  name: string
+  description: string
+  harnesses: string[]
+  autoAttach: { departments?: string[]; roles?: string[] }
+  enabled: boolean
+}
+
+/** The one workbench setting. Auto shows what it resolves to for THIS agent
+ *  (fit by department/role); On lets an admin force a specific profile. */
+function WorkbenchControl({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
+  const qc = useQueryClient()
+  const { data: profiles = [] } = useQuery({
+    queryKey: ['workbench-profiles'],
+    queryFn: async (): Promise<WorkbenchProfileLite[]> => {
+      const r = await fetch('/api/workbench', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { profiles: WorkbenchProfileLite[] }).profiles
+    },
+  })
+  const mode = def.workbench ?? 'auto'
+  const fits = (p: WorkbenchProfileLite) =>
+    (p.autoAttach.departments ?? []).some((d) => d.toLowerCase() === def.department.toLowerCase()) ||
+    (!!def.role && (p.autoAttach.roles ?? []).some((r) => (def.role ?? '').toLowerCase().includes(r.toLowerCase())))
+  const resolved =
+    mode === 'off'
+      ? null
+      : mode === 'on'
+        ? (profiles.find((p) => p.slug === def.workbenchProfile) ?? profiles.find(fits) ?? profiles.find((p) => p.slug === 'dev') ?? null)
+        : (profiles.find((p) => p.slug === def.workbenchProfile) ?? profiles.find(fits) ?? null)
+
+  const save = async (patch: { workbench?: 'off' | 'auto' | 'on'; workbenchProfile?: string | null }) => {
+    await patchAgentMeta(def.id, patch)
+    await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+  }
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-1.5">
+        <span className="text-xs uppercase tracking-wide text-muted">Workbench</span>
+        <InfoTip text="A sandboxed runtime scoped to this agent's role — tools, harnesses, and creds it can execute real work with. Auto attaches the profile that fits (department/role); On forces one; Off disables it." />
+      </div>
+      {isAdmin ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Segmented
+            options={[
+              { id: 'off', label: 'Off' },
+              { id: 'auto', label: 'Auto' },
+              { id: 'on', label: 'On' },
+            ]}
+            value={mode}
+            onChange={(m) => void save({ workbench: m })}
+          />
+          {mode !== 'off' && profiles.length > 1 && (
+            <Select
+              size="sm"
+              value={def.workbenchProfile ?? ''}
+              onChange={(e) => void save({ workbenchProfile: e.target.value || null })}
+            >
+              <option value="">{mode === 'auto' ? 'best fit' : 'best fit'}</option>
+              {profiles
+                .filter((p) => p.enabled)
+                .map((p) => (
+                  <option key={p.slug} value={p.slug}>
+                    {p.name}
+                  </option>
+                ))}
+            </Select>
+          )}
+          <span className="text-xs text-muted">
+            {mode === 'off' ? 'no sandbox' : resolved ? `→ ${resolved.name}${resolved.harnesses.length ? ` (${resolved.harnesses.join(', ')})` : ''}` : '→ nothing fits — no sandbox'}
+          </span>
+        </div>
+      ) : (
+        <div className="text-fg">{mode === 'off' ? 'Off' : resolved ? resolved.name : 'None'}</div>
+      )}
+      {isAdmin && mode !== 'off' && resolved && <WorkbenchRepos agentId={def.id} />}
+    </div>
+  )
+}
+
+/** Explicit per-agent repo grants — the workbench touches ONLY these. */
+function WorkbenchRepos({ agentId }: { agentId: string }) {
+  const qc = useQueryClient()
+  const { data, isLoading } = useQuery({
+    queryKey: ['workbench-repos', agentId],
+    queryFn: async (): Promise<{ available: string[]; granted: string[] } | null> => {
+      const r = await fetch(`/api/workbench/repos/${agentId}`, { credentials: 'same-origin' })
+      if (!r.ok) return null
+      return (await r.json()) as { available: string[]; granted: string[] }
+    },
+  })
+  const toggle = async (repo: string, on: boolean) => {
+    const next = on ? [...(data?.granted ?? []), repo] : (data?.granted ?? []).filter((r) => r !== repo)
+    await fetch(`/api/workbench/repos/${agentId}`, {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repos: next }),
+    })
+    await qc.invalidateQueries({ queryKey: ['workbench-repos', agentId] })
+  }
+  if (isLoading) return <div className="mt-2"><SkeletonRows rows={1} /></div>
+  if (!data || data.available.length === 0)
+    return (
+      <p className="mt-1.5 text-xs text-muted">
+        No repositories reachable — connect GitHub under <Link to="/admin" className="text-accent hover:underline">Admin → Org</Link> to grant repos.
+      </p>
+    )
+  return (
+    <div className="mt-2 space-y-1">
+      <span className="text-[11px] uppercase tracking-wide text-muted">Repos this agent may work</span>
+      <div className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
+        {data.available.map((repo) => {
+          const on = data.granted.includes(repo)
+          return (
+            <button
+              key={repo}
+              type="button"
+              onClick={() => void toggle(repo, !on)}
+              className={cn(
+                'rounded-full border px-2.5 py-0.5 text-xs transition-colors',
+                on ? 'border-[var(--theme-accent-border)] text-fg' : 'border-line-subtle text-muted hover:text-fg',
+              )}
+            >
+              {repo}
+            </button>
+          )
+        })}
+      </div>
+      {data.granted.length === 0 && <p className="text-xs text-muted">Nothing granted yet — the workbench can't touch any repo.</p>}
     </div>
   )
 }

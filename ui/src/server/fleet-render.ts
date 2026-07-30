@@ -19,6 +19,7 @@ import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promi
 import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
+import { resolveWorkbench, type WorkbenchProfile } from './workbench'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
 import { ensureMcpService } from './mcp-service'
@@ -176,6 +177,7 @@ async function managedAgents(): Promise<RenderTarget[]> {
   const sql = await db()
   const rows = (await sql`
     select d.id, d.slug, d.department, d.model, d.display_name as "displayName", d.enabled, d.managed, d.source,
+           d.role, d.workbench, d.workbench_profile as "workbenchProfile",
            d.active_slot as "activeSlot",
            d.current_version as "currentVersion", d.created_at as "createdAt", d.updated_at as "updatedAt",
            v.id as vid, v.version, v.soul, v.config, v.note, v.created_by as "createdBy", v.created_at as vcreated
@@ -390,6 +392,38 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     // chassis default was 0 (OFF) — which silently disabled ticket pickup
     // fleet-wide. 45s default, host env still overrides.
     env.TALARIA_HEARTBEAT_SECONDS = '${TALARIA_HEARTBEAT_SECONDS:-45}'
+
+    // Workbench overlay — the agent's runtime profile (sandbox tools for its
+    // role), resolved from THE setting (off/auto/on + fit rules). A profile
+    // may override the image, add env, and mount extra volumes; everything
+    // else about the chassis stays identical.
+    const wb = await resolveWorkbench({
+      department: def.department,
+      role: (def as unknown as { role?: string | null }).role ?? null,
+      workbench: ((def as unknown as { workbench?: string }).workbench ?? 'auto') as 'off' | 'auto' | 'on',
+      workbenchProfile: (def as unknown as { workbenchProfile?: string | null }).workbenchProfile ?? null,
+    }).catch(() => null as WorkbenchProfile | null)
+    if (wb) {
+      if (wb.image) svc.image = wb.image
+      for (const [k, v] of Object.entries(wb.env)) env[k] = v
+      env.TALARIA_WORKBENCH_PROFILE = wb.slug
+      // Harness auth, gateway-first: OpenAI-compatible harnesses point at
+      // Talaria's gateway (same creds the persona already uses — metered,
+      // attributed); native harnesses get their provider's key interpolated
+      // from the endpoint registry's env contract, scoped to this container.
+      const { HARNESSES } = await import('./workbench-harnesses')
+      const sqlc = await db()
+      const endpoints = (await sqlc`select provider, api_key_env as "apiKeyEnv" from llm_endpoints where api_key_env is not null`) as unknown as Array<{ provider: string; apiKeyEnv: string }>
+      for (const slug of wb.harnesses) {
+        const h = HARNESSES.find((x) => x.slug === slug)
+        if (!h) continue
+        for (const [k, v] of Object.entries(h.gatewayEnv)) env[k] = v
+        if (h.auth === 'native' && h.native) {
+          const ep = endpoints.find((e) => e.provider === h.native!.provider)
+          if (ep) env[h.native.envVar] = '${' + ep.apiKeyEnv + '}'
+        }
+      }
+    }
     svc.environment = env
 
     // Per-agent state volume: imported agents keep their pre-Talaria volume
@@ -398,7 +432,49 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     const stateVolume = `hermes-${def.department}`
     volumes[stateVolume] = imported ? { external: true, name: `${LEGACY_DOCKER_PROJECT}_${stateVolume}` } : {}
 
+    // MCP pass-through: the agent's EXISTING grants (talaria + registry
+    // servers incl. the workbench surface), rendered into each harness's
+    // native config format — pointed at the same per-agent gateway, keyed by
+    // the same env-interpolated fleet key. Zero in-sandbox reconnection;
+    // grant changes re-render, revocations bite at the gateway instantly.
+    if (wb) {
+      const names = ['talaria', ...(await serversForAgent(def.model)).map((x) => x.name)]
+      const uniq = [...new Set(names)]
+      const gwUrl = (n: string) => `${MCP_GW_BASE()}/${n}`
+      const wbDir = join(agentDir, 'workbench')
+      await mkdir(wbDir, { recursive: true })
+      // Claude Code (.mcp.json) — ${VAR} expands from the container env.
+      await writeFile(
+        join(wbDir, 'mcp.json'),
+        JSON.stringify(
+          {
+            mcpServers: Object.fromEntries(
+              uniq.map((n) => [n, { type: 'http', url: gwUrl(n), headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '${TALARIA_AGENT_KEY}' } }]),
+            ),
+          },
+          null,
+          2,
+        ),
+      )
+      // opencode — {env:VAR} is its env-substitution syntax.
+      await writeFile(
+        join(wbDir, 'opencode.json'),
+        JSON.stringify(
+          {
+            $schema: 'https://opencode.ai/config.json',
+            mcp: Object.fromEntries(
+              uniq.map((n) => [n, { type: 'remote', url: gwUrl(n), headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '{env:TALARIA_AGENT_KEY}' }, enabled: true }]),
+            ),
+          },
+          null,
+          2,
+        ),
+      )
+    }
+    const wbMounts = wb?.mounts ?? []
     svc.volumes = [
+      ...(wb ? [`${join(agentDir, 'workbench')}:/opt/workbench-config:ro`] : []),
+      ...wbMounts,
       `${stateVolume}:/opt/data`,
       `${join(agentDir, 'config.yaml')}:/opt/data/config.yaml:ro`,
       `${join(agentDir, 'SOUL.md')}:/opt/data/SOUL.md:ro`,

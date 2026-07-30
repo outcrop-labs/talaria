@@ -972,6 +972,66 @@ const MIGRATIONS: string[] = [
   // assigned work properly reports the gap ONCE per work-shape (signature);
   // repeats only bump seen_count (frequency = ranking, never re-notification).
   // The Studio's Suggested queue turns open gaps into skill/workflow drafts.
+  // Workbench runtime profiles — the role-agnostic sandbox methodology.
+  // A profile is a chassis overlay: image + env + mounts + the harnesses it
+  // preinstalls, plus autoAttach fit rules (departments/roles/toolkits) and
+  // room for the later phases (creds scoping, toolkit, effort routing) in
+  // config. 'dev' ships seeded; designer/data/marketing ride the same table.
+  `create table if not exists workbench_profiles (
+    slug text primary key,
+    name text not null,
+    description text not null default '',
+    image text not null default '',
+    env jsonb not null default '{}',
+    mounts jsonb not null default '[]',
+    harnesses jsonb not null default '[]',
+    auto_attach jsonb not null default '{}',
+    config jsonb not null default '{}',
+    enabled boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
+  // Per-agent workbench control — THE simple setting: off | auto | on.
+  `alter table agent_defs add column if not exists workbench text not null default 'auto'`,
+  `alter table agent_defs add column if not exists workbench_profile text`,
+  // Workbench repo grants — explicit per-agent GitHub repo access, like MCP
+  // assignment: connecting GitHub grants nothing until an admin grants repos.
+  `create table if not exists workbench_repos (
+    agent_id uuid not null references agent_defs(id) on delete cascade,
+    repo text not null,
+    created_at timestamptz not null default now(),
+    primary key (agent_id, repo)
+  )`,
+  // Workbench jobs — the platform-owned execution lifecycle. One row per
+  // start_job: the branch is Talaria's (cut via API at start), the PR opens
+  // at finish with the templated ticket-linked body. Agents never touch
+  // origin outside this flow.
+  `create table if not exists workbench_jobs (
+    id uuid primary key default gen_random_uuid(),
+    agent_id uuid not null references agent_defs(id) on delete cascade,
+    agent_model text not null,
+    task_id uuid references tasks(id) on delete set null,
+    repo text not null,
+    branch text not null,
+    effort text not null default 'standard',
+    plan text not null default '',
+    status text not null default 'started',
+    pr_url text,
+    summary text not null default '',
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
+  // Per-repo git flow: which branch PRs target (null = the repo's default)
+  // and an optional TESTING branch features can be merged into for
+  // integration testing before the PR merges. Org-level — a repo's flow is
+  // the repo's flow, not per agent.
+  `create table if not exists workbench_repo_flow (
+    repo text primary key,
+    base_branch text,
+    testing_branch text,
+    updated_at timestamptz not null default now()
+  )`,
+  `alter table workbench_jobs add column if not exists merged_testing_at timestamptz`,
   // Persistent skill summaries — one generated line per skill, keyed to a
   // hash of its SKILL.md so it only regenerates when the content changes.
   `create table if not exists skill_summaries (
