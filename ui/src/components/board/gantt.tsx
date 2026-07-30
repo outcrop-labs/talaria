@@ -79,6 +79,9 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
 
   // ── Bar dragging (pointer-captured; click-after-drag suppressed) ─────────
   const dragRef = useRef<{ id: string; mode: 'move' | 'start' | 'end'; originX: number; s: number; e: number; moved: boolean } | null>(null)
+  // Survives past pointerup: the browser fires click AFTER pointerup, so the
+  // "was this a drag?" answer must outlive the drag state itself.
+  const justDraggedRef = useRef(false)
   const [preview, setPreview] = useState<{ id: string; s: number; e: number } | null>(null)
 
   const applyDelta = (d: NonNullable<typeof dragRef.current>, deltaDays: number) => {
@@ -100,11 +103,13 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
     e.preventDefault()
     e.stopPropagation()
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
+    justDraggedRef.current = false
     dragRef.current = { id: span.task.id, mode, originX: e.clientX, s: span.start, e: span.end, moved: false }
   }
   const onPointerMove = (e: React.PointerEvent) => {
     const d = dragRef.current
     if (!d) return
+    if (Math.abs(e.clientX - d.originX) > 3) justDraggedRef.current = true
     const deltaDays = Math.round((e.clientX - d.originX) / dayW)
     if (deltaDays !== 0) d.moved = true
     const { s, en } = applyDelta(d, deltaDays)
@@ -253,9 +258,14 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                       onPointerMove={onPointerMove}
                       onPointerUp={onPointerUp}
                       onClick={(ev) => {
-                        // A completed drag must not read as a click.
+                        // A completed drag must not read as a click — click
+                        // fires AFTER pointerup, so check the surviving flag.
                         ev.stopPropagation()
-                        if (!preview) onOpen(r.task.id)
+                        if (justDraggedRef.current) {
+                          justDraggedRef.current = false
+                          return
+                        }
+                        onOpen(r.task.id)
                       }}
                       title={`${r.task.title} — drag to reschedule`}
                       className={cn('absolute top-1.5 flex h-6 touch-none select-none items-center gap-1 overflow-hidden rounded-md border px-1.5 text-[10px] text-fg', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer', late && 'ring-1 ring-[color:var(--theme-danger)]')}
