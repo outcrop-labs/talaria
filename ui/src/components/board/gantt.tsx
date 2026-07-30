@@ -4,7 +4,7 @@
 // just that end (day snapping, pointer-captured). Sub-tasks indent under their
 // parent. Below the chart sits the UNSCHEDULED list — drag a ticket up into
 // the chart and it schedules where you drop it. Zoom with the −/+ controls.
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Minus, Plus } from 'lucide-react'
 import { cn } from '@/lib/cn'
@@ -46,6 +46,19 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
   const [dayW, setDayW] = useState(26)
 
+  // The grid always fills the viewport at the current zoom — zooming out
+  // widens the RANGE, never leaves dead space past the last day.
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [containerW, setContainerW] = useState(0)
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setContainerW(el.clientWidth))
+    ro.observe(el)
+    setContainerW(el.clientWidth)
+    return () => ro.disconnect()
+  }, [])
+
   const { spans, unscheduled, rangeStart, days } = useMemo(() => {
     const scheduled = tasks.filter((t) => t.startDate || t.dueDate)
     const unscheduled = tasks.filter((t) => !t.startDate && !t.dueDate && !t.archivedAt)
@@ -67,11 +80,14 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
     }
     const today = dayFloor(Date.now())
     // Never a peephole: at least a week back and two months forward, growing
-    // as scheduled work extends beyond that.
+    // as scheduled work extends beyond that — and never NARROWER than the
+    // viewport at this zoom (fill-to-container days appended at the end).
     const min = Math.min(today - 7 * DAY, ...rows.map((r) => r.start - 3 * DAY))
     const max = Math.max(today + 60 * DAY, ...rows.map((r) => r.end + 10 * DAY))
-    return { spans: rows, unscheduled, rangeStart: min, days: Math.round((max - min) / DAY) + 1 }
-  }, [tasks])
+    const dataDays = Math.round((max - min) / DAY) + 1
+    const fillDays = containerW > 0 ? Math.ceil((containerW - 220) / dayW) + 1 : 0
+    return { spans: rows, unscheduled, rangeStart: min, days: Math.max(dataDays, fillDays) }
+  }, [tasks, containerW, dayW])
 
   const x = (t: number) => ((t - rangeStart) / DAY) * dayW
   const today = dayFloor(Date.now())
@@ -173,7 +189,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
 
   return (
     <div className="flex h-full flex-col">
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
         <div style={{ minWidth: labelW + days * dayW }}>
           {/* ── Header: months + day grid + zoom ── */}
           <div className="sticky top-0 z-10 flex border-b border-line bg-surface/95 backdrop-blur">
