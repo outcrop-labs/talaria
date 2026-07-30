@@ -120,7 +120,7 @@ export function PriorityPill({ t, ctx, className }: { t: Task; ctx: PillCtx; cla
   )
 }
 
-export function DuePill({ t, ctx, className }: { t: Task; ctx: PillCtx; className?: string }) {
+export function DuePill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean }) {
   const late = isOverdueTask(t)
   const label = t.dueDate ? fmtDue(t.dueDate) : 'Due'
   if (!ctx.canEdit) {
@@ -141,7 +141,12 @@ export function DuePill({ t, ctx, className }: { t: Task; ctx: PillCtx; classNam
           active={open}
           empty={!t.dueDate}
           title="Set due date"
-          className={cn(late && 'font-medium !text-[color:var(--theme-danger)]')}
+          className={cn(
+            late && 'font-medium !text-[color:var(--theme-danger)]',
+            // Ghost: an unset property stays invisible until the card is
+            // hovered (or its picker is open) — quiet cards, one-click set.
+            ghost && !t.dueDate && !open && 'opacity-0 transition-opacity group-hover:opacity-100',
+          )}
         >
           {label}
         </FieldPill>
@@ -170,7 +175,7 @@ export function DuePill({ t, ctx, className }: { t: Task; ctx: PillCtx; classNam
   )
 }
 
-export function EstimatePill({ t, ctx, className }: { t: Task; ctx: PillCtx; className?: string }) {
+export function EstimatePill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean }) {
   const label = t.estimatedHours != null ? `${t.estimatedHours}h` : 'Estimate'
   if (!ctx.canEdit) {
     if (t.estimatedHours == null) return null
@@ -181,7 +186,13 @@ export function EstimatePill({ t, ctx, className }: { t: Task; ctx: PillCtx; cla
       align="left"
       className={className}
       trigger={(open) => (
-        <FieldPill icon={<Timer size={11} />} active={open} empty={t.estimatedHours == null} title="Set estimate (hours)">
+        <FieldPill
+          icon={<Timer size={11} />}
+          active={open}
+          empty={t.estimatedHours == null}
+          title="Set estimate (hours)"
+          className={cn(ghost && t.estimatedHours == null && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
+        >
           {label}
         </FieldPill>
       )}
@@ -214,7 +225,7 @@ export function EstimatePill({ t, ctx, className }: { t: Task; ctx: PillCtx; cla
   )
 }
 
-export function AssigneesPill({ t, ctx, className }: { t: Task; ctx: PillCtx; className?: string }) {
+export function AssigneesPill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean }) {
   const infos = t.assignees.map((a) => assigneeInfo(a, ctx.agents, ctx.members))
   const summary =
     infos.length === 0 ? 'Assign' : infos.length === 1 ? infos[0]!.label : `${infos.length} assignees`
@@ -246,6 +257,7 @@ export function AssigneesPill({ t, ctx, className }: { t: Task; ctx: PillCtx; cl
           empty={infos.length === 0}
           icon={infos.length === 0 ? <UserRound size={11} /> : undefined}
           title="Assign teammates or agents"
+          className={cn(ghost && infos.length === 0 && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
         >
           {avatars}
         </FieldPill>

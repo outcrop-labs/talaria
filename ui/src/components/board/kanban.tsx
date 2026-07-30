@@ -219,31 +219,34 @@ function Card({
             {task.description && <div className="mt-1 line-clamp-3 font-sans text-xs leading-relaxed text-muted">{plainText(task.description)}</div>}
           </div>
         </div>
-        {/* Property pills — click to edit in place; the card click still opens
-            the ticket (pills own their clicks). */}
-        <div className="mt-2.5 flex flex-wrap items-center gap-1">
-          <AssigneesPill t={task} ctx={pillCtx} />
-          <DuePill t={task} ctx={pillCtx} />
-          <EstimatePill t={task} ctx={pillCtx} />
-          {subtasks.length > 0 && (
-            <span
-              className={cn('flex items-center gap-1 px-1 text-[11px]', doneKids === subtasks.length ? 'text-[color:var(--theme-success)]' : 'text-muted')}
-              title="Sub-tasks done"
-            >
-              <GitBranch size={11} /> {doneKids}/{subtasks.length}
-            </span>
-          )}
-          {task.commentCount > 0 && (
-            <span className="flex items-center gap-1 px-1 text-[11px] text-muted" title="Comments">
-              <MessageSquare size={11} /> {task.commentCount}
-            </span>
-          )}
-          {task.tags.slice(0, 2).map((tag) => (
-            <span key={tag} className="rounded-full border border-line-subtle px-1.5 py-0.5 text-[10px] text-muted">
-              {tag}
-            </span>
-          ))}
-          {task.tags.length > 2 && <span className="text-[10px] text-muted">+{task.tags.length - 2}</span>}
+        {/* Property pills — one quiet line. Set values always show; unset
+            pills are ghosts that surface on hover (one click to fill).
+            Indicators + labels sit right, so every card aligns the same. */}
+        <div className="mt-2.5 flex items-center gap-1 overflow-hidden">
+          <AssigneesPill t={task} ctx={pillCtx} ghost />
+          <DuePill t={task} ctx={pillCtx} ghost />
+          <EstimatePill t={task} ctx={pillCtx} ghost />
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            {subtasks.length > 0 && (
+              <span
+                className={cn('flex items-center gap-1 text-[11px]', doneKids === subtasks.length ? 'text-[color:var(--theme-success)]' : 'text-muted')}
+                title="Sub-tasks done"
+              >
+                <GitBranch size={11} /> {doneKids}/{subtasks.length}
+              </span>
+            )}
+            {task.commentCount > 0 && (
+              <span className="flex items-center gap-1 text-[11px] text-muted" title="Comments">
+                <MessageSquare size={11} /> {task.commentCount}
+              </span>
+            )}
+            {task.tags.slice(0, 1).map((tag) => (
+              <span key={tag} className="max-w-24 truncate rounded-full border border-line-subtle px-1.5 py-0.5 text-[10px] text-muted">
+                {tag}
+              </span>
+            ))}
+            {task.tags.length > 1 && <span className="text-[10px] text-muted">+{task.tags.length - 1}</span>}
+          </span>
         </div>
       </div>
     </div>
