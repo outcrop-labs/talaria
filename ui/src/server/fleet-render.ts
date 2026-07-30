@@ -386,6 +386,10 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     env.API_SERVER_MODEL_NAME = def.model
     // The toolkit MCP header interpolates this from the container env.
     env.TALARIA_AGENT_KEY = '${TALARIA_AGENT_KEY}'
+    // Work pickup: agents poll for assigned tickets on this cadence. The
+    // chassis default was 0 (OFF) — which silently disabled ticket pickup
+    // fleet-wide. 45s default, host env still overrides.
+    env.TALARIA_HEARTBEAT_SECONDS = '${TALARIA_HEARTBEAT_SECONDS:-45}'
     svc.environment = env
 
     // Per-agent state volume: imported agents keep their pre-Talaria volume

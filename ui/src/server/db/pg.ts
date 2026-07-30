@@ -945,6 +945,25 @@ const MIGRATIONS: string[] = [
   `alter table tasks add column if not exists start_date timestamptz`,
   // Ticket color-coding (palette key; null = status/priority defaults).
   `alter table tasks add column if not exists color text`,
+  // Task workflows — task-classified hooks: when an agent picks up a ticket
+  // that MATCHES (labels / boards / title keywords), the workflow rides along
+  // with the work: instructions (the flow), declared toolkits (MCP servers /
+  // tool subsets the work expects), and a reserved env block for sandbox
+  // profiles (the future custom-runtime layer).
+  `create table if not exists task_workflows (
+    id uuid primary key default gen_random_uuid(),
+    name text not null,
+    description text not null default '',
+    enabled boolean not null default true,
+    match jsonb not null default '{}',
+    instructions text not null default '',
+    toolkits jsonb not null default '[]',
+    env jsonb not null default '{}',
+    position int not null default 0,
+    created_by text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
   // Custom board statuses. category carries the workflow semantics: open
   // (intake), active (working), review (the agent-review catch), done
   // (terminal). agent_start marks columns that constitute assignment approval

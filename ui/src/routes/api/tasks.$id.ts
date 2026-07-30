@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { TICKET_COLORS } from '@/lib/task-const'
-import { statusMeta } from '@/server/statuses'
+import { listStatuses, statusMeta } from '@/server/statuses'
 import { getSessionUser } from '@/server/auth/session'
 import { agentName, checkAgentKey } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit, invalidAssignee, listMembers } from '@/server/boards'
@@ -48,7 +48,8 @@ export const Route = createFileRoute('/api/tasks/$id')({
           const agent = agentName(request)
           if (!agent) return json({ error: 'x-agent-name required' }, { status: 400 })
           if (!(await boardAllowsAgent(full.task.boardId, agent))) return json({ error: 'forbidden' }, { status: 403 })
-          return json(full)
+          const { workflowsForTask } = await import('@/server/workflows')
+          return json({ ...full, workflows: await workflowsForTask(full.task) })
         }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
@@ -85,14 +86,19 @@ export const Route = createFileRoute('/api/tasks/$id')({
         // effort, labels, description, status → in_progress/blocked/quality_review)
         // but cannot assign work or sign off. Assignment + done stay human.
         if (agent) {
-          // Board-aware guardrails: agent-start statuses ARE assignment (a
-          // human approval), so agents can never move work into them; a
+          // Board-aware guardrails: entering an agent-start column from
+          // intake IS assignment (a human approval), so agents can't do it —
+          // but a ticket already past that gate moves freely between working
+          // columns (assigned → in_progress, blocked → in_progress). A
           // terminal status redirects to the board's review catch — sign-off
           // stays a person's call.
           if (parsed.data.status) {
             const meta = await statusMeta(task.boardId)
-            if (meta.agentStartKeys.includes(parsed.data.status)) {
-              return json({ error: 'agents cannot assign tickets' }, { status: 403 })
+            if (meta.agentStartKeys.includes(parsed.data.status) && !meta.agentStartKeys.includes(task.status)) {
+              const cur = (await listStatuses(task.boardId)).find((s) => s.key === task.status)
+              if (!cur || cur.category === 'open') {
+                return json({ error: 'agents cannot assign tickets' }, { status: 403 })
+              }
             }
             if (meta.doneKeys.includes(parsed.data.status)) parsed.data.status = meta.reviewKey as typeof parsed.data.status
           }

@@ -14,6 +14,7 @@ import { Route as JoinRouteImport } from './routes/join'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as KbSlugRouteImport } from './routes/kb.$slug'
+import { Route as ApiWorkflowsRouteImport } from './routes/api/workflows'
 import { Route as ApiUsersRouteImport } from './routes/api/users'
 import { Route as ApiUploadsRouteImport } from './routes/api/uploads'
 import { Route as ApiTemplatesRouteImport } from './routes/api/templates'
@@ -44,6 +45,7 @@ import { Route as ApiAlertsRouteImport } from './routes/api/alerts'
 import { Route as ApiAgentsRouteImport } from './routes/api/agents'
 import { Route as ApiActivityRouteImport } from './routes/api/activity'
 import { Route as ASlugRouteImport } from './routes/a.$slug'
+import { Route as AppWorkflowsRouteImport } from './routes/_app/workflows'
 import { Route as AppTemplatesRouteImport } from './routes/_app/templates'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppResearchRouteImport } from './routes/_app/research'
@@ -63,6 +65,7 @@ import { Route as AppAgentsRouteImport } from './routes/_app/agents'
 import { Route as AppAdminRouteImport } from './routes/_app/admin'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as KbSpaceSlugRouteImport } from './routes/kb.space.$slug'
+import { Route as ApiWorkflowsIdRouteImport } from './routes/api/workflows.$id'
 import { Route as ApiWellKnownTalariaInstanceRouteImport } from './routes/api/well-known.talaria-instance'
 import { Route as ApiUploadsIdRouteImport } from './routes/api/uploads.$id'
 import { Route as ApiTemplatesIdRouteImport } from './routes/api/templates.$id'
@@ -228,6 +231,11 @@ const KbSlugRoute = KbSlugRouteImport.update({
   path: '/kb/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiWorkflowsRoute = ApiWorkflowsRouteImport.update({
+  id: '/api/workflows',
+  path: '/api/workflows',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiUsersRoute = ApiUsersRouteImport.update({
   id: '/api/users',
   path: '/api/users',
@@ -378,6 +386,11 @@ const ASlugRoute = ASlugRouteImport.update({
   path: '/a/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppWorkflowsRoute = AppWorkflowsRouteImport.update({
+  id: '/workflows',
+  path: '/workflows',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppTemplatesRoute = AppTemplatesRouteImport.update({
   id: '/templates',
   path: '/templates',
@@ -472,6 +485,11 @@ const KbSpaceSlugRoute = KbSpaceSlugRouteImport.update({
   id: '/kb/space/$slug',
   path: '/kb/space/$slug',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ApiWorkflowsIdRoute = ApiWorkflowsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiWorkflowsRoute,
 } as any)
 const ApiWellKnownTalariaInstanceRoute =
   ApiWellKnownTalariaInstanceRouteImport.update({
@@ -1216,6 +1234,7 @@ export interface FileRoutesByFullPath {
   '/research': typeof AppResearchRoute
   '/settings': typeof AppSettingsRoute
   '/templates': typeof AppTemplatesRoute
+  '/workflows': typeof AppWorkflowsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1246,6 +1265,7 @@ export interface FileRoutesByFullPath {
   '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
+  '/api/workflows': typeof ApiWorkflowsRouteWithChildren
   '/kb/$slug': typeof KbSlugRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
   '/api/admin/apps': typeof ApiAdminAppsRoute
@@ -1306,6 +1326,7 @@ export interface FileRoutesByFullPath {
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
+  '/api/workflows/$id': typeof ApiWorkflowsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards/': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -1410,6 +1431,7 @@ export interface FileRoutesByTo {
   '/research': typeof AppResearchRoute
   '/settings': typeof AppSettingsRoute
   '/templates': typeof AppTemplatesRoute
+  '/workflows': typeof AppWorkflowsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1440,6 +1462,7 @@ export interface FileRoutesByTo {
   '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
+  '/api/workflows': typeof ApiWorkflowsRouteWithChildren
   '/kb/$slug': typeof KbSlugRoute
   '/': typeof AppIndexRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
@@ -1501,6 +1524,7 @@ export interface FileRoutesByTo {
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
+  '/api/workflows/$id': typeof ApiWorkflowsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards': typeof AppBoardsIndexRoute
   '/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -1607,6 +1631,7 @@ export interface FileRoutesById {
   '/_app/research': typeof AppResearchRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/templates': typeof AppTemplatesRoute
+  '/_app/workflows': typeof AppWorkflowsRoute
   '/a/$slug': typeof ASlugRoute
   '/api/activity': typeof ApiActivityRoute
   '/api/agents': typeof ApiAgentsRouteWithChildren
@@ -1637,6 +1662,7 @@ export interface FileRoutesById {
   '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
+  '/api/workflows': typeof ApiWorkflowsRouteWithChildren
   '/kb/$slug': typeof KbSlugRoute
   '/_app/': typeof AppIndexRoute
   '/_app/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
@@ -1698,6 +1724,7 @@ export interface FileRoutesById {
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
+  '/api/workflows/$id': typeof ApiWorkflowsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/_app/boards/': typeof AppBoardsIndexRoute
   '/_app/boards/$boardId/$taskId': typeof AppBoardsBoardIdTaskIdRoute
@@ -1805,6 +1832,7 @@ export interface FileRouteTypes {
     | '/research'
     | '/settings'
     | '/templates'
+    | '/workflows'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -1835,6 +1863,7 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/api/uploads'
     | '/api/users'
+    | '/api/workflows'
     | '/kb/$slug'
     | '/boards/$boardId'
     | '/api/admin/apps'
@@ -1895,6 +1924,7 @@ export interface FileRouteTypes {
     | '/api/templates/$id'
     | '/api/uploads/$id'
     | '/api/well-known/talaria-instance'
+    | '/api/workflows/$id'
     | '/kb/space/$slug'
     | '/boards/'
     | '/boards/$boardId/$taskId'
@@ -1999,6 +2029,7 @@ export interface FileRouteTypes {
     | '/research'
     | '/settings'
     | '/templates'
+    | '/workflows'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -2029,6 +2060,7 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/api/uploads'
     | '/api/users'
+    | '/api/workflows'
     | '/kb/$slug'
     | '/'
     | '/boards/$boardId'
@@ -2090,6 +2122,7 @@ export interface FileRouteTypes {
     | '/api/templates/$id'
     | '/api/uploads/$id'
     | '/api/well-known/talaria-instance'
+    | '/api/workflows/$id'
     | '/kb/space/$slug'
     | '/boards'
     | '/boards/$boardId/$taskId'
@@ -2195,6 +2228,7 @@ export interface FileRouteTypes {
     | '/_app/research'
     | '/_app/settings'
     | '/_app/templates'
+    | '/_app/workflows'
     | '/a/$slug'
     | '/api/activity'
     | '/api/agents'
@@ -2225,6 +2259,7 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/api/uploads'
     | '/api/users'
+    | '/api/workflows'
     | '/kb/$slug'
     | '/_app/'
     | '/_app/boards/$boardId'
@@ -2286,6 +2321,7 @@ export interface FileRouteTypes {
     | '/api/templates/$id'
     | '/api/uploads/$id'
     | '/api/well-known/talaria-instance'
+    | '/api/workflows/$id'
     | '/kb/space/$slug'
     | '/_app/boards/'
     | '/_app/boards/$boardId/$taskId'
@@ -2405,6 +2441,7 @@ export interface RootRouteChildren {
   ApiTemplatesRoute: typeof ApiTemplatesRouteWithChildren
   ApiUploadsRoute: typeof ApiUploadsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
+  ApiWorkflowsRoute: typeof ApiWorkflowsRouteWithChildren
   KbSlugRoute: typeof KbSlugRoute
   ApiAdminAppsRoute: typeof ApiAdminAppsRoute
   ApiAdminDomainsRoute: typeof ApiAdminDomainsRoute
@@ -2488,6 +2525,13 @@ declare module '@tanstack/react-router' {
       path: '/kb/$slug'
       fullPath: '/kb/$slug'
       preLoaderRoute: typeof KbSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/workflows': {
+      id: '/api/workflows'
+      path: '/api/workflows'
+      fullPath: '/api/workflows'
+      preLoaderRoute: typeof ApiWorkflowsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/users': {
@@ -2700,6 +2744,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ASlugRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/workflows': {
+      id: '/_app/workflows'
+      path: '/workflows'
+      fullPath: '/workflows'
+      preLoaderRoute: typeof AppWorkflowsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/templates': {
       id: '/_app/templates'
       path: '/templates'
@@ -2832,6 +2883,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/kb/space/$slug'
       preLoaderRoute: typeof KbSpaceSlugRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api/workflows/$id': {
+      id: '/api/workflows/$id'
+      path: '/$id'
+      fullPath: '/api/workflows/$id'
+      preLoaderRoute: typeof ApiWorkflowsIdRouteImport
+      parentRoute: typeof ApiWorkflowsRoute
     }
     '/api/well-known/talaria-instance': {
       id: '/api/well-known/talaria-instance'
@@ -3845,6 +3903,7 @@ interface AppRouteChildren {
   AppResearchRoute: typeof AppResearchRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppTemplatesRoute: typeof AppTemplatesRoute
+  AppWorkflowsRoute: typeof AppWorkflowsRoute
   AppIndexRoute: typeof AppIndexRoute
   AppBoardsBoardIdRoute: typeof AppBoardsBoardIdRouteWithChildren
   AppBoardsIndexRoute: typeof AppBoardsIndexRoute
@@ -3870,6 +3929,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppResearchRoute: AppResearchRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppTemplatesRoute: AppTemplatesRoute,
+  AppWorkflowsRoute: AppWorkflowsRoute,
   AppIndexRoute: AppIndexRoute,
   AppBoardsBoardIdRoute: AppBoardsBoardIdRouteWithChildren,
   AppBoardsIndexRoute: AppBoardsIndexRoute,
@@ -4285,6 +4345,18 @@ const ApiUploadsRouteWithChildren = ApiUploadsRoute._addFileChildren(
   ApiUploadsRouteChildren,
 )
 
+interface ApiWorkflowsRouteChildren {
+  ApiWorkflowsIdRoute: typeof ApiWorkflowsIdRoute
+}
+
+const ApiWorkflowsRouteChildren: ApiWorkflowsRouteChildren = {
+  ApiWorkflowsIdRoute: ApiWorkflowsIdRoute,
+}
+
+const ApiWorkflowsRouteWithChildren = ApiWorkflowsRoute._addFileChildren(
+  ApiWorkflowsRouteChildren,
+)
+
 interface ApiAgentMediaModelRouteChildren {
   ApiAgentMediaModelSaveRoute: typeof ApiAgentMediaModelSaveRoute
 }
@@ -4495,6 +4567,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiTemplatesRoute: ApiTemplatesRouteWithChildren,
   ApiUploadsRoute: ApiUploadsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
+  ApiWorkflowsRoute: ApiWorkflowsRouteWithChildren,
   KbSlugRoute: KbSlugRoute,
   ApiAdminAppsRoute: ApiAdminAppsRoute,
   ApiAdminDomainsRoute: ApiAdminDomainsRoute,

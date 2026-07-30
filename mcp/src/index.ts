@@ -113,7 +113,7 @@ server.registerTool(
   'get_ticket',
   {
     description:
-      'Get a ticket in full: fields (incl. human estimate, sub-task parentId, mixed assignees — agents by id, humans as user:<id>), comments, activity, watchers, reviews, dependencies. Tickets may carry an `attachments` array (files + knowledge/artifact refs) — read a file with fetch_attachment.',
+      'Get a ticket in full: fields (incl. human estimate, sub-task parentId, mixed assignees — agents by id, humans as user:<id>), comments, activity, watchers, reviews, dependencies. May include `workflows` — how this kind of work is done here; follow their instructions. Tickets may carry an `attachments` array (files + knowledge/artifact refs) — read a file with fetch_attachment.',
     inputSchema: { taskId: z.string().describe('Ticket id') },
   },
   async ({ taskId }) => ok(await api('GET', `/api/tasks/${encodeURIComponent(taskId)}`)),

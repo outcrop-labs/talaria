@@ -160,6 +160,8 @@ export async function createTask(input: {
   await logActivity(id, input.createdBy, 'created', 'created this task')
   if (assignees.length) await logActivity(id, input.createdBy, 'assigned', `assigned to ${assignees.join(', ')}`)
   const task = (await getTask(id))!
+  // Born assigned into an agent-start column → push the work to the agents.
+  void import('./work-dispatch').then(({ maybeDispatchTicket }) => maybeDispatchTicket(task)).catch(() => {})
   void notifyTaskUsers(humanAssigneeIds(assignees), input.createdBy, {
     kind: 'task-assigned',
     title: `Assigned: ${input.title}`,
@@ -247,6 +249,14 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
 
   if (patch.status && patch.status !== cur.status) {
     await logActivity(id, actor, 'status', `moved to ${patch.status}`)
+    // Moving INTO an agent-start column re-dispatches to agent assignees
+    // (human approval by column move).
+    if (meta.agentStartKeys.includes(patch.status) && !meta.agentStartKeys.includes(cur.status)) {
+      void (async () => {
+        const fresh = await getTask(id)
+        if (fresh) await (await import('./work-dispatch')).maybeDispatchTicket(fresh)
+      })().catch(() => {})
+    }
     // Watchers + assigned humans hear about status moves (never the actor).
     const audience = [...(await watcherUserIds(id)), ...humanAssigneeIds(assignees)]
     void notifyTaskUsers(audience, actor, {
@@ -258,6 +268,14 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
   }
   if (patch.assignees !== undefined && assignees.join(',') !== cur.assignees.join(',')) {
     await logActivity(id, actor, 'assigned', assignees.length ? `assigned to ${assignees.join(', ')}` : 'unassigned')
+    // NEWLY added agents get the work pushed into their run loop.
+    const addedAgents = agentAssignees(assignees).filter((a) => !agentAssignees(cur.assignees).includes(a))
+    if (addedAgents.length) {
+      void (async () => {
+        const fresh = await getTask(id)
+        if (fresh) await (await import('./work-dispatch')).maybeDispatchTicket(fresh, addedAgents)
+      })().catch(() => {})
+    }
     // NEWLY added humans get an inbox nudge.
     const added = humanAssigneeIds(assignees).filter((uid) => !humanAssigneeIds(cur.assignees).includes(uid))
     void notifyTaskUsers(added, actor, {
@@ -391,12 +409,12 @@ export async function listActivity(taskId: string): Promise<TaskActivity[]> {
 }
 
 /** Work assigned to an agent (by name), across all boards — for heartbeat. */
-export async function assignedWork(agentName: string): Promise<Array<{ id: string; title: string; description: string | null }>> {
+export async function assignedWork(agentName: string): Promise<Array<{ id: string; title: string; description: string | null; workflows: unknown[] }>> {
   const sql = await db()
   // Custom-status boards: pickup = statuses flagged agent_start. Boards
   // without rows keep the classic ('assigned','in_progress') semantics.
   const rows = await sql`
-    select t.id, t.title, t.description from tasks t
+    select t.id, t.title, t.description, t.tags, t.board_id as "boardId" from tasks t
     where t.assignees @> ${sql.json([agentName])}::jsonb
       and (
         t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.agent_start)
@@ -407,5 +425,10 @@ export async function assignedWork(agentName: string): Promise<Array<{ id: strin
       )
     order by t.created_at asc
   `
-  return rows as unknown as Array<{ id: string; title: string; description: string | null }>
+  // Matched workflows ride with the pull channel too (plugin-side dispatch).
+  const { workflowsForTask } = await import('./workflows')
+  const items = rows as unknown as Array<{ id: string; title: string; description: string | null; tags: string[]; boardId: string }>
+  return Promise.all(
+    items.map(async (t) => ({ ...t, workflows: await workflowsForTask(t) })),
+  )
 }
