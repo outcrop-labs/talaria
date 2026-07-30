@@ -1753,7 +1753,7 @@ function GithubPanel() {
                 <a href="https://github.com/settings/apps/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
                   github.com/settings/apps/new
                 </a>{' '}
-                — or, if the repos belong to an organization, <span className="text-fg">Org settings → Developer settings → GitHub Apps → New GitHub App</span> so the org owns it. GitHub's form is long; here is every field that matters (leave anything unlisted at its default):
+                — or, if the repos belong to an organization, prefer <span className="text-fg">Org settings → Developer settings → GitHub Apps → New GitHub App</span> so the org owns it outright. GitHub's form is long; here is every field that matters (leave anything unlisted at its default):
               </p>
               <GhFields
                 rows={[
@@ -1767,7 +1767,7 @@ function GithubPanel() {
                   ['Repository permissions', 'Contents: Read and write · Pull requests: Read and write. (Metadata: Read-only is set automatically.)'],
                   ['Organization permissions', 'None needed. (Optional: Administration — Read and write, only if you later want agents to request NEW repos with human approval.)'],
                   ['Subscribe to events', 'None.'],
-                  ['Where can this app be installed?', '"Only on this account" is right for almost everyone.'],
+                  ['Where can this app be installed?', 'If the repos live in an ORGANIZATION and the app is created under your personal account, choose "Any account" — "Only on this account" locks installs to the owner. (Already created it? App settings → Advanced → "Make public" flips this; public only means installable elsewhere, nothing is exposed.) Org-owned apps can stay "Only on this account".'],
                 ]}
               />
             </GhStep>
@@ -1795,7 +1795,7 @@ function GithubPanel() {
             </GhStep>
             <GhStep n={3} title="Install it on your repos">
               <p className="text-xs text-muted">
-                On the app's settings page choose <span className="text-fg">Install App</span> in the sidebar → pick the account →{' '}
+                On the app's settings page choose <span className="text-fg">Install App</span> in the sidebar → pick the account or organization (org installs by non-owners become a request an org owner approves) →{' '}
                 <span className="text-fg">"Only select repositories"</span> → choose the repos agents will work (you can add more any time). Then pick that installation here:
               </p>
               <div className="flex items-center gap-2">
