@@ -18,6 +18,9 @@ export interface ActivityEvent {
   context: string
   /** What happened, human-sized. */
   detail: string
+  /** The event's own type within its source — 'dispatch', 'status', 'gap',
+   *  an audit action like 'fleet.render' — for row labels and sub-filters. */
+  type: string
   href: string
 }
 
@@ -37,7 +40,7 @@ export async function activityFeed(
   const [tickets, channels, fleet, audit] = await Promise.all([
     want.has('ticket')
       ? sql`
-          select a.created_at as at, a.actor, b.name as board, t.title,
+          select a.created_at as at, a.actor, a.type, b.name as board, t.title,
                  a.description as detail, b.id as board_id, t.id as task_id
           from task_activity a
           join tasks t on t.id = a.task_id
@@ -84,6 +87,7 @@ export async function activityFeed(
       actor: r.actor!,
       context: r.board!,
       detail: `${r.title} — ${r.detail}`,
+      type: r.type ?? 'activity',
       href: `/boards/${r.board_id}/${r.task_id}`,
     })),
     ...(channels as unknown as Array<Record<string, string>>).map((r) => ({
@@ -92,6 +96,7 @@ export async function activityFeed(
       actor: r.author!,
       context: `#${r.channel}`,
       detail: r.detail!,
+      type: r.authorType === 'agent' ? 'agent' : 'message',
       href: '/channels',
     })),
     ...(fleet as unknown as Array<Record<string, string>>).map((r) => ({
@@ -100,14 +105,16 @@ export async function activityFeed(
       actor: r.actor!,
       context: r.agent!,
       detail: `config v${r.version}${r.note ? ` — ${r.note}` : ''}`,
+      type: 'config',
       href: '/agents',
     })),
     ...(audit as unknown as Array<Record<string, unknown>>).map((r) => ({
       at: r.at as string,
       kind: 'audit' as const,
       actor: r.actor as string,
-      context: `${r.action}`,
+      context: String(r.action).split('.')[0] ?? 'audit',
       detail: `${(r.targetLabel as string) ?? (r.targetType as string)}${r.after ? ` → ${JSON.stringify(r.after)}` : ''}`.slice(0, 200),
+      type: r.action as string,
       href: '/observability?tab=audit',
     })),
   ]
