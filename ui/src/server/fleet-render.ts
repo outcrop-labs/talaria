@@ -432,8 +432,48 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     const stateVolume = `hermes-${def.department}`
     volumes[stateVolume] = imported ? { external: true, name: `${LEGACY_DOCKER_PROJECT}_${stateVolume}` } : {}
 
+    // MCP pass-through: the agent's EXISTING grants (talaria + registry
+    // servers incl. the workbench surface), rendered into each harness's
+    // native config format — pointed at the same per-agent gateway, keyed by
+    // the same env-interpolated fleet key. Zero in-sandbox reconnection;
+    // grant changes re-render, revocations bite at the gateway instantly.
+    if (wb) {
+      const names = ['talaria', ...(await serversForAgent(def.model)).map((x) => x.name)]
+      const uniq = [...new Set(names)]
+      const gwUrl = (n: string) => `${MCP_GW_BASE()}/${n}`
+      const wbDir = join(agentDir, 'workbench')
+      await mkdir(wbDir, { recursive: true })
+      // Claude Code (.mcp.json) — ${VAR} expands from the container env.
+      await writeFile(
+        join(wbDir, 'mcp.json'),
+        JSON.stringify(
+          {
+            mcpServers: Object.fromEntries(
+              uniq.map((n) => [n, { type: 'http', url: gwUrl(n), headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '${TALARIA_AGENT_KEY}' } }]),
+            ),
+          },
+          null,
+          2,
+        ),
+      )
+      // opencode — {env:VAR} is its env-substitution syntax.
+      await writeFile(
+        join(wbDir, 'opencode.json'),
+        JSON.stringify(
+          {
+            $schema: 'https://opencode.ai/config.json',
+            mcp: Object.fromEntries(
+              uniq.map((n) => [n, { type: 'remote', url: gwUrl(n), headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '{env:TALARIA_AGENT_KEY}' }, enabled: true }]),
+            ),
+          },
+          null,
+          2,
+        ),
+      )
+    }
     const wbMounts = wb?.mounts ?? []
     svc.volumes = [
+      ...(wb ? [`${join(agentDir, 'workbench')}:/opt/workbench-config:ro`] : []),
       ...wbMounts,
       `${stateVolume}:/opt/data`,
       `${join(agentDir, 'config.yaml')}:/opt/data/config.yaml:ro`,

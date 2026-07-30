@@ -33,7 +33,7 @@ export const HARNESSES: HarnessAdapter[] = [
     slug: 'opencode',
     label: 'opencode',
     auth: 'gateway',
-    gatewayEnv: { OPENAI_BASE_URL: '${LLM_BASE_URL}', OPENAI_API_KEY: '${LLM_API_KEY}' },
+    gatewayEnv: { OPENAI_BASE_URL: '${LLM_BASE_URL}', OPENAI_API_KEY: '${LLM_API_KEY}', OPENCODE_CONFIG: '/opt/workbench-config/opencode.json' },
     mcpConfig: 'opencode-json',
     invoke: 'opencode run --model openai/<model> "<task>"',
   },
@@ -44,7 +44,7 @@ export const HARNESSES: HarnessAdapter[] = [
     native: { provider: 'anthropic', envVar: 'ANTHROPIC_API_KEY' },
     gatewayEnv: {},
     mcpConfig: 'claude-json',
-    invoke: 'claude -p "<task>" --model <model>',
+    invoke: 'claude -p "<task>" --model <model> --mcp-config /opt/workbench-config/mcp.json',
   },
   {
     slug: 'codex',
