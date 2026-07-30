@@ -331,7 +331,9 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     }
     // The agent's CHOSEN coding harness, as an MCP server on its own config
     // (stdio, in-sandbox) — the agent drives it with tools, not raw output.
-    // Only when the profile ships a real image (binaries present).
+    // No custom gate: harnesses run via npx from the stock image (first use
+    // installs into the persistent npm cache); a real workbench image just
+    // makes first-run instant.
     {
       const wbc = await resolveWorkbench({
         department: def.department,
@@ -339,7 +341,7 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
         workbench: ((def as unknown as { workbench?: string }).workbench ?? 'auto') as 'off' | 'auto' | 'on',
         workbenchProfile: (def as unknown as { workbenchProfile?: string | null }).workbenchProfile ?? null,
       }).catch(() => null)
-      if (wbc?.image) {
+      if (wbc) {
         const { listHarnessDefs } = await import('./workbench-harnesses')
         const pick = (def as unknown as { workbenchHarness?: string | null }).workbenchHarness
         const chosen = pick && wbc.harnesses.includes(pick) ? pick : wbc.harnesses[0]
@@ -445,6 +447,9 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       env.XDG_DATA_HOME = '/opt/data/workbench/harness/xdg'
       // Playwright browsers persist too — UI testing is first-class dev work.
       env.PLAYWRIGHT_BROWSERS_PATH = '/opt/data/workbench/harness/playwright'
+      // npx-run harnesses install into a PERSISTENT cache — first use pays
+      // the download once, every later run (and container recreate) is warm.
+      env.npm_config_cache = '/opt/data/workbench/harness/npm'
       const agentLabel = `${def.displayName} (Talaria agent)`
       const agentEmail = `${def.model}@agents.talaria.local`
       env.GIT_AUTHOR_NAME = agentLabel
