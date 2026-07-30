@@ -1713,36 +1713,70 @@ function GithubPanel() {
         </div>
 
         {effMode === 'pat' && (
-          <div className="space-y-2 rounded-xl border border-line-subtle bg-card/40 px-4 py-3 text-sm">
-            <p className="text-xs text-muted">
-              1 · Create a <span className="text-fg">fine-grained token</span> at{' '}
-              <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
-                github.com/settings/personal-access-tokens
-              </a>{' '}
-              scoped to the repos your agents will work — permissions: <span className="text-fg">Contents (read/write) · Pull requests (read/write) · Metadata (read)</span>.
-              <br />2 · Paste it here. It's stored encrypted and never shown again.
-            </p>
-            <div className="flex items-center gap-2">
-              <Input size="sm" type="password" value={pat} onChange={(e) => setPat(e.target.value)} placeholder={status?.patSet ? '••••••••  (set — paste to replace)' : 'github_pat_…'} className="max-w-sm" />
-              <Button size="sm" disabled={!pat.trim() || busy} onClick={() => void save({ mode: 'pat', pat: { token: pat.trim() } }).then(() => setPat(''))}>
-                Connect
-              </Button>
-            </div>
+          <div className="space-y-3 rounded-xl border border-line-subtle bg-card/40 px-4 py-3 text-sm">
+            <GhStep n={1} title="Create a fine-grained token">
+              <p className="text-xs text-muted">
+                Open{' '}
+                <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                  github.com/settings/personal-access-tokens/new
+                </a>{' '}
+                and fill the form like this:
+              </p>
+              <GhFields
+                rows={[
+                  ['Token name', 'Anything recognizable — e.g. "Talaria Workbench".'],
+                  ['Resource owner', 'The account or organization that owns the repos your agents will work.'],
+                  ['Expiration', 'Your policy — you re-paste a fresh token here when it rotates.'],
+                  ['Repository access', '"Only select repositories" → pick the repos agents may touch. You can add more later.'],
+                  ['Permissions → Repository', 'Contents: Read and write · Pull requests: Read and write. (Metadata: Read-only is added automatically.)'],
+                  ['Everything else', 'Leave at its default.'],
+                ]}
+              />
+            </GhStep>
+            <GhStep n={2} title="Paste it here">
+              <p className="text-xs text-muted">Stored encrypted; never shown again. The status line above will confirm who it acts as.</p>
+              <div className="flex items-center gap-2">
+                <Input size="sm" type="password" value={pat} onChange={(e) => setPat(e.target.value)} placeholder={status?.patSet ? '••••••••  (set — paste to replace)' : 'github_pat_…'} className="max-w-sm" />
+                <Button size="sm" disabled={!pat.trim() || busy} onClick={() => void save({ mode: 'pat', pat: { token: pat.trim() } }).then(() => setPat(''))}>
+                  Connect
+                </Button>
+              </div>
+            </GhStep>
           </div>
         )}
 
         {effMode === 'app' && (
-          <div className="space-y-2 rounded-xl border border-line-subtle bg-card/40 px-4 py-3 text-sm">
-            <p className="text-xs text-muted">
-              1 · Create a GitHub App at{' '}
-              <a href="https://github.com/settings/apps/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
-                github.com/settings/apps/new
-              </a>{' '}
-              (use your org's settings if the repos live there) — repository permissions: <span className="text-fg">Contents (read/write) · Pull requests (read/write) · Metadata (read)</span>; no webhook needed.
-              <br />2 · Copy the <span className="text-fg">App ID</span>, then generate a <span className="text-fg">private key</span> and paste both here.
-              <br />3 · Install the app on the repos your agents will work, then pick the installation below.
-            </p>
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="space-y-3 rounded-xl border border-line-subtle bg-card/40 px-4 py-3 text-sm">
+            <GhStep n={1} title="Create the App">
+              <p className="text-xs text-muted">
+                Open{' '}
+                <a href="https://github.com/settings/apps/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                  github.com/settings/apps/new
+                </a>{' '}
+                — or, if the repos belong to an organization, <span className="text-fg">Org settings → Developer settings → GitHub Apps → New GitHub App</span> so the org owns it. GitHub's form is long; here is every field that matters (leave anything unlisted at its default):
+              </p>
+              <GhFields
+                rows={[
+                  ['GitHub App name', 'Anything unique — e.g. "Talaria Workbench — Yourco".'],
+                  ['Description', 'Optional.'],
+                  ['Homepage URL', "Required by GitHub but unused here — your company site or this Talaria instance's address both work."],
+                  ['Callback URL', 'Leave blank — Talaria never signs users in through this App.'],
+                  ['Request user authorization / Device flow', 'Leave unchecked.'],
+                  ['Setup URL / Redirect on update', 'Leave blank / unchecked.'],
+                  ['Webhook → Active', 'UNCHECK it. Talaria calls GitHub directly, so no webhook — unchecking also removes the required-URL field.'],
+                  ['Repository permissions', 'Contents: Read and write · Pull requests: Read and write. (Metadata: Read-only is set automatically.)'],
+                  ['Organization permissions', 'None needed. (Optional: Administration — Read and write, only if you later want agents to request NEW repos with human approval.)'],
+                  ['Subscribe to events', 'None.'],
+                  ['Where can this app be installed?', '"Only on this account" is right for almost everyone.'],
+                ]}
+              />
+            </GhStep>
+            <GhStep n={2} title="Collect the credentials">
+              <p className="text-xs text-muted">
+                After "Create GitHub App": the <span className="text-fg">App ID</span> is at the top of the app's settings page (About section). Then scroll to{' '}
+                <span className="text-fg">Private keys → Generate a private key</span> — it downloads a <span className="text-fg">.pem</span> file; open it in any text editor and paste the whole thing below, BEGIN/END lines included. Both are stored encrypted.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
               <Input size="sm" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder={status?.app.appId ? `App ID ${status.app.appId}` : 'App ID'} className="w-32" />
               <Textarea rows={2} value={privateKey} onChange={(e) => setPrivateKey(e.target.value)} placeholder={status?.app.keySet ? 'private key set — paste to replace' : '-----BEGIN RSA PRIVATE KEY-----'} className="max-h-20 min-w-64 flex-1 font-mono text-xs" />
               <Button
@@ -1758,10 +1792,15 @@ function GithubPanel() {
                 Save
               </Button>
             </div>
-            {status?.app.keySet && (
+            </GhStep>
+            <GhStep n={3} title="Install it on your repos">
+              <p className="text-xs text-muted">
+                On the app's settings page choose <span className="text-fg">Install App</span> in the sidebar → pick the account →{' '}
+                <span className="text-fg">"Only select repositories"</span> → choose the repos agents will work (you can add more any time). Then pick that installation here:
+              </p>
               <div className="flex items-center gap-2">
                 <label className="text-[11px] uppercase tracking-wide text-muted">Installation</label>
-                <Select size="sm" value={status.app.installationId} onChange={(e) => void save({ mode: 'app', app: { installationId: e.target.value } })}>
+                <Select size="sm" value={status?.app.installationId ?? ''} disabled={!status?.app.keySet} onChange={(e) => void save({ mode: 'app', app: { installationId: e.target.value } })}>
                   <option value="">pick where it's installed…</option>
                   {installations.map((i) => (
                     <option key={i.id} value={String(i.id)}>
@@ -1769,15 +1808,43 @@ function GithubPanel() {
                     </option>
                   ))}
                 </Select>
-                {installations.length === 0 && <span className="text-xs text-muted">none found yet — install the app on GitHub first</span>}
+                {status?.app.keySet && installations.length === 0 && <span className="text-xs text-muted">none found yet — finish the install on GitHub first</span>}
+                {!status?.app.keySet && <span className="text-xs text-muted">save the App ID + key first</span>}
               </div>
-            )}
+            </GhStep>
           </div>
         )}
         {error && <div className="text-xs text-[color:var(--theme-danger)]">{error}</div>}
         {status?.configured && <RepoFlowSection />}
       </div>
     </Panel>
+  )
+}
+
+/** One numbered setup step — a small circle, a title, then its content. */
+function GhStep({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-3">
+      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--theme-accent-border)] text-[10px] text-accent">{n}</span>
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="text-sm font-medium text-fg">{title}</div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+/** Field-by-field form guidance: GitHub's field name → exactly what to enter. */
+function GhFields({ rows }: { rows: Array<[string, string]> }) {
+  return (
+    <div className="divide-y divide-line-subtle rounded-lg border border-line-subtle bg-[var(--theme-panel)]/40">
+      {rows.map(([label, value]) => (
+        <div key={label} className="flex items-baseline gap-3 px-3 py-1.5">
+          <span className="w-52 shrink-0 text-xs text-muted">{label}</span>
+          <span className="min-w-0 flex-1 text-xs text-fg">{value}</span>
+        </div>
+      ))}
+    </div>
   )
 }
 
