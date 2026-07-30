@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Trash2 } from 'lucide-react'
+import { GripVertical, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { DangerLink } from '@/components/ui/chip'
@@ -530,14 +530,21 @@ function StatusesTab({ board }: { board: Board }) {
       .then(refresh)
       .catch((e: Error) => setErr(e.message))
   }
-  const moveStatus = (st: BoardStatus, dir: -1 | 1) => {
-    const ids = editable.map((x) => x.key)
-    const i = ids.indexOf(st.key)
-    const j = i + dir
-    if (i < 0 || j < 0 || j >= ids.length) return
-    const next = [...ids]
-    ;[next[i], next[j]] = [next[j]!, next[i]!]
-    run(() => reorderBoardStatuses(board.id, next))
+  // Drag-to-reorder — the same grammar as column reordering (grip handle,
+  // before/after indicator, drop commits). Blocked is system: not draggable,
+  // not a target (the server places it automatically).
+  const [dragKey, setDragKey] = useState<string | null>(null)
+  const [overKey, setOverKey] = useState<string | null>(null)
+  const [overPos, setOverPos] = useState<'before' | 'after'>('before')
+  const dropStatus = (target: BoardStatus) => {
+    if (dragKey && dragKey !== target.key && !target.system) {
+      const next = editable.map((x) => x.key).filter((k) => k !== dragKey)
+      const idx = next.indexOf(target.key) + (overPos === 'after' ? 1 : 0)
+      next.splice(idx, 0, dragKey)
+      run(() => reorderBoardStatuses(board.id, next))
+    }
+    setDragKey(null)
+    setOverKey(null)
   }
 
   return (
@@ -550,11 +557,42 @@ function StatusesTab({ board }: { board: Board }) {
       {err && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
       <ul className="divide-y divide-line-subtle">
         {statuses.map((st) => (
-          <li key={st.key} className={cn('flex items-center gap-2 py-2', st.system && 'opacity-70')}>
-            <div className="flex flex-col">
-              <button disabled={!canEdit || st.system} onClick={() => moveStatus(st, -1)} className="text-[9px] text-muted hover:text-fg disabled:opacity-30">▲</button>
-              <button disabled={!canEdit || st.system} onClick={() => moveStatus(st, 1)} className="text-[9px] text-muted hover:text-fg disabled:opacity-30">▼</button>
-            </div>
+          <li
+            key={st.key}
+            draggable={canEdit && !st.system}
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = 'move'
+              setDragKey(st.key)
+            }}
+            onDragEnd={() => {
+              setDragKey(null)
+              setOverKey(null)
+            }}
+            onDragOver={(e) => {
+              if (!dragKey || st.system) return
+              e.preventDefault()
+              const rect = e.currentTarget.getBoundingClientRect()
+              setOverKey(st.key)
+              setOverPos(e.clientY > rect.top + rect.height / 2 ? 'after' : 'before')
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              dropStatus(st)
+            }}
+            className={cn('relative flex items-center gap-2 py-2', st.system && 'opacity-70', dragKey === st.key && 'opacity-40')}
+          >
+            {overKey === st.key && dragKey !== st.key && (
+              <span
+                className={cn(
+                  'pointer-events-none absolute inset-x-0 h-0.5 rounded-full bg-accent',
+                  overPos === 'before' ? '-top-px' : '-bottom-px',
+                )}
+              />
+            )}
+            <GripVertical
+              size={13}
+              className={cn('shrink-0', canEdit && !st.system ? 'cursor-grab text-muted' : 'text-muted/30')}
+            />
             <DropdownMenu
               align="left"
               trigger={(open) => (
