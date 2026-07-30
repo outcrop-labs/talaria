@@ -39,6 +39,8 @@ export interface AgentDef {
   /** THE workbench setting: off | auto (fit rules) | on (forced). */
   workbench: 'off' | 'auto' | 'on'
   workbenchProfile: string | null
+  workbenchHarness: string | null
+  workbenchModels: Partial<Record<'light' | 'standard' | 'heavy', string>>
   /** Template overrides — this agent always formats tickets/plans on these. */
   ticketTemplateId: string | null
   planTemplateId: string | null
@@ -182,7 +184,7 @@ export async function createFleetAgent(input: {
 /** Update an agent's editable identity (role, display name, template bindings). */
 export async function patchAgentMeta(
   id: string,
-  patch: { role?: string | null; displayName?: string; ticketTemplateId?: string | null; planTemplateId?: string | null; workbench?: 'off' | 'auto' | 'on'; workbenchProfile?: string | null },
+  patch: { role?: string | null; displayName?: string; ticketTemplateId?: string | null; planTemplateId?: string | null; workbench?: 'off' | 'auto' | 'on'; workbenchProfile?: string | null; workbenchHarness?: string | null; workbenchModels?: Partial<Record<'light' | 'standard' | 'heavy', string | null>> },
 ): Promise<{ ok?: boolean; error?: string }> {
   const r = await fetch(`/api/fleet/defs/${id}`, {
     method: 'PATCH',

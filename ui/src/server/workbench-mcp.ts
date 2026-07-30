@@ -13,7 +13,7 @@
 import { db } from './db/pg'
 import { branchAhead, cloneUrl, createBranch, createPullRequest, effectiveBase, grantedRepos, mergeInto, repoFlow } from './github'
 import { resolveWorkbench } from './workbench'
-import { effortModel, effortModels, harness, type Effort } from './workbench-harnesses'
+import { effortModel, effortModels, harness, harnessModelArg, type Effort } from './workbench-harnesses'
 
 export interface WorkbenchJob {
   id: string
@@ -50,7 +50,7 @@ export const WORKBENCH_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string', description: 'The ticket this job implements' },
+        taskId: { type: 'string', description: 'The ticket this job implements — ALWAYS pass it when the work came from a ticket; it links the branch, audit trail, plan gate, and PR to the ticket.' },
         repo: { type: 'string', description: 'owner/name — must be one of your granted repos' },
         effort: { type: 'string', enum: ['light', 'standard', 'heavy'], description: 'How hard this work is — routes tooling and review weight' },
         plan: { type: 'string', description: 'Your implementation plan: approach, files touched, test strategy. Required for standard/heavy.' },
@@ -93,12 +93,15 @@ interface AgentCtx {
   role: string | null
   workbench: 'off' | 'auto' | 'on'
   workbenchProfile: string | null
+  workbenchHarness: string | null
+  workbenchModels: Partial<Record<Effort, string>>
 }
 
 async function agentByModel(model: string): Promise<AgentCtx | null> {
   const sql = await db()
   const rows = (await sql`
-    select id, model, display_name as "displayName", department, role, workbench, workbench_profile as "workbenchProfile"
+    select id, model, display_name as "displayName", department, role, workbench, workbench_profile as "workbenchProfile",
+           workbench_harness as "workbenchHarness", workbench_models as "workbenchModels"
     from agent_defs where model = ${model} and enabled
   `) as unknown as AgentCtx[]
   return rows[0] ?? null
@@ -125,7 +128,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
         ok: true,
         value: {
           repos: await grantedRepos(agent.id),
-          efforts: await effortModels(),
+          efforts: await effortModels(agent.workbenchModels),
           note: 'Pick effort by the work, not the model: light = quick fixes, standard = regular features (plan required), heavy = hard cross-cutting work (plan required, used sparingly).',
         },
       }
@@ -145,7 +148,10 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       let ref = ''
       let title = ''
       if (taskId) {
-        const rows = (await sql`select ticket_ref as "ticketRef", title from tasks where id = ${taskId}`) as unknown as Array<{ ticketRef: string | null; title: string }>
+        const rows = (await sql`
+          select case when t.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end as "ticketRef", t.title
+          from tasks t join boards b on b.id = t.board_id where t.id = ${taskId}
+        `) as unknown as Array<{ ticketRef: string | null; title: string }>
         ref = rows[0]?.ticketRef ?? ''
         title = rows[0]?.title ?? ''
       }
@@ -168,6 +174,28 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           insert into task_comments (task_id, author, content)
           values (${taskId}, ${agent.model}, ${`**Workbench plan** (${effort} effort · ${repo}):\n\n${plan}`})
         `.catch(() => {})
+        // The plan also becomes a markdown ARTIFACT attached to the ticket —
+        // durable and versioned, not just scrollback. Filed under the agent's
+        // Plans cabinet; org-visible like the ticket it belongs to.
+        void (async () => {
+          const { agentCategoryFolder, createArtifact, saveArtifact } = await import('./artifacts')
+          const { describeAgent } = await import('./gateway')
+          const label = agent.displayName || describeAgent(agent.model).label
+          const artifact = await createArtifact({
+            kind: 'doc',
+            title: `Plan — ${ref || title || repo}`.slice(0, 120),
+            createdBy: agent.model,
+            ownerUserId: null,
+            folderId: await agentCategoryFolder(label, 'Plans', agent.model).catch(() => null),
+          })
+          await saveArtifact(artifact.id, { body: `# Workbench plan — ${ref ? `${ref} · ` : ''}${title || repo}\n\n_${effort} effort · ${repo} · by ${label}_\n\n${plan}` }, agent.model)
+          const chip = { id: artifact.id, filename: artifact.title || 'Plan', mime: 'ref/artifact', size: 0, refType: 'artifact' }
+          const [cur] = (await sql`select attachments from tasks where id = ${taskId}`) as unknown as Array<{ attachments: unknown[] }>
+          const have = Array.isArray(cur?.attachments) ? cur.attachments : []
+          if (!have.some((a) => (a as { id?: string }).id === artifact.id)) {
+            await sql`update tasks set attachments = ${sql.json(JSON.parse(JSON.stringify([...have, chip])) as never)}, updated_at = now() where id = ${taskId}`
+          }
+        })().catch(() => {})
       }
       await logTicket(
         taskId,
@@ -179,11 +207,25 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       // Effort → model is Talaria's call: the agent picked the effort, the
       // platform resolves which model that means today. Invocation hints come
       // from the profile's harness adapters with the model slotted in.
-      const model = await effortModel(effort as Effort)
+      const model = await effortModel(effort as Effort, agent.workbenchModels)
+      // The agent's chosen harness leads (falling back to the profile's
+      // first); its invocation line carries the model in the harness's own
+      // syntax, so it's directly runnable.
+      const chosenSlug = agent.workbenchHarness && profile.harnesses.includes(agent.workbenchHarness) ? agent.workbenchHarness : profile.harnesses[0]
       const harnesses = profile.harnesses
         .map((slug) => harness(slug))
         .filter((h): h is NonNullable<typeof h> => !!h)
-        .map((h) => ({ harness: h.slug, run: model ? h.invoke.replace('<model>', model) : h.invoke }))
+        .sort((a, b) => (a.slug === chosenSlug ? -1 : b.slug === chosenSlug ? 1 : 0))
+        .map((h) => ({
+          harness: h.slug,
+          chosen: h.slug === chosenSlug,
+          run: model ? h.invoke.replace('<model>', harnessModelArg(h, model)) : h.invoke,
+          ...(h.jsonInvoke ? { jsonRun: model ? h.jsonInvoke.replace('<model>', harnessModelArg(h, model)) : h.jsonInvoke } : {}),
+          ...(h.slug === chosenSlug ? { guide: h.guide } : {}),
+        }))
+      // One WORKSPACE per job — concurrent jobs never collide — under the
+      // persistent volume, so clones and harness sessions survive restarts.
+      const workdir = `/opt/data/workbench/jobs/${job.id}`
       return {
         ok: true,
         value: {
@@ -193,13 +235,14 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           base,
           resumed: !created,
           status: job.status,
+          workdir,
           ...(gated ? {} : { cloneUrl: await cloneUrl(repo) }),
           effort,
           model,
           harnesses,
           rules: gated
             ? `Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved it returns the clone URL. Do NOT begin building.`
-            : `Clone with the URL above (token is short-lived — clone now). Work ONLY on ${branch}; commit and push to it as you go — your sandbox is preconfigured so commits are authored as YOU (do not override git identity). Never touch ${base} directly. Use the ${effort}-effort model shown — escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
+            : `Clone with the URL above INTO your workdir (mkdir -p ${workdir} first; the token is short-lived — clone now). One workspace per job: never work outside it, so concurrent jobs stay isolated. Your harness's session history persists under /opt/data/workbench/harness and is shared with your department — resume prior sessions or pick up a teammate's hand-off from there. Work ONLY on ${branch}; commit and push to it as you go — your sandbox is preconfigured so commits are authored as YOU (do not override git identity). Never touch ${base} directly. Use your CHOSEN harness (first in the list, marked chosen) with the ${effort}-effort model shown — via its MCP tools if registered on your config, else its jsonRun form; read structured results, never scrape raw logs. Escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
         },
       }
     }
@@ -212,7 +255,9 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       // Running jobs get a FRESH clone URL each poll (app tokens expire ~1h);
       // gated jobs stay locked until a human approves from the ticket.
       const jobs = await Promise.all(
-        rows.map(async ({ plan: _p, ...j }) => (j.status === 'started' ? { ...j, cloneUrl: await cloneUrl(j.repo) } : j)),
+        rows.map(async ({ plan: _p, ...j }) =>
+          j.status === 'started' ? { ...j, cloneUrl: await cloneUrl(j.repo), workdir: `/opt/data/workbench/jobs/${j.id}` } : j,
+        ),
       )
       return { ok: true, value: { jobs } }
     }
@@ -237,27 +282,31 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const rows = (await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where id = $1 and agent_id = $2`, [jobId, agent.id])) as unknown as WorkbenchJob[]
       const job = rows[0]
       if (!job) return { ok: false, error: 'unknown job' }
-      if (job.status === 'awaiting_approval') return { ok: false, error: 'the plan has not been approved yet — poll job_status' }
-      if (job.status !== 'started') return { ok: false, error: `job is already ${job.status}` }
-      if (args.abandon === true) {
+      // Abandon works from ANY live state — including a still-gated plan.
+      if (args.abandon === true && (job.status === 'started' || job.status === 'awaiting_approval')) {
         await sql`update workbench_jobs set status = 'abandoned', updated_at = now() where id = ${job.id}`
         await logTicket(job.taskId, agent.model, `workbench job abandoned: ${job.repo} @ ${job.branch}`)
         return { ok: true, value: { status: 'abandoned' } }
       }
+      if (job.status === 'awaiting_approval') return { ok: false, error: 'the plan has not been approved yet — poll job_status' }
+      if (job.status !== 'started') return { ok: false, error: `job is already ${job.status}` }
       const summary = String(args.summary ?? '').slice(0, 20_000)
       const base = await effectiveBase(job.repo)
       const ahead = await branchAhead(job.repo, base, job.branch)
       if (ahead === 0) return { ok: false, error: 'the branch has no commits yet — push your work first (or finish with abandon:true)' }
       let ticketLine = ''
+      let t: Array<{ ticketRef: string | null; title: string }> = []
       if (job.taskId) {
-        const t = (await sql`select ticket_ref as "ticketRef", title from tasks where id = ${job.taskId}`) as unknown as Array<{ ticketRef: string | null; title: string }>
+        t = (await sql`
+          select case when tk.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || tk.ticket_no end as "ticketRef", tk.title
+          from tasks tk join boards b on b.id = tk.board_id where tk.id = ${job.taskId}
+        `) as unknown as Array<{ ticketRef: string | null; title: string }>
         if (t[0]) ticketLine = `Ticket: ${t[0].ticketRef ?? job.taskId} — ${t[0].title}\n\n`
       }
       const body =
         `${ticketLine}${summary || '(no summary provided)'}` +
         (job.plan ? `\n\n## Plan\n\n${job.plan}` : '') +
         `\n\n---\n🔧 Opened by **${agent.displayName}** (\`${agent.model}\`) via the Talaria workbench (${job.effort} effort). Commits on this branch are authored by the agent.`
-      const t = (await sql`select ticket_ref as "ticketRef", title from tasks where id = ${job.taskId}`) as unknown as Array<{ ticketRef: string | null; title: string }>
       const title = t[0] ? `${t[0].ticketRef ? `[${t[0].ticketRef}] ` : ''}${t[0].title}`.slice(0, 100) : `Workbench: ${job.branch}`
       const pr = await createPullRequest(job.repo, { head: job.branch, base, title, body })
       await sql`update workbench_jobs set status = 'pr_open', pr_url = ${pr.url}, summary = ${summary}, updated_at = now() where id = ${job.id}`

@@ -39,7 +39,7 @@ const DEV_SEED = {
   description:
     'A sandboxed development environment: coding harnesses (opencode, claude code, codex) working repo checkouts under the platform-owned git flow.',
   env: { TALARIA_WORKBENCH: 'dev' },
-  harnesses: ['opencode', 'claude-code', 'codex'],
+  harnesses: ['opencode', 'claude-code', 'codex', 'oh-my-pi'],
   autoAttach: { departments: ['engineering'], roles: ['engineer', 'developer'] },
 }
 
@@ -116,4 +116,25 @@ export async function setAgentWorkbench(id: string, workbench: 'off' | 'auto' | 
   const sql = await db()
   await sql`update agent_defs set workbench = ${workbench}, updated_at = now() where id = ${id}`
   if (profile !== undefined) await sql`update agent_defs set workbench_profile = ${profile}, updated_at = now() where id = ${id}`
+}
+
+/** Per-agent workbench tuning: the harness pick + effort→model overrides —
+ *  the knobs the agent-view dropdowns write. */
+export async function setAgentWorkbenchTuning(
+  id: string,
+  patch: { harness?: string | null; models?: Partial<Record<'light' | 'standard' | 'heavy', string | null>> },
+): Promise<void> {
+  const sql = await db()
+  if (patch.harness !== undefined) await sql`update agent_defs set workbench_harness = ${patch.harness}, updated_at = now() where id = ${id}`
+  if (patch.models !== undefined) {
+    const [cur] = (await sql`select workbench_models as m from agent_defs where id = ${id}`) as unknown as Array<{ m: Record<string, string> }>
+    const next: Record<string, string> = { ...(cur?.m ?? {}) }
+    for (const k of ['light', 'standard', 'heavy'] as const) {
+      const v = patch.models[k]
+      if (v === undefined) continue
+      if (v === null || v === '') delete next[k]
+      else next[k] = v
+    }
+    await sql`update agent_defs set workbench_models = ${sql.json(next)}, updated_at = now() where id = ${id}`
+  }
 }

@@ -994,6 +994,11 @@ const MIGRATIONS: string[] = [
   // Per-agent workbench control — THE simple setting: off | auto | on.
   `alter table agent_defs add column if not exists workbench text not null default 'auto'`,
   `alter table agent_defs add column if not exists workbench_profile text`,
+  // Per-agent harness pick (null = profile default) and per-agent
+  // effort→model overrides ({light,standard,heavy}; unset keys fall back to
+  // the global Workbench model roles).
+  `alter table agent_defs add column if not exists workbench_harness text`,
+  `alter table agent_defs add column if not exists workbench_models jsonb not null default '{}'`,
   // Workbench repo grants — explicit per-agent GitHub repo access, like MCP
   // assignment: connecting GitHub grants nothing until an admin grants repos.
   `create table if not exists workbench_repos (
