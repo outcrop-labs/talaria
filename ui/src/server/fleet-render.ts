@@ -411,6 +411,17 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       // Talaria's gateway (same creds the persona already uses — metered,
       // attributed); native harnesses get their provider's key interpolated
       // from the endpoint registry's env contract, scoped to this container.
+      // GitHub attribution: commits made in this sandbox are AUTHORED as the
+      // agent — its display name and a stable per-agent email — so history
+      // and blame show who did the work, not a generic bot. (API actions —
+      // branch/PR/merge — still show the App's identity; per-agent bots would
+      // mean one App per agent, so PRs carry the agent label in their body.)
+      const agentLabel = `${def.displayName} (Talaria agent)`
+      const agentEmail = `${def.model}@agents.talaria.local`
+      env.GIT_AUTHOR_NAME = agentLabel
+      env.GIT_AUTHOR_EMAIL = agentEmail
+      env.GIT_COMMITTER_NAME = agentLabel
+      env.GIT_COMMITTER_EMAIL = agentEmail
       const { HARNESSES } = await import('./workbench-harnesses')
       const sqlc = await db()
       const endpoints = (await sqlc`select provider, api_key_env as "apiKeyEnv" from llm_endpoints where api_key_env is not null`) as unknown as Array<{ provider: string; apiKeyEnv: string }>

@@ -88,6 +88,7 @@ export const WORKBENCH_TOOLS = [
 interface AgentCtx {
   id: string
   model: string
+  displayName: string
   department: string
   role: string | null
   workbench: 'off' | 'auto' | 'on'
@@ -97,7 +98,7 @@ interface AgentCtx {
 async function agentByModel(model: string): Promise<AgentCtx | null> {
   const sql = await db()
   const rows = (await sql`
-    select id, model, department, role, workbench, workbench_profile as "workbenchProfile"
+    select id, model, display_name as "displayName", department, role, workbench, workbench_profile as "workbenchProfile"
     from agent_defs where model = ${model} and enabled
   `) as unknown as AgentCtx[]
   return rows[0] ?? null
@@ -198,7 +199,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           harnesses,
           rules: gated
             ? `Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved it returns the clone URL. Do NOT begin building.`
-            : `Clone with the URL above (token is short-lived — clone now). Work ONLY on ${branch}; commit and push to it as you go. Never touch ${base} directly. Use the ${effort}-effort model shown — escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
+            : `Clone with the URL above (token is short-lived — clone now). Work ONLY on ${branch}; commit and push to it as you go — your sandbox is preconfigured so commits are authored as YOU (do not override git identity). Never touch ${base} directly. Use the ${effort}-effort model shown — escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
         },
       }
     }
@@ -255,7 +256,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const body =
         `${ticketLine}${summary || '(no summary provided)'}` +
         (job.plan ? `\n\n## Plan\n\n${job.plan}` : '') +
-        `\n\n---\n🔧 Opened by ${agent.model} via the Talaria workbench (${job.effort} effort).`
+        `\n\n---\n🔧 Opened by **${agent.displayName}** (\`${agent.model}\`) via the Talaria workbench (${job.effort} effort). Commits on this branch are authored by the agent.`
       const t = (await sql`select ticket_ref as "ticketRef", title from tasks where id = ${job.taskId}`) as unknown as Array<{ ticketRef: string | null; title: string }>
       const title = t[0] ? `${t[0].ticketRef ? `[${t[0].ticketRef}] ` : ''}${t[0].title}`.slice(0, 100) : `Workbench: ${job.branch}`
       const pr = await createPullRequest(job.repo, { head: job.branch, base, title, body })
