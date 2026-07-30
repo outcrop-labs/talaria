@@ -354,11 +354,18 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     </div>
                   </Prop>
                 )}
-                <Prop label="Due date">
-                  <Input type="date" value={t.dueDate ? t.dueDate.slice(0, 10) : ''} disabled={!canEdit}
-                    onChange={(e) => save({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
-                    size="sm" className="w-full" />
-                </Prop>
+                <div className="grid grid-cols-2 gap-2">
+                  <Prop label="Start date">
+                    <Input type="date" value={t.startDate ? t.startDate.slice(0, 10) : ''} disabled={!canEdit}
+                      onChange={(e) => save({ startDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
+                      size="sm" className="w-full" />
+                  </Prop>
+                  <Prop label="Due date">
+                    <Input type="date" value={t.dueDate ? t.dueDate.slice(0, 10) : ''} disabled={!canEdit}
+                      onChange={(e) => save({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
+                      size="sm" className="w-full" />
+                  </Prop>
+                </div>
                 {/* Sub-tasks: one level deep. Children list + inline add on a
                     parent; a child shows its parent with a promote control. */}
                 {t.parentId ? (

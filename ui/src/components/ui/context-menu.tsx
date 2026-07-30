@@ -227,18 +227,45 @@ export function DropdownMenu({
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  // Fixed-position style computed from the trigger at open time. The panel
+  // PORTALS to <body>: cards/panels carry backdrop-filter (a stacking
+  // context), so an absolutely-positioned sibling could never stack above
+  // neighboring cards, no z-index would save it.
+  const [pos, setPos] = useState<React.CSSProperties | null>(null)
+
+  const toggle = () => {
+    if (open) return setOpen(false)
+    const r = ref.current?.getBoundingClientRect()
+    if (!r) return
+    setPos({
+      position: 'fixed',
+      zIndex: 80,
+      ...(up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }),
+      ...(align === 'right' ? { right: Math.max(8, window.innerWidth - r.right) } : { left: Math.max(8, r.left) }),
+    })
+    setOpen(true)
+  }
 
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (!ref.current?.contains(t) && !panelRef.current?.contains(t)) setOpen(false)
     }
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    // Reposition-on-scroll is guesswork; closing matches the context menu.
+    const onScroll = (e: Event) => {
+      if (panelRef.current?.contains(e.target as Node)) return
+      setOpen(false)
+    }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
+    document.addEventListener('scroll', onScroll, true)
     return () => {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
+      document.removeEventListener('scroll', onScroll, true)
     }
   }, [open])
 
@@ -249,51 +276,60 @@ export function DropdownMenu({
       <span
         onClick={(e) => {
           e.stopPropagation()
-          setOpen((o) => !o)
+          toggle()
         }}
       >
         {trigger(open)}
       </span>
-      {open && (
-        <div
-          role="menu"
-          onClick={(e) => e.stopPropagation()}
-          className={cn(
-            'absolute z-40 min-w-44 rounded-xl border border-line bg-card p-1 shadow-lg',
-            up ? 'bottom-full mb-1' : 'top-full mt-1',
-            align === 'right' ? 'right-0' : 'left-0',
-          )}
-        >
-          {entries.map((item, i) => {
-            if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
-            return (
-              <button
-                key={`${item.label}${i}`}
-                type="button"
-                role="menuitem"
-                disabled={item.disabled}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  item.onSelect?.()
-                  if (!item.keepOpen) setOpen(false)
-                }}
-                className={cn(
-                  'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
-                  item.disabled
-                    ? 'cursor-default text-muted opacity-50'
-                    : item.danger
-                      ? 'text-[color:var(--theme-danger)] hover:bg-[color:var(--theme-danger)]/10'
-                      : 'text-fg hover:bg-sidebar',
-                )}
-              >
-                {item.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{item.icon}</span>}
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
-              </button>
-            )
-          })}
-          {footer && <div className="mt-1 border-t border-line-subtle px-2 pb-1 pt-2">{footer(() => setOpen(false))}</div>}
-        </div>
-      )}
+      {open &&
+        pos &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            ref={panelRef}
+            role="menu"
+            style={pos}
+            onClick={(e) => e.stopPropagation()}
+            className="min-w-44 max-w-72 rounded-xl border border-line bg-card p-1 shadow-lg"
+          >
+            <div className="max-h-80 overflow-y-auto">
+              {entries.map((item, i) => {
+                if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
+                return (
+                  <button
+                    key={`${item.label}${i}`}
+                    type="button"
+                    role="menuitem"
+                    disabled={item.disabled}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      item.onSelect?.()
+                      if (!item.keepOpen) setOpen(false)
+                    }}
+                    className={cn(
+                      'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                      item.disabled
+                        ? 'cursor-default text-muted opacity-50'
+                        : item.danger
+                          ? 'text-[color:var(--theme-danger)] hover:bg-[color:var(--theme-danger)]/10'
+                          : cn('hover:bg-sidebar', item.checked === false ? 'text-muted' : 'text-fg'),
+                    )}
+                  >
+                    {/* checked state: leading ✓ slot (kept when unchecked so rows
+                        align); falls back to the icon slot otherwise. */}
+                    {item.checked !== undefined ? (
+                      <span className="grid w-4 shrink-0 place-items-center text-accent">{item.checked ? '✓' : ''}</span>
+                    ) : null}
+                    {item.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{item.icon}</span>}
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+            {footer && <div className="mt-1 border-t border-line-subtle px-2 pb-1 pt-2">{footer(() => setOpen(false))}</div>}
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

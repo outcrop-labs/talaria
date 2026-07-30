@@ -158,6 +158,7 @@ import { Route as ApiChannelsIdMembersRouteImport } from './routes/api/channels.
 import { Route as ApiChannelsIdEventsRouteImport } from './routes/api/channels.$id.events'
 import { Route as ApiChannelsIdConcludeRouteImport } from './routes/api/channels.$id.conclude'
 import { Route as ApiChannelsIdAgentsRouteImport } from './routes/api/channels.$id.agents'
+import { Route as ApiBoardsIdViewsRouteImport } from './routes/api/boards.$id.views'
 import { Route as ApiBoardsIdTemplatesRouteImport } from './routes/api/boards.$id.templates'
 import { Route as ApiBoardsIdTasksRouteImport } from './routes/api/boards.$id.tasks'
 import { Route as ApiBoardsIdMembersRouteImport } from './routes/api/boards.$id.members'
@@ -950,6 +951,11 @@ const ApiChannelsIdAgentsRoute = ApiChannelsIdAgentsRouteImport.update({
   path: '/agents',
   getParentRoute: () => ApiChannelsIdRoute,
 } as any)
+const ApiBoardsIdViewsRoute = ApiBoardsIdViewsRouteImport.update({
+  id: '/views',
+  path: '/views',
+  getParentRoute: () => ApiBoardsIdRoute,
+} as any)
 const ApiBoardsIdTemplatesRoute = ApiBoardsIdTemplatesRouteImport.update({
   id: '/templates',
   path: '/templates',
@@ -1303,6 +1309,7 @@ export interface FileRoutesByFullPath {
   '/api/boards/$id/members': typeof ApiBoardsIdMembersRoute
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
   '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
+  '/api/boards/$id/views': typeof ApiBoardsIdViewsRoute
   '/api/channels/$id/agents': typeof ApiChannelsIdAgentsRoute
   '/api/channels/$id/conclude': typeof ApiChannelsIdConcludeRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
@@ -1495,6 +1502,7 @@ export interface FileRoutesByTo {
   '/api/boards/$id/members': typeof ApiBoardsIdMembersRoute
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
   '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
+  '/api/boards/$id/views': typeof ApiBoardsIdViewsRoute
   '/api/channels/$id/agents': typeof ApiChannelsIdAgentsRoute
   '/api/channels/$id/conclude': typeof ApiChannelsIdConcludeRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
@@ -1689,6 +1697,7 @@ export interface FileRoutesById {
   '/api/boards/$id/members': typeof ApiBoardsIdMembersRoute
   '/api/boards/$id/tasks': typeof ApiBoardsIdTasksRoute
   '/api/boards/$id/templates': typeof ApiBoardsIdTemplatesRoute
+  '/api/boards/$id/views': typeof ApiBoardsIdViewsRoute
   '/api/channels/$id/agents': typeof ApiChannelsIdAgentsRoute
   '/api/channels/$id/conclude': typeof ApiChannelsIdConcludeRoute
   '/api/channels/$id/events': typeof ApiChannelsIdEventsRoute
@@ -1883,6 +1892,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/members'
     | '/api/boards/$id/tasks'
     | '/api/boards/$id/templates'
+    | '/api/boards/$id/views'
     | '/api/channels/$id/agents'
     | '/api/channels/$id/conclude'
     | '/api/channels/$id/events'
@@ -2075,6 +2085,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/members'
     | '/api/boards/$id/tasks'
     | '/api/boards/$id/templates'
+    | '/api/boards/$id/views'
     | '/api/channels/$id/agents'
     | '/api/channels/$id/conclude'
     | '/api/channels/$id/events'
@@ -2268,6 +2279,7 @@ export interface FileRouteTypes {
     | '/api/boards/$id/members'
     | '/api/boards/$id/tasks'
     | '/api/boards/$id/templates'
+    | '/api/boards/$id/views'
     | '/api/channels/$id/agents'
     | '/api/channels/$id/conclude'
     | '/api/channels/$id/events'
@@ -3462,6 +3474,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiChannelsIdAgentsRouteImport
       parentRoute: typeof ApiChannelsIdRoute
     }
+    '/api/boards/$id/views': {
+      id: '/api/boards/$id/views'
+      path: '/views'
+      fullPath: '/api/boards/$id/views'
+      preLoaderRoute: typeof ApiBoardsIdViewsRouteImport
+      parentRoute: typeof ApiBoardsIdRoute
+    }
     '/api/boards/$id/templates': {
       id: '/api/boards/$id/templates'
       path: '/templates'
@@ -3908,6 +3927,7 @@ interface ApiBoardsIdRouteChildren {
   ApiBoardsIdMembersRoute: typeof ApiBoardsIdMembersRoute
   ApiBoardsIdTasksRoute: typeof ApiBoardsIdTasksRoute
   ApiBoardsIdTemplatesRoute: typeof ApiBoardsIdTemplatesRoute
+  ApiBoardsIdViewsRoute: typeof ApiBoardsIdViewsRoute
 }
 
 const ApiBoardsIdRouteChildren: ApiBoardsIdRouteChildren = {
@@ -3916,6 +3936,7 @@ const ApiBoardsIdRouteChildren: ApiBoardsIdRouteChildren = {
   ApiBoardsIdMembersRoute: ApiBoardsIdMembersRoute,
   ApiBoardsIdTasksRoute: ApiBoardsIdTasksRoute,
   ApiBoardsIdTemplatesRoute: ApiBoardsIdTemplatesRoute,
+  ApiBoardsIdViewsRoute: ApiBoardsIdViewsRoute,
 }
 
 const ApiBoardsIdRouteWithChildren = ApiBoardsIdRoute._addFileChildren(

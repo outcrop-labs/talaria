@@ -21,7 +21,7 @@ export type { Effort, Priority, Task, TaskStatus } from '@/lib/task-const'
 const TASK_SELECT = `select t.id, t.board_id as "boardId",
   case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') || '-' || t.ticket_no end as "ticketRef",
   t.title, t.description, t.status, t.priority, t.effort, t.assignees, t.created_by as "createdBy",
-  t.due_date as "dueDate", t.tags, t.attachments, t.time_spent_seconds as "timeSpentSeconds",
+  t.due_date as "dueDate", t.start_date as "startDate", t.tags, t.attachments, t.time_spent_seconds as "timeSpentSeconds",
   t.estimated_hours as "estimatedHours", t.parent_id as "parentId",
   (select count(*)::int from task_comments c where c.task_id = t.id) as "commentCount",
   t.outcome, t.resolution, t.error_message as "errorMessage",
@@ -130,6 +130,7 @@ export async function createTask(input: {
   effort?: Effort | null
   assignees?: string[]
   dueDate?: string | null
+  startDate?: string | null
   estimatedHours?: number | null
   parentId?: string | null
   tags?: string[]
@@ -143,9 +144,9 @@ export async function createTask(input: {
     const seq = await tx`update boards set ticket_seq = ticket_seq + 1, updated_at = now() where id = ${input.boardId} returning ticket_seq`
     const ticketNo = (seq[0] as { ticket_seq: number }).ticket_seq
     const rows = await tx`
-      insert into tasks (board_id, ticket_no, title, description, priority, effort, assignees, due_date, estimated_hours, parent_id, tags, created_by, status)
+      insert into tasks (board_id, ticket_no, title, description, priority, effort, assignees, due_date, start_date, estimated_hours, parent_id, tags, created_by, status)
       values (${input.boardId}, ${ticketNo}, ${input.title}, ${input.description ?? null}, ${input.priority ?? 'medium'},
-              ${input.effort ?? null}, ${sql.json(assignees)}, ${input.dueDate ?? null}, ${input.estimatedHours ?? null},
+              ${input.effort ?? null}, ${sql.json(assignees)}, ${input.dueDate ?? null}, ${input.startDate ?? null}, ${input.estimatedHours ?? null},
               ${input.parentId ?? null}, ${sql.json(input.tags ?? [])}, ${input.createdBy}, ${status})
       returning id
     `
@@ -172,6 +173,7 @@ export interface TaskPatch {
   effort?: Effort | null
   assignees?: string[]
   dueDate?: string | null
+  startDate?: string | null
   tags?: string[]
   outcome?: string | null
   resolution?: string | null
@@ -203,6 +205,7 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
     effort: pick(patch.effort, cur.effort),
     priority: patch.priority ?? cur.priority,
     dueDate: pick(patch.dueDate, cur.dueDate),
+    startDate: pick(patch.startDate, cur.startDate),
     estimatedHours: pick(patch.estimatedHours, cur.estimatedHours),
     parentId: pick(patch.parentId, cur.parentId),
     tags: patch.tags ?? cur.tags,
@@ -218,7 +221,7 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
 
   await sql`
     update tasks set title=${next.title}, description=${next.description}, status=${next.status},
-      priority=${next.priority}, effort=${next.effort}, assignees=${sql.json(assignees)}, due_date=${next.dueDate},
+      priority=${next.priority}, effort=${next.effort}, assignees=${sql.json(assignees)}, due_date=${next.dueDate}, start_date=${next.startDate},
       estimated_hours=${next.estimatedHours}, parent_id=${next.parentId},
       tags=${sql.json(next.tags as unknown as Parameters<typeof sql.json>[0])},
       attachments=${sql.json(attachments as unknown as Parameters<typeof sql.json>[0])},

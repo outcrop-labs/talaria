@@ -29,6 +29,8 @@ export interface Task {
   assignees: string[]
   createdBy: string
   dueDate: string | null
+  /** Gantt scheduling: bars run startDate → dueDate. */
+  startDate: string | null
   tags: string[]
   attachments: Attachment[]
   timeSpentSeconds: number

@@ -21,6 +21,7 @@ const Patch = z.object({
   effort: z.enum(EFFORTS).nullish(),
   assignees: z.array(z.string().max(200)).max(20).optional(),
   dueDate: z.string().datetime().nullish(),
+  startDate: z.string().datetime().nullish(),
   tags: z.array(z.string().max(40)).max(20).optional(),
   outcome: z.string().max(50_000).nullish(),
   resolution: z.string().max(50_000).nullish(),

@@ -941,6 +941,20 @@ const MIGRATIONS: string[] = [
   // code). Deleting a parent releases its children back to top level.
   `alter table tasks add column if not exists parent_id uuid references tasks(id) on delete set null`,
   `create index if not exists tasks_parent_idx on tasks(parent_id)`,
+  // Gantt scheduling: optional start (bars run start → due).
+  `alter table tasks add column if not exists start_date timestamptz`,
+  // Saved board views: named filter/layout presets shared with the board.
+  `create table if not exists board_views (
+    id uuid primary key default gen_random_uuid(),
+    board_id uuid not null references boards(id) on delete cascade,
+    name text not null,
+    config jsonb not null default '{}',
+    created_by text not null,
+    position int not null default 0,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
+  `create index if not exists board_views_board_idx on board_views(board_id, position)`,
   // Explicit per-plan template pick (mirrors agent_defs.plan_template_id, which
   // is the fallback). Set at creation; resolveTemplate treats it as the highest
   // link. Dead refs degrade to the agent binding via on-delete-set-null.

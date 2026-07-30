@@ -1,26 +1,44 @@
 import { createFileRoute, useNavigate, Outlet } from '@tanstack/react-router'
 import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
 import { useMemo, useState } from 'react'
-import { LayoutGrid, List } from 'lucide-react'
+import { CalendarRange, Layers, LayoutGrid, List, Plus } from 'lucide-react'
 import { BoardHeader } from '@/components/board/board-header'
 import { Kanban } from '@/components/board/kanban'
 import { BoardList, type GroupByKey } from '@/components/board/board-list'
+import { Gantt } from '@/components/board/gantt'
 import { BoardSettingsModal } from '@/components/board/board-settings-modal'
 import { FilterBar, filtersActive, type BoardFilters } from '@/components/board/filter-bar'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
+import { FieldPill } from '@/components/ui/field-pill'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
-import { useBoards, useArchivedBoards, useBoardTasks, useBoardLive, useBoardAgents, useBoardMembers } from '@/lib/boards'
+import {
+  useBoards,
+  useArchivedBoards,
+  useBoardTasks,
+  useBoardLive,
+  useBoardAgents,
+  useBoardMembers,
+  useBoardViews,
+  createBoardView,
+  updateBoardView,
+  deleteBoardView,
+  type BoardViewConfig,
+} from '@/lib/boards'
+import { useQueryClient } from '@tanstack/react-query'
+import { useContextMenu, DropdownMenu } from '@/components/ui/context-menu'
+import { confirm, prompt } from '@/components/ui/confirm'
 import { useSession } from '@/lib/session'
 import type { Task } from '@/lib/task-const'
 
 // All view state lives in the URL (deep-link convention): view, group, q, and
 // the filter facets (comma-multi within a facet: OR inside, AND across).
 interface BoardSearch {
-  view?: 'list'
+  view?: 'list' | 'gantt'
+  /** Active saved view id (styling only — the config params travel too). */
+  v?: string
   group?: GroupByKey
   q?: string
   status?: string
@@ -36,7 +54,8 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v 
 export const Route = createFileRoute('/_app/boards/$boardId')({
   component: BoardPage,
   validateSearch: (s: Record<string, unknown>): BoardSearch => ({
-    ...(s.view === 'list' ? { view: 'list' as const } : {}),
+    ...(s.view === 'list' || s.view === 'gantt' ? { view: s.view as 'list' | 'gantt' } : {}),
+    ...(str(s.v) ? { v: str(s.v) } : {}),
     ...(['status', 'priority', 'assignee', 'label', 'none'].includes(s.group as string) && s.group !== 'status'
       ? { group: s.group as GroupByKey }
       : {}),
@@ -95,6 +114,9 @@ function BoardPage() {
     : (fleet?.agents ?? []).filter((a) => boardCfg?.models.includes(a.id))
   useBoardLive(board ? boardId : null)
 
+  const qc = useQueryClient()
+  const { data: savedViews = [] } = useBoardViews(board ? boardId : null)
+  const { openMenu, menu: viewTabMenu } = useContextMenu()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const view = search.view ?? 'board'
   const groupBy: GroupByKey = search.group ?? 'status'
@@ -129,6 +151,55 @@ function BoardPage() {
       label: joinOrDrop(f.labels),
       due: f.due || undefined,
     })
+
+  // ── Saved views: apply / save / manage ─────────────────────────────────
+  const currentConfig = (): BoardViewConfig => ({
+    ...(view !== 'board' ? { view } : {}),
+    ...(groupBy !== 'status' ? { group: groupBy } : {}),
+    ...(q ? { q } : {}),
+    ...(search.status ? { status: search.status } : {}),
+    ...(search.assignee ? { assignee: search.assignee } : {}),
+    ...(search.priority ? { priority: search.priority } : {}),
+    ...(search.label ? { label: search.label } : {}),
+    ...(search.due ? { due: search.due } : {}),
+  })
+  const invalidateViews = () => qc.invalidateQueries({ queryKey: ['board-views', boardId] })
+  const applyView = (sv: { id: string; config: BoardViewConfig }) =>
+    void navigate({ to: '/boards/$boardId', params: { boardId }, search: { ...sv.config, v: sv.id } as BoardSearch })
+  const saveCurrentAsView = async () => {
+    const name = await prompt({ title: 'Save view', message: 'Name this view (current layout, grouping, and filters are captured).', confirmLabel: 'Save' })
+    if (!name?.trim()) return
+    const r = (await createBoardView(boardId, name.trim(), currentConfig())) as { view?: { id: string } }
+    await invalidateViews()
+    if (r.view?.id) setSearch({ v: r.view.id })
+  }
+  const viewTabContextMenu = (e: React.MouseEvent, sv: { id: string; name: string; config: BoardViewConfig }) =>
+    openMenu(e, [
+      {
+        label: 'Update to current filters',
+        onSelect: () => void updateBoardView(boardId, sv.id, { config: currentConfig() }).then(invalidateViews),
+      },
+      {
+        label: 'Rename',
+        onSelect: () =>
+          void (async () => {
+            const name = await prompt({ title: 'Rename view', message: sv.name, confirmLabel: 'Rename' })
+            if (name?.trim()) await updateBoardView(boardId, sv.id, { name: name.trim() }).then(invalidateViews)
+          })(),
+      },
+      'sep',
+      {
+        label: 'Delete view',
+        danger: true,
+        onSelect: () =>
+          void (async () => {
+            if (!(await confirm({ title: `Delete view "${sv.name}"?`, message: 'The filters it saved are lost; tickets are untouched.', danger: true }))) return
+            await deleteBoardView(boardId, sv.id)
+            await invalidateViews()
+            if (search.v === sv.id) setSearch({ v: undefined })
+          })(),
+      },
+    ])
 
   // Labels present on this board (for the filter facet).
   const boardLabels = useMemo(() => [...new Set(allTasks.flatMap((t) => t.tags))].sort(), [allTasks])
@@ -199,6 +270,14 @@ function BoardPage() {
           >
             <List size={15} />
           </button>
+          <button
+            className={toggleCls(view === 'gantt')}
+            onClick={() => setSearch({ view: 'gantt' })}
+            title="Gantt view"
+            aria-label="Gantt view"
+          >
+            <CalendarRange size={15} />
+          </button>
         </div>
         <Input value={q} onChange={(e) => setSearch({ q: e.target.value }, true)} placeholder="Search" size="sm" className="w-40" />
         {fleetLoading || cfgLoading ? (
@@ -207,13 +286,19 @@ function BoardPage() {
           <FilterBar value={filters} onChange={setFilters} members={members} agents={boardAgents} labels={boardLabels} meId={me?.id} />
         )}
         {view === 'list' && (
-          <Select value={groupBy} onChange={(e) => setSearch({ group: e.target.value as GroupByKey })} size="sm" title="Group by">
-            <option value="status">Group: status</option>
-            <option value="priority">Group: priority</option>
-            <option value="assignee">Group: assignee</option>
-            <option value="label">Group: label</option>
-            <option value="none">No grouping</option>
-          </Select>
+          <DropdownMenu
+            align="left"
+            trigger={(open) => (
+              <FieldPill icon={<Layers size={12} />} active={open || groupBy !== 'status'} className="h-9 rounded-lg px-2 text-xs" title="Group by">
+                {groupBy === 'none' ? 'No grouping' : `Group: ${groupBy}`}
+              </FieldPill>
+            )}
+            items={(['status', 'priority', 'assignee', 'label', 'none'] as GroupByKey[]).map((g) => ({
+              label: g === 'none' ? 'No grouping' : g,
+              checked: groupBy === g,
+              onSelect: () => setSearch({ group: g }),
+            }))}
+          />
         )}
         <Checkbox checked={showArchived} onChange={(v) => setSearch({ archived: v })} label="Archived" />
         <span className="ml-auto text-xs text-muted">
@@ -221,9 +306,43 @@ function BoardPage() {
         </span>
       </div>
 
+      {/* Saved views: named presets shared with the board. Right-click a tab
+          to update/rename/delete. */}
+      {(savedViews.length > 0 || canEdit) && (
+        <div className="flex flex-wrap items-center gap-1 border-b border-line-subtle px-5 py-1.5">
+          {savedViews.map((sv) => (
+            <button
+              key={sv.id}
+              onClick={() => applyView(sv)}
+              onContextMenu={(e) => viewTabContextMenu(e, sv)}
+              className={cn(
+                'rounded-md border px-2 py-0.5 text-xs transition-colors',
+                search.v === sv.id
+                  ? 'border-[var(--theme-accent-border)] bg-card text-fg'
+                  : 'border-transparent text-muted hover:bg-card hover:text-fg',
+              )}
+            >
+              {sv.name}
+            </button>
+          ))}
+          {canEdit && (
+            <button
+              onClick={() => void saveCurrentAsView()}
+              title="Save the current layout, grouping, and filters as a named view"
+              className="flex items-center gap-1 rounded-md px-2 py-0.5 text-xs text-muted transition-colors hover:text-accent"
+            >
+              <Plus size={12} /> Save view
+            </button>
+          )}
+          {viewTabMenu}
+        </div>
+      )}
+
       <div className="relative min-h-0 min-w-0 flex-1">
         {view === 'board' ? (
           <Kanban board={board} tasks={tasks} onOpen={openTicket} members={members} />
+        ) : view === 'gantt' ? (
+          <Gantt board={board} tasks={tasks} onOpen={openTicket} />
         ) : (
           <BoardList tasks={tasks} onOpen={openTicket} boardId={boardId} members={members} canEdit={canEdit} groupBy={groupBy} />
         )}
