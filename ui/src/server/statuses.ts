@@ -70,24 +70,37 @@ export async function statusMeta(boardId: string): Promise<{
   keys: string[]
   agentStartKeys: string[]
   reviewKey: string
+  reviewKeys: string[]
   doneKeys: string[]
   defaultKey: string
   assignedKey: string
 }> {
   const list = await listStatuses(boardId)
   const agentStart = list.filter((s) => s.agentStart).map((s) => s.key)
-  const review = list.find((s) => s.category === 'review')?.key ?? 'quality_review'
+  const reviews = list.filter((s) => s.category === 'review').map((s) => s.key)
   const done = list.filter((s) => s.category === 'done').map((s) => s.key)
   const open = list.find((s) => s.category === 'open')?.key ?? list[0]!.key
   return {
     keys: list.map((s) => s.key),
     agentStartKeys: agentStart,
-    reviewKey: review,
+    reviewKey: reviews[0] ?? 'quality_review',
+    reviewKeys: reviews.length ? reviews : ['quality_review'],
     doneKeys: done.length ? done : ['done'],
     defaultKey: open,
     assignedKey: agentStart[0] ?? open,
   }
 }
+
+/** SQL fragment: `t.status` is in the given CATEGORY on the ticket's own
+ *  board, with the legacy fallback for never-customized boards. Interpolate
+ *  only with a literal category + fallback list (no user input). */
+export const statusCategorySql = (category: StatusCategory, legacyKeys: string[]): string => `(
+  t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = '${category}')
+  or (
+    not exists (select 1 from board_statuses bs where bs.board_id = t.board_id)
+    and t.status in (${legacyKeys.map((k) => `'${k}'`).join(', ')})
+  )
+)`
 
 /** First customization COPIES the defaults into rows so edits are complete. */
 async function materialize(boardId: string): Promise<void> {

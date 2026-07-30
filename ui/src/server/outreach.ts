@@ -202,7 +202,16 @@ async function checkInTurn(agent: SweepAgent): Promise<string> {
            extract(epoch from now() - t.updated_at)::int / 3600 as "idleHours"
     from tasks t join boards b on b.id = t.board_id
     where t.assignees @> ${sql.json([agent.model])}::jsonb
-      and t.status in ('assigned', 'in_progress', 'blocked', 'quality_review')
+      and (
+        t.status = 'blocked'
+        or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category in ('open', 'active', 'review') and bs.key <> (
+          select bs2.key from board_statuses bs2 where bs2.board_id = t.board_id and bs2.category = 'open' and not bs2.agent_start order by bs2.position limit 1
+        ))
+        or (
+          not exists (select 1 from board_statuses bs where bs.board_id = t.board_id)
+          and t.status in ('assigned', 'in_progress', 'quality_review')
+        )
+      )
       and t.archived_at is null
     order by t.updated_at asc limit 15
   `) as unknown as Array<{ id: string; title: string; status: string; board: string; idleHours: number }>

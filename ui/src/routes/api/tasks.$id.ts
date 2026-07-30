@@ -139,10 +139,14 @@ export const Route = createFileRoute('/api/tasks/$id')({
             )
           })().catch(() => {})
         }
-        // Reliability gate: when work lands in quality_review, run the QA judge
-        // (advisory) in the background so the human reviewer gets a verdict.
-        if (updated && updated.status === 'quality_review' && task.status !== 'quality_review') {
-          void runJudgeForTask(params.id).catch(() => {})
+        // Reliability gate: when work lands in ANY review-category column, run
+        // the QA judge (advisory) in the background so the human reviewer gets
+        // a verdict. Custom review columns count — category is the contract.
+        if (updated && updated.status !== task.status) {
+          const meta2 = await statusMeta(task.boardId)
+          if (meta2.reviewKeys.includes(updated.status) && !meta2.reviewKeys.includes(task.status)) {
+            void runJudgeForTask(params.id).catch(() => {})
+          }
         }
         return json({ task: updated })
       },
