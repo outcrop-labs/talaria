@@ -223,6 +223,9 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           ...(h.jsonInvoke ? { jsonRun: model ? h.jsonInvoke.replace('<model>', harnessModelArg(h, model)) : h.jsonInvoke } : {}),
           ...(h.slug === chosenSlug ? { guide: h.guide } : {}),
         }))
+      // One WORKSPACE per job — concurrent jobs never collide — under the
+      // persistent volume, so clones and harness sessions survive restarts.
+      const workdir = `/opt/data/workbench/jobs/${job.id}`
       return {
         ok: true,
         value: {
@@ -232,13 +235,14 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           base,
           resumed: !created,
           status: job.status,
+          workdir,
           ...(gated ? {} : { cloneUrl: await cloneUrl(repo) }),
           effort,
           model,
           harnesses,
           rules: gated
             ? `Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved it returns the clone URL. Do NOT begin building.`
-            : `Clone with the URL above (token is short-lived — clone now). Work ONLY on ${branch}; commit and push to it as you go — your sandbox is preconfigured so commits are authored as YOU (do not override git identity). Never touch ${base} directly. Use your CHOSEN harness (first in the list, marked chosen) with the ${effort}-effort model shown — via its MCP tools if registered on your config, else its jsonRun form; read structured results, never scrape raw logs. Escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
+            : `Clone with the URL above INTO your workdir (mkdir -p ${workdir} first; the token is short-lived — clone now). One workspace per job: never work outside it, so concurrent jobs stay isolated. Your harness's session history persists under /opt/data/workbench/harness and is shared with your department — resume prior sessions or pick up a teammate's hand-off from there. Work ONLY on ${branch}; commit and push to it as you go — your sandbox is preconfigured so commits are authored as YOU (do not override git identity). Never touch ${base} directly. Use your CHOSEN harness (first in the list, marked chosen) with the ${effort}-effort model shown — via its MCP tools if registered on your config, else its jsonRun form; read structured results, never scrape raw logs. Escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
         },
       }
     }
@@ -251,7 +255,9 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       // Running jobs get a FRESH clone URL each poll (app tokens expire ~1h);
       // gated jobs stay locked until a human approves from the ticket.
       const jobs = await Promise.all(
-        rows.map(async ({ plan: _p, ...j }) => (j.status === 'started' ? { ...j, cloneUrl: await cloneUrl(j.repo) } : j)),
+        rows.map(async ({ plan: _p, ...j }) =>
+          j.status === 'started' ? { ...j, cloneUrl: await cloneUrl(j.repo), workdir: `/opt/data/workbench/jobs/${j.id}` } : j,
+        ),
       )
       return { ok: true, value: { jobs } }
     }

@@ -436,6 +436,13 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       // and blame show who did the work, not a generic bot. (API actions —
       // branch/PR/merge — still show the App's identity; per-agent bots would
       // mean one App per agent, so PRs carry the agent label in their body.)
+      // Harness state PERSISTS: each harness's sessions/history live on the
+      // department's state volume, not ephemeral /root — surviving container
+      // recreates and SHARED across the department's agents (hand-offs:
+      // a session one agent starts, a department-mate can resume).
+      env.CLAUDE_CONFIG_DIR = '/opt/data/workbench/harness/claude'
+      env.CODEX_HOME = '/opt/data/workbench/harness/codex'
+      env.XDG_DATA_HOME = '/opt/data/workbench/harness/xdg'
       const agentLabel = `${def.displayName} (Talaria agent)`
       const agentEmail = `${def.model}@agents.talaria.local`
       env.GIT_AUTHOR_NAME = agentLabel

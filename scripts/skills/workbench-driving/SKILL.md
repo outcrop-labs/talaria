@@ -10,11 +10,12 @@ When to use: whenever you run coding work through your workbench — start_job, 
 
 ## While you build — drive, don't fling
 
-4. Prefer the harness's **MCP tools** when they're registered on your config — you get structured tool results, not text to guess at. Otherwise use the `jsonRun` invocation and read the structured result object (result text, files touched, session id). Never scrape raw logs for meaning.
-5. Iterate in conversation with the harness: run, read the structured result, ask follow-ups (resume the session where supported) until you understand what changed and why. If the harness's answer surprises you, dig — surprise is information.
-6. You own the result, not the harness. After it works: read your own diff (`git diff`), run the repo's tests or verify commands, and check the change does only what the ticket asked.
+4. One workspace per job: clone into the `workdir` start_job gives you and never work outside it — concurrent jobs stay isolated that way. Your harness's session history lives under `/opt/data/workbench/harness/`, persists across restarts, and is shared with your department: resume your own earlier sessions, or pick up a teammate's hand-off instead of starting cold.
+5. Prefer the harness's **MCP tools** when they're registered on your config — you get structured tool results, not text to guess at. Otherwise use the `jsonRun` invocation and read the structured result object (result text, files touched, session id). Never scrape raw logs for meaning.
+6. Iterate in conversation with the harness: run, read the structured result, ask follow-ups (resume the session where supported) until you understand what changed and why. If the harness's answer surprises you, dig — surprise is information.
+7. You own the result, not the harness. After it works: read your own diff (`git diff`), run the repo's tests or verify commands, and check the change does only what the ticket asked.
 
 ## Finishing
 
-7. finish_job only when the branch holds work you have personally verified. Your summary should say what changed, how you verified it, and anything the reviewer should look at hardest.
-8. If you could not do the work properly — missing tools, access, or org process you'd be guessing at — report_gap once and block with the reason. Never improvise a process to look busy.
+8. finish_job only when the branch holds work you have personally verified. Your summary should say what changed, how you verified it, and anything the reviewer should look at hardest.
+9. If you could not do the work properly — missing tools, access, or org process you'd be guessing at — report_gap once and block with the reason. Never improvise a process to look busy.
