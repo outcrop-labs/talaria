@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { inlineEditKeys } from '@/components/ui/control'
-import { Maximize2, ChevronLeft, Archive, ArchiveRestore, Trash2 } from 'lucide-react'
+import { Maximize2, ChevronLeft, Archive, ArchiveRestore, Check, Trash2 } from 'lucide-react'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { CloseButton } from '@/components/ui/close-button'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
@@ -301,17 +301,29 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                   </Select>
                 </Prop>
                 <Prop label="Color">
-                  <div className="flex flex-wrap items-center gap-1.5 py-1">
-                    {TICKET_COLORS.map((c) => (
-                      <button
-                        key={c}
-                        title={c}
-                        disabled={!canEdit}
-                        onClick={() => save({ color: t.color === c ? null : c })}
-                        className={cn('h-4 w-4 rounded-full ring-2 transition-shadow', t.color === c ? 'ring-[var(--theme-accent-border)]' : 'ring-transparent hover:ring-line')}
-                        style={{ background: LABEL_CSS[c] }}
-                      />
-                    ))}
+                  <div className="flex flex-wrap items-center gap-2 py-1">
+                    {TICKET_COLORS.map((c) => {
+                      const active = t.color === c
+                      return (
+                        <button
+                          key={c}
+                          title={active ? `${c} — click to clear` : c}
+                          disabled={!canEdit}
+                          onClick={() => save({ color: active ? null : c })}
+                          className={cn(
+                            'grid h-5 w-5 place-items-center rounded-full transition-all',
+                            // Active is unmissable: scaled up, bright ring
+                            // offset from the swatch, check inside.
+                            active
+                              ? 'scale-110 ring-2 ring-[color:var(--theme-fg)] ring-offset-2 ring-offset-[color:var(--theme-panel)]'
+                              : 'ring-1 ring-transparent hover:ring-line',
+                          )}
+                          style={{ background: LABEL_CSS[c] }}
+                        >
+                          {active && <Check size={11} strokeWidth={3} className="text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]" />}
+                        </button>
+                      )
+                    })}
                   </div>
                 </Prop>
                 <Prop label="Assignees">
