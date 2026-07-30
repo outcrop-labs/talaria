@@ -3,13 +3,12 @@ import { useQueryClient } from '@tanstack/react-query'
 import { MessageSquare, GitBranch } from 'lucide-react'
 import { ticketMenuEntries } from '@/components/board/ticket-menu'
 import { Input } from '@/components/ui/input'
-import { Avatar } from '@/components/ui/avatar'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { useContextMenu } from '@/components/ui/context-menu'
+import { AssigneesPill, DuePill, EstimatePill, type PillCtx } from '@/components/board/field-pills'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
 import { archiveTask, createTask, updateTask, type Board, type BoardMember } from '@/lib/boards'
-import { assigneeInfo, type AssigneeInfo } from '@/lib/assignees'
 import { plainText } from '@/lib/plain-text'
 import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task, type TaskStatus } from '@/lib/task-const'
 import { useSession } from '@/lib/session'
@@ -22,9 +21,6 @@ const COL_ACCENT: Record<string, string> = {
   quality_review: 'var(--theme-accent-secondary)',
   done: 'var(--theme-success)',
 }
-
-const overdue = (t: Task) =>
-  !!t.dueDate && new Date(t.dueDate).getTime() < Date.now() && !['done', 'cancelled'].includes(t.status)
 
 /** Compact "4h" / "2.5h" — estimates render short or not at all. */
 const fmtHours = (h: number) => `${Number.isInteger(h) ? h : h.toFixed(1)}h`
@@ -132,7 +128,7 @@ export function Kanban({
                 <Card
                   key={t.id}
                   task={t}
-                  assignees={t.assignees.map((a) => assigneeInfo(a, agents, members))}
+                  pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id }}
                   subtasks={childrenOf.get(t.id) ?? []}
                   parentRef={parentRef(t)}
                   draggable={canEdit}
@@ -159,7 +155,7 @@ export function Kanban({
 
 function Card({
   task,
-  assignees,
+  pillCtx,
   subtasks,
   parentRef,
   draggable,
@@ -170,7 +166,7 @@ function Card({
   onContextMenu,
 }: {
   task: Task
-  assignees: AssigneeInfo[]
+  pillCtx: PillCtx
   subtasks: Task[]
   parentRef: string | null
   draggable: boolean
@@ -180,7 +176,6 @@ function Card({
   onOpen: () => void
   onContextMenu: (e: React.MouseEvent) => void
 }) {
-  const late = overdue(task)
   const doneKids = subtasks.filter((s) => s.status === 'done').length
   return (
     <div
@@ -194,7 +189,14 @@ function Card({
         path={`/boards/${task.boardId}/${task.id}`}
         className="absolute right-2 top-2 z-10 bg-card opacity-0 shadow-[var(--theme-shadow-1)] group-hover:opacity-100"
       />
-      <button type="button" onClick={onOpen} className={cn('mercury-panel w-full rounded-xl p-4 text-left transition-shadow hover:shadow-[var(--theme-shadow-3)]', task.archivedAt && 'opacity-60')}>
+      {/* div, not <button>: the pills inside are buttons themselves. */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onOpen}
+        onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && onOpen()}
+        className={cn('mercury-panel w-full cursor-pointer rounded-xl p-4 text-left transition-shadow hover:shadow-[var(--theme-shadow-3)]', task.archivedAt && 'opacity-60')}
+      >
         <div className="flex items-start gap-2.5">
           <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: PRIORITY_COLOR[task.priority] }} />
           <div className="min-w-0 flex-1">
@@ -217,52 +219,33 @@ function Card({
             {task.description && <div className="mt-1 line-clamp-3 font-sans text-xs leading-relaxed text-muted">{plainText(task.description)}</div>}
           </div>
         </div>
-        {(assignees.length > 0 || task.dueDate || task.tags.length > 0 || subtasks.length > 0 || task.commentCount > 0) && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {assignees.length > 0 && (
-              <span className="flex items-center gap-1.5 text-[11px] text-muted">
-                <span className="flex -space-x-1.5">
-                  {assignees.slice(0, 3).map((a) => (
-                    <Avatar key={a.key} name={a.label} className="h-5 w-5 ring-2 ring-[color:var(--theme-panel)]" />
-                  ))}
-                </span>
-                {assignees.length === 1
-                  ? assignees[0]!.label
-                  : assignees.length <= 3
-                    ? `${assignees.length} assignees`
-                    : `+${assignees.length - 3} · ${assignees.length} assignees`}
-              </span>
-            )}
-            {task.dueDate && (
-              <span
-                className={cn('text-[11px]', late ? 'font-medium text-[color:var(--theme-danger)]' : 'text-muted')}
-                title={late ? 'Past due' : 'Due date'}
-              >
-                · {task.dueDate.slice(0, 10)}
-              </span>
-            )}
-            {subtasks.length > 0 && (
-              <span
-                className={cn('flex items-center gap-1 text-[11px]', doneKids === subtasks.length ? 'text-[color:var(--theme-success)]' : 'text-muted')}
-                title="Sub-tasks done"
-              >
-                <GitBranch size={11} /> {doneKids}/{subtasks.length}
-              </span>
-            )}
-            {task.commentCount > 0 && (
-              <span className="flex items-center gap-1 text-[11px] text-muted" title="Comments">
-                <MessageSquare size={11} /> {task.commentCount}
-              </span>
-            )}
-            {task.tags.slice(0, 2).map((tag) => (
-              <span key={tag} className="rounded-full border border-line-subtle px-1.5 py-0.5 text-[10px] text-muted">
-                {tag}
-              </span>
-            ))}
-            {task.tags.length > 2 && <span className="text-[10px] text-muted">+{task.tags.length - 2}</span>}
-          </div>
-        )}
-      </button>
+        {/* Property pills — click to edit in place; the card click still opens
+            the ticket (pills own their clicks). */}
+        <div className="mt-2.5 flex flex-wrap items-center gap-1">
+          <AssigneesPill t={task} ctx={pillCtx} />
+          <DuePill t={task} ctx={pillCtx} />
+          <EstimatePill t={task} ctx={pillCtx} />
+          {subtasks.length > 0 && (
+            <span
+              className={cn('flex items-center gap-1 px-1 text-[11px]', doneKids === subtasks.length ? 'text-[color:var(--theme-success)]' : 'text-muted')}
+              title="Sub-tasks done"
+            >
+              <GitBranch size={11} /> {doneKids}/{subtasks.length}
+            </span>
+          )}
+          {task.commentCount > 0 && (
+            <span className="flex items-center gap-1 px-1 text-[11px] text-muted" title="Comments">
+              <MessageSquare size={11} /> {task.commentCount}
+            </span>
+          )}
+          {task.tags.slice(0, 2).map((tag) => (
+            <span key={tag} className="rounded-full border border-line-subtle px-1.5 py-0.5 text-[10px] text-muted">
+              {tag}
+            </span>
+          ))}
+          {task.tags.length > 2 && <span className="text-[10px] text-muted">+{task.tags.length - 2}</span>}
+        </div>
+      </div>
     </div>
   )
 }

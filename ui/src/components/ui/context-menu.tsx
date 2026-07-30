@@ -26,6 +26,8 @@ export interface ContextMenuItem {
   disabled?: boolean
   /** Marks the current choice in a submenu (renders a leading check). */
   checked?: boolean
+  /** Keep the menu open after selecting (multi-toggle pickers). */
+  keepOpen?: boolean
   /** Submenu — hover opens a flyout of these entries. `onSelect` is ignored
    *  on items that carry children. */
   children?: ContextMenuEntry[]
@@ -209,13 +211,19 @@ export function DropdownMenu({
   trigger,
   items,
   align = 'right',
+  up = false,
   className,
+  footer,
 }: {
   /** Renders the trigger; `open` lets it style its active state. */
   trigger: (open: boolean) => ReactNode
   items: ContextMenuEntry[] | (() => ContextMenuEntry[])
   align?: 'left' | 'right'
+  /** Open upward (triggers docked at the bottom of the viewport). */
+  up?: boolean
   className?: string
+  /** Rendered under the items (e.g. a date input) — clicks inside stay open. */
+  footer?: (close: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -237,11 +245,24 @@ export function DropdownMenu({
   const entries = typeof items === 'function' ? (open ? items() : []) : items
   return (
     <div ref={ref} className={cn('relative', className)}>
-      <span onClick={() => setOpen((o) => !o)}>{trigger(open)}</span>
+      {/* The trigger click is the menu's — never the row/card underneath. */}
+      <span
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen((o) => !o)
+        }}
+      >
+        {trigger(open)}
+      </span>
       {open && (
         <div
           role="menu"
-          className={cn('absolute top-full z-40 mt-1 min-w-44 rounded-xl border border-line bg-card p-1 shadow-lg', align === 'right' ? 'right-0' : 'left-0')}
+          onClick={(e) => e.stopPropagation()}
+          className={cn(
+            'absolute z-40 min-w-44 rounded-xl border border-line bg-card p-1 shadow-lg',
+            up ? 'bottom-full mb-1' : 'top-full mt-1',
+            align === 'right' ? 'right-0' : 'left-0',
+          )}
         >
           {entries.map((item, i) => {
             if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
@@ -251,9 +272,10 @@ export function DropdownMenu({
                 type="button"
                 role="menuitem"
                 disabled={item.disabled}
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation()
                   item.onSelect?.()
-                  setOpen(false)
+                  if (!item.keepOpen) setOpen(false)
                 }}
                 className={cn(
                   'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
@@ -269,6 +291,7 @@ export function DropdownMenu({
               </button>
             )
           })}
+          {footer && <div className="mt-1 border-t border-line-subtle px-2 pb-1 pt-2">{footer(() => setOpen(false))}</div>}
         </div>
       )}
     </div>

@@ -5,9 +5,12 @@ import { useAgents } from '@/lib/agents'
 import { archiveTask, updateTask, type BoardMember } from '@/lib/boards'
 import { assigneeInfo } from '@/lib/assignees'
 import { ticketMenuEntries } from '@/components/board/ticket-menu'
+import { AssigneesPill, DuePill, EstimatePill, PriorityPill, StatusPill, STATUS_COLOR } from '@/components/board/field-pills'
+import { FieldPill } from '@/components/ui/field-pill'
 import { useSession } from '@/lib/session'
+import { userAssignee } from '@/lib/assignees'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
-import { useContextMenu } from '@/components/ui/context-menu'
+import { useContextMenu, DropdownMenu } from '@/components/ui/context-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 import { EFFORT_LABEL, PRIORITIES, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
@@ -103,19 +106,33 @@ function fmtTime(s: number): string {
   return `${s}s`
 }
 
-// List view of a board's tasks with configurable columns (persisted per board).
+export type GroupByKey = 'status' | 'priority' | 'assignee' | 'label' | 'none'
+
+interface RowGroup {
+  key: string
+  label: string
+  dot?: string
+  hours: number
+  tasks: Task[]
+}
+
+// List view of a board's tasks: grouped (ClickUp-style collapsible sections),
+// configurable columns (persisted per board), inline property pills, and
+// bulk selection with a floating action bar.
 export function BoardList({
   tasks,
   onOpen,
   boardId,
   members = [],
   canEdit = false,
+  groupBy = 'status',
 }: {
   tasks: Task[]
   onOpen: (id: string) => void
   boardId: string
   members?: BoardMember[]
   canEdit?: boolean
+  groupBy?: GroupByKey
 }) {
   const qc = useQueryClient()
   const { openMenu, menu } = useContextMenu()
@@ -225,9 +242,96 @@ export function BoardList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, sort, fleet])
 
-  // Inline-editable cells (bare controls — kit chrome is noise at table
-  // density; the artifacts sheet set the precedent). Clicks stay in the cell.
-  const stop = (e: React.SyntheticEvent) => e.stopPropagation()
+  // ── Grouping (ClickUp-style sections; a multi-assignee/multi-label ticket
+  //    appears in each of its groups) ──────────────────────────────────────
+  const groups = useMemo<RowGroup[]>(() => {
+    const sum = (ts: Task[]) => Math.round(ts.reduce((s, t) => s + (t.estimatedHours ?? 0), 0) * 10) / 10
+    if (groupBy === 'none') return [{ key: 'all', label: '', hours: 0, tasks: sorted }]
+    if (groupBy === 'status') {
+      const order = [...TASK_STATUSES, 'failed', 'cancelled'] as TaskStatus[]
+      return order
+        .map((st) => ({ key: st, label: STATUS_LABEL[st] ?? st, dot: STATUS_COLOR[st], tasks: sorted.filter((t) => t.status === st) }))
+        .filter((g) => g.tasks.length > 0)
+        .map((g) => ({ ...g, hours: sum(g.tasks) }))
+    }
+    if (groupBy === 'priority') {
+      return [...PRIORITIES]
+        .reverse()
+        .map((p) => ({ key: p, label: p, dot: PRIORITY_COLOR[p], tasks: sorted.filter((t) => t.priority === p) }))
+        .filter((g) => g.tasks.length > 0)
+        .map((g) => ({ ...g, hours: sum(g.tasks) }))
+    }
+    if (groupBy === 'assignee') {
+      const byKey = new Map<string, Task[]>()
+      for (const t of sorted) {
+        const keys = t.assignees.length ? t.assignees : ['__none']
+        for (const k of keys) byKey.set(k, [...(byKey.get(k) ?? []), t])
+      }
+      return [...byKey.entries()]
+        .map(([k, ts]) => ({
+          key: k,
+          label: k === '__none' ? 'Unassigned' : assigneeInfo(k, fleet?.agents ?? [], members).label,
+          tasks: ts,
+        }))
+        .sort((a, b) => (a.key === '__none' ? 1 : b.key === '__none' ? -1 : a.label.localeCompare(b.label)))
+        .map((g) => ({ ...g, hours: sum(g.tasks) }))
+    }
+    // label
+    const byTag = new Map<string, Task[]>()
+    for (const t of sorted) {
+      const keys = t.tags.length ? t.tags : ['__none']
+      for (const k of keys) byTag.set(k, [...(byTag.get(k) ?? []), t])
+    }
+    return [...byTag.entries()]
+      .map(([k, ts]) => ({ key: k, label: k === '__none' ? 'No label' : k, tasks: ts }))
+      .sort((a, b) => (a.key === '__none' ? 1 : b.key === '__none' ? -1 : a.label.localeCompare(b.label)))
+      .map((g) => ({ ...g, hours: sum(g.tasks) }))
+  }, [sorted, groupBy, fleet, members])
+
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const toggleGroup = (k: string) =>
+    setCollapsed((c) => {
+      const next = new Set(c)
+      if (next.has(k)) next.delete(k)
+      else next.add(k)
+      return next
+    })
+
+  // ── Bulk selection ───────────────────────────────────────────────────────
+  const [sel, setSel] = useState<Set<string>>(new Set())
+  useEffect(() => setSel(new Set()), [boardId, groupBy])
+  const toggleSel = (id: string) =>
+    setSel((s) => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const bulk = async (action: { status?: TaskStatus; priority?: Priority; assignToMe?: boolean; archive?: boolean }) => {
+    for (const id of sel) {
+      if (action.archive) {
+        await archiveTask(id, true)
+      } else if (action.assignToMe && me) {
+        const t = tasks.find((x) => x.id === id)
+        const meKey = userAssignee(me.id)
+        if (t && !t.assignees.includes(meKey)) await updateTask(id, { assignees: [...t.assignees, meKey] })
+      } else {
+        await updateTask(id, action)
+      }
+    }
+    setSel(new Set())
+    invalidate()
+  }
+
+  // Property pills (FieldPill + DropdownMenu) — the shared clickable-inline
+  // affordance; pills own their clicks so row-click still opens the ticket.
+  const pctx = (t: Task) => ({
+    canEdit,
+    onPatch: (p: Parameters<typeof updateTask>[1]) => void patch(t.id, p),
+    agents: fleet?.agents ?? [],
+    members,
+    meId: me?.id,
+  })
 
   const cell = (t: Task, key: ColumnKey) => {
     switch (key) {
@@ -236,101 +340,20 @@ export function BoardList({
       case 'title':
         return <span className="font-sans text-fg">{t.title}</span>
       case 'status':
-        if (!canEdit) return <span className="text-muted">{STATUS_LABEL[t.status]}</span>
-        return (
-          <select
-            value={t.status}
-            onClick={stop}
-            onChange={(e) => {
-              stop(e)
-              void patch(t.id, { status: e.target.value as TaskStatus })
-            }}
-            className="cursor-pointer appearance-none bg-transparent pr-1 text-muted transition-colors hover:text-fg focus:outline-none"
-            title="Change status"
-          >
-            {TASK_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {STATUS_LABEL[s]}
-              </option>
-            ))}
-          </select>
-        )
-      case 'priority': {
-        const dot = <span className="h-2 w-2 rounded-full" style={{ background: PRIORITY_COLOR[t.priority] }} />
-        if (!canEdit)
-          return (
-            <span className="inline-flex items-center gap-1.5 text-muted">
-              {dot}
-              {t.priority}
-            </span>
-          )
-        return (
-          <span className="inline-flex items-center gap-1.5">
-            {dot}
-            <select
-              value={t.priority}
-              onClick={stop}
-              onChange={(e) => {
-                stop(e)
-                void patch(t.id, { priority: e.target.value as Priority })
-              }}
-              className="cursor-pointer appearance-none bg-transparent pr-1 text-muted transition-colors hover:text-fg focus:outline-none"
-              title="Change priority"
-            >
-              {PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </span>
-        )
-      }
+        return <StatusPill t={t} ctx={pctx(t)} />
+      case 'priority':
+        return <PriorityPill t={t} ctx={pctx(t)} />
       case 'effort':
         return <span className="text-muted">{t.effort ? EFFORT_LABEL[t.effort] : '—'}</span>
       case 'estimate':
-        if (!canEdit) return <span className="text-muted">{t.estimatedHours != null ? `${t.estimatedHours}h` : '—'}</span>
-        return (
-          <input
-            type="number"
-            min={0}
-            max={999}
-            step={0.5}
-            defaultValue={t.estimatedHours ?? ''}
-            key={`est-${t.id}-${t.estimatedHours ?? ''}`}
-            onClick={stop}
-            onBlur={(e) => {
-              const v = e.target.value.trim()
-              const n = v === '' ? null : Number(v)
-              if (n !== t.estimatedHours && (n === null || (!Number.isNaN(n) && n >= 0))) void patch(t.id, { estimatedHours: n })
-            }}
-            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-            placeholder="—"
-            title="Estimate (hours)"
-            className="w-14 bg-transparent text-right text-muted transition-colors [appearance:textfield] hover:text-fg focus:outline-none"
-          />
-        )
+        return <EstimatePill t={t} ctx={pctx(t)} />
       case 'assignees':
         // Raw model ids would flash then swap to labels (jumping the column
         // width) — hold the cell with a short bar until the fleet resolves.
         if (agentsLoading && t.assignees.length > 0) return <Skeleton className="h-2.5 w-16 rounded-full" />
-        return <span className="text-muted">{assigneeText(t.assignees)}</span>
+        return <AssigneesPill t={t} ctx={pctx(t)} />
       case 'due':
-        if (!canEdit) return <span className="text-muted">{t.dueDate ? t.dueDate.slice(0, 10) : '—'}</span>
-        return (
-          <input
-            type="date"
-            value={t.dueDate ? t.dueDate.slice(0, 10) : ''}
-            onClick={stop}
-            onChange={(e) => {
-              stop(e)
-              const v = e.target.value
-              void patch(t.id, { dueDate: v ? new Date(`${v}T17:00`).toISOString() : null })
-            }}
-            title="Due date"
-            className="cursor-pointer bg-transparent text-muted transition-colors hover:text-fg focus:outline-none"
-          />
-        )
+        return <DuePill t={t} ctx={pctx(t)} />
       case 'time':
         return <span className="text-muted">{fmtTime(t.timeSpentSeconds)}</span>
       case 'labels':
@@ -348,14 +371,24 @@ export function BoardList({
         <ColumnsMenu visible={visible} order={order} onChangeVisible={updateCols} onChangeOrder={updateOrder} />
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="relative min-h-0 flex-1 overflow-auto p-4">
         {tasks.length === 0 ? (
           <div className="grid h-full place-items-center text-sm text-muted">No tasks match.</div>
         ) : (
           <table className="w-full text-sm">
             <thead className="border-b border-line text-xs uppercase tracking-wide text-muted">
               <tr>
-                <th className="w-6 py-2" />
+                <th className="w-7 py-2 pl-2">
+                  {canEdit && (
+                    <input
+                      type="checkbox"
+                      title="Select all"
+                      checked={sorted.length > 0 && sorted.every((t) => sel.has(t.id))}
+                      onChange={(e) => setSel(e.target.checked ? new Set(sorted.map((t) => t.id)) : new Set())}
+                      className="accent-[var(--theme-accent)]"
+                    />
+                  )}
+                </th>
                 {cols.map((c) => (
                   <th key={c.key} className={cn('px-3 py-2 font-semibold', c.align === 'right' ? 'text-right' : 'text-left')}>
                     <button
@@ -373,28 +406,104 @@ export function BoardList({
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-line-subtle">
-              {sorted.map((t) => (
-                <tr
-                  key={t.id}
-                  onClick={() => onOpen(t.id)}
-                  onContextMenu={(e) => rowMenu(e, t)}
-                  className="group cursor-pointer transition-colors hover:bg-card"
-                >
-                  <td className="pl-2">
-                    <CopyLinkButton path={`/boards/${t.boardId}/${t.id}`} className="opacity-0 group-hover:opacity-100" />
-                  </td>
-                  {cols.map((c) => (
-                    <td key={c.key} className={cn('px-3 py-2', c.align === 'right' && 'text-right')}>
-                      {cell(t, c.key)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
+            {groups.map((g) => {
+              const open = !collapsed.has(g.key)
+              return (
+                <tbody key={g.key} className="divide-y divide-line-subtle">
+                  {groupBy !== 'none' && (
+                    <tr className="cursor-pointer select-none bg-sidebar/60" onClick={() => toggleGroup(g.key)}>
+                      <td colSpan={cols.length + 1} className="px-2 py-1.5">
+                        <span className="flex items-center gap-2 text-xs">
+                          <span className="text-muted">{open ? '▾' : '▸'}</span>
+                          {g.dot && <span className="h-2 w-2 rounded-full" style={{ background: g.dot }} />}
+                          <span className="font-semibold uppercase tracking-wide text-fg">{g.label}</span>
+                          <span className="text-muted">{g.tasks.length}</span>
+                          {g.hours > 0 && <span className="text-[10px] text-muted">Σ {g.hours}h</span>}
+                        </span>
+                      </td>
+                    </tr>
+                  )}
+                  {open &&
+                    g.tasks.map((t) => (
+                      <tr
+                        key={`${g.key}:${t.id}`}
+                        onClick={() => onOpen(t.id)}
+                        onContextMenu={(e) => rowMenu(e, t)}
+                        className={cn('group cursor-pointer transition-colors hover:bg-card', sel.has(t.id) && 'bg-card/70')}
+                      >
+                        <td className="pl-2" onClick={(e) => e.stopPropagation()}>
+                          {canEdit ? (
+                            <input
+                              type="checkbox"
+                              checked={sel.has(t.id)}
+                              onChange={() => toggleSel(t.id)}
+                              className={cn('accent-[var(--theme-accent)] transition-opacity', sel.size === 0 && 'opacity-0 group-hover:opacity-100')}
+                            />
+                          ) : (
+                            <CopyLinkButton path={`/boards/${t.boardId}/${t.id}`} className="opacity-0 group-hover:opacity-100" />
+                          )}
+                        </td>
+                        {cols.map((c) => (
+                          <td key={c.key} className={cn('px-3 py-2', c.align === 'right' && 'text-right')}>
+                            {cell(t, c.key)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                </tbody>
+              )
+            })}
           </table>
         )}
       </div>
+
+      {/* Bulk action bar — appears with a selection, acts on every selected
+          ticket, then clears. */}
+      {sel.size > 0 && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex justify-center">
+          <div className="mercury-panel pointer-events-auto flex items-center gap-1 rounded-xl px-2 py-1.5 shadow-[var(--theme-shadow-3)]">
+            <span className="px-2 text-xs font-medium text-fg">{sel.size} selected</span>
+            <DropdownMenu
+              up
+              align="left"
+              trigger={(open) => (
+                <FieldPill active={open} className="text-xs">
+                  Move to
+                </FieldPill>
+              )}
+              items={TASK_STATUSES.map((st) => ({
+                label: STATUS_LABEL[st] ?? st,
+                onSelect: () => void bulk({ status: st }),
+              }))}
+            />
+            <DropdownMenu
+              up
+              align="left"
+              trigger={(open) => (
+                <FieldPill active={open} className="text-xs">
+                  Priority
+                </FieldPill>
+              )}
+              items={[...PRIORITIES].reverse().map((pr) => ({
+                label: pr,
+                icon: <span className="h-2 w-2 rounded-full" style={{ background: PRIORITY_COLOR[pr] }} />,
+                onSelect: () => void bulk({ priority: pr }),
+              }))}
+            />
+            {me && (
+              <button onClick={() => void bulk({ assignToMe: true })} className="rounded-md px-2 py-0.5 text-xs text-muted transition-colors hover:bg-card hover:text-fg">
+                Assign to me
+              </button>
+            )}
+            <button onClick={() => void bulk({ archive: true })} className="rounded-md px-2 py-0.5 text-xs text-muted transition-colors hover:bg-card hover:text-[color:var(--theme-danger)]">
+              Archive
+            </button>
+            <button onClick={() => setSel(new Set())} title="Clear selection" className="rounded-md px-1.5 py-0.5 text-xs text-muted transition-colors hover:text-fg">
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
       {menu}
     </div>
   )
