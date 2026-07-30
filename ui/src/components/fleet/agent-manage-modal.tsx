@@ -782,6 +782,61 @@ function WorkbenchControl({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
       ) : (
         <div className="text-fg">{mode === 'off' ? 'Off' : resolved ? resolved.name : 'None'}</div>
       )}
+      {isAdmin && mode !== 'off' && resolved && <WorkbenchRepos agentId={def.id} />}
+    </div>
+  )
+}
+
+/** Explicit per-agent repo grants — the workbench touches ONLY these. */
+function WorkbenchRepos({ agentId }: { agentId: string }) {
+  const qc = useQueryClient()
+  const { data, isLoading } = useQuery({
+    queryKey: ['workbench-repos', agentId],
+    queryFn: async (): Promise<{ available: string[]; granted: string[] } | null> => {
+      const r = await fetch(`/api/workbench/repos/${agentId}`, { credentials: 'same-origin' })
+      if (!r.ok) return null
+      return (await r.json()) as { available: string[]; granted: string[] }
+    },
+  })
+  const toggle = async (repo: string, on: boolean) => {
+    const next = on ? [...(data?.granted ?? []), repo] : (data?.granted ?? []).filter((r) => r !== repo)
+    await fetch(`/api/workbench/repos/${agentId}`, {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repos: next }),
+    })
+    await qc.invalidateQueries({ queryKey: ['workbench-repos', agentId] })
+  }
+  if (isLoading) return <div className="mt-2"><SkeletonRows rows={1} /></div>
+  if (!data || data.available.length === 0)
+    return (
+      <p className="mt-1.5 text-xs text-muted">
+        No repositories reachable — connect GitHub under <Link to="/admin" className="text-accent hover:underline">Admin → Org</Link> to grant repos.
+      </p>
+    )
+  return (
+    <div className="mt-2 space-y-1">
+      <span className="text-[11px] uppercase tracking-wide text-muted">Repos this agent may work</span>
+      <div className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
+        {data.available.map((repo) => {
+          const on = data.granted.includes(repo)
+          return (
+            <button
+              key={repo}
+              type="button"
+              onClick={() => void toggle(repo, !on)}
+              className={cn(
+                'rounded-full border px-2.5 py-0.5 text-xs transition-colors',
+                on ? 'border-[var(--theme-accent-border)] text-fg' : 'border-line-subtle text-muted hover:text-fg',
+              )}
+            >
+              {repo}
+            </button>
+          )
+        })}
+      </div>
+      {data.granted.length === 0 && <p className="text-xs text-muted">Nothing granted yet — the workbench can't touch any repo.</p>}
     </div>
   )
 }

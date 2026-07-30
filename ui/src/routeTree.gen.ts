@@ -68,6 +68,7 @@ import { Route as AppAdminRouteImport } from './routes/_app/admin'
 import { Route as AppBoardsIndexRouteImport } from './routes/_app/boards/index'
 import { Route as KbSpaceSlugRouteImport } from './routes/kb.space.$slug'
 import { Route as ApiWorkflowsIdRouteImport } from './routes/api/workflows.$id'
+import { Route as ApiWorkbenchGithubRouteImport } from './routes/api/workbench.github'
 import { Route as ApiWellKnownTalariaInstanceRouteImport } from './routes/api/well-known.talaria-instance'
 import { Route as ApiUploadsIdRouteImport } from './routes/api/uploads.$id'
 import { Route as ApiTemplatesIdRouteImport } from './routes/api/templates.$id'
@@ -130,6 +131,7 @@ import { Route as ApiAdminDomainsRouteImport } from './routes/api/admin.domains'
 import { Route as ApiAdminAppsRouteImport } from './routes/api/admin.apps'
 import { Route as AppBoardsBoardIdRouteImport } from './routes/_app/boards/$boardId'
 import { Route as AppXAppIndexRouteImport } from './routes/_app/x.$app.index'
+import { Route as ApiWorkbenchReposAgentIdRouteImport } from './routes/api/workbench.repos.$agentId'
 import { Route as ApiTeamsIdMembersRouteImport } from './routes/api/teams.$id.members'
 import { Route as ApiTasksIdWatchersRouteImport } from './routes/api/tasks.$id.watchers'
 import { Route as ApiTasksIdUsageRouteImport } from './routes/api/tasks.$id.usage'
@@ -505,6 +507,11 @@ const ApiWorkflowsIdRoute = ApiWorkflowsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ApiWorkflowsRoute,
 } as any)
+const ApiWorkbenchGithubRoute = ApiWorkbenchGithubRouteImport.update({
+  id: '/github',
+  path: '/github',
+  getParentRoute: () => ApiWorkbenchRoute,
+} as any)
 const ApiWellKnownTalariaInstanceRoute =
   ApiWellKnownTalariaInstanceRouteImport.update({
     id: '/api/well-known/talaria-instance',
@@ -816,6 +823,12 @@ const AppXAppIndexRoute = AppXAppIndexRouteImport.update({
   path: '/x/$app/',
   getParentRoute: () => AppRoute,
 } as any)
+const ApiWorkbenchReposAgentIdRoute =
+  ApiWorkbenchReposAgentIdRouteImport.update({
+    id: '/repos/$agentId',
+    path: '/repos/$agentId',
+    getParentRoute: () => ApiWorkbenchRoute,
+  } as any)
 const ApiTeamsIdMembersRoute = ApiTeamsIdMembersRouteImport.update({
   id: '/$id/members',
   path: '/$id/members',
@@ -1290,7 +1303,7 @@ export interface FileRoutesByFullPath {
   '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
-  '/api/workbench': typeof ApiWorkbenchRoute
+  '/api/workbench': typeof ApiWorkbenchRouteWithChildren
   '/api/workflows': typeof ApiWorkflowsRouteWithChildren
   '/kb/$slug': typeof KbSlugRoute
   '/boards/$boardId': typeof AppBoardsBoardIdRouteWithChildren
@@ -1354,6 +1367,7 @@ export interface FileRoutesByFullPath {
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
+  '/api/workbench/github': typeof ApiWorkbenchGithubRoute
   '/api/workflows/$id': typeof ApiWorkflowsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards/': typeof AppBoardsIndexRoute
@@ -1408,6 +1422,7 @@ export interface FileRoutesByFullPath {
   '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/workbench/repos/$agentId': typeof ApiWorkbenchReposAgentIdRoute
   '/x/$app/': typeof AppXAppIndexRoute
   '/api/artifacts/$id/export/google': typeof ApiArtifactsIdExportGoogleRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
@@ -1491,7 +1506,7 @@ export interface FileRoutesByTo {
   '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
-  '/api/workbench': typeof ApiWorkbenchRoute
+  '/api/workbench': typeof ApiWorkbenchRouteWithChildren
   '/api/workflows': typeof ApiWorkflowsRouteWithChildren
   '/kb/$slug': typeof KbSlugRoute
   '/': typeof AppIndexRoute
@@ -1556,6 +1571,7 @@ export interface FileRoutesByTo {
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
+  '/api/workbench/github': typeof ApiWorkbenchGithubRoute
   '/api/workflows/$id': typeof ApiWorkflowsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/boards': typeof AppBoardsIndexRoute
@@ -1610,6 +1626,7 @@ export interface FileRoutesByTo {
   '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/workbench/repos/$agentId': typeof ApiWorkbenchReposAgentIdRoute
   '/x/$app': typeof AppXAppIndexRoute
   '/api/artifacts/$id/export/google': typeof ApiArtifactsIdExportGoogleRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
@@ -1695,7 +1712,7 @@ export interface FileRoutesById {
   '/api/templates': typeof ApiTemplatesRouteWithChildren
   '/api/uploads': typeof ApiUploadsRouteWithChildren
   '/api/users': typeof ApiUsersRoute
-  '/api/workbench': typeof ApiWorkbenchRoute
+  '/api/workbench': typeof ApiWorkbenchRouteWithChildren
   '/api/workflows': typeof ApiWorkflowsRouteWithChildren
   '/kb/$slug': typeof KbSlugRoute
   '/_app/': typeof AppIndexRoute
@@ -1760,6 +1777,7 @@ export interface FileRoutesById {
   '/api/templates/$id': typeof ApiTemplatesIdRoute
   '/api/uploads/$id': typeof ApiUploadsIdRoute
   '/api/well-known/talaria-instance': typeof ApiWellKnownTalariaInstanceRoute
+  '/api/workbench/github': typeof ApiWorkbenchGithubRoute
   '/api/workflows/$id': typeof ApiWorkflowsIdRoute
   '/kb/space/$slug': typeof KbSpaceSlugRoute
   '/_app/boards/': typeof AppBoardsIndexRoute
@@ -1814,6 +1832,7 @@ export interface FileRoutesById {
   '/api/tasks/$id/usage': typeof ApiTasksIdUsageRoute
   '/api/tasks/$id/watchers': typeof ApiTasksIdWatchersRoute
   '/api/teams/$id/members': typeof ApiTeamsIdMembersRoute
+  '/api/workbench/repos/$agentId': typeof ApiWorkbenchReposAgentIdRoute
   '/_app/x/$app/': typeof AppXAppIndexRoute
   '/api/artifacts/$id/export/google': typeof ApiArtifactsIdExportGoogleRoute
   '/api/artifacts/public/$slug/download': typeof ApiArtifactsPublicSlugDownloadRoute
@@ -1964,6 +1983,7 @@ export interface FileRouteTypes {
     | '/api/templates/$id'
     | '/api/uploads/$id'
     | '/api/well-known/talaria-instance'
+    | '/api/workbench/github'
     | '/api/workflows/$id'
     | '/kb/space/$slug'
     | '/boards/'
@@ -2018,6 +2038,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/workbench/repos/$agentId'
     | '/x/$app/'
     | '/api/artifacts/$id/export/google'
     | '/api/artifacts/public/$slug/download'
@@ -2166,6 +2187,7 @@ export interface FileRouteTypes {
     | '/api/templates/$id'
     | '/api/uploads/$id'
     | '/api/well-known/talaria-instance'
+    | '/api/workbench/github'
     | '/api/workflows/$id'
     | '/kb/space/$slug'
     | '/boards'
@@ -2220,6 +2242,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/workbench/repos/$agentId'
     | '/x/$app'
     | '/api/artifacts/$id/export/google'
     | '/api/artifacts/public/$slug/download'
@@ -2369,6 +2392,7 @@ export interface FileRouteTypes {
     | '/api/templates/$id'
     | '/api/uploads/$id'
     | '/api/well-known/talaria-instance'
+    | '/api/workbench/github'
     | '/api/workflows/$id'
     | '/kb/space/$slug'
     | '/_app/boards/'
@@ -2423,6 +2447,7 @@ export interface FileRouteTypes {
     | '/api/tasks/$id/usage'
     | '/api/tasks/$id/watchers'
     | '/api/teams/$id/members'
+    | '/api/workbench/repos/$agentId'
     | '/_app/x/$app/'
     | '/api/artifacts/$id/export/google'
     | '/api/artifacts/public/$slug/download'
@@ -2490,7 +2515,7 @@ export interface RootRouteChildren {
   ApiTemplatesRoute: typeof ApiTemplatesRouteWithChildren
   ApiUploadsRoute: typeof ApiUploadsRouteWithChildren
   ApiUsersRoute: typeof ApiUsersRoute
-  ApiWorkbenchRoute: typeof ApiWorkbenchRoute
+  ApiWorkbenchRoute: typeof ApiWorkbenchRouteWithChildren
   ApiWorkflowsRoute: typeof ApiWorkflowsRouteWithChildren
   KbSlugRoute: typeof KbSlugRoute
   ApiAdminAppsRoute: typeof ApiAdminAppsRoute
@@ -2956,6 +2981,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiWorkflowsIdRouteImport
       parentRoute: typeof ApiWorkflowsRoute
     }
+    '/api/workbench/github': {
+      id: '/api/workbench/github'
+      path: '/github'
+      fullPath: '/api/workbench/github'
+      preLoaderRoute: typeof ApiWorkbenchGithubRouteImport
+      parentRoute: typeof ApiWorkbenchRoute
+    }
     '/api/well-known/talaria-instance': {
       id: '/api/well-known/talaria-instance'
       path: '/api/well-known/talaria-instance'
@@ -3389,6 +3421,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/x/$app/'
       preLoaderRoute: typeof AppXAppIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/api/workbench/repos/$agentId': {
+      id: '/api/workbench/repos/$agentId'
+      path: '/repos/$agentId'
+      fullPath: '/api/workbench/repos/$agentId'
+      preLoaderRoute: typeof ApiWorkbenchReposAgentIdRouteImport
+      parentRoute: typeof ApiWorkbenchRoute
     }
     '/api/teams/$id/members': {
       id: '/api/teams/$id/members'
@@ -4435,6 +4474,20 @@ const ApiUploadsRouteWithChildren = ApiUploadsRoute._addFileChildren(
   ApiUploadsRouteChildren,
 )
 
+interface ApiWorkbenchRouteChildren {
+  ApiWorkbenchGithubRoute: typeof ApiWorkbenchGithubRoute
+  ApiWorkbenchReposAgentIdRoute: typeof ApiWorkbenchReposAgentIdRoute
+}
+
+const ApiWorkbenchRouteChildren: ApiWorkbenchRouteChildren = {
+  ApiWorkbenchGithubRoute: ApiWorkbenchGithubRoute,
+  ApiWorkbenchReposAgentIdRoute: ApiWorkbenchReposAgentIdRoute,
+}
+
+const ApiWorkbenchRouteWithChildren = ApiWorkbenchRoute._addFileChildren(
+  ApiWorkbenchRouteChildren,
+)
+
 interface ApiWorkflowsRouteChildren {
   ApiWorkflowsIdRoute: typeof ApiWorkflowsIdRoute
 }
@@ -4658,7 +4711,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiTemplatesRoute: ApiTemplatesRouteWithChildren,
   ApiUploadsRoute: ApiUploadsRouteWithChildren,
   ApiUsersRoute: ApiUsersRoute,
-  ApiWorkbenchRoute: ApiWorkbenchRoute,
+  ApiWorkbenchRoute: ApiWorkbenchRouteWithChildren,
   ApiWorkflowsRoute: ApiWorkflowsRouteWithChildren,
   KbSlugRoute: KbSlugRoute,
   ApiAdminAppsRoute: ApiAdminAppsRoute,

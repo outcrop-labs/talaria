@@ -994,6 +994,14 @@ const MIGRATIONS: string[] = [
   // Per-agent workbench control — THE simple setting: off | auto | on.
   `alter table agent_defs add column if not exists workbench text not null default 'auto'`,
   `alter table agent_defs add column if not exists workbench_profile text`,
+  // Workbench repo grants — explicit per-agent GitHub repo access, like MCP
+  // assignment: connecting GitHub grants nothing until an admin grants repos.
+  `create table if not exists workbench_repos (
+    agent_id uuid not null references agent_defs(id) on delete cascade,
+    repo text not null,
+    created_at timestamptz not null default now(),
+    primary key (agent_id, repo)
+  )`,
   // Persistent skill summaries — one generated line per skill, keyed to a
   // hash of its SKILL.md so it only regenerates when the content changes.
   `create table if not exists skill_summaries (

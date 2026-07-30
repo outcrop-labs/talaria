@@ -154,6 +154,7 @@ function AdminPage() {
             <InstanceDomainPanel />
             <SignupDomainsPanel />
             <EmailPanel />
+            <GithubPanel />
             <OrgGooglePanel />
           </>
         )}
@@ -1603,5 +1604,168 @@ function OrgGoogleTargets({ targets }: { targets: OrgGoogle['targets'] }) {
         {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
       </div>
     </div>
+  )
+}
+
+
+/** The Workbench's GitHub connection — App or PAT, whichever the org prefers,
+ *  with the setup steps inline. Secrets seal on save and never render back. */
+function GithubPanel() {
+  const qc = useQueryClient()
+  interface GhStatus {
+    mode: 'app' | 'pat' | null
+    configured: boolean
+    account: string | null
+    error: string | null
+    app: { appId: string; installationId: string; keySet: boolean }
+    patSet: boolean
+  }
+  const { data: status, isPending } = useQuery({
+    queryKey: ['github-status'],
+    queryFn: async (): Promise<GhStatus | null> => {
+      const r = await fetch('/api/workbench/github', { credentials: 'same-origin' })
+      if (!r.ok) return null
+      return ((await r.json()) as { status: GhStatus }).status
+    },
+  })
+  const [mode, setMode] = useState<'app' | 'pat' | ''>('')
+  const [pat, setPat] = useState('')
+  const [appId, setAppId] = useState('')
+  const [privateKey, setPrivateKey] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const effMode = mode || status?.mode || ''
+
+  const save = async (body: unknown) => {
+    setBusy(true)
+    setError(null)
+    const r = await fetch('/api/workbench/github', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    setBusy(false)
+    if (!r.ok) setError(((await r.json().catch(() => ({}))) as { error?: string }).error ?? 'failed')
+    await qc.invalidateQueries({ queryKey: ['github-status'] })
+    await qc.invalidateQueries({ queryKey: ['github-installations'] })
+  }
+  const disconnect = async () => {
+    if (!(await confirm({ title: 'Disconnect GitHub', message: 'Agents lose workbench repo access until reconnected.', confirmLabel: 'Disconnect', danger: true }))) return
+    await fetch('/api/workbench/github', { method: 'DELETE', credentials: 'same-origin' })
+    await qc.invalidateQueries({ queryKey: ['github-status'] })
+  }
+
+  const { data: installations = [] } = useQuery({
+    queryKey: ['github-installations'],
+    enabled: status?.mode === 'app' && !!status.app.keySet,
+    queryFn: async (): Promise<Array<{ id: number; account: string }>> => {
+      const r = await fetch('/api/workbench/github?installations=1', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { installations: Array<{ id: number; account: string }> }).installations
+    },
+  })
+
+  if (isPending) {
+    return (
+      <Panel className="mt-4">
+        <Skeleton className="mb-3 h-4 w-24 rounded-full" />
+        <SkeletonRows rows={2} />
+      </Panel>
+    )
+  }
+  return (
+    <Panel className="mt-4">
+      <SectionHeader
+        title="GitHub · Workbench"
+        info="Lets dev-leaning agents work real repositories through their sandboxed workbench. Connect once here; which agent may touch which repo stays an explicit per-agent grant on the agent's manage view."
+      />
+      <div className="space-y-3">
+        {status?.configured && (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="h-2 w-2 rounded-full bg-[color:var(--theme-success)]" />
+            <span className="text-fg">Connected{status.account ? ` as ${status.account}` : ''}</span>
+            <span className="text-xs text-muted">({status.mode === 'app' ? 'GitHub App' : 'personal access token'})</span>
+            <button type="button" onClick={() => void disconnect()} className="ml-auto text-xs text-muted transition-colors hover:text-[color:var(--theme-danger)]">
+              Disconnect
+            </button>
+          </div>
+        )}
+        {status?.error && <div className="text-xs text-[color:var(--theme-warning)]">{status.error}</div>}
+
+        <div className="flex items-center gap-3">
+          <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">Connect via</label>
+          <Select size="sm" value={effMode} onChange={(e) => setMode(e.target.value as 'app' | 'pat' | '')}>
+            <option value="">choose…</option>
+            <option value="app">GitHub App (recommended)</option>
+            <option value="pat">Personal access token</option>
+          </Select>
+        </div>
+
+        {effMode === 'pat' && (
+          <div className="space-y-2 rounded-xl border border-line-subtle bg-card/40 px-4 py-3 text-sm">
+            <p className="text-xs text-muted">
+              1 · Create a <span className="text-fg">fine-grained token</span> at{' '}
+              <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                github.com/settings/personal-access-tokens
+              </a>{' '}
+              scoped to the repos your agents will work — permissions: <span className="text-fg">Contents (read/write) · Pull requests (read/write) · Metadata (read)</span>.
+              <br />2 · Paste it here. It's stored encrypted and never shown again.
+            </p>
+            <div className="flex items-center gap-2">
+              <Input size="sm" type="password" value={pat} onChange={(e) => setPat(e.target.value)} placeholder={status?.patSet ? '••••••••  (set — paste to replace)' : 'github_pat_…'} className="max-w-sm" />
+              <Button size="sm" disabled={!pat.trim() || busy} onClick={() => void save({ mode: 'pat', pat: { token: pat.trim() } }).then(() => setPat(''))}>
+                Connect
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {effMode === 'app' && (
+          <div className="space-y-2 rounded-xl border border-line-subtle bg-card/40 px-4 py-3 text-sm">
+            <p className="text-xs text-muted">
+              1 · Create a GitHub App at{' '}
+              <a href="https://github.com/settings/apps/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                github.com/settings/apps/new
+              </a>{' '}
+              (use your org's settings if the repos live there) — repository permissions: <span className="text-fg">Contents (read/write) · Pull requests (read/write) · Metadata (read)</span>; no webhook needed.
+              <br />2 · Copy the <span className="text-fg">App ID</span>, then generate a <span className="text-fg">private key</span> and paste both here.
+              <br />3 · Install the app on the repos your agents will work, then pick the installation below.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input size="sm" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder={status?.app.appId ? `App ID ${status.app.appId}` : 'App ID'} className="w-32" />
+              <Textarea rows={2} value={privateKey} onChange={(e) => setPrivateKey(e.target.value)} placeholder={status?.app.keySet ? 'private key set — paste to replace' : '-----BEGIN RSA PRIVATE KEY-----'} className="max-h-20 min-w-64 flex-1 font-mono text-xs" />
+              <Button
+                size="sm"
+                disabled={busy || (!appId.trim() && !privateKey.trim())}
+                onClick={() =>
+                  void save({ mode: 'app', app: { ...(appId.trim() ? { appId: appId.trim() } : {}), ...(privateKey.trim() ? { privateKey: privateKey.trim() } : {}) } }).then(() => {
+                    setAppId('')
+                    setPrivateKey('')
+                  })
+                }
+              >
+                Save
+              </Button>
+            </div>
+            {status?.app.keySet && (
+              <div className="flex items-center gap-2">
+                <label className="text-[11px] uppercase tracking-wide text-muted">Installation</label>
+                <Select size="sm" value={status.app.installationId} onChange={(e) => void save({ mode: 'app', app: { installationId: e.target.value } })}>
+                  <option value="">pick where it's installed…</option>
+                  {installations.map((i) => (
+                    <option key={i.id} value={String(i.id)}>
+                      {i.account} (#{i.id})
+                    </option>
+                  ))}
+                </Select>
+                {installations.length === 0 && <span className="text-xs text-muted">none found yet — install the app on GitHub first</span>}
+              </div>
+            )}
+          </div>
+        )}
+        {error && <div className="text-xs text-[color:var(--theme-danger)]">{error}</div>}
+      </div>
+    </Panel>
   )
 }
