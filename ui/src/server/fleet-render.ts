@@ -513,9 +513,18 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       for (const slug of wb.harnesses) {
         const h = passDefs.find((x) => x.slug === slug)
         if (!h?.mcpConfig || written.has(h.mcpConfig.filename)) continue
-        const render = renderers[h.mcpConfig.format]
-        if (!render) continue
-        await writeFile(join(wbDir, h.mcpConfig.filename), JSON.stringify(render(), null, 2))
+        // 'custom' hands rendering to the harness's own code (app-shipped
+        // only — admin JSON can't carry functions); it owns its env syntax.
+        const body =
+          h.mcpConfig.format === 'custom'
+            ? h.renderMcpConfig?.({
+                agentModel: def.model,
+                servers: uniq.map((n) => ({ name: n, url: gwUrl(n) })),
+                apiKeyEnvVar: 'TALARIA_AGENT_KEY',
+              })
+            : renderers[h.mcpConfig.format]?.()
+        if (body === undefined) continue
+        await writeFile(join(wbDir, h.mcpConfig.filename), JSON.stringify(body, null, 2))
         written.add(h.mcpConfig.filename)
       }
     }

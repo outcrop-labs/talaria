@@ -14,6 +14,7 @@ import { db } from './db/pg'
 import { branchAhead, cloneUrl, createBranch, createPullRequest, effectiveBase, grantedRepos, mergeInto, repoFlow } from './github'
 import { resolveWorkbench } from './workbench'
 import { effortModel, effortModels, harnessModelArg, listHarnessDefs, type Effort } from './workbench-harnesses'
+import { githubStatus } from './github'
 
 export interface WorkbenchJob {
   id: string
@@ -38,6 +39,12 @@ const slugify = (v: string) =>
   v.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
 
 export const WORKBENCH_TOOLS = [
+  {
+    name: 'doctor',
+    description:
+      'Diagnose YOUR workbench end to end: profile, chosen harness (with a probe command to run in your shell), auth, GitHub connection, repo grants, effort→model map, and pass-through config locations. Run this first when anything about your workbench misbehaves — or before your first job.',
+    inputSchema: { type: 'object', properties: {} },
+  },
   {
     name: 'list_repos',
     description: 'The repositories YOUR workbench is granted. Work only these — anything else is out of bounds.',
@@ -123,6 +130,41 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
   const sql = await db()
 
   switch (name) {
+    case 'doctor': {
+      const registry = await listHarnessDefs()
+      const chosenSlug = agent.workbenchHarness && profile.harnesses.includes(agent.workbenchHarness) ? agent.workbenchHarness : profile.harnesses[0]
+      const h = registry.find((x) => x.slug === chosenSlug)
+      const gh = await githubStatus().catch(() => null)
+      const repos = await grantedRepos(agent.id)
+      const checks: string[] = []
+      checks.push(`profile: ${profile.name} (${profile.slug}) — attached`)
+      checks.push(h ? `harness: ${h.label} (${h.slug}, ${h.source}) — chosen` : `harness: "${chosenSlug}" NOT in the registry — pick another or ask an admin`)
+      if (h) checks.push(h.auth === 'gateway' ? 'auth: Talaria gateway (no key needed on your side)' : `auth: native ${(h.auth as { provider: string }).provider} key expected in ${(h.auth as { envVar: string }).envVar}`)
+      checks.push(gh?.configured ? `github: connected${gh.account ? ` as ${gh.account}` : ''}` : 'github: NOT connected — jobs cannot start (an admin connects it in Admin → Org)')
+      checks.push(repos.length ? `repos: ${repos.join(', ')}` : 'repos: none granted — ask an admin to grant repos on your agent settings')
+      return {
+        ok: true,
+        value: {
+          checks,
+          harness: h
+            ? {
+                slug: h.slug,
+                guide: h.guide,
+                probe: h.probe ?? null,
+                mcpTools: h.mcpServe ? 'registered on your config when this harness is chosen' : 'none — drive it via jsonRun',
+                passthroughConfig: h.mcpConfig ? `/opt/workbench-config/${h.mcpConfig.filename}` : null,
+              }
+            : null,
+          efforts: await effortModels(agent.workbenchModels),
+          workspaceRoot: '/opt/data/workbench/jobs/<jobId>',
+          sessionHistory: '/opt/data/workbench/harness (persistent, shared with your department)',
+          next: h?.probe
+            ? `Run the probe in your shell to verify the harness binary: ${h.probe}`
+            : 'No probe declared — try the harness directly on your first job.',
+        },
+      }
+    }
+
     case 'list_repos':
       return {
         ok: true,
