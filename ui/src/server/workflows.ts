@@ -2,13 +2,16 @@
 // agent works it the right way". A workflow is classified ONTO a task by its
 // match rules (labels, boards, title/description keywords); everything that
 // matches rides along with the work delivery (dispatch, heartbeat, get_ticket):
-//   instructions  the flow — how this KIND of work is done here
+//   skills        Hermes skills that ARE the flow — the content lives in the
+//                 skill library the agents already mount (/opt/skills +
+//                 /opt/dept-skills); the workflow only names them
 //   toolkits      declared MCP servers/tool subsets the work expects (granted
 //                 through the MCP registry; declared here so the agent and
-//                 the admin both see what the harness assumes)
-//   env           RESERVED: sandbox/runtime profile for the custom-harness
+//                 the admin both see what the workflow assumes)
+//   env           RESERVED: sandbox/runtime profile for the custom-runtime
 //                 layer (dev containers, design pipelines) — schema now,
-//                 execution later.
+//                 execution later. Profiles will attach to agents/departments
+//                 via chassis overlays; workflows only ROUTE work there.
 import { db } from './db/pg'
 import type { Task } from '@/lib/task-const'
 
@@ -24,13 +27,13 @@ export interface TaskWorkflow {
   description: string
   enabled: boolean
   match: WorkflowMatch
-  instructions: string
+  skills: string[]
   toolkits: Array<{ server: string; tools?: string[] }>
   env: Record<string, unknown>
   position: number
 }
 
-const ROW = `id, name, description, enabled, match, instructions, toolkits, env, position`
+const ROW = `id, name, description, enabled, match, skills, toolkits, env, position`
 
 export async function listWorkflows(): Promise<TaskWorkflow[]> {
   const sql = await db()
@@ -41,14 +44,14 @@ export async function createWorkflow(input: {
   name: string
   description?: string
   match?: WorkflowMatch
-  instructions?: string
+  skills?: string[]
   toolkits?: Array<{ server: string; tools?: string[] }>
   createdBy: string
 }): Promise<TaskWorkflow> {
   const sql = await db()
   const rows = (await sql`
-    insert into task_workflows (name, description, match, instructions, toolkits, created_by, position)
-    values (${input.name.trim()}, ${input.description ?? ''}, ${sql.json((input.match ?? {}) as Record<string, string[]>)}, ${input.instructions ?? ''},
+    insert into task_workflows (name, description, match, skills, toolkits, created_by, position)
+    values (${input.name.trim()}, ${input.description ?? ''}, ${sql.json((input.match ?? {}) as Record<string, string[]>)}, ${sql.json(input.skills ?? [])},
             ${sql.json(input.toolkits ?? [])}, ${input.createdBy},
             coalesce((select max(position) + 1 from task_workflows), 0))
     returning ${sql.unsafe(ROW)}
@@ -63,7 +66,7 @@ export async function updateWorkflow(
     description?: string
     enabled?: boolean
     match?: WorkflowMatch
-    instructions?: string
+    skills?: string[]
     toolkits?: Array<{ server: string; tools?: string[] }>
   },
 ): Promise<void> {
@@ -72,7 +75,7 @@ export async function updateWorkflow(
   if (patch.description !== undefined) await sql`update task_workflows set description = ${patch.description}, updated_at = now() where id = ${id}`
   if (patch.enabled !== undefined) await sql`update task_workflows set enabled = ${patch.enabled}, updated_at = now() where id = ${id}`
   if (patch.match !== undefined) await sql`update task_workflows set match = ${sql.json(patch.match as Record<string, string[]>)}, updated_at = now() where id = ${id}`
-  if (patch.instructions !== undefined) await sql`update task_workflows set instructions = ${patch.instructions}, updated_at = now() where id = ${id}`
+  if (patch.skills !== undefined) await sql`update task_workflows set skills = ${sql.json(patch.skills)}, updated_at = now() where id = ${id}`
   if (patch.toolkits !== undefined) await sql`update task_workflows set toolkits = ${sql.json(patch.toolkits)}, updated_at = now() where id = ${id}`
 }
 
@@ -102,7 +105,7 @@ export function matchWorkflow(
 
 export interface WorkflowDelivery {
   name: string
-  instructions: string
+  skills: string[]
   toolkits: Array<{ server: string; tools?: string[] }>
 }
 
@@ -113,5 +116,5 @@ export async function workflowsForTask(
   const all = await listWorkflows()
   return all
     .filter((h) => matchWorkflow(h, t))
-    .map((h) => ({ name: h.name, instructions: h.instructions, toolkits: h.toolkits }))
+    .map((h) => ({ name: h.name, skills: h.skills, toolkits: h.toolkits }))
 }

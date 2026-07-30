@@ -14,9 +14,28 @@ export interface TaskWorkflow {
   description: string
   enabled: boolean
   match: WorkflowMatch
-  instructions: string
+  skills: string[]
   toolkits: Array<{ server: string; tools?: string[] }>
   position: number
+}
+
+export interface SkillLibraryOwner {
+  owner: string // 'shared' or an agent slug
+  label: string
+  skills: Array<{ name: string; description: string }>
+}
+
+/** The fleet skill library (shared + per-agent) — what workflows bind to.
+ *  Gated like the agents view; the picker is an editor-only surface. */
+export function useSkillLibrary() {
+  return useQuery({
+    queryKey: ['skill-library'],
+    queryFn: async (): Promise<SkillLibraryOwner[]> => {
+      const r = await fetch('/api/skills', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { owners: SkillLibraryOwner[] }).owners
+    },
+  })
 }
 
 export function useWorkflows() {
@@ -46,7 +65,7 @@ export const createWorkflow = (h: { name: string; description?: string }) =>
 
 export const updateWorkflow = (
   id: string,
-  patch: Partial<Pick<TaskWorkflow, 'name' | 'description' | 'enabled' | 'match' | 'instructions' | 'toolkits'>>,
+  patch: Partial<Pick<TaskWorkflow, 'name' | 'description' | 'enabled' | 'match' | 'skills' | 'toolkits'>>,
 ) => send(`/api/workflows/${id}`, 'PUT', patch)
 
 export const deleteWorkflow = (id: string) => send(`/api/workflows/${id}`, 'DELETE')

@@ -10,7 +10,7 @@ import { Chip } from '@/components/ui/chip'
 import { Toggle } from '@/components/ui/checkbox'
 import { InfoTip } from '@/components/ui/info-tip'
 import { useBoards } from '@/lib/boards'
-import { updateWorkflow, type TaskWorkflow } from '@/lib/workflows'
+import { updateWorkflow, useSkillLibrary, type TaskWorkflow } from '@/lib/workflows'
 
 /** Free-entry token list: type, Enter adds, ✕ removes. */
 function TokenInput({ value, onChange, placeholder }: { value: string[]; onChange: (v: string[]) => void; placeholder: string }) {
@@ -48,9 +48,9 @@ function TokenInput({ value, onChange, placeholder }: { value: string[]; onChang
 
 export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: TaskWorkflow; onChanged: () => void; onDelete: () => void }) {
   const { data: boards = [] } = useBoards()
+  const { data: skillOwners = [] } = useSkillLibrary()
   const [name, setName] = useState(workflow.name)
   const [description, setDescription] = useState(workflow.description)
-  const [instructions, setInstructions] = useState(workflow.instructions)
   const [toolkitsText, setToolkitsText] = useState(
     workflow.toolkits.map((t) => (t.tools?.length ? `${t.server}: ${t.tools.join(', ')}` : t.server)).join('\n'),
   )
@@ -127,18 +127,54 @@ export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: Ta
 
       <div className="mb-4">
         <div className="mb-1 flex items-center gap-1.5">
-          <span className="text-[11px] uppercase tracking-wide text-muted">Instructions</span>
-          <InfoTip text="The flow for this kind of work — delivered verbatim with the dispatched ticket. Write it to the agent." />
+          <span className="text-[11px] uppercase tracking-wide text-muted">Skills</span>
+          <InfoTip text="The flow lives in Hermes skills — the same library the agents already mount, edited on the agent view. The workflow only names which ones this kind of work follows; dispatch tells the agent to load them." />
         </div>
-        <Textarea
-          autoGrow
-          rows={6}
-          value={instructions}
-          onChange={(e) => setInstructions(e.target.value)}
-          onBlur={() => instructions !== workflow.instructions && void save({ instructions })}
-          className="max-h-96 font-mono text-xs"
-          placeholder={'e.g. "Development work: reproduce first, write a failing test, keep the diff minimal, link the branch in your outcome report."'}
-        />
+        <div className="space-y-2 rounded-xl border border-line-subtle bg-card/40 px-4 py-3">
+          {skillOwners.map((o) =>
+            o.skills.length ? (
+              <div key={o.owner} className="space-y-1">
+                <span className="text-xs text-muted">{o.label}</span>
+                <div className="flex flex-wrap gap-1">
+                  {o.skills.map((sk) => {
+                    const on = workflow.skills.includes(sk.name)
+                    return (
+                      <Chip
+                        key={`${o.owner}/${sk.name}`}
+                        title={sk.description}
+                        selected={on}
+                        onSelect={() =>
+                          void save({ skills: on ? workflow.skills.filter((x) => x !== sk.name) : [...workflow.skills, sk.name] })
+                        }
+                      >
+                        {sk.name}
+                      </Chip>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : null,
+          )}
+          {(() => {
+            const known = new Set(skillOwners.flatMap((o) => o.skills.map((sk) => sk.name)))
+            const orphans = workflow.skills.filter((sk) => !known.has(sk))
+            return orphans.length ? (
+              <div className="space-y-1">
+                <span className="text-xs text-[color:var(--theme-warning)]">Bound but not in the library</span>
+                <div className="flex flex-wrap gap-1">
+                  {orphans.map((sk) => (
+                    <Chip key={sk} tone="warn" onRemove={() => void save({ skills: workflow.skills.filter((x) => x !== sk) })}>
+                      {sk}
+                    </Chip>
+                  ))}
+                </div>
+              </div>
+            ) : null
+          })()}
+          {skillOwners.every((o) => !o.skills.length) && !workflow.skills.length && (
+            <span className="text-xs text-muted">No skills in the library yet — create them on an agent's manage view.</span>
+          )}
+        </div>
       </div>
 
       <div>

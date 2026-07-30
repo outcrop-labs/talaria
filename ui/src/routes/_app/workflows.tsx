@@ -15,10 +15,12 @@ import { WorkflowDetail } from '@/components/workflows/workflow-detail'
 import { cn } from '@/lib/cn'
 import { createWorkflow, deleteWorkflow, useWorkflows, type TaskWorkflow } from '@/lib/workflows'
 
-// Workflows — how each KIND of work gets done. Match rules (boards / labels /
-// keywords) classify tickets; everything that matches rides with the work
-// when it's dispatched to an agent: the flow instructions plus the toolkits
-// the work expects. Growing area: sandboxes/runtimes land here next.
+// Workflows — which work is which, bound to how it gets done. Match rules
+// (boards / labels / keywords) classify tickets; a match rides with the work
+// when it's dispatched to an agent: the Hermes skills that define the flow
+// plus the toolkits the work expects. The flow content itself lives in the
+// skill library the agents mount. Growing area: the Studio (skill authoring,
+// gap suggestions, runtime profiles) lands here next.
 export const Route = createFileRoute('/_app/workflows')({
   component: WorkflowsPage,
   validateSearch: (search: Record<string, unknown>): { w?: string } => ({
@@ -59,7 +61,7 @@ function WorkflowsPage() {
       <div className="mx-auto max-w-5xl space-y-6">
         <div className="flex items-center gap-1.5">
           <h1 className="mercury-text text-2xl font-semibold">Workflows</h1>
-          <InfoTip text="How each kind of work gets done. Match rules classify tickets; when one is dispatched to an agent, every matching workflow rides along — the flow instructions plus the toolkits the work expects." />
+          <InfoTip text="Which work is which. Match rules classify tickets; when one is dispatched to an agent, every matching workflow tells it which skills to load and follow, and which toolkits the work expects. The flow content itself lives in the skill library." />
         </div>
 
         <div className="grid gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
@@ -109,7 +111,7 @@ function WorkflowsPage() {
               <EmptyState
                 icon="⚙"
                 title="No workflow selected"
-                hint={workflows.length ? 'Pick one on the left, or create a new one.' : 'Create the first one on the left — e.g. "Development" matching your dev board, with the flow and tools that work expects.'}
+                hint={workflows.length ? 'Pick one on the left, or create a new one.' : 'Create the first one on the left — e.g. "Development" matching your dev board, bound to the skills that kind of work follows.'}
               />
             </Panel>
           )}
