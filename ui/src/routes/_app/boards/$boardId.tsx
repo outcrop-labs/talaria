@@ -280,21 +280,26 @@ function BoardPage() {
           </button>
         </div>
         {savedViews.length > 0 && <div className="h-5 w-px bg-line-subtle" />}
-        {savedViews.map((sv) => (
-          <button
-            key={sv.id}
-            onClick={() => applyView(sv)}
-            onContextMenu={(e) => viewTabContextMenu(e, sv)}
-            className={cn(
-              'rounded-md border px-2 py-1 text-xs transition-colors',
-              search.v === sv.id
-                ? 'border-[var(--theme-accent-border)] bg-card text-fg'
-                : 'border-transparent text-muted hover:bg-card hover:text-fg',
-            )}
-          >
-            {sv.name}
-          </button>
-        ))}
+        {savedViews.map((sv) => {
+          // The tab wears its view type: board grid, list, or gantt.
+          const TypeIcon = sv.config.view === 'gantt' ? CalendarRange : sv.config.view === 'list' ? List : LayoutGrid
+          return (
+            <button
+              key={sv.id}
+              onClick={() => applyView(sv)}
+              onContextMenu={(e) => viewTabContextMenu(e, sv)}
+              className={cn(
+                'flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
+                search.v === sv.id
+                  ? 'border-[var(--theme-accent-border)] bg-card text-fg'
+                  : 'border-transparent text-muted hover:bg-card hover:text-fg',
+              )}
+            >
+              <TypeIcon size={12} className={cn('shrink-0', search.v === sv.id ? 'text-accent' : 'opacity-70')} />
+              {sv.name}
+            </button>
+          )
+        })}
         {canEdit && (
           <button
             onClick={() => void saveCurrentAsView()}
