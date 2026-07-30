@@ -5,9 +5,10 @@ import { parseBody, requireUser, actorOf } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
 import { db } from '@/server/db/pg'
 import { getTask, logActivity } from '@/server/tasks'
+import { mergeInto, repoFlow } from '@/server/github'
 
 const JOB_ROW = `id, agent_model as "agentModel", task_id as "taskId", repo, branch, effort, plan, status,
-  pr_url as "prUrl", summary, created_at as "createdAt", updated_at as "updatedAt"`
+  pr_url as "prUrl", summary, merged_testing_at as "mergedTestingAt", created_at as "createdAt", updated_at as "updatedAt"`
 
 // Workbench jobs from the human side. GET ?taskId= → the ticket's jobs (board
 // members — this is how the plan-approval gate and PR links surface on the
@@ -25,13 +26,14 @@ export const Route = createFileRoute('/api/workbench/jobs')({
         if (!task) return json({ error: 'not found' }, { status: 404 })
         if (!(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
         const sql = await db()
-        const jobs = await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where task_id = $1 order by created_at desc`, [taskId])
-        return json({ jobs })
+        const jobs = (await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where task_id = $1 order by created_at desc`, [taskId])) as unknown as Array<{ repo: string }>
+        const withFlow = await Promise.all(jobs.map(async (j) => ({ ...j, testingBranch: (await repoFlow(j.repo)).testingBranch })))
+        return json({ jobs: withFlow })
       },
       PUT: async ({ request }) => {
         const user = await requireUser(request)
         if (user instanceof Response) return user
-        const body = await parseBody(request, z.object({ jobId: z.string().uuid(), action: z.enum(['approve', 'reject']), note: z.string().max(500).optional() }))
+        const body = await parseBody(request, z.object({ jobId: z.string().uuid(), action: z.enum(['approve', 'reject', 'merge_testing']), note: z.string().max(500).optional() }))
         if (body instanceof Response) return body
         const sql = await db()
         const [job] = (await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where id = $1`, [body.jobId])) as unknown as Array<{
@@ -43,10 +45,20 @@ export const Route = createFileRoute('/api/workbench/jobs')({
           status: string
         }>
         if (!job) return json({ error: 'not found' }, { status: 404 })
-        if (job.status !== 'awaiting_approval') return json({ error: `job is ${job.status}` }, { status: 400 })
         const task = job.taskId ? await getTask(job.taskId) : null
         if (!task || !canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
         const actor = actorOf(user)
+        if (body.action === 'merge_testing') {
+          if (job.status !== 'started' && job.status !== 'pr_open') return json({ error: `job is ${job.status}` }, { status: 400 })
+          const flow = await repoFlow(job.repo)
+          if (!flow.testingBranch) return json({ error: 'no testing branch configured for this repo' }, { status: 400 })
+          const r = await mergeInto(job.repo, flow.testingBranch, job.branch).catch((e: Error) => ({ merged: false, reason: e.message }))
+          if (!r.merged) return json({ error: r.reason ?? 'merge failed' }, { status: 400 })
+          await sql`update workbench_jobs set merged_testing_at = now(), updated_at = now() where id = ${job.id}`
+          await logActivity(task.id, actor, 'workbench', `merged ${job.branch} into ${flow.testingBranch} for testing`)
+          return json({ ok: true })
+        }
+        if (job.status !== 'awaiting_approval') return json({ error: `job is ${job.status}` }, { status: 400 })
         if (body.action === 'approve') {
           await sql`update workbench_jobs set status = 'started', updated_at = now() where id = ${job.id}`
           await logActivity(task.id, actor, 'workbench', `approved the workbench plan — ${job.agentModel} may build (${job.repo} @ ${job.branch})`)

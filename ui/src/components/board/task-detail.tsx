@@ -1020,6 +1020,8 @@ interface WbJob {
   plan: string
   status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned'
   prUrl: string | null
+  testingBranch: string | null
+  mergedTestingAt: string | null
 }
 
 /** Workbench jobs on this ticket — the plan-approval gate and PR links live
@@ -1035,7 +1037,7 @@ function WorkbenchJobsStrip({ taskId, canEdit }: { taskId: string; canEdit: bool
     },
     refetchInterval: 30_000,
   })
-  const act = async (jobId: string, action: 'approve' | 'reject') => {
+  const act = async (jobId: string, action: 'approve' | 'reject' | 'merge_testing') => {
     await fetch('/api/workbench/jobs', {
       method: 'PUT',
       credentials: 'same-origin',
@@ -1072,6 +1074,15 @@ function WorkbenchJobsStrip({ taskId, canEdit }: { taskId: string; canEdit: bool
                     Reject
                   </Button>
                 </>
+              )}
+              {j.testingBranch && (j.status === 'started' || j.status === 'pr_open') && canEdit && (
+                j.mergedTestingAt ? (
+                  <span className="text-xs text-muted">on {j.testingBranch}</span>
+                ) : (
+                  <Button size="sm" variant="outline" onClick={() => void act(j.id, 'merge_testing')}>
+                    Merge to {j.testingBranch}
+                  </Button>
+                )
               )}
               {j.prUrl && (
                 <a href={j.prUrl} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">

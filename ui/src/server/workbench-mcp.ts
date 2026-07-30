@@ -11,7 +11,7 @@
 // the workbench token is the only credential in the sandbox, and every
 // transition lands in task_activity.
 import { db } from './db/pg'
-import { branchAhead, cloneUrl, createBranch, createPullRequest, grantedRepos } from './github'
+import { branchAhead, cloneUrl, createBranch, createPullRequest, effectiveBase, grantedRepos, mergeInto, repoFlow } from './github'
 import { resolveWorkbench } from './workbench'
 import { effortModel, effortModels, harness, type Effort } from './workbench-harnesses'
 
@@ -62,6 +62,12 @@ export const WORKBENCH_TOOLS = [
     name: 'job_status',
     description: 'Your workbench jobs (optionally one by id): branch, status, PR link.',
     inputSchema: { type: 'object', properties: { jobId: { type: 'string' } } },
+  },
+  {
+    name: 'merge_to_testing',
+    description:
+      "Merge a job's branch into the repo's TESTING branch for integration testing (only when the repo has one configured). The PR to the base branch stays open and unmerged — testing is a sideline, never the way work ships.",
+    inputSchema: { type: 'object', properties: { jobId: { type: 'string' } }, required: ['jobId'] },
   },
   {
     name: 'finish_job',
@@ -210,6 +216,21 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       return { ok: true, value: { jobs } }
     }
 
+    case 'merge_to_testing': {
+      const jobId = String(args.jobId ?? '')
+      const rows = (await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where id = $1 and agent_id = $2`, [jobId, agent.id])) as unknown as WorkbenchJob[]
+      const job = rows[0]
+      if (!job) return { ok: false, error: 'unknown job' }
+      if (job.status !== 'started' && job.status !== 'pr_open') return { ok: false, error: `job is ${job.status}` }
+      const flow = await repoFlow(job.repo)
+      if (!flow.testingBranch) return { ok: false, error: 'this repo has no testing branch configured — an admin can set one on the GitHub panel' }
+      const r = await mergeInto(job.repo, flow.testingBranch, job.branch)
+      if (!r.merged) return { ok: false, error: r.reason ?? 'merge failed' }
+      await sql`update workbench_jobs set merged_testing_at = now(), updated_at = now() where id = ${job.id}`
+      await logTicket(job.taskId, agent.model, `workbench: merged ${job.branch} into ${flow.testingBranch} for testing${r.reason ? ` (${r.reason})` : ''}`)
+      return { ok: true, value: { merged: true, testingBranch: flow.testingBranch, note: 'Testing merge only — the PR still ships through review.' } }
+    }
+
     case 'finish_job': {
       const jobId = String(args.jobId ?? '')
       const rows = (await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where id = $1 and agent_id = $2`, [jobId, agent.id])) as unknown as WorkbenchJob[]
@@ -223,8 +244,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
         return { ok: true, value: { status: 'abandoned' } }
       }
       const summary = String(args.summary ?? '').slice(0, 20_000)
-      const { defaultBranch } = await import('./github')
-      const base = await defaultBranch(job.repo)
+      const base = await effectiveBase(job.repo)
       const ahead = await branchAhead(job.repo, base, job.branch)
       if (ahead === 0) return { ok: false, error: 'the branch has no commits yet — push your work first (or finish with abandon:true)' }
       let ticketLine = ''

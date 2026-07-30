@@ -1775,7 +1775,87 @@ function GithubPanel() {
           </div>
         )}
         {error && <div className="text-xs text-[color:var(--theme-danger)]">{error}</div>}
+        {status?.configured && <RepoFlowSection />}
       </div>
     </Panel>
+  )
+}
+
+/** Per-repo git flow: which branch PRs target, and the optional testing
+ *  branch features merge into for integration testing. */
+function RepoFlowSection() {
+  const qc = useQueryClient()
+  interface FlowData {
+    flows: Array<{ repo: string; baseBranch: string | null; testingBranch: string | null }>
+    repos: string[]
+  }
+  const { data } = useQuery({
+    queryKey: ['workbench-flow'],
+    queryFn: async (): Promise<FlowData | null> => {
+      const r = await fetch('/api/workbench/flow', { credentials: 'same-origin' })
+      if (!r.ok) return null
+      return (await r.json()) as FlowData
+    },
+  })
+  const [repo, setRepo] = useState('')
+  const [base, setBase] = useState('')
+  const [testing, setTesting] = useState('')
+
+  const save = async (body: { repo: string; baseBranch?: string | null; testingBranch?: string | null }) => {
+    await fetch('/api/workbench/flow', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    await qc.invalidateQueries({ queryKey: ['workbench-flow'] })
+  }
+  if (!data) return null
+  const configured = new Set(data.flows.map((f) => f.repo))
+  return (
+    <div className="space-y-2 border-t border-line-subtle pt-3">
+      <div className="text-[11px] uppercase tracking-wide text-muted">Repository flow</div>
+      <p className="text-xs text-muted">
+        Where workbench PRs land per repo (blank = the repo's default branch), and an optional testing branch features can be merged into
+        before the PR ships. Unlisted repos use their defaults.
+      </p>
+      {data.flows.map((f) => (
+        <div key={f.repo} className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="w-56 truncate text-fg">{f.repo}</span>
+          <Input
+            size="sm"
+            defaultValue={f.baseBranch ?? ''}
+            placeholder="PRs → default"
+            className="w-36"
+            onBlur={(e) => e.target.value.trim() !== (f.baseBranch ?? '') && void save({ repo: f.repo, baseBranch: e.target.value.trim() || null, testingBranch: f.testingBranch })}
+          />
+          <Input
+            size="sm"
+            defaultValue={f.testingBranch ?? ''}
+            placeholder="testing branch (off)"
+            className="w-40"
+            onBlur={(e) => e.target.value.trim() !== (f.testingBranch ?? '') && void save({ repo: f.repo, baseBranch: f.baseBranch, testingBranch: e.target.value.trim() || null })}
+          />
+        </div>
+      ))}
+      <div className="flex flex-wrap items-center gap-2">
+        <Select size="sm" value={repo} onChange={(e) => setRepo(e.target.value)} className="w-56">
+          <option value="">configure a repo…</option>
+          {data.repos.filter((r) => !configured.has(r)).map((r) => (
+            <option key={r} value={r}>{r}</option>
+          ))}
+        </Select>
+        <Input size="sm" value={base} onChange={(e) => setBase(e.target.value)} placeholder="PR base (blank = default)" className="w-44" />
+        <Input size="sm" value={testing} onChange={(e) => setTesting(e.target.value)} placeholder="testing branch" className="w-40" />
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!repo}
+          onClick={() => void save({ repo, baseBranch: base.trim() || null, testingBranch: testing.trim() || null }).then(() => { setRepo(''); setBase(''); setTesting('') })}
+        >
+          Add
+        </Button>
+      </div>
+    </div>
   )
 }

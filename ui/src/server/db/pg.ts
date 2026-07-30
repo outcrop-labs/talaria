@@ -1021,6 +1021,17 @@ const MIGRATIONS: string[] = [
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now()
   )`,
+  // Per-repo git flow: which branch PRs target (null = the repo's default)
+  // and an optional TESTING branch features can be merged into for
+  // integration testing before the PR merges. Org-level — a repo's flow is
+  // the repo's flow, not per agent.
+  `create table if not exists workbench_repo_flow (
+    repo text primary key,
+    base_branch text,
+    testing_branch text,
+    updated_at timestamptz not null default now()
+  )`,
+  `alter table workbench_jobs add column if not exists merged_testing_at timestamptz`,
   // Persistent skill summaries — one generated line per skill, keyed to a
   // hash of its SKILL.md so it only regenerates when the content changes.
   `create table if not exists skill_summaries (

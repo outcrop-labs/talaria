@@ -147,6 +147,76 @@ export async function listReachableRepos(): Promise<string[]> {
   return ((await res.json()) as Array<{ full_name: string }>).map((r) => r.full_name)
 }
 
+// ── Per-repo git flow (PR target + optional testing branch) ──────────────────
+
+export interface RepoFlow {
+  repo: string
+  /** PR/base branch; null = the repo's default branch. */
+  baseBranch: string | null
+  /** Integration branch features merge into for testing; null = disabled. */
+  testingBranch: string | null
+}
+
+export async function repoFlow(repo: string): Promise<RepoFlow> {
+  const sql = await db()
+  const rows = (await sql`
+    select repo, base_branch as "baseBranch", testing_branch as "testingBranch"
+    from workbench_repo_flow where repo = ${repo}
+  `) as unknown as RepoFlow[]
+  return rows[0] ?? { repo, baseBranch: null, testingBranch: null }
+}
+
+export async function listRepoFlows(): Promise<RepoFlow[]> {
+  const sql = await db()
+  return (await sql`
+    select repo, base_branch as "baseBranch", testing_branch as "testingBranch"
+    from workbench_repo_flow order by repo
+  `) as unknown as RepoFlow[]
+}
+
+export async function setRepoFlow(repo: string, patch: { baseBranch?: string | null; testingBranch?: string | null }): Promise<void> {
+  const sql = await db()
+  const cur = await repoFlow(repo)
+  await sql`
+    insert into workbench_repo_flow (repo, base_branch, testing_branch)
+    values (${repo}, ${patch.baseBranch !== undefined ? patch.baseBranch : cur.baseBranch}, ${patch.testingBranch !== undefined ? patch.testingBranch : cur.testingBranch})
+    on conflict (repo) do update set
+      base_branch = excluded.base_branch, testing_branch = excluded.testing_branch, updated_at = now()
+  `
+}
+
+/** The branch jobs cut from and PRs target — the flow override, else default. */
+export async function effectiveBase(repo: string): Promise<string> {
+  const flow = await repoFlow(repo)
+  return flow.baseBranch ?? (await defaultBranch(repo))
+}
+
+/** Merge head into base via GitHub's merge API (e.g. feature → testing).
+ *  Ensures the target exists (created from the effective base if missing). */
+export async function mergeInto(repo: string, targetBranch: string, head: string): Promise<{ merged: boolean; reason?: string }> {
+  const token = await githubToken()
+  if (!token) throw new Error('GitHub is not connected')
+  const existing = await gh(`/repos/${repo}/git/ref/heads/${encodeURIComponent(targetBranch)}`, token)
+  if (!existing.ok) {
+    const base = await effectiveBase(repo)
+    const headRef = await ghJson<{ object: { sha: string } }>(`/repos/${repo}/git/ref/heads/${encodeURIComponent(base)}`, token)
+    await ghJson(`/repos/${repo}/git/refs`, token, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ref: `refs/heads/${targetBranch}`, sha: headRef.object.sha }),
+    })
+  }
+  const res = await gh(`/repos/${repo}/merges`, token, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ base: targetBranch, head, commit_message: `Merge ${head} into ${targetBranch} (Talaria workbench, for testing)` }),
+  })
+  if (res.status === 201) return { merged: true }
+  if (res.status === 204) return { merged: true, reason: 'already up to date' }
+  if (res.status === 409) return { merged: false, reason: 'merge conflict — resolve on the branch first' }
+  return { merged: false, reason: `GitHub merge failed (${res.status})` }
+}
+
 // ── Per-agent repo grants — explicit, like MCP assignment ────────────────────
 
 export async function grantedRepos(agentId: string): Promise<string[]> {
@@ -179,10 +249,10 @@ export async function defaultBranch(repo: string): Promise<string> {
 
 /** Cut a branch from the default branch's head. Idempotent-ish: an existing
  *  branch of the same name is left alone (the job resumes on it). */
-export async function createBranch(repo: string, branch: string): Promise<{ base: string; created: boolean }> {
+export async function createBranch(repo: string, branch: string, baseOverride?: string): Promise<{ base: string; created: boolean }> {
   const token = await githubToken()
   if (!token) throw new Error('GitHub is not connected')
-  const base = await defaultBranch(repo)
+  const base = baseOverride ?? (await effectiveBase(repo))
   const existing = await gh(`/repos/${repo}/git/ref/heads/${encodeURIComponent(branch)}`, token)
   if (existing.ok) return { base, created: false }
   const head = await ghJson<{ object: { sha: string } }>(`/repos/${repo}/git/ref/heads/${encodeURIComponent(base)}`, token)
