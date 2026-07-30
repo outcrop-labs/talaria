@@ -53,8 +53,8 @@ const BUILTINS: HarnessDefinition[] = [
     slug: 'oh-my-pi',
     label: 'Oh My Pi',
     auth: 'gateway',
-    invoke: 'omp run --model <model> "<task>"',
-    guide: 'Ask it for structured output where supported; verify its work yourself with git diff and the test suite — you own the result, not the harness.',
+    invoke: 'npx -y @oh-my-pi/pi-coding-agent "<task>" --model <model>',
+    guide: 'Oh My Pi (omp) is a full terminal coding agent — hash-anchored edits, LSP, subagents, a browser. It inherits MCP/rules config from .claude/.codex-style dirs in the workspace, so your pass-through config reaches it via the repo. No first-party MCP server mode yet: drive it one-shot per task and verify its work yourself with git diff and tests.',
   },
   {
     slug: 'codex',
