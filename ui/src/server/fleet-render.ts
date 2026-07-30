@@ -443,6 +443,8 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       env.CLAUDE_CONFIG_DIR = '/opt/data/workbench/harness/claude'
       env.CODEX_HOME = '/opt/data/workbench/harness/codex'
       env.XDG_DATA_HOME = '/opt/data/workbench/harness/xdg'
+      // Playwright browsers persist too — UI testing is first-class dev work.
+      env.PLAYWRIGHT_BROWSERS_PATH = '/opt/data/workbench/harness/playwright'
       const agentLabel = `${def.displayName} (Talaria agent)`
       const agentEmail = `${def.model}@agents.talaria.local`
       env.GIT_AUTHOR_NAME = agentLabel
