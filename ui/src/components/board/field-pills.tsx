@@ -4,13 +4,14 @@
 // components serves kanban cards, list rows, and group headers, so every
 // surface manipulates tickets identically. All pickers stop propagation —
 // the row/card click still opens the ticket.
-import { CalendarDays, Flag, Timer, UserRound } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { CalendarDays, Flag, Tag, Timer, UserRound } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { DropdownMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { FieldPill } from '@/components/ui/field-pill'
 import { cn } from '@/lib/cn'
 import { assigneeInfo, userAssignee } from '@/lib/assignees'
-import type { BoardMember } from '@/lib/boards'
+import { createBoardLabel, type BoardLabel, type BoardMember, type LabelColor } from '@/lib/boards'
 import {
   PRIORITIES,
   PRIORITY_COLOR,
@@ -27,6 +28,39 @@ export type TicketPatch = {
   dueDate?: string | null
   estimatedHours?: number | null
   assignees?: string[]
+  tags?: string[]
+}
+
+/** The label palette — Mercury-toned, keyed by the stored color name. */
+export const LABEL_CSS: Record<LabelColor, string> = {
+  slate: 'var(--theme-muted)',
+  bronze: 'var(--theme-accent)',
+  green: 'var(--theme-success)',
+  amber: 'var(--theme-warning)',
+  red: 'var(--theme-danger)',
+  blue: '#6b9bd1',
+  purple: '#a78bda',
+  teal: '#5fb8ad',
+}
+
+export const labelColor = (name: string, labels: BoardLabel[]): string =>
+  LABEL_CSS[labels.find((l) => l.name === name)?.color ?? 'slate']
+
+/** The one tinted label chip — used on cards, rows, facets, and settings. */
+export function LabelChip({ name, labels, className }: { name: string; labels: BoardLabel[]; className?: string }) {
+  const c = labelColor(name, labels)
+  return (
+    <span
+      className={cn('max-w-28 truncate rounded-full border px-1.5 py-0.5 text-[10px]', className)}
+      style={{
+        color: c,
+        borderColor: `color-mix(in srgb, ${c} 45%, transparent)`,
+        background: `color-mix(in srgb, ${c} 10%, transparent)`,
+      }}
+    >
+      {name}
+    </span>
+  )
 }
 
 export interface PillCtx {
@@ -35,6 +69,9 @@ export interface PillCtx {
   agents: Array<{ id: string; label: string }>
   members: BoardMember[]
   meId?: string | null
+  /** The board's label registry — powers LabelsPill + tinted chips. */
+  labels?: BoardLabel[]
+  boardId?: string
 }
 
 export const STATUS_COLOR: Record<string, string> = {
@@ -280,6 +317,79 @@ export function AssigneesPill({ t, ctx, className, ghost }: { t: Task; ctx: Pill
           onSelect: () => toggle(a.id),
         })),
       ]}
+    />
+  )
+}
+
+export function LabelsPill({ t, ctx, className, ghost }: { t: Task; ctx: PillCtx; className?: string; ghost?: boolean }) {
+  const qc = useQueryClient()
+  const labels = ctx.labels ?? []
+  const shown = t.tags.slice(0, 2)
+  if (!ctx.canEdit) {
+    if (t.tags.length === 0) return null
+    return (
+      <span className={cn('inline-flex items-center gap-1', className)}>
+        {shown.map((n) => (
+          <LabelChip key={n} name={n} labels={labels} />
+        ))}
+        {t.tags.length > 2 && <span className="text-[10px] text-muted">+{t.tags.length - 2}</span>}
+      </span>
+    )
+  }
+  const toggle = (name: string) =>
+    ctx.onPatch({ tags: t.tags.includes(name) ? t.tags.filter((x) => x !== name) : [...t.tags, name] })
+  return (
+    <DropdownMenu
+      align="left"
+      className={className}
+      trigger={(open) => (
+        <FieldPill
+          active={open}
+          empty={t.tags.length === 0}
+          icon={t.tags.length === 0 ? <Tag size={11} /> : undefined}
+          title="Labels"
+          className={cn(ghost && t.tags.length === 0 && !open && 'opacity-0 transition-opacity group-hover:opacity-100')}
+        >
+          {t.tags.length === 0 ? (
+            'Label'
+          ) : (
+            <span className="flex items-center gap-1">
+              {shown.map((n) => (
+                <LabelChip key={n} name={n} labels={labels} />
+              ))}
+              {t.tags.length > 2 && <span className="text-[10px] text-muted">+{t.tags.length - 2}</span>}
+            </span>
+          )}
+        </FieldPill>
+      )}
+      items={() =>
+        labels.map((l) => ({
+          label: l.name,
+          icon: <span className="h-2 w-2 rounded-full" style={{ background: LABEL_CSS[l.color] }} />,
+          checked: t.tags.includes(l.name),
+          keepOpen: true,
+          onSelect: () => toggle(l.name),
+        }))
+      }
+      footer={(close) => (
+        <input
+          placeholder="New label — Enter creates"
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return
+            const name = (e.target as HTMLInputElement).value.trim()
+            if (!name) return
+            void (async () => {
+              if (ctx.boardId) {
+                await createBoardLabel(ctx.boardId, name)
+                void qc.invalidateQueries({ queryKey: ['board-labels', ctx.boardId] })
+              }
+              ctx.onPatch({ tags: t.tags.includes(name) ? t.tags : [...t.tags, name] })
+              close()
+            })()
+          }}
+          className="w-full bg-transparent text-xs text-fg placeholder:text-muted focus:outline-none"
+        />
+      )}
     />
   )
 }

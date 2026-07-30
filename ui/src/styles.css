@@ -384,3 +384,22 @@ body {
   0% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent) 45%, transparent); }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
+
+/* ── Text selection: chrome is not selectable, content is. ──────────────────
+   The app default is user-select none — dragging cards, clicking pills, and
+   sweeping the cursor across chrome must never paint blue. Selection comes
+   back on purpose-built surfaces: form fields, editors, rendered content
+   (Markdown/tiptap), code, and anything opting in with .select-text. */
+body { -webkit-user-select: none; user-select: none; }
+input,
+textarea,
+[contenteditable='true'],
+[contenteditable=''],
+pre, pre *,
+code,
+kbd,
+.tiptap, .tiptap *,
+.select-text, .select-text * {
+  -webkit-user-select: text;
+  user-select: text;
+}

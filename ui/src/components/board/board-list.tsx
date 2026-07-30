@@ -3,10 +3,10 @@ import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { SlidersHorizontal, ChevronUp, ChevronDown, GripVertical } from 'lucide-react'
 import { useAgents } from '@/lib/agents'
-import { archiveTask, updateTask, type BoardMember } from '@/lib/boards'
+import { archiveTask, updateTask, useBoardLabels, type BoardMember } from '@/lib/boards'
 import { assigneeInfo } from '@/lib/assignees'
 import { ticketMenuEntries } from '@/components/board/ticket-menu'
-import { AssigneesPill, DuePill, EstimatePill, PriorityPill, StatusPill, STATUS_COLOR } from '@/components/board/field-pills'
+import { AssigneesPill, DuePill, EstimatePill, LabelsPill, PriorityPill, StatusPill, LABEL_CSS, STATUS_COLOR } from '@/components/board/field-pills'
 import { FieldPill } from '@/components/ui/field-pill'
 import { useSession } from '@/lib/session'
 import { userAssignee } from '@/lib/assignees'
@@ -139,6 +139,7 @@ export function BoardList({
   const { openMenu, menu } = useContextMenu()
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   const { data: me } = useSession()
+  const { data: boardLabels = [] } = useBoardLabels(boardId)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', boardId] })
   const patch = async (taskId: string, p: Parameters<typeof updateTask>[1]) => {
@@ -284,10 +285,15 @@ export function BoardList({
       for (const k of keys) byTag.set(k, [...(byTag.get(k) ?? []), t])
     }
     return [...byTag.entries()]
-      .map(([k, ts]) => ({ key: k, label: k === '__none' ? 'No label' : k, tasks: ts }))
+      .map(([k, ts]) => ({
+        key: k,
+        label: k === '__none' ? 'No label' : k,
+        dot: k === '__none' ? undefined : LABEL_CSS[boardLabels.find((l) => l.name === k)?.color ?? 'slate'],
+        tasks: ts,
+      }))
       .sort((a, b) => (a.key === '__none' ? 1 : b.key === '__none' ? -1 : a.label.localeCompare(b.label)))
       .map((g) => ({ ...g, hours: sum(g.tasks) }))
-  }, [sorted, groupBy, fleet, members])
+  }, [sorted, groupBy, fleet, members, boardLabels])
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const toggleGroup = (k: string) =>
@@ -332,6 +338,8 @@ export function BoardList({
     agents: fleet?.agents ?? [],
     members,
     meId: me?.id,
+    labels: boardLabels,
+    boardId,
   })
 
   const cell = (t: Task, key: ColumnKey) => {
@@ -358,7 +366,7 @@ export function BoardList({
       case 'time':
         return <span className="text-muted">{fmtTime(t.timeSpentSeconds)}</span>
       case 'labels':
-        return <span className="text-muted">{t.tags.length ? t.tags.join(', ') : '—'}</span>
+        return <LabelsPill t={t} ctx={pctx(t)} />
       case 'updated':
         return <span className="text-muted">{relativeTime(t.updatedAt)}</span>
       case 'created':

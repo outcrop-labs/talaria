@@ -6,6 +6,7 @@ import { db } from './db/pg'
 import { publishBoard } from './realtime'
 import { taskUsage, type TaskUsage } from './usage'
 import { listJudgeReviews, type JudgeReview } from './judge'
+import { ensureLabels } from './labels'
 import type { Effort, Priority, QualityReview, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
 
 async function taskBoardId(id: string): Promise<string | null> {
@@ -140,6 +141,7 @@ export async function createTask(input: {
   const assignees = input.assignees ?? []
   const status = assignees.length > 0 ? 'assigned' : 'inbox'
   if (input.parentId) await assertValidParent(null, input.parentId, input.boardId)
+  if (input.tags?.length) await ensureLabels(input.boardId, input.tags)
   const id = await sql.begin(async (tx) => {
     const seq = await tx`update boards set ticket_seq = ticket_seq + 1, updated_at = now() where id = ${input.boardId} returning ticket_seq`
     const ticketNo = (seq[0] as { ticket_seq: number }).ticket_seq
@@ -199,6 +201,7 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
   const assignees = patch.assignees ?? cur.assignees
   const attachments = patch.attachments ?? cur.attachments
   if (patch.parentId) await assertValidParent(id, patch.parentId, cur.boardId)
+  if (patch.tags?.length) await ensureLabels(cur.boardId, patch.tags)
   const next = {
     title: patch.title ?? cur.title,
     description: pick(patch.description, cur.description),

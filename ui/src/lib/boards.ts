@@ -129,6 +129,44 @@ export interface BoardView {
   updatedAt: string
 }
 
+export type LabelColor = 'slate' | 'bronze' | 'green' | 'amber' | 'red' | 'blue' | 'purple' | 'teal'
+export interface BoardLabel {
+  id: string
+  boardId: string
+  name: string
+  color: LabelColor
+  position: number
+}
+
+/** The board's label registry (first-class, colored, manageable). */
+export function useBoardLabels(boardId: string | null) {
+  return useQuery({
+    queryKey: ['board-labels', boardId],
+    enabled: !!boardId,
+    queryFn: async (): Promise<BoardLabel[]> => {
+      const r = await fetch(`/api/boards/${boardId}/labels`, { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return (await r.json()).labels
+    },
+  })
+}
+export const createBoardLabel = (boardId: string, name: string, color?: LabelColor) =>
+  post(`/api/boards/${boardId}/labels`, { name, color }).then(j)
+export const updateBoardLabel = (boardId: string, labelId: string, patch: { name?: string; color?: LabelColor }) =>
+  fetch(`/api/boards/${boardId}/labels`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ labelId, ...patch }),
+  }).then(j)
+export const deleteBoardLabel = (boardId: string, labelId: string) =>
+  fetch(`/api/boards/${boardId}/labels`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ labelId }),
+  }).then(j)
+
 /** Saved views: named filter/layout presets shared with the board. */
 export function useBoardViews(boardId: string | null) {
   return useQuery({

@@ -53,8 +53,10 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
       rows.push({ task: c, ...spanOf(c), child: false })
     }
     const today = dayFloor(Date.now())
-    const min = Math.min(today, ...rows.map((r) => r.start)) - 3 * DAY
-    const max = Math.max(today, ...rows.map((r) => r.end)) + 10 * DAY
+    // Never a peephole: at least a week back and two months forward, growing
+    // as scheduled work extends beyond that.
+    const min = Math.min(today - 7 * DAY, ...rows.map((r) => r.start - 3 * DAY))
+    const max = Math.max(today + 60 * DAY, ...rows.map((r) => r.end + 10 * DAY))
     return { spans: rows, unscheduled, rangeStart: min, days: Math.round((max - min) / DAY) + 1 }
   }, [tasks])
 

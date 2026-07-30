@@ -22,6 +22,7 @@ import {
   useBoardAgents,
   useBoardMembers,
   useBoardViews,
+  useBoardLabels,
   createBoardView,
   updateBoardView,
   deleteBoardView,
@@ -108,6 +109,7 @@ function BoardPage() {
   const { data: fleet, isLoading: fleetLoading } = useAgents()
   const { data: boardCfg, isLoading: cfgLoading } = useBoardAgents(board ? boardId : null)
   const { data: members = [] } = useBoardMembers(board ? boardId : null)
+  const { data: registryLabels = [] } = useBoardLabels(board ? boardId : null)
   // Only agents allowed on this board are assignable/filterable here.
   const boardAgents = boardCfg?.allowAll
     ? fleet?.agents ?? []
@@ -201,8 +203,8 @@ function BoardPage() {
       },
     ])
 
-  // Labels present on this board (for the filter facet).
-  const boardLabels = useMemo(() => [...new Set(allTasks.flatMap((t) => t.tags))].sort(), [allTasks])
+  // The label registry powers the facet (colored); names still filter tags.
+  const boardLabels = registryLabels
 
   const tasks = useMemo(() => {
     const query = q.trim().toLowerCase()

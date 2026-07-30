@@ -27,6 +27,7 @@ import {
   unwatchTask,
   updateTask,
   useBoardAgents,
+  useBoardLabels,
   useBoardMembers,
   useBoardTasks,
   useTask,
@@ -75,6 +76,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
   // @mention board members in comments + description — the people the server
   // notifies (tasks comment/description paths). Tokens mirror the server's.
   const { data: boardMembers = [] } = useBoardMembers(board.id)
+  const { data: boardLabels = [] } = useBoardLabels(board.id)
   const mentionables = boardMembers
     .map((m) => ({ insert: userMentionInsert(m), label: m.name ?? m.email ?? m.userId, sub: m.email ?? undefined }))
     .filter((m) => m.insert)
@@ -474,7 +476,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                 <Prop label="Labels">
                   <LabelPicker
                     value={t.tags}
-                    options={boardTasks.flatMap((bt) => bt.tags)}
+                    options={boardLabels.map((l) => l.name)}
                     onChange={(next) => save({ tags: next })}
                     disabled={!canEdit}
                     size="sm"

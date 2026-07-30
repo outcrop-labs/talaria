@@ -943,6 +943,21 @@ const MIGRATIONS: string[] = [
   `create index if not exists tasks_parent_idx on tasks(parent_id)`,
   // Gantt scheduling: optional start (bars run start → due).
   `alter table tasks add column if not exists start_date timestamptz`,
+  // First-class board labels: named + colored, scoped to a board. Task.tags
+  // stays a string array of label NAMES (existing data keeps working); the
+  // registry makes them colorable and manageable. Backfilled from live tags.
+  `create table if not exists board_labels (
+    id uuid primary key default gen_random_uuid(),
+    board_id uuid not null references boards(id) on delete cascade,
+    name text not null,
+    color text not null default 'slate',
+    position int not null default 0,
+    created_at timestamptz not null default now(),
+    unique (board_id, name)
+  )`,
+  `insert into board_labels (board_id, name)
+    select distinct t.board_id, e.name from tasks t, jsonb_array_elements_text(t.tags) as e(name)
+    on conflict (board_id, name) do nothing`,
   // Saved board views: named filter/layout presets shared with the board.
   `create table if not exists board_views (
     id uuid primary key default gen_random_uuid(),

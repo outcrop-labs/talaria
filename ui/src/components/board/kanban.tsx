@@ -5,10 +5,10 @@ import { ticketMenuEntries } from '@/components/board/ticket-menu'
 import { Input } from '@/components/ui/input'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { useContextMenu } from '@/components/ui/context-menu'
-import { AssigneesPill, DuePill, EstimatePill, type PillCtx } from '@/components/board/field-pills'
+import { AssigneesPill, DuePill, EstimatePill, LabelsPill, type PillCtx } from '@/components/board/field-pills'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
-import { archiveTask, createTask, updateTask, type Board, type BoardMember } from '@/lib/boards'
+import { archiveTask, createTask, updateTask, useBoardLabels, type Board, type BoardMember } from '@/lib/boards'
 import { plainText } from '@/lib/plain-text'
 import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task, type TaskStatus } from '@/lib/task-const'
 import { useSession } from '@/lib/session'
@@ -41,6 +41,7 @@ export function Kanban({
   const qc = useQueryClient()
   const { data: fleet } = useAgents()
   const { data: me } = useSession()
+  const { data: boardLabels = [] } = useBoardLabels(board.id)
   const agents = fleet?.agents ?? []
   const canEdit = board.role === 'owner' || board.role === 'editor'
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
@@ -128,7 +129,7 @@ export function Kanban({
                 <Card
                   key={t.id}
                   task={t}
-                  pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id }}
+                  pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, boardId: board.id }}
                   subtasks={childrenOf.get(t.id) ?? []}
                   parentRef={parentRef(t)}
                   draggable={canEdit}
@@ -226,6 +227,7 @@ function Card({
           <AssigneesPill t={task} ctx={pillCtx} ghost />
           <DuePill t={task} ctx={pillCtx} ghost />
           <EstimatePill t={task} ctx={pillCtx} ghost />
+          <LabelsPill t={task} ctx={pillCtx} ghost />
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
             {subtasks.length > 0 && (
               <span
@@ -240,12 +242,6 @@ function Card({
                 <MessageSquare size={11} /> {task.commentCount}
               </span>
             )}
-            {task.tags.slice(0, 1).map((tag) => (
-              <span key={tag} className="max-w-24 truncate rounded-full border border-line-subtle px-1.5 py-0.5 text-[10px] text-muted">
-                {tag}
-              </span>
-            ))}
-            {task.tags.length > 1 && <span className="text-[10px] text-muted">+{task.tags.length - 1}</span>}
           </span>
         </div>
       </div>

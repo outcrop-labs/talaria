@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
+import { Trash2 } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { DangerLink } from '@/components/ui/chip'
+import { DropdownMenu } from '@/components/ui/context-menu'
+import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Avatar } from '@/components/ui/avatar'
@@ -23,10 +26,16 @@ import {
   unshareBoard,
   useBoardAgents,
   useBoardMembers,
+  useBoardLabels,
+  createBoardLabel,
+  updateBoardLabel,
+  deleteBoardLabel,
   type Board,
+  type LabelColor,
 } from '@/lib/boards'
+import { LABEL_CSS } from '@/components/board/field-pills'
 
-type Tab = 'general' | 'people' | 'agents'
+type Tab = 'general' | 'labels' | 'people' | 'agents'
 
 // One place for everything about a board: rename, sharing, agent policy, and the
 // danger zone (archive / delete). Keeps the board header uncluttered.
@@ -49,7 +58,7 @@ export function BoardSettingsModal({
   return (
     <Modal open={open} onClose={onClose} title="Board settings" width="max-w-xl">
       <div className="mb-4 flex gap-1 rounded-lg border border-line p-0.5">
-        {(['general', 'people', 'agents'] as const).map((t) => (
+        {(['general', 'labels', 'people', 'agents'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -66,6 +75,7 @@ export function BoardSettingsModal({
       {tab === 'general' && (
         <GeneralTab board={board} isOwner={isOwner} onClose={onClose} onArchived={onArchived} onDeleted={onDeleted} />
       )}
+      {tab === 'labels' && <LabelsTab board={board} />}
       {tab === 'people' && <PeopleTab board={board} />}
       {tab === 'agents' && <AgentsTab board={board} />}
     </Modal>
@@ -382,6 +392,110 @@ function AgentsTab({ board }: { board: Board }) {
             </div>
           </div>
         </>
+      )}
+    </div>
+  )
+}
+
+// ── Labels: the board's label registry — create, rename (cascades into
+//    tickets), recolor, delete (strips off tickets). ─────────────────────
+function LabelsTab({ board }: { board: Board }) {
+  const qc = useQueryClient()
+  const { data: labels = [] } = useBoardLabels(board.id)
+  const canEdit = board.role === 'owner' || board.role === 'editor'
+  const [draft, setDraft] = useState('')
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: ['board-labels', board.id] })
+    void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="font-sans text-xs text-muted">
+        Labels are shared by everyone on this board. Renaming updates every ticket carrying the label; deleting removes it
+        from tickets.
+      </p>
+      <ul className="divide-y divide-line-subtle">
+        {labels.map((l) => (
+          <li key={l.id} className="flex items-center gap-2 py-2">
+            <DropdownMenu
+              align="left"
+              trigger={(open) => (
+                <button
+                  title="Color"
+                  disabled={!canEdit}
+                  className={cn('h-4 w-4 shrink-0 rounded-full ring-2 transition-shadow', open ? 'ring-[var(--theme-accent-border)]' : 'ring-transparent')}
+                  style={{ background: LABEL_CSS[l.color] }}
+                />
+              )}
+              items={(Object.keys(LABEL_CSS) as LabelColor[]).map((c) => ({
+                label: c,
+                icon: <span className="h-2.5 w-2.5 rounded-full" style={{ background: LABEL_CSS[c] }} />,
+                checked: l.color === c,
+                onSelect: () => void updateBoardLabel(board.id, l.id, { color: c }).then(refresh),
+              }))}
+            />
+            <Input
+              size="sm"
+              defaultValue={l.name}
+              key={`${l.id}-${l.name}`}
+              disabled={!canEdit}
+              onBlur={(e) => {
+                const v = e.target.value.trim()
+                if (v && v !== l.name) void updateBoardLabel(board.id, l.id, { name: v }).then(refresh)
+              }}
+              onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+              className="flex-1"
+            />
+            {canEdit && (
+              <button
+                title="Delete label (removes it from tickets)"
+                onClick={() =>
+                  void (async () => {
+                    if (await confirm({ title: `Delete label "${l.name}"?`, message: 'It is removed from every ticket carrying it.', danger: true })) {
+                      await deleteBoardLabel(board.id, l.id)
+                      refresh()
+                    }
+                  })()
+                }
+                className="shrink-0 text-muted transition-colors hover:text-[color:var(--theme-danger)]"
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
+          </li>
+        ))}
+        {labels.length === 0 && <li className="py-3 text-xs text-muted">No labels yet.</li>}
+      </ul>
+      {canEdit && (
+        <div className="flex gap-2">
+          <Input
+            size="sm"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="New label"
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' || !draft.trim()) return
+              void createBoardLabel(board.id, draft.trim()).then(() => {
+                setDraft('')
+                refresh()
+              })
+            }}
+            className="flex-1"
+          />
+          <Button
+            size="sm"
+            disabled={!draft.trim()}
+            onClick={() =>
+              void createBoardLabel(board.id, draft.trim()).then(() => {
+                setDraft('')
+                refresh()
+              })
+            }
+          >
+            Add
+          </Button>
+        </div>
       )}
     </div>
   )

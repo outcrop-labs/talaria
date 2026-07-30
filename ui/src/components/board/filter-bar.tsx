@@ -8,7 +8,8 @@ import { FieldPill } from '@/components/ui/field-pill'
 import { userAssignee } from '@/lib/assignees'
 import type { BoardMember } from '@/lib/boards'
 import { PRIORITIES, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES } from '@/lib/task-const'
-import { STATUS_COLOR } from './field-pills'
+import type { BoardLabel } from '@/lib/boards'
+import { LABEL_CSS, STATUS_COLOR } from './field-pills'
 
 export interface BoardFilters {
   statuses: string[]
@@ -67,7 +68,7 @@ export function FilterBar({
   onChange: (next: BoardFilters) => void
   members: BoardMember[]
   agents: Array<{ id: string; label: string }>
-  labels: string[]
+  labels: BoardLabel[]
   meId?: string | null
 }) {
   const toggle = (facet: 'statuses' | 'assignees' | 'priorities' | 'labels', v: string) => {
@@ -146,10 +147,11 @@ export function FilterBar({
           label="Label"
           count={value.labels.length}
           items={labels.map((l) => ({
-            label: l,
-            checked: value.labels.includes(l),
+            label: l.name,
+            icon: <span className="h-2 w-2 rounded-full" style={{ background: LABEL_CSS[l.color] }} />,
+            checked: value.labels.includes(l.name),
             keepOpen: true,
-            onSelect: () => toggle('labels', l),
+            onSelect: () => toggle('labels', l.name),
           }))}
         />
       )}
