@@ -435,7 +435,7 @@ function SkillRow({
           )}
           {sharedBadge && <Chip className="shrink-0">shared</Chip>}
         </span>
-        <span className="block truncate text-sm text-muted">{skill.description || '…'}</span>
+        <span className="mt-0.5 block text-sm leading-snug text-muted">{skill.description || '…'}</span>
       </button>
       {canEdit && (
         <DropdownMenu
