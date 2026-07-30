@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { inlineEditKeys } from '@/components/ui/control'
-import { Maximize2, ChevronLeft, Archive, ArchiveRestore, Check, Trash2 } from 'lucide-react'
+import { Maximize2, ChevronLeft, Archive, ArchiveRestore, Trash2 } from 'lucide-react'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { CloseButton } from '@/components/ui/close-button'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
@@ -318,9 +318,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                               : 'ring-1 ring-transparent hover:ring-line',
                           )}
                           style={{ background: LABEL_CSS[c] }}
-                        >
-                          {active && <Check size={10} strokeWidth={2.5} className="text-white/90" />}
-                        </button>
+                        />
                       )
                     })}
                   </div>
