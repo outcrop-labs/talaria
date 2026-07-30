@@ -274,6 +274,7 @@ export const createTask = (
     color?: string | null
     estimatedHours?: number | null
     parentId?: string | null
+    tags?: string[]
   },
 ) => post(`/api/boards/${boardId}/tasks`, input).then(j)
 

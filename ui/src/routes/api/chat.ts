@@ -20,7 +20,7 @@ import {
 import { continueConversation, persistAssistantStream } from '@/server/chat-persist'
 import { attachmentAsDataUrl, attachmentTextBlocks, resolveAttachments, isImage } from '@/server/uploads'
 import { refBlocks, resolveRefs } from '@/server/refs'
-import { notifyPlanMentions, PLAN_MODE_PROMPT } from '@/server/plan-doc'
+import { notifyPlanMentions, PLAN_MODE_PROMPT, planRoutingBlock } from '@/server/plan-doc'
 import { indexActivity } from '@/server/retrieval/sources'
 
 const Body = z.object({
@@ -160,7 +160,7 @@ export const Route = createFileRoute('/api/chat')({
         // Plan turns carry the plan-mode harness: think and decide, read
         // freely, create NOTHING — tickets come from Draft tickets later.
         const messages = [
-          ...(kind === 'plan' ? [{ role: 'system' as const, content: PLAN_MODE_PROMPT }] : []),
+          ...(kind === 'plan' ? [{ role: 'system' as const, content: PLAN_MODE_PROMPT + (await planRoutingBlock().catch(() => '')) }] : []),
           ...prior,
           { role: 'user' as const, content: userContent as unknown as string },
         ]

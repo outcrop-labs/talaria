@@ -14,6 +14,7 @@
 //                 via chassis overlays; workflows only ROUTE work there.
 import { db } from './db/pg'
 import type { Task } from '@/lib/task-const'
+import { listAllSkills, SHARED } from './agent-skills'
 
 export interface WorkflowMatch {
   labels?: string[]
@@ -117,4 +118,40 @@ export async function workflowsForTask(
   return all
     .filter((h) => matchWorkflow(h, t))
     .map((h) => ({ name: h.name, skills: h.skills, toolkits: h.toolkits }))
+}
+
+/** A compact, model-readable map of the org's routing: enabled workflows with
+ *  their match rules, bound skills, and the agents that carry those skills.
+ *  Empty string when there's nothing to route by — callers omit the section. */
+export async function routingContext(): Promise<string> {
+  const all = (await listWorkflows()).filter((w) => w.enabled && (w.skills.length || Object.values(w.match ?? {}).some((v) => v?.length)))
+  if (!all.length) return ''
+  const sql = await db()
+  const boards = (await sql`select id, name from boards where archived_at is null`) as unknown as Array<{ id: string; name: string }>
+  const boardName = new Map(boards.map((b) => [b.id, b.name]))
+  const owners = await listAllSkills()
+  const carriers = (skill: string): string[] => {
+    const out: string[] = []
+    for (const o of owners) {
+      if (!o.skills.some((sk) => sk.name === skill)) continue
+      if (o.owner === SHARED) return ['any agent']
+      out.push(o.label)
+    }
+    return out
+  }
+  const lines = all.slice(0, 20).map((w) => {
+    const rules = [
+      w.match.boards?.length ? `boards: ${w.match.boards.map((b) => boardName.get(b) ?? b).join('/')}` : '',
+      w.match.labels?.length ? `labels: ${w.match.labels.join(', ')}` : '',
+      w.match.keywords?.length ? `keywords: ${w.match.keywords.join(', ')}` : '',
+    ].filter(Boolean).join('; ')
+    const skills = w.skills.length
+      ? w.skills.map((sk) => {
+          const c = carriers(sk)
+          return `${sk}${c.length ? ` (${c.join(', ')})` : ' (no agent carries this yet)'}`
+        }).join(', ')
+      : '(no skills bound)'
+    return `- ${w.name} — matches [${rules || 'no rules'}] → skills: ${skills}`
+  })
+  return lines.join('\n')
 }

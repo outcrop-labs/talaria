@@ -8,6 +8,7 @@ import { listChannelMessages } from './channels'
 import { priorMessages } from './conversations'
 import { planDocFor } from './plan-doc'
 import { resolveTemplate, templatePrompt, type Template } from './templates'
+import { routingContext } from './workflows'
 
 export interface TicketProposal {
   title: string
@@ -16,6 +17,9 @@ export interface TicketProposal {
   effort: 'xs' | 's' | 'm' | 'l' | 'xl' | null
   /** Zero-based indices of proposals in the SAME batch this one is blocked by. */
   dependsOn: number[]
+  /** Routing labels — chosen to trip a workflow's match rules so dispatch
+   *  classification fires when the ticket is later approved to an agent. */
+  tags: string[]
 }
 
 const PRIORITIES = new Set(['low', 'medium', 'high', 'urgent'])
@@ -25,9 +29,10 @@ const PLAN_PROMPT = `You are a planning assistant. Break the discussed work into
 When a plan document is provided, it is the curated source of truth — draft tickets from it and use the transcript only for supporting context; the raw chat never overrides the document.
 
 Respond with ONLY a JSON array — no prose before or after, no markdown fence. Each element:
-{"title": "imperative, <= 80 chars", "description": "markdown body with enough context that someone who didn't read the chat can act on it", "priority": "low|medium|high|urgent", "effort": "xs|s|m|l|xl", "dependsOn": [zero-based indices of tickets in THIS array that must finish first]}
+{"title": "imperative, <= 80 chars", "description": "markdown body with enough context that someone who didn't read the chat can act on it", "priority": "low|medium|high|urgent", "effort": "xs|s|m|l|xl", "dependsOn": [zero-based indices of tickets in THIS array that must finish first], "tags": ["optional routing labels"]}
 
-Rules: 2-10 tickets. Each independently actionable. Don't invent work nobody discussed. Capture decisions and constraints (and any @mentioned people) in the descriptions. Use dependsOn only for real ordering constraints — most tickets have none.`
+Rules: 2-10 tickets. Each independently actionable. Don't invent work nobody discussed. Capture decisions and constraints (and any @mentioned people) in the descriptions. Use dependsOn only for real ordering constraints — most tickets have none.
+When a workflow map is provided and a ticket clearly falls under one of its workflows, add that workflow's matching label(s) to tags and end the description with one line: "Routing: <workflow> → <agent>". Most tickets won't match — then omit tags and the routing line entirely; never force a fit.`
 
 /** Extract a JSON array of proposals from model output. Tries EVERY '['
  *  candidate (prose like "[DONE]" or markdown links before the real array must
@@ -47,6 +52,10 @@ export function extractProposals(text: string): TicketProposal[] {
       description: String(x.description ?? '').slice(0, 20_000),
       priority: PRIORITIES.has(String(x.priority)) ? (String(x.priority) as TicketProposal['priority']) : 'medium',
       effort: EFFORTS.has(String(x.effort)) ? (String(x.effort) as Exclude<TicketProposal['effort'], null>) : null,
+      tags: (Array.isArray(x.tags) ? x.tags : [])
+        .map((t) => String(t).trim().slice(0, 40))
+        .filter(Boolean)
+        .slice(0, 5),
       dependsOn: [
         ...new Set(
           (Array.isArray(x.dependsOn) ? x.dependsOn : [])
@@ -108,7 +117,9 @@ async function planFromTranscript(
   if (!transcript.trim() && !opts.planDoc?.trim()) return { proposals: [], raw: '' }
 
   const system = opts.template ? `${PLAN_PROMPT}\n\n${templatePrompt(opts.template, 'ticket descriptions')}` : PLAN_PROMPT
+  const routing = await routingContext().catch(() => '')
   const parts = [
+    ...(routing ? [`Workflow map (match rules → skills → agents):\n${routing}`] : []),
     ...(opts.planDoc?.trim() ? [`Plan document (source of truth):\n\n${opts.planDoc}`] : []),
     ...(transcript.trim() ? [`Transcript:\n\n${transcript}`] : []),
   ]
