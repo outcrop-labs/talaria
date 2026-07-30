@@ -239,6 +239,21 @@ server.registerTool(
 )
 
 server.registerTool(
+  'report_gap',
+  {
+    description:
+      "Report a capability gap — use ONLY when you genuinely cannot do assigned work properly: a tool or access you're missing, or an org-specific process you'd be guessing at. NOT for small tasks you can simply do with your own judgment, and never twice for the same kind of work (repeats are deduplicated; the team is already aware). The team sees gaps ranked by recurrence and can build a workflow/skill to cover them.",
+    inputSchema: {
+      kind: z.string().min(2).max(80).describe('Short slug naming the kind of work, e.g. "invoice-reconciliation"'),
+      missing: z.string().min(5).max(300).describe("One line: what you can't do properly and why"),
+      needs: z.string().max(5000).optional().describe('What a flow would need to cover: steps, tools, access, decisions'),
+      taskId: z.string().optional().describe('The ticket that surfaced the gap'),
+    },
+  },
+  async (body) => ok(await api('POST', '/api/agent/gap', body)),
+)
+
+server.registerTool(
   'add_time',
   {
     description: "Add time spent to a ticket's auto-accumulated total.",

@@ -19,6 +19,7 @@ import { canRead, listEditors, setEditors } from './kb-perms'
 import { notifyMentions } from './mentions'
 import { indexActivity } from './retrieval/sources'
 import { resolveTemplate, templatePrompt } from './templates'
+import { routingContext } from './workflows'
 import { estimateTokens, recordUsage } from './usage'
 import { listUsers } from './users'
 
@@ -29,9 +30,20 @@ export const PLAN_MODE_PROMPT = `This is a PLANNING conversation on the Plan sur
 Planning is side-effect free. Do NOT create or modify anything: no tickets, no documents or artifacts, no knowledge-base entries or spaces, no emails, calendar events, or channel posts. Reading is encouraged (search knowledge, read docs, list boards and tickets) to ground the plan in what actually exists.
 When the plan is settled, the teammate turns it into tickets with the "Draft tickets" control on this surface. If asked to create tickets or other work products here, point to that control instead of doing it yourself.`
 
+/** Routing awareness for plan surfaces: the org's workflow map, framed as a
+ *  FINAL aside — never something that reshapes the plan itself. */
+export async function planRoutingBlock(): Promise<string> {
+  const ctx = await routingContext()
+  if (!ctx) return ''
+  return `\n\nThe org routes ticket work through workflows (match rules → skills → agents):\n${ctx}\nWhen converging on owners, prefer routing work where a workflow already covers it — and say so in passing, not as the plan's centerpiece.`
+}
+
 const SYNC_PROMPT = `You maintain the living plan document for a planning conversation. Rewrite the document so it reflects the conversation so far: goals, scope, decisions, open questions, and next steps — organized under markdown headings, tight and actionable.
 Start from the current version when one is given: keep what still holds, fold in what changed, never silently drop sections the conversation didn't overturn.
 Return ONLY the complete updated markdown document, starting with its "# " title heading as your very first characters — no commentary, no lead-in sentence, no code fences. Anything before the first heading corrupts the document.`
+
+const SYNC_ROUTING = (ctx: string) =>
+  `\n\nThe org routes ticket work through workflows (match rules → skills → agents):\n${ctx}\nAFTER the rest of the document, if parts of this plan clearly fall under one of these workflows, end with a short "## Agent routing" section — one line per mapping ("<work> → <workflow> → <agent>"). If nothing clearly matches, OMIT the section entirely; never force a fit.`
 
 /** The plan's linked doc artifact, if one exists yet. */
 export async function planDocFor(conversationId: string): Promise<Artifact | null> {
@@ -120,7 +132,10 @@ export async function syncPlanDoc(
   if (!transcript.trim()) return doc
 
   const template = await resolveTemplate('plan', { explicitId: templateId, agentModel })
-  const system = template ? `${SYNC_PROMPT}\n\n${templatePrompt(template, 'the plan document')}` : SYNC_PROMPT
+  const routing = await routingContext()
+  const system =
+    (template ? `${SYNC_PROMPT}\n\n${templatePrompt(template, 'the plan document')}` : SYNC_PROMPT) +
+    (routing ? SYNC_ROUTING(routing) : '')
   const current = doc.body.trim()
   const messages = [
     { role: 'system', content: system },

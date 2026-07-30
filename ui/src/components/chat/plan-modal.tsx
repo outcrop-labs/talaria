@@ -19,6 +19,8 @@ interface Proposal {
   effort: Effort | null
   /** Indices of proposals in this batch that must land first. */
   dependsOn: number[]
+  /** Routing labels from the workflow map — trip dispatch classification. */
+  tags: string[]
   include: boolean
 }
 
@@ -72,7 +74,7 @@ export function PlanModal({
       const j = (await r.json()) as { proposals?: Omit<Proposal, 'include'>[]; note?: string; error?: string }
       if (!r.ok || j.error) setNote(j.error ?? 'planning failed')
       else if (!j.proposals?.length) setNote(j.note ?? 'no tickets came back')
-      else setProposals(j.proposals.map((p) => ({ ...p, dependsOn: p.dependsOn ?? [], include: true })))
+      else setProposals(j.proposals.map((p) => ({ ...p, dependsOn: p.dependsOn ?? [], tags: p.tags ?? [], include: true })))
     } catch {
       setNote('planning failed. Is the gateway up?')
     } finally {
@@ -100,6 +102,7 @@ export function PlanModal({
           description: p.description || undefined,
           priority: p.priority,
           effort: p.effort,
+          tags: p.tags.length ? p.tags : undefined,
         })) as { task?: { id: string } }
         if (res.task?.id) createdIds.set(i, res.task.id)
         setCreatedCount((n) => n + 1)

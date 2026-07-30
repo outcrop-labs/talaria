@@ -947,22 +947,54 @@ const MIGRATIONS: string[] = [
   `alter table tasks add column if not exists color text`,
   // Task workflows — task-classified hooks: when an agent picks up a ticket
   // that MATCHES (labels / boards / title keywords), the workflow rides along
-  // with the work: instructions (the flow), declared toolkits (MCP servers /
-  // tool subsets the work expects), and a reserved env block for sandbox
-  // profiles (the future custom-runtime layer).
+  // with the work: skills (Hermes skills that ARE the flow), declared
+  // toolkits (MCP servers / tool subsets the work expects), and a reserved
+  // env block for sandbox profiles (the future custom-runtime layer).
   `create table if not exists task_workflows (
     id uuid primary key default gen_random_uuid(),
     name text not null,
     description text not null default '',
     enabled boolean not null default true,
     match jsonb not null default '{}',
-    instructions text not null default '',
+    skills jsonb not null default '[]',
     toolkits jsonb not null default '[]',
     env jsonb not null default '{}',
     position int not null default 0,
     created_by text,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now()
+  )`,
+  // Workflows bind to Hermes SKILLS (the flow content lives in the skill
+  // library the agents already mount) — no freeform instruction prose here.
+  `alter table task_workflows add column if not exists skills jsonb not null default '[]'`,
+  `alter table task_workflows drop column if exists instructions`,
+  // Capability gaps — the honesty loop. An agent that genuinely can't do
+  // assigned work properly reports the gap ONCE per work-shape (signature);
+  // repeats only bump seen_count (frequency = ranking, never re-notification).
+  // The Studio's Suggested queue turns open gaps into skill/workflow drafts.
+  // Persistent skill summaries — one generated line per skill, keyed to a
+  // hash of its SKILL.md so it only regenerates when the content changes.
+  `create table if not exists skill_summaries (
+    owner text not null,
+    name text not null,
+    hash text not null,
+    summary text not null,
+    updated_at timestamptz not null default now(),
+    primary key (owner, name)
+  )`,
+  `create table if not exists capability_gaps (
+    id uuid primary key default gen_random_uuid(),
+    signature text not null unique,
+    kind text not null,
+    board_id uuid references boards(id) on delete set null,
+    agent_model text not null,
+    missing text not null,
+    needs text not null default '',
+    example_task_id uuid references tasks(id) on delete set null,
+    seen_count int not null default 1,
+    status text not null default 'open',
+    created_at timestamptz not null default now(),
+    last_seen timestamptz not null default now()
   )`,
   // Custom board statuses. category carries the workflow semantics: open
   // (intake), active (working), review (the agent-review catch), done

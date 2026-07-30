@@ -15,12 +15,12 @@ export const Body = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   match: Match.optional(),
-  instructions: z.string().max(20_000).optional(),
+  skills: z.array(z.string().min(1).max(80)).max(20).optional(),
   toolkits: z.array(Toolkit).max(20).optional(),
 })
 
-// Task workflows — match rules classify tickets; the payload (instructions +
-// declared toolkits) rides with dispatched/picked-up work. GET → all (any
+// Task workflows — match rules classify tickets; the payload (bound Hermes
+// skills + declared toolkits) rides with dispatched/picked-up work. GET → all (any
 // member; they ground what agents will be told). POST → agents.manage.
 export const Route = createFileRoute('/api/workflows')({
   server: {

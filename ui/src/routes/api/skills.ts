@@ -1,17 +1,25 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { requireView } from '@/server/api-guard'
+import { requireUser } from '@/server/api-guard'
 import { listAllSkills } from '@/server/agent-skills'
+import { canEditSkills } from '@/server/skill-access'
 
 // Skills across the fleet: shared + per-agent, straight from the mounts the
-// agents actually read. Fleet-wide detail: admins + Agents-view grantees.
+// agents actually read. Any member reads (the library grounds the Studio and
+// what agents will be told); each owner carries canEdit for THIS user —
+// admins/agents.manage everywhere, explicit user_agent_access grants (or a
+// personal assistant) for that agent's own skills.
 export const Route = createFileRoute('/api/skills')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const gate = await requireView(request, '/agents')
-        if (gate instanceof Response) return gate
-        return json({ owners: await listAllSkills() })
+        const user = await requireUser(request)
+        if (user instanceof Response) return user
+        const owners = await listAllSkills()
+        const withEdit = await Promise.all(
+          owners.map(async (o) => ({ ...o, canEdit: await canEditSkills(user, o.owner) })),
+        )
+        return json({ owners: withEdit })
       },
     },
   },

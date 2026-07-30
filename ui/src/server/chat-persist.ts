@@ -17,7 +17,7 @@ import {
 import { routedModelFor } from './fleet-agents'
 import { estimateTokens, recordUsage } from './usage'
 import { guardChatReply, needsRedaction, redactSecrets } from './guardrails'
-import { notifyPlanMentions, PLAN_MODE_PROMPT } from './plan-doc'
+import { notifyPlanMentions, PLAN_MODE_PROMPT, planRoutingBlock } from './plan-doc'
 import { describeAgent, proxyChat } from './gateway'
 import { indexActivity } from './retrieval/sources'
 
@@ -44,7 +44,7 @@ export async function continueConversation(conversationId: string, meta: TurnMet
     const prior = await priorMessages(conversationId)
     if (prior[prior.length - 1]?.role !== 'user') return
     // Chained plan turns carry the same plan-mode harness as live ones.
-    const messages = meta.plan ? [{ role: 'system' as const, content: PLAN_MODE_PROMPT }, ...prior] : prior
+    const messages = meta.plan ? [{ role: 'system' as const, content: PLAN_MODE_PROMPT + (await planRoutingBlock().catch(() => '')) }, ...prior] : prior
     const routed = (meta.tier ? await routedModelFor(meta.agentModel, meta.tier).catch(() => null) : null) ?? meta.agentModel
     const assistantId = await insertStreamingAssistant(conversationId, await nextSeq(conversationId))
     const upstream = await proxyChat({ model: routed, messages })

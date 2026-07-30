@@ -14,9 +14,32 @@ export interface TaskWorkflow {
   description: string
   enabled: boolean
   match: WorkflowMatch
-  instructions: string
+  skills: string[]
   toolkits: Array<{ server: string; tools?: string[] }>
   position: number
+}
+
+export interface SkillLibraryOwner {
+  owner: string // 'shared' or an agent slug
+  label: string
+  /** The agent's model id (absent for the shared root). */
+  model?: string
+  /** Whether THIS user may edit this owner's skills (server-computed). */
+  canEdit: boolean
+  skills: Array<{ name: string; description: string; platform?: boolean }>
+}
+
+/** The fleet skill library (shared + per-agent) — what workflows bind to
+ *  and what the Studio manages. Any member reads. */
+export function useSkillLibrary() {
+  return useQuery({
+    queryKey: ['skill-library'],
+    queryFn: async (): Promise<SkillLibraryOwner[]> => {
+      const r = await fetch('/api/skills', { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { owners: SkillLibraryOwner[] }).owners
+    },
+  })
 }
 
 export function useWorkflows() {
@@ -46,7 +69,50 @@ export const createWorkflow = (h: { name: string; description?: string }) =>
 
 export const updateWorkflow = (
   id: string,
-  patch: Partial<Pick<TaskWorkflow, 'name' | 'description' | 'enabled' | 'match' | 'instructions' | 'toolkits'>>,
+  patch: Partial<Pick<TaskWorkflow, 'name' | 'description' | 'enabled' | 'match' | 'skills' | 'toolkits'>>,
 ) => send(`/api/workflows/${id}`, 'PUT', patch)
 
 export const deleteWorkflow = (id: string) => send(`/api/workflows/${id}`, 'DELETE')
+
+// ── Skill structural ops (Studio row controls) ──────────────────────────────
+
+export const renameSkill = (owner: string, name: string, toName: string) =>
+  send(`/api/skills/${owner}/${name}`, 'POST', { op: 'rename', toName })
+
+export const copySkillTo = (owner: string, name: string, toOwner: string) =>
+  send(`/api/skills/${owner}/${name}`, 'POST', { op: 'copy', toOwner })
+
+export const moveSkillTo = (owner: string, name: string, toOwner: string) =>
+  send(`/api/skills/${owner}/${name}`, 'POST', { op: 'move', toOwner })
+
+export const deleteSkillReq = (owner: string, name: string) => send(`/api/skills/${owner}/${name}`, 'DELETE')
+
+// ── Capability gaps (the Studio's Suggested queue) ──────────────────────────
+
+export interface CapabilityGap {
+  id: string
+  kind: string
+  boardId: string | null
+  agentModel: string
+  missing: string
+  needs: string
+  exampleTaskId: string | null
+  seenCount: number
+  status: 'open' | 'dismissed' | 'resolved'
+  createdAt: string
+  lastSeen: string
+}
+
+export function useGaps(status = 'open') {
+  return useQuery({
+    queryKey: ['gaps', status],
+    queryFn: async (): Promise<CapabilityGap[]> => {
+      const r = await fetch(`/api/gaps?status=${status}`, { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { gaps: CapabilityGap[] }).gaps
+    },
+  })
+}
+
+export const setGapStatus = (id: string, status: CapabilityGap['status']) =>
+  send(`/api/gaps/${id}`, 'PUT', { status })

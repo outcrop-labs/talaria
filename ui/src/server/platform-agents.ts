@@ -11,7 +11,7 @@
 import { getSetting, setSetting } from './audit'
 import { resolveRoute } from './llm-gateway'
 
-export type PlatformAgentId = 'muse' | 'distiller' | 'concluder' | 'blurb-writer' | 'titler' | 'librarian' | 'judge' | 'briefer'
+export type PlatformAgentId = 'muse' | 'distiller' | 'concluder' | 'blurb-writer' | 'titler' | 'librarian' | 'judge' | 'briefer' | 'summarizer'
 
 export const PLATFORM_AGENTS: Array<{
   id: PlatformAgentId
@@ -61,6 +61,14 @@ export const PLATFORM_AGENTS: Array<{
     label: 'Titler',
     job: 'Names things as they take shape: chats and plans after their first exchange, research runs from their question.',
     skills: ['concise naming', 'never clobbers user-chosen names'],
+    auto: 'the Utility role chain — a fast, cheap model is ideal',
+    assignable: true,
+  },
+  {
+    id: 'summarizer',
+    label: 'Summarizer',
+    job: 'Keeps the Studio readable: one plain line per skill saying what it teaches, regenerated only when the skill changes.',
+    skills: ['one-line gist extraction', 'content-hash change detection'],
     auto: 'the Utility role chain — a fast, cheap model is ideal',
     assignable: true,
   },
