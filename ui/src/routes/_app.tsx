@@ -1,5 +1,6 @@
 import { createFileRoute, Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
+import { LogOut, Settings, ShieldCheck, SunMoon } from 'lucide-react'
 import { Brand } from '@/components/brand'
 import { MercuryBackdrop } from '@/components/mercury-backdrop'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -148,41 +149,59 @@ function UserMenu({ user, onLogout }: { user: SessionUser; onLogout: () => void 
         <span className="text-xs text-muted">▾</span>
       </button>
       {open && (
-        <div className="mercury-panel absolute right-0 top-full z-30 mt-2 w-60 rounded-xl p-1">
-            <div className="border-b border-line-subtle px-3 py-2.5">
+        <div className="mercury-panel absolute right-0 top-full z-30 mt-2 w-64 rounded-xl p-1">
+          <div className="flex items-center gap-2.5 border-b border-line-subtle px-3 py-2.5">
+            <Avatar src={user.picture} name={user.name ?? user.email} className="h-8 w-8 shrink-0" />
+            <div className="min-w-0">
               <div className="truncate text-sm font-medium text-fg">{user.name ?? user.email}</div>
               <div className="flex items-baseline gap-2">
                 <span className="min-w-0 truncate text-xs text-muted">{user.email}</span>
                 {user.role === 'admin' && <span className="shrink-0 text-xs text-accent">admin</span>}
               </div>
             </div>
-            <Link
-              to="/settings"
-              onClick={() => setOpen(false)}
-              className="block rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-card hover:text-fg"
-            >
-              Settings
-            </Link>
-            {user.role === 'admin' && (
+          </div>
+
+          <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted">Account</div>
+          <Link
+            to="/settings"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-card hover:text-fg"
+          >
+            <Settings size={15} className="shrink-0 text-muted" />
+            <span>Settings</span>
+          </Link>
+          <div className="flex items-center justify-between rounded-lg px-3 py-1.5 text-sm text-muted">
+            <span className="flex items-center gap-2.5">
+              <SunMoon size={15} className="shrink-0 text-muted" />
+              <span>Theme</span>
+            </span>
+            <ThemeToggle />
+          </div>
+
+          {user.role === 'admin' && (
+            <>
+              <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted">Administration</div>
               <Link
                 to="/admin"
                 onClick={() => setOpen(false)}
-                className="block rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-card hover:text-fg"
+                className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-card hover:text-fg"
               >
-                Admin
+                <ShieldCheck size={15} className="shrink-0 text-muted" />
+                <span>Admin</span>
               </Link>
-            )}
-            <div className="flex items-center justify-between rounded-lg px-3 py-1.5 text-sm text-muted">
-              <span>Theme</span>
-              <ThemeToggle />
-            </div>
-          <button
-            type="button"
-            onClick={onLogout}
-            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-muted transition-colors hover:bg-card hover:text-fg"
-          >
-            Sign out
-          </button>
+            </>
+          )}
+
+          <div className="mt-1 border-t border-line-subtle pt-1">
+            <button
+              type="button"
+              onClick={onLogout}
+              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-[color:var(--theme-danger)] transition-colors hover:bg-[color:var(--theme-danger)]/10"
+            >
+              <LogOut size={15} className="shrink-0" />
+              <span>Sign out</span>
+            </button>
+          </div>
         </div>
       )}
     </div>
