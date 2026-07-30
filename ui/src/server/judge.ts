@@ -17,12 +17,18 @@ export interface JudgeConfig {
   enabled: boolean
   /** Model id (an alias/endpoint from the registry). null → a safe default. */
   model: string | null
+  /** The GLOBAL stance boards inherit: enforcing = bad submissions never sit
+   *  in QA (revise bounces back to the agent); advisory = verdicts only. */
+  mode: 'advisory' | 'enforcing'
 }
 
 const CONFIG_KEY = 'judge_config'
-const DEFAULT_CONFIG: JudgeConfig = { enabled: false, model: null }
+const DEFAULT_CONFIG: JudgeConfig = { enabled: false, model: null, mode: 'enforcing' }
 
-export const getJudgeConfig = () => getSetting<JudgeConfig>(CONFIG_KEY, DEFAULT_CONFIG)
+export const getJudgeConfig = async (): Promise<JudgeConfig> => ({
+  ...DEFAULT_CONFIG,
+  ...(await getSetting<Partial<JudgeConfig>>(CONFIG_KEY, {})),
+})
 export const setJudgeConfig = (c: JudgeConfig) => setSetting(CONFIG_KEY, c)
 
 export type Verdict = 'pass' | 'revise' | 'escalate'
@@ -53,7 +59,7 @@ async function shouldJudge(boardId: string): Promise<{ run: boolean; model: stri
   const sql = await db()
   const [row] = (await sql`select judge_mode as "mode" from boards where id = ${boardId}`) as unknown as Array<{ mode: string }>
   const raw = row?.mode ?? 'inherit'
-  const mode: JudgeMode = raw === 'off' ? 'off' : raw === 'advisory' ? 'advisory' : raw === 'enforcing' ? 'enforcing' : cfg.enabled ? 'advisory' : 'off'
+  const mode: JudgeMode = raw === 'off' ? 'off' : raw === 'advisory' ? 'advisory' : raw === 'enforcing' ? 'enforcing' : cfg.enabled ? cfg.mode : 'off'
   return { run: mode !== 'off', model: cfg.model, mode }
 }
 
@@ -166,7 +172,16 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
           `**QA judge requested changes** (revision ${reviseCount}/${MAX_REVISIONS})\n\n${summary}` +
           (issues.length ? `\n\n${issues.map((i) => `- ${i}`).join('\n')}` : '')
         await sql`insert into task_comments (task_id, author, content) values (${taskId}, ${actor}, ${feedback})`
-        await sql`update tasks set status = 'in_progress', updated_at = now() where id = ${taskId}`
+        // Bounce to the board's own first ACTIVE column (custom statuses
+        // included), THROUGH updateTask — so the move validates, notifies,
+        // and re-fires the dispatch push: the agent gets the work back in
+        // its loop with the judge's feedback waiting on the ticket.
+        const { listStatuses } = await import('./statuses')
+        const active = (await listStatuses(task.boardId)).find((st) => st.category === 'active')?.key ?? 'in_progress'
+        const { updateTask } = await import('./tasks')
+        await updateTask(taskId, { status: active as import('./tasks').TaskStatus }, actor).catch(async () => {
+          await sql`update tasks set status = ${active}, updated_at = now() where id = ${taskId}`
+        })
         await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'status', ${`sent back for revision (${reviseCount}/${MAX_REVISIONS})`})`
       } else {
         await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'judge', ${`revision limit reached (${MAX_REVISIONS}) — needs a human`})`

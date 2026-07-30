@@ -13,6 +13,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
+import { Segmented } from '@/components/ui/segmented'
 import { useAgents } from '@/lib/agents'
 import { useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
@@ -1149,7 +1150,7 @@ function JudgePanel() {
   const qc = useQueryClient()
   const { data, isPending } = useQuery({
     queryKey: ['judge-config'],
-    queryFn: async (): Promise<{ config: { enabled: boolean; model: string | null }; models: string[] }> => {
+    queryFn: async (): Promise<{ config: { enabled: boolean; model: string | null; mode?: 'advisory' | 'enforcing' }; models: string[] }> => {
       const r = await fetch('/api/admin/judge')
       if (!r.ok) throw new Error('failed')
       return r.json()
@@ -1158,9 +1159,10 @@ function JudgePanel() {
   const { saved, flash } = useSavedFlash()
   const enabled = data?.config.enabled ?? false
   const model = data?.config.model ?? ''
+  const mode = data?.config.mode ?? 'enforcing'
 
-  const save = async (patch: { enabled?: boolean; model?: string | null }) => {
-    const body = { enabled: patch.enabled ?? enabled, model: patch.model !== undefined ? patch.model : model }
+  const save = async (patch: { enabled?: boolean; model?: string | null; mode?: 'advisory' | 'enforcing' }) => {
+    const body = { enabled: patch.enabled ?? enabled, model: patch.model !== undefined ? patch.model : model, mode: patch.mode ?? mode }
     const r = await fetch('/api/admin/judge', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     if (r.ok) {
       await qc.invalidateQueries({ queryKey: ['judge-config'] })
@@ -1173,7 +1175,7 @@ function JudgePanel() {
       <SectionHeader
         className="mb-4"
         title="QA judge"
-        info="When an agent hands a ticket to quality review, a judge model reviews the reported work and posts a verdict (pass / revise / escalate) with specific issues. Advisory: the human reviewer still decides. Pick a strong model for the sharpest review."
+        info="When an agent hands a ticket to quality review, a judge model reviews the reported work and posts a verdict (pass / revise / escalate) with specific issues. Enforcing: bad submissions never sit in QA — revise verdicts bounce straight back to the agent with the issues (capped, then a human takes over). Advisory: verdicts only, the human decides. Pick a strong model for the sharpest review."
       />
       {isPending ? (
         // The checkbox and model select seed from the query — hold the whole
@@ -1191,6 +1193,14 @@ function JudgePanel() {
           onChange={(checked) => void save({ enabled: checked })}
           label="Run the judge on quality review"
         />
+        <Segmented
+          options={[
+            { id: 'enforcing' as const, label: 'Enforcing' },
+            { id: 'advisory' as const, label: 'Advisory' },
+          ]}
+          value={mode}
+          onChange={(m) => void save({ mode: m })}
+        />
         <div className="flex items-center gap-2">
           <span className="text-[11px] uppercase tracking-wide text-muted">Model</span>
           <Select size="sm" value={model} onChange={(e) => void save({ model: e.target.value || null })} className="w-64" disabled={!enabled}>
@@ -1202,7 +1212,7 @@ function JudgePanel() {
         {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
       </div>
       )}
-      <p className="mt-3 text-[11px] text-muted">Per-board override lives on each board (advisory / off); default follows this toggle.</p>
+      <p className="mt-3 text-[11px] text-muted">Per-board override lives on each board (enforcing / advisory / off); boards on "inherit" follow this stance.</p>
     </Panel>
   )
 }
