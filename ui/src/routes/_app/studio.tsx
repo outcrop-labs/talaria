@@ -13,6 +13,7 @@ import { confirm } from '@/components/ui/confirm'
 import { useContextMenu, copyAppLink } from '@/components/ui/context-menu'
 import { WorkflowDetail } from '@/components/workflows/workflow-detail'
 import { StudioSkillEditor } from '@/components/workflows/skill-editor'
+import { StudioGuide, type GuidePrefill } from '@/components/workflows/studio-guide'
 import { cn } from '@/lib/cn'
 import {
   createWorkflow,
@@ -56,6 +57,9 @@ function StudioPage() {
   const { data: owners = [], isLoading: skillsLoading } = useSkillLibrary()
   const { data: workflows = [] } = useWorkflows()
   const { data: gaps = [] } = useGaps()
+  const [guide, setGuide] = useState<(GuidePrefill & { gapId?: string }) | null>(null)
+  const canTeach = owners.some((o) => o.canEdit)
+  const qcTop = useQueryClient()
 
   const setTab = (t: Tab) => void navigate({ search: t === 'skills' ? {} : { tab: t } })
   const skillCount = owners.reduce((n, o) => n + o.skills.length, 0)
@@ -72,6 +76,11 @@ function StudioPage() {
         <div className="flex items-center gap-1.5">
           <h1 className="mercury-text text-2xl font-semibold">Studio</h1>
           <InfoTip text="Tailor how agents work. Skills are the how — the flow content agents load and follow, edited live. Workflows are the which — match rules that classify tickets and bind them to skills. You can edit skills for agents you've been granted; admins shape the fleet." />
+          {canTeach && (
+            <Button size="sm" className="ml-auto" onClick={() => setGuide({})}>
+              Teach your agents
+            </Button>
+          )}
         </div>
 
         <div className="flex gap-1 border-b border-line-subtle">
@@ -99,9 +108,22 @@ function StudioPage() {
         ) : tab === 'workflows' ? (
           <WorkflowsTab workflows={workflows} selectedId={search.w ?? null} select={(id) => void navigate({ search: { tab: 'workflows', ...(id ? { w: id } : {}) } })} />
         ) : (
-          <SuggestedTab gaps={gaps} owners={owners} openSkill={(sk) => void navigate({ search: { ...(sk ? { sk } : {}) } })} />
+          <SuggestedTab gaps={gaps} owners={owners} teach={(p) => setGuide(p)} />
         )}
       </div>
+      {guide && (
+        <StudioGuide
+          open
+          onClose={() => setGuide(null)}
+          owners={owners}
+          prefill={guide}
+          onCreated={() => {
+            // A gap is resolved only once a human actually ratified a skill
+            // for it — cancelling the guide leaves the suggestion in place.
+            if (guide.gapId) void setGapStatus(guide.gapId, 'resolved').then(() => qcTop.invalidateQueries({ queryKey: ['gaps', 'open'] }))
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -189,6 +211,9 @@ function SkillsTab({
         </Panel>
       ))}
       {owners.length === 0 && <EmptyState icon="✦" title="No agents yet" hint="Skills appear here once the fleet has agents." />}
+      {owners.length > 0 && owners.every((o) => !o.skills.length) && (
+        <p className="text-center text-xs text-muted">Nothing taught yet — “Teach your agents” walks you through the first one.</p>
+      )}
 
       {openOwner && openName && openOwnerInfo && (
         <StudioSkillEditor
@@ -293,36 +318,25 @@ function WorkflowsTab({
 function SuggestedTab({
   gaps,
   owners,
-  openSkill,
+  teach,
 }: {
   gaps: CapabilityGap[]
   owners: SkillLibraryOwner[]
-  openSkill: (sk: string) => void
+  teach: (p: GuidePrefill & { gapId?: string }) => void
 }) {
   const qc = useQueryClient()
   const editable = owners.filter((o) => o.canEdit)
   const refresh = () => qc.invalidateQueries({ queryKey: ['gaps', 'open'] })
 
-  // Draft = create the skill (prefilled from the agent's own gap report) under
-  // an owner you can edit, mark the gap resolved, and open the editor — Muse
-  // takes it from there. Agents propose, humans ratify.
-  const draft = async (gap: CapabilityGap, owner: string) => {
-    const name = gap.kind
-    const content =
-      `# ${name}\n\nWhen to use: ${gap.missing}\n\n` +
-      (gap.needs ? `## What the reporting agent said a flow would need\n\n${gap.needs}\n\n` : '') +
-      `## Steps\n\n1. Replace this draft with the real flow — Muse can help from the notes above.\n`
-    const r = await fetch(`/api/skills/${owner}/${name}`, {
-      method: 'PUT',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content }),
+  // "Build it" hands the gap to the guided flow, prefilled with the agent's
+  // own words; the gap resolves only when the human ratifies a skill for it.
+  const build = (gap: CapabilityGap) => {
+    teach({
+      name: gap.kind.replace(/-/g, ' '),
+      describe: `${gap.missing}${gap.needs ? `\n\nWhat the reporting agent said a flow would need:\n${gap.needs}` : ''}`,
+      boardIds: gap.boardId ? [gap.boardId] : [],
+      gapId: gap.id,
     })
-    if (!r.ok) return
-    await setGapStatus(gap.id, 'resolved').catch(() => {})
-    await qc.invalidateQueries({ queryKey: ['skill-library'] })
-    refresh()
-    openSkill(`${owner}/${name}`)
   }
   const dismiss = async (gap: CapabilityGap) => {
     await setGapStatus(gap.id, 'dismissed')
@@ -349,8 +363,8 @@ function SuggestedTab({
             <span className="text-xs text-muted">reported by {g.agentModel}</span>
             <div className="ml-auto flex items-center gap-1.5">
               {editable.length > 0 && (
-                <Button size="sm" variant="outline" onClick={() => void draft(g, editable.some((o) => o.owner === 'shared') ? 'shared' : editable[0]!.owner)}>
-                  Draft skill
+                <Button size="sm" onClick={() => build(g)}>
+                  Build it
                 </Button>
               )}
               <Button size="sm" variant="ghost" onClick={() => void dismiss(g)}>
