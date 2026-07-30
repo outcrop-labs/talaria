@@ -312,15 +312,14 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                           onClick={() => save({ color: active ? null : c })}
                           className={cn(
                             'grid h-5 w-5 place-items-center rounded-full transition-all',
-                            // Active is unmissable: scaled up, bright ring
-                            // offset from the swatch, check inside.
+                            // Clear but calm: a quiet offset ring marks the pick.
                             active
-                              ? 'scale-110 ring-2 ring-[color:var(--theme-fg)] ring-offset-2 ring-offset-[color:var(--theme-panel)]'
+                              ? 'ring-1 ring-[color:var(--theme-fg)]/60 ring-offset-2 ring-offset-[color:var(--theme-panel)]'
                               : 'ring-1 ring-transparent hover:ring-line',
                           )}
                           style={{ background: LABEL_CSS[c] }}
                         >
-                          {active && <Check size={11} strokeWidth={3} className="text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]" />}
+                          {active && <Check size={10} strokeWidth={2.5} className="text-white/90" />}
                         </button>
                       )
                     })}
