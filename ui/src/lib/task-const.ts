@@ -13,6 +13,10 @@ export const EFFORTS = ['xs', 's', 'm', 'l', 'xl'] as const
 export type Effort = (typeof EFFORTS)[number]
 export const EFFORT_LABEL: Record<Effort, string> = { xs: 'XS', s: 'S', m: 'M', l: 'L', xl: 'XL' }
 
+// Assignees mix AGENT model ids (bare strings) and HUMANS as `user:<uuid>`.
+export const isHumanAssignee = (a: string): boolean => a.startsWith('user:')
+export const humanAssigneeId = (a: string): string => a.slice(5)
+
 export interface Task {
   id: string
   boardId: string
@@ -28,6 +32,11 @@ export interface Task {
   tags: string[]
   attachments: Attachment[]
   timeSpentSeconds: number
+  /** Human planning estimate, in hours. */
+  estimatedHours: number | null
+  /** Sub-task parent (one level deep). */
+  parentId: string | null
+  commentCount: number
   outcome: string | null
   resolution: string | null
   errorMessage: string | null

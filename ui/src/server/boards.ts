@@ -194,6 +194,20 @@ export async function boardAllowsAgent(boardId: string, model: string): Promise<
   return isElevatedAssistant(model)
 }
 
+/** Validate a mixed assignee list: `user:<uuid>` entries must be board
+ *  members; bare strings are agents and must pass the board's agent policy.
+ *  Returns the first human-readable problem, or null when all pass. */
+export async function invalidAssignee(boardId: string, assignees: string[]): Promise<string | null> {
+  for (const a of assignees) {
+    if (a.startsWith('user:')) {
+      if (!(await boardRole(a.slice(5), boardId))) return 'assignees must be members of this board'
+    } else if (!(await boardAllowsAgent(boardId, a))) {
+      return `agent "${a}" is not allowed on this board`
+    }
+  }
+  return null
+}
+
 /** Every live board, org-wide — the elevated-assistant listing. No role. */
 export async function listAllBoards(): Promise<Array<Omit<Board, 'role'>>> {
   const sql = await db()

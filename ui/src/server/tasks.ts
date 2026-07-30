@@ -22,10 +22,63 @@ const TASK_SELECT = `select t.id, t.board_id as "boardId",
   case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') || '-' || t.ticket_no end as "ticketRef",
   t.title, t.description, t.status, t.priority, t.effort, t.assignees, t.created_by as "createdBy",
   t.due_date as "dueDate", t.tags, t.attachments, t.time_spent_seconds as "timeSpentSeconds",
+  t.estimated_hours as "estimatedHours", t.parent_id as "parentId",
+  (select count(*)::int from task_comments c where c.task_id = t.id) as "commentCount",
   t.outcome, t.resolution, t.error_message as "errorMessage",
   t.created_at as "createdAt", t.updated_at as "updatedAt", t.completed_at as "completedAt",
   t.archived_at as "archivedAt"
   from tasks t join boards b on b.id = t.board_id`
+
+// ── Mixed assignees ──────────────────────────────────────────────────────────
+// The assignees array mixes AGENT model ids (bare strings, unchanged — the
+// heartbeat/outreach `@>` predicates keep matching) and HUMANS as
+// `user:<uuid>`. Helpers below split the two worlds.
+export const isHumanAssignee = (a: string): boolean => a.startsWith('user:')
+export const humanAssigneeIds = (assignees: string[]): string[] =>
+  assignees.filter(isHumanAssignee).map((a) => a.slice(5))
+export const agentAssignees = (assignees: string[]): string[] => assignees.filter((a) => !isHumanAssignee(a))
+
+/** Notify users about a task event (self-notifications excluded by actor email). */
+async function notifyTaskUsers(
+  userIds: string[],
+  actor: string,
+  n: { kind: string; title: string; body?: string; href?: string },
+): Promise<void> {
+  if (userIds.length === 0) return
+  const sql = await db()
+  const { addNotification } = await import('./notifications')
+  const self = actor.includes('@')
+    ? ((await sql`select id from users where lower(email) = ${actor.toLowerCase()}`) as unknown as Array<{ id: string }>)[0]?.id
+    : null
+  for (const id of new Set(userIds)) {
+    if (id === self) continue
+    await addNotification(id, n).catch(() => {})
+  }
+}
+
+/** Resolve watcher strings (emails) to user ids for notification fan-out. */
+async function watcherUserIds(taskId: string): Promise<string[]> {
+  const sql = await db()
+  const watchers = await listWatchers(taskId)
+  const emails = watchers.filter((w) => w.includes('@')).map((w) => w.toLowerCase())
+  if (emails.length === 0) return []
+  const rows = (await sql`select id from users where lower(email) = any(${emails})`) as unknown as Array<{ id: string }>
+  return rows.map((r) => r.id)
+}
+
+/** Sub-task guard: one level deep, same board, no self/cycle. Throws with a
+ *  human-readable reason. */
+export async function assertValidParent(taskId: string | null, parentId: string, boardId: string): Promise<void> {
+  if (taskId && taskId === parentId) throw new Error('a ticket cannot be its own parent')
+  const parent = await getTask(parentId)
+  if (!parent || parent.boardId !== boardId) throw new Error('parent must be a ticket on the same board')
+  if (parent.parentId) throw new Error('sub-tasks go one level deep — that ticket is already a sub-task')
+  if (taskId) {
+    const sql = await db()
+    const kids = await sql`select 1 from tasks where parent_id = ${taskId} limit 1`
+    if (kids.length) throw new Error('this ticket has sub-tasks of its own — it cannot become a sub-task')
+  }
+}
 
 // Minimal shape for dependency links (blocked-by / blocks).
 const LINK_SELECT = `select t.id,
@@ -77,26 +130,37 @@ export async function createTask(input: {
   effort?: Effort | null
   assignees?: string[]
   dueDate?: string | null
+  estimatedHours?: number | null
+  parentId?: string | null
   createdBy: string
 }): Promise<Task> {
   const sql = await db()
   const assignees = input.assignees ?? []
   const status = assignees.length > 0 ? 'assigned' : 'inbox'
+  if (input.parentId) await assertValidParent(null, input.parentId, input.boardId)
   const id = await sql.begin(async (tx) => {
     const seq = await tx`update boards set ticket_seq = ticket_seq + 1, updated_at = now() where id = ${input.boardId} returning ticket_seq`
     const ticketNo = (seq[0] as { ticket_seq: number }).ticket_seq
     const rows = await tx`
-      insert into tasks (board_id, ticket_no, title, description, priority, effort, assignees, due_date, created_by, status)
+      insert into tasks (board_id, ticket_no, title, description, priority, effort, assignees, due_date, estimated_hours, parent_id, created_by, status)
       values (${input.boardId}, ${ticketNo}, ${input.title}, ${input.description ?? null}, ${input.priority ?? 'medium'},
-              ${input.effort ?? null}, ${sql.json(assignees)}, ${input.dueDate ?? null}, ${input.createdBy}, ${status})
+              ${input.effort ?? null}, ${sql.json(assignees)}, ${input.dueDate ?? null}, ${input.estimatedHours ?? null},
+              ${input.parentId ?? null}, ${input.createdBy}, ${status})
       returning id
     `
     return (rows[0] as { id: string }).id
   })
   await logActivity(id, input.createdBy, 'created', 'created this task')
   if (assignees.length) await logActivity(id, input.createdBy, 'assigned', `assigned to ${assignees.join(', ')}`)
+  const task = (await getTask(id))!
+  void notifyTaskUsers(humanAssigneeIds(assignees), input.createdBy, {
+    kind: 'task-assigned',
+    title: `Assigned: ${input.title}`,
+    body: task.ticketRef ?? undefined,
+    href: `/boards/${input.boardId}/${id}`,
+  })
   publishBoard(input.boardId, { type: 'task', taskId: id })
-  return (await getTask(id))!
+  return task
 }
 
 export interface TaskPatch {
@@ -112,6 +176,10 @@ export interface TaskPatch {
   resolution?: string | null
   errorMessage?: string | null
   archived?: boolean
+  /** Human planning estimate, in hours (null clears). */
+  estimatedHours?: number | null
+  /** Sub-task parent (null promotes back to top level). */
+  parentId?: string | null
   /** Full replacement list of attachment chips (uploads + refs), already
    *  resolved/ACL-checked by the route — same shape as message attachments. */
   attachments?: unknown[]
@@ -127,12 +195,15 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
   const pick = <T>(v: T | undefined, fallback: T): T => (v === undefined ? fallback : v)
   const assignees = patch.assignees ?? cur.assignees
   const attachments = patch.attachments ?? cur.attachments
+  if (patch.parentId) await assertValidParent(id, patch.parentId, cur.boardId)
   const next = {
     title: patch.title ?? cur.title,
     description: pick(patch.description, cur.description),
     effort: pick(patch.effort, cur.effort),
     priority: patch.priority ?? cur.priority,
     dueDate: pick(patch.dueDate, cur.dueDate),
+    estimatedHours: pick(patch.estimatedHours, cur.estimatedHours),
+    parentId: pick(patch.parentId, cur.parentId),
     tags: patch.tags ?? cur.tags,
     outcome: pick(patch.outcome, cur.outcome),
     resolution: pick(patch.resolution, cur.resolution),
@@ -147,6 +218,7 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
   await sql`
     update tasks set title=${next.title}, description=${next.description}, status=${next.status},
       priority=${next.priority}, effort=${next.effort}, assignees=${sql.json(assignees)}, due_date=${next.dueDate},
+      estimated_hours=${next.estimatedHours}, parent_id=${next.parentId},
       tags=${sql.json(next.tags as unknown as Parameters<typeof sql.json>[0])},
       attachments=${sql.json(attachments as unknown as Parameters<typeof sql.json>[0])},
       outcome=${next.outcome}, resolution=${next.resolution}, error_message=${next.errorMessage},
@@ -157,12 +229,35 @@ export async function updateTask(id: string, patch: TaskPatch, actor: string): P
   if (patch.archived !== undefined && patch.archived !== !!cur.archivedAt)
     await logActivity(id, actor, 'archived', patch.archived ? 'archived this ticket' : 'restored this ticket')
 
-  if (patch.status && patch.status !== cur.status) await logActivity(id, actor, 'status', `moved to ${patch.status}`)
-  if (patch.assignees !== undefined && assignees.join(',') !== cur.assignees.join(','))
+  if (patch.status && patch.status !== cur.status) {
+    await logActivity(id, actor, 'status', `moved to ${patch.status}`)
+    // Watchers + assigned humans hear about status moves (never the actor).
+    const audience = [...(await watcherUserIds(id)), ...humanAssigneeIds(assignees)]
+    void notifyTaskUsers(audience, actor, {
+      kind: 'task-status',
+      title: `${cur.ticketRef ?? cur.title}: ${patch.status.replace('_', ' ')}`,
+      body: cur.title,
+      href: `/boards/${cur.boardId}/${id}`,
+    })
+  }
+  if (patch.assignees !== undefined && assignees.join(',') !== cur.assignees.join(',')) {
     await logActivity(id, actor, 'assigned', assignees.length ? `assigned to ${assignees.join(', ')}` : 'unassigned')
+    // NEWLY added humans get an inbox nudge.
+    const added = humanAssigneeIds(assignees).filter((uid) => !humanAssigneeIds(cur.assignees).includes(uid))
+    void notifyTaskUsers(added, actor, {
+      kind: 'task-assigned',
+      title: `Assigned: ${cur.title}`,
+      body: cur.ticketRef ?? undefined,
+      href: `/boards/${cur.boardId}/${id}`,
+    })
+  }
   if (patch.priority && patch.priority !== cur.priority) await logActivity(id, actor, 'priority', `priority → ${patch.priority}`)
   if (patch.effort !== undefined && patch.effort !== cur.effort)
     await logActivity(id, actor, 'effort', patch.effort ? `effort → ${patch.effort.toUpperCase()}` : 'effort cleared')
+  if (patch.estimatedHours !== undefined && patch.estimatedHours !== cur.estimatedHours)
+    await logActivity(id, actor, 'estimate', patch.estimatedHours ? `estimate → ${patch.estimatedHours}h` : 'estimate cleared')
+  if (patch.parentId !== undefined && patch.parentId !== cur.parentId)
+    await logActivity(id, actor, 'parent', patch.parentId ? 'made a sub-task' : 'promoted to top level')
   if (patch.outcome && patch.outcome !== cur.outcome) await logActivity(id, actor, 'outcome', 'reported an outcome')
   if (patch.attachments !== undefined && attachments.length !== cur.attachments.length)
     await logActivity(
