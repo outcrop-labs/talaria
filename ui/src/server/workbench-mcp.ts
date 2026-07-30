@@ -171,6 +171,28 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           insert into task_comments (task_id, author, content)
           values (${taskId}, ${agent.model}, ${`**Workbench plan** (${effort} effort · ${repo}):\n\n${plan}`})
         `.catch(() => {})
+        // The plan also becomes a markdown ARTIFACT attached to the ticket —
+        // durable and versioned, not just scrollback. Filed under the agent's
+        // Plans cabinet; org-visible like the ticket it belongs to.
+        void (async () => {
+          const { agentCategoryFolder, createArtifact, saveArtifact } = await import('./artifacts')
+          const { describeAgent } = await import('./gateway')
+          const label = agent.displayName || describeAgent(agent.model).label
+          const artifact = await createArtifact({
+            kind: 'doc',
+            title: `Plan — ${ref || title || repo}`.slice(0, 120),
+            createdBy: agent.model,
+            ownerUserId: null,
+            folderId: await agentCategoryFolder(label, 'Plans', agent.model).catch(() => null),
+          })
+          await saveArtifact(artifact.id, { body: `# Workbench plan — ${ref ? `${ref} · ` : ''}${title || repo}\n\n_${effort} effort · ${repo} · by ${label}_\n\n${plan}` }, agent.model)
+          const chip = { id: artifact.id, filename: artifact.title || 'Plan', mime: 'ref/artifact', size: 0, refType: 'artifact' }
+          const [cur] = (await sql`select attachments from tasks where id = ${taskId}`) as unknown as Array<{ attachments: unknown[] }>
+          const have = Array.isArray(cur?.attachments) ? cur.attachments : []
+          if (!have.some((a) => (a as { id?: string }).id === artifact.id)) {
+            await sql`update tasks set attachments = ${sql.json(JSON.parse(JSON.stringify([...have, chip])) as never)}, updated_at = now() where id = ${taskId}`
+          }
+        })().catch(() => {})
       }
       await logTicket(
         taskId,
