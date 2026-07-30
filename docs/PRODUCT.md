@@ -40,7 +40,9 @@ Talaria makes agents teammates, with everything that word implies:
 |---|---|
 | **Comms** | Every conversation in one place: #channels, **Relays** (purpose-driven gatherings that conclude with a summary and archive), teammate DMs, agent DMs (fresh thread per topic; idle chats distill into retrievable memory and archive) |
 | **Plan** | **Multiplayer** planning chats (share with teammates — author voices, presence, one shared living document the agent keeps synced); dependency-aware ticket drafting from the document, on your templates, human-reviewed |
-| **Boards** | Plane/Linear-grade PM: kanban + list, rich tickets, review gate, per-board agent policy, per-ticket cost |
+| **Boards** | Plane/Linear-grade PM with ClickUp-grade controls: kanban + grouped list + Gantt, custom statuses with agent-workflow semantics (agent-start / review-catch columns), saved views, managed labels, humans + agents assignable, review gate, per-ticket cost |
+| **Agent Studio** | Build agents one at a time: skills (the how — Hermes-native, Muse-drafted), workflows (the which — ticket match rules binding work to skills), and the honesty loop (agents report capability gaps; humans ratify skills from them) |
+| **Workbench** | Role-scoped sandboxed execution — dev first: governed git flow (platform-cut branches, plan gates, ticket-linked PRs, per-agent commit attribution), pluggable coding harnesses, effort→model routing, multi-turn work sessions ([WORKBENCH.md](./WORKBENCH.md)) |
 | **Knowledge** | Versioned markdown drive feeding visibility-scoped RAG brains (org / personal / departmental / ambient activity) |
 | **Artifacts** | Docs, microsites, sheets, and files: versioned, shared, publicly hostable, Google Workspace export, agent-writable |
 

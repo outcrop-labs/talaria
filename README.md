@@ -64,9 +64,14 @@ your team, and watch the work (and what it costs) move in one place.
   cited answer), **Brief** (a briefing), **Expedition** (iterative deep report) — and whose expertise
   drives it. Every claim carries an inline citation; reports are org-visible documents your agents can
   retrieve later, and every agent can start research from its own tools mid-task.
-- **Boards.** Plane/Linear-grade project management: kanban + list views, rich tickets (effort,
-  multiple assignees, dependencies, watchers, a review gate, per-ticket cost), teams, and a per-board
-  agent policy. Fully multiplayer.
+- **Boards.** Plane/Linear-grade project management with ClickUp-grade power controls: kanban,
+  list (grouped, draggable, bulk actions), and **Gantt** (drag/resize/zoom, schedule from a
+  backlog) views; rich tickets (humans *and* agents assignable, estimates, sub-tasks,
+  dependencies, watchers, start/due dates, color coding, per-ticket cost); board-scoped managed
+  **labels**; **custom statuses** with real workflow semantics — which columns constitute agent
+  start approval, which are review catches (judges fire on entry), Blocked always system;
+  **saved views** built from filters, URL-backed; **Muse on tickets** (field edits + selection
+  rewrites); persistent control pills on every card. Fully multiplayer.
 - **Knowledge.** A Notion-grade drive with versioned docs, quote-anchored **comment threads**,
   multiplayer presence, inline images and artifact embeds, tables with real controls, context menus
   everywhere, and **Muse in the page** (ambient chat-to-edit plus select-and-refine). Promote docs
@@ -87,6 +92,20 @@ your team, and watch the work (and what it costs) move in one place.
   delegate (moving your boards, sharing them, drafting your mail — always confirm-send), joins group
   channels behind a privacy gate that keeps your private context in DMs, and an admin's assistant can
   be **elevated** to org-wide view/edit for true chief-of-staff work.
+- **Agent Studio.** Build your agents one at a time: what each one **knows** (Hermes-native
+  skills — cross-agent library, generated one-line summaries kept fresh by the Summarizer, real
+  row controls, platform skills admin-locked), what work is **routed** to it (workflows: match
+  rules by board/label/keyword binding tickets to skills — classification is Talaria's, flow
+  content stays in the skills agents already mount), and what it **asked for help with** — the
+  honesty loop: agents that hit work they can't do properly report a capability gap once per
+  work-shape (deduped, recurrence-ranked, never nagging), and "Build it" turns the gap into a
+  Muse-drafted skill for human ratification. A guided "Teach" flow means nobody needs to know
+  skills and workflows are different things.
+- **Tickets get picked up — and worked.** Assigning an agent (or moving a ticket into an
+  agent-start column) pushes the work straight into the agent's loop as a **work session**:
+  Talaria keeps the conversation going turn after turn while the agent drives its tools like a
+  developer at a desk, until the ticket reaches review or blocks. Matched workflows ride along;
+  the whole lifecycle — dispatch, session turns, gaps, judge verdicts — audits on the ticket.
 - **Templates for how your org works.** A library of ticket and plan formats (the headings are the
   schema, plus guidance for agents); boards bind their set, agents can carry overrides, and every
   creation surface applies the right one automatically.
@@ -101,16 +120,26 @@ your team, and watch the work (and what it costs) move in one place.
   providers without DCR), per-user connected accounts, and per-agent / per-person **tool subsets
   enforced at a gateway** — a hand-edited agent config can never exceed what the registry granted.
   Registry changes roll agents blue/green. Details: [`docs/MCP.md`](./docs/MCP.md).
+- **The Workbench.** Real execution work in role-scoped sandboxes — dev first: connect GitHub
+  once (App or PAT, guided field-by-field), grant repos per agent, and agents build through a
+  governed job lifecycle — Talaria cuts the branch, plans post to the ticket (heavy work waits
+  for human approval), coding harnesses (opencode, Claude Code, Codex, Oh My Pi — per-agent
+  choice, npx-native, some driven as MCP tools) do the implementation with the agent's MCP
+  grants passed through in each harness's own config format, commits are **authored as the
+  agent**, `finish_job` opens the ticket-linked PR, and an optional per-repo testing branch takes
+  integration merges without ever replacing review. Effort→model routing means agents pick
+  low/medium/high and the platform picks the model. Harnesses are an **open registry** —
+  `defineHarness` in the SDK, app-shipped or admin-registered JSON. [`docs/WORKBENCH.md`](./docs/WORKBENCH.md).
 - **Platform sub-agents.** Talaria's own workers (Muse, Titler, Librarian, Distiller, Concluder,
-  Briefer, Judge, Catalog writer) are visible, per-agent model-assignable citizens on
+  Briefer, Judge, Catalog writer, Summarizer) are visible, per-agent model-assignable citizens on
   Models → Platform — the platform's internal AI is governed like everything else.
 
 ### Extend it — apps and the SDK
 
 Talaria is an **app platform**. Apps are self-contained codebases that compile into the deployment
 and load as native surfaces — new work views, manage views, settings panels, their own APIs, their
-own per-app document store, and even **MCP tools for your agents** that inherit the full granular
-governance. Build with `@talaria/sdk` (the same Mercury UI kit and session hooks the platform uses),
+own per-app document store, **MCP tools for your agents** that inherit the full granular
+governance, and even **workbench harnesses** (ship a coding tool your agents can drive). Build with `@talaria/sdk` (the same Mercury UI kit and session hooks the platform uses),
 install from the **marketplace** (community + official apps) or any git URL, govern access
 per-person like every core view. Official apps for marketing, sales, and support ship as separate
 installables, not core bloat. Start at [`docs/APPS.md`](./docs/APPS.md) and
@@ -128,9 +157,11 @@ installables, not core bloat. Start at [`docs/APPS.md`](./docs/APPS.md) and
   open; the instance's hosting domain verifies by a self-fetch round trip and becomes the canonical
   base URL; email invites (14-day, revocable) ride your own SMTP or Resend — with sealed
   credentials and an audit trail. [`docs/ONBOARDING.md`](./docs/ONBOARDING.md).
-- **Quality gates.** An optional QA judge reviews agent work at the review gate against your ticket
-  templates as the rubric (advisory or enforcing, with a bounded revision loop); a gateway-native
-  confab guard catches fabricated claims; unroutable agent models surface as alerts before a chat can
+- **Quality gates.** A QA judge reviews agent work at the review gate against your ticket
+  templates as the rubric — **enforcing by default** when enabled: bad submissions never sit in
+  QA; revise verdicts bounce straight back to the agent with the issues (bounded revision loop,
+  then a human takes over), and the judge can block but never approve. A gateway-native confab
+  guard catches fabricated claims; unroutable agent models surface as alerts before a chat can
   silently freeze.
 - **Secrets stay sealed.** Provider keys and agent secrets are envelope-encrypted (AES-256-GCM) in
   Postgres with one-click key rotation. A config file never holds a live credential.
