@@ -51,6 +51,8 @@ import {
   type TaskStatus,
 } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
+import { parseTicketPatch, streamMuse, type TicketMusePatch } from '@/lib/muse'
+import { Sparkles } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { Link } from '@tanstack/react-router'
 import { BookOpen, FileText, Gem, X } from 'lucide-react'
@@ -94,6 +96,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
   const [title, setTitle] = useState('')
   const [tab, setTab] = useState<'comments' | 'activity'>('comments')
   const commentRef = useRef<RichEditorHandle>(null)
+  const descMuseRef = useRef<RichEditorHandle>(null)
   const navigate = useNavigate()
   // Jump to a sibling ticket (parent/sub-task links) — same overlay route.
   const openTask = (id: string) =>
@@ -195,6 +198,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                   )}
 
                   <DescriptionSection
+                    editorRef={descMuseRef}
                     key={`ds-${t.id}`}
                     title={t.ticketRef ? `${t.ticketRef} · ${t.title}` : t.title}
                     value={t.description ?? ''}
@@ -283,6 +287,19 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     </ul>
                   )}
                 </div>
+
+                {/* Muse — fast natural-language edits: fields from the base
+                    view ("high priority, due friday"), or a selected passage
+                    of the description while editing. */}
+                {canEdit && (
+                  <TicketMuseBar
+                    t={t}
+                    descRef={descMuseRef}
+                    onPatch={async (patch) => {
+                      await save(patch as Parameters<typeof save>[0])
+                    }}
+                  />
+                )}
               </div>
 
               {/* Properties rail */}
@@ -545,12 +562,15 @@ function DescriptionSection({
   canEdit,
   mentions,
   onSave,
+  editorRef,
 }: {
   title: string
   value: string
   canEdit: boolean
   mentions?: Mentionable[]
   onSave: (md: string) => void
+  /** Exposes the live editor handle (selection-scoped Muse). */
+  editorRef?: React.Ref<RichEditorHandle>
 }) {
   const [draft, setDraft] = useState(value)
   const [mode, setMode] = useState<'read' | 'edit'>(canEdit && !value ? 'edit' : 'read')
@@ -585,7 +605,7 @@ function DescriptionSection({
 
   const body = (keyPrefix: string, minHeight: string, readMax?: string) =>
     mode === 'edit' && canEdit ? (
-      <RichEditor key={`${keyPrefix}-${rev}`} value={draft} editable mentions={mentions} onSave={save} placeholder="Add detail" minHeight={minHeight} />
+      <RichEditor ref={editorRef} key={`${keyPrefix}-${rev}`} value={draft} editable mentions={mentions} onSave={save} placeholder="Add detail" minHeight={minHeight} />
     ) : draft ? (
       <div className={cn('rounded-xl border border-line-subtle bg-card px-4 py-3 text-sm leading-relaxed', readMax && `${readMax} overflow-y-auto`)}>
         <Markdown>{draft}</Markdown>
@@ -804,6 +824,177 @@ function JudgeVerdict({ review }: { review: JudgeReview }) {
           {review.issues.map((i, n) => <li key={n}>{i}</li>)}
         </ul>
       )}
+    </div>
+  )
+}
+
+/** Muse on tickets — one bar, two modes. With a description selection (while
+ *  editing): rewrite just that passage. Otherwise: natural-language FIELD
+ *  edits ("urgent, due friday, label launch") proposed as a previewable patch. */
+function TicketMuseBar({
+  t,
+  descRef,
+  onPatch,
+}: {
+  t: Task
+  descRef: React.RefObject<RichEditorHandle | null>
+  onPatch: (patch: TicketMusePatch) => Promise<void>
+}) {
+  const [instruction, setInstruction] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [fieldPatch, setFieldPatch] = useState<TicketMusePatch | null>(null)
+  const [passage, setPassage] = useState<string | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  useEffect(() => () => abortRef.current?.abort(), [])
+
+  const FIELD_LABEL: Record<string, string> = {
+    title: 'title',
+    priority: 'priority',
+    effort: 'effort',
+    estimatedHours: 'estimate',
+    dueDate: 'due',
+    startDate: 'start',
+    color: 'color',
+    tags: 'labels',
+    status: 'status',
+  }
+
+  const generate = async () => {
+    const instr = instruction.trim()
+    if (!instr || generating) return
+    setGenerating(true)
+    setError(null)
+    setFieldPatch(null)
+    setPassage(null)
+    const ac = new AbortController()
+    abortRef.current = ac
+    const sel = descRef.current?.getSelectionText().trim()
+    try {
+      if (sel) {
+        // Selection mode: rewrite only the selected passage of the description.
+        let acc = ''
+        acc = await streamMuse(
+          {
+            kind: 'document',
+            context:
+              'You are editing ONLY this selected passage of a project ticket description — reply with the replacement passage alone, no commentary.',
+            current: sel,
+            instruction: instr,
+          },
+          () => {},
+          ac.signal,
+        )
+        setPassage(acc.trim())
+      } else {
+        // Field mode: structured JSON patch over the whole ticket.
+        const current = JSON.stringify({
+          title: t.title,
+          description: t.description,
+          priority: t.priority,
+          effort: t.effort,
+          estimatedHours: t.estimatedHours,
+          dueDate: t.dueDate,
+          startDate: t.startDate,
+          color: t.color,
+          tags: t.tags,
+          status: t.status,
+        })
+        const full = await streamMuse(
+          { kind: 'ticket', context: `now: ${new Date().toISOString()}`, current, instruction: instr },
+          () => {},
+          ac.signal,
+        )
+        const patch = parseTicketPatch(full)
+        if (!patch) throw new Error('Muse returned something unusable — try rephrasing')
+        if (patch.error) throw new Error(patch.error)
+        setFieldPatch(patch)
+      }
+      setInstruction('')
+    } catch (e) {
+      if (!ac.signal.aborted) setError((e as Error).message)
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const applyFields = async () => {
+    if (!fieldPatch) return
+    const p = fieldPatch
+    setFieldPatch(null)
+    await onPatch(p)
+  }
+  const applyPassage = () => {
+    if (passage === null) return
+    descRef.current?.replaceSelection(passage)
+    setPassage(null)
+    const md = descRef.current?.getMarkdown()
+    if (md !== undefined) void onPatch({ description: md })
+  }
+
+  const chip = (k: string, v: unknown) => (
+    <span key={k} className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] text-fg">
+      {FIELD_LABEL[k] ?? k} → {v === null ? 'clear' : Array.isArray(v) ? v.join(', ') : String(v).slice(0, 40)}
+    </span>
+  )
+
+  return (
+    <div className="shrink-0 space-y-2 border-t border-line-subtle px-5 py-2.5">
+      {fieldPatch && (
+        <div className="space-y-2 rounded-xl border border-accent/30 bg-card/40 p-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {Object.entries(fieldPatch)
+              .filter(([k]) => k !== 'description')
+              .map(([k, v]) => chip(k, v))}
+          </div>
+          {fieldPatch.description !== undefined && (
+            <div className="max-h-40 overflow-y-auto rounded-lg border border-line-subtle bg-card px-3 py-2">
+              <Markdown className="text-sm">{fieldPatch.description}</Markdown>
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="outline" onClick={() => setFieldPatch(null)}>
+              Discard
+            </Button>
+            <Button size="sm" onClick={() => void applyFields()}>
+              Apply
+            </Button>
+          </div>
+        </div>
+      )}
+      {passage !== null && (
+        <div className="space-y-2 rounded-xl border border-accent/30 bg-card/40 p-3">
+          <div className="text-[10px] uppercase tracking-wide text-muted">Replacement for the selection</div>
+          <div className="max-h-40 overflow-y-auto">
+            <Markdown className="text-sm">{passage}</Markdown>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="outline" onClick={() => setPassage(null)}>
+              Discard
+            </Button>
+            <Button size="sm" onClick={applyPassage}>
+              Replace selection
+            </Button>
+          </div>
+        </div>
+      )}
+      {error && (
+        <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
+          {error}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <Sparkles size={14} className={cn('shrink-0 text-accent', generating && 'animate-pulse')} />
+        <Input
+          size="sm"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && void generate()}
+          placeholder={generating ? 'Muse is thinking' : 'Muse: "urgent, due friday" — or select text while editing to rewrite it'}
+          disabled={generating}
+          className="flex-1"
+        />
+      </div>
     </div>
   )
 }
