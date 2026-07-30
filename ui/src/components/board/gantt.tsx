@@ -284,7 +284,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
               const e = p?.e ?? r.end
               const late = isOverdueTask(r.task)
               return (
-                <div key={r.task.id} className="group flex h-9 items-center border-b border-line-subtle/60 hover:bg-card/40">
+                <div key={r.task.id} className="group flex h-12 items-center border-b border-line-subtle/60 hover:bg-card/40">
                   <button
                     onClick={() => onOpen(r.task.id)}
                     style={{ width: labelW }}
@@ -309,7 +309,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                         onOpen(r.task.id)
                       }}
                       title={`${r.task.title} — drag to reschedule`}
-                      className={cn('absolute top-1.5 flex h-6 touch-none select-none items-center gap-1 overflow-hidden rounded-md border px-1.5 text-[10px] text-fg', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer', late && 'ring-1 ring-[color:var(--theme-danger)]')}
+                      className={cn('absolute top-2 flex h-8 touch-none select-none items-center gap-1 rounded-md border px-2.5 text-[11px] text-fg', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer', late && 'ring-1 ring-[color:var(--theme-danger)]')}
                       style={{
                         left: x(s),
                         width: Math.max(dayW, x(e) - x(s) + dayW),
@@ -322,8 +322,11 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                           onPointerDown={(ev) => beginDrag(ev, r, 'start')}
                           onPointerMove={onPointerMove}
                           onPointerUp={onPointerUp}
-                          className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize"
-                        />
+                          title="Drag to change the start date"
+                          className="group/h absolute -left-2 inset-y-0 flex w-5 cursor-ew-resize items-center justify-center"
+                        >
+                          <span className="h-4 w-0.5 rounded-full bg-fg/0 transition-colors group-hover/h:bg-fg/50" />
+                        </span>
                       )}
                       <span className="pointer-events-none truncate">{r.task.title}</span>
                       {canEdit && (
@@ -331,8 +334,11 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                           onPointerDown={(ev) => beginDrag(ev, r, 'end')}
                           onPointerMove={onPointerMove}
                           onPointerUp={onPointerUp}
-                          className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize"
-                        />
+                          title="Drag to change the due date"
+                          className="group/h absolute -right-2 inset-y-0 flex w-5 cursor-ew-resize items-center justify-center"
+                        >
+                          <span className="h-4 w-0.5 rounded-full bg-fg/0 transition-colors group-hover/h:bg-fg/50" />
+                        </span>
                       )}
                     </div>
                   </div>
