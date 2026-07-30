@@ -208,6 +208,7 @@ export async function listAgentDefs(): Promise<Array<AgentDef & { latest: AgentV
   const defs = (await sql`
     select id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
            workbench, workbench_profile as "workbenchProfile",
+           workbench_harness as "workbenchHarness", workbench_models as "workbenchModels",
            ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
            current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
     from agent_defs order by slug asc
@@ -234,6 +235,7 @@ export async function getAgentDef(id: string): Promise<AgentDef | null> {
   const rows = await sql`
     select id, slug, department, model, display_name as "displayName", role, enabled, managed, source,
            workbench, workbench_profile as "workbenchProfile",
+           workbench_harness as "workbenchHarness", workbench_models as "workbenchModels",
            ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
            current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
     from agent_defs where id = ${id}

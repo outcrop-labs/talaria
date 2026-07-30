@@ -17,6 +17,7 @@ import { InfoTip } from '@/components/ui/info-tip'
 import { cn } from '@/lib/cn'
 import { relativeTime, useFleet } from '@/lib/fleet'
 import { Segmented } from '@/components/ui/segmented'
+import { useModels } from '@/lib/muse'
 import { AgentConfigForm } from '@/components/fleet/agent-editor'
 import { CronsPanel } from '@/components/fleet/agent-crons'
 import { SecretsTab } from '@/components/fleet/agent-secrets-tab'
@@ -714,6 +715,18 @@ interface WorkbenchProfileLite {
   enabled: boolean
 }
 
+const HARNESS_LABELS: Record<string, string> = {
+  opencode: 'opencode',
+  'claude-code': 'Claude Code',
+  codex: 'Codex CLI',
+  'oh-my-pi': 'Oh My Pi',
+}
+const EFFORTS = [
+  ['light', 'Low'],
+  ['standard', 'Medium'],
+  ['heavy', 'High'],
+] as const
+
 /** The one workbench setting. Auto shows what it resolves to for THIS agent
  *  (fit by department/role); On lets an admin force a specific profile. */
 function WorkbenchControl({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
@@ -782,7 +795,66 @@ function WorkbenchControl({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
       ) : (
         <div className="text-fg">{mode === 'off' ? 'Off' : resolved ? resolved.name : 'None'}</div>
       )}
-      {isAdmin && mode !== 'off' && resolved && <WorkbenchRepos agentId={def.id} />}
+      {isAdmin && mode !== 'off' && resolved && (
+        <>
+          <WorkbenchTuning def={def} profile={resolved} save={save} />
+          <WorkbenchRepos agentId={def.id} />
+        </>
+      )}
+    </div>
+  )
+}
+
+/** The per-agent knobs: WHICH harness this agent runs, and which model each
+ *  effort level means for it (blank = the org-wide Workbench roles). */
+function WorkbenchTuning({
+  def,
+  profile,
+  save,
+}: {
+  def: AgentDef
+  profile: WorkbenchProfileLite
+  save: (patch: Parameters<typeof patchAgentMeta>[1]) => Promise<void>
+}) {
+  const { data: modelsData } = useModels()
+  const models = Array.isArray(modelsData) ? [] : (modelsData?.models ?? [])
+  const chosen = def.workbenchHarness && profile.harnesses.includes(def.workbenchHarness) ? def.workbenchHarness : ''
+  return (
+    <div className="mt-2 space-y-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] uppercase tracking-wide text-muted">Harness</span>
+        <Select size="sm" value={chosen} onChange={(e) => void save({ workbenchHarness: e.target.value || null })} className="w-40">
+          <option value="">Auto ({HARNESS_LABELS[profile.harnesses[0] ?? ''] ?? profile.harnesses[0] ?? 'none'})</option>
+          {profile.harnesses.map((h) => (
+            <option key={h} value={h}>
+              {HARNESS_LABELS[h] ?? h}
+            </option>
+          ))}
+        </Select>
+        <InfoTip text="The coding tool this agent's workbench jobs run. Auto uses the profile's first harness. The effort models below are handed to it in its own syntax." />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] uppercase tracking-wide text-muted">Effort</span>
+        {EFFORTS.map(([key, label]) => (
+          <span key={key} className="flex items-center gap-1">
+            <span className="text-xs text-muted">{label}</span>
+            <Select
+              size="sm"
+              value={def.workbenchModels?.[key] ?? ''}
+              onChange={(e) => void save({ workbenchModels: { [key]: e.target.value || null } })}
+              className="w-44"
+            >
+              <option value="">org default</option>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id}
+                </option>
+              ))}
+            </Select>
+          </span>
+        ))}
+        <InfoTip text="What low / medium / high effort means for THIS agent. Blank follows the org-wide Workbench model roles on /models. Agents pick the effort; these decide the model." />
+      </div>
     </div>
   )
 }

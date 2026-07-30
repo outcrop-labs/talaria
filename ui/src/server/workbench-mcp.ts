@@ -13,7 +13,7 @@
 import { db } from './db/pg'
 import { branchAhead, cloneUrl, createBranch, createPullRequest, effectiveBase, grantedRepos, mergeInto, repoFlow } from './github'
 import { resolveWorkbench } from './workbench'
-import { effortModel, effortModels, harness, type Effort } from './workbench-harnesses'
+import { effortModel, effortModels, harness, harnessModelArg, type Effort } from './workbench-harnesses'
 
 export interface WorkbenchJob {
   id: string
@@ -93,12 +93,15 @@ interface AgentCtx {
   role: string | null
   workbench: 'off' | 'auto' | 'on'
   workbenchProfile: string | null
+  workbenchHarness: string | null
+  workbenchModels: Partial<Record<Effort, string>>
 }
 
 async function agentByModel(model: string): Promise<AgentCtx | null> {
   const sql = await db()
   const rows = (await sql`
-    select id, model, display_name as "displayName", department, role, workbench, workbench_profile as "workbenchProfile"
+    select id, model, display_name as "displayName", department, role, workbench, workbench_profile as "workbenchProfile",
+           workbench_harness as "workbenchHarness", workbench_models as "workbenchModels"
     from agent_defs where model = ${model} and enabled
   `) as unknown as AgentCtx[]
   return rows[0] ?? null
@@ -125,7 +128,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
         ok: true,
         value: {
           repos: await grantedRepos(agent.id),
-          efforts: await effortModels(),
+          efforts: await effortModels(agent.workbenchModels),
           note: 'Pick effort by the work, not the model: light = quick fixes, standard = regular features (plan required), heavy = hard cross-cutting work (plan required, used sparingly).',
         },
       }
@@ -204,11 +207,22 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       // Effort → model is Talaria's call: the agent picked the effort, the
       // platform resolves which model that means today. Invocation hints come
       // from the profile's harness adapters with the model slotted in.
-      const model = await effortModel(effort as Effort)
+      const model = await effortModel(effort as Effort, agent.workbenchModels)
+      // The agent's chosen harness leads (falling back to the profile's
+      // first); its invocation line carries the model in the harness's own
+      // syntax, so it's directly runnable.
+      const chosenSlug = agent.workbenchHarness && profile.harnesses.includes(agent.workbenchHarness) ? agent.workbenchHarness : profile.harnesses[0]
       const harnesses = profile.harnesses
         .map((slug) => harness(slug))
         .filter((h): h is NonNullable<typeof h> => !!h)
-        .map((h) => ({ harness: h.slug, run: model ? h.invoke.replace('<model>', model) : h.invoke }))
+        .sort((a, b) => (a.slug === chosenSlug ? -1 : b.slug === chosenSlug ? 1 : 0))
+        .map((h) => ({
+          harness: h.slug,
+          chosen: h.slug === chosenSlug,
+          run: model ? h.invoke.replace('<model>', harnessModelArg(h, model)) : h.invoke,
+          ...(h.jsonInvoke ? { jsonRun: model ? h.jsonInvoke.replace('<model>', harnessModelArg(h, model)) : h.jsonInvoke } : {}),
+          ...(h.slug === chosenSlug ? { guide: h.guide } : {}),
+        }))
       return {
         ok: true,
         value: {
@@ -224,7 +238,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           harnesses,
           rules: gated
             ? `Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved it returns the clone URL. Do NOT begin building.`
-            : `Clone with the URL above (token is short-lived — clone now). Work ONLY on ${branch}; commit and push to it as you go — your sandbox is preconfigured so commits are authored as YOU (do not override git identity). Never touch ${base} directly. Use the ${effort}-effort model shown — escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
+            : `Clone with the URL above (token is short-lived — clone now). Work ONLY on ${branch}; commit and push to it as you go — your sandbox is preconfigured so commits are authored as YOU (do not override git identity). Never touch ${base} directly. Use your CHOSEN harness (first in the list, marked chosen) with the ${effort}-effort model shown — via its MCP tools if registered on your config, else its jsonRun form; read structured results, never scrape raw logs. Escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.`,
         },
       }
     }
@@ -262,13 +276,14 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const rows = (await sql.unsafe(`select ${JOB_ROW} from workbench_jobs where id = $1 and agent_id = $2`, [jobId, agent.id])) as unknown as WorkbenchJob[]
       const job = rows[0]
       if (!job) return { ok: false, error: 'unknown job' }
-      if (job.status === 'awaiting_approval') return { ok: false, error: 'the plan has not been approved yet — poll job_status' }
-      if (job.status !== 'started') return { ok: false, error: `job is already ${job.status}` }
-      if (args.abandon === true) {
+      // Abandon works from ANY live state — including a still-gated plan.
+      if (args.abandon === true && (job.status === 'started' || job.status === 'awaiting_approval')) {
         await sql`update workbench_jobs set status = 'abandoned', updated_at = now() where id = ${job.id}`
         await logTicket(job.taskId, agent.model, `workbench job abandoned: ${job.repo} @ ${job.branch}`)
         return { ok: true, value: { status: 'abandoned' } }
       }
+      if (job.status === 'awaiting_approval') return { ok: false, error: 'the plan has not been approved yet — poll job_status' }
+      if (job.status !== 'started') return { ok: false, error: `job is already ${job.status}` }
       const summary = String(args.summary ?? '').slice(0, 20_000)
       const base = await effectiveBase(job.repo)
       const ahead = await branchAhead(job.repo, base, job.branch)

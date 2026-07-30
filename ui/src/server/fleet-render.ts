@@ -177,7 +177,7 @@ async function managedAgents(): Promise<RenderTarget[]> {
   const sql = await db()
   const rows = (await sql`
     select d.id, d.slug, d.department, d.model, d.display_name as "displayName", d.enabled, d.managed, d.source,
-           d.role, d.workbench, d.workbench_profile as "workbenchProfile",
+           d.role, d.workbench, d.workbench_profile as "workbenchProfile", d.workbench_harness as "workbenchHarness",
            d.active_slot as "activeSlot",
            d.current_version as "currentVersion", d.created_at as "createdAt", d.updated_at as "updatedAt",
            v.id as vid, v.version, v.soul, v.config, v.note, v.created_by as "createdBy", v.created_at as vcreated
@@ -328,6 +328,26 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
         url: `${MCP_GW_BASE()}/talaria`,
         headers: { 'X-Agent-Name': def.model, 'X-Api-Key': '${TALARIA_AGENT_KEY}' },
       },
+    }
+    // The agent's CHOSEN coding harness, as an MCP server on its own config
+    // (stdio, in-sandbox) — the agent drives it with tools, not raw output.
+    // Only when the profile ships a real image (binaries present).
+    {
+      const wbc = await resolveWorkbench({
+        department: def.department,
+        role: (def as unknown as { role?: string | null }).role ?? null,
+        workbench: ((def as unknown as { workbench?: string }).workbench ?? 'auto') as 'off' | 'auto' | 'on',
+        workbenchProfile: (def as unknown as { workbenchProfile?: string | null }).workbenchProfile ?? null,
+      }).catch(() => null)
+      if (wbc?.image) {
+        const { HARNESSES } = await import('./workbench-harnesses')
+        const pick = (def as unknown as { workbenchHarness?: string | null }).workbenchHarness
+        const chosen = pick && wbc.harnesses.includes(pick) ? pick : wbc.harnesses[0]
+        const h = HARNESSES.find((x) => x.slug === chosen)
+        if (h?.mcpServe) {
+          ;(routed.mcp_servers as Record<string, unknown>)[h.slug] = { command: h.mcpServe.command, args: h.mcpServe.args }
+        }
+      }
     }
     // Org-registry MCP servers (Manage → MCP) ride in as GATEWAY URLs — the
     // agent never sees an upstream address or credential, and the gateway
