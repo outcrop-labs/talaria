@@ -968,6 +968,24 @@ const MIGRATIONS: string[] = [
   // library the agents already mount) — no freeform instruction prose here.
   `alter table task_workflows add column if not exists skills jsonb not null default '[]'`,
   `alter table task_workflows drop column if exists instructions`,
+  // Capability gaps — the honesty loop. An agent that genuinely can't do
+  // assigned work properly reports the gap ONCE per work-shape (signature);
+  // repeats only bump seen_count (frequency = ranking, never re-notification).
+  // The Studio's Suggested queue turns open gaps into skill/workflow drafts.
+  `create table if not exists capability_gaps (
+    id uuid primary key default gen_random_uuid(),
+    signature text not null unique,
+    kind text not null,
+    board_id uuid references boards(id) on delete set null,
+    agent_model text not null,
+    missing text not null,
+    needs text not null default '',
+    example_task_id uuid references tasks(id) on delete set null,
+    seen_count int not null default 1,
+    status text not null default 'open',
+    created_at timestamptz not null default now(),
+    last_seen timestamptz not null default now()
+  )`,
   // Custom board statuses. category carries the workflow semantics: open
   // (intake), active (working), review (the agent-review catch), done
   // (terminal). agent_start marks columns that constitute assignment approval

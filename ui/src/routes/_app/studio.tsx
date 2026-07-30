@@ -17,8 +17,11 @@ import { cn } from '@/lib/cn'
 import {
   createWorkflow,
   deleteWorkflow,
+  setGapStatus,
+  useGaps,
   useSkillLibrary,
   useWorkflows,
+  type CapabilityGap,
   type SkillLibraryOwner,
   type TaskWorkflow,
 } from '@/lib/workflows'
@@ -31,14 +34,16 @@ import {
 //              agent's own skills.
 //   Workflows  the WHICH: match rules classifying tickets, bound to the
 //              skills that kind of work follows + expected toolkits.
-// Growing area: gap suggestions and runtime profiles land here next.
-type Tab = 'skills' | 'workflows'
+//   Suggested  the honesty loop's queue: capability gaps agents reported,
+//              ranked by recurrence — one click turns a gap into a skill
+//              draft. Agents propose, humans ratify.
+type Tab = 'skills' | 'workflows' | 'suggested'
 
 export const Route = createFileRoute('/_app/studio')({
   component: StudioPage,
   // /studio?tab=workflows&w=<id> · /studio?sk=<owner>/<name>
   validateSearch: (search: Record<string, unknown>): { tab?: Tab; w?: string; sk?: string } => ({
-    ...(search.tab === 'workflows' ? { tab: 'workflows' as const } : {}),
+    ...(search.tab === 'workflows' || search.tab === 'suggested' ? { tab: search.tab as Tab } : {}),
     ...(typeof search.w === 'string' && search.w ? { w: search.w } : {}),
     ...(typeof search.sk === 'string' && search.sk ? { sk: search.sk } : {}),
   }),
@@ -50,6 +55,7 @@ function StudioPage() {
   const tab: Tab = search.tab ?? 'skills'
   const { data: owners = [], isLoading: skillsLoading } = useSkillLibrary()
   const { data: workflows = [] } = useWorkflows()
+  const { data: gaps = [] } = useGaps()
 
   const setTab = (t: Tab) => void navigate({ search: t === 'skills' ? {} : { tab: t } })
   const skillCount = owners.reduce((n, o) => n + o.skills.length, 0)
@@ -57,6 +63,7 @@ function StudioPage() {
   const TABS: { id: Tab; label: string; count: number }[] = [
     { id: 'skills', label: 'Skills', count: skillCount },
     { id: 'workflows', label: 'Workflows', count: workflows.length },
+    { id: 'suggested', label: 'Suggested', count: gaps.length },
   ]
 
   return (
@@ -89,8 +96,10 @@ function StudioPage() {
             openSkill={search.sk ?? null}
             setOpenSkill={(sk) => void navigate({ search: { ...(sk ? { sk } : {}) } })}
           />
-        ) : (
+        ) : tab === 'workflows' ? (
           <WorkflowsTab workflows={workflows} selectedId={search.w ?? null} select={(id) => void navigate({ search: { tab: 'workflows', ...(id ? { w: id } : {}) } })} />
+        ) : (
+          <SuggestedTab gaps={gaps} owners={owners} openSkill={(sk) => void navigate({ search: { ...(sk ? { sk } : {}) } })} />
         )}
       </div>
     </div>
@@ -275,6 +284,89 @@ function WorkflowsTab({
         </Panel>
       )}
       {menu}
+    </div>
+  )
+}
+
+// ── Suggested: the honesty loop's queue ─────────────────────────────────────
+
+function SuggestedTab({
+  gaps,
+  owners,
+  openSkill,
+}: {
+  gaps: CapabilityGap[]
+  owners: SkillLibraryOwner[]
+  openSkill: (sk: string) => void
+}) {
+  const qc = useQueryClient()
+  const editable = owners.filter((o) => o.canEdit)
+  const refresh = () => qc.invalidateQueries({ queryKey: ['gaps', 'open'] })
+
+  // Draft = create the skill (prefilled from the agent's own gap report) under
+  // an owner you can edit, mark the gap resolved, and open the editor — Muse
+  // takes it from there. Agents propose, humans ratify.
+  const draft = async (gap: CapabilityGap, owner: string) => {
+    const name = gap.kind
+    const content =
+      `# ${name}\n\nWhen to use: ${gap.missing}\n\n` +
+      (gap.needs ? `## What the reporting agent said a flow would need\n\n${gap.needs}\n\n` : '') +
+      `## Steps\n\n1. Replace this draft with the real flow — Muse can help from the notes above.\n`
+    const r = await fetch(`/api/skills/${owner}/${name}`, {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content }),
+    })
+    if (!r.ok) return
+    await setGapStatus(gap.id, 'resolved').catch(() => {})
+    await qc.invalidateQueries({ queryKey: ['skill-library'] })
+    refresh()
+    openSkill(`${owner}/${name}`)
+  }
+  const dismiss = async (gap: CapabilityGap) => {
+    await setGapStatus(gap.id, 'dismissed')
+    refresh()
+  }
+
+  if (!gaps.length)
+    return (
+      <Panel>
+        <EmptyState
+          icon="✦"
+          title="Nothing suggested"
+          hint="When an agent hits work it genuinely can't do properly, the gap lands here — ranked by how often the shape recurs — ready to become a skill."
+        />
+      </Panel>
+    )
+  return (
+    <div className="space-y-3">
+      {gaps.map((g) => (
+        <Panel key={g.id}>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-fg">{g.kind}</span>
+            <Chip tone={g.seenCount > 2 ? 'warn' : 'neutral'}>{g.seenCount}×</Chip>
+            <span className="text-xs text-muted">reported by {g.agentModel}</span>
+            <div className="ml-auto flex items-center gap-1.5">
+              {editable.length > 0 && (
+                <Button size="sm" variant="outline" onClick={() => void draft(g, editable.some((o) => o.owner === 'shared') ? 'shared' : editable[0]!.owner)}>
+                  Draft skill
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" onClick={() => void dismiss(g)}>
+                Dismiss
+              </Button>
+            </div>
+          </div>
+          <p className="mt-1.5 text-sm text-muted">{g.missing}</p>
+          {g.needs && <p className="mt-1 line-clamp-3 text-xs text-muted">{g.needs}</p>}
+          {g.exampleTaskId && (
+            <a href={`/boards?t=${g.exampleTaskId}`} className="mt-1.5 inline-block text-xs text-accent hover:underline">
+              Example ticket
+            </a>
+          )}
+        </Panel>
+      ))}
     </div>
   )
 }

@@ -71,3 +71,33 @@ export const updateWorkflow = (
 ) => send(`/api/workflows/${id}`, 'PUT', patch)
 
 export const deleteWorkflow = (id: string) => send(`/api/workflows/${id}`, 'DELETE')
+
+// ── Capability gaps (the Studio's Suggested queue) ──────────────────────────
+
+export interface CapabilityGap {
+  id: string
+  kind: string
+  boardId: string | null
+  agentModel: string
+  missing: string
+  needs: string
+  exampleTaskId: string | null
+  seenCount: number
+  status: 'open' | 'dismissed' | 'resolved'
+  createdAt: string
+  lastSeen: string
+}
+
+export function useGaps(status = 'open') {
+  return useQuery({
+    queryKey: ['gaps', status],
+    queryFn: async (): Promise<CapabilityGap[]> => {
+      const r = await fetch(`/api/gaps?status=${status}`, { credentials: 'same-origin' })
+      if (!r.ok) return []
+      return ((await r.json()) as { gaps: CapabilityGap[] }).gaps
+    },
+  })
+}
+
+export const setGapStatus = (id: string, status: CapabilityGap['status']) =>
+  send(`/api/gaps/${id}`, 'PUT', { status })

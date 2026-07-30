@@ -31,6 +31,7 @@ import { Route as ApiJoinRouteImport } from './routes/api/join'
 import { Route as ApiInferenceRouteImport } from './routes/api/inference'
 import { Route as ApiHomeRouteImport } from './routes/api/home'
 import { Route as ApiHistoryRouteImport } from './routes/api/history'
+import { Route as ApiGapsRouteImport } from './routes/api/gaps'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
 import { Route as ApiDmsRouteImport } from './routes/api/dms'
 import { Route as ApiCostRouteImport } from './routes/api/cost'
@@ -85,6 +86,7 @@ import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
 import { Route as ApiKbSpacesRouteImport } from './routes/api/kb.spaces'
 import { Route as ApiKbSearchRouteImport } from './routes/api/kb.search'
 import { Route as ApiIntegrationsGoogleRouteImport } from './routes/api/integrations/google'
+import { Route as ApiGapsIdRouteImport } from './routes/api/gaps.$id'
 import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
 import { Route as ApiFleetReconcileRouteImport } from './routes/api/fleet.reconcile'
 import { Route as ApiFleetFederateRouteImport } from './routes/api/fleet.federate'
@@ -107,6 +109,7 @@ import { Route as ApiArtifactFoldersIdRouteImport } from './routes/api/artifact-
 import { Route as ApiAgentsRegisterRouteImport } from './routes/api/agents.register'
 import { Route as ApiAgentProblemRouteImport } from './routes/api/agent.problem'
 import { Route as ApiAgentMessageUserRouteImport } from './routes/api/agent.message-user'
+import { Route as ApiAgentGapRouteImport } from './routes/api/agent.gap'
 import { Route as ApiAgentMediaModelRouteImport } from './routes/api/agent-media.$model'
 import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminStorageRouteImport } from './routes/api/admin.storage'
@@ -314,6 +317,11 @@ const ApiHomeRoute = ApiHomeRouteImport.update({
 const ApiHistoryRoute = ApiHistoryRouteImport.update({
   id: '/api/history',
   path: '/api/history',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiGapsRoute = ApiGapsRouteImport.update({
+  id: '/api/gaps',
+  path: '/api/gaps',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiFleetRoute = ApiFleetRouteImport.update({
@@ -587,6 +595,11 @@ const ApiIntegrationsGoogleRoute = ApiIntegrationsGoogleRouteImport.update({
   path: '/api/integrations/google',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiGapsIdRoute = ApiGapsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiGapsRoute,
+} as any)
 const ApiFleetRenderRoute = ApiFleetRenderRouteImport.update({
   id: '/render',
   path: '/render',
@@ -695,6 +708,11 @@ const ApiAgentProblemRoute = ApiAgentProblemRouteImport.update({
 const ApiAgentMessageUserRoute = ApiAgentMessageUserRouteImport.update({
   id: '/api/agent/message-user',
   path: '/api/agent/message-user',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAgentGapRoute = ApiAgentGapRouteImport.update({
+  id: '/api/agent/gap',
+  path: '/api/agent/gap',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAgentMediaModelRoute = ApiAgentMediaModelRouteImport.update({
@@ -1249,6 +1267,7 @@ export interface FileRoutesByFullPath {
   '/api/cost': typeof ApiCostRoute
   '/api/dms': typeof ApiDmsRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/gaps': typeof ApiGapsRouteWithChildren
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
@@ -1285,6 +1304,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/storage': typeof ApiAdminStorageRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
+  '/api/agent/gap': typeof ApiAgentGapRoute
   '/api/agent/message-user': typeof ApiAgentMessageUserRoute
   '/api/agent/problem': typeof ApiAgentProblemRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
@@ -1307,6 +1327,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/federate': typeof ApiFleetFederateRoute
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/gaps/$id': typeof ApiGapsIdRoute
   '/api/integrations/google': typeof ApiIntegrationsGoogleRouteWithChildren
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
@@ -1446,6 +1467,7 @@ export interface FileRoutesByTo {
   '/api/cost': typeof ApiCostRoute
   '/api/dms': typeof ApiDmsRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/gaps': typeof ApiGapsRouteWithChildren
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
@@ -1483,6 +1505,7 @@ export interface FileRoutesByTo {
   '/api/admin/storage': typeof ApiAdminStorageRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
+  '/api/agent/gap': typeof ApiAgentGapRoute
   '/api/agent/message-user': typeof ApiAgentMessageUserRoute
   '/api/agent/problem': typeof ApiAgentProblemRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
@@ -1505,6 +1528,7 @@ export interface FileRoutesByTo {
   '/api/fleet/federate': typeof ApiFleetFederateRoute
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/gaps/$id': typeof ApiGapsIdRoute
   '/api/integrations/google': typeof ApiIntegrationsGoogleRouteWithChildren
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
@@ -1646,6 +1670,7 @@ export interface FileRoutesById {
   '/api/cost': typeof ApiCostRoute
   '/api/dms': typeof ApiDmsRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
+  '/api/gaps': typeof ApiGapsRouteWithChildren
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
@@ -1683,6 +1708,7 @@ export interface FileRoutesById {
   '/api/admin/storage': typeof ApiAdminStorageRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
   '/api/agent-media/$model': typeof ApiAgentMediaModelRouteWithChildren
+  '/api/agent/gap': typeof ApiAgentGapRoute
   '/api/agent/message-user': typeof ApiAgentMessageUserRoute
   '/api/agent/problem': typeof ApiAgentProblemRoute
   '/api/agents/register': typeof ApiAgentsRegisterRoute
@@ -1705,6 +1731,7 @@ export interface FileRoutesById {
   '/api/fleet/federate': typeof ApiFleetFederateRoute
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
+  '/api/gaps/$id': typeof ApiGapsIdRoute
   '/api/integrations/google': typeof ApiIntegrationsGoogleRouteWithChildren
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
@@ -1847,6 +1874,7 @@ export interface FileRouteTypes {
     | '/api/cost'
     | '/api/dms'
     | '/api/fleet'
+    | '/api/gaps'
     | '/api/history'
     | '/api/home'
     | '/api/inference'
@@ -1883,6 +1911,7 @@ export interface FileRouteTypes {
     | '/api/admin/storage'
     | '/api/admin/users'
     | '/api/agent-media/$model'
+    | '/api/agent/gap'
     | '/api/agent/message-user'
     | '/api/agent/problem'
     | '/api/agents/register'
@@ -1905,6 +1934,7 @@ export interface FileRouteTypes {
     | '/api/fleet/federate'
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
+    | '/api/gaps/$id'
     | '/api/integrations/google'
     | '/api/kb/search'
     | '/api/kb/spaces'
@@ -2044,6 +2074,7 @@ export interface FileRouteTypes {
     | '/api/cost'
     | '/api/dms'
     | '/api/fleet'
+    | '/api/gaps'
     | '/api/history'
     | '/api/home'
     | '/api/inference'
@@ -2081,6 +2112,7 @@ export interface FileRouteTypes {
     | '/api/admin/storage'
     | '/api/admin/users'
     | '/api/agent-media/$model'
+    | '/api/agent/gap'
     | '/api/agent/message-user'
     | '/api/agent/problem'
     | '/api/agents/register'
@@ -2103,6 +2135,7 @@ export interface FileRouteTypes {
     | '/api/fleet/federate'
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
+    | '/api/gaps/$id'
     | '/api/integrations/google'
     | '/api/kb/search'
     | '/api/kb/spaces'
@@ -2243,6 +2276,7 @@ export interface FileRouteTypes {
     | '/api/cost'
     | '/api/dms'
     | '/api/fleet'
+    | '/api/gaps'
     | '/api/history'
     | '/api/home'
     | '/api/inference'
@@ -2280,6 +2314,7 @@ export interface FileRouteTypes {
     | '/api/admin/storage'
     | '/api/admin/users'
     | '/api/agent-media/$model'
+    | '/api/agent/gap'
     | '/api/agent/message-user'
     | '/api/agent/problem'
     | '/api/agents/register'
@@ -2302,6 +2337,7 @@ export interface FileRouteTypes {
     | '/api/fleet/federate'
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
+    | '/api/gaps/$id'
     | '/api/integrations/google'
     | '/api/kb/search'
     | '/api/kb/spaces'
@@ -2425,6 +2461,7 @@ export interface RootRouteChildren {
   ApiCostRoute: typeof ApiCostRoute
   ApiDmsRoute: typeof ApiDmsRoute
   ApiFleetRoute: typeof ApiFleetRouteWithChildren
+  ApiGapsRoute: typeof ApiGapsRouteWithChildren
   ApiHistoryRoute: typeof ApiHistoryRoute
   ApiHomeRoute: typeof ApiHomeRoute
   ApiInferenceRoute: typeof ApiInferenceRoute
@@ -2460,6 +2497,7 @@ export interface RootRouteChildren {
   ApiAdminStorageRoute: typeof ApiAdminStorageRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
   ApiAgentMediaModelRoute: typeof ApiAgentMediaModelRouteWithChildren
+  ApiAgentGapRoute: typeof ApiAgentGapRoute
   ApiAgentMessageUserRoute: typeof ApiAgentMessageUserRoute
   ApiAgentProblemRoute: typeof ApiAgentProblemRoute
   ApiAuthGoogleRoute: typeof ApiAuthGoogleRouteWithChildren
@@ -2644,6 +2682,13 @@ declare module '@tanstack/react-router' {
       path: '/api/history'
       fullPath: '/api/history'
       preLoaderRoute: typeof ApiHistoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/gaps': {
+      id: '/api/gaps'
+      path: '/api/gaps'
+      fullPath: '/api/gaps'
+      preLoaderRoute: typeof ApiGapsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/fleet': {
@@ -3024,6 +3069,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiIntegrationsGoogleRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/gaps/$id': {
+      id: '/api/gaps/$id'
+      path: '/$id'
+      fullPath: '/api/gaps/$id'
+      preLoaderRoute: typeof ApiGapsIdRouteImport
+      parentRoute: typeof ApiGapsRoute
+    }
     '/api/fleet/render': {
       id: '/api/fleet/render'
       path: '/render'
@@ -3176,6 +3228,13 @@ declare module '@tanstack/react-router' {
       path: '/api/agent/message-user'
       fullPath: '/api/agent/message-user'
       preLoaderRoute: typeof ApiAgentMessageUserRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/agent/gap': {
+      id: '/api/agent/gap'
+      path: '/api/agent/gap'
+      fullPath: '/api/agent/gap'
+      preLoaderRoute: typeof ApiAgentGapRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/agent-media/$model': {
@@ -4227,6 +4286,17 @@ const ApiFleetRouteWithChildren = ApiFleetRoute._addFileChildren(
   ApiFleetRouteChildren,
 )
 
+interface ApiGapsRouteChildren {
+  ApiGapsIdRoute: typeof ApiGapsIdRoute
+}
+
+const ApiGapsRouteChildren: ApiGapsRouteChildren = {
+  ApiGapsIdRoute: ApiGapsIdRoute,
+}
+
+const ApiGapsRouteWithChildren =
+  ApiGapsRoute._addFileChildren(ApiGapsRouteChildren)
+
 interface ApiKeysRouteChildren {
   ApiKeysIdRoute: typeof ApiKeysIdRoute
 }
@@ -4551,6 +4621,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCostRoute: ApiCostRoute,
   ApiDmsRoute: ApiDmsRoute,
   ApiFleetRoute: ApiFleetRouteWithChildren,
+  ApiGapsRoute: ApiGapsRouteWithChildren,
   ApiHistoryRoute: ApiHistoryRoute,
   ApiHomeRoute: ApiHomeRoute,
   ApiInferenceRoute: ApiInferenceRoute,
@@ -4586,6 +4657,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminStorageRoute: ApiAdminStorageRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,
   ApiAgentMediaModelRoute: ApiAgentMediaModelRouteWithChildren,
+  ApiAgentGapRoute: ApiAgentGapRoute,
   ApiAgentMessageUserRoute: ApiAgentMessageUserRoute,
   ApiAgentProblemRoute: ApiAgentProblemRoute,
   ApiAuthGoogleRoute: ApiAuthGoogleRouteWithChildren,

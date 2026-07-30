@@ -74,6 +74,7 @@ export async function dispatchTicketWork(task: Task, agentModel: string, boardNa
       `2. comment a one-line acknowledgment, and triage_ticket to status "${activeHint ?? 'in_progress'}" while you work.\n` +
       `3. Do the work. If you are blocked, set status "blocked" and comment why.\n` +
       `4. report_outcome when finished — a human signs off from review.\n` +
+      `\nMost tickets need no special flow — use your own judgment and just do the work. But be honest about capability: if you genuinely can't do this properly (a tool or access you're missing, an org-specific process you'd be guessing at), don't improvise a process — report_gap once with what a flow would need, then set "blocked" with a comment. Never report a gap for work you can simply do.\n` +
       `Reply here with ONE short line: what you did or what blocks you.`
     const upstream = await proxyChat({ model: agentModel, messages: [{ role: 'user', content: prompt }] }, { waitMs: 120_000 })
     if (!upstream.ok || !upstream.body) throw new Error(`gateway ${upstream.status}`)
