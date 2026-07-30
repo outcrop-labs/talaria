@@ -12,6 +12,7 @@ import { submitOnEnter } from '@/components/ui/control'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
+import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { Segmented } from '@/components/ui/segmented'
 import { useAgents } from '@/lib/agents'
@@ -1620,6 +1621,9 @@ function OrgGoogleTargets({ targets }: { targets: OrgGoogle['targets'] }) {
 
 /** The Workbench's GitHub connection — App or PAT, whichever the org prefers,
  *  with the setup steps inline. Secrets seal on save and never render back. */
+/** The Workbench's GitHub connection — one calm panel: status, the minimal
+ *  connect controls, repo flow. The full field-by-field walkthrough lives in
+ *  a setup-guide modal so the panel itself stays readable. */
 function GithubPanel() {
   const qc = useQueryClient()
   interface GhStatus {
@@ -1644,6 +1648,7 @@ function GithubPanel() {
   const [privateKey, setPrivateKey] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [guideOpen, setGuideOpen] = useState(false)
   const effMode = mode || status?.mode || ''
 
   const save = async (body: unknown) => {
@@ -1688,138 +1693,193 @@ function GithubPanel() {
     <Panel className="mt-4">
       <SectionHeader
         title="GitHub · Workbench"
-        info="Lets dev-leaning agents work real repositories through their sandboxed workbench. Connect once here; which agent may touch which repo stays an explicit per-agent grant on the agent's manage view."
+        info="Lets granted agents work real repositories through their sandboxed workbench. Connect once; which agent may touch which repo stays an explicit per-agent grant."
+        action={
+          <Button size="sm" variant="outline" onClick={() => setGuideOpen(true)}>
+            Setup guide
+          </Button>
+        }
       />
-      <div className="space-y-3">
-        {status?.configured && (
+      <div className="space-y-4">
+        {/* Status */}
+        {status?.configured ? (
           <div className="flex items-center gap-2 text-sm">
-            <span className="h-2 w-2 rounded-full bg-[color:var(--theme-success)]" />
+            <span className="h-2 w-2 shrink-0 rounded-full bg-[color:var(--theme-success)]" />
             <span className="text-fg">Connected{status.account ? ` as ${status.account}` : ''}</span>
-            <span className="text-xs text-muted">({status.mode === 'app' ? 'GitHub App' : 'personal access token'})</span>
+            <span className="text-xs text-muted">via {status.mode === 'app' ? 'GitHub App' : 'personal access token'}</span>
             <button type="button" onClick={() => void disconnect()} className="ml-auto text-xs text-muted transition-colors hover:text-[color:var(--theme-danger)]">
               Disconnect
             </button>
           </div>
+        ) : (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="h-2 w-2 shrink-0 rounded-full bg-line" />
+            <span className="text-muted">Not connected — pick a method and follow the setup guide.</span>
+          </div>
         )}
         {status?.error && <div className="text-xs text-[color:var(--theme-warning)]">{status.error}</div>}
 
-        <div className="flex items-center gap-3">
-          <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">Connect via</label>
-          <Select size="sm" value={effMode} onChange={(e) => setMode(e.target.value as 'app' | 'pat' | '')}>
-            <option value="">choose…</option>
-            <option value="app">GitHub App (recommended)</option>
-            <option value="pat">Personal access token</option>
-          </Select>
-        </div>
+        {/* Connect controls — minimal; the guide holds the walkthrough */}
+        <div className="space-y-2 rounded-xl border border-line-subtle bg-card/40 px-4 py-3">
+          <div className="flex items-center gap-3">
+            <label className="w-20 shrink-0 text-[11px] uppercase tracking-wide text-muted">Method</label>
+            <Segmented
+              options={[
+                { id: 'app' as const, label: 'GitHub App' },
+                { id: 'pat' as const, label: 'Access token' },
+              ]}
+              value={effMode === 'pat' ? 'pat' : 'app'}
+              onChange={(m) => setMode(m)}
+            />
+            {effMode === 'app' && <span className="text-xs text-muted">recommended — short-lived tokens, per-repo installs</span>}
+          </div>
 
-        {effMode === 'pat' && (
-          <div className="space-y-3 rounded-xl border border-line-subtle bg-card/40 px-4 py-3 text-sm">
-            <GhStep n={1} title="Create a fine-grained token">
-              <p className="text-xs text-muted">
-                Open{' '}
-                <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
-                  github.com/settings/personal-access-tokens/new
-                </a>{' '}
-                and fill the form like this:
-              </p>
-              <GhFields
-                rows={[
-                  ['Token name', 'Anything recognizable — e.g. "Talaria Workbench".'],
-                  ['Resource owner', 'The account or organization that owns the repos your agents will work.'],
-                  ['Expiration', 'Your policy — you re-paste a fresh token here when it rotates.'],
-                  ['Repository access', '"Only select repositories" → pick the repos agents may touch. You can add more later.'],
-                  ['Permissions → Repository', 'Contents: Read and write · Pull requests: Read and write. (Metadata: Read-only is added automatically.)'],
-                  ['Everything else', 'Leave at its default.'],
-                ]}
-              />
-            </GhStep>
-            <GhStep n={2} title="Paste it here">
-              <p className="text-xs text-muted">Stored encrypted; never shown again. The status line above will confirm who it acts as.</p>
-              <div className="flex items-center gap-2">
-                <Input size="sm" type="password" value={pat} onChange={(e) => setPat(e.target.value)} placeholder={status?.patSet ? '••••••••  (set — paste to replace)' : 'github_pat_…'} className="max-w-sm" />
-                <Button size="sm" disabled={!pat.trim() || busy} onClick={() => void save({ mode: 'pat', pat: { token: pat.trim() } }).then(() => setPat(''))}>
-                  Connect
+          {effMode !== 'pat' ? (
+            <>
+              <div className="flex items-center gap-3">
+                <label className="w-20 shrink-0 text-[11px] uppercase tracking-wide text-muted">App ID</label>
+                <Input size="sm" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder={status?.app.appId || 'e.g. 1234567'} className="w-40" />
+                <label className="ml-2 text-[11px] uppercase tracking-wide text-muted">Key</label>
+                <Input size="sm" type="password" value={privateKey} onChange={(e) => setPrivateKey(e.target.value)} placeholder={status?.app.keySet ? 'set — paste .pem to replace' : 'paste the whole .pem'} className="min-w-0 flex-1" />
+                <Button
+                  size="sm"
+                  disabled={busy || (!appId.trim() && !privateKey.trim())}
+                  onClick={() =>
+                    void save({ mode: 'app', app: { ...(appId.trim() ? { appId: appId.trim() } : {}), ...(privateKey.trim() ? { privateKey: privateKey.trim() } : {}) } }).then(() => {
+                      setAppId('')
+                      setPrivateKey('')
+                    })
+                  }
+                >
+                  Save
                 </Button>
               </div>
-            </GhStep>
-          </div>
-        )}
-
-        {effMode === 'app' && (
-          <div className="space-y-3 rounded-xl border border-line-subtle bg-card/40 px-4 py-3 text-sm">
-            <GhStep n={1} title="Create the App">
-              <p className="text-xs text-muted">
-                Open{' '}
-                <a href="https://github.com/settings/apps/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
-                  github.com/settings/apps/new
-                </a>{' '}
-                — or, if the repos belong to an organization, <span className="text-fg">Org settings → Developer settings → GitHub Apps → New GitHub App</span> so the org owns it. GitHub's form is long; here is every field that matters (leave anything unlisted at its default):
-              </p>
-              <GhFields
-                rows={[
-                  ['GitHub App name', 'Anything unique — e.g. "Talaria Workbench — Yourco".'],
-                  ['Description', 'Optional.'],
-                  ['Homepage URL', "Required by GitHub but unused here — your company site or this Talaria instance's address both work."],
-                  ['Callback URL', 'Leave blank — Talaria never signs users in through this App.'],
-                  ['Request user authorization / Device flow', 'Leave unchecked.'],
-                  ['Setup URL / Redirect on update', 'Leave blank / unchecked.'],
-                  ['Webhook → Active', 'UNCHECK it. Talaria calls GitHub directly, so no webhook — unchecking also removes the required-URL field.'],
-                  ['Repository permissions', 'Contents: Read and write · Pull requests: Read and write. (Metadata: Read-only is set automatically.)'],
-                  ['Organization permissions', 'None needed. (Optional: Administration — Read and write, only if you later want agents to request NEW repos with human approval.)'],
-                  ['Subscribe to events', 'None.'],
-                  ['Where can this app be installed?', '"Only on this account" is right for almost everyone.'],
-                ]}
-              />
-            </GhStep>
-            <GhStep n={2} title="Collect the credentials">
-              <p className="text-xs text-muted">
-                After "Create GitHub App": the <span className="text-fg">App ID</span> is at the top of the app's settings page (About section). Then scroll to{' '}
-                <span className="text-fg">Private keys → Generate a private key</span> — it downloads a <span className="text-fg">.pem</span> file; open it in any text editor and paste the whole thing below, BEGIN/END lines included. Both are stored encrypted.
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-              <Input size="sm" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder={status?.app.appId ? `App ID ${status.app.appId}` : 'App ID'} className="w-32" />
-              <Textarea rows={2} value={privateKey} onChange={(e) => setPrivateKey(e.target.value)} placeholder={status?.app.keySet ? 'private key set — paste to replace' : '-----BEGIN RSA PRIVATE KEY-----'} className="max-h-20 min-w-64 flex-1 font-mono text-xs" />
-              <Button
-                size="sm"
-                disabled={busy || (!appId.trim() && !privateKey.trim())}
-                onClick={() =>
-                  void save({ mode: 'app', app: { ...(appId.trim() ? { appId: appId.trim() } : {}), ...(privateKey.trim() ? { privateKey: privateKey.trim() } : {}) } }).then(() => {
-                    setAppId('')
-                    setPrivateKey('')
-                  })
-                }
-              >
-                Save
-              </Button>
-            </div>
-            </GhStep>
-            <GhStep n={3} title="Install it on your repos">
-              <p className="text-xs text-muted">
-                On the app's settings page choose <span className="text-fg">Install App</span> in the sidebar → pick the account →{' '}
-                <span className="text-fg">"Only select repositories"</span> → choose the repos agents will work (you can add more any time). Then pick that installation here:
-              </p>
-              <div className="flex items-center gap-2">
-                <label className="text-[11px] uppercase tracking-wide text-muted">Installation</label>
-                <Select size="sm" value={status?.app.installationId ?? ''} disabled={!status?.app.keySet} onChange={(e) => void save({ mode: 'app', app: { installationId: e.target.value } })}>
-                  <option value="">pick where it's installed…</option>
+              <div className="flex items-center gap-3">
+                <label className="w-20 shrink-0 text-[11px] uppercase tracking-wide text-muted">Installed on</label>
+                <Select size="sm" value={status?.app.installationId ?? ''} disabled={!status?.app.keySet} onChange={(e) => void save({ mode: 'app', app: { installationId: e.target.value } })} className="w-64">
+                  <option value="">pick an installation…</option>
                   {installations.map((i) => (
                     <option key={i.id} value={String(i.id)}>
                       {i.account} (#{i.id})
                     </option>
                   ))}
                 </Select>
-                {status?.app.keySet && installations.length === 0 && <span className="text-xs text-muted">none found yet — finish the install on GitHub first</span>}
-                {!status?.app.keySet && <span className="text-xs text-muted">save the App ID + key first</span>}
+                {status?.app.keySet && installations.length === 0 && <span className="text-xs text-muted">install the app on GitHub first — the guide's step 3</span>}
               </div>
-            </GhStep>
-          </div>
-        )}
-        {error && <div className="text-xs text-[color:var(--theme-danger)]">{error}</div>}
+            </>
+          ) : (
+            <div className="flex items-center gap-3">
+              <label className="w-20 shrink-0 text-[11px] uppercase tracking-wide text-muted">Token</label>
+              <Input size="sm" type="password" value={pat} onChange={(e) => setPat(e.target.value)} placeholder={status?.patSet ? '••••••••  set — paste to replace' : 'github_pat_…'} className="min-w-0 flex-1" />
+              <Button size="sm" disabled={!pat.trim() || busy} onClick={() => void save({ mode: 'pat', pat: { token: pat.trim() } }).then(() => setPat(''))}>
+                Connect
+              </Button>
+            </div>
+          )}
+          {error && <div className="text-xs text-[color:var(--theme-danger)]">{error}</div>}
+        </div>
+
         {status?.configured && <RepoFlowSection />}
       </div>
+
+      <GithubGuideModal open={guideOpen} onClose={() => setGuideOpen(false)} mode={effMode === 'pat' ? 'pat' : 'app'} />
     </Panel>
   )
 }
+
+/** The full field-by-field setup walkthrough — out of the panel, into a calm
+ *  scrollable modal. Mirrors whichever method is selected. */
+function GithubGuideModal({ open, onClose, mode }: { open: boolean; onClose: () => void; mode: 'app' | 'pat' }) {
+  const [tab, setTab] = useState<'app' | 'pat'>(mode)
+  useEffect(() => setTab(mode), [mode, open])
+  return (
+    <Modal open={open} onClose={onClose} width="max-w-2xl" title="Connect GitHub — setup guide">
+      <div className="space-y-4">
+        <Segmented
+          options={[
+            { id: 'app' as const, label: 'GitHub App (recommended)' },
+            { id: 'pat' as const, label: 'Personal access token' },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
+        <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
+          {tab === 'app' ? (
+            <>
+              <GhStep n={1} title="Create the App">
+                <p className="text-xs text-muted">
+                  Open{' '}
+                  <a href="https://github.com/settings/apps/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                    github.com/settings/apps/new
+                  </a>{' '}
+                  — or, if the repos belong to an organization, prefer <span className="text-fg">Org settings → Developer settings → GitHub Apps → New GitHub App</span> so the org owns it outright. GitHub's form is long; here is every field that matters (leave anything unlisted at its default):
+                </p>
+                <GhFields
+                  rows={[
+                    ['GitHub App name', 'Anything unique — e.g. "Talaria Workbench — Yourco".'],
+                    ['Description', 'Optional.'],
+                    ['Homepage URL', "Required by GitHub but unused here — your company site or this Talaria instance's address both work."],
+                    ['Callback URL', 'Leave blank — Talaria never signs users in through this App.'],
+                    ['Request user authorization / Device flow', 'Leave unchecked.'],
+                    ['Setup URL / Redirect on update', 'Leave blank / unchecked.'],
+                    ['Webhook → Active', 'UNCHECK it. Talaria calls GitHub directly, so no webhook — unchecking also removes the required-URL field.'],
+                    ['Repository permissions', 'Contents: Read and write · Pull requests: Read and write. (Metadata: Read-only is set automatically.)'],
+                    ['Organization permissions', 'None needed. (Optional: Administration — Read and write, only if you later want agents to request NEW repos with human approval.)'],
+                    ['Subscribe to events', 'None.'],
+                    ['Where can this app be installed?', 'If the repos live in an ORGANIZATION and the app is created under your personal account, choose "Any account" — "Only on this account" locks installs to the owner. (Already created it? App settings → Advanced → "Make public" flips this; public only means installable elsewhere, nothing is exposed.) Org-owned apps can stay "Only on this account".'],
+                  ]}
+                />
+              </GhStep>
+              <GhStep n={2} title="Collect the credentials">
+                <p className="text-xs text-muted">
+                  After "Create GitHub App": the <span className="text-fg">App ID</span> is at the top of the app's settings page (About section). Then scroll to{' '}
+                  <span className="text-fg">Private keys → Generate a private key</span> — it downloads a <span className="text-fg">.pem</span> file; open it in any text editor and paste the whole thing into the panel, BEGIN/END lines included. Both are stored encrypted.
+                </p>
+              </GhStep>
+              <GhStep n={3} title="Install it on your repos">
+                <p className="text-xs text-muted">
+                  On the app's settings page choose <span className="text-fg">Install App</span> in the sidebar → pick the account or organization (org installs by non-owners become a request an org owner approves) →{' '}
+                  <span className="text-fg">"Only select repositories"</span> → choose the repos agents will work (you can add more any time). Then pick that installation in the panel's "Installed on" selector.
+                </p>
+              </GhStep>
+            </>
+          ) : (
+            <>
+              <GhStep n={1} title="Create a fine-grained token">
+                <p className="text-xs text-muted">
+                  Open{' '}
+                  <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                    github.com/settings/personal-access-tokens/new
+                  </a>{' '}
+                  and fill the form like this:
+                </p>
+                <GhFields
+                  rows={[
+                    ['Token name', 'Anything recognizable — e.g. "Talaria Workbench".'],
+                    ['Resource owner', 'The account or organization that owns the repos your agents will work.'],
+                    ['Expiration', 'Your policy — you re-paste a fresh token when it rotates.'],
+                    ['Repository access', '"Only select repositories" → pick the repos agents may touch. You can add more later.'],
+                    ['Permissions → Repository', 'Contents: Read and write · Pull requests: Read and write. (Metadata: Read-only is added automatically.)'],
+                    ['Everything else', 'Leave at its default.'],
+                  ]}
+                />
+              </GhStep>
+              <GhStep n={2} title="Paste it in the panel">
+                <p className="text-xs text-muted">Stored encrypted; never shown again. The status line confirms who it acts as.</p>
+              </GhStep>
+            </>
+          )}
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" variant="outline" onClick={onClose}>
+            Done
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 
 /** One numbered setup step — a small circle, a title, then its content. */
 function GhStep({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
@@ -1848,8 +1908,8 @@ function GhFields({ rows }: { rows: Array<[string, string]> }) {
   )
 }
 
-/** Per-repo git flow: which branch PRs target, and the optional testing
- *  branch features merge into for integration testing. */
+/** Per-repo git flow — every reachable repo is a row; blank fields mean the
+ *  defaults, so there is no separate "add" ceremony to learn. */
 function RepoFlowSection() {
   const qc = useQueryClient()
   interface FlowData {
@@ -1864,65 +1924,74 @@ function RepoFlowSection() {
       return (await r.json()) as FlowData
     },
   })
-  const [repo, setRepo] = useState('')
-  const [base, setBase] = useState('')
-  const [testing, setTesting] = useState('')
+  const { saved, flash } = useSavedFlash()
 
-  const save = async (body: { repo: string; baseBranch?: string | null; testingBranch?: string | null }) => {
+  const save = async (repo: string, patch: { baseBranch?: string | null; testingBranch?: string | null }) => {
+    const cur = data?.flows.find((f) => f.repo === repo)
     await fetch('/api/workbench/flow', {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        repo,
+        baseBranch: patch.baseBranch !== undefined ? patch.baseBranch : (cur?.baseBranch ?? null),
+        testingBranch: patch.testingBranch !== undefined ? patch.testingBranch : (cur?.testingBranch ?? null),
+      }),
     })
+    flash()
     await qc.invalidateQueries({ queryKey: ['workbench-flow'] })
   }
   if (!data) return null
-  const configured = new Set(data.flows.map((f) => f.repo))
+  // Every reachable repo is a row; configs for repos the connection lost
+  // access to still show (flagged) so they can be understood and cleared.
+  const rows = [...new Set([...data.repos, ...data.flows.map((f) => f.repo)])].sort()
   return (
     <div className="space-y-2 border-t border-line-subtle pt-3">
-      <div className="text-[11px] uppercase tracking-wide text-muted">Repository flow</div>
-      <p className="text-xs text-muted">
-        Where workbench PRs land per repo (blank = the repo's default branch), and an optional testing branch features can be merged into
-        before the PR ships. Unlisted repos use their defaults.
-      </p>
-      {data.flows.map((f) => (
-        <div key={f.repo} className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="w-56 truncate text-fg">{f.repo}</span>
-          <Input
-            size="sm"
-            defaultValue={f.baseBranch ?? ''}
-            placeholder="PRs → default"
-            className="w-36"
-            onBlur={(e) => e.target.value.trim() !== (f.baseBranch ?? '') && void save({ repo: f.repo, baseBranch: e.target.value.trim() || null, testingBranch: f.testingBranch })}
-          />
-          <Input
-            size="sm"
-            defaultValue={f.testingBranch ?? ''}
-            placeholder="testing branch (off)"
-            className="w-40"
-            onBlur={(e) => e.target.value.trim() !== (f.testingBranch ?? '') && void save({ repo: f.repo, baseBranch: f.baseBranch, testingBranch: e.target.value.trim() || null })}
-          />
-        </div>
-      ))}
-      <div className="flex flex-wrap items-center gap-2">
-        <Select size="sm" value={repo} onChange={(e) => setRepo(e.target.value)} className="w-56">
-          <option value="">configure a repo…</option>
-          {data.repos.filter((r) => !configured.has(r)).map((r) => (
-            <option key={r} value={r}>{r}</option>
-          ))}
-        </Select>
-        <Input size="sm" value={base} onChange={(e) => setBase(e.target.value)} placeholder="PR base (blank = default)" className="w-44" />
-        <Input size="sm" value={testing} onChange={(e) => setTesting(e.target.value)} placeholder="testing branch" className="w-40" />
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!repo}
-          onClick={() => void save({ repo, baseBranch: base.trim() || null, testingBranch: testing.trim() || null }).then(() => { setRepo(''); setBase(''); setTesting('') })}
-        >
-          Add
-        </Button>
+      <div className="flex items-baseline gap-2">
+        <span className="text-[11px] uppercase tracking-wide text-muted">Repository flow</span>
+        <span className="text-xs text-muted">how workbench branches and PRs move, per repo</span>
+        {saved && <span className="ml-auto text-xs text-[color:var(--theme-success)]">Saved</span>}
       </div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[36rem]">
+          <div className="grid grid-cols-[minmax(0,1fr)_11rem_11rem] gap-2 pb-1 text-[11px] uppercase tracking-wide text-muted">
+            <span>Repository</span>
+            <span>PRs land on</span>
+            <span>Testing branch</span>
+          </div>
+          <div className="space-y-1.5">
+            {rows.map((repo) => {
+              const f = data.flows.find((x) => x.repo === repo)
+              const unreachable = !data.repos.includes(repo)
+              return (
+                <div key={repo} className="grid grid-cols-[minmax(0,1fr)_11rem_11rem] items-center gap-2">
+                  <span className="min-w-0 truncate text-sm text-fg">
+                    {repo}
+                    {unreachable && <span className="ml-2 text-xs text-[color:var(--theme-warning)]">no longer reachable</span>}
+                  </span>
+                  <Input
+                    size="sm"
+                    defaultValue={f?.baseBranch ?? ''}
+                    placeholder="default branch"
+                    onBlur={(e) => e.target.value.trim() !== (f?.baseBranch ?? '') && void save(repo, { baseBranch: e.target.value.trim() || null })}
+                  />
+                  <Input
+                    size="sm"
+                    defaultValue={f?.testingBranch ?? ''}
+                    placeholder="none"
+                    onBlur={(e) => e.target.value.trim() !== (f?.testingBranch ?? '') && void save(repo, { testingBranch: e.target.value.trim() || null })}
+                  />
+                </div>
+              )
+            })}
+            {rows.length === 0 && <p className="text-xs text-muted">No repositories reachable yet — finish the install on GitHub.</p>}
+          </div>
+        </div>
+      </div>
+      <p className="text-[11px] text-muted">
+        <span className="text-fg">PRs land on</span> — the branch workbench jobs cut from and pull requests target; blank uses the repo's default branch.{' '}
+        <span className="text-fg">Testing branch</span> — optional integration branch a feature can be merged into (from the ticket or by the agent) before its PR ships; blank disables it. Testing merges never replace review — the PR still lands normally.
+      </p>
     </div>
   )
 }
