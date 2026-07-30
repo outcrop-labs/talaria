@@ -246,7 +246,10 @@ function BoardPage() {
 
   const toggleCls = (active: boolean) =>
     cn('grid h-7 w-7 place-items-center rounded-md transition-colors', active ? 'bg-card text-fg' : 'text-muted hover:text-fg')
-  const openTicket = (taskId: string) => void navigate({ to: '/boards/$boardId/$taskId', params: { boardId, taskId } })
+  // Opening a ticket keeps the CURRENT view/filter state — the overlay sits
+  // on top of whatever view you were in, and closing returns you to it.
+  const openTicket = (taskId: string) =>
+    void navigate({ to: '/boards/$boardId/$taskId', params: { boardId, taskId }, search: (prev: BoardSearch) => prev })
   const canEdit = board.role === 'owner' || board.role === 'editor'
 
   return (

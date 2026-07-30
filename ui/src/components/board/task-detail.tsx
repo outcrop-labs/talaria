@@ -96,7 +96,11 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
   const navigate = useNavigate()
   // Jump to a sibling ticket (parent/sub-task links) — same overlay route.
   const openTask = (id: string) =>
-    void navigate({ to: '/boards/$boardId/$taskId', params: { boardId: board.id, taskId: id } })
+    void navigate({
+      to: '/boards/$boardId/$taskId',
+      params: { boardId: board.id, taskId: id },
+      search: (prev: Record<string, unknown>) => prev,
+    })
 
   // Initialise editable fields ONCE per task (not on every refetch) so live
   // updates behind the modal don't reset what the user is typing.
