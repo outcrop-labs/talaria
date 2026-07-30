@@ -209,7 +209,13 @@ function BoardPage() {
         {view === 'board' ? (
           <Kanban board={board} tasks={tasks} onOpen={openTicket} members={members} />
         ) : (
-          <BoardList tasks={tasks} onOpen={openTicket} boardId={boardId} members={members} />
+          <BoardList
+            tasks={tasks}
+            onOpen={openTicket}
+            boardId={boardId}
+            members={members}
+            canEdit={board.role === 'owner' || board.role === 'editor'}
+          />
         )}
       </div>
 

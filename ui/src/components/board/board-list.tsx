@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { SlidersHorizontal, ChevronUp, ChevronDown, GripVertical, Archive, ExternalLink, Hash, Link as LinkIcon } from 'lucide-react'
+import { SlidersHorizontal, ChevronUp, ChevronDown, GripVertical } from 'lucide-react'
 import { useAgents } from '@/lib/agents'
-import { archiveTask, type BoardMember } from '@/lib/boards'
+import { archiveTask, updateTask, type BoardMember } from '@/lib/boards'
 import { assigneeInfo } from '@/lib/assignees'
+import { ticketMenuEntries } from '@/components/board/ticket-menu'
+import { useSession } from '@/lib/session'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
-import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
+import { useContextMenu } from '@/components/ui/context-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
-import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task } from '@/lib/task-const'
+import { EFFORT_LABEL, PRIORITIES, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
 
 type ColumnKey = 'ticket' | 'title' | 'status' | 'priority' | 'effort' | 'estimate' | 'assignees' | 'due' | 'time' | 'labels' | 'updated' | 'created'
@@ -107,36 +109,37 @@ export function BoardList({
   onOpen,
   boardId,
   members = [],
+  canEdit = false,
 }: {
   tasks: Task[]
   onOpen: (id: string) => void
   boardId: string
   members?: BoardMember[]
+  canEdit?: boolean
 }) {
   const qc = useQueryClient()
   const { openMenu, menu } = useContextMenu()
   const { data: fleet, isLoading: agentsLoading } = useAgents()
+  const { data: me } = useSession()
 
-  // Right-click a row — shortcuts to actions the board already offers.
-  const rowMenu = (e: React.MouseEvent, t: Task) => {
-    const items: ContextMenuEntry[] = [
-      { label: 'Open', icon: <ExternalLink size={14} />, onSelect: () => onOpen(t.id) },
-      { label: 'Copy link', icon: <LinkIcon size={14} />, onSelect: () => copyAppLink(`/boards/${t.boardId}/${t.id}`) },
-    ]
-    if (t.ticketRef) {
-      const ref = t.ticketRef
-      items.push({ label: 'Copy ticket ref', icon: <Hash size={14} />, onSelect: () => void navigator.clipboard.writeText(ref) })
-    }
-    items.push('sep', {
-      label: t.archivedAt ? 'Unarchive' : 'Archive',
-      icon: <Archive size={14} />,
-      danger: !t.archivedAt,
-      onSelect: () => {
-        void archiveTask(t.id, !t.archivedAt).then(() => qc.invalidateQueries({ queryKey: ['board-tasks', boardId] }))
-      },
-    })
-    openMenu(e, items)
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', boardId] })
+  const patch = async (taskId: string, p: Parameters<typeof updateTask>[1]) => {
+    await updateTask(taskId, p)
+    invalidate()
   }
+
+  // Right-click a row — the SAME quick-control menu the kanban cards serve.
+  const rowMenu = (e: React.MouseEvent, t: Task) =>
+    openMenu(
+      e,
+      ticketMenuEntries(t, {
+        canEdit,
+        meId: me?.id,
+        onOpen: () => onOpen(t.id),
+        onPatch: (p) => void patch(t.id, p),
+        onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
+      }),
+    )
   const label = (id: string) => assigneeInfo(id, fleet?.agents ?? [], members).label
   const assigneeText = (ids: string[]) => (ids.length ? ids.map(label).join(', ') : '—')
 
@@ -222,6 +225,10 @@ export function BoardList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, sort, fleet])
 
+  // Inline-editable cells (bare controls — kit chrome is noise at table
+  // density; the artifacts sheet set the precedent). Clicks stay in the cell.
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation()
+
   const cell = (t: Task, key: ColumnKey) => {
     switch (key) {
       case 'ticket':
@@ -229,25 +236,101 @@ export function BoardList({
       case 'title':
         return <span className="font-sans text-fg">{t.title}</span>
       case 'status':
-        return <span className="text-muted">{STATUS_LABEL[t.status]}</span>
-      case 'priority':
+        if (!canEdit) return <span className="text-muted">{STATUS_LABEL[t.status]}</span>
         return (
-          <span className="inline-flex items-center gap-1.5 text-muted">
-            <span className="h-2 w-2 rounded-full" style={{ background: PRIORITY_COLOR[t.priority] }} />
-            {t.priority}
+          <select
+            value={t.status}
+            onClick={stop}
+            onChange={(e) => {
+              stop(e)
+              void patch(t.id, { status: e.target.value as TaskStatus })
+            }}
+            className="cursor-pointer appearance-none bg-transparent pr-1 text-muted transition-colors hover:text-fg focus:outline-none"
+            title="Change status"
+          >
+            {TASK_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {STATUS_LABEL[s]}
+              </option>
+            ))}
+          </select>
+        )
+      case 'priority': {
+        const dot = <span className="h-2 w-2 rounded-full" style={{ background: PRIORITY_COLOR[t.priority] }} />
+        if (!canEdit)
+          return (
+            <span className="inline-flex items-center gap-1.5 text-muted">
+              {dot}
+              {t.priority}
+            </span>
+          )
+        return (
+          <span className="inline-flex items-center gap-1.5">
+            {dot}
+            <select
+              value={t.priority}
+              onClick={stop}
+              onChange={(e) => {
+                stop(e)
+                void patch(t.id, { priority: e.target.value as Priority })
+              }}
+              className="cursor-pointer appearance-none bg-transparent pr-1 text-muted transition-colors hover:text-fg focus:outline-none"
+              title="Change priority"
+            >
+              {PRIORITIES.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
           </span>
         )
+      }
       case 'effort':
         return <span className="text-muted">{t.effort ? EFFORT_LABEL[t.effort] : '—'}</span>
       case 'estimate':
-        return <span className="text-muted">{t.estimatedHours != null ? `${t.estimatedHours}h` : '—'}</span>
+        if (!canEdit) return <span className="text-muted">{t.estimatedHours != null ? `${t.estimatedHours}h` : '—'}</span>
+        return (
+          <input
+            type="number"
+            min={0}
+            max={999}
+            step={0.5}
+            defaultValue={t.estimatedHours ?? ''}
+            key={`est-${t.id}-${t.estimatedHours ?? ''}`}
+            onClick={stop}
+            onBlur={(e) => {
+              const v = e.target.value.trim()
+              const n = v === '' ? null : Number(v)
+              if (n !== t.estimatedHours && (n === null || (!Number.isNaN(n) && n >= 0))) void patch(t.id, { estimatedHours: n })
+            }}
+            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+            placeholder="—"
+            title="Estimate (hours)"
+            className="w-14 bg-transparent text-right text-muted transition-colors [appearance:textfield] hover:text-fg focus:outline-none"
+          />
+        )
       case 'assignees':
         // Raw model ids would flash then swap to labels (jumping the column
         // width) — hold the cell with a short bar until the fleet resolves.
         if (agentsLoading && t.assignees.length > 0) return <Skeleton className="h-2.5 w-16 rounded-full" />
         return <span className="text-muted">{assigneeText(t.assignees)}</span>
       case 'due':
-        return <span className="text-muted">{t.dueDate ? t.dueDate.slice(0, 10) : '—'}</span>
+        if (!canEdit) return <span className="text-muted">{t.dueDate ? t.dueDate.slice(0, 10) : '—'}</span>
+        return (
+          <input
+            type="date"
+            value={t.dueDate ? t.dueDate.slice(0, 10) : ''}
+            onClick={stop}
+            onChange={(e) => {
+              stop(e)
+              const v = e.target.value
+              void patch(t.id, { dueDate: v ? new Date(`${v}T17:00`).toISOString() : null })
+            }}
+            title="Due date"
+            className="cursor-pointer bg-transparent text-muted transition-colors hover:text-fg focus:outline-none"
+          />
+        )
       case 'time':
         return <span className="text-muted">{fmtTime(t.timeSpentSeconds)}</span>
       case 'labels':

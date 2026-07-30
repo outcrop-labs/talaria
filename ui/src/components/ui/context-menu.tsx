@@ -24,7 +24,12 @@ export interface ContextMenuItem {
   icon?: ReactNode
   danger?: boolean
   disabled?: boolean
-  onSelect: () => void
+  /** Marks the current choice in a submenu (renders a leading check). */
+  checked?: boolean
+  /** Submenu — hover opens a flyout of these entries. `onSelect` is ignored
+   *  on items that carry children. */
+  children?: ContextMenuEntry[]
+  onSelect?: () => void
 }
 export type ContextMenuEntry = ContextMenuItem | 'sep'
 
@@ -57,6 +62,7 @@ export function useContextMenu() {
 function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(-1)
+  const [openSub, setOpenSub] = useState<number | null>(null)
   const selectable = state.items.filter((i): i is ContextMenuItem => i !== 'sep' && !i.disabled)
 
   // Clamp inside the viewport once we know our size.
@@ -84,8 +90,11 @@ function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
         setActive((a) => (a - 1 + selectable.length) % selectable.length)
       } else if (e.key === 'Enter' && active >= 0) {
         e.preventDefault()
-        selectable[active]?.onSelect()
-        onClose()
+        const it = selectable[active]
+        if (it && !it.children?.length) {
+          it.onSelect?.()
+          onClose()
+        }
       }
     }
     const onScroll = () => onClose()
@@ -113,29 +122,76 @@ function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
         if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
         if (!item.disabled) selIdx += 1
         const idx = selIdx
+        const hasKids = !!item.children?.length
         return (
-          <button
-            key={`${item.label}${i}`}
-            type="button"
-            role="menuitem"
-            disabled={item.disabled}
-            onMouseEnter={() => !item.disabled && setActive(idx)}
-            onClick={() => {
-              item.onSelect()
-              onClose()
-            }}
-            className={cn(
-              'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
-              item.disabled
-                ? 'cursor-default text-muted opacity-50'
-                : item.danger
-                  ? cn('text-[color:var(--theme-danger)]', active === idx && 'bg-[color:var(--theme-danger)]/10')
-                  : cn('text-fg', active === idx && 'bg-sidebar'),
+          <div key={`${item.label}${i}`} className="relative" onMouseLeave={() => hasKids && setOpenSub((s) => (s === i ? null : s))}>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              aria-haspopup={hasKids || undefined}
+              onMouseEnter={() => {
+                if (item.disabled) return
+                setActive(idx)
+                setOpenSub(hasKids ? i : null)
+              }}
+              onClick={() => {
+                if (hasKids) return setOpenSub((s) => (s === i ? null : i))
+                item.onSelect?.()
+                onClose()
+              }}
+              className={cn(
+                'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                item.disabled
+                  ? 'cursor-default text-muted opacity-50'
+                  : item.danger
+                    ? cn('text-[color:var(--theme-danger)]', active === idx && 'bg-[color:var(--theme-danger)]/10')
+                    : cn('text-fg', (active === idx || openSub === i) && 'bg-sidebar'),
+              )}
+            >
+              {item.checked !== undefined ? (
+                <span className="grid w-4 shrink-0 place-items-center text-accent">{item.checked ? '✓' : ''}</span>
+              ) : (
+                item.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{item.icon}</span>
+              )}
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              {hasKids && <span className="shrink-0 text-xs text-muted">▸</span>}
+            </button>
+            {hasKids && openSub === i && (
+              <div className="absolute left-full top-0 z-10 -ml-0.5 min-w-40 rounded-xl border border-line bg-card p-1 shadow-lg">
+                {item.children!.map((kid, k) => {
+                  if (kid === 'sep') return <div key={`ks${k}`} className="mx-2 my-1 border-t border-line-subtle" />
+                  return (
+                    <button
+                      key={`${kid.label}${k}`}
+                      type="button"
+                      role="menuitem"
+                      disabled={kid.disabled}
+                      onClick={() => {
+                        kid.onSelect?.()
+                        onClose()
+                      }}
+                      className={cn(
+                        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                        kid.disabled
+                          ? 'cursor-default text-muted opacity-50'
+                          : kid.danger
+                            ? 'text-[color:var(--theme-danger)] hover:bg-[color:var(--theme-danger)]/10'
+                            : 'text-fg hover:bg-sidebar',
+                      )}
+                    >
+                      {kid.checked !== undefined ? (
+                        <span className="grid w-4 shrink-0 place-items-center text-accent">{kid.checked ? '✓' : ''}</span>
+                      ) : (
+                        kid.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{kid.icon}</span>
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{kid.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
             )}
-          >
-            {item.icon && <span className="grid w-4 shrink-0 place-items-center text-muted">{item.icon}</span>}
-            <span className="min-w-0 flex-1 truncate">{item.label}</span>
-          </button>
+          </div>
         )
       })}
     </div>,
@@ -196,7 +252,7 @@ export function DropdownMenu({
                 role="menuitem"
                 disabled={item.disabled}
                 onClick={() => {
-                  item.onSelect()
+                  item.onSelect?.()
                   setOpen(false)
                 }}
                 className={cn(

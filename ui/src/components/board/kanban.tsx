@@ -1,16 +1,18 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Archive, ExternalLink, Hash, Link as LinkIcon, MessageSquare, GitBranch } from 'lucide-react'
+import { MessageSquare, GitBranch } from 'lucide-react'
+import { ticketMenuEntries } from '@/components/board/ticket-menu'
 import { Input } from '@/components/ui/input'
 import { Avatar } from '@/components/ui/avatar'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
-import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
+import { useContextMenu } from '@/components/ui/context-menu'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
 import { archiveTask, createTask, updateTask, type Board, type BoardMember } from '@/lib/boards'
 import { assigneeInfo, type AssigneeInfo } from '@/lib/assignees'
 import { plainText } from '@/lib/plain-text'
 import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task, type TaskStatus } from '@/lib/task-const'
+import { useSession } from '@/lib/session'
 
 const COL_ACCENT: Record<string, string> = {
   inbox: 'var(--theme-muted)',
@@ -42,6 +44,7 @@ export function Kanban({
 }) {
   const qc = useQueryClient()
   const { data: fleet } = useAgents()
+  const { data: me } = useSession()
   const agents = fleet?.agents ?? []
   const canEdit = board.role === 'owner' || board.role === 'editor'
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
@@ -60,28 +63,23 @@ export function Kanban({
     return p ? (p.ticketRef ?? p.title) : null
   }
 
-  // Right-click a card — shortcuts to actions the card/board already offers.
-  const cardMenu = (e: React.MouseEvent, t: Task) => {
-    const items: ContextMenuEntry[] = [
-      { label: 'Open', icon: <ExternalLink size={14} />, onSelect: () => onOpen(t.id) },
-      { label: 'Copy link', icon: <LinkIcon size={14} />, onSelect: () => copyAppLink(`/boards/${t.boardId}/${t.id}`) },
-    ]
-    if (t.ticketRef) {
-      const ref = t.ticketRef
-      items.push({ label: 'Copy ticket ref', icon: <Hash size={14} />, onSelect: () => void navigator.clipboard.writeText(ref) })
-    }
-    if (canEdit) {
-      items.push('sep', {
-        label: t.archivedAt ? 'Unarchive' : 'Archive',
-        icon: <Archive size={14} />,
-        danger: !t.archivedAt,
-        onSelect: () => {
-          void archiveTask(t.id, !t.archivedAt).then(invalidate)
-        },
-      })
-    }
-    openMenu(e, items)
+  const patch = async (taskId: string, p: Parameters<typeof updateTask>[1]) => {
+    await updateTask(taskId, p)
+    invalidate()
   }
+
+  // Right-click a card — the shared ticket menu (quick controls + shortcuts).
+  const cardMenu = (e: React.MouseEvent, t: Task) =>
+    openMenu(
+      e,
+      ticketMenuEntries(t, {
+        canEdit,
+        meId: me?.id,
+        onOpen: () => onOpen(t.id),
+        onPatch: (p) => void patch(t.id, p),
+        onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
+      }),
+    )
 
   const addTo = async (status: TaskStatus, title: string) => {
     const { task } = await createTask(board.id, { title })

@@ -132,6 +132,7 @@ export async function createTask(input: {
   dueDate?: string | null
   estimatedHours?: number | null
   parentId?: string | null
+  tags?: string[]
   createdBy: string
 }): Promise<Task> {
   const sql = await db()
@@ -142,10 +143,10 @@ export async function createTask(input: {
     const seq = await tx`update boards set ticket_seq = ticket_seq + 1, updated_at = now() where id = ${input.boardId} returning ticket_seq`
     const ticketNo = (seq[0] as { ticket_seq: number }).ticket_seq
     const rows = await tx`
-      insert into tasks (board_id, ticket_no, title, description, priority, effort, assignees, due_date, estimated_hours, parent_id, created_by, status)
+      insert into tasks (board_id, ticket_no, title, description, priority, effort, assignees, due_date, estimated_hours, parent_id, tags, created_by, status)
       values (${input.boardId}, ${ticketNo}, ${input.title}, ${input.description ?? null}, ${input.priority ?? 'medium'},
               ${input.effort ?? null}, ${sql.json(assignees)}, ${input.dueDate ?? null}, ${input.estimatedHours ?? null},
-              ${input.parentId ?? null}, ${input.createdBy}, ${status})
+              ${input.parentId ?? null}, ${sql.json(input.tags ?? [])}, ${input.createdBy}, ${status})
       returning id
     `
     return (rows[0] as { id: string }).id

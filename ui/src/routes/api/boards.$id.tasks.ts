@@ -56,6 +56,7 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
             dueDate: z.string().datetime().nullish(),
             estimatedHours: z.number().min(0).max(999).nullish(),
             parentId: z.string().uuid().nullish(),
+            tags: z.array(z.string().max(40)).max(20).optional(),
           })
           .safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
@@ -90,6 +91,7 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
             dueDate: parsed.data.dueDate ?? null,
             estimatedHours: parsed.data.estimatedHours ?? null,
             parentId: parsed.data.parentId ?? null,
+            tags: parsed.data.tags,
             createdBy: who.actor,
           })
         } catch (e) {
