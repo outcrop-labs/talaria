@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { cn } from '@/lib/cn'
 import { Avatar } from '@/components/ui/avatar'
+import { popPanel, popRow } from '@/components/chat/chat-chrome'
 
 /** A composer mention option: `insert` is the token typed into the message. */
 export interface Mentionable {
@@ -85,7 +86,7 @@ export function MentionMenu({
   className?: string
 }) {
   return (
-    <div className={cn('mercury-panel z-10 w-64 overflow-hidden rounded-xl p-1', className)}>
+    <div className={cn(popPanel, 'z-10 w-64 overflow-hidden', className)}>
       {mention.options.map((a, i) => (
         <button
           key={`${a.insert}-${a.sub ?? ''}`}
@@ -94,14 +95,13 @@ export function MentionMenu({
             e.preventDefault()
             onPick(a.insert)
           }}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm',
-            i === picked ? 'bg-card text-fg' : 'text-muted',
-          )}
+          className={cn(popRow, i === picked ? 'bg-hover text-fg' : 'text-muted')}
         >
           <Avatar name={a.label} className="h-5 w-5 text-xs" />
           <span className="truncate">{a.label}</span>
-          {a.sub && <span className="ml-auto truncate text-xs text-muted">{a.sub}</span>}
+          {a.sub && (
+            <span className="ml-auto max-w-28 truncate font-mono text-[10px] tracking-[0.05em] text-ink-dim">{a.sub}</span>
+          )}
         </button>
       ))}
     </div>

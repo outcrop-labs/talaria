@@ -13,14 +13,17 @@ export interface GuardFinding {
 export function GuardCaveat({ findings }: { findings?: GuardFinding[] | null }) {
   if (!findings?.length) return null
   return (
-    <div
-      className="mt-2 space-y-1 rounded-lg border px-2.5 py-2 text-xs"
-      style={{ borderColor: 'var(--theme-warning)', color: 'var(--theme-warning)' }}
-    >
-      <div className="font-semibold">Unverified: the confab guard flagged this reply</div>
+    // Attention panel (spec §8): gold hairline + mono uppercase label; body
+    // stays readable sans on the readout tone.
+    <div className="mt-2 space-y-1 rounded-md border px-2.5 py-2 text-xs" style={{ borderColor: 'var(--theme-warning)' }}>
+      <div className="font-mono text-[10px] uppercase tracking-[0.08em]" style={{ color: 'var(--theme-warning)' }}>
+        Unverified · confab guard flagged this reply
+      </div>
       {findings.map((f, i) => (
-        <div key={`${f.check}-${i}`} className="text-fg">
-          <span className="uppercase tracking-wide">{f.check.replace(/_/g, ' ')}</span>
+        <div key={`${f.check}-${i}`} className="font-sans text-fg">
+          <span className="font-mono text-[10px] uppercase tracking-[0.05em]" style={{ color: 'var(--theme-warning)' }}>
+            {f.check.replace(/_/g, ' ')}
+          </span>
           {' · '}
           {f.message}
           {f.snippet ? <span className="text-muted"> ({f.snippet})</span> : null}

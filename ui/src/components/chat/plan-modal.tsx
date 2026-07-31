@@ -173,7 +173,7 @@ export function PlanModal({
             </p>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Planner</label>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Planner</label>
                 <Select value={picked?.id ?? ''} size="sm" onChange={(e) => setAgentModel(e.target.value)} className="w-full">
                   {agents.map((a) => (
                     <option key={a.id} value={a.id}>
@@ -183,7 +183,7 @@ export function PlanModal({
                 </Select>
               </div>
               <div>
-                <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Model tier</label>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Model tier</label>
                 <Select value={tier} size="sm" onChange={(e) => setTier(e.target.value)} className="w-full">
                   <option value="">main</option>
                   {tiers.map((t) => (
@@ -194,7 +194,7 @@ export function PlanModal({
                 </Select>
               </div>
               <div>
-                <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Board</label>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Board</label>
                 {boardsLoading ? (
                   // Select-shaped stand-in (sm control = h-9) so the field —
                   // and why Draft is still disabled — is visible on open.
@@ -211,7 +211,7 @@ export function PlanModal({
                 )}
               </div>
               <div>
-                <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Ticket template</label>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Ticket template</label>
                 {templatesLoading ? (
                   <Skeleton className="h-9 w-full rounded-xl" delay={0.12} />
                 ) : (
@@ -293,7 +293,7 @@ function ProposalCard({
     .filter(({ j }) => j !== index && !p.dependsOn.includes(j))
 
   return (
-    <div className={`rounded-xl border border-line-subtle p-4 ${p.include ? '' : 'opacity-50'}`}>
+    <div className={`rounded-lg border border-line bg-panel p-4 ${p.include ? '' : 'opacity-50'}`}>
       <div className="flex items-center gap-2">
         <input
           type="checkbox"
@@ -332,9 +332,9 @@ function ProposalCard({
             <RichEditor value={p.description} onSave={(md) => onPatch({ description: md })} autosave minHeight="8rem" />
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] uppercase tracking-wide text-muted">Blocked by</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Blocked by</span>
             {p.dependsOn.map((d) => (
-              <span key={d} className="inline-flex items-center gap-1 rounded-full border border-line-subtle px-2 py-0.5 text-xs text-fg">
+              <span key={d} className="inline-flex items-center gap-1 rounded-md border border-line bg-raised px-2 py-0.5 text-xs text-fg">
                 #{d + 1} {short(all[d]?.title ?? '')}
                 <button
                   type="button"

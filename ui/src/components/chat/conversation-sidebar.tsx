@@ -1,13 +1,47 @@
 // The plan rail — LEFT, on the shared Rail primitives (agent picker up top,
-// this agent's plans below, plans shared with you at the end).
+// this agent's plans below, plans shared with you at the end). Rows follow
+// the Gentle dew session-list pattern (spec §10): status dot, 13px sans
+// title, right-aligned mono meta/time; the active row carries the gold dot.
 import { Plus } from 'lucide-react'
 import { useHasPerm } from '@/lib/session'
 import { AgentPicker } from '@/components/chat/agent-picker'
 import { IconButton } from '@/components/ui/icon-button'
 import { Rail, RailRow, RailSection } from '@/components/app/surface'
 import { SkeletonRows } from '@/components/ui/skeleton'
+import { relativeTime } from '@/lib/fleet'
 import type { AgentModel } from '@/lib/agents'
 import type { Conversation } from '@/lib/conversations'
+
+/** §10 session row content: [status dot] [13px title] [mono owner] [mono time]. */
+function SessionRowBody({ conv, active }: { conv: Conversation; active: boolean }) {
+  // Semantic first (spec §1): failure orange, working green; the active row's
+  // dot reads gold, idle rows stay dim ink.
+  const dot = conv.failed
+    ? 'var(--theme-danger)'
+    : conv.working
+      ? 'var(--theme-success)'
+      : active
+        ? 'var(--theme-accent)'
+        : 'var(--theme-ink-dim)'
+  return (
+    <>
+      <span
+        aria-hidden
+        className="h-[6px] w-[6px] shrink-0 rounded-full"
+        style={{ backgroundColor: dot }}
+      />
+      <span className="min-w-0 flex-1 truncate font-sans text-[13px]">{conv.title || 'Untitled'}</span>
+      {conv.ownerLabel && (
+        <span className="max-w-16 shrink-0 truncate font-mono text-[10px] tracking-[0.05em] text-muted">
+          {conv.ownerLabel}
+        </span>
+      )}
+      <span className="shrink-0 font-mono text-[10px] tracking-[0.05em] text-ink-dim">
+        {relativeTime(conv.updatedAt)}
+      </span>
+    </>
+  )
+}
 
 export function ConversationSidebar({
   agents,
@@ -54,10 +88,7 @@ export function ConversationSidebar({
         <ul className="space-y-0.5">
           {agentConvs.map((c) => (
             <RailRow key={c.id} active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)}>
-              <span className="min-w-0 flex-1 truncate">{c.title || 'Untitled'}</span>
-              {c.role === 'collaborator' && c.ownerLabel && (
-                <span className="shrink-0 text-[10px] text-muted">{c.ownerLabel}</span>
-              )}
+              <SessionRowBody conv={c} active={c.id === selectedConversationId} />
             </RailRow>
           ))}
         </ul>
@@ -69,8 +100,7 @@ export function ConversationSidebar({
           <RailSection label="Shared with you">
             {sharedElsewhere.map((c) => (
               <RailRow key={c.id} active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)}>
-                <span className="min-w-0 flex-1 truncate">{c.title || 'Untitled'}</span>
-                {c.ownerLabel && <span className="shrink-0 text-[10px] text-muted">{c.ownerLabel}</span>}
+                <SessionRowBody conv={c} active={c.id === selectedConversationId} />
               </RailRow>
             ))}
           </RailSection>

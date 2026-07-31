@@ -13,13 +13,13 @@ export const THEMES: Array<{
   {
     id: 'mercury',
     label: 'Mercury',
-    description: 'Basalt near-black with violet→magenta neon: the winged-sandal HUD',
+    description: 'Near-black instrument surfaces with a warm gold signal (Gentle dew, default)',
     icon: '☿',
   },
   {
     id: 'mercury-light',
     label: 'Mercury Light',
-    description: 'Pale regolith grey with a deep violet accent: daylight HUD',
+    description: 'Warm paper-white surfaces with a deep gold accent (Gentle dew daylight)',
     icon: '☾',
   },
 ]

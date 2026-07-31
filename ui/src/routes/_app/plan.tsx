@@ -231,6 +231,8 @@ function PlanPage() {
                 agentModel={selectedAgent}
                 agentLabel={current.label}
                 tiers={current.tiers ?? []}
+                agents={agents}
+                onAgentChange={selectAgent}
                 conversationId={selectedConversationId}
                 newChatSignal={newChatSignal}
                 onCreated={onCreated}

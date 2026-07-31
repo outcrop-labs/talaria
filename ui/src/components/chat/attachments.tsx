@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Paperclip, X, FileText, Loader2, BookOpen, Gem, Upload, Search } from 'lucide-react'
+import { X, FileText, Loader2, BookOpen, Gem, Upload } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
-import { Input } from '@/components/ui/input'
+import { cn } from '@/lib/cn'
 import { SkeletonRows } from '@/components/ui/skeleton'
+import { PopSearch, popPanel, popRow, tileBase } from '@/components/chat/chat-chrome'
 import { searchKb } from '@/lib/kb'
 import { attachmentUrl, humanSize, isImage, uploadFile, type Attachment } from '@/lib/attachments'
 
@@ -43,11 +44,12 @@ export function AttachButton({ onAttach, disabled }: { onAttach: (a: Attachment)
     }
   }
 
-  const item = 'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-sidebar'
+  const item = cn(popRow, 'text-[13px] text-fg')
 
   return (
     <div ref={wrapRef} className="relative">
       <input ref={fileRef} type="file" multiple hidden onChange={(e) => void pickFiles(e.target.files)} />
+      {/* The `+` attach tile: 36×36, radius 6, hairline border, mono glyph (spec §7). */}
       <button
         type="button"
         title="Attach knowledge, artifacts, or files"
@@ -56,12 +58,12 @@ export function AttachButton({ onAttach, disabled }: { onAttach: (a: Attachment)
           setOpen((v) => !v)
           setPick(null)
         }}
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-sidebar hover:text-fg disabled:opacity-40"
+        className={cn(tileBase, 'font-mono text-base leading-none')}
       >
-        {busy ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
+        {busy ? <Loader2 size={14} className="animate-spin" /> : <span aria-hidden>+</span>}
       </button>
       {open && (
-        <div className="absolute bottom-full left-0 z-30 mb-1 w-64 rounded-xl border border-line bg-card p-1 shadow-lg">
+        <div className={cn(popPanel, 'absolute bottom-full left-0 z-30 mb-1.5 w-64')}>
           {pick ? (
             <RefPicker
               kind={pick}
@@ -136,17 +138,8 @@ function RefPicker({ kind, onPick }: { kind: 'kb-doc' | 'artifact'; onPick: (a: 
 
   return (
     <div className="p-1">
-      <div className="mb-1 flex items-center gap-1.5 rounded-lg border border-line-subtle px-2">
-        <Search size={12} className="shrink-0 text-muted" />
-        <Input
-          autoFocus
-          size="sm"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder={kind === 'kb-doc' ? 'Search knowledge' : 'Search artifacts'}
-          className="border-0 bg-transparent px-0 focus:border-0"
-        />
-      </div>
+      {/* Popover search row (spec §7 popover pattern: mono placeholder, ⌘K hint). */}
+      <PopSearch value={q} onChange={setQ} placeholder={kind === 'kb-doc' ? 'Search knowledge' : 'Search artifacts'} />
       <div className="max-h-48 overflow-y-auto">
         {loading && <SkeletonRows rows={3} className="px-2 py-2" />}
         {!loading && results.length === 0 && (
@@ -157,7 +150,7 @@ function RefPicker({ kind, onPick }: { kind: 'kb-doc' | 'artifact'; onPick: (a: 
             key={r.id}
             type="button"
             onClick={() => onPick({ id: r.id, filename: r.title, mime: `ref/${kind}`, size: 0, refType: kind })}
-            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-sidebar"
+            className={cn(popRow, 'text-[13px] text-fg')}
           >
             {kind === 'kb-doc' ? <BookOpen size={13} className="shrink-0 text-muted" /> : <Gem size={13} className="shrink-0 text-muted" />}
             <span className="min-w-0 flex-1 truncate">{r.title}</span>
@@ -171,13 +164,14 @@ function RefPicker({ kind, onPick }: { kind: 'kb-doc' | 'artifact'; onPick: (a: 
 const refIcon = (refType: string) =>
   refType === 'kb-doc' ? <BookOpen size={14} className="shrink-0 text-muted" /> : <Gem size={14} className="shrink-0 text-muted" />
 
-// The pending-attachments strip above the composer (with remove buttons).
+// The pending-attachments strip above the composer's prompt well (with
+// remove buttons) — raised chips on the composer panel.
 export function PendingAttachments({ items, onRemove }: { items: Attachment[]; onRemove: (id: string) => void }) {
   if (!items.length) return null
   return (
-    <div className="flex flex-wrap gap-2 px-2 pb-2">
+    <div className="flex flex-wrap gap-2">
       {items.map((a) => (
-        <div key={a.id} className="flex items-center gap-2 rounded-lg border border-line-subtle bg-card/50 px-2 py-1 text-xs">
+        <div key={a.id} className="flex items-center gap-2 rounded-md border border-line bg-raised px-2 py-1 font-sans text-xs">
           {a.refType ? (
             refIcon(a.refType)
           ) : isImage(a.mime) ? (
@@ -208,7 +202,7 @@ export function MessageAttachments({ items }: { items: Attachment[] }) {
         <div className="flex flex-wrap gap-2">
           {images.map((a) => (
             <a key={a.id} href={attachmentUrl(a.id)} target="_blank" rel="noreferrer">
-              <img src={attachmentUrl(a.id)} alt={a.filename} className="max-h-48 rounded-xl border border-line-subtle object-cover" />
+              <img src={attachmentUrl(a.id)} alt={a.filename} className="max-h-48 rounded-md border border-line object-cover" />
             </a>
           ))}
         </div>
@@ -217,7 +211,7 @@ export function MessageAttachments({ items }: { items: Attachment[] }) {
         <Link
           key={a.id}
           to={a.refType === 'kb-doc' ? '/knowledge' : '/artifacts'}
-          className="inline-flex items-center gap-2 rounded-lg border border-line-subtle bg-card/50 px-2.5 py-1.5 text-xs text-fg transition-colors hover:border-accent"
+          className="inline-flex items-center gap-2 rounded-md border border-line bg-raised px-2.5 py-1.5 font-sans text-xs text-fg transition-colors hover:border-line-strong"
           title={a.refType === 'kb-doc' ? 'Attached knowledge doc' : 'Attached artifact'}
         >
           {refIcon(a.refType!)}
@@ -230,11 +224,11 @@ export function MessageAttachments({ items }: { items: Attachment[] }) {
           href={attachmentUrl(a.id)}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-2 rounded-lg border border-line-subtle bg-card/50 px-2.5 py-1.5 text-xs text-fg transition-colors hover:border-accent"
+          className="inline-flex items-center gap-2 rounded-md border border-line bg-raised px-2.5 py-1.5 font-sans text-xs text-fg transition-colors hover:border-line-strong"
         >
           <FileText size={14} className="text-muted" />
           <span className="max-w-48 truncate">{a.filename}</span>
-          <span className="text-muted">{humanSize(a.size)}</span>
+          <span className="font-mono text-[10px] tracking-[0.05em] text-muted">{humanSize(a.size)}</span>
         </a>
       ))}
     </div>

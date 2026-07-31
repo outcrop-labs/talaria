@@ -1,12 +1,22 @@
-import { useState } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { Plus, Users, Archive, ExternalLink, Link as LinkIcon } from 'lucide-react'
+import {
+  Archive,
+  ChevronsLeft,
+  ChevronsRight,
+  ExternalLink,
+  Link as LinkIcon,
+  Plus,
+  Users,
+} from 'lucide-react'
 import { useContextMenu, copyAppLink } from '@/components/ui/context-menu'
 import { TeamsModal } from '@/components/board/teams-modal'
 import { CreateBoardModal } from '@/components/board/create-board-modal'
 import { alert } from '@/components/ui/confirm'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Brand, WingMark } from '@/components/brand'
 import { cn } from '@/lib/cn'
 import { NAV, type NavItem } from '@/lib/nav'
 import { useBoards, useArchivedBoards, moveBoardToTeam, type Board } from '@/lib/boards'
@@ -15,14 +25,31 @@ import { useNotifications } from '@/lib/notifications'
 import { useDeniedViews, useHasPerm, type SessionUser } from '@/lib/session'
 import { useEnabledApps } from '@/lib/apps'
 
-// The main application menu. The Boards item expands to the user's boards
-// (grouped by team) when that section is active.
+// Gentle dew shell (spec §5): one collapsible nav — 208px sidebar ⇄ 64px icon
+// rail. The choice persists in localStorage; the loading skeleton in _app.tsx
+// reads the same key so the frame never jumps on hydrate.
+const NAV_COLLAPSED_KEY = 'talaria:nav-collapsed'
+
+export function navCollapsedInitial(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(NAV_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+// The main application menu. Expanded: WORK/MANAGE/SYSTEM sections with the
+// Boards sublist; collapsed: 36px icon tiles with tooltips. Active state uses
+// TanStack Router's data-status attribute so the Link's activeOptions remain
+// the single source of truth for matching.
 export function NavRail({ user }: { user: SessionUser }) {
   const isAdmin = user.role === 'admin'
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const denied = useDeniedViews()
   const [creating, setCreating] = useState(false)
   const [teamsOpen, setTeamsOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(navCollapsedInitial)
   const unread = useNotifications().data?.unread ?? 0
   // Enabled apps slot into the sections as if they shipped with the platform:
   // work surfaces under Work, manage surfaces under Manage (grant-gated like
@@ -33,35 +60,131 @@ export function NavRail({ user }: { user: SessionUser }) {
     Manage: apps.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage!, icon: a.icon })),
   }
 
+  const toggleCollapsed = () =>
+    setCollapsed((v) => {
+      const next = !v
+      try {
+        window.localStorage.setItem(NAV_COLLAPSED_KEY, next ? '1' : '0')
+      } catch {
+        /* private mode — state simply won't persist */
+      }
+      return next
+    })
+
+  // Denied-view + role filtering, shared by both modes.
+  const sections = NAV.flatMap((section) => {
+    if (section.adminOnly && !isAdmin) return []
+    const items = [...section.items, ...(appItems[section.title] ?? [])].filter(
+      (i) => (!i.adminOnly || isAdmin) && !denied.includes(i.to) && !denied.some((d) => i.to.startsWith(d + '/')),
+    )
+    return items.length === 0 ? [] : [{ title: section.title, items }]
+  })
+
+  // Exact for Home and for app WORK items: /x/<slug> is a path prefix of its
+  // sibling /x/<slug>/manage, and fuzzy matching would light both up at once.
+  const exactFor = (item: NavItem) => item.to === '/' || appItems.Manage!.some((m) => m.to.startsWith(item.to + '/'))
+
+  const modals = (
+    <>
+      <CreateBoardModal open={creating} onClose={() => setCreating(false)} />
+      <TeamsModal open={teamsOpen} onClose={() => setTeamsOpen(false)} />
+    </>
+  )
+
+  if (collapsed) {
+    // ── Icon rail (64px, spec §5) ─────────────────────────────────────────
+    return (
+      <nav className="flex h-full w-16 shrink-0 flex-col items-center border-r border-line bg-sidebar pb-5 pt-3">
+        <div className="grid h-9 w-9 shrink-0 place-items-center" aria-label="Talaria">
+          <WingMark className="h-5 w-5" />
+        </div>
+
+        <div className="mt-3 flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
+          {sections.map((section, si) => (
+            <Fragment key={section.title}>
+              {si > 0 && <div className="my-2 h-px w-6 shrink-0 bg-line" />}
+              {section.items.map((item) => (
+                <RailTooltip key={item.to} label={item.label}>
+                  <Link
+                    to={item.to}
+                    activeOptions={{ exact: exactFor(item) }}
+                    aria-label={item.label}
+                    className={cn(
+                      'relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg',
+                      'data-[status=active]:bg-raised data-[status=active]:text-fg',
+                      '[&[data-status=active]_svg]:h-[22px] [&[data-status=active]_svg]:w-[22px]',
+                    )}
+                  >
+                    <NavIcon icon={item.icon} />
+                    {item.to === '/' && unread > 0 && (
+                      <span className="absolute right-0.5 top-0 font-mono text-[10px] leading-3 tracking-[0.05em] text-muted">
+                        {unread}
+                      </span>
+                    )}
+                  </Link>
+                </RailTooltip>
+              ))}
+            </Fragment>
+          ))}
+        </div>
+
+        <div className="mt-3 flex shrink-0 flex-col items-center gap-3">
+          <RailTooltip label="Expand">
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              aria-label="Expand navigation"
+              className="grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg"
+            >
+              <ChevronsRight size={16} strokeWidth={1.5} />
+            </button>
+          </RailTooltip>
+          <RailTooltip label={user.name ?? user.email ?? 'Account'}>
+            <div className="grid h-[26px] w-[26px] place-items-center rounded-full border border-line-strong bg-raised font-mono text-[10px] font-medium tracking-[0.05em] text-muted">
+              {userInitials(user)}
+            </div>
+          </RailTooltip>
+        </div>
+
+        {modals}
+      </nav>
+    )
+  }
+
+  // ── Sidebar (208px, spec §5) ────────────────────────────────────────────
   return (
-    <nav className="flex h-full w-56 shrink-0 flex-col gap-6 overflow-y-auto border-r border-line-subtle bg-sidebar px-3 py-5">
-      {NAV.map((section) => {
-        if (section.adminOnly && !isAdmin) return null
-        const items = [...section.items, ...(appItems[section.title] ?? [])].filter(
-          (i) => (!i.adminOnly || isAdmin) && !denied.includes(i.to) && !denied.some((d) => i.to.startsWith(d + '/')),
-        )
-        if (items.length === 0) return null
-        return (
+    <nav className="flex h-full w-[208px] shrink-0 flex-col border-r border-line bg-sidebar px-3 pb-4 pt-5">
+      <div className="flex h-6 shrink-0 items-center">
+        <Brand />
+      </div>
+
+      <div className="mt-5 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+        {sections.map((section) => (
           <div key={section.title}>
-            <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted">{section.title}</div>
-            <ul className="space-y-0.5">
-              {items.map((item) => (
+            <div className="flex h-6 items-center px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+              {section.title}
+            </div>
+            <ul className="space-y-px">
+              {section.items.map((item) => (
                 <li key={item.to}>
                   <Link
                     to={item.to}
-                    // Exact for Home and for app WORK items: /x/<slug> is a
-                    // path prefix of its sibling /x/<slug>/manage, and fuzzy
-                    // matching would light both up at once.
-                    activeOptions={{ exact: item.to === '/' || appItems.Manage!.some((m) => m.to.startsWith(item.to + '/')) }}
-                    className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted transition-colors hover:bg-card hover:text-fg"
-                    activeProps={{ className: 'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm bg-card text-fg [&_.nav-ico]:text-accent' }}
+                    activeOptions={{ exact: exactFor(item) }}
+                    className={cn(
+                      'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg',
+                      'data-[status=active]:bg-raised data-[status=active]:font-medium data-[status=active]:text-fg',
+                      '[&[data-status=active]_.nav-bar]:bg-accent [&[data-status=active]_.nav-ico]:text-fg',
+                    )}
                   >
-                    <span className="nav-ico w-4 text-center text-muted">{item.icon}</span>
+                    <span className="nav-bar h-3.5 w-[3px] shrink-0 rounded-[2px] bg-transparent" aria-hidden />
+                    <span className="nav-ico grid h-4 w-4 shrink-0 place-items-center text-muted">
+                      <NavIcon icon={item.icon} />
+                    </span>
                     <span className="flex-1 truncate">{item.label}</span>
                     {item.to === '/' && unread > 0 && (
-                      <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-surface">{unread}</span>
+                      // Spec §5: nav counts are muted (#8E877E) — not accent.
+                      <span className="font-mono text-[10px] leading-3 tracking-[0.05em] text-muted">{unread}</span>
                     )}
-                    {item.adminOnly && <span className="text-[10px] text-accent">admin</span>}
                   </Link>
                   {item.to === '/boards' && pathname.startsWith('/boards') && (
                     <BoardsSublist activePath={pathname} onNew={() => setCreating(true)} onTeams={() => setTeamsOpen(true)} />
@@ -70,12 +193,68 @@ export function NavRail({ user }: { user: SessionUser }) {
               ))}
             </ul>
           </div>
-        )
-      })}
+        ))}
+      </div>
 
-      <CreateBoardModal open={creating} onClose={() => setCreating(false)} />
-      <TeamsModal open={teamsOpen} onClose={() => setTeamsOpen(false)} />
+      <div className="mt-4 flex h-5 shrink-0 items-center gap-2 px-1">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" aria-hidden />
+        <span className="truncate font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Local · Operator</span>
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          aria-label="Collapse navigation"
+          className="ml-auto grid h-5 w-5 shrink-0 place-items-center rounded text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg"
+        >
+          <ChevronsLeft size={13} strokeWidth={1.5} />
+        </button>
+      </div>
+
+      {modals}
     </nav>
+  )
+}
+
+// Core items carry lucide components; enabled apps inject string glyphs from
+// their manifest — both render at the 16px icon slot.
+function NavIcon({ icon }: { icon: NavItem['icon'] }) {
+  if (typeof icon === 'string')
+    return <span className="grid h-4 w-4 place-items-center text-[13px] leading-none">{icon}</span>
+  const Icon = icon
+  return <Icon size={16} strokeWidth={1.5} />
+}
+
+function userInitials(user: SessionUser): string {
+  const base = user.name?.trim() || user.email || '?'
+  const words = base.split(/\s+/).filter(Boolean)
+  const init = words.length >= 2 ? `${words[0]!.charAt(0)}${words[1]!.charAt(0)}` : base.slice(0, 2)
+  return init.toUpperCase()
+}
+
+// Rail tooltips render into a portal at a fixed position so the rail's
+// scroll container can't clip them.
+function RailTooltip({ label, children }: { label: string; children: ReactNode }) {
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  return (
+    <div
+      onMouseEnter={(e) => {
+        const r = e.currentTarget.getBoundingClientRect()
+        setPos({ x: r.right + 8, y: r.top + r.height / 2 })
+      }}
+      onMouseLeave={() => setPos(null)}
+      onClick={() => setPos(null)}
+    >
+      {children}
+      {pos &&
+        createPortal(
+          <div
+            style={{ left: pos.x, top: pos.y }}
+            className="pointer-events-none fixed z-50 -translate-y-1/2 whitespace-nowrap rounded-md border border-line bg-raised px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-fg"
+          >
+            {label}
+          </div>,
+          document.body,
+        )}
+    </div>
   )
 }
 
@@ -131,8 +310,8 @@ function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onN
         setOverGroup(null)
       }}
       className={cn(
-        'block truncate rounded-md px-2 py-1 text-xs transition-colors hover:bg-card hover:text-fg',
-        activePath === `/boards/${b.id}` ? 'bg-card text-fg' : 'text-muted',
+        'block truncate rounded-md px-2 py-1 text-xs transition-colors duration-[120ms] hover:bg-hover hover:text-fg',
+        activePath === `/boards/${b.id}` ? 'bg-raised text-fg' : 'text-muted',
         dragging?.id === b.id && 'opacity-40',
       )}
     >
@@ -173,9 +352,9 @@ function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onN
             e.preventDefault()
             void drop(g.teamId, group)
           }}
-          className={cn(dragging && overGroup === group && 'rounded-md bg-card ring-1 ring-[color:var(--theme-accent-border)]')}
+          className={cn(dragging && overGroup === group && 'rounded-md bg-raised ring-1 ring-[color:var(--theme-accent-border)]')}
         >
-          <div className="px-2 text-[9px] font-semibold uppercase tracking-wider text-muted opacity-70">{group}</div>
+          <div className="px-2 font-mono text-[9px] uppercase tracking-[0.08em] text-ink-dim">{group}</div>
           <ul className="space-y-0.5">
             {g.boards.map((b) => (
               <li key={b.id}>{boardLink(b)}</li>
@@ -191,7 +370,7 @@ function BoardsSublist({ activePath, onNew, onTeams }: { activePath: string; onN
         <div>
           <button
             onClick={() => setShowArchived((v) => !v)}
-            className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-muted opacity-70 transition-colors hover:text-fg"
+            className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-ink-dim transition-colors duration-[120ms] hover:text-fg"
           >
             <Archive size={11} /> Archived ({archived.length}) <span className="ml-auto">{showArchived ? '▾' : '▸'}</span>
           </button>
@@ -216,11 +395,11 @@ function SublistFooter({ onNew, onTeams }: { onNew: () => void; onTeams: () => v
   return (
     <div className="flex flex-col gap-0.5">
       {mayCreate && (
-        <button onClick={onNew} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:text-accent">
+        <button onClick={onNew} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors duration-[120ms] hover:text-accent">
           <Plus size={13} /> New board
         </button>
       )}
-      <button onClick={onTeams} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:text-accent">
+      <button onClick={onTeams} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors duration-[120ms] hover:text-accent">
         <Users size={13} /> Manage teams
       </button>
     </div>

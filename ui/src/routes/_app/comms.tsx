@@ -364,6 +364,7 @@ function CommsPage() {
             fleet={fleet}
             conversationId={sel.conversationId}
             newChatSignal={fresh}
+            onSwitchAgent={openAgent}
             onNewThread={() => newThread(sel.model)}
             onCreated={(id) => {
               setSel({ t: 'agent', model: sel.model, conversationId: id })
@@ -486,6 +487,7 @@ function AgentDmPane({
   fleet,
   conversationId,
   newChatSignal,
+  onSwitchAgent,
   onNewThread,
   onCreated,
 }: {
@@ -493,6 +495,9 @@ function AgentDmPane({
   fleet: { id: string; label: string; tiers?: string[] }[]
   conversationId: string | null
   newChatSignal: number
+  /** The composer rail's agent chip switches agents route-level — same
+   *  behavior as clicking the agent in the sidebar (working thread or fresh). */
+  onSwitchAgent: (model: string) => void
   onNewThread: () => void
   onCreated: (id: string) => void
 }) {
@@ -513,6 +518,8 @@ function AgentDmPane({
           agentModel={model}
           agentLabel={agent.label}
           tiers={agent.tiers ?? []}
+          agents={fleet}
+          onAgentChange={onSwitchAgent}
           conversationId={conversationId}
           newChatSignal={newChatSignal}
           onCreated={onCreated}
