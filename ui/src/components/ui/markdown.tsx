@@ -73,7 +73,7 @@ const components: Partial<Components> = {
     const isBlock = /language-(\w+)/.test(className ?? '')
     if (!isBlock) {
       return (
-        <code className="rounded border border-line bg-card2 px-1.5 py-0.5 text-[0.85em] text-accent" {...props}>
+        <code className="rounded border border-line bg-card2 px-1.5 py-0.5 font-mono text-[0.85em] text-fg" {...props}>
           {children}
         </code>
       )
@@ -96,7 +96,7 @@ const components: Partial<Components> = {
   p: ({ children }) => <p className="leading-relaxed text-fg">{children}</p>,
   a: ({ children, href }) =>
     href?.startsWith('mention:') ? (
-      <span className="rounded bg-[color:var(--theme-accent)]/10 px-1 font-medium text-accent">{children}</span>
+      <span className="rounded bg-accent-soft px-1 font-medium text-accent">{children}</span>
     ) : (
       <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent underline decoration-[var(--theme-accent-border)] underline-offset-2 hover:decoration-accent">
         {children}
@@ -121,13 +121,17 @@ const components: Partial<Components> = {
         <img src={src} alt={alt ?? ''} className="my-2 max-h-96 rounded-lg border border-line" />
       )
     ) : null,
+  // Tables per spec §8: hairline separators, sans cells, mono uppercase dim
+  // column headers, row hover on the body.
   table: ({ children }) => (
     <div className="my-3 max-w-full overflow-x-auto rounded-lg border border-line">
-      <table className="w-full border-collapse text-sm">{children}</table>
+      <table className="w-full border-collapse text-sm [&>tbody>tr]:transition-colors [&>tbody>tr:hover]:bg-card2">{children}</table>
     </div>
   ),
-  thead: ({ children }) => <thead className="border-b border-line bg-card2">{children}</thead>,
-  th: ({ children }) => <th className="px-3 py-2 text-left font-semibold text-fg">{children}</th>,
+  thead: ({ children }) => <thead className="border-b border-line">{children}</thead>,
+  th: ({ children }) => (
+    <th className="px-3 py-2 text-left font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-ink-dim">{children}</th>
+  ),
   td: ({ children }) => <td className="border-t border-line-subtle px-3 py-2 align-top text-fg">{children}</td>,
 }
 

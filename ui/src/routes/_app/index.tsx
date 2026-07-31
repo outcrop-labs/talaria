@@ -10,7 +10,8 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { Tabs } from '@/components/ui/tabs'
-import { Chip } from '@/components/ui/chip'
+import { Chip, StatusDot, type DotStatus } from '@/components/ui/chip'
+import { SectionHeader } from '@/components/ui/section-header'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AssistantWizard } from '@/components/assistant/assistant-wizard'
 import { NotificationsPanel } from '@/components/app/notifications-panel'
@@ -133,7 +134,7 @@ function HomePage() {
   return (
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-6xl space-y-6">
-        <h1 className="mercury-text text-2xl font-semibold">{greeting(session?.name ?? session?.email)}</h1>
+        <h1 className="font-sans text-2xl font-semibold tracking-tight text-fg">{greeting(session?.name ?? session?.email)}</h1>
 
         <Tabs
           value={tab}
@@ -143,9 +144,7 @@ function HomePage() {
             label: (
               <span className="flex items-center gap-1.5">
                 {t.label}
-                {t.badge !== undefined && (
-                  <span className="rounded-full bg-accent/15 px-1.5 text-[10px] font-semibold text-accent">{t.badge}</span>
-                )}
+                {t.badge !== undefined && <span className="font-medium text-accent">{t.badge}</span>}
               </span>
             ),
           }))}
@@ -195,17 +194,23 @@ function ActivityList({ kinds, title = 'Recent activity', collapsible = false }:
   return (
     <Panel>
       {collapsible ? (
-        <button type="button" onClick={() => setExpanded((v) => !v)} className={cn('flex items-center gap-2 text-left', expanded && 'mb-3')}>
-          {expanded ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted" />}
-          <span className="text-sm font-semibold text-fg">{title}</span>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className={cn('group flex min-h-6 items-center gap-2 text-left', expanded && 'mb-3')}
+        >
+          {expanded ? <ChevronDown size={12} className="text-muted" /> : <ChevronRight size={12} className="text-muted" />}
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim transition-colors group-hover:text-muted">
+            {title}
+          </span>
         </button>
       ) : (
-        <div className="mb-3 text-sm font-semibold text-fg">{title}</div>
+        <SectionHeader title={title} />
       )}
       {!expanded ? null : isLoading ? (
         <SkeletonRows rows={6} />
       ) : (data ?? []).length === 0 ? (
-        <div className="text-xs text-muted">Quiet so far.</div>
+        <EmptyState variant="inline" title="Quiet so far." />
       ) : (
         <ul className="space-y-1">
           {data!.slice(0, 12).map((a, i) => (
@@ -219,10 +224,10 @@ function ActivityList({ kinds, title = 'Recent activity', collapsible = false }:
 
 // ── Boards: board-scoped briefing, full queues behind a sidebar, audit trail ─
 type QueueKey = 'triage' | 'review' | 'blocked'
-const QUEUE_META: Record<QueueKey, { label: string; hint: string; accent: string }> = {
-  triage: { label: 'To triage', hint: 'New tickets waiting to be assigned', accent: 'var(--theme-accent)' },
-  review: { label: 'To review', hint: 'Agent work awaiting your sign-off', accent: 'var(--theme-success)' },
-  blocked: { label: 'Blocked', hint: 'Stalled, needs you to unblock', accent: 'var(--theme-warning)' },
+const QUEUE_META: Record<QueueKey, { label: string; hint: string; dot: DotStatus }> = {
+  triage: { label: 'To triage', hint: 'New tickets waiting to be assigned', dot: 'accent' },
+  review: { label: 'To review', hint: 'Agent work awaiting your sign-off', dot: 'ok' },
+  blocked: { label: 'Blocked', hint: 'Stalled, needs you to unblock', dot: 'warn' },
 }
 
 function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoading: boolean }) {
@@ -242,29 +247,33 @@ function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoadi
               type="button"
               onClick={() => setQueue(k)}
               className={cn(
-                'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors',
-                queue === k ? 'bg-card text-fg' : 'text-muted hover:bg-card hover:text-fg',
+                'flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left font-sans text-sm transition-colors',
+                queue === k ? 'bg-raised text-fg' : 'text-muted hover:bg-card2 hover:text-fg',
               )}
             >
-              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: QUEUE_META[k].accent }} />
+              <StatusDot status={QUEUE_META[k].dot} />
               <span className="min-w-0 flex-1 truncate">{QUEUE_META[k].label}</span>
               {isLoading ? (
                 <Skeleton className="h-3 w-6 rounded-full" />
               ) : (
-                <span className="shrink-0 text-xs text-muted">{data?.queues[k].count ?? 0}</span>
+                <span className="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{data?.queues[k].count ?? 0}</span>
               )}
             </button>
           ))}
         </aside>
         <Panel>
-          <div className="mb-1 text-sm font-semibold text-fg">{meta.label}</div>
-          <div className="mb-3 text-xs text-muted">{meta.hint}</div>
+          <SectionHeader
+            title={meta.label}
+            action={String(data?.queues[queue].count ?? items.length).padStart(2, '0') + ' open'}
+            className="mb-1"
+          />
+          <div className="mb-3 font-sans text-xs text-muted">{meta.hint}</div>
           {isLoading ? (
             <SkeletonRows rows={8} />
           ) : items.length === 0 ? (
-            <div className="py-6 text-center text-xs text-muted">All clear.</div>
+            <EmptyState variant="compact" title="All clear." />
           ) : (
-            <ul className="divide-y divide-line-subtle">
+            <ul className="divide-y divide-line">
               {items.map((w) => (
                 <li key={w.id}>
                   <button
@@ -281,12 +290,12 @@ function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoadi
                           : []),
                       ])
                     }
-                    className="flex w-full items-center gap-3 py-2.5 text-left"
+                    className="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-card2"
                   >
-                    {w.ticketRef && <span className="shrink-0 font-[var(--font-mono)] text-[11px] text-muted">{w.ticketRef}</span>}
+                    {w.ticketRef && <span className="shrink-0 font-mono text-[11px] text-muted">{w.ticketRef}</span>}
                     <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{w.title}</span>
-                    <span className="shrink-0 text-xs text-muted">{w.board}</span>
-                    <span className="shrink-0 text-xs text-muted">{relativeTime(w.updatedAt)}</span>
+                    <span className="shrink-0 font-sans text-xs text-muted">{w.board}</span>
+                    <span className="shrink-0 font-mono text-[11px] text-muted">{relativeTime(w.updatedAt)}</span>
                   </button>
                 </li>
               ))}
@@ -312,13 +321,13 @@ function CommsTab() {
     <div className="space-y-6">
       <AssistantBriefing scope="comms" />
       <Panel>
-        <div className="mb-3 text-sm font-semibold text-fg">Unread</div>
+        <SectionHeader title="Unread" action={unread.length > 0 ? String(unread.length).padStart(2, '0') : undefined} />
         {isLoading ? (
           <SkeletonRows rows={4} />
         ) : unread.length === 0 ? (
-          <div className="text-xs text-muted">All caught up.</div>
+          <EmptyState variant="inline" title="All caught up." />
         ) : (
-          <ul className="divide-y divide-line-subtle">
+          <ul className="divide-y divide-line">
             {unread.map((c) => (
               <li key={c.id}>
                 <button
@@ -330,11 +339,11 @@ function CommsTab() {
                       { label: 'Copy link', onSelect: () => copyAppLink(`/comms?c=${c.id}`) },
                     ])
                   }
-                  className="flex w-full items-center gap-3 py-2.5 text-left"
+                  className="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-card2"
                 >
                   <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{label(c)}</span>
-                  <span className="shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-semibold text-accent">{c.unreadCount}</span>
-                  <span className="shrink-0 text-xs text-muted">{relativeTime(c.updatedAt)}</span>
+                  <span className="shrink-0 font-mono text-[10px] font-medium tracking-[0.05em] text-accent">{c.unreadCount}</span>
+                  <span className="shrink-0 font-mono text-[11px] text-muted">{relativeTime(c.updatedAt)}</span>
                 </button>
               </li>
             ))}
@@ -358,13 +367,13 @@ function PlansTab() {
     <div className="space-y-6">
       <AssistantBriefing scope="plans" />
       <Panel>
-        <div className="mb-3 text-sm font-semibold text-fg">Plans</div>
+        <SectionHeader title="Plans" />
         {isLoading ? (
           <SkeletonRows rows={5} />
         ) : plans.length === 0 ? (
           <EmptyState variant="inline" title="No plans yet. Start one on /plan." />
         ) : (
-          <ul className="divide-y divide-line-subtle">
+          <ul className="divide-y divide-line">
             {plans.slice(0, 10).map((c) => (
               <li key={c.id}>
                 <button
@@ -376,16 +385,16 @@ function PlansTab() {
                       { label: 'Copy link', onSelect: () => copyAppLink(`/plan?p=${c.id}`) },
                     ])
                   }
-                  className="flex w-full items-center gap-3 py-2.5 text-left"
+                  className="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-card2"
                 >
-                  {c.working && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />}
+                  {c.working && <StatusDot status="accent" pulse />}
                   <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{c.title || 'Untitled plan'}</span>
-                  {c.failed && <span className="shrink-0 text-xs text-[color:var(--theme-danger)]">failed — open to retry →</span>}
+                  {c.failed && <span className="shrink-0 font-sans text-xs text-danger">failed — open to retry →</span>}
                   {c.role === 'collaborator' && c.ownerLabel && (
-                    <span className="shrink-0 text-[11px] text-muted">shared by {c.ownerLabel}</span>
+                    <span className="shrink-0 font-sans text-[11px] text-muted">shared by {c.ownerLabel}</span>
                   )}
-                  <span className="shrink-0 text-xs text-muted">{agentLabel(c.agentModel)}</span>
-                  <span className="shrink-0 text-xs text-muted">{relativeTime(c.updatedAt)}</span>
+                  <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{agentLabel(c.agentModel)}</span>
+                  <span className="shrink-0 font-mono text-[11px] text-muted">{relativeTime(c.updatedAt)}</span>
                 </button>
               </li>
             ))}
@@ -398,11 +407,11 @@ function PlansTab() {
 }
 
 // ── Research: runs in flight and fresh reports ──────────────────────────────
-const RUN_DOT: Record<string, string> = {
-  queued: 'var(--theme-warning)',
-  running: 'var(--theme-accent)',
-  done: 'var(--theme-success)',
-  error: 'var(--theme-danger)',
+const RUN_DOT: Record<string, DotStatus> = {
+  queued: 'warn',
+  running: 'accent',
+  done: 'ok',
+  error: 'danger',
 }
 
 function ResearchTab() {
@@ -413,13 +422,13 @@ function ResearchTab() {
     <div className="space-y-6">
       <AssistantBriefing scope="research" />
       <Panel>
-        <div className="mb-3 text-sm font-semibold text-fg">Research</div>
+        <SectionHeader title="Research" />
         {isLoading ? (
           <SkeletonRows rows={5} />
         ) : runs.length === 0 ? (
-          <div className="text-xs text-muted">Nothing researched yet. Ask something on /research.</div>
+          <EmptyState variant="inline" title="Nothing researched yet." hint="Ask something on /research." />
         ) : (
-          <ul className="divide-y divide-line-subtle">
+          <ul className="divide-y divide-line">
             {runs.slice(0, 10).map((r) => (
               <li key={r.id}>
                 <button
@@ -431,15 +440,15 @@ function ResearchTab() {
                       { label: 'Copy link', onSelect: () => copyAppLink(`/research?r=${r.id}`) },
                     ])
                   }
-                  className="flex w-full items-center gap-3 py-2.5 text-left"
+                  className="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-card2"
                 >
-                  <span className={cn('h-2 w-2 shrink-0 rounded-full', r.status === 'running' && 'animate-pulse')} style={{ background: RUN_DOT[r.status] ?? 'var(--theme-line)' }} />
+                  <StatusDot status={RUN_DOT[r.status] ?? 'idle'} pulse={r.status === 'running'} />
                   <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{r.question}</span>
-                  <span className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted">{r.mode}</span>
+                  <Chip>{r.mode}</Chip>
                   {r.status === 'error' ? (
-                    <span className="shrink-0 text-xs text-[color:var(--theme-danger)]">failed — open to re-run →</span>
+                    <span className="shrink-0 font-sans text-xs text-danger">failed — open to re-run →</span>
                   ) : (
-                    <span className="shrink-0 text-xs text-muted">{r.status}</span>
+                    <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{r.status}</span>
                   )}
                 </button>
               </li>
@@ -461,13 +470,13 @@ function DocsTab() {
   return (
     <div className="space-y-6">
       <Panel>
-        <div className="mb-3 text-sm font-semibold text-fg">Recently updated</div>
+        <SectionHeader title="Recently updated" />
         {isLoading ? (
           <SkeletonRows rows={6} />
         ) : recent.length === 0 ? (
           <EmptyState variant="inline" title="No documents yet." />
         ) : (
-          <ul className="divide-y divide-line-subtle">
+          <ul className="divide-y divide-line">
             {recent.map((a) => (
               <li key={a.id}>
                 <button
@@ -479,11 +488,11 @@ function DocsTab() {
                       { label: 'Copy link', onSelect: () => copyAppLink(`/artifacts?a=${a.id}`) },
                     ])
                   }
-                  className="flex w-full items-center gap-3 py-2.5 text-left"
+                  className="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-card2"
                 >
                   <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{a.title}</span>
-                  <span className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted">{a.kind}</span>
-                  <span className="shrink-0 text-xs text-muted">{relativeTime(a.updatedAt)}</span>
+                  <Chip>{a.kind}</Chip>
+                  <span className="shrink-0 font-mono text-[11px] text-muted">{relativeTime(a.updatedAt)}</span>
                 </button>
               </li>
             ))}
@@ -523,19 +532,19 @@ function FleetTab({ data }: { data: HomeSummary | undefined }) {
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <div className="space-y-4">
-        <div className="px-1 text-[11px] uppercase tracking-wide text-muted">{org.name || 'Your org'}</div>
+        <div className="px-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{org.name || 'Your org'}</div>
         <Panel>
           <div className="flex items-center gap-3">
-            <span
-              className="h-2.5 w-2.5 shrink-0 rounded-full"
-              style={{ background: fleet.down.length ? 'var(--theme-warning)' : 'var(--theme-success)' }}
-            />
-            <span className="text-sm font-semibold text-fg">Fleet</span>
-            <span className="min-w-0 flex-1 truncate text-sm text-muted">
+            <StatusDot status={fleet.down.length ? 'warn' : 'ok'} />
+            <span className="font-sans text-sm font-semibold text-fg">Fleet</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
               {fleet.online}/{fleet.total} online
               {fleet.down.length > 0 && ` · ${fleet.down.slice(0, 2).join(', ')} down`}
             </span>
-            <Link to="/agents" className="shrink-0 text-xs text-accent hover:underline">
+            <Link
+              to="/agents"
+              className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-accent hover:underline"
+            >
               Manage →
             </Link>
           </div>
@@ -543,10 +552,12 @@ function FleetTab({ data }: { data: HomeSummary | undefined }) {
         <div className="grid grid-cols-2 gap-3">
           <Link to="/observability" search={{ tab: 'alerts' }} className="block">
             <Panel className="p-4">
-              <div className="text-xs uppercase tracking-wide text-muted">Alerts</div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Alerts</div>
               <div
-                className="mt-1 text-xl font-semibold"
-                style={{ color: (org.alerts ?? 0) > 0 ? 'var(--theme-warning)' : 'var(--theme-success)' }}
+                className={cn(
+                  'mt-1 font-sans text-2xl font-semibold',
+                  (org.alerts ?? 0) > 0 ? 'text-warning' : 'text-success',
+                )}
               >
                 {org.alerts ?? 0}
               </div>
@@ -554,12 +565,12 @@ function FleetTab({ data }: { data: HomeSummary | undefined }) {
           </Link>
           <Link to="/observability" search={{ tab: 'cost' }} className="block">
             <Panel className="p-4">
-              <div className="text-xs uppercase tracking-wide text-muted">Spend today</div>
-              <div className="mt-1 truncate text-xl font-semibold text-fg">
+              <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Spend today</div>
+              <div className="mt-1 truncate font-sans text-2xl font-semibold text-fg">
                 {org.costToday ? `$${org.costToday.usd.toFixed(2)}` : '—'}
               </div>
               {org.costToday && (
-                <div className="text-[11px] text-muted">{(org.costToday.tokens / 1000).toFixed(0)}k tokens</div>
+                <div className="font-mono text-[10px] tracking-[0.05em] text-muted">{(org.costToday.tokens / 1000).toFixed(0)}k tokens</div>
               )}
             </Panel>
           </Link>
@@ -575,9 +586,9 @@ function FleetPulse({ activity }: { activity: OrgActivity[] }) {
   const navigate = useNavigate()
   return (
     <Panel>
-      <div className="mb-2 text-sm font-semibold text-fg">Pulse</div>
+      <SectionHeader title="Pulse" className="mb-2" />
       {activity.length === 0 ? (
-        <div className="text-xs text-muted">Quiet so far. Activity across boards, comms, and the fleet shows here.</div>
+        <EmptyState variant="inline" title="Quiet so far." hint="Activity across boards, comms, and the fleet shows here." />
       ) : (
         <ul className="space-y-2">
           {activity.map((a, i) => (
@@ -675,13 +686,13 @@ function AssistantBriefing({ scope = 'inbox' }: { scope?: BriefScope }) {
     <Panel>
       <div className="mb-3 flex items-center gap-2">
         <Sparkles size={15} className="text-accent" />
-        <span className="text-sm font-semibold text-fg">{data.agentName}</span>
+        <span className="font-sans text-sm font-semibold text-fg">{data.agentName}</span>
         {data.generating ? (
-          <span className="flex items-center gap-1.5 text-[11px] text-muted">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" /> updating
+          <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
+            <StatusDot status="accent" pulse /> updating
           </span>
         ) : (
-          data.generatedAt && <span className="text-[11px] text-muted">{relativeTime(data.generatedAt)}</span>
+          data.generatedAt && <span className="font-mono text-[10px] tracking-[0.05em] text-muted">{relativeTime(data.generatedAt)}</span>
         )}
       </div>
       {data.summary ? (
@@ -692,11 +703,11 @@ function AssistantBriefing({ scope = 'inbox' }: { scope?: BriefScope }) {
         <SkeletonRows rows={3} />
       )}
       {thread.length > 0 && (
-        <div className="mt-4 space-y-3 border-t border-line-subtle pt-4">
+        <div className="mt-4 space-y-3 border-t border-line pt-4">
           {thread.map((m, i) =>
             m.role === 'user' ? (
               <div key={i} className="flex justify-end">
-                <div className="max-w-[85%] rounded-2xl border px-3.5 py-2 font-sans text-sm text-[color:var(--chat-user-foreground)]" style={{ background: 'var(--chat-user-bg)', borderColor: 'var(--chat-user-border)' }}>
+                <div className="max-w-[85%] rounded-lg border px-3.5 py-2 font-sans text-sm text-[color:var(--chat-user-foreground)]" style={{ background: 'var(--chat-user-bg)', borderColor: 'var(--chat-user-border)' }}>
                   {m.content}
                 </div>
               </div>
@@ -738,7 +749,7 @@ function AssistantCard() {
   if (isLoading)
     return (
       <Panel className="flex items-center gap-4">
-        <Skeleton className="h-11 w-11 shrink-0 rounded-2xl" />
+        <Skeleton className="h-11 w-11 shrink-0 rounded-md" />
         <div className="min-w-0 flex-1 space-y-2">
           <Skeleton className="h-3 w-40 rounded-full" />
           <Skeleton className="h-2.5 w-64 rounded-full" />
@@ -747,14 +758,14 @@ function AssistantCard() {
     )
   return (
     <Panel className="flex items-center gap-4">
-      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-accent/15 text-accent">
+      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-md border border-line-strong bg-raised text-accent">
         <Sparkles size={20} />
       </span>
       {data ? (
         <>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-fg">{data.displayName}</div>
-            <div className="truncate text-xs text-muted">Your personal assistant, with its own memory, skills, and tools.</div>
+            <div className="font-sans text-sm font-medium text-fg">{data.displayName}</div>
+            <div className="truncate font-sans text-xs text-muted">Your personal assistant, with its own memory, skills, and tools.</div>
           </div>
           <Button size="sm" onClick={() => void navigate({ to: '/chat' })}>
             Open chat
@@ -763,8 +774,8 @@ function AssistantCard() {
       ) : (
         <>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-fg">Set up your assistant</div>
-            <div className="truncate text-xs text-muted">A personal agent that's just yours: memory, skills, and tools of its own.</div>
+            <div className="font-sans text-sm font-medium text-fg">Set up your assistant</div>
+            <div className="truncate font-sans text-xs text-muted">A personal agent that's just yours: memory, skills, and tools of its own.</div>
           </div>
           <Button size="sm" onClick={() => setWizard(true)}>
             Get started
@@ -818,32 +829,36 @@ function AgendaPanel() {
 
   return (
     <Panel>
-      <div className="mb-3 flex items-center gap-2">
-        <CalendarDays size={16} className="text-muted" />
-        <span className="text-sm font-semibold text-fg">Agenda</span>
-        <span className="text-xs text-muted">Google Calendar</span>
-        <button type="button" onClick={() => setAdding((v) => !v)} className="ml-auto flex items-center gap-1 text-xs text-accent hover:underline">
-          <Plus size={13} /> New event
+      <div className="mb-3 flex min-h-6 items-center gap-2">
+        <CalendarDays size={14} className="text-ink-dim" />
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agenda</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">Google Calendar</span>
+        <button
+          type="button"
+          onClick={() => setAdding((v) => !v)}
+          className="ml-auto flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-accent transition-colors hover:underline"
+        >
+          <Plus size={12} /> New event
         </button>
       </div>
 
       {adding && <QuickEvent onDone={async () => { setAdding(false); await qc.invalidateQueries({ queryKey: ['agenda'] }) }} />}
 
       {events.length === 0 ? (
-        <div className="py-3 text-sm text-muted">Nothing on the calendar coming up.</div>
+        <EmptyState variant="inline" className="py-3" title="Nothing on the calendar coming up." />
       ) : (
-        <div className="divide-y divide-line-subtle">
+        <div className="divide-y divide-line">
           {events.map((e) => (
             <a
               key={e.id}
               href={e.htmlLink ?? '#'}
               target="_blank"
               rel="noreferrer"
-              className="group flex items-center gap-3 py-2"
+              className="group flex items-center gap-3 py-2 transition-colors hover:bg-card2"
             >
-              <span className="w-32 shrink-0 text-[11px] text-muted">{formatWhen(e)}</span>
+              <span className="w-32 shrink-0 font-mono text-[11px] text-muted">{formatWhen(e)}</span>
               <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{e.summary}</span>
-              {e.location && <span className="hidden shrink-0 truncate text-[11px] text-muted sm:block sm:max-w-[8rem]">{e.location}</span>}
+              {e.location && <span className="hidden shrink-0 truncate font-sans text-[11px] text-muted sm:block sm:max-w-[8rem]">{e.location}</span>}
               <ExternalLink size={12} className="shrink-0 text-muted opacity-0 group-hover:opacity-100" />
             </a>
           ))}
@@ -888,7 +903,7 @@ function QuickEvent({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-line-subtle p-2">
+    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-line p-2">
       <Input
         size="sm"
         value={summary}
@@ -906,7 +921,7 @@ function QuickEvent({ onDone }: { onDone: () => void }) {
       <Button size="sm" onClick={() => void submit()} disabled={busy || !summary.trim() || !start}>
         Add
       </Button>
-      {err && <span className="w-full text-[11px]" style={{ color: 'var(--theme-danger)' }}>{err}</span>}
+      {err && <span className="w-full font-sans text-[11px] text-danger">{err}</span>}
     </div>
   )
 }
@@ -953,33 +968,37 @@ function MailPanel() {
 
   return (
     <Panel>
-      <div className="mb-3 flex items-center gap-2">
-        <Mail size={16} className="text-muted" />
-        <span className="text-sm font-semibold text-fg">Mail</span>
-        <span className="text-xs text-muted">Gmail</span>
-        <button type="button" onClick={() => setComposing(true)} className="ml-auto flex items-center gap-1 text-xs text-accent hover:underline">
+      <div className="mb-3 flex min-h-6 items-center gap-2">
+        <Mail size={14} className="text-ink-dim" />
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Mail</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">Gmail</span>
+        <button
+          type="button"
+          onClick={() => setComposing(true)}
+          className="ml-auto flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-accent transition-colors hover:underline"
+        >
           <Send size={12} /> Compose
         </button>
       </div>
 
       {messages.length === 0 ? (
-        <div className="py-3 text-sm text-muted">No recent mail.</div>
+        <EmptyState variant="inline" className="py-3" title="No recent mail." />
       ) : (
-        <div className="divide-y divide-line-subtle">
+        <div className="divide-y divide-line">
           {messages.map((m) => (
             <a
               key={m.id}
               href={`https://mail.google.com/mail/u/0/#all/${m.threadId}`}
               target="_blank"
               rel="noreferrer"
-              className="group flex items-center gap-3 py-2"
+              className="group flex items-center gap-3 py-2 transition-colors hover:bg-card2"
             >
               <span className={cn('w-32 shrink-0 truncate font-sans text-[12px]', m.unread ? 'font-semibold text-fg' : 'text-muted')}>{fromName(m.from)}</span>
               <span className="min-w-0 flex-1 truncate font-sans text-sm">
                 <span className={m.unread ? 'font-medium text-fg' : 'text-fg'}>{m.subject}</span>
                 <span className="text-muted"> — {m.snippet}</span>
               </span>
-              <span className="shrink-0 text-[11px] text-muted">{m.date ? relativeTime(m.date) : ''}</span>
+              <span className="shrink-0 font-mono text-[11px] text-muted">{m.date ? relativeTime(m.date) : ''}</span>
             </a>
           ))}
         </div>
@@ -1027,7 +1046,7 @@ function ComposeModal({ onClose }: { onClose: () => void }) {
           <Button size="sm" onClick={() => void send()} disabled={busy || !to.trim()}>
             <Send size={13} className="mr-1" /> {busy ? 'Sending' : 'Send'}
           </Button>
-          {status && <span className="text-xs" style={{ color: 'var(--theme-danger)' }}>{status}</span>}
+          {status && <span className="font-sans text-xs text-danger">{status}</span>}
         </div>
       </div>
     </Modal>
@@ -1094,18 +1113,18 @@ function ApprovalsPanel() {
 
   return (
     <Panel>
-      <div className="mb-3 flex items-center gap-2">
-        <ShieldCheck size={16} style={{ color: 'var(--theme-warning)' }} />
-        <span className="text-sm font-semibold text-fg">Needs your approval</span>
-        <span className="text-xs text-muted">an agent wants to act as you</span>
+      <div className="mb-3 flex min-h-6 items-center gap-2">
+        <ShieldCheck size={14} className="text-warning" />
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-warning">Needs your approval</span>
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted">an agent wants to act as you</span>
       </div>
-      <div className="divide-y divide-line-subtle">
+      <div className="divide-y divide-line">
         {pending.map((a) => (
           <div key={a.id} className="flex items-center gap-3 py-2.5">
             <Chip>{kindLabel(a.kind)}</Chip>
-            {a.isOrg && <span className="shrink-0 rounded bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted" title="Shared org account">org</span>}
+            {a.isOrg && <Chip title="Shared org account">org</Chip>}
             <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{a.summary ?? '(action)'}</span>
-            {a.agentModel && <span className="hidden shrink-0 text-[11px] text-muted sm:block">{a.agentModel}</span>}
+            {a.agentModel && <span className="hidden shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted sm:block">{a.agentModel}</span>}
             <div className="flex shrink-0 items-center gap-1">
               <Button size="sm" disabled={busy === a.id} onClick={() => void decide(a.id, 'approve')}>
                 <Check size={13} className="mr-1" /> Approve

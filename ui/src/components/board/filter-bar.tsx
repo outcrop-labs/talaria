@@ -47,7 +47,7 @@ function FacetPill({
     <DropdownMenu
       align="left"
       trigger={(open) => (
-        <FieldPill icon={icon} active={open || count > 0} className="h-9 rounded-lg px-2 text-xs">
+        <FieldPill icon={icon} active={open || count > 0} className="h-9 rounded-md px-2 font-mono text-[10px] uppercase tracking-[0.05em]">
           {label}
           {count > 0 ? ` · ${count}` : ''}
         </FieldPill>
@@ -82,14 +82,14 @@ export function FilterBar({
   return (
     <div className="flex flex-wrap items-center gap-1">
       <FacetPill
-        icon={<span className="h-2 w-2 rounded-full bg-[color:var(--theme-accent)]" />}
+        icon={<span className="h-1.5 w-1.5 rounded-full bg-accent" />}
         label="Status"
         count={value.statuses.length}
         items={[...(statuses?.length ? statuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])), 'failed', 'cancelled'].map((s) => ({
           label: statusLabelOf(s, statuses ?? []),
           icon: (
             <span
-              className="h-2 w-2 rounded-full"
+              className="h-1.5 w-1.5 rounded-full"
               style={{ background: statuses?.length ? statusColorOf(s, statuses) : STATUS_COLOR[s] ?? 'var(--theme-muted)' }}
             />
           ),
@@ -156,7 +156,7 @@ export function FilterBar({
           count={value.labels.length}
           items={labels.map((l) => ({
             label: l.name,
-            icon: <span className="h-2 w-2 rounded-full" style={{ background: LABEL_CSS[l.color] }} />,
+            icon: <span className="h-1.5 w-1.5 rounded-full" style={{ background: LABEL_CSS[l.color] }} />,
             checked: value.labels.includes(l.name),
             keepOpen: true,
             onSelect: () => toggle('labels', l.name),
@@ -177,7 +177,7 @@ export function FilterBar({
         <button
           onClick={() => onChange(EMPTY_FILTERS)}
           title="Clear all filters"
-          className="flex h-9 items-center gap-1 rounded-lg px-2 text-xs text-muted transition-colors hover:text-[color:var(--theme-danger)]"
+          className="flex h-9 items-center gap-1 rounded-md px-2 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger"
         >
           <X size={12} /> Clear
         </button>

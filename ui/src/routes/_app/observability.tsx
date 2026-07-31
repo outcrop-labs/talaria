@@ -40,7 +40,7 @@ function ObservabilityPage() {
   return (
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-5xl space-y-6">
-        <h1 className="mercury-text text-2xl font-semibold">Observability</h1>
+        <h1 className="font-sans text-2xl font-semibold tracking-tight text-fg">Observability</h1>
         <Tabs items={OBS_TABS} value={tab} onChange={setTab} />
         {tab === 'overview' && <OverviewPanel onOpen={setTab} />}
         {tab === 'compute' && <ComputePanel />}
@@ -125,16 +125,16 @@ function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
     <div className="space-y-6">
       {/* Worst news first: alerts strip */}
       <Panel>
-        <button type="button" onClick={() => onOpen('alerts')} className="mb-3 flex w-full items-center gap-2 text-left">
-          <span className="text-sm font-semibold text-fg">Alerts</span>
+        <button type="button" onClick={() => onOpen('alerts')} className="group -mx-1.5 mb-3 flex min-h-6 w-[calc(100%+0.75rem)] items-center gap-2 rounded px-1.5 text-left transition-colors duration-[120ms] hover:bg-hover">
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Alerts</span>
           {alertsLoading ? (
             <Skeleton className="h-3 w-8 rounded-full" />
           ) : problems.length > 0 ? (
-            <span className="rounded-full bg-[color:var(--theme-warning)]/15 px-1.5 text-[10px] font-semibold text-[color:var(--theme-warning)]">{problems.length}</span>
+            <span className="rounded border border-warning/40 px-1.5 font-mono text-[10px] tracking-[0.05em] text-warning">{problems.length}</span>
           ) : (
-            <span className="text-xs" style={{ color: 'var(--theme-success)' }}>all clear</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-success">● all clear</span>
           )}
-          <span className="ml-auto text-xs text-accent">Open →</span>
+          <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors group-hover:text-accent">Open →</span>
         </button>
         {alertsLoading ? (
           <SkeletonRows rows={2} />
@@ -142,7 +142,7 @@ function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
           <ul className="space-y-1.5">
             {problems.slice(0, 3).map((a, i) => (
               <li key={i} className="flex items-center gap-2.5 text-sm">
-                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: SEV_COLOR[a.severity] }} />
+                <span className="h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: SEV_COLOR[a.severity] }} />
                 <span className="min-w-0 flex-1 truncate font-sans text-fg">{a.title}</span>
               </li>
             ))}
@@ -151,26 +151,27 @@ function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
       </Panel>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <Panel className="p-4">
+        {/* §8 stat blocks: big sans numeral + 10px mono uppercase label. */}
+        <Panel className="p-5">
           <button type="button" onClick={() => onOpen('compute')} className="w-full text-left">
-            <div className="text-xs uppercase tracking-wide text-muted">Generating now</div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Generating now</div>
             {live ? (
               <>
-                <div className="mt-1 text-xl font-semibold text-fg">{generating}</div>
-                <div className="mt-0.5 truncate text-[11px] text-muted">{fleetParts}</div>
+                <div className="mt-1.5 font-sans text-2xl font-semibold text-fg">{generating}</div>
+                <div className="mt-1 truncate font-mono text-[11px] text-muted">{fleetParts}</div>
               </>
             ) : (
               <Skeleton className="mt-2 h-5 w-16 rounded-full" />
             )}
           </button>
         </Panel>
-        <Panel className="p-4">
+        <Panel className="p-5">
           <button type="button" onClick={() => onOpen('compute')} className="w-full text-left">
-            <div className="text-xs uppercase tracking-wide text-muted">Gateway · 15 min</div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Gateway · 15 min</div>
             {live ? (
               <>
-                <div className="mt-1 text-xl font-semibold text-fg">{live.gateway.requests}</div>
-                <div className="mt-0.5 text-[11px] text-muted">
+                <div className="mt-1.5 font-sans text-2xl font-semibold text-fg">{live.gateway.requests}</div>
+                <div className="mt-1 font-mono text-[11px] text-muted">
                   {live.gateway.errors ? `${live.gateway.errors} errors` : 'no errors'}
                   {live.gateway.p50 != null && ` · p50 ${(live.gateway.p50 / 1000).toFixed(1)}s`}
                 </div>
@@ -180,13 +181,13 @@ function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
             )}
           </button>
         </Panel>
-        <Panel className="p-4">
+        <Panel className="p-5">
           <button type="button" onClick={() => onOpen('cost')} className="w-full text-left">
-            <div className="text-xs uppercase tracking-wide text-muted">Spend today</div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Spend today</div>
             {cost ? (
               <>
-                <div className="mt-1 text-xl font-semibold text-fg">${cost.totals.today.cost.toFixed(2)}</div>
-                <div className="mt-0.5 text-[11px] text-muted">
+                <div className="mt-1.5 font-sans text-2xl font-semibold text-fg">${cost.totals.today.cost.toFixed(2)}</div>
+                <div className="mt-1 font-mono text-[11px] text-muted">
                   {formatTokens(cost.totals.today.prompt + cost.totals.today.completion)} tokens · ${cost.totals.month.cost.toFixed(2)} this month
                 </div>
               </>
@@ -198,9 +199,9 @@ function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
       </div>
 
       <Panel>
-        <button type="button" onClick={() => onOpen('audit')} className="mb-3 flex w-full items-center gap-2 text-left">
-          <span className="text-sm font-semibold text-fg">Audit trail</span>
-          <span className="ml-auto text-xs text-accent">Open →</span>
+        <button type="button" onClick={() => onOpen('audit')} className="group -mx-1.5 mb-3 flex min-h-6 w-[calc(100%+0.75rem)] items-center gap-2 rounded px-1.5 text-left transition-colors duration-[120ms] hover:bg-hover">
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Audit trail</span>
+          <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors group-hover:text-accent">Open →</span>
         </button>
         {auditLoading ? (
           <SkeletonRows rows={5} />

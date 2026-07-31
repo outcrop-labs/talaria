@@ -14,6 +14,7 @@ import { userAssignee } from '@/lib/assignees'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { useContextMenu, DropdownMenu } from '@/components/ui/context-menu'
 import { Skeleton } from '@/components/ui/skeleton'
+import { popHeader, popPanel } from '@/components/chat/chat-chrome'
 import { cn } from '@/lib/cn'
 import { EFFORT_LABEL, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
@@ -375,7 +376,7 @@ export function BoardList({
   const cell = (t: Task, key: ColumnKey) => {
     switch (key) {
       case 'ticket':
-        return <span className="font-[var(--font-mono)] text-xs text-muted">{t.ticketRef ?? ''}</span>
+        return <span className="font-mono text-xs tracking-[0.05em] text-muted">{t.ticketRef ?? ''}</span>
       case 'title':
         return <span className="font-sans text-fg">{t.title}</span>
       case 'status':
@@ -383,7 +384,7 @@ export function BoardList({
       case 'priority':
         return <PriorityPill t={t} ctx={pctx(t)} />
       case 'effort':
-        return <span className="text-muted">{t.effort ? EFFORT_LABEL[t.effort] : '—'}</span>
+        return <span className="font-mono text-xs tracking-[0.05em] text-muted">{t.effort ? EFFORT_LABEL[t.effort] : '—'}</span>
       case 'estimate':
         return <EstimatePill t={t} ctx={pctx(t)} />
       case 'assignees':
@@ -394,13 +395,13 @@ export function BoardList({
       case 'due':
         return <DuePill t={t} ctx={pctx(t)} />
       case 'time':
-        return <span className="text-muted">{fmtTime(t.timeSpentSeconds)}</span>
+        return <span className="font-mono text-xs tracking-[0.05em] text-muted">{fmtTime(t.timeSpentSeconds)}</span>
       case 'labels':
         return <LabelsPill t={t} ctx={pctx(t)} />
       case 'updated':
-        return <span className="text-muted">{relativeTime(t.updatedAt)}</span>
+        return <span className="font-mono text-xs tracking-[0.05em] text-muted">{relativeTime(t.updatedAt)}</span>
       case 'created':
-        return <span className="text-muted">{relativeTime(t.createdAt)}</span>
+        return <span className="font-mono text-xs tracking-[0.05em] text-muted">{relativeTime(t.createdAt)}</span>
     }
   }
 
@@ -408,10 +409,10 @@ export function BoardList({
     <div className="flex h-full flex-col">
       <div className="relative min-h-0 flex-1 overflow-auto p-4">
         {tasks.length === 0 ? (
-          <div className="grid h-full place-items-center text-sm text-muted">No tasks match.</div>
+          <div className="grid h-full place-items-center font-sans text-sm text-muted">No tasks match.</div>
         ) : (
           <table className="w-full text-sm">
-            <thead className="border-b border-line text-xs uppercase tracking-wide text-muted">
+            <thead className="border-b border-line font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
               <tr>
                 <th className="w-7 py-2 pl-2">
                   {canEdit && (
@@ -425,12 +426,12 @@ export function BoardList({
                   )}
                 </th>
                 {cols.map((c) => (
-                  <th key={c.key} className={cn('px-3 py-2 font-semibold', c.align === 'right' ? 'text-right' : 'text-left')}>
+                  <th key={c.key} className={cn('px-3 py-2 font-medium', c.align === 'right' ? 'text-right' : 'text-left')}>
                     <button
                       onClick={() => onSort(c.key)}
                       className={cn(
-                        'inline-flex items-center gap-1 uppercase tracking-wide transition-colors hover:text-fg',
-                        sort.key === c.key ? 'text-fg' : 'text-muted',
+                        'inline-flex items-center gap-1 uppercase tracking-[0.08em] transition-colors hover:text-fg',
+                        sort.key === c.key ? 'text-fg' : 'text-ink-dim',
                         c.align === 'right' && 'flex-row-reverse',
                       )}
                     >
@@ -463,23 +464,23 @@ export function BoardList({
                 >
                   {groupBy !== 'none' && (
                     <tr
-                      className={cn('cursor-pointer select-none bg-sidebar/60', dragOverGroup === g.key && dragRow && 'ring-1 ring-inset ring-[color:var(--theme-accent)]')}
+                      className={cn('cursor-pointer select-none bg-panel/60', dragOverGroup === g.key && dragRow && 'ring-1 ring-inset ring-accent')}
                       onClick={() => toggleGroup(g.key)}
                     >
                       <td colSpan={cols.length + 2} className="px-2 py-1.5">
-                        <span className="flex items-center gap-2 text-xs">
+                        <span className="flex items-center gap-2 font-mono text-[10px] tracking-[0.05em]">
                           <span className="text-muted">{open ? '▾' : '▸'}</span>
-                          {g.dot && <span className="h-2 w-2 rounded-full" style={{ background: g.dot }} />}
-                          <span className="font-semibold uppercase tracking-wide text-fg">{g.label}</span>
+                          {g.dot && <span className="h-1.5 w-1.5 rounded-full" style={{ background: g.dot }} />}
+                          <span className="font-medium uppercase tracking-[0.08em] text-ink-dim">{g.label}</span>
                           <span className="text-muted">{g.tasks.length}</span>
-                          {g.hours > 0 && <span className="text-[10px] text-muted">Σ {g.hours}h</span>}
+                          {g.hours > 0 && <span className="text-muted">Σ {g.hours}h</span>}
                         </span>
                       </td>
                     </tr>
                   )}
                   {open && g.tasks.length === 0 && (
                     <tr>
-                      <td colSpan={cols.length + 2} className={cn('px-4 py-2 text-xs italic text-muted/70', dragOverGroup === g.key && dragRow && 'text-accent')}>
+                      <td colSpan={cols.length + 2} className={cn('px-4 py-2 font-sans text-xs italic text-muted/70', dragOverGroup === g.key && dragRow && 'text-accent')}>
                         {dragRow ? 'Drop here' : 'No tickets'}
                       </td>
                     </tr>
@@ -500,7 +501,7 @@ export function BoardList({
                         }}
                         onClick={() => onOpen(t.id)}
                         onContextMenu={(e) => rowMenu(e, t)}
-                        className={cn('group cursor-pointer transition-colors hover:bg-card', sel.has(t.id) && 'bg-card/70', dragRow === t.id && 'opacity-40')}
+                        className={cn('group cursor-pointer transition-colors hover:bg-hover', sel.has(t.id) && 'bg-raised/70', dragRow === t.id && 'opacity-40')}
                       >
                         <td className="pl-2" onClick={(e) => e.stopPropagation()}>
                           {canEdit ? (
@@ -533,8 +534,8 @@ export function BoardList({
           ticket, then clears. */}
       {sel.size > 0 && (
         <div className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex justify-center">
-          <div className="mercury-panel pointer-events-auto flex items-center gap-1 rounded-xl px-2 py-1.5 shadow-[var(--theme-shadow-3)]">
-            <span className="px-2 text-xs font-medium text-fg">{sel.size} selected</span>
+          <div className="pointer-events-auto flex items-center gap-1 rounded-lg border border-line bg-panel px-2 py-1.5 shadow-[var(--theme-shadow-3)]">
+            <span className="px-2 font-mono text-[10px] font-medium uppercase tracking-[0.05em] text-fg">{sel.size} selected</span>
             <DropdownMenu
               up
               align="left"
@@ -564,14 +565,14 @@ export function BoardList({
               }))}
             />
             {me && (
-              <button onClick={() => void bulk({ assignToMe: true })} className="rounded-md px-2 py-0.5 text-xs text-muted transition-colors hover:bg-card hover:text-fg">
+              <button onClick={() => void bulk({ assignToMe: true })} className="rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg">
                 Assign to me
               </button>
             )}
-            <button onClick={() => void bulk({ archive: true })} className="rounded-md px-2 py-0.5 text-xs text-muted transition-colors hover:bg-card hover:text-[color:var(--theme-danger)]">
+            <button onClick={() => void bulk({ archive: true })} className="rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-danger">
               Archive
             </button>
-            <button onClick={() => setSel(new Set())} title="Clear selection" className="rounded-md px-1.5 py-0.5 text-xs text-muted transition-colors hover:text-fg">
+            <button onClick={() => setSel(new Set())} title="Clear selection" className="rounded-md px-1.5 py-1 font-mono text-[10px] text-muted transition-colors hover:text-fg">
               ✕
             </button>
           </div>
@@ -642,14 +643,14 @@ function ColumnsMenu({
         aria-label="Configure columns"
         className={cn(
           'grid h-6 w-6 place-items-center rounded-md transition-colors',
-          open ? 'bg-card text-fg' : 'text-muted hover:bg-card hover:text-fg',
+          open ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
         )}
       >
         <SlidersHorizontal size={13} />
       </button>
       {open && pos && typeof document !== 'undefined' && createPortal(
-        <div ref={panelRef} style={pos} className="mercury-panel w-48 rounded-xl p-1">
-          <div className="px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-muted">Drag to reorder</div>
+        <div ref={panelRef} style={pos} className={cn(popPanel, 'w-48')}>
+          <div className={popHeader}>Drag to reorder</div>
           {order.map((key) => {
             const c = LIST_COLUMNS.find((x) => x.key === key)!
             return (
@@ -672,7 +673,7 @@ function ColumnsMenu({
                   drop(c.key)
                 }}
                 className={cn(
-                  'relative flex items-center gap-1.5 rounded-md px-1.5 py-1.5 text-sm text-fg',
+                  'relative flex items-center gap-1.5 rounded-md px-1.5 py-1.5 font-sans text-[13px] text-fg transition-colors hover:bg-hover',
                   dragKey === c.key && 'opacity-40',
                 )}
               >

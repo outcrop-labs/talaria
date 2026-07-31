@@ -148,7 +148,7 @@ export function PermissionsModal({
     >
       <div className="space-y-5">
         {showInheritBanner ? (
-          <div className="rounded-xl border border-line-subtle bg-card/50 p-4 text-sm">
+          <div className="rounded-lg border border-line bg-panel p-4 text-sm">
             <div className="mb-1 font-medium text-fg">Access follows the folder{folderName ? ` “${folderName}”` : ''}</div>
             <p className="mb-3 text-xs text-muted">
               This document shares whoever the folder is shared with. Customize it to give this doc its own,
@@ -164,7 +164,8 @@ export function PermissionsModal({
           <>
         {/* People & agents */}
         <div>
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">People &amp; agents</div>
+          {/* §8 section header: 10px mono uppercase 0.08em ink-dim. */}
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">People &amp; agents</div>
           {canManage && (
             <Combobox
               options={addOptions}
@@ -203,7 +204,7 @@ export function PermissionsModal({
                       size="sm"
                       className="w-28 shrink-0"
                     />
-                    <button type="button" onClick={() => remove(i)} className="shrink-0 rounded p-1 text-muted hover:text-[color:var(--theme-danger)]" title="Remove">
+                    <button type="button" onClick={() => remove(i)} className="shrink-0 rounded p-1 text-muted transition-colors hover:text-danger" title="Remove">
                       <X size={14} />
                     </button>
                   </>
@@ -219,7 +220,7 @@ export function PermissionsModal({
 
         {/* General access */}
         <div className="border-t border-line-subtle pt-4">
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">General access</div>
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">General access</div>
           <div className="flex items-center gap-2.5">
             <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-full', vis === 'private' ? 'bg-card2 text-muted' : 'bg-accent/15 text-accent')}>
               <AccessIcon size={16} />
@@ -253,10 +254,10 @@ export function PermissionsModal({
                 void navigator.clipboard?.writeText(publicUrl)
                 setCopied(true)
               }}
-              className="mt-3 flex w-full items-center gap-2 rounded-lg border border-line-subtle px-3 py-2 text-left text-xs text-muted hover:border-[var(--theme-accent-border)]"
+              className="mt-3 flex w-full items-center gap-2 rounded-md border border-line px-3 py-2 text-left text-xs text-muted transition-colors hover:border-[var(--theme-accent-border)]"
             >
               <Globe size={13} className="shrink-0" />
-              <code className="min-w-0 flex-1 truncate text-fg">{publicUrl}</code>
+              <code className="min-w-0 flex-1 truncate font-mono text-fg">{publicUrl}</code>
               {copied ? <Check size={13} className="shrink-0 text-accent" /> : <Copy size={13} className="shrink-0" />}
             </button>
           )}

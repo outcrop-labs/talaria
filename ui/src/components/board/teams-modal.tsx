@@ -37,12 +37,12 @@ export function TeamsModal({ open, onClose }: { open: boolean; onClose: () => vo
                 key={t.id}
                 onClick={() => setSelected(t.id)}
                 className={cn(
-                  'flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-card',
-                  t.id === activeId ? 'bg-card text-fg' : 'text-muted',
+                  'flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left font-sans text-sm transition-colors hover:bg-hover',
+                  t.id === activeId ? 'bg-raised text-fg' : 'text-muted',
                 )}
               >
                 <span className="min-w-0 flex-1 truncate">{t.name}</span>
-                <span className="text-xs text-muted">{t.memberCount}</span>
+                <span className="font-mono text-[10px] tracking-[0.05em] text-muted">{t.memberCount}</span>
               </button>
             ))}
           </div>
@@ -56,7 +56,7 @@ export function TeamsModal({ open, onClose }: { open: boolean; onClose: () => vo
           ) : teamsLoading ? (
             <SkeletonRows rows={3} avatar className="pt-1" />
           ) : (
-            <div className="grid h-40 place-items-center text-sm text-muted">Create a team to get started.</div>
+            <div className="grid h-40 place-items-center font-sans text-sm text-muted">Create a team to get started.</div>
           )}
         </div>
       </div>
@@ -98,19 +98,19 @@ function TeamMembers({ teamId, canManage }: { teamId: string; canManage: boolean
           </Select>
         </div>
       )}
-      {err && <div className="mt-1 text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
+      {err && <div className="mt-1 font-sans text-xs text-danger">{err}</div>}
       {membersLoading && <SkeletonRows rows={3} avatar className="mt-4 px-1 py-2" />}
       <ul className="mt-4 space-y-1.5">
         {members.map((m) => (
-          <li key={m.userId} className="flex items-center gap-2 rounded-lg px-1 py-2">
+          <li key={m.userId} className="flex items-center gap-2 rounded-md px-1 py-2">
             <Avatar name={m.name ?? m.email} className="h-6 w-6" />
-            <span className="min-w-0 flex-1 truncate text-sm text-fg">
+            <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">
               {m.name ?? m.email ?? m.userId}
-              {m.name && m.email && <span className="ml-1.5 text-xs text-muted">{m.email}</span>}
+              {m.name && m.email && <span className="ml-1.5 font-mono text-[11px] text-muted">{m.email}</span>}
             </span>
-            <span className="text-xs text-muted">{m.role}</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{m.role}</span>
             {canManage && m.role !== 'owner' && (
-              <button onClick={() => void removeTeamMember(teamId, m.userId).then(refresh)} className="text-xs text-muted hover:text-[color:var(--theme-danger)]">
+              <button onClick={() => void removeTeamMember(teamId, m.userId).then(refresh)} className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger">
                 Remove
               </button>
             )}

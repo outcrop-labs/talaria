@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CalendarClock, Loader2, Pause, Pencil, Play, Sparkles, Trash2, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Chip } from '@/components/ui/chip'
 import { confirm } from '@/components/ui/confirm'
 import { Generating } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
@@ -160,13 +161,13 @@ function ScheduleBuilder({ value, onChange }: { value: Sched; onChange: (s: Sche
           </>
         )}
         {value.mode === 'custom' && (
-          <Input size="sm" value={value.custom} onChange={(e) => set({ custom: e.target.value })} placeholder="0 9 * * 1-5" className="w-44 font-[var(--font-mono)]" />
+          <Input size="sm" value={value.custom} onChange={(e) => set({ custom: e.target.value })} placeholder="0 9 * * 1-5" className="w-44 font-mono" />
         )}
         <InfoTip text="Times are the agent's clock (UTC). Underneath this compiles to standard cron syntax — Custom accepts any 5-field expression or an interval like 'every 2h'." />
       </div>
       <div className="text-xs text-muted">
-        → <span className="text-fg">{describeSchedule(schedToString(value)) || '…'}</span>
-        {value.mode !== 'custom' && <span className="ml-2 font-[var(--font-mono)] text-[10px]">{schedToString(value)}</span>}
+        → <span className="font-sans text-fg">{describeSchedule(schedToString(value)) || '…'}</span>
+        {value.mode !== 'custom' && <span className="ml-2 font-mono text-[10px] tracking-[0.05em] text-ink-dim">{schedToString(value)}</span>}
       </div>
     </div>
   )
@@ -219,7 +220,7 @@ function CronRow({
   return (
     <li className="px-3.5 py-3">
       <div className="flex items-center gap-2.5">
-        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: jobDot(job) }} title={paused ? 'paused' : job.state} />
+        <span className="h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: jobDot(job) }} title={paused ? 'paused' : job.state} />
         <button type="button" onClick={() => setExpanded((v) => !v)} className="min-w-0 flex-1 text-left">
           <span className="font-sans text-sm font-medium text-fg">{job.name}</span>
           {agentLabel && <span className="ml-2 text-xs text-muted">{agentLabel}</span>}
@@ -227,7 +228,7 @@ function CronRow({
             {describeSchedule(job.schedule)}
           </span>
         </button>
-        <span className="shrink-0 text-xs text-muted">
+        <span className="shrink-0 font-mono text-[11px] text-muted">
           {paused ? 'paused' : job.nextRunAt ? `next ${fmtNext(job.nextRunAt)}` : ''}
         </span>
         {onAction && (
@@ -237,7 +238,7 @@ function CronRow({
                 type="button"
                 title="Edit"
                 onClick={startEdit}
-                className="grid h-7 w-7 place-items-center rounded-lg text-muted transition-colors hover:bg-card hover:text-fg"
+                className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
               >
                 <Pencil size={13} />
               </button>
@@ -246,7 +247,7 @@ function CronRow({
               type="button"
               title="Run on the next tick (≤60s)"
               onClick={() => onAction('run')}
-              className="grid h-7 w-7 place-items-center rounded-lg text-muted transition-colors hover:bg-card hover:text-fg"
+              className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
             >
               <Zap size={14} />
             </button>
@@ -254,7 +255,7 @@ function CronRow({
               type="button"
               title={paused ? 'Resume' : 'Pause'}
               onClick={() => onAction(paused ? 'resume' : 'pause')}
-              className="grid h-7 w-7 place-items-center rounded-lg text-muted transition-colors hover:bg-card hover:text-fg"
+              className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
             >
               {paused ? <Play size={14} fill="currentColor" /> : <Pause size={14} fill="currentColor" />}
             </button>
@@ -262,7 +263,7 @@ function CronRow({
               type="button"
               title="Delete"
               onClick={() => onAction('remove')}
-              className="grid h-7 w-7 place-items-center rounded-lg text-muted transition-colors hover:bg-card hover:text-[color:var(--theme-danger)]"
+              className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-danger"
             >
               <Trash2 size={14} />
             </button>
@@ -271,15 +272,15 @@ function CronRow({
       </div>
       {expanded && !editing && (
         <div className="mt-2.5 space-y-1.5 pl-4">
-          <div className="whitespace-pre-wrap rounded-lg border border-line-subtle p-3 font-sans text-xs leading-5 text-muted">{job.prompt}</div>
-          <div className="text-[11px] text-muted">
+          <div className="whitespace-pre-wrap rounded-md border border-line p-3 font-sans text-xs leading-5 text-muted">{job.prompt}</div>
+          <div className="font-mono text-[11px] text-muted">
             {job.lastRunAt ? `last ran ${relativeTime(job.lastRunAt)}${job.lastStatus ? ` · ${job.lastStatus}` : ''}` : 'never ran'}
-            {job.lastError && <span className="text-[color:var(--theme-danger)]"> · {job.lastError}</span>}
+            {job.lastError && <span className="text-danger"> · {job.lastError}</span>}
           </div>
         </div>
       )}
       {editing && (
-        <div className="mt-2.5 space-y-3 rounded-lg border border-line-subtle p-3.5 pl-4">
+        <div className="mt-2.5 space-y-3 rounded-lg border border-line p-3.5 pl-4">
           <div className="flex items-center gap-2">
             <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} className="w-56" />
           </div>
@@ -302,16 +303,16 @@ function CronRow({
 /** The shape of the jobs list while it loads: dot + name + schedule + actions. */
 function CronListSkeleton({ rows = 3 }: { rows?: number }) {
   return (
-    <ul aria-hidden className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+    <ul aria-hidden className="divide-y divide-line rounded-lg border border-line">
       {Array.from({ length: rows }, (_, i) => (
         <li key={i} className="flex items-center gap-2.5 px-3.5 py-3">
           <Skeleton className="h-2 w-2 shrink-0 rounded-full" delay={i * 0.12} />
           <Skeleton className="h-3 w-36 rounded-full" delay={i * 0.12} />
           <Skeleton className="h-2.5 w-28 rounded-full" delay={i * 0.12 + 0.12} />
           <span className="ml-auto flex shrink-0 items-center gap-1">
-            <Skeleton className="h-7 w-7 rounded-lg" delay={i * 0.12} />
-            <Skeleton className="h-7 w-7 rounded-lg" delay={i * 0.12 + 0.06} />
-            <Skeleton className="h-7 w-7 rounded-lg" delay={i * 0.12 + 0.12} />
+            <Skeleton className="h-7 w-7 rounded-md" delay={i * 0.12} />
+            <Skeleton className="h-7 w-7 rounded-md" delay={i * 0.12 + 0.06} />
+            <Skeleton className="h-7 w-7 rounded-md" delay={i * 0.12 + 0.12} />
           </span>
         </li>
       ))}
@@ -363,7 +364,7 @@ function CronForm({
   }
 
   return (
-    <div className="space-y-5 rounded-xl border border-line-subtle p-5">
+    <div className="space-y-5 rounded-lg border border-line p-5">
       <div className="flex items-end gap-2.5">
         <Sparkles size={14} className="mb-3 shrink-0 text-accent" />
         <Textarea
@@ -384,21 +385,21 @@ function CronForm({
           {drafting ? 'Drafting' : 'Draft'}
         </Button>
       </div>
-      {draftErr && <p className="text-xs text-[color:var(--theme-danger)]">{draftErr}</p>}
+      {draftErr && <p className="text-xs text-danger">{draftErr}</p>}
       {drafting && <Generating label="Designing the job: name, schedule, and the prompt it runs" lines={2} />}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
-          <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Name</label>
+          <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="weekly-recap" maxLength={80} />
         </div>
       </div>
       <div>
-        <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">When</label>
+        <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">When</label>
         <ScheduleBuilder value={sched} onChange={setSched} />
       </div>
       <div>
-        <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">What it does</label>
+        <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">What it does</label>
         <Textarea
           autoGrow
           rows={3}
@@ -518,7 +519,7 @@ export function CronsPanel({ agentId }: { agentId: string }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-1.5">
-        <span className="text-xs uppercase tracking-wide text-muted">Schedules</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Schedules</span>
         <InfoTip text="Recurring jobs the agent runs on its own native scheduler — they keep firing even when Talaria is down." />
       </div>
       {isLoading ? (
@@ -528,14 +529,14 @@ export function CronsPanel({ agentId }: { agentId: string }) {
       ) : (data ?? []).length === 0 ? (
         <EmptyState icon={<CalendarClock size={22} />} title="Nothing scheduled" hint="Give it a recurring job below." />
       ) : (
-        <ul className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+        <ul className="divide-y divide-line rounded-lg border border-line">
           {data!.map((j) => (
             <CronRow key={j.id} job={j} busy={busy} onAction={(a) => void act(j.id, a)} onEdit={(patch) => edit(j.id, patch)} />
           ))}
         </ul>
       )}
       <CronForm onCreate={create} busy={busy} />
-      {err && <p className="text-xs text-[color:var(--theme-danger)]">{err}</p>}
+      {err && <p className="text-xs text-danger">{err}</p>}
     </div>
   )
 }
@@ -640,7 +641,7 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
         ) : withJobs.length === 0 ? (
           <EmptyState icon={<CalendarClock size={22} />} title="Nothing scheduled anywhere" hint="Create the first job below." />
         ) : (
-          <ul className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+          <ul className="divide-y divide-line rounded-lg border border-line">
             {withJobs.map(({ agent, job }) => (
               <CronRow
                 key={`${agent.id}-${job.id}`}
@@ -653,32 +654,25 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
           </ul>
         )}
         {agents.some((a) => a.error) && (
-          <p className="text-xs text-[color:var(--theme-warning)]">
+          <p className="text-xs text-warning">
             Unreachable: {agents.filter((a) => a.error).map((a) => a.displayName).join(', ')}. Are they running?
           </p>
         )}
 
         <div>
-          <div className="mb-1.5 text-[11px] uppercase tracking-wide text-muted">New job across agents</div>
+          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">New job across agents</div>
           {/* While agents load, `chosen` would be an empty set — a job created
               now would target NOBODY. Hold the create button and show the
               chip row's shape until the roster resolves. */}
           <CronForm onCreate={create} busy={busy} disabled={isLoading}>
             <div className="flex flex-wrap gap-1.5">
               {isLoading &&
-                Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-6 w-20 rounded-full" delay={i * 0.12} />)}
+                Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-6 w-20 rounded" delay={i * 0.12} />)}
+              {/* Target agents — the one filter-pill primitive (Chip). */}
               {agents.map((a) => (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => toggle(a.id)}
-                  className={cn(
-                    'rounded-full border px-2.5 py-0.5 text-[11px] transition-colors',
-                    chosen.has(a.id) ? 'border-[var(--theme-accent)] text-accent' : 'border-line-subtle text-muted hover:border-line',
-                  )}
-                >
+                <Chip key={a.id} onSelect={() => toggle(a.id)} selected={chosen.has(a.id)} className="px-2.5 py-0.5">
                   {a.displayName}
-                </button>
+                </Chip>
               ))}
             </div>
           </CronForm>

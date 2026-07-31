@@ -11,9 +11,12 @@ import { CloseButton } from './close-button'
 //     Use for anything substantial: tabbed managers, libraries, composers.
 //
 // Portaled to <body>: `position: fixed` is relative to the nearest ancestor
-// with a transform/filter/backdrop-filter (the mercury-panel surfaces have
+// with a transform/filter/backdrop-filter (some surfaces carry
 // backdrop-filter), which would otherwise center the modal inside a card rather
 // than the viewport. The portal escapes any such containing block.
+//
+// Gentle dew (spec §8): panel surface + hairline + radius ~12 + matte shadow;
+// string titles render as mono uppercase labels (the panel-header voice).
 export function Modal({
   open,
   onClose,
@@ -60,18 +63,22 @@ export function Modal({
             transition={{ duration: 0.16 }}
             className={
               takeover
-                ? 'mercury-panel relative z-10 flex h-full w-full flex-col overflow-hidden rounded-2xl'
-                : `mercury-panel relative z-10 w-full ${width} rounded-2xl`
+                ? 'relative z-10 flex h-full w-full flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]'
+                : `relative z-10 w-full ${width} rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]`
             }
           >
             {title && (
-              <div className="flex shrink-0 items-center justify-between border-b border-line-subtle px-7 py-4">
-                <div className="text-sm font-semibold text-fg">{title}</div>
+              <div className="flex shrink-0 items-center justify-between border-b border-line px-7 py-4">
+                {typeof title === 'string' ? (
+                  <div className="min-w-0 truncate font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted">{title}</div>
+                ) : (
+                  <div className="min-w-0 text-sm font-semibold text-fg">{title}</div>
+                )}
                 <CloseButton onClick={onClose} className="-mr-2" />
               </div>
             )}
             <div className={takeover ? 'min-h-0 flex-1 overflow-y-auto p-7' : 'p-7'}>{children}</div>
-            {footer && <div className="shrink-0 border-t border-line-subtle px-7 py-4">{footer}</div>}
+            {footer && <div className="shrink-0 border-t border-line px-7 py-4">{footer}</div>}
           </motion.div>
         </div>
       )}

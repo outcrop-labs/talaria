@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '@/lib/cn'
+import { popPanel } from '@/components/chat/chat-chrome'
 
 // The one context menu. Right-click a row/card/tile → its actions at the
-// cursor. Same shell as dropdown menus (rounded-xl border bg-card p-1
-// shadow-lg); portaled to <body> so backdrop-filter surfaces can't trap the
-// fixed positioning. Esc / outside-click / scroll close it.
+// cursor. Same shell as dropdown menus (the §7 popover pattern: panel surface,
+// hairline, radius 10, matte shadow — `popPanel` from chat-chrome); portaled
+// to <body> so backdrop-filter surfaces can't trap the fixed positioning.
+// Esc / outside-click / scroll close it.
 //
 // Usage:
 //   const { openMenu, menu } = useContextMenu()
@@ -117,11 +119,11 @@ function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
       ref={ref}
       role="menu"
       style={{ position: 'fixed', left: state.x, top: state.y, zIndex: 80 }}
-      className="min-w-44 rounded-xl border border-line bg-card p-1 shadow-lg"
+      className={cn(popPanel, 'min-w-44')}
       onContextMenu={(e) => e.preventDefault()}
     >
       {state.items.map((item, i) => {
-        if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
+        if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line" />
         if (!item.disabled) selIdx += 1
         const idx = selIdx
         const hasKids = !!item.children?.length
@@ -143,12 +145,12 @@ function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
                 onClose()
               }}
               className={cn(
-                'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-sans text-[13px] transition-colors',
                 item.disabled
                   ? 'cursor-default text-muted opacity-50'
                   : item.danger
-                    ? cn('text-[color:var(--theme-danger)]', active === idx && 'bg-[color:var(--theme-danger)]/10')
-                    : cn('text-fg', (active === idx || openSub === i) && 'bg-sidebar'),
+                    ? cn('text-danger', active === idx && 'bg-danger/10')
+                    : cn('text-fg', (active === idx || openSub === i) && 'bg-hover'),
               )}
             >
               {item.checked !== undefined ? (
@@ -160,9 +162,9 @@ function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
               {hasKids && <span className="shrink-0 text-xs text-muted">▸</span>}
             </button>
             {hasKids && openSub === i && (
-              <div className="absolute left-full top-0 z-10 -ml-0.5 min-w-40 rounded-xl border border-line bg-card p-1 shadow-lg">
+              <div className={cn(popPanel, 'absolute left-full top-0 z-10 -ml-0.5 min-w-40')}>
                 {item.children!.map((kid, k) => {
-                  if (kid === 'sep') return <div key={`ks${k}`} className="mx-2 my-1 border-t border-line-subtle" />
+                  if (kid === 'sep') return <div key={`ks${k}`} className="mx-2 my-1 border-t border-line" />
                   return (
                     <button
                       key={`${kid.label}${k}`}
@@ -174,12 +176,12 @@ function Menu({ state, onClose }: { state: MenuState; onClose: () => void }) {
                         onClose()
                       }}
                       className={cn(
-                        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                        'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-sans text-[13px] transition-colors',
                         kid.disabled
                           ? 'cursor-default text-muted opacity-50'
                           : kid.danger
-                            ? 'text-[color:var(--theme-danger)] hover:bg-[color:var(--theme-danger)]/10'
-                            : 'text-fg hover:bg-sidebar',
+                            ? 'text-danger hover:bg-danger/10'
+                            : 'text-fg hover:bg-hover',
                       )}
                     >
                       {kid.checked !== undefined ? (
@@ -206,7 +208,7 @@ export { copyAppLink } from '@/lib/links'
 
 /** Anchored dropdown menu — the SAME shell and item grammar as the context
  *  menu, attached to a trigger instead of the cursor. Replaces every ad-hoc
- *  `absolute top-full … rounded-xl border bg-card p-1` panel. */
+ *  absolutely-positioned menu panel with the §7 popover shell. */
 export function DropdownMenu({
   trigger,
   items,
@@ -294,14 +296,14 @@ export function DropdownMenu({
             role="menu"
             style={pos}
             onClick={(e) => e.stopPropagation()}
-            className="min-w-44 max-w-72 rounded-xl border border-line bg-card p-1 shadow-lg"
+            className={cn(popPanel, 'min-w-44 max-w-72')}
           >
             {content ? (
               <div className="p-1">{content(() => setOpen(false))}</div>
             ) : (
             <div className="max-h-80 overflow-y-auto">
               {entries.map((item, i) => {
-                if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line-subtle" />
+                if (item === 'sep') return <div key={`s${i}`} className="mx-2 my-1 border-t border-line" />
                 return (
                   <button
                     key={`${item.label}${i}`}
@@ -314,12 +316,12 @@ export function DropdownMenu({
                       if (!item.keepOpen) setOpen(false)
                     }}
                     className={cn(
-                      'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                      'flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-sans text-[13px] transition-colors',
                       item.disabled
                         ? 'cursor-default text-muted opacity-50'
                         : item.danger
-                          ? 'text-[color:var(--theme-danger)] hover:bg-[color:var(--theme-danger)]/10'
-                          : cn('hover:bg-sidebar', item.checked === false ? 'text-muted' : 'text-fg'),
+                          ? 'text-danger hover:bg-danger/10'
+                          : cn('hover:bg-hover', item.checked === false ? 'text-muted' : 'text-fg'),
                     )}
                   >
                     {/* checked state: leading ✓ slot (kept when unchecked so rows
@@ -334,7 +336,7 @@ export function DropdownMenu({
               })}
             </div>
             )}
-            {!content && footer && <div className="mt-1 border-t border-line-subtle px-2 pb-1 pt-2">{footer(() => setOpen(false))}</div>}
+            {!content && footer && <div className="mt-1 border-t border-line px-2 pb-1 pt-2">{footer(() => setOpen(false))}</div>}
           </div>,
           document.body,
         )}

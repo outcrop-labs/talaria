@@ -92,9 +92,9 @@ export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: Ta
         <Input size="sm" value={description} onChange={(e) => setDescription(e.target.value)} onBlur={() => description !== workflow.description && void save({ description })} placeholder="One-line description (shown to admins, not agents)" />
       </div>
 
-      <div className="mb-4 space-y-3 rounded-xl border border-line-subtle bg-card/40 px-4 py-3">
+      <div className="mb-4 space-y-3 rounded-lg border border-line bg-card/40 px-4 py-3">
         <div className="flex items-center gap-1.5">
-          <span className="text-[11px] uppercase tracking-wide text-muted">Matches when</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Matches when</span>
           <InfoTip text="OR within a rule, AND across the rules you set. A workflow with no rules matches nothing." />
         </div>
         <div className="space-y-1">
@@ -129,10 +129,10 @@ export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: Ta
 
       <div className="mb-4">
         <div className="mb-1 flex items-center gap-1.5">
-          <span className="text-[11px] uppercase tracking-wide text-muted">Skills</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Skills</span>
           <InfoTip text="The flow lives in Hermes skills — the same library the agents already mount, edited on the agent view. The workflow only names which ones this kind of work follows; dispatch tells the agent to load them." />
         </div>
-        <div className="space-y-2 rounded-xl border border-line-subtle bg-card/40 px-4 py-3">
+        <div className="space-y-2 rounded-lg border border-line bg-card/40 px-4 py-3">
           {skillOwners.map((o) =>
             o.skills.length ? (
               <div key={o.owner} className="space-y-1">
@@ -162,7 +162,7 @@ export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: Ta
             const orphans = workflow.skills.filter((sk) => !known.has(sk))
             return orphans.length ? (
               <div className="space-y-1">
-                <span className="text-xs text-[color:var(--theme-warning)]">Bound but not in the library</span>
+                <span className="text-xs text-warning">Bound but not in the library</span>
                 <div className="flex flex-wrap gap-1">
                   {orphans.map((sk) => (
                     <Chip key={sk} tone="warn" onRemove={() => void save({ skills: workflow.skills.filter((x) => x !== sk) })}>
@@ -181,7 +181,7 @@ export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: Ta
 
       <div>
         <div className="mb-1 flex items-center gap-1.5">
-          <span className="text-[11px] uppercase tracking-wide text-muted">Toolkits</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Toolkits</span>
           <InfoTip text="MCP servers (optionally: specific tools) this work expects, one per line — 'github: create_pr, get_diff'. Declarative; access is still granted in the MCP registry." />
         </div>
         <Textarea autoGrow rows={2} value={toolkitsText} onChange={(e) => setToolkitsText(e.target.value)} onBlur={saveToolkits} className="max-h-40 font-mono text-xs" placeholder={'github: create_pr, get_diff\nsandbox'} />

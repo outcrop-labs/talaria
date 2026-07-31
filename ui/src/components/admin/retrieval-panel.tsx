@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
-import { InfoTip } from '@/components/ui/info-tip'
+import { SectionHeader } from '@/components/ui/section-header'
 import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,7 @@ import { Select } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
 import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
 import { useAgents } from '@/lib/agents'
+import { cn } from '@/lib/cn'
 import { useUsers } from '@/lib/users'
 import { useTeams } from '@/lib/teams'
 
@@ -101,33 +102,34 @@ export function RetrievalPanel() {
 
   return (
     <Panel>
-      <div className="mb-4 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Retrieval</span>
-        <InfoTip text="The org's RAG brains. Workspace activity and Organization knowledge are automatic. Spin up more for a domain or team, bind who can search each, and point KB spaces at them to curate what they contain." />
-      </div>
+      <SectionHeader
+        className="mb-4"
+        title="Retrieval"
+        info="The org's RAG brains. Workspace activity and Organization knowledge are automatic. Spin up more for a domain or team, bind who can search each, and point KB spaces at them to curate what they contain."
+      />
 
       {/* Services + backfill */}
-      {ragPending && <Skeleton className="mb-4 h-10 w-full rounded-xl" />}
+      {ragPending && <Skeleton className="mb-4 h-10 w-full rounded-md" />}
       {rag && (
-        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-line-subtle p-3">
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-line p-3">
           <HealthDot ok={rag.health.qdrant} label="Vector store" />
           <HealthDot ok={rag.health.embeddings} label="Embeddings" />
           {rag.upgrade?.embed && (
             <span className="text-xs text-muted" title="Change it via TALARIA_EMBED_MODEL (docker/dev-compose.yml), restart the embeddings container, then rebuild here.">
-              model <span className="text-fg">{rag.upgrade.embed.modelId}</span> · {rag.upgrade.embed.dim}d
+              model <span className="font-mono text-[11px] text-fg">{rag.upgrade.embed.modelId}</span> · <span className="font-mono text-[11px]">{rag.upgrade.embed.dim}d</span>
             </span>
           )}
-          <span className="ml-auto text-xs text-muted">
+          <span className="ml-auto font-mono text-[10px] tracking-[0.05em] text-muted">
             {rebuilding ? (
               <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> {rag.reindex.phase === 'backfilling' ? 'refilling from sources' : 'rebuilding collections'}</span>
             ) : rag.backfill.state === 'running' ? (
               <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> backfilling</span>
             ) : rag.reindex.state === 'error' ? (
-              <span style={{ color: 'var(--theme-danger)' }}>rebuild failed: {rag.reindex.error}</span>
+              <span className="text-danger">rebuild failed: {rag.reindex.error}</span>
             ) : rag.backfill.state === 'done' && rag.backfill.counts ? (
               `last backfill: ${Object.entries(rag.backfill.counts).map(([k, v]) => `${v} ${k}`).join(' · ')}`
             ) : rag.backfill.state === 'error' ? (
-              <span style={{ color: 'var(--theme-danger)' }}>backfill failed: {rag.backfill.error}</span>
+              <span className="text-danger">backfill failed: {rag.backfill.error}</span>
             ) : null}
           </span>
           <Button size="sm" variant="outline" onClick={() => void backfill()} disabled={rebuilding || rag.backfill.state === 'running' || !rag.health.qdrant || !rag.health.embeddings}>
@@ -140,8 +142,10 @@ export function RetrievalPanel() {
           a brain predates hybrid keyword search. One button repairs both. */}
       {rag?.upgrade?.needsReindex && !rebuilding && (
         <div
-          className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border p-3"
-          style={{ borderColor: rag.upgrade.dimMismatch ? 'var(--theme-danger)' : 'var(--theme-warning)' }}
+          className={cn(
+            'mb-4 flex flex-wrap items-center gap-3 rounded-md border p-3',
+            rag.upgrade.dimMismatch ? 'border-danger' : 'border-warning',
+          )}
         >
           <div className="min-w-0 flex-1 text-xs">
             <div className="font-semibold text-fg">
@@ -190,8 +194,8 @@ export function RetrievalPanel() {
 }
 
 const HealthDot = ({ ok, label }: { ok: boolean; label: string }) => (
-  <span className="flex items-center gap-1.5 text-xs text-muted">
-    <span className="h-2 w-2 rounded-full" style={{ background: ok ? 'var(--theme-success, #22c55e)' : 'var(--theme-danger)' }} />
+  <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
+    <span className={cn('h-1.5 w-1.5 rounded-full', ok ? 'bg-success' : 'bg-danger')} />
     {label} {ok ? 'up' : 'down'}
   </span>
 )
@@ -243,14 +247,14 @@ function CollectionRow({ col, spaces }: { col: RagCollection; spaces: Array<{ id
   }
 
   return (
-    <div className="rounded-xl border border-line-subtle p-3">
+    <div className="rounded-md border border-line p-3">
       <div className="flex items-center gap-2">
         <span className="text-sm font-medium text-fg">{col.name}</span>
-        <span className="rounded border border-line-subtle px-1.5 text-[10px] uppercase tracking-wide text-muted">{col.kind}</span>
-        {col.auto && <span className="text-[10px] text-muted">auto</span>}
+        <span className="rounded border border-line-subtle px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{col.kind}</span>
+        {col.auto && <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">auto</span>}
         <span className="ml-auto" />
         {!col.auto && (
-          <button type="button" onClick={() => void del()} className="text-xs text-muted hover:text-[color:var(--theme-danger)]">
+          <button type="button" onClick={() => void del()} className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger">
             Delete
           </button>
         )}
@@ -261,7 +265,7 @@ function CollectionRow({ col, spaces }: { col: RagCollection; spaces: Array<{ id
       {!col.auto && (
         <div className="mt-2.5 space-y-2">
           <label className="flex items-center gap-1.5 text-xs text-muted">
-            <input type="checkbox" checked={bindingsAll} onChange={(e) => applyBindings({ all: e.target.checked })} className="accent-[var(--theme-accent)]" />
+            <input type="checkbox" checked={bindingsAll} onChange={(e) => applyBindings({ all: e.target.checked })} className="accent-accent" />
             Everyone
           </label>
           {!bindingsAll && pickersPending && (
@@ -360,7 +364,7 @@ function RerankSection({ rag }: { rag: RagAdmin }) {
 
   return (
     <div className="mt-5 border-t border-line-subtle pt-4">
-      <div className="mb-1 text-sm font-semibold text-fg">Reranker</div>
+      <SectionHeader className="mb-1" title="Reranker" />
       <p className="mb-3 text-xs text-muted">
         The precision stage after vector recall: a cross-encoder rescores the merged candidates so the best
         sources win. Off = plain vector order. Self-host it, or hook up a provider and set your default.
@@ -412,7 +416,7 @@ function RerankSection({ rag }: { rag: RagAdmin }) {
         )}
       </div>
       {cfg.provider !== 'off' && (
-        <div className="mt-1.5 text-[11px] text-muted">
+        <div className="mt-1.5 font-mono text-[10px] tracking-[0.05em] text-muted">
           Active: {cfg.provider}{cfg.model ? ` · ${cfg.model}` : ''}{cfg.hasKey ? ' · key sealed' : ''} · rescoring top {cfg.candidates ?? 30}
         </div>
       )}

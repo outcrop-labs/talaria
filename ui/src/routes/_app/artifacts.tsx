@@ -19,6 +19,7 @@ import { Segmented } from '@/components/ui/segmented'
 import { CloseButton } from '@/components/ui/close-button'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { BrainRoutingSelect } from '@/components/kb/brain-select'
+import { popPanel } from '@/components/chat/chat-chrome'
 import { IconButton } from '@/components/ui/icon-button'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
@@ -149,9 +150,9 @@ function ArtifactsPage() {
             </IconButton>
           </div>
           {newOpen && (
-            <div className="absolute right-3 top-full z-30 mt-1 w-44 rounded-xl border border-line bg-card p-1 shadow-lg" onMouseLeave={() => setNewOpen(false)}>
+            <div className={cn(popPanel, 'absolute right-3 top-full z-30 mt-1 w-44')} onMouseLeave={() => setNewOpen(false)}>
               {NEW_KINDS.map(({ kind, label, icon: Icon }) => (
-                <button key={kind} type="button" onClick={() => void create(kind)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-fg hover:bg-sidebar">
+                <button key={kind} type="button" onClick={() => void create(kind)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-hover">
                   <Icon size={13} /> {label}
                 </button>
               ))}
@@ -313,19 +314,19 @@ function DriveImportModal({ onClose, onImported }: { onClose: () => void; onImpo
           </div>
           <div className="max-h-[50vh] min-h-[12rem] overflow-y-auto">
             {state === 'loading' && <SkeletonRows rows={6} className="px-2 py-3" />}
-            {state === 'error' && <div className="p-6 text-center text-xs text-[color:var(--theme-danger)]">Couldn’t reach Google Drive.</div>}
-            {state === 'ready' && files && files.length === 0 && <div className="p-6 text-center text-xs text-muted">No files found.</div>}
+            {state === 'error' && <div className="p-6 text-center text-xs text-danger">Couldn’t reach Google Drive.</div>}
+            {state === 'ready' && files && files.length === 0 && <EmptyState variant="compact" title="No files found." />}
             {state === 'ready' && files?.map((f) => (
               <button
                 key={f.id}
                 type="button"
                 disabled={!!importing}
                 onClick={() => void doImport(f.id)}
-                className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-sidebar disabled:opacity-50"
+                className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-hover disabled:opacity-50"
               >
                 <span className="w-14 shrink-0 text-[11px] text-muted">{driveKind(f.mimeType)}</span>
                 <span className="min-w-0 flex-1 truncate text-sm text-fg">{f.name}</span>
-                <span className="shrink-0 text-[11px] text-muted">
+                <span className="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">
                   {importing === f.id ? 'Importing' : f.modifiedTime ? relativeTime(f.modifiedTime) : ''}
                 </span>
               </button>
@@ -347,12 +348,15 @@ function ArtifactRow({ artifact: a, depth, activeId, onSelect, setDrag, onContex
       onDragEnd={() => setDrag(null)}
       onClick={() => onSelect(a.id)}
       onContextMenu={onContextMenu}
-      className={cn('flex w-full items-center gap-2 rounded-lg py-1.5 pr-2 text-left text-sm', activeId === a.id ? 'bg-card text-fg' : 'text-muted hover:text-fg')}
+      className={cn('flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-sm transition-colors', activeId === a.id ? 'bg-card text-fg' : 'text-muted hover:bg-hover hover:text-fg')}
       style={{ paddingLeft: depth * 14 + 8 }}
     >
-      {a.icon ? <span className="text-[15px] leading-none">{a.icon}</span> : <Icon size={14} className="shrink-0" />}
+      {/* Fixed icon lane (§8) — emoji and lucide share one slot. */}
+      <span className="grid w-4 shrink-0 place-items-center">
+        {a.icon ? <span className="text-[15px] leading-none">{a.icon}</span> : <Icon size={14} />}
+      </span>
       <span className="min-w-0 flex-1 truncate">{a.title}</span>
-      <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted">{a.kind}</span>
+      <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{a.kind}</span>
     </button>
   )
 }
@@ -408,10 +412,10 @@ function FolderNode({
         onDragLeave={() => setOver(false)}
         onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); onDrop(folder.id) }}
         onContextMenu={renaming ? undefined : (e) => openMenu(e, folderMenu())}
-        className={cn('group flex items-center gap-1 rounded-md py-1 pr-1 text-sm text-muted hover:text-fg', over && 'ring-1 ring-accent/60')}
+        className={cn('group flex items-center gap-1 rounded-md py-1 pr-1 text-sm text-muted transition-colors hover:bg-hover hover:text-fg', over && 'ring-1 ring-accent/60')}
         style={{ paddingLeft: depth * 14 + 2 }}
       >
-        <button type="button" onClick={toggle} className={cn('shrink-0 rounded p-0.5 hover:bg-card', childFolders.length + childArtifacts.length === 0 && 'invisible')}>
+        <button type="button" onClick={toggle} className={cn('shrink-0 rounded p-0.5 hover:bg-card2', childFolders.length + childArtifacts.length === 0 && 'invisible')}>
           <ChevronRight size={12} className={cn('transition-transform', isOpen && 'rotate-90')} />
         </button>
         {renaming ? (
@@ -426,7 +430,7 @@ function FolderNode({
           />
         ) : (
           <button type="button" onClick={toggle} onDoubleClick={() => setRenaming(true)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-            <span className="shrink-0">{folder.icon ?? <Folder size={13} />}</span>
+            <span className="grid w-4 shrink-0 place-items-center">{folder.icon ?? <Folder size={13} />}</span>
             <span className="truncate font-medium">{folder.name}</span>
           </button>
         )}
@@ -434,7 +438,7 @@ function FolderNode({
           size={12}
           label="Delete folder"
           onClick={() => void remove()}
-          className="shrink-0 rounded p-0.5 opacity-0 hover:bg-transparent hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
+          className="shrink-0 rounded p-0.5 opacity-0 hover:bg-transparent hover:text-danger group-hover:opacity-100"
         />
       </div>
       {isOpen && (
@@ -548,7 +552,7 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
     <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
       <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
         <div className="relative shrink-0">
-          <button type="button" onClick={() => setEmojiOpen((v) => !v)} className="rounded-lg px-1 text-xl leading-none hover:bg-card" title="Set icon">
+          <button type="button" onClick={() => setEmojiOpen((v) => !v)} className="rounded-md px-1 text-xl leading-none transition-colors hover:bg-hover" title="Set icon">
             {artifact.icon ?? '📄'}
           </button>
           {emojiOpen && (
@@ -664,13 +668,13 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
             {artifact.storageRef ? (
               <div className="mx-auto max-w-2xl">
                 {artifact.contentType?.startsWith('image/') ? (
-                  <img src={`/api/uploads/${artifact.storageRef}`} alt={artifact.title} className="mb-4 max-h-[60vh] rounded-xl border border-line-subtle" />
+                  <img src={`/api/uploads/${artifact.storageRef}`} alt={artifact.title} className="mb-4 max-h-[60vh] rounded-lg border border-line" />
                 ) : (
-                  <div className="mb-4 flex items-center gap-3 rounded-xl border border-line-subtle p-4">
+                  <div className="mb-4 flex items-center gap-3 rounded-lg border border-line bg-panel p-4">
                     <Paperclip size={20} className="shrink-0 text-muted" />
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-sans text-sm text-fg">{artifact.title}</div>
-                      <div className="text-xs text-muted">{artifact.contentType ?? 'file'}</div>
+                      <div className="font-mono text-[11px] text-muted">{artifact.contentType ?? 'file'}</div>
                     </div>
                   </div>
                 )}
@@ -687,11 +691,11 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
                 </div>
               </div>
             ) : (
-              <label className="mx-auto flex max-w-lg cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-line-subtle p-12 text-center hover:border-[var(--theme-accent-border)]">
+              <label className="mx-auto flex max-w-lg cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed border-line p-12 text-center transition-colors hover:border-[var(--theme-accent-border)]">
                 <input type="file" className="hidden" onChange={(e) => void onPickFile(e.target.files?.[0])} />
                 <Paperclip size={22} className="text-muted" />
                 <div className="text-sm text-fg">{uploading ? 'Uploading' : 'Click to upload a file'}</div>
-                <div className="text-xs text-muted">Up to 25 MB · stored and hosted by Talaria</div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">Up to 25 MB · stored and hosted by Talaria</div>
               </label>
             )}
           </div>
@@ -717,10 +721,11 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
         )}
       </div>
 
-      <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 text-xs text-muted">
+      {/* Footer status line — mono chrome voice with right-aligned meta (§8). */}
+      <div className="flex items-center gap-2 border-t border-line-subtle px-6 py-2 font-mono text-[10px] tracking-[0.05em] text-muted">
         <span>edited {relativeTime(artifact.updatedAt)}{artifact.updatedBy ? ` by ${artifact.updatedBy}` : ''}</span>
         <span className="ml-auto" />
-        {mode === 'edit' && artifact.kind !== 'file' && <span className="text-[11px] text-muted">{saving ? 'Saving' : 'Saved'}</span>}
+        {mode === 'edit' && artifact.kind !== 'file' && <span className="uppercase">{saving ? 'Saving' : 'Saved'}</span>}
       </div>
 
       <PermissionsModal
@@ -784,16 +789,16 @@ function ArtifactHistory({ id, onRestore }: { id: string; onRestore: (content: s
   }
   return (
     <div>
-      <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">History</div>
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">History</div>
       {loading ? (
         <SkeletonRows rows={4} className="px-2 py-1" />
       ) : revs.length === 0 ? (
         <EmptyState variant="inline" title="No saved revisions yet." />
       ) : (
         revs.map((r, i) => (
-          <button key={r.id} type="button" onClick={() => void restore(r)} className="block w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-card" title="Restore this version">
+          <button key={r.id} type="button" onClick={() => void restore(r)} className="block w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover" title="Restore this version">
             <div className="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>
-            <div className="text-[11px] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>
+            <div className="font-mono text-[10px] tracking-[0.05em] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>
           </button>
         ))
       )}
@@ -835,13 +840,14 @@ function SheetView({ value, editable, onSave }: { value: string; editable: boole
     const [head = [], ...rows] = grid
     return (
       <div className="min-w-0 flex-1 overflow-auto p-6">
-        <table className="border-collapse text-sm">
+        <table className="border-collapse font-sans text-sm">
           <thead>
-            <tr>{head.map((h, i) => <th key={i} className="border border-line-subtle bg-card px-3 py-1.5 text-left font-semibold text-fg">{h}</th>)}</tr>
+            {/* §8 table header: raised fill + mono uppercase column labels. */}
+            <tr>{head.map((h, i) => <th key={i} className="border border-line bg-card px-3 py-1.5 text-left font-mono text-[10px] font-medium uppercase tracking-[0.05em] text-muted">{h}</th>)}</tr>
           </thead>
           <tbody>
             {rows.map((row, ri) => (
-              <tr key={ri}>{row.map((cell, ci) => <td key={ci} className="border border-line-subtle px-3 py-1.5 text-fg">{cell}</td>)}</tr>
+              <tr key={ri} className="transition-colors hover:bg-card2">{row.map((cell, ci) => <td key={ci} className="border border-line px-3 py-1.5 text-fg">{cell}</td>)}</tr>
             ))}
           </tbody>
         </table>
@@ -851,12 +857,12 @@ function SheetView({ value, editable, onSave }: { value: string; editable: boole
 
   return (
     <div className="min-w-0 flex-1 overflow-auto p-6">
-      <table className="border-collapse text-sm">
+      <table className="border-collapse font-sans text-sm">
         <thead>
           <tr>
             {grid[0]!.map((_, c) => (
               <th key={c} className="p-0.5">
-                <button type="button" onClick={() => delCol(c)} title="Delete column" className="w-full rounded text-[10px] text-muted hover:text-[color:var(--theme-danger)]">✕</button>
+                <button type="button" onClick={() => delCol(c)} title="Delete column" className="w-full rounded text-[10px] text-muted transition-colors hover:text-danger">✕</button>
               </th>
             ))}
             <th />
@@ -866,7 +872,7 @@ function SheetView({ value, editable, onSave }: { value: string; editable: boole
           {grid.map((row, r) => (
             <tr key={r}>
               {row.map((cell, c) => (
-                <td key={c} className="border border-line-subtle p-0">
+                <td key={c} className="border border-line p-0">
                   <input
                     value={cell}
                     onChange={(e) => setCell(r, c, e.target.value)}
@@ -876,7 +882,7 @@ function SheetView({ value, editable, onSave }: { value: string; editable: boole
                 </td>
               ))}
               <td className="pl-1">
-                {r > 0 && <button type="button" onClick={() => delRow(r)} title="Delete row" className="text-[10px] text-muted hover:text-[color:var(--theme-danger)]">✕</button>}
+                {r > 0 && <button type="button" onClick={() => delRow(r)} title="Delete row" className="text-[10px] text-muted transition-colors hover:text-danger">✕</button>}
               </td>
             </tr>
           ))}
@@ -885,7 +891,7 @@ function SheetView({ value, editable, onSave }: { value: string; editable: boole
       <div className="mt-3 flex gap-2">
         <Button variant="outline" size="sm" onClick={addRow}><Plus size={12} className="mr-1" /> Row</Button>
         <Button variant="outline" size="sm" onClick={addCol}><Plus size={12} className="mr-1" /> Column</Button>
-        <span className="self-center text-[11px] text-muted">{grid.length - 1} rows · {cols} columns</span>
+        <span className="self-center font-mono text-[10px] tracking-[0.05em] text-muted">{grid.length - 1} rows · {cols} columns</span>
       </div>
     </div>
   )

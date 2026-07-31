@@ -37,7 +37,7 @@ function TargetRow({
         <Input value={name ?? ''} onChange={(e) => onName(e.target.value)} placeholder={namePlaceholder} size="sm" className="w-28 shrink-0" />
       )}
       <ModelPicker endpoints={endpoints} value={value} onChange={onChange} size="sm" className="min-w-0 flex-1" />
-      <span className="w-10 shrink-0 text-xs" style={{ color: epClass === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}>
+      <span className={`w-10 shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] ${epClass === 'local' ? 'text-success' : 'text-accent'}`}>
         {epClass}
       </span>
       {onRemove && (
@@ -80,12 +80,12 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
   return (
       <div className="space-y-5">
         <section>
-          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Main model</div>
+          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Main model</div>
           <TargetRow endpoints={endpoints} value={main} onChange={setMain} />
         </section>
 
         <section>
-          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Model tiers (aliases)</div>
+          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Model tiers (aliases)</div>
           <div className="space-y-1.5">
             {aliases.map((a, i) => (
               <TargetRow
@@ -106,7 +106,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
         </section>
 
         <section>
-          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Fallbacks (when the model above is down)</div>
+          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Fallbacks (when the model above is down)</div>
           <div className="space-y-1.5">
             {fallbacks.map((f, i) => (
               <TargetRow
@@ -124,13 +124,14 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
         </section>
 
         <section>
-          <div className="mb-1.5 flex items-center text-xs font-semibold uppercase tracking-wide text-muted">
+          <div className="mb-1.5 flex items-center font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             Soul
             <Button variant="outline" size="sm" className="ml-auto" onClick={() => setSoulOpen(true)}>
               Open workspace
             </Button>
           </div>
-          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line-subtle p-3 font-[var(--font-mono)] text-xs text-muted">
+          {/* Documents render as ground-inset wells (spec §8 code treatment). */}
+          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-line bg-surface p-3 font-mono text-xs text-muted">
             {soul || 'No soul yet.'}
           </pre>
           {soulOpen && (
@@ -165,11 +166,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
           )}
         </section>
 
-        {err && (
-          <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>
-            {err}
-          </div>
-        )}
+        {err && <div className="text-sm text-danger">{err}</div>}
 
         {busy === 'apply' && (
           <Generating
@@ -177,7 +174,7 @@ export function AgentConfigForm({ def, endpoints, onSaved }: { def: AgentDef; en
             lines={2}
           />
         )}
-        <div className="flex items-center gap-2 border-t border-line-subtle pt-3">
+        <div className="flex items-center gap-2 border-t border-line pt-3">
           <Input value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={submitOnEnter(() => !busy && void save(false))} placeholder="version note (optional)" size="sm" className="min-w-0 flex-1" />
           <Button variant="outline" size="sm" onClick={() => void save(false)} disabled={!!busy}>
             Save version

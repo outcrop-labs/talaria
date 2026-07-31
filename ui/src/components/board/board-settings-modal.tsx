@@ -65,14 +65,14 @@ export function BoardSettingsModal({
 
   return (
     <Modal open={open} onClose={onClose} title="Board settings" width="max-w-xl">
-      <div className="mb-4 flex gap-1 rounded-lg border border-line p-0.5">
+      <div className="mb-4 flex gap-1 rounded-md border border-line p-0.5">
         {(['general', 'statuses', 'labels', 'people', 'agents'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={cn(
-              'flex-1 rounded-md px-3 py-1.5 text-sm capitalize transition-colors',
-              tab === t ? 'bg-card text-fg' : 'text-muted hover:text-fg',
+              'flex-1 rounded-md px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+              tab === t ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
             )}
           >
             {t}
@@ -113,19 +113,19 @@ function TemplatesSection({ board }: { board: Board }) {
   return (
     <div>
       <div className="mb-1 flex items-center">
-        <label className="text-[11px] uppercase tracking-wide text-muted">Ticket templates</label>
+        <label className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Ticket templates</label>
         <Link to="/templates" className="ml-auto text-xs text-accent hover:underline">
           Manage library →
         </Link>
       </div>
       {templatesLoading || bindingsLoading ? (
-        <SkeletonRows rows={3} className="rounded-xl border border-line-subtle p-2" />
+        <SkeletonRows rows={3} className="rounded-lg border border-line p-2" />
       ) : ticketTemplates.length === 0 ? (
-        <div className="text-xs text-muted">No ticket templates in the library yet. Create one to templatize this board's tickets.</div>
+        <div className="font-sans text-xs text-muted">No ticket templates in the library yet. Create one to templatize this board's tickets.</div>
       ) : (
-        <div className="space-y-1 rounded-xl border border-line-subtle p-2">
+        <div className="space-y-1 rounded-lg border border-line p-2">
           {ticketTemplates.map((t) => (
-            <div key={t.id} className="flex items-center gap-2 text-sm">
+            <div key={t.id} className="flex items-center gap-2 font-sans text-sm">
               <input
                 type="checkbox"
                 checked={bound.has(t.id)}
@@ -134,7 +134,7 @@ function TemplatesSection({ board }: { board: Board }) {
               />
               <span className="min-w-0 flex-1 truncate text-fg">{t.name}</span>
               {bound.has(t.id) && (
-                <label className="flex shrink-0 items-center gap-1 text-[11px] text-muted">
+                <label className="flex shrink-0 items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
                   <input
                     type="radio"
                     name={`default-template-${board.id}`}
@@ -149,7 +149,7 @@ function TemplatesSection({ board }: { board: Board }) {
           ))}
         </div>
       )}
-      <div className="mt-1 text-[11px] text-muted">
+      <div className="mt-1 font-sans text-[11px] text-muted">
         The default seeds new tickets and formats agent-drafted ones on this board (an agent's own template binding wins).
       </div>
     </div>
@@ -185,7 +185,7 @@ function GeneralTab({
   return (
     <div className="space-y-5">
       <div>
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
+        <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -196,7 +196,7 @@ function GeneralTab({
       </div>
 
       <div>
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">QA judge</label>
+        <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">QA judge</label>
         <Select
           value={board.judgeMode ?? 'inherit'}
           onChange={async (e) => {
@@ -210,19 +210,24 @@ function GeneralTab({
           <option value="advisory">Advisory: judge posts a verdict, human decides</option>
           <option value="enforcing">Enforcing: auto-send failing work back to the agent (up to 3×), then a human</option>
         </Select>
-        <div className="mt-1 text-[11px] text-muted">
+        <div className="mt-1 font-sans text-[11px] text-muted">
           When an agent hands a ticket to quality review, the judge reviews it. Enforcing bounces “revise” verdicts back to the agent with the issues before a human sees them.
         </div>
       </div>
 
       <TemplatesSection board={board} />
 
-      <div className="rounded-xl border border-line-subtle p-3">
-        <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Danger zone</div>
+      {/* DANGER ZONE (spec §8): orange hairline panel, orange mono label +
+          right-aligned mono meta, muted body, destructive outline actions. */}
+      <div className="rounded-lg border border-danger/40 p-3">
+        <div className="mb-2 flex items-center font-mono text-[10px] uppercase tracking-[0.08em]">
+          <span className="text-danger">Danger zone</span>
+          <span className="ml-auto text-ink-dim">Delete is irreversible</span>
+        </div>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm text-fg">{archived ? 'Restore board' : 'Archive board'}</div>
-            <div className="text-xs text-muted">
+            <div className="font-sans text-sm text-fg">{archived ? 'Restore board' : 'Archive board'}</div>
+            <div className="font-sans text-xs text-muted">
               {archived ? 'Make it active and visible again.' : 'Hide it from the sidebar and boards list. Reversible.'}
             </div>
           </div>
@@ -244,8 +249,8 @@ function GeneralTab({
         {isOwner && (
           <div className="mt-3 flex items-center justify-between gap-3 border-t border-line-subtle pt-3">
             <div className="min-w-0">
-              <div className="text-sm text-fg">Delete board</div>
-              <div className="text-xs text-muted">Permanently removes the board and all its tickets.</div>
+              <div className="font-sans text-sm text-fg">Delete board</div>
+              <div className="font-sans text-xs text-muted">Permanently removes the board and all its tickets.</div>
             </div>
             {confirmDelete ? (
               <div className="flex shrink-0 gap-2">
@@ -308,23 +313,23 @@ function PeopleTab({ board }: { board: Board }) {
           <option value="viewer">Viewer</option>
         </Select>
       </div>
-      {err && <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
+      {err && <div className="mt-2 font-sans text-xs text-danger">{err}</div>}
 
       <div className="mt-4 space-y-1">
-        <div className="mb-1 text-xs uppercase tracking-wide text-muted">People with access</div>
+        <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">People with access</div>
         {membersLoading && <SkeletonRows rows={3} avatar className="px-1 py-1.5" />}
         {members.map((m) => (
-          <div key={m.userId} className="flex items-center gap-2 rounded-lg px-1 py-1.5">
+          <div key={m.userId} className="flex items-center gap-2 rounded-md px-1 py-1.5">
             <Avatar name={m.name ?? m.email} className="h-7 w-7" />
-            <span className="min-w-0 flex-1 truncate text-sm text-fg">
+            <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">
               {m.name ?? m.email ?? m.userId}
-              {m.name && m.email && <span className="ml-1.5 text-xs text-muted">{m.email}</span>}
+              {m.name && m.email && <span className="ml-1.5 font-mono text-[11px] text-muted">{m.email}</span>}
             </span>
-            <span className="text-xs text-muted">{m.role}</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{m.role}</span>
             {m.role !== 'owner' && (
               <button
                 onClick={() => void unshareBoard(board.id, m.userId).then(refresh)}
-                className="text-xs text-muted hover:text-[color:var(--theme-danger)]"
+                className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger"
               >
                 Remove
               </button>
@@ -367,7 +372,7 @@ function AgentsTab({ board }: { board: Board }) {
 
   return (
     <div>
-      <p className="mb-3 text-xs text-muted">
+      <p className="mb-3 font-sans text-xs text-muted">
         Restrictive by default: a ticket can only be assigned to agents allowed here.
       </p>
       {configLoading || fleetLoading ? (
@@ -384,7 +389,7 @@ function AgentsTab({ board }: { board: Board }) {
         <>
           {!allowAll && <Combobox options={options} selected={agents} onChange={setAgents} multiple placeholder="Select agents" />}
           <div className="mt-4 flex items-center justify-between gap-2">
-            <label className="flex cursor-pointer items-center gap-2 text-sm text-fg">
+            <label className="flex cursor-pointer items-center gap-2 font-sans text-sm text-fg">
               <input
                 type="checkbox"
                 checked={allowAll}
@@ -394,7 +399,7 @@ function AgentsTab({ board }: { board: Board }) {
               Allow all agents
             </label>
             <div className="flex items-center gap-2">
-              {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
+              {saved && <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-success">Saved</span>}
               <Button size="sm" onClick={() => void save()} disabled={busy}>
                 Save
               </Button>
@@ -421,8 +426,8 @@ function LabelsTab({ board }: { board: Board }) {
   return (
     <div className="space-y-3">
       <p className="font-sans text-xs text-muted">
-        Labels are shared by everyone on this board. Renaming updates every ticket carrying the label; deleting removes it
-        from tickets.
+        Labels are shared by everyone on this board. Renaming updates every ticket carrying the label; deleting removes
+        it from tickets.
       </p>
       <ul className="divide-y divide-line-subtle">
         {labels.map((l) => (
@@ -467,14 +472,14 @@ function LabelsTab({ board }: { board: Board }) {
                     }
                   })()
                 }
-                className="shrink-0 text-muted transition-colors hover:text-[color:var(--theme-danger)]"
+                className="shrink-0 text-muted transition-colors hover:text-danger"
               >
                 <Trash2 size={14} />
               </button>
             )}
           </li>
         ))}
-        {labels.length === 0 && <li className="py-3 text-xs text-muted">No labels yet.</li>}
+        {labels.length === 0 && <li className="py-3 font-sans text-xs text-muted">No labels yet.</li>}
       </ul>
       {canEdit && (
         <div className="flex gap-2">
@@ -554,7 +559,7 @@ function StatusesTab({ board }: { board: Board }) {
         review is where agent work lands for sign-off, done completes. <strong>Agent start</strong> marks the columns
         where assignment counts as approval — agents only pick up work sitting there. Blocked is always present.
       </p>
-      {err && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
+      {err && <div className="font-sans text-xs text-danger">{err}</div>}
       <ul className="divide-y divide-line-subtle">
         {statuses.map((st) => (
           <li
@@ -611,7 +616,7 @@ function StatusesTab({ board }: { board: Board }) {
               }))}
             />
             {st.system ? (
-              <span className="flex-1 text-sm text-fg">Blocked <span className="ml-1 text-[10px] uppercase tracking-wide text-muted">system</span></span>
+              <span className="flex-1 font-sans text-sm text-fg">Blocked <span className="ml-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">system</span></span>
             ) : (
               <Input
                 size="sm"
@@ -643,7 +648,7 @@ function StatusesTab({ board }: { board: Board }) {
                 </Select>
                 <label
                   title="Agents may pick up work in this column (assignment here = approval to start)"
-                  className="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] uppercase tracking-wide text-muted"
+                  className="flex shrink-0 cursor-pointer items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted"
                 >
                   <input
                     type="checkbox"
@@ -658,7 +663,7 @@ function StatusesTab({ board }: { board: Board }) {
                   <DropdownMenu
                     align="right"
                     trigger={() => (
-                      <button title="Delete status (tickets move to another column)" className="shrink-0 text-muted transition-colors hover:text-[color:var(--theme-danger)]">
+                      <button title="Delete status (tickets move to another column)" className="shrink-0 text-muted transition-colors hover:text-danger">
                         <Trash2 size={14} />
                       </button>
                     )}

@@ -26,6 +26,7 @@ import { Tabs } from '@/components/ui/tabs'
 import { Checkbox } from '@/components/ui/checkbox'
 import { SectionHeader } from '@/components/ui/section-header'
 import { useSavedFlash } from '@/components/ui/save-button'
+import { focusGold } from '@/components/chat/chat-chrome'
 import { CopyButton } from '@/components/ui/copy-link-button'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
@@ -145,7 +146,7 @@ function AdminPage() {
   return (
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-4xl space-y-6">
-        <h1 className="mercury-text text-2xl font-semibold">Admin</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-fg">Admin</h1>
 
         {/* One concern per tab; every panel keeps its own component. */}
         <Tabs items={ADMIN_TABS} value={tab} onChange={setTab} />
@@ -185,7 +186,7 @@ function AdminPage() {
             info="Roles, per-person agent access, and which views each member can reach. Empty = all (open by default); pick any to restrict. Admins always have full access."
           />
           {error && (
-            <div className="mb-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
+            <div className="mb-2 text-xs text-danger">
               {error}
             </div>
           )}
@@ -216,7 +217,7 @@ function AdminPage() {
                 ...manageViews.filter((v) => u.allowedManageViews.includes(v.to)).map((v) => v.to),
               ]
               return (
-                <li key={u.id} className="space-y-2 py-3">
+                <li key={u.id} className="-mx-2 space-y-2 rounded-md px-2 py-3 transition-colors hover:bg-hover">
                   <div className="flex items-center gap-3">
                     <Avatar name={u.name ?? u.email} className="h-7 w-7" />
                     <span className="min-w-0 flex-1">
@@ -245,7 +246,7 @@ function AdminPage() {
                         label="elevated assistant"
                       />
                     )}
-                    <span className="w-16 shrink-0 text-right text-xs text-muted">{relativeTime(u.lastSeenAt)}</span>
+                    <span className="w-16 shrink-0 text-right font-mono text-[10px] tracking-[0.05em] text-muted">{relativeTime(u.lastSeenAt)}</span>
                   </div>
                   {u.role !== 'admin' && (
                     <>
@@ -312,14 +313,15 @@ function PermChip({
       title={`${entry.hint}${overridden ? ' (overridden — click twice to return to default)' : ''}`}
       onClick={onToggle}
       className={cn(
-        'flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors',
+        'flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+        focusGold,
         effective
           ? 'border-accent/60 bg-accent/10 text-fg'
           : 'border-line-subtle text-muted hover:border-line hover:text-fg',
       )}
     >
       {entry.label}
-      {overridden && <span className="h-1 w-1 rounded-full bg-[color:var(--theme-warning)]" title="overridden" />}
+      {overridden && <span className="h-1 w-1 rounded-full bg-warning" title="overridden" />}
     </button>
   )
 }
@@ -347,7 +349,7 @@ function UserPermChips({ userId, perms }: { userId: string; perms: PermsData }) 
   }
   return (
     <div className="flex flex-wrap items-center gap-1.5 pl-10">
-      <span className="text-[11px] uppercase tracking-wide text-muted/80">can</span>
+      <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">can</span>
       {perms.catalog.map((p) => {
         const effective = overrides[p.id] ?? orgDefault(p)
         return (
@@ -387,7 +389,7 @@ function MemberDefaultsPanel({ perms }: { perms: PermsData }) {
       <div className="space-y-2">
         {permGroups(perms.catalog).map(([group, entries]) => (
           <div key={group} className="flex flex-wrap items-center gap-1.5">
-            <span className="w-16 shrink-0 text-[11px] uppercase tracking-wide text-muted/80">{group}</span>
+            <span className="w-16 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{group}</span>
             {entries.map((p) => {
               const effective = perms.orgDefaults[p.id] ?? p.memberDefault
               return (
@@ -451,13 +453,15 @@ function InstanceDomainPanel() {
         <SkeletonRows rows={1} />
       ) : data ? (
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-fg">{data.domain}</span>
+          <span className="font-mono text-[13px] text-fg">{data.domain}</span>
           {data.verified ? (
-            <span className="rounded-full border border-[color:var(--theme-success)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-success)]">
-              ✓ verified — routes to this instance
+            <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
+              <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
+              verified — routes to this instance
             </span>
           ) : (
-            <span className="rounded-full border border-[color:var(--theme-warning)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-warning)]">
+            <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning">
+              <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
               unverified
             </span>
           )}
@@ -471,7 +475,7 @@ function InstanceDomainPanel() {
             type="button"
             title="Clear the hosting domain"
             onClick={() => void post({ domain: null })}
-            className="text-muted hover:text-[color:var(--theme-danger)]"
+            className="text-muted transition-colors hover:text-danger"
           >
             <Trash2 size={13} />
           </button>
@@ -492,7 +496,7 @@ function InstanceDomainPanel() {
         </div>
       )}
       {error && (
-        <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
+        <div className="mt-2 text-xs text-danger">
           {error}
         </div>
       )}
@@ -557,7 +561,7 @@ function EmailPanel() {
       />
       <div className="space-y-3">
         <div className="flex items-center gap-3">
-          <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">Provider</label>
+          <label className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Provider</label>
           <Select
             size="sm"
             value={data.provider ?? ''}
@@ -571,7 +575,7 @@ function EmailPanel() {
         </div>
         {data.provider && (
           <div className="flex items-center gap-3">
-            <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">From</label>
+            <label className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">From</label>
             <Input
               size="sm"
               defaultValue={data.from}
@@ -584,7 +588,7 @@ function EmailPanel() {
         {data.provider === 'smtp' && (
           <>
             <div className="flex items-center gap-3">
-              <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">Host / port</label>
+              <label className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Host / port</label>
               <Input size="sm" defaultValue={data.smtp.host} onBlur={(e) => void post({ smtp: { host: e.target.value } })} placeholder="smtp.gmail.com" className="w-56" />
               <Input size="sm" defaultValue={String(data.smtp.port)} onBlur={(e) => void post({ smtp: { port: Number(e.target.value) || 587 } })} className="w-20" />
               <Checkbox
@@ -595,7 +599,7 @@ function EmailPanel() {
               />
             </div>
             <div className="flex items-center gap-3">
-              <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">User</label>
+              <label className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">User</label>
               <Input size="sm" defaultValue={data.smtp.user} onBlur={(e) => void post({ smtp: { user: e.target.value } })} placeholder="talaria@yourcompany.com" className="w-56" />
               <Input
                 size="sm"
@@ -614,7 +618,7 @@ function EmailPanel() {
         )}
         {data.provider === 'resend' && (
           <div className="flex items-center gap-3">
-            <label className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-muted">API key</label>
+            <label className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">API key</label>
             <Input
               size="sm"
               type="password"
@@ -634,10 +638,10 @@ function EmailPanel() {
             <Button size="sm" disabled={busy} onClick={() => void post({ test: true }, 'test sent — check your inbox')}>
               {busy ? 'Working' : 'Send me a test'}
             </Button>
-            {notice && <span className="text-xs" style={{ color: 'var(--theme-success)' }}>{notice}</span>}
+            {notice && <span className="text-xs text-success">{notice}</span>}
           </div>
         )}
-        {error && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{error}</div>}
+        {error && <div className="text-xs text-danger">{error}</div>}
       </div>
     </Panel>
   )
@@ -713,7 +717,7 @@ function InvitesPanel() {
         </Button>
         {notice && <span className="min-w-0 truncate text-xs text-muted">{notice}</span>}
       </div>
-      {error && <div className="mb-2 text-xs" style={{ color: 'var(--theme-danger)' }}>{error}</div>}
+      {error && <div className="mb-2 text-xs text-danger">{error}</div>}
       {isPending ? (
         <SkeletonRows rows={2} />
       ) : (data ?? []).length === 0 ? (
@@ -723,19 +727,19 @@ function InvitesPanel() {
           {(data ?? []).map((i) => {
             const st = state(i)
             return (
-              <li key={i.id} className="flex items-center gap-3 py-2 text-sm">
+              <li key={i.id} className="-mx-2 flex items-center gap-3 rounded-md px-2 py-2 text-sm transition-colors hover:bg-hover">
                 <span className="min-w-0 flex-1 truncate text-fg">{i.email}</span>
                 <span
                   className={cn(
-                    'shrink-0 rounded-full border px-1.5 py-0.5 text-[10px]',
-                    st === 'accepted' && 'border-[color:var(--theme-success)]/40 text-[color:var(--theme-success)]',
-                    st === 'pending' && 'border-line-subtle text-muted',
+                    'shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em]',
+                    st === 'accepted' && 'border-success/40 text-success',
+                    st === 'pending' && 'border-line text-muted',
                     (st === 'revoked' || st === 'expired') && 'border-line-subtle text-muted/60 line-through',
                   )}
                 >
                   {st}
                 </span>
-                <span className="shrink-0 text-xs text-muted">{relativeTime(i.createdAt)}</span>
+                <span className="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{relativeTime(i.createdAt)}</span>
                 {st === 'pending' && (
                   <button
                     type="button"
@@ -749,7 +753,7 @@ function InvitesPanel() {
                       })
                       await refresh()
                     }}
-                    className="shrink-0 text-muted hover:text-[color:var(--theme-danger)]"
+                    className="shrink-0 text-muted transition-colors hover:text-danger"
                   >
                     <Trash2 size={13} />
                   </button>
@@ -838,15 +842,17 @@ function SignupDomainsPanel() {
             />
           )}
           {(data ?? []).map((d) => (
-            <div key={d.id} className="space-y-1.5 rounded-xl border border-line-subtle p-2.5">
+            <div key={d.id} className="space-y-1.5 rounded-md border border-line p-2.5">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-fg">{d.domain}</span>
+                <span className="font-mono text-[13px] text-fg">{d.domain}</span>
                 {d.verified ? (
-                  <span className="rounded-full border border-[color:var(--theme-success)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-success)]">
-                    ✓ verified — self-joins open
+                  <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
+                    <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
+                    verified — self-joins open
                   </span>
                 ) : (
-                  <span className="rounded-full border border-[color:var(--theme-warning)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--theme-warning)]">
+                  <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning">
+                    <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
                     awaiting DNS proof
                   </span>
                 )}
@@ -869,7 +875,7 @@ function SignupDomainsPanel() {
                     })
                     await refresh()
                   }}
-                  className="text-muted hover:text-[color:var(--theme-danger)]"
+                  className="text-muted transition-colors hover:text-danger"
                 >
                   <Trash2 size={13} />
                 </button>
@@ -877,7 +883,7 @@ function SignupDomainsPanel() {
               {!d.verified && (
                 <div className="flex items-center gap-2">
                   <span className="shrink-0 text-[11px] text-muted">TXT on _talaria-verify.{d.domain}:</span>
-                  <code className="min-w-0 flex-1 truncate rounded bg-card px-1.5 py-0.5 text-[11px] text-fg">{d.verificationToken}</code>
+                  <code className="min-w-0 flex-1 truncate rounded bg-raised px-1.5 py-0.5 font-mono text-[11px] text-fg">{d.verificationToken}</code>
                   <CopyButton value={d.verificationToken} label="Copy" className="text-xs" />
                 </div>
               )}
@@ -897,7 +903,7 @@ function SignupDomainsPanel() {
             </Button>
           </div>
           {error && (
-            <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
+            <div className="text-xs text-danger">
               {error}
             </div>
           )}
@@ -942,7 +948,7 @@ function OrgPanel() {
 
   return (
     <Panel>
-      <div className="mb-1 text-sm font-semibold text-fg">Organization</div>
+      <SectionHeader className="mb-1" title="Organization" />
       <p className="mb-3 text-xs text-muted">
         The business your agents work for. Baked into every agent's identity automatically. Generated souls anchor to
         this team, and saving here rolls running agents (a fresh container comes up and traffic cuts over only once
@@ -964,11 +970,11 @@ function OrgPanel() {
       ) : (
       <div className="space-y-3">
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Business name</label>
+          <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Business name</label>
           <Input size="sm" value={nameVal} onChange={(e) => setName(e.target.value)} placeholder="e.g. Outcrop Labs" className="max-w-xs" />
         </div>
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">What the business does</label>
+          <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">What the business does</label>
           <Textarea
             rows={2}
             value={aboutVal}
@@ -978,7 +984,7 @@ function OrgPanel() {
           />
         </div>
         <div className="flex items-center gap-2">
-          {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
+          {saved && <span className="text-xs text-success">Saved</span>}
           <span className="ml-auto" />
           <Button size="sm" onClick={() => void save()} disabled={!dirty}>
             Save
@@ -1015,7 +1021,7 @@ function SettingsPanel() {
   }
   return (
     <Panel>
-      <div className="mb-2 text-sm font-semibold text-fg">Settings</div>
+      <SectionHeader className="mb-2" title="Settings" />
       {isPending ? (
         // Hold the retention row so the input never renders blank, then fills.
         <div className="flex items-center gap-3">
@@ -1040,7 +1046,7 @@ function SettingsPanel() {
           onKeyDown={submitOnEnter(() => days !== '' && Number(days) !== data?.auditRetentionDays && void save())}
           className="w-24 shrink-0"
         />
-        <span className="shrink-0 text-xs text-muted">days</span>
+        <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">days</span>
         <Button size="sm" className="shrink-0" onClick={() => void save()} disabled={days === '' || Number(days) === data?.auditRetentionDays}>
           Save
         </Button>
@@ -1107,42 +1113,66 @@ function EncryptionPanel() {
           ))}
         </div>
       ) : (
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted">
-        <span>Key version: <strong className="text-fg">v{data?.keyVersion ?? '—'}</strong></span>
-        <span>Secrets protected: <strong className="text-fg">{data?.secretCount ?? '—'}</strong></span>
-        <span>Root of trust: <strong className="text-fg">{data?.rootSource ?? '—'}</strong></span>
-        {data?.rotatedAt && <span>Rotated: {new Date(data.rotatedAt).toLocaleString()}</span>}
-      </div>
-      )}
-      <div className="mt-4 flex flex-wrap items-end gap-3">
-        <div className="flex-1 min-w-[16rem]">
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">New root secret (optional)</label>
-          <Input
-            type="password"
-            value={newRoot}
-            onChange={(e) => setNewRoot(e.target.value)}
-            placeholder="leave blank to keep the current root"
-            autoComplete="off"
-          />
-        </div>
-        <Button size="sm" onClick={() => void rotate()} disabled={busy}>
-          {busy ? 'Rotating' : 'Rotate keys'}
-        </Button>
-      </div>
-      <div className="mt-3">
-        {busy && (
-          <Generating
-            label="Rotating the data key: re-encrypting provider keys, agent secrets, and OAuth tokens in one pass"
-            lines={2}
-          />
+      <div className="flex flex-wrap items-end gap-x-8 gap-y-2">
+        <span>
+          <span className="block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key version</span>
+          <span className="font-sans text-2xl font-semibold text-fg">v{data?.keyVersion ?? '—'}</span>
+        </span>
+        <span>
+          <span className="block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Secrets protected</span>
+          <span className="font-sans text-2xl font-semibold text-fg">{data?.secretCount ?? '—'}</span>
+        </span>
+        <span>
+          <span className="block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Root of trust</span>
+          <span className="font-sans text-2xl font-semibold text-fg">{data?.rootSource ?? '—'}</span>
+        </span>
+        {data?.rotatedAt && (
+          <span className="pb-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
+            rotated {new Date(data.rotatedAt).toLocaleString()}
+          </span>
         )}
       </div>
-      {newRoot.trim() && (
-        <p className="mt-2 text-[11px] text-muted">
-          After rotating with a new root secret, update <code>TALARIA_SECRET_KEY</code> (or the key-file) to match before the next restart.
-        </p>
       )}
-      {msg && <p className="mt-2 text-xs text-[color:var(--theme-success)]">{msg}</p>}
+      {/* §8 DANGER ZONE: orange hairline panel, mono label + IRREVERSIBLE
+          meta, muted body, orange-outline action — never an orange fill. */}
+      <div className="mt-4 rounded-md border border-danger/40 p-4">
+        <div className="mb-2 flex items-center gap-1.5">
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-danger">Danger zone</span>
+          <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">Irreversible</span>
+        </div>
+        <p className="mb-3 text-xs text-muted">
+          Rotating re-encrypts every stored secret under a fresh key in one pass. The previous key is retired for good.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex-1 min-w-[16rem]">
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">New root secret (optional)</label>
+            <Input
+              type="password"
+              value={newRoot}
+              onChange={(e) => setNewRoot(e.target.value)}
+              placeholder="leave blank to keep the current root"
+              autoComplete="off"
+            />
+          </div>
+          <Button size="sm" variant="danger" onClick={() => void rotate()} disabled={busy}>
+            {busy ? 'Rotating' : 'Rotate keys'}
+          </Button>
+        </div>
+        {busy && (
+          <div className="mt-3">
+            <Generating
+              label="Rotating the data key: re-encrypting provider keys, agent secrets, and OAuth tokens in one pass"
+              lines={2}
+            />
+          </div>
+        )}
+        {newRoot.trim() && (
+          <p className="mt-2 text-[11px] text-muted">
+            After rotating with a new root secret, update <code className="font-mono">TALARIA_SECRET_KEY</code> (or the key-file) to match before the next restart.
+          </p>
+        )}
+      </div>
+      {msg && <p className="mt-2 text-xs text-success">{msg}</p>}
     </Panel>
   )
 }
@@ -1203,14 +1233,14 @@ function JudgePanel() {
           onChange={(m) => void save({ mode: m })}
         />
         <div className="flex items-center gap-2">
-          <span className="text-[11px] uppercase tracking-wide text-muted">Model</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Model</span>
           <Select size="sm" value={model} onChange={(e) => void save({ model: e.target.value || null })} className="w-64" disabled={!enabled}>
             <option value="">Default (self-hosted)</option>
             {(data?.models ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
             {model && !(data?.models ?? []).includes(model) && <option value={model}>{model}</option>}
           </Select>
         </div>
-        {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
+        {saved && <span className="text-xs text-success">Saved</span>}
       </div>
       )}
       <p className="mt-3 text-[11px] text-muted">Per-board override lives on each board (enforcing / advisory / off); boards on "inherit" follow this stance.</p>
@@ -1279,7 +1309,7 @@ function GuardrailsPanel() {
       <>
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] uppercase tracking-wide text-muted">Mode</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Mode</span>
           <Select size="sm" value={cfg?.mode ?? 'observe'} onChange={(e) => void save({ mode: e.target.value })} className="w-40">
             <option value="off">Off</option>
             <option value="observe">Observe</option>
@@ -1288,15 +1318,15 @@ function GuardrailsPanel() {
           </Select>
         </div>
         <label className="flex items-center gap-2 text-xs text-muted" title="Findings below this confidence are dropped">
-          <span className="uppercase tracking-wide">Min confidence</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Min confidence</span>
           <input
             type="range" min={0} max={1} step={0.05}
             value={cfg?.minConfidence ?? 0.5}
             disabled={cfg?.mode === 'off'}
             onChange={(e) => void save({ minConfidence: Number(e.target.value) })}
-            className="w-28"
+            className="w-28 accent-accent"
           />
-          <span className="w-8 text-fg">{((cfg?.minConfidence ?? 0.5) * 100).toFixed(0)}%</span>
+          <span className="w-8 font-mono text-[11px] text-fg">{((cfg?.minConfidence ?? 0.5) * 100).toFixed(0)}%</span>
         </label>
         <Checkbox
           className="gap-2"
@@ -1306,7 +1336,7 @@ function GuardrailsPanel() {
           onChange={(checked) => void save({ coach: checked })}
           label="Coach agents from findings"
         />
-        <div className="text-xs text-muted">{data?.stats.total ?? 0} findings</div>
+        <div className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{data?.stats.total ?? 0} findings</div>
       </div>
       <div className="mt-3 space-y-1.5">
         {rules.map((c) => (
@@ -1327,13 +1357,13 @@ function GuardrailsPanel() {
       </div>
       {data?.findings && data.findings.length > 0 && (
         <div className="mt-4">
-          <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Recent findings</div>
-          <div className="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-lg border border-line-subtle">
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Recent findings</div>
+          <div className="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-md border border-line">
             {data.findings.slice(0, 20).map((f) => (
-              <div key={f.id} className="flex items-start gap-2 px-2 py-1.5 text-xs">
-                <span className="shrink-0 rounded px-1 text-[10px] uppercase" style={{ color: f.severity === 'high' ? 'var(--theme-danger)' : 'var(--theme-warning)' }}>{f.check.replace(/_/g, ' ')}</span>
+              <div key={f.id} className="flex items-start gap-2 px-2 py-1.5 text-xs transition-colors hover:bg-hover">
+                <span className={cn('shrink-0 rounded px-1 font-mono text-[10px] uppercase tracking-[0.05em]', f.severity === 'high' ? 'text-danger' : 'text-warning')}>{f.check.replace(/_/g, ' ')}</span>
                 <span className="min-w-0 flex-1 truncate text-muted" title={f.snippet}>{f.snippet || f.message}</span>
-                <span className="shrink-0 text-[10px] text-muted">{f.model}</span>
+                <span className="shrink-0 font-mono text-[10px] text-muted">{f.model}</span>
               </div>
             ))}
           </div>
@@ -1415,7 +1445,7 @@ function OutreachPanel() {
           label="Enable periodic check-ins"
         />
         <label className="flex items-center gap-2 text-xs text-muted" title="Minimum minutes between one agent's check-ins">
-          <span className="uppercase tracking-wide">Every</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Every</span>
           <Input
             size="sm" type="number" min={15} max={1440} className="w-20"
             value={cfg?.intervalMinutes ?? 240}
@@ -1425,7 +1455,7 @@ function OutreachPanel() {
           <span>min</span>
         </label>
         <label className="flex items-center gap-2 text-xs text-muted" title="Agent-initiated direct messages allowed per person per day">
-          <span className="uppercase tracking-wide">DM cap</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">DM cap</span>
           <Input
             size="sm" type="number" min={1} max={20} className="w-16"
             value={cfg?.dailyDmCap ?? 3}
@@ -1436,7 +1466,7 @@ function OutreachPanel() {
       </div>
       {agents.length > 0 && (
         <div className="mt-3">
-          <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Proactive agents</div>
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Proactive agents</div>
           <div className="flex flex-wrap gap-x-4 gap-y-1.5">
             {agents.map((a) => (
               <Checkbox
@@ -1460,14 +1490,14 @@ function OutreachPanel() {
       )}
       {data?.events && data.events.length > 0 && (
         <div className="mt-4">
-          <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">Recent outreach</div>
-          <div className="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-lg border border-line-subtle">
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Recent outreach</div>
+          <div className="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-md border border-line">
             {data.events.map((ev, i) => (
-              <div key={i} className="flex items-start gap-2 px-2 py-1.5 text-xs">
-                <span className="shrink-0 rounded px-1 text-[10px] uppercase text-muted">{ev.kind}</span>
+              <div key={i} className="flex items-start gap-2 px-2 py-1.5 text-xs transition-colors hover:bg-hover">
+                <span className="shrink-0 rounded px-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{ev.kind}</span>
                 <span className="min-w-0 flex-1 truncate text-muted" title={ev.note ?? ''}>{ev.note ?? '—'}</span>
-                <span className="shrink-0 text-[10px] text-muted">{ev.agentModel}</span>
-                <span className="shrink-0 text-[10px] text-muted">{relativeTime(ev.createdAt)}</span>
+                <span className="shrink-0 font-mono text-[10px] text-muted">{ev.agentModel}</span>
+                <span className="shrink-0 font-mono text-[10px] text-muted">{relativeTime(ev.createdAt)}</span>
               </div>
             ))}
           </div>
@@ -1534,7 +1564,7 @@ function OrgGooglePanel() {
       {isPending ? (
         // Never show "Not connected" + Connect while the status is in flight —
         // hold the connection row's shape until it resolves.
-        <div className="flex items-center gap-3 rounded-xl border border-line-subtle p-4">
+        <div className="flex items-center gap-3 rounded-md border border-line p-4">
           <Skeleton className="h-9 w-9 shrink-0" />
           <div className="min-w-0 flex-1 space-y-1.5">
             <Skeleton className="h-3 w-36 rounded-full" />
@@ -1545,16 +1575,19 @@ function OrgGooglePanel() {
       ) : data && !data.available ? (
         <div className="text-xs text-muted">Google integration isn’t configured on this server.</div>
       ) : (
-        <div className="flex items-center gap-3 rounded-xl border border-line-subtle p-4">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line-subtle text-lg">🏢</div>
+        <div className="flex items-center gap-3 rounded-md border border-line p-4">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-raised text-lg">🏢</div>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-fg">Shared Drive & Docs</div>
-            <div className="truncate text-xs text-muted">
+            <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
+              Shared Drive & Docs
+              {data?.connected && <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />}
+            </div>
+            <div className="truncate font-mono text-[11px] text-muted">
               {data?.connected ? `Connected${data.email ? ` as ${data.email}` : ''}` : 'Not connected'}
             </div>
           </div>
           {data?.connected ? (
-            <Button variant="ghost" size="sm" onClick={() => void disconnect()}>Disconnect</Button>
+            <Button variant="danger-outline" size="sm" onClick={() => void disconnect()}>Disconnect</Button>
           ) : (
             <a href="/api/integrations/google/org/connect" className={buttonClasses({ size: 'sm' })}>Connect</a>
           )}
@@ -1562,7 +1595,7 @@ function OrgGooglePanel() {
       )}
       {data?.connected && <OrgGoogleTargets targets={data.targets} />}
       {flash && (
-        <div className="mt-3 text-xs" style={{ color: flash === 'connected' ? 'var(--theme-success)' : 'var(--theme-danger)' }}>
+        <div className={cn('mt-3 text-xs', flash === 'connected' ? 'text-success' : 'text-danger')}>
           {msg[flash] ?? flash}
         </div>
       )}
@@ -1593,26 +1626,26 @@ function OrgGoogleTargets({ targets }: { targets: OrgGoogle['targets'] }) {
   }
 
   return (
-    <div className="mt-4 space-y-3 rounded-xl border border-line-subtle p-4">
-      <div className="text-xs font-medium text-fg">Where agents build</div>
+    <div className="mt-4 space-y-3 rounded-md border border-line p-4">
+      <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Where agents build</div>
       <div>
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Shared Drive / folder ID</label>
+        <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Shared Drive / folder ID</label>
         <Input size="sm" value={drive} onChange={(e) => setDrive(e.target.value)} placeholder="Shared Drive or folder ID" />
         <div className="mt-1 text-[11px] text-muted">Files agents create land here (team-owned). Blank = the account’s My Drive. The org account must be a member of the Shared Drive.</div>
       </div>
       <div>
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Calendar ID</label>
+        <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Calendar ID</label>
         <Input size="sm" value={cal} onChange={(e) => setCal(e.target.value)} placeholder="team@group.calendar.google.com" />
         <div className="mt-1 text-[11px] text-muted">Org events land here. Blank = the account’s primary calendar.</div>
       </div>
       <div>
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Send mail as</label>
+        <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Send mail as</label>
         <Input size="sm" value={sendAs} onChange={(e) => setSendAs(e.target.value)} placeholder="support@yourdomain.com" />
         <div className="mt-1 text-[11px] text-muted">A verified send-as alias on the org account for outgoing mail. Blank = the account’s own address.</div>
       </div>
       <div className="flex items-center gap-3">
         <Button size="sm" onClick={() => void save()} disabled={!dirty}>Save</Button>
-        {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
+        {saved && <span className="text-xs text-success">Saved</span>}
       </div>
     </div>
   )
@@ -1703,25 +1736,25 @@ function GithubPanel() {
         {/* Status */}
         {status?.configured ? (
           <div className="flex items-center gap-2 text-sm">
-            <span className="h-2 w-2 shrink-0 rounded-full bg-[color:var(--theme-success)]" />
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
             <span className="text-fg">Connected{status.account ? ` as ${status.account}` : ''}</span>
-            <span className="text-xs text-muted">via {status.mode === 'app' ? 'GitHub App' : 'personal access token'}</span>
-            <button type="button" onClick={() => void disconnect()} className="ml-auto text-xs text-muted transition-colors hover:text-[color:var(--theme-danger)]">
+            <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">via {status.mode === 'app' ? 'GitHub App' : 'access token'}</span>
+            <button type="button" onClick={() => void disconnect()} className="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger">
               Disconnect
             </button>
           </div>
         ) : (
           <div className="flex items-center gap-2 text-sm">
-            <span className="h-2 w-2 shrink-0 rounded-full bg-line" />
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-line" />
             <span className="text-muted">Not connected — pick a method and follow the setup guide.</span>
           </div>
         )}
-        {status?.error && <div className="text-xs text-[color:var(--theme-warning)]">{status.error}</div>}
+        {status?.error && <div className="text-xs text-warning">{status.error}</div>}
 
         {/* Connect controls — minimal; the guide holds the walkthrough */}
-        <div className="space-y-2 rounded-xl border border-line-subtle bg-card/40 px-4 py-3">
+        <div className="space-y-2 rounded-md border border-line bg-raised/40 px-4 py-3">
           <div className="flex items-center gap-3">
-            <label className="w-20 shrink-0 text-[11px] uppercase tracking-wide text-muted">Method</label>
+            <label className="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Method</label>
             <Segmented
               options={[
                 { id: 'app' as const, label: 'GitHub App' },
@@ -1736,9 +1769,9 @@ function GithubPanel() {
           {effMode !== 'pat' ? (
             <>
               <div className="flex items-center gap-3">
-                <label className="w-20 shrink-0 text-[11px] uppercase tracking-wide text-muted">App ID</label>
+                <label className="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">App ID</label>
                 <Input size="sm" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder={status?.app.appId || 'e.g. 1234567'} className="w-40" />
-                <label className="ml-2 text-[11px] uppercase tracking-wide text-muted">Key</label>
+                <label className="ml-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key</label>
                 <Input size="sm" type="password" value={privateKey} onChange={(e) => setPrivateKey(e.target.value)} placeholder={status?.app.keySet ? 'set — paste .pem to replace' : 'paste the whole .pem'} className="min-w-0 flex-1" />
                 <Button
                   size="sm"
@@ -1754,7 +1787,7 @@ function GithubPanel() {
                 </Button>
               </div>
               <div className="flex items-start gap-3">
-                <label className="w-20 shrink-0 pt-1 text-[11px] uppercase tracking-wide text-muted">Installed on</label>
+                <label className="w-20 shrink-0 pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Installed on</label>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {installations.map((i) => {
                     const selected = (status?.app.installationIds ?? []).includes(String(i.id))
@@ -1774,8 +1807,9 @@ function GithubPanel() {
                           })
                         }
                         className={cn(
-                          'rounded-full border px-2.5 py-0.5 text-xs transition-colors',
-                          selected ? 'border-[var(--theme-accent-border)] text-fg' : 'border-line-subtle text-muted hover:text-fg',
+                          'rounded-md border px-2.5 py-0.5 font-mono text-[11px] transition-colors',
+                          focusGold,
+                          selected ? 'border-[var(--theme-accent-border)] bg-accent/10 text-fg' : 'border-line-subtle text-muted hover:border-line hover:text-fg',
                         )}
                       >
                         {i.account} (#{i.id})
@@ -1790,14 +1824,14 @@ function GithubPanel() {
             </>
           ) : (
             <div className="flex items-center gap-3">
-              <label className="w-20 shrink-0 text-[11px] uppercase tracking-wide text-muted">Token</label>
+              <label className="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Token</label>
               <Input size="sm" type="password" value={pat} onChange={(e) => setPat(e.target.value)} placeholder={status?.patSet ? '••••••••  set — paste to replace' : 'github_pat_…'} className="min-w-0 flex-1" />
               <Button size="sm" disabled={!pat.trim() || busy} onClick={() => void save({ mode: 'pat', pat: { token: pat.trim() } }).then(() => setPat(''))}>
                 Connect
               </Button>
             </div>
           )}
-          {error && <div className="text-xs text-[color:var(--theme-danger)]">{error}</div>}
+          {error && <div className="text-xs text-danger">{error}</div>}
         </div>
 
         {status?.configured && (
@@ -1911,7 +1945,7 @@ function GithubGuideModal({ open, onClose, mode }: { open: boolean; onClose: () 
 function GhStep({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
     <div className="flex gap-3">
-      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--theme-accent-border)] text-[10px] text-accent">{n}</span>
+      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--theme-accent-border)] font-mono text-[10px] text-accent">{n}</span>
       <div className="min-w-0 flex-1 space-y-2">
         <div className="text-sm font-medium text-fg">{title}</div>
         {children}
@@ -1923,7 +1957,7 @@ function GhStep({ n, title, children }: { n: number; title: string; children: Re
 /** Field-by-field form guidance: GitHub's field name → exactly what to enter. */
 function GhFields({ rows }: { rows: Array<[string, string]> }) {
   return (
-    <div className="divide-y divide-line-subtle rounded-lg border border-line-subtle bg-[var(--theme-panel)]/40">
+    <div className="divide-y divide-line-subtle rounded-md border border-line bg-raised/40">
       {rows.map(([label, value]) => (
         <div key={label} className="flex items-baseline gap-3 px-3 py-1.5">
           <span className="w-52 shrink-0 text-xs text-muted">{label}</span>
@@ -1980,7 +2014,7 @@ function RepoCreationSection({
   return (
     <div className="space-y-2 border-t border-line-subtle pt-3">
       <div className="flex items-baseline gap-2">
-        <span className="text-[11px] uppercase tracking-wide text-muted">Agent repo creation</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent repo creation</span>
         <span className="text-xs text-muted">agents may REQUEST new repos in these orgs; you approve each one</span>
       </div>
       <div className="flex items-center gap-2">
@@ -1998,16 +2032,16 @@ function RepoCreationSection({
         <span className="text-xs text-muted">needs the App's org Administration permission to create</span>
       </div>
       {requests.map((r) => (
-        <div key={r.id} className="flex items-center gap-2 rounded-lg border border-[color:var(--theme-warning)]/30 px-3 py-2 text-sm">
+        <div key={r.id} className="flex items-center gap-2 rounded-md border border-warning/30 px-3 py-2 text-sm">
           <span className="min-w-0 flex-1 truncate">
-            <span className="text-fg">{r.org}/{r.name}</span>
+            <span className="font-mono text-[13px] text-fg">{r.org}/{r.name}</span>
             <span className="text-muted"> — {r.agentModel}: {r.why}</span>
           </span>
           <Button size="sm" onClick={() => void decide(r.id, 'approve')}>Create + grant</Button>
           <Button size="sm" variant="ghost" onClick={() => void decide(r.id, 'reject')}>Reject</Button>
         </div>
       ))}
-      {decideError && <div className="text-xs text-[color:var(--theme-danger)]">{decideError}</div>}
+      {decideError && <div className="text-xs text-danger">{decideError}</div>}
     </div>
   )
 }
@@ -2052,13 +2086,13 @@ function RepoFlowSection() {
   return (
     <div className="space-y-2 border-t border-line-subtle pt-3">
       <div className="flex items-baseline gap-2">
-        <span className="text-[11px] uppercase tracking-wide text-muted">Repository flow</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Repository flow</span>
         <span className="text-xs text-muted">how workbench branches and PRs move, per repo</span>
-        {saved && <span className="ml-auto text-xs text-[color:var(--theme-success)]">Saved</span>}
+        {saved && <span className="ml-auto text-xs text-success">Saved</span>}
       </div>
       <div className="overflow-x-auto">
         <div className="min-w-[36rem]">
-          <div className="grid grid-cols-[minmax(0,1fr)_11rem_11rem] gap-2 pb-1 text-[11px] uppercase tracking-wide text-muted">
+          <div className="grid grid-cols-[minmax(0,1fr)_11rem_11rem] gap-2 pb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             <span>Repository</span>
             <span>PRs land on</span>
             <span>Testing branch</span>
@@ -2069,9 +2103,9 @@ function RepoFlowSection() {
               const unreachable = !data.repos.includes(repo)
               return (
                 <div key={repo} className="grid grid-cols-[minmax(0,1fr)_11rem_11rem] items-center gap-2">
-                  <span className="min-w-0 truncate text-sm text-fg">
+                  <span className="min-w-0 truncate font-mono text-xs text-fg">
                     {repo}
-                    {unreachable && <span className="ml-2 text-xs text-[color:var(--theme-warning)]">no longer reachable</span>}
+                    {unreachable && <span className="ml-2 font-sans text-xs text-warning">no longer reachable</span>}
                   </span>
                   <Input
                     size="sm"

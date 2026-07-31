@@ -40,14 +40,18 @@ export function NotificationsPanel() {
 
   return (
     <Panel>
-      <div className={expanded ? 'mb-2 flex items-center gap-3' : 'flex items-center gap-3'}>
-        <button type="button" onClick={() => setExpanded((v) => !v)} className="flex min-w-0 items-center gap-2 text-left">
-          {expanded ? <ChevronDown size={14} className="shrink-0 text-muted" /> : <ChevronRight size={14} className="shrink-0 text-muted" />}
-          <span className="text-sm font-semibold text-fg">Notifications</span>
+      <div className={expanded ? 'mb-2 flex min-h-6 items-center gap-3' : 'flex min-h-6 items-center gap-3'}>
+        <button type="button" onClick={() => setExpanded((v) => !v)} className="group flex min-w-0 items-center gap-2 text-left">
+          {expanded ? <ChevronDown size={12} className="shrink-0 text-muted" /> : <ChevronRight size={12} className="shrink-0 text-muted" />}
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim transition-colors group-hover:text-muted">
+            Notifications
+          </span>
           {unread > 0 && (
-            <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">{unread}</span>
+            <span className="font-mono text-[10px] font-medium tracking-[0.05em] text-accent">{unread}</span>
           )}
-          {unread === 0 && <span className="text-xs text-muted">all read</span>}
+          {unread === 0 && (
+            <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">all read</span>
+          )}
         </button>
         {expanded && unread > 0 && (
           <Button variant="outline" size="sm" className="ml-auto" onClick={() => void markRead()}>
@@ -63,8 +67,8 @@ export function NotificationsPanel() {
               type="button"
               onClick={() => open(n)}
               className={cn(
-                'w-full rounded-xl border border-transparent px-3 py-2.5 text-left transition-colors hover:bg-card',
-                !n.readAt && 'border-line-subtle bg-card',
+                'w-full rounded-md border border-transparent px-3 py-2.5 text-left transition-colors hover:bg-card2',
+                !n.readAt && 'border-line bg-raised',
               )}
             >
               <div className="flex items-baseline gap-2">
@@ -72,9 +76,9 @@ export function NotificationsPanel() {
                 <span className={cn('min-w-0 flex-1 truncate font-sans text-sm', n.readAt ? 'text-muted' : 'font-medium text-fg')}>
                   {n.title}
                 </span>
-                <span className="shrink-0 text-xs text-muted">{relativeTime(n.createdAt)}</span>
+                <span className="shrink-0 font-mono text-[11px] text-muted">{relativeTime(n.createdAt)}</span>
               </div>
-              {n.body && <div className="mt-0.5 truncate pl-3.5 text-xs text-muted">{n.body}</div>}
+              {n.body && <div className="mt-0.5 truncate pl-3.5 font-sans text-xs text-muted">{n.body}</div>}
             </button>
           </li>
         ))}

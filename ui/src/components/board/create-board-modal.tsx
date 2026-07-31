@@ -71,7 +71,7 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
       width="max-w-lg"
       footer={
         <div className="flex items-center justify-between">
-          <span className="text-xs text-muted">{allowAll ? 'All agents allowed' : `${agents.length} agents`}</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{allowAll ? 'All agents allowed' : `${agents.length} agents`}</span>
           <div className="flex gap-2">
             <Button variant="ghost" size="sm" onClick={close}>Cancel</Button>
             <Button size="sm" onClick={() => void create()} disabled={busy || !name.trim()}>Create board</Button>
@@ -98,7 +98,7 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
         </Field>
 
         <Field label="Agents">
-          <label className="mb-2 flex cursor-pointer items-center gap-2 text-sm text-fg">
+          <label className="mb-2 flex cursor-pointer items-center gap-2 font-sans text-sm text-fg">
             <input type="checkbox" checked={allowAll} onChange={(e) => setAllowAll(e.target.checked)} className="accent-[color:var(--theme-accent)]" />
             Allow all agents
           </label>
@@ -121,9 +121,9 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
           {invites.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {invites.map((i) => (
-                <span key={i.email} className="flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-xs text-muted">
+                <span key={i.email} className="flex items-center gap-1 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-muted">
                   {i.email} · {i.role}
-                  <button onClick={() => setInvites((prev) => prev.filter((x) => x.email !== i.email))} className="hover:text-[color:var(--theme-danger)]">✕</button>
+                  <button onClick={() => setInvites((prev) => prev.filter((x) => x.email !== i.email))} className="transition-colors hover:text-danger">✕</button>
                 </span>
               ))}
             </div>
@@ -137,7 +137,7 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-1 text-xs uppercase tracking-wide text-muted">{label}</div>
+      <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</div>
       {children}
     </div>
   )

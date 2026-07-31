@@ -15,10 +15,11 @@ export function AgentMediaImage({ src, alt }: { src: string; alt: string }) {
   return (
     <span className="group relative my-2 inline-block">
       <img src={src} alt={alt} className="max-h-96 rounded-lg border border-line" />
+      {/* Secondary action (§8): raised tile + hairline + mono readout label. */}
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="absolute right-2 top-2 rounded-lg border border-line-subtle bg-card px-2 py-1 text-xs text-muted opacity-0 transition-opacity hover:text-fg group-hover:opacity-100"
+        className="absolute right-2 top-2 rounded-md border border-line bg-raised px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted opacity-0 transition-opacity hover:text-fg group-hover:opacity-100"
       >
         Save to Artifacts
       </button>
@@ -77,11 +78,11 @@ function SaveDialog({ src, onClose }: { src: string; onClose: () => void }) {
       ) : (
         <div className="space-y-3">
           <div>
-            <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Title</label>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Title</label>
             <Input size="sm" autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
           </div>
           <div>
-            <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Folder</label>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Folder</label>
             {foldersLoading ? (
               <Skeleton className="h-9 w-full" />
             ) : (
@@ -95,11 +96,7 @@ function SaveDialog({ src, onClose }: { src: string; onClose: () => void }) {
               </Select>
             )}
           </div>
-          {error && (
-            <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
-              {error}
-            </div>
-          )}
+          {error && <div className="text-xs text-danger">{error}</div>}
           <div className="flex justify-end gap-2 border-t border-line-subtle pt-3">
             <Button variant="ghost" size="sm" onClick={onClose}>
               Cancel

@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
 import { FieldPill } from '@/components/ui/field-pill'
 import { Chip } from '@/components/ui/chip'
+import { focusGold } from '@/components/chat/chat-chrome'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
 import {
@@ -272,7 +273,11 @@ function BoardPage() {
   if (!board) return <EmptyState icon="⧉" title="Board not found" hint="It may have been deleted, or you don’t have access." />
 
   const toggleCls = (active: boolean) =>
-    cn('grid h-7 w-7 place-items-center rounded-md transition-colors', active ? 'bg-card text-fg' : 'text-muted hover:text-fg')
+    cn(
+      'grid h-7 w-7 place-items-center rounded-md transition-colors',
+      focusGold,
+      active ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+    )
   // Opening a ticket keeps the CURRENT view/filter state — the overlay sits
   // on top of whatever view you were in, and closing returns you to it.
   const openTicket = (taskId: string) =>
@@ -285,7 +290,7 @@ function BoardPage() {
 
       {/* Row 1 — the VIEW: mode toggle, saved views, save. */}
       <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-5 py-2">
-        <div className="flex rounded-lg border border-line p-0.5">
+        <div className="flex rounded-md border border-line p-0.5">
           <button
             className={toggleCls(view === 'board')}
             onClick={() => setSearch({ view: undefined })}
@@ -321,10 +326,11 @@ function BoardPage() {
               onClick={() => applyView(sv)}
               onContextMenu={(e) => viewTabContextMenu(e, sv)}
               className={cn(
-                'flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
+                'flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+                focusGold,
                 search.v === sv.id
-                  ? 'border-[var(--theme-accent-border)] bg-card text-fg'
-                  : 'border-transparent text-muted hover:bg-card hover:text-fg',
+                  ? 'border-[var(--theme-accent-border)] bg-raised text-fg'
+                  : 'border-transparent text-muted hover:bg-hover hover:text-fg',
               )}
             >
               <TypeIcon size={12} className={cn('shrink-0', search.v === sv.id ? 'text-accent' : 'opacity-70')} />
@@ -336,12 +342,15 @@ function BoardPage() {
           <button
             onClick={() => void saveCurrentAsView()}
             title="Save the current layout, grouping, and filters as a named view"
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted transition-colors hover:text-accent"
+            className={cn(
+              'flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg',
+              focusGold,
+            )}
           >
             <Plus size={12} /> Save view
           </button>
         )}
-        <span className="ml-auto text-xs text-muted">
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
           {filtersActive(filters) || q ? `${tasks.length} of ${allTasks.length}` : `${allTasks.length} tickets`}
         </span>
         {viewTabMenu}
@@ -360,7 +369,7 @@ function BoardPage() {
             <DropdownMenu
               align="right"
               trigger={(open) => (
-                <FieldPill icon={<Layers size={12} />} active={open || groupBy !== 'status'} className="h-9 rounded-lg px-2 text-xs" title="Group by">
+                <FieldPill icon={<Layers size={12} />} active={open || groupBy !== 'status'} className="h-9 rounded-md px-2 font-mono text-[10px] uppercase tracking-[0.05em]" title="Group by">
                   {groupBy === 'none' ? 'No grouping' : `Group: ${groupBy}`}
                 </FieldPill>
               )}

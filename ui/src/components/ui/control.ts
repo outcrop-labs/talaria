@@ -8,6 +8,12 @@ export const controlSizes: Record<ControlSize, string> = {
   md: 'h-11',
 }
 
+// Gentle dew focus-visible (spec §8): gold — SOLID 2px ring on controls
+// (buttons, icon tiles, segmented cells, inputs). Chips use the dashed
+// variant from `chat-chrome.tsx` (`focusGold`) instead.
+export const focusRing =
+  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
+
 // The one key-affordance vocabulary (#49). Every single-line control pairs
 // with one of these instead of hand-rolling `e.key === …` at the call site.
 

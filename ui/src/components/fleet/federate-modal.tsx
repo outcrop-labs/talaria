@@ -106,10 +106,10 @@ export function FederateModal({ onClose }: { onClose: () => void }) {
               again. Agents whose handle already exists are skipped.
             </p>
             <div>
-              <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Directory on server</label>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Directory on server</label>
               <Input value={dir} onChange={(e) => setDir(e.target.value)} onKeyDown={submitOnEnter(() => !busy && dir.trim() && void federate())} placeholder="/path/to/stack" autoFocus />
             </div>
-            {err && <p className="text-xs text-[color:var(--theme-danger)]">{err}</p>}
+            {err && <p className="text-xs text-danger">{err}</p>}
           </div>
         )}
 
@@ -119,11 +119,11 @@ export function FederateModal({ onClose }: { onClose: () => void }) {
               {fresh.length} federated · {result.agents.length - fresh.length} already here
             </div>
             {result.agents.length > 0 && (
-              <ul className="max-h-56 divide-y divide-line-subtle overflow-y-auto rounded-lg border border-line-subtle">
+              <ul className="max-h-56 divide-y divide-line overflow-y-auto rounded-lg border border-line">
                 {result.agents.map((a) => (
                   <li key={a.slug} className="flex items-center gap-2 px-3.5 py-2 text-sm">
-                    <span className="text-fg">{a.slug}</span>
-                    <span className={cn('ml-auto text-xs', a.status === 'federated' ? 'text-accent' : 'text-muted')}>
+                    <span className="font-mono text-xs text-fg">{a.slug}</span>
+                    <span className={cn('ml-auto font-mono text-[10px] uppercase tracking-[0.05em]', a.status === 'federated' ? 'text-accent' : 'text-muted')}>
                       {a.status === 'federated' ? 'federated' : 'already exists'}
                     </span>
                   </li>
@@ -131,7 +131,7 @@ export function FederateModal({ onClose }: { onClose: () => void }) {
               </ul>
             )}
             {result.errors.map((e) => (
-              <p key={e} className="text-xs text-[color:var(--theme-danger)]">
+              <p key={e} className="text-xs text-danger">
                 {e}
               </p>
             ))}

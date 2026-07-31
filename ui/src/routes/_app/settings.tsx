@@ -7,6 +7,8 @@ import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Combobox } from '@/components/ui/combobox'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
+import { Panel } from '@/components/ui/panel'
+import { cn } from '@/lib/cn'
 import { useDeniedViews, useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
 import { savePreferredModel, useModels, usePreferredModel } from '@/lib/muse'
@@ -87,10 +89,10 @@ function SettingsPage() {
   return (
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto w-full max-w-2xl">
-        <h1 className="mercury-text mb-4 text-lg font-semibold">Settings</h1>
+        <h1 className="mb-4 text-2xl font-semibold tracking-tight text-fg">Settings</h1>
         <Tabs items={[...SETTINGS_TABS, ...appTabs]} value={tab} onChange={setTab} className="mb-6" />
         {tab === 'profile' && (
-        <section className="mercury-panel rounded-2xl p-6">
+        <Panel as="section">
           <div className="mb-4 flex items-center gap-3">
             {sessionLoading ? (
               // Hold the identity header until the session lands — an empty
@@ -112,7 +114,7 @@ function SettingsPage() {
               </>
             )}
           </div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Display name</label>
+          <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Display name</label>
           {sessionLoading ? (
             <div className="flex items-center gap-2">
               <Skeleton className="h-11 flex-1" />
@@ -131,9 +133,9 @@ function SettingsPage() {
               </Button>
             </div>
           )}
-          {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
+          {saved && <div className="mt-2 text-xs text-success">Saved</div>}
           <PreferredModelPicker />
-        </section>
+        </Panel>
         )}
 
         {tab === 'assistant' && <AssistantSection />}
@@ -175,7 +177,7 @@ function PreferredModelPicker() {
 
   return (
     <div className="mt-5 border-t border-line-subtle pt-4">
-      <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Preferred model</label>
+      <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Preferred model</label>
       {catalogLoading || prefsLoading ? (
         // Mounting the combobox before both queries land makes its value flip
         // from Default to the saved pick — hold with a select-shaped shimmer.
@@ -197,8 +199,8 @@ function PreferredModelPicker() {
       )}
       <p className="mt-1 text-xs text-muted">
         Powers AI drafting across Talaria: souls, skills, memories, schedules.
-        {saved && !error && <span className="ml-2 text-[color:var(--theme-success)]">Saved</span>}
-        {error && <span className="ml-2" style={{ color: 'var(--theme-danger)' }}>{error}</span>}
+        {saved && !error && <span className="ml-2 text-success">Saved</span>}
+        {error && <span className="ml-2 text-danger">{error}</span>}
       </p>
     </div>
   )
@@ -265,7 +267,7 @@ function McpConnectionsSection() {
 
   if (!isPending && (data ?? []).length === 0) return null
   return (
-    <section className="mercury-panel mt-4 rounded-2xl p-6">
+    <Panel as="section" className="mt-4">
       <SectionHeader
         title="Tool accounts"
         info="MCP servers your org runs in per-user mode. Connect your own account (stored encrypted) and your assistant can use the server as you. Disconnect any time — the server drops off your assistant on the next config render."
@@ -283,8 +285,11 @@ function McpConnectionsSection() {
                 </div>
                 {s.connected ? (
                   <>
-                    <span className="text-xs" style={{ color: 'var(--theme-success)' }}>connected</span>
-                    <Button size="sm" variant="ghost" onClick={() => void put(s.id, null)}>
+                    <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
+                      <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-success" />
+                      connected
+                    </span>
+                    <Button size="sm" variant="danger-outline" onClick={() => void put(s.id, null)}>
                       Disconnect
                     </Button>
                   </>
@@ -308,7 +313,7 @@ function McpConnectionsSection() {
                       without declarations falls back to one auth header. */}
                   {(s.requiredHeaders.length ? s.requiredHeaders : [{ name: 'Authorization', description: null, isSecret: true, placeholder: 'Bearer …' }]).map((h) => (
                     <div key={h.name} className="flex items-end gap-2">
-                      <span className="w-40 shrink-0 truncate pb-2 text-xs text-muted" title={h.name}>
+                      <span className="w-40 shrink-0 truncate pb-2 font-mono text-[11px] text-muted" title={h.name}>
                         {h.name}
                       </span>
                       <div className="min-w-0 flex-1">
@@ -339,7 +344,7 @@ function McpConnectionsSection() {
           ))}
         </ul>
       )}
-    </section>
+    </Panel>
   )
 }
 
@@ -380,7 +385,7 @@ function IntegrationsSection() {
   }
 
   return (
-    <section className="mercury-panel rounded-2xl p-6">
+    <Panel as="section">
       <SectionHeader
         className="mb-4"
         title="Connected accounts"
@@ -390,8 +395,8 @@ function IntegrationsSection() {
       {isLoading ? (
         // Never show "Not connected" + Connect while the status is unknown —
         // that's a false state. Hold the row's shape until the query resolves.
-        <div aria-hidden className="flex items-center gap-3 rounded-xl border border-line-subtle p-4">
-          <Skeleton className="h-9 w-9 shrink-0 rounded-lg" />
+        <div aria-hidden className="flex items-center gap-3 rounded-md border border-line p-4">
+          <Skeleton className="h-9 w-9 shrink-0 rounded-md" />
           <div className="min-w-0 flex-1 space-y-2">
             <Skeleton className="h-3 w-40 rounded-full" delay={0.12} />
             <Skeleton className="h-2.5 w-56 rounded-full" delay={0.24} />
@@ -401,20 +406,23 @@ function IntegrationsSection() {
       ) : data && !data.available ? (
         <div className="text-xs text-muted">Google integration isn’t configured on this server yet.</div>
       ) : (
-        <div className="flex items-center gap-3 rounded-xl border border-line-subtle p-4">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line-subtle text-lg">
+        <div className="flex items-center gap-3 rounded-md border border-line p-4">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-raised text-lg">
             🗂️
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-fg">Google Drive & Docs</div>
-            <div className="truncate text-xs text-muted">
+            <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
+              Google Drive & Docs
+              {data?.connected && <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />}
+            </div>
+            <div className="truncate font-mono text-[11px] text-muted">
               {data?.connected
                 ? `Connected${data.email ? ` as ${data.email}` : ''}${data.connectedAt ? ` · ${relativeTime(data.connectedAt)}` : ''}`
                 : 'Not connected'}
             </div>
           </div>
           {data?.connected ? (
-            <Button variant="ghost" size="sm" onClick={() => void disconnect()}>
+            <Button variant="danger-outline" size="sm" onClick={() => void disconnect()}>
               Disconnect
             </Button>
           ) : (
@@ -426,11 +434,11 @@ function IntegrationsSection() {
       )}
 
       {flash && (
-        <div className="mt-3 text-xs" style={{ color: flash === 'connected' ? 'var(--theme-success)' : 'var(--theme-danger)' }}>
+        <div className={cn('mt-3 text-xs', flash === 'connected' ? 'text-success' : 'text-danger')}>
           {flashText[flash] ?? flash}
         </div>
       )}
-    </section>
+    </Panel>
   )
 }
 
@@ -482,7 +490,7 @@ function ApiKeysSection() {
   }
 
   return (
-    <section className="mercury-panel rounded-2xl p-6">
+    <Panel as="section">
       <SectionHeader
         className="mb-4"
         title="API keys"
@@ -504,13 +512,13 @@ function ApiKeysSection() {
           {keys.length > 0 && (
             <div className="mb-4 divide-y divide-line-subtle">
               {keys.map((k) => (
-                <div key={k.id} className="flex items-center gap-3 py-3 text-sm">
+                <div key={k.id} className="-mx-2 flex items-center gap-3 rounded-md px-2 py-3 text-sm transition-colors hover:bg-hover">
                   <span className="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
-                  <code className="shrink-0 text-xs text-muted">{k.prefix}</code>
-                  <span className="min-w-0 flex-1 truncate text-xs text-muted">
+                  <code className="shrink-0 font-mono text-[11px] text-muted">{k.prefix}</code>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
                     {k.lastUsedAt ? `used ${relativeTime(k.lastUsedAt)}` : 'never used'}
                   </span>
-                  <Button variant="ghost" size="sm" className="shrink-0" onClick={() => void revoke(k.id)}>
+                  <Button variant="danger-outline" size="sm" className="shrink-0" onClick={() => void revoke(k.id)}>
                     Revoke
                   </Button>
                 </div>
@@ -537,16 +545,16 @@ function ApiKeysSection() {
         </>
       )}
       {minted && (
-        <div className="mt-3 rounded-lg border border-line-subtle p-3">
-          <div className="mb-1 text-xs text-muted">Copy it now. It won't be shown again.</div>
-          <code className="break-all text-xs text-fg">{minted}</code>
+        <div className="mt-3 rounded-md border border-accent/40 bg-raised p-3">
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning">Copy it now — it won't be shown again</div>
+          <code className="break-all font-mono text-xs text-fg">{minted}</code>
         </div>
       )}
       {err && (
-        <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
+        <div className="mt-2 text-xs text-danger">
           {err}
         </div>
       )}
-    </section>
+    </Panel>
   )
 }

@@ -17,6 +17,8 @@ import { InfoTip } from '@/components/ui/info-tip'
 import { cn } from '@/lib/cn'
 import { relativeTime, useFleet } from '@/lib/fleet'
 import { Segmented } from '@/components/ui/segmented'
+import { Tabs } from '@/components/ui/tabs'
+import { Chip } from '@/components/ui/chip'
 import { useModels } from '@/lib/muse'
 import { AgentConfigForm } from '@/components/fleet/agent-editor'
 import { CronsPanel } from '@/components/fleet/agent-crons'
@@ -60,22 +62,7 @@ export function AgentManageModal({
       {/* Takeover modal: the frame owns the height, so every tab renders at
           the SAME size and scrolls internally — no height jank between tabs. */}
       <div className="flex h-full min-h-0 flex-col">
-        <div className="flex shrink-0 gap-1 border-b border-line-subtle">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn(
-                'relative px-3 py-2 text-sm transition-colors',
-                tab === t.id ? 'text-fg' : 'text-muted hover:text-fg',
-              )}
-            >
-              {t.label}
-              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
-            </button>
-          ))}
-        </div>
+        <Tabs items={TABS} value={tab} onChange={setTab} className="shrink-0 border-b border-line pb-2" />
 
         <div className="min-h-0 flex-1 overflow-y-auto pt-4">
           {tab === 'summary' && <SummaryTab def={def} isAdmin={isAdmin} />}
@@ -100,11 +87,12 @@ export function AgentManageModal({
 // ── Summary ───────────────────────────────────────────────────────────────────
 function TargetChip({ t, name }: { t: ModelTarget; name?: string }) {
   const local = /inference|vllm|ollama|spark|local/.test(t.endpoint)
+  // Model identity is chrome — mono chip, radius 6, class in signal color.
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-xs">
-      {name && <span className="font-semibold text-fg">{name}</span>}
+    <span className="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-0.5 font-mono text-[10px] tracking-[0.05em]">
+      {name && <span className="font-medium uppercase text-fg">{name}</span>}
       <span className="text-muted">{t.model}</span>
-      <span className={local ? 'text-[color:var(--theme-success)]' : 'text-accent'}>{local ? 'self-hosted' : 'cloud'}</span>
+      <span className={cn('uppercase', local ? 'text-success' : 'text-accent')}>{local ? 'self-hosted' : 'cloud'}</span>
     </span>
   )
 }
@@ -124,7 +112,7 @@ function SummaryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
     <div className="space-y-4 text-sm">
       {/* Editable role — the human-readable title shown on the roster. */}
       <div>
-        <div className="mb-1 text-xs uppercase tracking-wide text-muted">Role</div>
+        <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role</div>
         {isAdmin ? (
           <Input size="sm" value={role} onChange={(e) => setRole(e.target.value)} onBlur={() => void saveRole()} placeholder="e.g. Support Lead" className="max-w-xs" />
         ) : (
@@ -154,7 +142,7 @@ function SummaryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
         )}
       </div>
       <div>
-        <div className="mb-1.5 text-xs uppercase tracking-wide text-muted">Models</div>
+        <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Models</div>
         <div className="flex flex-wrap items-center gap-2">
           {cfg?.main && <TargetChip t={cfg.main} name="main" />}
           {cfg?.aliases?.map((a) => <TargetChip key={a.name} t={a} name={a.name} />)}
@@ -196,7 +184,7 @@ function TemplateBindings({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
   )
   return (
     <div>
-      <div className="mb-1.5 flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted">
+      <div className="mb-1.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
         Templates
         <InfoTip text="A bound template wins over the board's default wherever this agent writes tickets or plans." />
       </div>
@@ -233,9 +221,10 @@ function TemplateBindings({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
     </div>
   )
 }
+// §8 stat cell: 10px mono uppercase ink-dim label over a readout value.
 const Stat = ({ label, value }: { label: string; value: string }) => (
   <div>
-    <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
+    <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</div>
     <div className="truncate text-fg" title={value}>{value}</div>
   </div>
 )
@@ -256,8 +245,8 @@ function ReadOnlyConfig({ def }: { def: AgentDef }) {
       <Field label="Fallbacks" value={cfg?.fallbacks?.length ? String(cfg.fallbacks.length) : 'none'} />
       {def.latest?.soul && (
         <div>
-          <div className="mb-1 text-xs uppercase tracking-wide text-muted">Soul</div>
-          <div className="max-h-64 overflow-y-auto rounded-lg border border-line-subtle p-3 text-xs">
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Soul</div>
+          <div className="max-h-64 overflow-y-auto rounded-lg border border-line p-3 text-xs">
             <Markdown>{def.latest.soul}</Markdown>
           </div>
         </div>
@@ -267,7 +256,7 @@ function ReadOnlyConfig({ def }: { def: AgentDef }) {
 }
 const Field = ({ label, value }: { label: string; value: string }) => (
   <div className="flex gap-3">
-    <span className="w-24 shrink-0 text-xs uppercase tracking-wide text-muted">{label}</span>
+    <span className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</span>
     <span className="min-w-0 flex-1 text-fg">{value}</span>
   </div>
 )
@@ -312,12 +301,12 @@ function SkillsTab({ slug, isAdmin }: { slug: string; isAdmin: boolean }) {
       ) : skills.length === 0 ? (
         <EmptyState icon="✦" title="No skills yet" hint={isAdmin ? 'Add one below.' : undefined} />
       ) : (
-        <div className="divide-y divide-line-subtle">
+        <div className="divide-y divide-line">
           {skills.map((s) => (
-            <button key={s.name} type="button" onClick={() => setOpen(s.name)} className="flex w-full items-baseline gap-3 py-2.5 text-left">
-              <span className="shrink-0 text-sm font-medium text-fg">{s.name}</span>
-              <span className="min-w-0 truncate text-sm text-muted">{s.description}</span>
-              {s.files.length > 1 && <span className="ml-auto shrink-0 text-xs text-muted">{s.files.length} files</span>}
+            <button key={s.name} type="button" onClick={() => setOpen(s.name)} className="flex w-full items-baseline gap-3 py-2.5 text-left transition-colors hover:bg-hover">
+              <span className="shrink-0 font-sans text-sm font-medium text-fg">{s.name}</span>
+              <span className="min-w-0 truncate font-sans text-sm text-muted">{s.description}</span>
+              {s.files.length > 1 && <span className="ml-auto shrink-0 font-mono text-[11px] text-muted">{s.files.length} files</span>}
             </button>
           ))}
         </div>
@@ -440,7 +429,7 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-1.5">
-        <span className="text-xs uppercase tracking-wide text-muted">Memory</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Memory</span>
         <InfoTip text={`Lives in the agent's own container (${data?.container ?? ''}) — the agent curates it too, so a concurrent agent write can win over a manual edit. Every save is snapshotted and revertible.`} />
         {isAdmin && (
           <Button size="sm" className="ml-auto shrink-0" disabled={isLoading} onClick={() => setEditing(true)}>
@@ -561,30 +550,27 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       ) : servers.length === 0 ? (
         <div className="text-sm text-muted">No MCP servers connected.</div>
       ) : (
-        <div className="divide-y divide-line-subtle">
+        <div className="divide-y divide-line">
           {servers.map((s) => {
             const probe = probes[s.name]
             return (
               <div key={s.name} className="flex items-center gap-3 py-2.5 text-sm">
                 <span className="w-28 shrink-0 truncate font-medium text-fg">{s.name}</span>
                 {s.extras.includes('built-in') && (
-                  <span
-                    className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted"
-                    title="The Talaria toolkit, attached to every managed agent automatically"
-                  >
+                  <Chip className="shrink-0" title="The Talaria toolkit, attached to every managed agent automatically">
                     built-in
-                  </span>
+                  </Chip>
                 )}
                 {s.extras.includes('managed') && (
                   <Link
                     to="/mcp"
-                    className="shrink-0 rounded border border-accent/50 bg-accent/10 px-1 text-[10px] uppercase tracking-wide text-accent hover:bg-accent/15"
+                    className="shrink-0 rounded border border-accent/50 bg-accent/10 px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-accent transition-colors hover:bg-accent/15"
                     title="Attached from the org MCP registry — assignment, tool subsets, and credentials are managed on the MCP page"
                   >
                     org registry
                   </Link>
                 )}
-                <span className="min-w-0 flex-1 truncate text-muted">{s.url}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{s.url}</span>
                 {probe === 'testing' ? (
                   <Loader2 size={13} className="shrink-0 animate-spin text-muted" />
                 ) : probe ? (
@@ -593,7 +579,7 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
                   </span>
                 ) : null}
                 {!s.extras.includes('managed') && (
-                  <button type="button" onClick={() => void test(s)} className="shrink-0 text-xs text-muted hover:text-accent">
+                  <button type="button" onClick={() => void test(s)} className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent">
                     Test
                   </button>
                 )}
@@ -602,7 +588,7 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
                     type="button"
                     disabled={busy}
                     onClick={async () => { if (await confirm({ title: 'Remove skill', message: `Remove "${s.name}"?`, confirmLabel: 'Remove', danger: true })) void edit({ remove: [s.name] }) }}
-                    className="shrink-0 text-xs text-muted hover:text-[color:var(--theme-danger)]"
+                    className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger"
                   >
                     Remove
                   </button>
@@ -659,14 +645,14 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   // The header row (History + Config history) renders in every state — only
   // the list below it swaps between skeleton, empty, and rows.
   return (
-    <div className="divide-y divide-line-subtle">
+    <div className="divide-y divide-line">
       {busy !== null && (
         <div className="pb-2.5">
           <Generating label={`Reverting to v${busy}, publishing as a new version`} lines={2} />
         </div>
       )}
       <div className="flex items-center gap-1.5 pb-2.5">
-        <span className="text-xs uppercase tracking-wide text-muted">History</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">History</span>
         <InfoTip text="Reverting never destroys anything — the old content is published as a NEW version on top." />
         <Button variant="outline" size="sm" className="ml-auto" onClick={() => setConfigOpen(true)}>
           Config history
@@ -689,16 +675,16 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       {isLoading && <SkeletonRows rows={4} className="py-3" />}
       {!isLoading && versions.length === 0 && <div className="py-2.5 text-sm text-muted">No version history.</div>}
       {versions.map((v) => (
-        <div key={v.version} className="flex items-center gap-3 py-2.5 text-sm">
-          <span className={cn('w-12 shrink-0 font-[var(--font-mono)]', v.version === def.currentVersion ? 'text-accent' : 'text-muted')}>v{v.version}</span>
-          <span className="min-w-0 flex-1 truncate text-fg">{v.note ?? '—'}</span>
-          <span className="shrink-0 text-xs text-muted">{v.createdBy ?? 'system'} · {relativeTime(v.createdAt)}</span>
+        <div key={v.version} className="flex items-center gap-3 py-2.5 text-sm transition-colors hover:bg-hover">
+          <span className={cn('w-12 shrink-0 font-mono', v.version === def.currentVersion ? 'text-accent' : 'text-muted')}>v{v.version}</span>
+          <span className="min-w-0 flex-1 truncate font-sans text-fg">{v.note ?? '—'}</span>
+          <span className="shrink-0 font-mono text-[11px] text-muted">{v.createdBy ?? 'system'} · {relativeTime(v.createdAt)}</span>
           {isAdmin && v.version !== def.currentVersion && (
-            <button type="button" disabled={busy !== null} onClick={() => void revert(v.version)} className="flex shrink-0 items-center gap-1 text-xs text-muted hover:text-accent">
+            <button type="button" disabled={busy !== null} onClick={() => void revert(v.version)} className="flex shrink-0 items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent">
               <RotateCcw size={12} /> {busy === v.version ? 'reverting' : 'revert'}
             </button>
           )}
-          {v.version === def.currentVersion && <span className="shrink-0 text-xs" style={{ color: 'var(--theme-success)' }}>current</span>}
+          {v.version === def.currentVersion && <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-success">current</span>}
         </div>
       ))}
     </div>
@@ -754,7 +740,7 @@ function WorkbenchControl({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
   return (
     <div>
       <div className="mb-1 flex items-center gap-1.5">
-        <span className="text-xs uppercase tracking-wide text-muted">Workbench</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Workbench</span>
         <InfoTip text="A sandboxed runtime scoped to this agent's role — tools, harnesses, and creds it can execute real work with. Auto attaches the profile that fits (department/role); On forces one; Off disables it." />
       </div>
       {isAdmin ? (
@@ -784,7 +770,7 @@ function WorkbenchControl({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
                 ))}
             </Select>
           )}
-          <span className="text-xs text-muted">
+          <span className="font-mono text-[11px] text-muted">
             {mode === 'off' ? 'no sandbox' : resolved ? `→ ${resolved.name}${resolved.harnesses.length ? ` (${resolved.harnesses.join(', ')})` : ''}` : '→ nothing fits — no sandbox'}
           </span>
         </div>
@@ -828,7 +814,7 @@ function WorkbenchTuning({
   return (
     <div className="mt-2 space-y-1.5">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] uppercase tracking-wide text-muted">Harness</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Harness</span>
         <Select size="sm" value={chosen} onChange={(e) => void save({ workbenchHarness: e.target.value || null })} className="w-40">
           <option value="">Auto ({profile.harnesses[0] ? labelOf(profile.harnesses[0]) : 'none'})</option>
           {profile.harnesses.map((h) => (
@@ -840,7 +826,7 @@ function WorkbenchTuning({
         <InfoTip text="The coding tool this agent's workbench jobs run. Auto uses the profile's first harness. The effort models below are handed to it in its own syntax." />
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] uppercase tracking-wide text-muted">Effort</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Effort</span>
         {EFFORTS.map(([key, label]) => (
           <span key={key} className="flex items-center gap-1">
             <span className="text-xs text-muted">{label}</span>
@@ -895,22 +881,15 @@ function WorkbenchRepos({ agentId }: { agentId: string }) {
     )
   return (
     <div className="mt-2 space-y-1">
-      <span className="text-[11px] uppercase tracking-wide text-muted">Repos this agent may work</span>
+      <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Repos this agent may work</span>
       <div className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
+        {/* Repo grants — the one filter-pill primitive (Chip). */}
         {data.available.map((repo) => {
           const on = data.granted.includes(repo)
           return (
-            <button
-              key={repo}
-              type="button"
-              onClick={() => void toggle(repo, !on)}
-              className={cn(
-                'rounded-full border px-2.5 py-0.5 text-xs transition-colors',
-                on ? 'border-[var(--theme-accent-border)] text-fg' : 'border-line-subtle text-muted hover:text-fg',
-              )}
-            >
+            <Chip key={repo} onSelect={() => void toggle(repo, !on)} selected={on} className="px-2.5 py-0.5 normal-case">
               {repo}
-            </button>
+            </Chip>
           )
         })}
       </div>
