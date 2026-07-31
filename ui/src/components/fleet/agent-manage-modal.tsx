@@ -2,13 +2,13 @@ import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { stringify as stringifyYaml } from 'yaml'
-import { Loader2, Check, Lock, X, RotateCcw, Plug } from 'lucide-react'
+import { Check, Lock, X, RotateCcw, Plug } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { submitOnEnter } from '@/components/ui/control'
 import { Modal } from '@/components/ui/modal'
-import { Generating } from '@/components/ui/generating'
+import { Generating, GeneratingBars } from '@/components/ui/generating'
 import { Select } from '@/components/ui/select'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -572,7 +572,7 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
                 )}
                 <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{s.url}</span>
                 {probe === 'testing' ? (
-                  <Loader2 size={13} className="shrink-0 animate-spin text-muted" />
+                  <GeneratingBars bars={3} variant="scan" className="shrink-0 text-muted" />
                 ) : probe ? (
                   <span className="flex shrink-0 items-center gap-1 text-xs" style={{ color: PROBE_UI[probe.state].color }} title={probe.detail}>
                     {PROBE_UI[probe.state].icon} {PROBE_UI[probe.state].label}

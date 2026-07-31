@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2 } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
+import { GeneratingBars } from '@/components/ui/generating'
 import { SectionHeader } from '@/components/ui/section-header'
 import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
@@ -121,9 +121,9 @@ export function RetrievalPanel() {
           )}
           <span className="ml-auto font-mono text-[10px] tracking-[0.05em] text-muted">
             {rebuilding ? (
-              <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> {rag.reindex.phase === 'backfilling' ? 'refilling from sources' : 'rebuilding collections'}</span>
+              <span className="flex items-center gap-1.5"><GeneratingBars bars={3} variant="breathe" step={0.2} /> {rag.reindex.phase === 'backfilling' ? 'refilling from sources' : 'rebuilding collections'}</span>
             ) : rag.backfill.state === 'running' ? (
-              <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> backfilling</span>
+              <span className="flex items-center gap-1.5"><GeneratingBars bars={3} variant="breathe" step={0.2} /> backfilling</span>
             ) : rag.reindex.state === 'error' ? (
               <span className="text-danger">rebuild failed: {rag.reindex.error}</span>
             ) : rag.backfill.state === 'done' && rag.backfill.counts ? (

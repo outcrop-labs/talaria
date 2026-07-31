@@ -12,6 +12,7 @@ import { AttachButton, PendingAttachments, MessageAttachments } from '@/componen
 import { GuardCaveat, type GuardFinding } from '@/components/chat/guard-caveat'
 import { Markdown } from '@/components/ui/markdown'
 import { Disclosure } from '@/components/ui/disclosure'
+import { GeneratingBars, GeneratingDots, GeneratingHelix } from '@/components/ui/generating'
 import { Skeleton } from '@/components/ui/skeleton'
 import { resolveAgentMedia } from '@/lib/agent-media'
 import { queueChatMessage, streamChat } from '@/lib/chat'
@@ -521,12 +522,12 @@ function AssistantTurn({
         )}
         {!live && <GuardCaveat findings={guard} />}
 
-        {empty && live && (
-          <span className="inline-flex gap-1 py-1">
-            <Dot /> <Dot delay={0.15} /> <Dot delay={0.3} />
-          </span>
-        )}
-        {content && live && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-accent align-middle" />}
+        {/* Spec §9 state mapping: submitting (awaiting the first token) rides
+            the fast gold SIGNAL WEAVE; once reasoning/tools stream but prose
+            hasn't landed, the CONTEXT HELIX loops on the standard budget. */}
+        {empty && live && <GeneratingDots className="py-1" />}
+        {!empty && !content && live && <GeneratingHelix className="py-1" />}
+        {content && live && <span className="gd-pulse ml-0.5 inline-block h-4 w-1.5 bg-accent align-middle" />}
         {!live && status === 'streaming' && (
           <div className="font-mono text-[11px] text-muted">· saved (was in progress)</div>
         )}
@@ -543,13 +544,11 @@ function AssistantTurn({
 }
 
 function ToolStatus({ status }: { status: 'running' | 'completed' }) {
+  // Tool in flight = STAGE SCAN on the standard budget (spec §9), scaled to
+  // the 11px mono row; done = the quiet green check.
   return status === 'completed' ? (
     <span className="text-[color:var(--theme-success)]">✓</span>
   ) : (
-    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent" />
+    <GeneratingBars bars={4} variant="scan" step={0.18} className="text-accent [&>span]:h-[9px]" />
   )
-}
-
-function Dot({ delay = 0 }: { delay?: number }) {
-  return <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted" style={{ animationDelay: `${delay}s` }} />
 }

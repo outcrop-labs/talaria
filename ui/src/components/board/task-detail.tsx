@@ -993,7 +993,7 @@ function TicketMuseBar({
       )}
       {error && <div className="font-sans text-xs text-danger">{error}</div>}
       <div className="flex items-center gap-2">
-        <Sparkles size={14} className={cn('shrink-0 text-accent', generating && 'animate-pulse')} />
+        <Sparkles size={14} className={cn('shrink-0 text-accent', generating && 'gd-pulse')} />
         <Input
           size="sm"
           value={instruction}

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Loader2 } from 'lucide-react'
+import { GeneratingBars } from '@/components/ui/generating'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -70,7 +70,7 @@ export function FederateModal({ onClose }: { onClose: () => void }) {
           Cancel
         </Button>
         <Button size="sm" onClick={() => void federate()} disabled={busy || !dir.trim()}>
-          {busy && <Loader2 size={14} className="animate-spin" />}
+          {busy && <GeneratingBars bars={3} variant="weave" step={0.15} />}
           {busy ? 'Federating' : 'Federate'}
         </Button>
       </div>

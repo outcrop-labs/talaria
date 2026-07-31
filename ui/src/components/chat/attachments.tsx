@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, FileText, Loader2, BookOpen, Gem, Upload } from 'lucide-react'
+import { X, FileText, BookOpen, Gem, Upload } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 import { cn } from '@/lib/cn'
 import { SkeletonRows } from '@/components/ui/skeleton'
+import { GeneratingBars } from '@/components/ui/generating'
 import { PopSearch, popPanel, popRow, tileBase } from '@/components/chat/chat-chrome'
 import { searchKb } from '@/lib/kb'
 import { attachmentUrl, humanSize, isImage, uploadFile, type Attachment } from '@/lib/attachments'
@@ -60,7 +61,7 @@ export function AttachButton({ onAttach, disabled }: { onAttach: (a: Attachment)
         }}
         className={cn(tileBase, 'font-mono text-base leading-none')}
       >
-        {busy ? <Loader2 size={14} className="animate-spin" /> : <span aria-hidden>+</span>}
+        {busy ? <GeneratingBars bars={3} variant="weave" step={0.15} /> : <span aria-hidden>+</span>}
       </button>
       {open && (
         <div className={cn(popPanel, 'absolute bottom-full left-0 z-30 mb-1.5 w-64')}>

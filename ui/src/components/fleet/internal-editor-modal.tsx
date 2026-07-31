@@ -326,7 +326,7 @@ export function InternalEditorModal({
                       className="h-full overflow-y-auto whitespace-pre-wrap rounded-lg border border-[var(--theme-accent-border,var(--theme-accent))] p-3 font-mono text-xs leading-5 text-fg"
                     >
                       {proposal}
-                      {generating && <span className="animate-pulse text-accent">▍</span>}
+                      {generating && <span className="gd-pulse text-accent">▍</span>}
                     </pre>
                   ) : (
                     <DiffView diff={proposalDiff} fallback={proposal} />

@@ -34,3 +34,6 @@ ui/.uploads/
 .reference/
 .inspect/
 ui/.tanstack/
+
+# Vite dep-optimizer cache (created when the dev server runs from ui/)
+ui/.vite/

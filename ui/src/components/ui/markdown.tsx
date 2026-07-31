@@ -98,7 +98,7 @@ const components: Partial<Components> = {
     href?.startsWith('mention:') ? (
       <span className="rounded bg-accent-soft px-1 font-medium text-accent">{children}</span>
     ) : (
-      <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent underline decoration-[var(--theme-accent-border)] underline-offset-2 hover:decoration-accent">
+      <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent underline decoration-[var(--theme-accent-border)] underline-offset-2 transition-colors duration-[120ms] hover:decoration-accent">
         {children}
       </a>
     ),

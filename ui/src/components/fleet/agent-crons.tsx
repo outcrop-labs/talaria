@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { CalendarClock, Loader2, Pause, Pencil, Play, Sparkles, Trash2, Zap } from 'lucide-react'
+import { CalendarClock, Pause, Pencil, Play, Sparkles, Trash2, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { confirm } from '@/components/ui/confirm'
-import { Generating } from '@/components/ui/generating'
+import { Generating, GeneratingBars } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
 import { InfoTip } from '@/components/ui/info-tip'
 import { Select } from '@/components/ui/select'
@@ -425,7 +425,7 @@ function CronForm({
             })
           }
         >
-          {busy && <Loader2 size={13} className="animate-spin" />}
+          {busy && <GeneratingBars bars={3} variant="weave" step={0.15} />}
           {busy ? 'Creating' : 'Create job'}
         </Button>
       </div>

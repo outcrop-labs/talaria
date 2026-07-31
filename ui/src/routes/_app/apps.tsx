@@ -266,7 +266,7 @@ function DiscoverTab({ isAdmin }: { isAdmin: boolean }) {
         </div>
         <button
           onClick={() => void refetch()}
-          className={cn('flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg', isFetching && 'animate-pulse')}
+          className={cn('flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg', isFetching && 'gd-breathe')}
         >
           <RefreshCw size={12} /> Refresh
         </button>

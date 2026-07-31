@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2 } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
+import { GeneratingBars } from '@/components/ui/generating'
 import { SectionHeader } from '@/components/ui/section-header'
 import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
@@ -196,10 +196,10 @@ export function StoragePanel() {
         <span><span className="font-mono text-fg">{data.stats.internal}</span> in the built-in bucket</span>
         <span><span className="font-mono text-fg">{data.stats.s3}</span> in external storage</span>
         {migrating && (
-          <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> moving <span className="font-mono">{data.migrate!.moved}/{data.migrate!.total}</span></span>
+          <span className="flex items-center gap-1.5"><GeneratingBars bars={3} variant="breathe" step={0.2} /> moving <span className="font-mono">{data.migrate!.moved}/{data.migrate!.total}</span></span>
         )}
         {syncing && (
-          <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> syncing <span className="font-mono">{data.sync!.moved}/{data.sync!.total}</span> to replica</span>
+          <span className="flex items-center gap-1.5"><GeneratingBars bars={3} variant="breathe" step={0.2} /> syncing <span className="font-mono">{data.sync!.moved}/{data.sync!.total}</span> to replica</span>
         )}
         {!migrating && data.migrate?.failed ? <span className="text-danger">{data.migrate.failed} failed to move</span> : null}
         {!syncing && data.sync?.failed ? <span className="text-danger">{data.sync.failed} failed to sync</span> : null}

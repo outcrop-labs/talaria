@@ -93,7 +93,7 @@ function UserMenu({ user, onLogout }: { user: SessionUser; onLogout: () => void 
         </span>
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-2 w-64 rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]">
+        <div className="gd-enter absolute right-0 top-full z-30 mt-2 w-64 rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]">
           <div className="flex items-center gap-2.5 border-b border-line px-3 py-2.5">
             <Avatar src={user.picture} name={user.name ?? user.email} className="h-8 w-8 shrink-0" />
             <div className="min-w-0">

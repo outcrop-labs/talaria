@@ -66,7 +66,9 @@ function LiveSection({ live }: { live: InferenceLive }) {
           value={
             generatingTotal ? (
               <span className="flex items-center gap-2">
-                {generatingTotal} <GeneratingDots />
+                {/* Live monitor, not an inline action — MONITOR BREATHE on
+                    the ambient budget (spec §9). */}
+                {generatingTotal} <GeneratingDots variant="breathe" />
               </span>
             ) : (
               '0'
@@ -93,7 +95,7 @@ function LiveSection({ live }: { live: InferenceLive }) {
             {live.lastHour.map((a) => (
               <div key={a.agentModel} className="flex items-center gap-3 py-3 text-sm transition-colors hover:bg-hover">
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{a.agentModel}</span>
-                {genByAgent.has(a.agentModel) && <GeneratingDots />}
+                {genByAgent.has(a.agentModel) && <GeneratingDots variant="breathe" />}
                 <span className="shrink-0 font-mono text-[11px] text-muted">{a.generations} gen</span>
                 <span className="shrink-0 font-mono text-[11px] text-muted">{formatTokens(a.tokens)} tokens</span>
                 <span className="w-16 shrink-0 text-right font-mono text-[11px] text-muted">{relativeTime(a.lastAt)}</span>

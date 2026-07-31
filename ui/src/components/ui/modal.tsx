@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import type { ReactNode } from 'react'
 import { CloseButton } from './close-button'
 
@@ -34,6 +34,11 @@ export function Modal({
   width?: string
   takeover?: boolean
 }) {
+  // Spec §9 entrance: ~160ms fade + small rise/scale, exit shorter; reduced
+  // motion keeps the fade and drops the travel.
+  const reduceMotion = useReducedMotion()
+  const hidden = reduceMotion ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.98 }
+
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -57,9 +62,9 @@ export function Modal({
           <motion.div
             role="dialog"
             aria-modal
-            initial={{ opacity: 0, y: 12, scale: 0.98 }}
+            initial={hidden}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 12, scale: 0.98 }}
+            exit={{ ...hidden, transition: { duration: 0.12 } }}
             transition={{ duration: 0.16 }}
             className={
               takeover

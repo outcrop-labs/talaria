@@ -80,12 +80,14 @@ const DOT_COLOR: Record<DotStatus, string> = {
 }
 
 /** The one status dot — 6px round (spec §8), status decides the color
- *  (green healthy / gold attention / orange failure), `pulse` for live. */
+ *  (green healthy / gold attention / orange failure), `pulse` for live:
+ *  MONITOR BREATHE on the ambient budget (spec §9), only while the state
+ *  is actually active. */
 export function StatusDot({ status, pulse, title, className }: { status: DotStatus; pulse?: boolean; title?: string; className?: string }) {
   return (
     <span
       title={title}
-      className={cn('inline-block h-1.5 w-1.5 shrink-0 rounded-full', pulse && 'animate-pulse', className)}
+      className={cn('inline-block h-1.5 w-1.5 shrink-0 rounded-full', pulse && 'gd-breathe', className)}
       style={{ background: DOT_COLOR[status] }}
     />
   )

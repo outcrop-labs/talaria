@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Loader2, Sparkles, Trash2 } from 'lucide-react'
+import { Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Generating } from '@/components/ui/generating'
+import { Generating, GeneratingBars } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
@@ -147,7 +147,7 @@ export function CreateAgentModal({
           {generating && (
             <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line bg-surface p-3 font-mono text-xs leading-5 text-muted">
               {genPreview || 'Designing'}
-              <span className="animate-pulse text-accent">▍</span>
+              <span className="gd-pulse text-accent">▍</span>
             </pre>
           )}
           {genErr && <p className="text-xs text-danger">{genErr}</p>}
@@ -160,7 +160,7 @@ export function CreateAgentModal({
               Cancel
             </Button>
             <Button onClick={() => void generate(purpose, false)} disabled={generating || !purpose.trim()}>
-              {generating && <Loader2 size={14} className="animate-spin" />}
+              {generating && <GeneratingBars bars={3} variant="weave" step={0.15} />}
               {generating ? 'Designing' : 'Design agent'}
             </Button>
           </div>
@@ -350,7 +350,7 @@ function RefineBar({
       {busy && preview !== null && (
         <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded-md border border-line bg-surface p-2.5 font-mono text-[11px] leading-4 text-muted">
           {preview || 'Designing'}
-          <span className="animate-pulse text-accent">▍</span>
+          <span className="gd-pulse text-accent">▍</span>
         </pre>
       )}
       {error && <p className="text-xs text-danger">{error}</p>}

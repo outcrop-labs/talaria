@@ -307,6 +307,15 @@ body {
   0%, 100% { opacity: 0.35; }
   50% { opacity: 0.9; }
 }
+/* CONTEXT HELIX — looping multi-colour bar orbit (reasoning / generating).
+   Bars ride a small vertical orbit with a scale swell; stagger per bar and
+   alternate chart-1 / gold / chart-2 so the row reads as a woven helix. */
+@keyframes gd-helix {
+  0%, 100% { transform: translateY(2px) scaleY(0.5); opacity: 0.55; }
+  25% { transform: translateY(0) scaleY(1); opacity: 1; }
+  50% { transform: translateY(-2px) scaleY(0.5); opacity: 0.7; }
+  75% { transform: translateY(0) scaleY(1); opacity: 1; }
+}
 /* Two-state opacity pulse — also the reduced-motion fallback for the rest. */
 @keyframes gd-pulse {
   0%, 49.9% { opacity: 1; }
@@ -320,16 +329,36 @@ body {
 .gd-scan { animation: gd-scan var(--motion-standard) linear infinite; }
 .gd-breathe { animation: gd-breathe var(--motion-ambient) ease-in-out infinite; }
 .gd-pulse { animation: gd-pulse var(--motion-standard) linear infinite; }
+.gd-helix {
+  animation: gd-helix var(--motion-standard) ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* ── Entrances (spec §9): 150–250ms fade + small travel for popovers/menus.
+   Exits stay shorter by being instant unmounts. ─────────────────────────── */
+@keyframes gd-enter {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+}
+@keyframes gd-enter-fade {
+  from { opacity: 0; }
+}
+.gd-enter { animation: gd-enter 180ms ease-out; }
 
 /* Reduced motion: no travel/scale — swap every motif for the two-state
-   opacity pulse; the status label and semantic colour stay unchanged. */
+   opacity pulse; the status label and semantic colour stay unchanged.
+   Entrances degrade to fade-only. */
 @media (prefers-reduced-motion: reduce) {
   .gd-weave,
   .gd-scan,
-  .gd-breathe {
+  .gd-breathe,
+  .gd-helix {
     animation: gd-pulse var(--motion-ambient) linear infinite;
     transform: none;
   }
+  /* gd-pulse is already the sanctioned two-state fallback; just relax it to
+     the ambient cadence so every reduced-motion indicator shares one rhythm. */
+  .gd-pulse { animation-duration: var(--motion-ambient); }
+  .gd-enter { animation: gd-enter-fade 150ms ease-out; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════

@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Loader2, Sparkles } from 'lucide-react'
+import { Sparkles } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { RichEditor } from '@/components/ui/rich-editor'
 import { Steps } from '@/components/ui/steps'
+import { GeneratingBars } from '@/components/ui/generating'
 import { focusGold } from '@/components/chat/chat-chrome'
 import { cn } from '@/lib/cn'
 import { useSession } from '@/lib/session'
@@ -112,7 +113,7 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
         Back
       </Button>
       <Button size="sm" onClick={() => void launch()} disabled={busy}>
-        {busy && <Loader2 size={14} className="animate-spin" />}
+        {busy && <GeneratingBars bars={3} variant="weave" step={0.15} />}
         {busy ? 'Creating' : 'Create assistant'}
       </Button>
     </div>

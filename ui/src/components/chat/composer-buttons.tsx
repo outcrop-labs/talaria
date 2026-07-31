@@ -54,8 +54,8 @@ export function StopButton({ onClick, title = 'Stop (Esc)' }: { onClick: () => v
         focusGold,
       )}
     >
-      <span className="absolute inset-0 animate-pulse rounded-md border border-[color:var(--theme-accent-border)]" />
-      <Square size={12} fill="currentColor" className="animate-pulse" />
+      <span className="gd-pulse absolute inset-0 rounded-md border border-[color:var(--theme-accent-border)]" />
+      <Square size={12} fill="currentColor" className="gd-pulse" />
     </button>
   )
 }

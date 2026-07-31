@@ -5,6 +5,7 @@ import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components
 import { Markdown } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
+import { GeneratingDots } from '@/components/ui/generating'
 import { Skeleton } from '@/components/ui/skeleton'
 import { confirm } from '@/components/ui/confirm'
 import { cn } from '@/lib/cn'
@@ -339,13 +340,12 @@ function MessageRow({
           ) : m.content ? (
             <Markdown>{m.authorType === 'agent' ? resolveAgentMedia(m.content, m.author) : m.content}</Markdown>
           ) : live ? (
-            <span className="inline-flex gap-1 py-1">
-              <Dot /> <Dot delay={0.15} /> <Dot delay={0.3} />
-            </span>
+            // Awaiting the agent's first token — SIGNAL WEAVE burst (spec §9).
+            <GeneratingDots className="py-1" />
           ) : null}
           {m.attachments && m.attachments.length > 0 && <MessageAttachments items={m.attachments} />}
           {!live && <GuardCaveat findings={m.guard} />}
-          {m.content && live && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-accent align-middle" />}
+          {m.content && live && <span className="gd-pulse ml-0.5 inline-block h-4 w-1.5 bg-accent align-middle" />}
           {m.status === 'error' && (
             <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
               · interrupted
@@ -642,8 +642,4 @@ function Composer({
       </div>
     </div>
   )
-}
-
-function Dot({ delay = 0 }: { delay?: number }) {
-  return <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted" style={{ animationDelay: `${delay}s` }} />
 }

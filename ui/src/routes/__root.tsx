@@ -5,6 +5,7 @@ import {
   createRootRoute,
 } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MotionConfig } from 'framer-motion'
 import { useState } from 'react'
 import appCss from '../styles.css?url'
 import { DEFAULT_THEME } from '@/lib/theme'
@@ -50,8 +51,14 @@ function RootDocument() {
       </head>
       <body>
         <QueryClientProvider client={queryClient}>
-          <Outlet />
-          <ConfirmHost />
+          {/* Spec §9 reduced-motion rule for the framer-motion side of the
+              grammar: entrances lose travel/scale and degrade to fade-only
+              when the OS asks for reduced motion (CSS motifs are handled by
+              the prefers-reduced-motion block in styles.css). */}
+          <MotionConfig reducedMotion="user">
+            <Outlet />
+            <ConfirmHost />
+          </MotionConfig>
         </QueryClientProvider>
         <Scripts />
       </body>

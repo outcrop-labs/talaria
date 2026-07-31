@@ -2,7 +2,8 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Gauge, Loader2, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Gauge, Trash2, UserPlus, X } from 'lucide-react'
+import { GeneratingDots, GeneratingHelix } from '@/components/ui/generating'
 import { RailSurface, Rail, Stage, StageHeader } from '@/components/app/surface'
 import { Chip, DangerLink, StatusDot, type DotStatus } from '@/components/ui/chip'
 import { ComposerPicker } from '@/components/chat/composer-picker'
@@ -244,7 +245,7 @@ function ResearchPage() {
                   }))}
                 />
                 {starting && (
-                  <span className="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><Loader2 size={15} className="animate-spin text-muted" /></span>
+                  <span className="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><GeneratingDots /></span>
                 )}
               </div>
               {error && <div className="px-2 pb-1 pt-1 text-xs text-danger">{error}</div>}
@@ -401,7 +402,7 @@ function RunView({ runId }: { runId: string }) {
 
       {(run.status === 'queued' || run.status === 'running') && (
         <Panel className="flex items-center gap-3">
-          <Loader2 size={16} className="animate-spin text-accent" />
+          <GeneratingHelix />
           <div className="min-w-0">
             <div className="text-sm text-fg">{run.status === 'queued' ? 'Queued' : 'Researching'}</div>
             {run.phase && <div className="truncate text-xs text-muted">{run.phase}</div>}

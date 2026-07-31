@@ -3,6 +3,7 @@
 // the Gentle dew session-list pattern (spec §10): status dot, 13px sans
 // title, right-aligned mono meta/time; the active row carries the gold dot.
 import { Plus } from 'lucide-react'
+import { cn } from '@/lib/cn'
 import { useHasPerm } from '@/lib/session'
 import { AgentPicker } from '@/components/chat/agent-picker'
 import { IconButton } from '@/components/ui/icon-button'
@@ -27,7 +28,9 @@ function SessionRowBody({ conv, active }: { conv: Conversation; active: boolean 
     <>
       <span
         aria-hidden
-        className="h-[6px] w-[6px] shrink-0 rounded-full"
+        // A working session is live background state — MONITOR BREATHE on the
+        // ambient budget (spec §9); idle/failed dots stay still.
+        className={cn('h-[6px] w-[6px] shrink-0 rounded-full', conv.working && !conv.failed && 'gd-breathe')}
         style={{ backgroundColor: dot }}
       />
       <span className="min-w-0 flex-1 truncate font-sans text-[13px]">{conv.title || 'Untitled'}</span>

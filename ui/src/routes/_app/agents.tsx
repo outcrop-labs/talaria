@@ -2,7 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Loader2, Copy, RotateCw, Repeat, Trash2, UserPlus, Plus } from 'lucide-react'
+import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Copy, RotateCw, Repeat, Trash2, UserPlus, Plus } from 'lucide-react'
+import { GeneratingBars } from '@/components/ui/generating'
 import { Panel } from '@/components/ui/panel'
 import { Segmented } from '@/components/ui/segmented'
 import { confirm } from '@/components/ui/confirm'
@@ -239,7 +240,7 @@ function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; r
   const isAdmin = session?.role === 'admin'
   const { pending, act } = useAgentControls(d)
   const [retiring, setRetiring] = useState(false)
-  if (pending) return <Loader2 size={15} className="animate-spin text-muted" />
+  if (pending) return <GeneratingBars bars={3} variant="weave" step={0.15} className="text-muted" />
   // Retired agents: re-hire (re-enable + start), duplicate as a template, or
   // delete forever (admin) — the only truly destructive lifecycle action.
   if (!d.enabled)
@@ -391,7 +392,7 @@ function StatusDot({ def: d, containers }: { def: AgentDef; containers: AgentCon
   // Spec §8 status dot: 6–7px round, signal color carries the meaning.
   return (
     <span
-      className={cn('h-[7px] w-[7px] shrink-0 rounded-full', health === 'warming' && 'animate-pulse')}
+      className={cn('h-[7px] w-[7px] shrink-0 rounded-full', health === 'warming' && 'gd-breathe')}
       style={{ background: HEALTH_COLOR[health] }}
       title={health === 'warming' ? 'warming up' : health}
     />

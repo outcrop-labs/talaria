@@ -3,6 +3,7 @@ import { useContextMenu } from '@/components/ui/context-menu'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { GeneratingBars } from '@/components/ui/generating'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Combobox } from '@/components/ui/combobox'
@@ -291,7 +292,7 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
           className="flex items-center gap-1.5 rounded border border-line px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg"
           title="Ask the server for its tool catalog"
         >
-          <RefreshCw size={11} className={cn(refreshing && 'animate-spin')} />
+          {refreshing ? <GeneratingBars bars={3} variant="scan" /> : <RefreshCw size={11} />}
           {s.tools.length ? `${s.tools.length} tools` : 'Discover tools'}
           {s.toolsRefreshedAt && <span className="normal-case text-ink-dim">· {relativeTime(s.toolsRefreshedAt)}</span>}
         </button>
@@ -683,7 +684,7 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
             placeholder="Search the official MCP registry — GitHub, Linear, Notion, Stripe, Vercel…"
             className="max-w-xl"
           />
-          {isFetching && <RefreshCw size={14} className="animate-spin text-muted" />}
+          {isFetching && <GeneratingBars bars={3} variant="scan" className="text-muted" />}
           <span className="flex-1" />
           <button type="button" onClick={onCustom} className="text-xs text-accent hover:underline">
             Custom / self-hosted server →
@@ -772,7 +773,7 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
                               : 'border-line bg-raised text-muted opacity-0 hover:border-accent hover:text-accent group-hover:opacity-100',
                           )}
                         >
-                          {busy ? <RefreshCw size={13} className="animate-spin" /> : <Plus size={14} />}
+                          {busy ? <GeneratingBars bars={3} variant="weave" step={0.15} /> : <Plus size={14} />}
                         </button>
                       )}
                     </div>
