@@ -146,14 +146,7 @@ const MIGRATIONS: string[] = [
   `create index if not exists task_activity_task_idx on task_activity(task_id, created_at desc)`,
   // Ticket refs (BOARD-12): a per-board prefix + monotonic counter.
   `alter table boards add column if not exists ticket_prefix text`,
-  `alter table research_runs add column if not exists title text`,
-  `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
-  `alter table channel_messages add column if not exists edited_at timestamptz`,
-  `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
   `alter table users add column if not exists allowed_manage_views text[] not null default '{}'`,
-  `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
-  `alter table kb_docs add column if not exists okf text`,
-  `update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null)`,
   `create table if not exists invites (
     id uuid primary key default gen_random_uuid(),
     email text not null,
@@ -185,18 +178,6 @@ const MIGRATIONS: string[] = [
     created_at timestamptz not null default now(),
     verified_at timestamptz
   )`,
-  `create table if not exists kb_comments (
-    id uuid primary key default gen_random_uuid(),
-    doc_id uuid not null references kb_docs(id) on delete cascade,
-    parent_id uuid references kb_comments(id) on delete cascade,
-    author_user_id uuid references users(id) on delete set null,
-    author text not null,
-    quote text,
-    content text not null,
-    resolved boolean not null default false,
-    created_at timestamptz not null default now()
-  )`,
-  `create index if not exists kb_comments_doc_idx on kb_comments(doc_id, created_at)`,
   `create table if not exists mcp_servers (
     id uuid primary key default gen_random_uuid(),
     name text not null unique,
@@ -259,17 +240,6 @@ const MIGRATIONS: string[] = [
     allowed boolean not null,
     created_at timestamptz not null default now(),
     primary key (user_id, perm)
-  )`,
-  `insert into user_permissions (user_id, perm, allowed)
-     select id, 'models.mint-keys', true from users where can_mint_keys
-     on conflict (user_id, perm) do nothing`,
-  `create table if not exists channel_message_reactions (
-    message_id uuid not null references channel_messages(id) on delete cascade,
-    emoji text not null,
-    actor text not null,
-    actor_type text not null default 'user',
-    created_at timestamptz not null default now(),
-    primary key (message_id, emoji, actor)
   )`,
   `alter table boards add column if not exists ticket_seq integer not null default 0`,
   // Richer task fields (ripped from mission-control): ticket no, effort, the
@@ -1175,6 +1145,46 @@ const MIGRATIONS: string[] = [
      generated_at timestamptz not null default now(),
      primary key (user_id, scope)
    )`,
+  // Late patches — these reference tables created above, so they must stay at
+  // the tail of the list or a FRESH database fails its very first migration
+  // ("relation ... does not exist"; existing DBs never noticed).
+  `create table if not exists kb_comments (
+    id uuid primary key default gen_random_uuid(),
+    doc_id uuid not null references kb_docs(id) on delete cascade,
+    parent_id uuid references kb_comments(id) on delete cascade,
+    author_user_id uuid references users(id) on delete set null,
+    author text not null,
+    quote text,
+    content text not null,
+    resolved boolean not null default false,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists kb_comments_doc_idx on kb_comments(doc_id, created_at)`,
+  `create table if not exists channel_message_reactions (
+    message_id uuid not null references channel_messages(id) on delete cascade,
+    emoji text not null,
+    actor text not null,
+    actor_type text not null default 'user',
+    created_at timestamptz not null default now(),
+    primary key (message_id, emoji, actor)
+  )`,
+  `insert into user_permissions (user_id, perm, allowed)
+     select id, 'models.mint-keys', true from users where can_mint_keys
+     on conflict (user_id, perm) do nothing`,
+  `alter table research_runs add column if not exists title text`,
+  `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
+  `alter table channel_messages add column if not exists edited_at timestamptz`,
+  `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
+  `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
+  `alter table kb_docs add column if not exists okf text`,
+  // One-time data fix for legacy DBs only: kb_spaces.okf_doc_id predates this
+  // migration list and doesn't exist on fresh installs — guard on the column.
+  `do $$ begin
+     if exists (select 1 from information_schema.columns
+                where table_schema = 'public' and table_name = 'kb_spaces' and column_name = 'okf_doc_id') then
+       update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null);
+     end if;
+   end $$`,
 ]
 
 function ensureMigrated(): Promise<void> {
