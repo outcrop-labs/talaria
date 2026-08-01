@@ -1177,6 +1177,9 @@ const MIGRATIONS: string[] = [
   `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
   `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
   `alter table kb_docs add column if not exists okf text`,
+  // kb.ts SPACE_COLS selects okf_doc_id unconditionally, so fresh installs
+  // need the column too (nullable; legacy DBs already have it).
+  `alter table kb_spaces add column if not exists okf_doc_id uuid references kb_docs(id) on delete set null`,
   // One-time data fix for legacy DBs only: kb_spaces.okf_doc_id predates this
   // migration list and doesn't exist on fresh installs — guard on the column.
   `do $$ begin

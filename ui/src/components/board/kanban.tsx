@@ -23,8 +23,13 @@ const COL_ACCENT: Record<string, string> = {
   done: 'var(--theme-success)',
 }
 
-/** Compact "4h" / "2.5h" — estimates render short or not at all. */
-const fmtHours = (h: number) => `${Number.isInteger(h) ? h : h.toFixed(1)}h`
+/** Compact "4h" / "2.5h" — estimates render short or not at all. Coerces
+ *  defensively: numeric columns can surface as strings at the API edge. */
+const fmtHours = (h: number | string) => {
+  const n = Number(h)
+  if (!Number.isFinite(n)) return null
+  return `${Number.isInteger(n) ? n : n.toFixed(1)}h`
+}
 
 // Kanban board — polished columns, per-column add, drag-and-drop between columns.
 // Tasks are passed in (the board page owns fetching + filtering).
@@ -106,7 +111,10 @@ export function Kanban({
       {columns.map((col) => {
         const colTasks = tasks.filter((t) => t.status === col.key)
         // Column estimate rollup — visible planning weight per column.
-        const colHours = colTasks.reduce((s, t) => s + (t.estimatedHours ?? 0), 0)
+        const colHours = colTasks.reduce((s, t) => {
+          const n = Number(t.estimatedHours ?? 0)
+          return s + (Number.isFinite(n) ? n : 0)
+        }, 0)
         return (
           <div
             key={col.key}
@@ -229,7 +237,7 @@ function Card({
                 </span>
               )}
               {task.effort && <span className="rounded border border-line-subtle px-1 font-mono text-[9px] font-medium uppercase tracking-[0.05em] text-muted">{EFFORT_LABEL[task.effort]}</span>}
-              {task.estimatedHours != null && (
+              {task.estimatedHours != null && fmtHours(task.estimatedHours) != null && (
                 <span className="rounded border border-line-subtle px-1 font-mono text-[9px] font-medium tracking-[0.05em] text-muted" title="Estimate">
                   {fmtHours(task.estimatedHours)}
                 </span>

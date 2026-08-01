@@ -13,8 +13,10 @@ import { relativeTime } from '@/lib/fleet'
 import type { AgentModel } from '@/lib/agents'
 import type { Conversation } from '@/lib/conversations'
 
-/** §10 session row content: [status dot] [13px title] [mono owner] [mono time]. */
-function SessionRowBody({ conv, active }: { conv: Conversation; active: boolean }) {
+/** §10 session row content: [status dot] [13px title] [mono owner] [mono time].
+ *  Shared: the Plan rail and the Comms agent-thread rows are both session
+ *  lists — one anatomy, one component. */
+export function SessionRowBody({ conv, active }: { conv: Conversation; active: boolean }) {
   // Semantic first (spec §1): failure orange, working green; the active row's
   // dot reads gold, idle rows stay dim ink.
   const dot = conv.failed

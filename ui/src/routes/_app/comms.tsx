@@ -14,6 +14,7 @@ import { ChatView } from '@/components/chat/chat-view'
 import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { CountPill, Rail, RailRow, RailSurface } from '@/components/app/surface'
 import { ChannelView } from '@/components/chat/channel-view'
+import { SessionRowBody } from '@/components/chat/conversation-sidebar'
 import { ChannelSettingsModal } from '@/components/chat/channel-settings'
 import { PlanModal } from '@/components/chat/plan-modal'
 import { useAgents } from '@/lib/agents'
@@ -37,10 +38,13 @@ export const Route = createFileRoute('/_app/comms')({
   component: CommsPage,
   // ?c=<channelId> deep-links a channel/DM; ?a=<agentModel>&x=<convId>
   // deep-links an agent conversation (agent-outreach notifications land here).
-  validateSearch: (search: Record<string, unknown>): { c?: string; a?: string; x?: string } => ({
+  // ?t=agent (the /chat redirect) asks for the chat workspace: default to the
+  // first agent's fresh thread instead of the first channel.
+  validateSearch: (search: Record<string, unknown>): { c?: string; a?: string; x?: string; t?: 'agent' } => ({
     ...(typeof search.c === 'string' && search.c ? { c: search.c } : {}),
     ...(typeof search.a === 'string' && search.a ? { a: search.a } : {}),
     ...(typeof search.x === 'string' && search.x ? { x: search.x } : {}),
+    ...(search.t === 'agent' ? { t: 'agent' as const } : {}),
   }),
 })
 
@@ -126,16 +130,26 @@ function CommsPage() {
   const people = users.filter((u) => u.id !== session?.id)
   const dmByPeer = useMemo(() => new Map(dms.map((c) => [c.peer?.userId, c])), [dms])
 
-  // Default to the first channel; heal a selection that vanished (archived).
-  // Both are replace-navigations — housekeeping shouldn't pollute history.
+  // Default selection; heal a selection that vanished (archived). All are
+  // replace-navigations — housekeeping shouldn't pollute history.
+  // /chat lands here with ?t=agent: the chat workspace must be directly
+  // reachable, so default to the first agent's fresh thread (§7 composer)
+  // instead of the first channel; no agents → channel default as usual.
   useEffect(() => {
+    if (!sel && search.t === 'agent') {
+      if (fleetLoading) return
+      if (fleet[0]) {
+        setSel({ t: 'agent', model: fleet[0].id, conversationId: null }, { replace: true })
+        return
+      }
+    }
     if (channels.length === 0 && isLoading) return
     if (!sel && channels[0]) setSel({ t: 'channel', id: channels[0].id }, { replace: true })
     if (sel?.t === 'channel' && channels.length > 0 && !channels.some((c) => c.id === sel.id)) {
       setSel(channels[0] ? { t: 'channel', id: channels[0].id } : null, { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channels, sel, isLoading])
+  }, [channels, sel, isLoading, search.t, fleet, fleetLoading])
 
   const selected: Channel | null = sel?.t === 'channel' ? (channels.find((c) => c.id === sel.id) ?? null) : null
   const { data: detail, isLoading: detailLoading } = useChannelDetail(selected?.id ?? null)
@@ -327,7 +341,7 @@ function CommsPage() {
                       key={c.id}
                       active={activeAgent && sel.conversationId === c.id}
                       onClick={() => setSel({ t: 'agent', model: a.id, conversationId: c.id })}
-                      className="pl-7 text-xs"
+                      className="pl-7"
                     >
                       <span
                         className="contents"
@@ -353,8 +367,8 @@ function CommsPage() {
                           ])
                         }
                       >
-                        <span className="min-w-0 flex-1 truncate">{c.title || 'Untitled'}</span>
-                        {c.working && <span className="gd-breathe h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
+                        {/* §10 session-row anatomy, shared with the Plan rail. */}
+                        <SessionRowBody conv={c} active={activeAgent && sel.conversationId === c.id} />
                       </span>
                     </RailRow>
                   ))}

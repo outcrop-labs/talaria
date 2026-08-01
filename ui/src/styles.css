@@ -19,10 +19,11 @@
 
 :root {
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
-  /* Two registers: mono is the CHROME voice (nav, labels, chips, buttons,
-     identifiers, config); sans is the READING/BUSINESS voice — anywhere
-     someone reads paragraphs or types real content (markdown surfaces,
-     editors, inputs, board card/list text). Apply via `font-sans`. */
+  /* Two registers (spec §2): sans is the READING/BUSINESS voice — headings,
+     body, message text, nav labels, input content — and is the app DEFAULT
+     (inherited from the base below). Mono is the CHROME voice (section
+     headers, chips, metadata, telemetry, counts, identifiers, button labels)
+     and is always opt-in via `font-mono`. */
   --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif;
   --font-display: var(--font-mono);
 
@@ -217,7 +218,11 @@ body,
 #root {
   background-color: var(--theme-bg);
   color: var(--theme-text);
-  font-family: var(--font-mono);
+  /* Default voice is SANS — the reading voice (spec §2: headings, body,
+     interface copy). Mono is chrome-only and always opts in via `font-mono`;
+     defaulting to mono made every unvoiced heading/paragraph render in the
+     chrome voice. */
+  font-family: var(--font-sans);
 }
 
 body {

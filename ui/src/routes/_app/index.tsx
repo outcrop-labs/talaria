@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Sparkles, CalendarDays, ChevronDown, ChevronRight, Plus, ExternalLink, Mail, Send, ShieldCheck, Check } from 'lucide-react'
+import { Sparkles, CalendarDays, ChevronDown, ChevronRight, Plus, ExternalLink, Inbox, Mail, Send, ShieldCheck, Check } from 'lucide-react'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { Panel } from '@/components/ui/panel'
 import { alert } from '@/components/ui/confirm'
@@ -20,6 +20,7 @@ import { relativeTime } from '@/lib/fleet'
 import { cn } from '@/lib/cn'
 import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { useAssistant } from '@/lib/assistant'
+import { useNotifications } from '@/lib/notifications'
 import { useSession } from '@/lib/session'
 import { useChannels } from '@/lib/channels'
 import { useConversations } from '@/lib/conversations'
@@ -157,6 +158,7 @@ function HomePage() {
             <ApprovalsPanel />
             <AgendaPanel />
             <MailPanel />
+            <InboxQuiet />
           </div>
         )}
         {tab === 'boards' && <BoardsTab data={data} isLoading={isLoading} />}
@@ -212,7 +214,7 @@ function ActivityList({ kinds, title = 'Recent activity', collapsible = false }:
       ) : (data ?? []).length === 0 ? (
         <EmptyState variant="inline" title="Quiet so far." />
       ) : (
-        <ul className="space-y-1">
+        <ul>
           {data!.slice(0, 12).map((a, i) => (
             <ActivityRow key={i} actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigate({ to: a.href })} />
           ))}
@@ -590,7 +592,7 @@ function FleetPulse({ activity }: { activity: OrgActivity[] }) {
       {activity.length === 0 ? (
         <EmptyState variant="inline" title="Quiet so far." hint="Activity across boards, comms, and the fleet shows here." />
       ) : (
-        <ul className="space-y-2">
+        <ul>
           {activity.map((a, i) => (
             <ActivityRow key={i} actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigate({ to: a.href })} />
           ))}
@@ -799,23 +801,55 @@ interface AgendaEvent {
   htmlLink: string | null
 }
 
-// The user's Google Calendar agenda, shown only when they've connected Google.
-// Stays invisible otherwise so Home isn't cluttered for the unconnected.
-function AgendaPanel() {
-  const qc = useQueryClient()
-  const { data, isError } = useQuery({
+// The user's Google connection status — one cheap 200 up front (cache shared
+// with Settings via the query key) so the agenda/mail panels never fire the
+// data requests that answer 409 for the unconnected.
+const useGoogleStatus = () =>
+  useQuery({
+    queryKey: ['integration-google'],
+    queryFn: async (): Promise<{ available: boolean; connected: boolean }> => {
+      const r = await fetch('/api/integrations/google', { credentials: 'same-origin' })
+      if (!r.ok) throw new Error('failed')
+      return r.json()
+    },
+    retry: false,
+  })
+
+// Fired only once the status says connected; both the panel and the
+// quiet-inbox sentinel subscribe (same key → one request).
+const useAgenda = (enabled: boolean) =>
+  useQuery({
     queryKey: ['agenda'],
+    enabled,
     queryFn: async (): Promise<{ events?: AgendaEvent[]; error?: string }> => {
       const r = await fetch('/api/integrations/google/calendar/events')
-      if (r.status === 409 || r.status === 502) return { error: 'unavailable' } // not connected / transient
+      if (r.status === 409 || r.status === 502) return { error: 'unavailable' } // scope lost / transient
       if (!r.ok) throw new Error('failed')
       return r.json()
     },
     retry: false,
     refetchInterval: 5 * 60_000,
   })
+
+// The user's Google Calendar agenda, shown only when they've connected Google.
+// Stays invisible otherwise so Home isn't cluttered for the unconnected.
+function AgendaPanel() {
+  const qc = useQueryClient()
+  const { data: google, isError: googleError } = useGoogleStatus()
+  const connected = !googleError && google?.connected === true
+  const { data, isError } = useAgenda(connected)
   const [adding, setAdding] = useState(false)
 
+  // Status in flight → hold the space with a skeleton (no pop-in).
+  if (!google && !googleError)
+    return (
+      <Panel>
+        <Skeleton className="mb-4 h-3 w-20 rounded-full" />
+        <SkeletonRows rows={3} />
+      </Panel>
+    )
+  // Not connected → render nothing; the quiet-inbox panel speaks for the space.
+  if (!connected) return null
   if (!data && !isError)
     return (
       <Panel>
@@ -823,7 +857,7 @@ function AgendaPanel() {
         <SkeletonRows rows={3} />
       </Panel>
     )
-  // Not connected (or unreachable) → render nothing.
+  // Unreachable (scope lost / transient) → render nothing.
   if (isError || data?.error || !data) return null
   const events = data.events ?? []
 
@@ -936,11 +970,12 @@ interface Mail {
   unread: boolean
 }
 
-// Recent Gmail, shown only when the user has connected Google. Compose sends as
-// the user via Gmail.
-function MailPanel() {
-  const { data, isError } = useQuery({
+// Fired only once the status says connected — same key-sharing pattern as
+// useAgenda, so the unconnected never see the 409-answering request at all.
+const useGmail = (enabled: boolean) =>
+  useQuery({
     queryKey: ['gmail'],
+    enabled,
     queryFn: async (): Promise<{ messages?: Mail[]; error?: string }> => {
       const r = await fetch('/api/integrations/google/gmail/messages')
       if (r.status === 409 || r.status === 502) return { error: 'unavailable' }
@@ -950,10 +985,25 @@ function MailPanel() {
     retry: false,
     refetchInterval: 5 * 60_000,
   })
+
+// Recent Gmail, shown only when the user has connected Google. Compose sends as
+// the user via Gmail.
+function MailPanel() {
+  const { data: google, isError: googleError } = useGoogleStatus()
+  const connected = !googleError && google?.connected === true
+  const { data, isError } = useGmail(connected)
   const [composing, setComposing] = useState(false)
 
   // In flight → hold the space with a skeleton; only a RESOLVED
   // not-connected state may remove the panel (no pop-in, no dead panel).
+  if (!google && !googleError)
+    return (
+      <Panel>
+        <Skeleton className="mb-4 h-3 w-16 rounded-full" />
+        <SkeletonRows rows={4} />
+      </Panel>
+    )
+  if (!connected) return null
   if (!data && !isError)
     return (
       <Panel>
@@ -1062,11 +1112,8 @@ interface PendingAction {
   createdAt: string
 }
 
-// Agent-drafted Google actions (send email / create event) awaiting the user's
-// approval — confirm-sends. Hidden when there's nothing to approve.
-function ApprovalsPanel() {
-  const qc = useQueryClient()
-  const { data, isError } = useQuery({
+const useGooglePending = () =>
+  useQuery({
     queryKey: ['google-pending'],
     queryFn: async (): Promise<{ pending: PendingAction[] }> => {
       const r = await fetch('/api/integrations/google/pending')
@@ -1075,6 +1122,12 @@ function ApprovalsPanel() {
     },
     refetchInterval: 60_000,
   })
+
+// Agent-drafted Google actions (send email / create event) awaiting the user's
+// approval — confirm-sends. Hidden when there's nothing to approve.
+function ApprovalsPanel() {
+  const qc = useQueryClient()
+  const { data, isError } = useGooglePending()
   const [busy, setBusy] = useState<string | null>(null)
   // In flight → hold the space (same pattern as Agenda/Mail below); only a
   // RESOLVED empty queue may remove the panel, so it never drops in above the
@@ -1136,6 +1189,48 @@ function ApprovalsPanel() {
           </div>
         ))}
       </div>
+    </Panel>
+  )
+}
+
+// The quiet-inbox surface (spec §8): even a silent inbox gets a styled panel —
+// mono dim header + the shared EmptyState — never a bare void. It claims the
+// space only once every feed above has RESOLVED to nothing (notifications
+// empty, no approvals, Google off or its panels unavailable), so it never
+// flashes in while skeletons still hold the column.
+function InboxQuiet() {
+  const { data: notif } = useNotifications()
+  const { data: pending } = useGooglePending()
+  const { data: google, isError: googleError } = useGoogleStatus()
+  const connected = !googleError && google?.connected === true
+  // Same query keys as AgendaPanel/MailPanel — shared subscriptions, no extra
+  // requests, and still gated off for the unconnected.
+  const agenda = useAgenda(connected)
+  const gmail = useGmail(connected)
+
+  const notifQuiet = !!notif && notif.notifications.length === 0
+  const pendingQuiet = !!pending && (pending.pending ?? []).length === 0
+  const googleResolved = !!google || googleError
+  // A Google panel is on screen iff connected and its fetch succeeded (it then
+  // renders its own inline empty state).
+  const agendaShown = connected && !!agenda.data && !agenda.data.error
+  const gmailShown = connected && !!gmail.data && !gmail.data.error
+  const agendaSettled = !connected || agenda.isError || !!agenda.data
+  const gmailSettled = !connected || gmail.isError || !!gmail.data
+
+  const quiet =
+    notifQuiet && pendingQuiet && googleResolved && agendaSettled && gmailSettled && !agendaShown && !gmailShown
+  if (!quiet) return null
+
+  return (
+    <Panel>
+      <SectionHeader title="Inbox" action="00 waiting" />
+      <EmptyState
+        variant="compact"
+        icon={<Inbox size={18} />}
+        title="Inbox zero."
+        hint="Mentions, approvals, and updates from your agents land here as they arrive."
+      />
     </Panel>
   )
 }

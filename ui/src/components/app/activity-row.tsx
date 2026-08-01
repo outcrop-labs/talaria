@@ -1,6 +1,9 @@
 // The one activity/audit row: "actor · detail" + relative time, with an
 // optional quiet context line underneath. Shared by Home's activity feeds
 // (ActivityList, Fleet pulse) and the Observability overview's audit trail.
+// Rows carry their own hairline separator (spec §8 "tables/lists: hairline
+// row separators") so every consumer list is separated without needing
+// divide-y on the container.
 import { relativeTime } from '@/lib/fleet'
 
 export function ActivityRow({
@@ -18,7 +21,7 @@ export function ActivityRow({
   onClick: () => void
 }) {
   return (
-    <li>
+    <li className="border-b border-line last:border-b-0">
       <button
         type="button"
         onClick={onClick}

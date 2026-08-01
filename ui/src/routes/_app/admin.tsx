@@ -1480,7 +1480,7 @@ function OutreachPanel() {
                 label={
                   <>
                     {a.displayName}
-                    {a.personal && <span className="text-[10px] uppercase text-muted">personal</span>}
+                    {a.personal && <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">personal</span>}
                   </>
                 }
               />

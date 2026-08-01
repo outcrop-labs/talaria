@@ -20,6 +20,7 @@ import { confirm } from '@/components/ui/confirm'
 import { Chip } from '@/components/ui/chip'
 import { popPanel, popRow } from '@/components/chat/chat-chrome'
 import { cn } from '@/lib/cn'
+import { publicIconDomain } from '@/lib/icon-domain'
 import { relativeTime } from '@/lib/fleet'
 import { useAgents } from '@/lib/agents'
 import { useUsers } from '@/lib/users'
@@ -179,9 +180,12 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
     const u = users.find((x) => x.id === id)
     return u?.name ?? u?.email ?? id.slice(0, 8)
   }
+  // A "domain" only exists for real web URLs — pseudo-schemes like
+  // talaria-workbench://core carry a routing token, not a hostname.
   const domain = (() => {
     try {
-      return new URL(s.url).hostname
+      const u = new URL(s.url)
+      return u.protocol === 'http:' || u.protocol === 'https:' ? u.hostname : null
     } catch {
       return null
     }
@@ -570,7 +574,10 @@ interface LibraryServerRow {
  *  is the floor. */
 function ServerMark({ title, domain, icon, size = 32 }: { title: string; domain?: string | null; icon?: string | null; size?: number }) {
   const [failed, setFailed] = useState(false)
-  const src = icon ?? (domain ? `/api/mcp/icon?domain=${encodeURIComponent(domain)}` : null)
+  // Internal hosts have no favicon — don't ask the proxy (it can only 404);
+  // the monogram tile paints immediately instead.
+  const proxied = publicIconDomain(domain)
+  const src = icon ?? (proxied ? `/api/mcp/icon?domain=${encodeURIComponent(proxied)}` : null)
   // Publisher marks sit in retoned raised tiles (spec: retone containers only).
   if (!src || failed) {
     return (

@@ -65,7 +65,7 @@ export function LabelChip({ name, labels, className }: { name: string; labels: B
   const c = labelColor(name, labels)
   return (
     <span
-      className={cn('max-w-28 truncate rounded-full border px-1.5 py-0.5 font-mono text-[10px] tracking-[0.05em]', className)}
+      className={cn('max-w-28 truncate rounded-full border px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-[0.05em]', className)}
       style={{
         color: c,
         borderColor: `color-mix(in srgb, ${c} 45%, transparent)`,
@@ -128,7 +128,7 @@ export function StatusPill({ t, ctx, className }: { t: Task; ctx: PillCtx; class
   const dot = sts.length ? statusColorOf(t.status, sts) : STATUS_COLOR[t.status]
   if (!ctx.canEdit)
     return (
-      <span className={cn('inline-flex items-center gap-1.5 text-[11px] text-muted', className)}>
+      <span className={cn('inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>
         <span className="h-1.5 w-1.5 rounded-full" style={{ background: dot }} />
         {label}
       </span>
@@ -159,7 +159,7 @@ export function PriorityPill({ t, ctx, className }: { t: Task; ctx: PillCtx; cla
   const flag = <Flag size={11} style={{ color: PRIORITY_COLOR[t.priority] }} />
   if (!ctx.canEdit)
     return (
-      <span className={cn('inline-flex items-center gap-1.5 text-[11px] text-muted', className)}>
+      <span className={cn('inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>
         {flag}
         {t.priority}
       </span>
@@ -189,7 +189,7 @@ export function DuePill({ t, ctx, className, ghost, persistent }: { t: Task; ctx
   if (!ctx.canEdit) {
     if (!t.dueDate) return null
     return (
-      <span className={cn('text-[11px]', late ? 'font-medium text-danger' : 'text-muted', className)}>
+      <span className={cn('font-mono text-[10px] uppercase tracking-[0.05em]', late ? 'font-medium text-danger' : 'text-muted', className)}>
         {label}
       </span>
     )
@@ -243,7 +243,7 @@ export function EstimatePill({ t, ctx, className, ghost, persistent }: { t: Task
   const label = t.estimatedHours != null ? `${t.estimatedHours}h` : 'Estimate'
   if (!ctx.canEdit) {
     if (t.estimatedHours == null) return null
-    return <span className={cn('text-[11px] text-muted', className)}>{label}</span>
+    return <span className={cn('font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>{label}</span>
   }
   return (
     <DropdownMenu
@@ -308,7 +308,7 @@ export function AssigneesPill({ t, ctx, className, ghost, persistent }: { t: Tas
   )
   if (!ctx.canEdit) {
     if (infos.length === 0) return null
-    return <span className={cn('inline-flex items-center text-[11px] text-muted', className)}>{avatars}</span>
+    return <span className={cn('inline-flex items-center font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>{avatars}</span>
   }
   const toggle = (key: string) =>
     ctx.onPatch({ assignees: t.assignees.includes(key) ? t.assignees.filter((a) => a !== key) : [...t.assignees, key] })
@@ -442,7 +442,7 @@ export function ColorPill({
   if (disabled) {
     if (!value) return null
     return (
-      <span className={cn('inline-flex items-center gap-1.5 text-[11px] text-muted', className)}>
+      <span className={cn('inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>
         <span className="h-2.5 w-2.5 rounded-full" style={{ background: LABEL_CSS[value as keyof typeof LABEL_CSS] }} />
         {value}
       </span>

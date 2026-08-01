@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
@@ -26,17 +26,50 @@ import { useDeniedViews, useHasPerm, type SessionUser } from '@/lib/session'
 import { useEnabledApps } from '@/lib/apps'
 
 // Gentle dew shell (spec §5): one collapsible nav — 208px sidebar ⇄ 64px icon
-// rail. The choice persists in localStorage; the loading skeleton in _app.tsx
-// reads the same key so the frame never jumps on hydrate.
+// rail. The choice persists in localStorage, but the server can't see
+// localStorage — reading it during the first render made SSR (expanded) and
+// client (collapsed) disagree and hydration fail. useSyncExternalStore is the
+// hydration-safe channel: the server snapshot (expanded) is what hydration
+// matches against, then React swaps in the persisted client snapshot in the
+// immediate follow-up render. NavRail and the _app.tsx loading skeleton share
+// the same store so both frames always agree.
 const NAV_COLLAPSED_KEY = 'talaria:nav-collapsed'
+const NAV_COLLAPSED_EVENT = 'talaria:nav-collapsed'
 
-export function navCollapsedInitial(): boolean {
-  if (typeof window === 'undefined') return false
+// In-memory fallback so the toggle still works when localStorage is
+// unavailable (private mode) — the choice simply won't persist.
+let collapsedFallback = false
+
+function readNavCollapsed(): boolean {
   try {
     return window.localStorage.getItem(NAV_COLLAPSED_KEY) === '1'
   } catch {
-    return false
+    return collapsedFallback
   }
+}
+
+function subscribeNavCollapsed(onChange: () => void): () => void {
+  window.addEventListener(NAV_COLLAPSED_EVENT, onChange)
+  window.addEventListener('storage', onChange) // sync across tabs
+  return () => {
+    window.removeEventListener(NAV_COLLAPSED_EVENT, onChange)
+    window.removeEventListener('storage', onChange)
+  }
+}
+
+export function useNavCollapsed(): { collapsed: boolean; toggleCollapsed: () => void } {
+  const collapsed = useSyncExternalStore(subscribeNavCollapsed, readNavCollapsed, () => false)
+  const toggleCollapsed = useCallback(() => {
+    const next = !readNavCollapsed()
+    collapsedFallback = next
+    try {
+      window.localStorage.setItem(NAV_COLLAPSED_KEY, next ? '1' : '0')
+    } catch {
+      /* private mode — state simply won't persist */
+    }
+    window.dispatchEvent(new Event(NAV_COLLAPSED_EVENT))
+  }, [])
+  return { collapsed, toggleCollapsed }
 }
 
 // The main application menu. Expanded: WORK/MANAGE/SYSTEM sections with the
@@ -49,7 +82,7 @@ export function NavRail({ user }: { user: SessionUser }) {
   const denied = useDeniedViews()
   const [creating, setCreating] = useState(false)
   const [teamsOpen, setTeamsOpen] = useState(false)
-  const [collapsed, setCollapsed] = useState(navCollapsedInitial)
+  const { collapsed, toggleCollapsed } = useNavCollapsed()
   const unread = useNotifications().data?.unread ?? 0
   // Enabled apps slot into the sections as if they shipped with the platform:
   // work surfaces under Work, manage surfaces under Manage (grant-gated like
@@ -59,17 +92,6 @@ export function NavRail({ user }: { user: SessionUser }) {
     Work: apps.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work!, icon: a.icon })),
     Manage: apps.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage!, icon: a.icon })),
   }
-
-  const toggleCollapsed = () =>
-    setCollapsed((v) => {
-      const next = !v
-      try {
-        window.localStorage.setItem(NAV_COLLAPSED_KEY, next ? '1' : '0')
-      } catch {
-        /* private mode — state simply won't persist */
-      }
-      return next
-    })
 
   // Denied-view + role filtering, shared by both modes.
   const sections = NAV.flatMap((section) => {

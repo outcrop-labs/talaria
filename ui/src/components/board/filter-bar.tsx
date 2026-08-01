@@ -47,7 +47,7 @@ function FacetPill({
     <DropdownMenu
       align="left"
       trigger={(open) => (
-        <FieldPill icon={icon} active={open || count > 0} className="h-9 rounded-md px-2 font-mono text-[10px] uppercase tracking-[0.05em]">
+        <FieldPill icon={icon} active={open || count > 0} className="h-9 rounded-md px-2">
           {label}
           {count > 0 ? ` · ${count}` : ''}
         </FieldPill>

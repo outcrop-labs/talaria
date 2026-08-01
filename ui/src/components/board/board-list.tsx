@@ -480,7 +480,7 @@ export function BoardList({
                   )}
                   {open && g.tasks.length === 0 && (
                     <tr>
-                      <td colSpan={cols.length + 2} className={cn('px-4 py-2 font-sans text-xs italic text-muted/70', dragOverGroup === g.key && dragRow && 'text-accent')}>
+                      <td colSpan={cols.length + 2} className={cn('px-4 py-2 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim', dragOverGroup === g.key && dragRow && 'text-accent')}>
                         {dragRow ? 'Drop here' : 'No tickets'}
                       </td>
                     </tr>
@@ -540,7 +540,7 @@ export function BoardList({
               up
               align="left"
               trigger={(open) => (
-                <FieldPill active={open} className="text-xs">
+                <FieldPill active={open}>
                   Move to
                 </FieldPill>
               )}
@@ -554,7 +554,7 @@ export function BoardList({
               up
               align="left"
               trigger={(open) => (
-                <FieldPill active={open} className="text-xs">
+                <FieldPill active={open}>
                   Priority
                 </FieldPill>
               )}

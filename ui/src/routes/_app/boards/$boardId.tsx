@@ -369,7 +369,7 @@ function BoardPage() {
             <DropdownMenu
               align="right"
               trigger={(open) => (
-                <FieldPill icon={<Layers size={12} />} active={open || groupBy !== 'status'} className="h-9 rounded-md px-2 font-mono text-[10px] uppercase tracking-[0.05em]" title="Group by">
+                <FieldPill icon={<Layers size={12} />} active={open || groupBy !== 'status'} className="h-9 rounded-md px-2" title="Group by">
                   {groupBy === 'none' ? 'No grouping' : `Group: ${groupBy}`}
                 </FieldPill>
               )}

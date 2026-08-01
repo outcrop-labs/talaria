@@ -2,7 +2,7 @@ import { createFileRoute, Outlet, useNavigate, useRouterState } from '@tanstack/
 import { useEffect } from 'react'
 import { Brand, WingMark } from '@/components/brand'
 import { MercuryBackdrop } from '@/components/mercury-backdrop'
-import { NavRail, navCollapsedInitial } from '@/components/app/nav-rail'
+import { NavRail, useNavCollapsed } from '@/components/app/nav-rail'
 import { TopStrip } from '@/components/app/top-strip'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useDeniedViews, useLogout, useSession } from '@/lib/session'
@@ -72,7 +72,9 @@ function AppLayout() {
 // collapse state so the frame never jumps), top strip, a skeleton page — and
 // only content fills in.
 function ShellSkeleton() {
-  const collapsed = navCollapsedInitial()
+  // Hydration-safe: server snapshot is "expanded"; the persisted client value
+  // swaps in right after hydration (same store NavRail uses, so no jump).
+  const { collapsed } = useNavCollapsed()
   return (
     <>
       <MercuryBackdrop />

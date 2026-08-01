@@ -208,7 +208,7 @@ function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
         ) : (audit ?? []).length === 0 ? (
           <div className="text-xs text-muted">Quiet so far.</div>
         ) : (
-          <ul className="space-y-1">
+          <ul>
             {audit!.slice(0, 6).map((a, i) => (
               <ActivityRow key={i} actor={a.actor} detail={a.detail} at={a.at} onClick={() => a.href && void nav({ to: a.href })} />
             ))}
