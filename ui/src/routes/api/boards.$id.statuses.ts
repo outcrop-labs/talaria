@@ -3,13 +3,45 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
-import { createStatus, deleteStatus, listStatuses, reorderStatuses, updateStatus } from '@/server/statuses'
+import { agentStartConflict, createStatus, deleteStatus, listStatuses, reorderStatuses, updateStatus } from '@/server/statuses'
 
 // Board statuses (custom workflow columns). GET → the ordered list incl. the
 // system Blocked column (any member). POST create, PUT update/reorder, DELETE
 // (tickets reassigned) — owner/editor. Category + agentStart carry the
 // workflow semantics; Blocked is system and not editable here.
 const Category = z.enum(['open', 'active', 'review', 'done'])
+
+// ── Cross-validation ─────────────────────────────────────────────────────────
+// An agent-start column is the queue agents pick work UP from, so it cannot
+// also be a HUMAN GATE:
+//   • `review` + agentStart is a loop — the agent's own hand-off drops the
+//     ticket straight back into its pickup queue;
+//   • `done` + agentStart turns CLOSING a ticket into a dispatch — the move to
+//     done fires updateTask's re-dispatch branch and starts a live work session
+//     on the ticket a person just signed off.
+// Either way it hands an agent a legitimate-looking write into a column the
+// assignment gate would otherwise refuse. Zod can't see it (either flag may
+// arrive alone, on top of whatever the column already is), so the check runs
+// against the EFFECTIVE post-patch column. `statusKey` null = a create, which
+// inherits createStatus's defaults.
+//
+// The rule itself lives with the data (statuses.ts refuses the same write from
+// any caller); this stays because a 400 with the reason beats a thrown error,
+// and because it runs BEFORE materialize() copies the defaults in.
+async function humanGateConflict(
+  boardId: string,
+  statusKey: string | null,
+  patch: { category?: z.infer<typeof Category>; agentStart?: boolean },
+): Promise<string | null> {
+  if (patch.category === undefined && patch.agentStart === undefined) return null
+  const cur = statusKey ? (await listStatuses(boardId)).find((s) => s.key === statusKey) : undefined
+  const category = patch.category ?? cur?.category ?? 'active'
+  const agentStart = patch.agentStart ?? cur?.agentStart ?? false
+  // The system Blocked column is the one entry with a non-StatusCategory
+  // category; it is never editable here (updateStatus refuses the key), and it
+  // is never agent-start, so the cast can only see a real workflow category.
+  return agentStartConflict(category as z.infer<typeof Category>, agentStart)
+}
 
 export const Route = createFileRoute('/api/boards/$id/statuses')({
   server: {
@@ -34,7 +66,13 @@ export const Route = createFileRoute('/api/boards/$id/statuses')({
           }),
         )
         if (body instanceof Response) return body
-        return json({ status: await createStatus(params.id, body) })
+        const conflict = await humanGateConflict(params.id, null, body)
+        if (conflict) return json({ error: conflict }, { status: 400 })
+        try {
+          return json({ status: await createStatus(params.id, body) })
+        } catch (e) {
+          return json({ error: (e as Error).message }, { status: 400 })
+        }
       },
       PUT: async ({ request, params }) => {
         const user = await requireUser(request)
@@ -54,6 +92,10 @@ export const Route = createFileRoute('/api/boards/$id/statuses')({
           ]),
         )
         if (body instanceof Response) return body
+        if (!('order' in body)) {
+          const conflict = await humanGateConflict(params.id, body.statusKey, body)
+          if (conflict) return json({ error: conflict }, { status: 400 })
+        }
         try {
           if ('order' in body) await reorderStatuses(params.id, body.order)
           else await updateStatus(params.id, body.statusKey, body)

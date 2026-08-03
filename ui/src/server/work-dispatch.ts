@@ -110,6 +110,7 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
       `2. comment a one-line acknowledgment, and triage_ticket to status "${activeHint ?? 'in_progress'}" while you work.\n` +
       `3. Do the work in as many steps as it takes — iterate with your tools and (if you have one) your workbench harness: run it, read its structured result, respond to it, verify with tests, repeat.\n` +
       `4. report_outcome when genuinely finished — a human signs off from review. If blocked, set status "blocked" and comment why. Either of those ends the session.\n` +
+      `That status move in step 4 is your LAST one on this ticket. Once it is in review, or parked in blocked, only a person moves it again — triage_ticket will refuse you with a 403, and so will add_time once the ticket is closed. Don't retry it; comment instead, which stays open.\n` +
       `\nBe honest about capability: if you genuinely can't do this properly (a tool or access you're missing, an org-specific process you'd be guessing at), don't improvise — report_gap once with what a flow would need, then block. Never report a gap for work you can simply do.\n` +
       `End each reply with a short status line: what you just did and what you'll do next (or DONE / BLOCKED).`
     const sendTurn = async (content: string): Promise<string> => {
@@ -125,6 +126,9 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
         agentModel,
         source: 'chat',
         refId: task.id,
+        // The ticket this session's spend belongs to — without it the turn
+        // lands in the ledger but never in the ticket's cost.
+        taskId: task.id,
         tier: null,
         promptTokens: usage?.promptTokens ?? estimateTokens(content.length),
         completionTokens: usage?.completionTokens ?? estimateTokens(text.length),

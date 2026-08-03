@@ -175,14 +175,24 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
         // Bounce to the board's own first ACTIVE column (custom statuses
         // included), THROUGH updateTask — so the move validates, notifies,
         // and re-fires the dispatch push: the agent gets the work back in
-        // its loop with the judge's feedback waiting on the ticket.
-        const { listStatuses } = await import('./statuses')
-        const active = (await listStatuses(task.boardId)).find((st) => st.category === 'active')?.key ?? 'in_progress'
+        // its loop with the judge's feedback waiting on the ticket. The judge
+        // writes as the PLATFORM, not as an agent: the human-in-the-loop
+        // invariant is Talaria's to enforce, and sending work back for
+        // revision is the one move only it makes.
+        const { listStatuses, statusMeta } = await import('./statuses')
+        const meta = await statusMeta(task.boardId)
+        const active = (await listStatuses(task.boardId)).find((st) => st.category === 'active')?.key ?? meta.assignedKey
         const { updateTask } = await import('./tasks')
-        await updateTask(taskId, { status: active as import('./tasks').TaskStatus }, actor).catch(async () => {
-          await sql`update tasks set status = ${active}, updated_at = now() where id = ${taskId}`
-        })
-        await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'status', ${`sent back for revision (${reviseCount}/${MAX_REVISIONS})`})`
+        // No raw-SQL fallback: forcing the status past updateTask skips every
+        // validation the board's columns exist for, and a bounce that can't
+        // land belongs to the human reviewer, who still has the ticket.
+        const bounced = await updateTask(taskId, { status: active as import('./tasks').TaskStatus }, { kind: 'platform', id: actor })
+          .then(() => true)
+          .catch(() => false)
+        const note = bounced
+          ? `sent back for revision (${reviseCount}/${MAX_REVISIONS})`
+          : `could not send back for revision (${reviseCount}/${MAX_REVISIONS}) — left for a human`
+        await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'status', ${note})`
       } else {
         await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'judge', ${`revision limit reached (${MAX_REVISIONS}) — needs a human`})`
       }

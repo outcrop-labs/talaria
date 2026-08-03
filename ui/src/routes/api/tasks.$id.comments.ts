@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, listMembers } from '@/server/boards'
 import { addComment, getTask, listComments } from '@/server/tasks'
 import { notifyMentions } from '@/server/mentions'
@@ -10,12 +10,13 @@ import { indexTicketComment } from '@/server/retrieval/sources'
 
 /** Board access for either a session user or a board-allowed named agent. */
 async function commentAuthor(request: Request, boardId: string): Promise<string | Response> {
-  if (checkAgentKey(request)) {
-    const name = agentName(request)
-    // Unnamed agent-key callers keep the legacy generic author.
-    if (!name) return 'agent'
-    if (!(await boardAllowsAgent(boardId, name))) return json({ error: 'forbidden' }, { status: 403 })
-    return name
+  const caller = await agentCaller(request)
+  if (caller instanceof Response) return caller
+  if (caller) {
+    // The CALLER, not its model: the elevated-assistant bypass inside board
+    // policy is org-wide reach, and a legacy caller only asserted its name.
+    if (!(await boardAllowsAgent(boardId, caller))) return json({ error: 'forbidden' }, { status: 403 })
+    return caller.model
   }
   const user = await getSessionUser(request)
   if (!user || !(await boardRole(user.id, boardId))) return json({ error: 'forbidden' }, { status: 403 })
