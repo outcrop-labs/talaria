@@ -12,9 +12,11 @@ import { Generating } from '@/components/ui/generating'
 import { Select } from '@/components/ui/select'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
+import { QueryError, QueryState } from '@/components/ui/query-state'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { InfoTip } from '@/components/ui/info-tip'
 import { cn } from '@/lib/cn'
+import { getJson, getList } from '@/lib/fetch-json'
 import { relativeTime, useFleet } from '@/lib/fleet'
 import { Segmented } from '@/components/ui/segmented'
 import { useModels } from '@/lib/muse'
@@ -280,15 +282,15 @@ interface SkillSummary {
 }
 function SkillsTab({ slug, isAdmin }: { slug: string; isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery({
+  const query = useQuery({
     queryKey: ['skills'],
-    queryFn: async () => {
-      const r = await fetch('/api/skills')
-      if (!r.ok) throw new Error('failed')
-      return ((await r.json()) as { owners: Array<{ owner: string; skills: SkillSummary[] }> }).owners
-    },
+    queryFn: (): Promise<Array<{ owner: string; skills: SkillSummary[] }>> =>
+      getList<{ owner: string; skills: SkillSummary[] }>('/api/skills', 'owners'),
   })
-  const skills = data?.find((o) => o.owner === slug)?.skills ?? []
+  // `owners` not carrying THIS agent is a real empty ("no skills yet"); a
+  // failure is not, and must not be flattened into the same `?? []`.
+  const skillsOf = (owners: Array<{ owner: string; skills: SkillSummary[] }>) =>
+    owners.find((o) => o.owner === slug)?.skills ?? []
   const [open, setOpen] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
 
@@ -307,21 +309,26 @@ function SkillsTab({ slug, isAdmin }: { slug: string; isAdmin: boolean }) {
 
   return (
     <div className="space-y-3">
-      {isLoading ? (
-        <SkeletonRows rows={3} className="py-2" />
-      ) : skills.length === 0 ? (
-        <EmptyState icon="✦" title="No skills yet" hint={isAdmin ? 'Add one below.' : undefined} />
-      ) : (
-        <div className="divide-y divide-line-subtle">
-          {skills.map((s) => (
-            <button key={s.name} type="button" onClick={() => setOpen(s.name)} className="flex w-full items-baseline gap-3 py-2.5 text-left">
-              <span className="shrink-0 text-sm font-medium text-fg">{s.name}</span>
-              <span className="min-w-0 truncate text-sm text-muted">{s.description}</span>
-              {s.files.length > 1 && <span className="ml-auto shrink-0 text-xs text-muted">{s.files.length} files</span>}
-            </button>
-          ))}
-        </div>
-      )}
+      <QueryState
+        query={query}
+        errorTitle="Could not load skills"
+        errorVariant="compact"
+        skeleton={<SkeletonRows rows={3} className="py-2" />}
+        isEmpty={(owners) => skillsOf(owners).length === 0}
+        empty={<EmptyState icon="✦" title="No skills yet" hint={isAdmin ? 'Add one below.' : undefined} />}
+      >
+        {(owners) => (
+          <div className="divide-y divide-line-subtle">
+            {skillsOf(owners).map((s) => (
+              <button key={s.name} type="button" onClick={() => setOpen(s.name)} className="flex w-full items-baseline gap-3 py-2.5 text-left">
+                <span className="shrink-0 text-sm font-medium text-fg">{s.name}</span>
+                <span className="min-w-0 truncate text-sm text-muted">{s.description}</span>
+                {s.files.length > 1 && <span className="ml-auto shrink-0 text-xs text-muted">{s.files.length} files</span>}
+              </button>
+            ))}
+          </div>
+        )}
+      </QueryState>
       {isAdmin && (
         <div className="flex items-center gap-2 pt-1">
           <Input size="sm" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="new-skill-name" className="w-52" onKeyDown={(e) => e.key === 'Enter' && void create()} />
@@ -337,14 +344,15 @@ function SkillsTab({ slug, isAdmin }: { slug: string; isAdmin: boolean }) {
 
 function SkillEditorModal({ slug, name, isAdmin, onClose }: { slug: string; name: string; isAdmin: boolean; onClose: () => void }) {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  // A 404 here is NOT a legitimate null: this editor is only reachable from a
+  // row in the list above (or straight after a create), so "no such skill" is
+  // as much of a failure as a 500 — and the route already sends the reason as
+  // `{ error }`, which `readJson` turns into the line the panel shows.
+  const query = useQuery({
     queryKey: ['skill', slug, name],
-    queryFn: async () => {
-      const r = await fetch(`/api/skills/${slug}/${name}`)
-      if (!r.ok) throw new Error('failed')
-      return (await r.json()) as { content: string; files: string[] }
-    },
+    queryFn: (): Promise<{ content: string; files: string[] }> => getJson<{ content: string; files: string[] }>(`/api/skills/${slug}/${name}`),
   })
+  const { data } = query
   const [busy, setBusy] = useState(false)
   const save = async (content: string) => {
     setBusy(true)
@@ -372,14 +380,24 @@ function SkillEditorModal({ slug, name, isAdmin, onClose }: { slug: string; name
       <div className="absolute inset-0 z-30 flex flex-col bg-[var(--theme-panel)]">
         <div className="flex shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-3.5">
           <div className="text-sm font-semibold text-fg">{name} · SKILL.md</div>
+          <Button variant="ghost" size="sm" className="ml-auto" onClick={onClose}>
+            Close
+          </Button>
         </div>
-        <div className="space-y-3 p-6" aria-hidden>
-          <Skeleton className="h-2.5 w-2/3 rounded-full" />
-          <Skeleton className="h-2.5 w-full rounded-full" delay={0.12} />
-          <Skeleton className="h-2.5 w-5/6 rounded-full" delay={0.24} />
-          <Skeleton className="h-2.5 w-3/4 rounded-full" delay={0.36} />
-          <Skeleton className="h-2.5 w-1/2 rounded-full" delay={0.48} />
-        </div>
+        {query.isError ? (
+          // Never seed the editor from a failed read: mounting it with '' and
+          // then letting someone hit Save would overwrite the real SKILL.md
+          // with an empty file.
+          <QueryError error={query.error} title="Could not open this skill" onRetry={() => void query.refetch()} />
+        ) : (
+          <div className="space-y-3 p-6" aria-hidden>
+            <Skeleton className="h-2.5 w-2/3 rounded-full" />
+            <Skeleton className="h-2.5 w-full rounded-full" delay={0.12} />
+            <Skeleton className="h-2.5 w-5/6 rounded-full" delay={0.24} />
+            <Skeleton className="h-2.5 w-3/4 rounded-full" delay={0.36} />
+            <Skeleton className="h-2.5 w-1/2 rounded-full" delay={0.48} />
+          </div>
+        )}
       </div>
     )
   return (
@@ -403,12 +421,14 @@ function SkillEditorModal({ slug, name, isAdmin, onClose }: { slug: string; name
 // ── Memory ────────────────────────────────────────────────────────────────────
 function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data, error, isLoading } = useQuery({
+  const { data, error, isLoading, refetch } = useQuery({
     queryKey: ['memory', def.id],
-    queryFn: async () => {
-      const r = await fetch(`/api/memory/${def.id}`)
-      const j = (await r.json()) as { content?: string; error?: string; container?: string }
-      if (!r.ok || j.error) throw new Error(j.error ?? 'failed')
+    // GET /api/memory/:id is 200 `{ content, container }`, or 400/403 `{ error }`
+    // when the container can't be reached — every non-2xx is a real failure and
+    // already had a real error branch below; this just routes it through the
+    // one door so the message is the server's own sentence.
+    queryFn: async (): Promise<{ content: string; container: string }> => {
+      const j = await getJson<{ content?: string; container?: string }>(`/api/memory/${def.id}`)
       return { content: j.content ?? '', container: j.container ?? '' }
     },
     retry: false,
@@ -436,7 +456,7 @@ function MemoryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
     setNote('')
   }
   if (!def.managed) return <EmptyState icon="❖" title="Not managed" hint="Memory reads through the managed container. Migrate this agent first." />
-  if (error) return <EmptyState icon="❖" title="Can't reach the agent" hint={(error as Error).message} />
+  if (error) return <QueryError error={error} title="Can't reach the agent" onRetry={() => void refetch()} />
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-1.5">
@@ -519,15 +539,12 @@ interface McpServer {
 }
 function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery({
+  const query = useQuery({
     queryKey: ['mcp-agents'],
-    queryFn: async () => {
-      const r = await fetch('/api/mcp')
-      if (!r.ok) throw new Error('failed')
-      return ((await r.json()) as { agents: Array<{ id: string; servers: McpServer[] }> }).agents
-    },
+    queryFn: (): Promise<Array<{ id: string; servers: McpServer[] }>> =>
+      getList<{ id: string; servers: McpServer[] }>('/api/mcp', 'agents'),
   })
-  const servers = data?.find((a) => a.id === def.id)?.servers ?? []
+  const serversOf = (agents: Array<{ id: string; servers: McpServer[] }>) => agents.find((a) => a.id === def.id)?.servers ?? []
   const [probes, setProbes] = useState<Record<string, Probe | 'testing'>>({})
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
@@ -556,13 +573,17 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       {busy && (
         <Generating label={`Applying MCP change: rolling ${def.displayName} so the new version takes effect`} lines={2} />
       )}
-      {isLoading ? (
-        <SkeletonRows rows={2} className="py-2" />
-      ) : servers.length === 0 ? (
-        <div className="text-sm text-muted">No MCP servers connected.</div>
-      ) : (
+      <QueryState
+        query={query}
+        errorTitle="Could not load MCP servers"
+        errorVariant="compact"
+        skeleton={<SkeletonRows rows={2} className="py-2" />}
+        isEmpty={(agents) => serversOf(agents).length === 0}
+        empty={<div className="text-sm text-muted">No MCP servers connected.</div>}
+      >
+        {(agents) => (
         <div className="divide-y divide-line-subtle">
-          {servers.map((s) => {
+          {serversOf(agents).map((s) => {
             const probe = probes[s.name]
             return (
               <div key={s.name} className="flex items-center gap-3 py-2.5 text-sm">
@@ -611,7 +632,8 @@ function McpTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
             )
           })}
         </div>
-      )}
+        )}
+      </QueryState>
       {isAdmin && (
         <div className="flex items-center gap-2 pt-1">
           <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={submitOnEnter(() => !busy && name.trim() && /^https?:\/\//.test(url.trim()) && void edit({ add: [{ name: name.trim(), url: url.trim() }] }))} placeholder="name" className="w-28" />
@@ -634,13 +656,11 @@ interface Version {
 }
 function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery({
+  // 404 stays a failure: this tab only renders for a def we are already showing,
+  // so "no such agent" means something is wrong, not "no history".
+  const query = useQuery({
     queryKey: ['agent-versions', def.id],
-    queryFn: async () => {
-      const r = await fetch(`/api/fleet/defs/${def.id}/versions`)
-      if (!r.ok) throw new Error('failed')
-      return ((await r.json()) as { versions: Version[] }).versions
-    },
+    queryFn: (): Promise<Version[]> => getList<Version>(`/api/fleet/defs/${def.id}/versions`, 'versions'),
   })
   const [busy, setBusy] = useState<number | null>(null)
   const [configOpen, setConfigOpen] = useState(false)
@@ -655,9 +675,8 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
       setBusy(null)
     }
   }
-  const versions = data ?? []
   // The header row (History + Config history) renders in every state — only
-  // the list below it swaps between skeleton, empty, and rows.
+  // the list below it swaps between skeleton, error, empty, and rows.
   return (
     <div className="divide-y divide-line-subtle">
       {busy !== null && (
@@ -686,21 +705,29 @@ function VersionsTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
           mode="plain"
         />
       )}
-      {isLoading && <SkeletonRows rows={4} className="py-3" />}
-      {!isLoading && versions.length === 0 && <div className="py-2.5 text-sm text-muted">No version history.</div>}
-      {versions.map((v) => (
-        <div key={v.version} className="flex items-center gap-3 py-2.5 text-sm">
-          <span className={cn('w-12 shrink-0 font-[var(--font-mono)]', v.version === def.currentVersion ? 'text-accent' : 'text-muted')}>v{v.version}</span>
-          <span className="min-w-0 flex-1 truncate text-fg">{v.note ?? '—'}</span>
-          <span className="shrink-0 text-xs text-muted">{v.createdBy ?? 'system'} · {relativeTime(v.createdAt)}</span>
-          {isAdmin && v.version !== def.currentVersion && (
-            <button type="button" disabled={busy !== null} onClick={() => void revert(v.version)} className="flex shrink-0 items-center gap-1 text-xs text-muted hover:text-accent">
-              <RotateCcw size={12} /> {busy === v.version ? 'reverting' : 'revert'}
-            </button>
-          )}
-          {v.version === def.currentVersion && <span className="shrink-0 text-xs" style={{ color: 'var(--theme-success)' }}>current</span>}
-        </div>
-      ))}
+      <QueryState
+        query={query}
+        errorTitle="Could not load version history"
+        errorVariant="compact"
+        skeleton={<SkeletonRows rows={4} className="py-3" />}
+        empty={<div className="py-2.5 text-sm text-muted">No version history.</div>}
+      >
+        {(versions) =>
+          versions.map((v) => (
+            <div key={v.version} className="flex items-center gap-3 py-2.5 text-sm">
+              <span className={cn('w-12 shrink-0 font-[var(--font-mono)]', v.version === def.currentVersion ? 'text-accent' : 'text-muted')}>v{v.version}</span>
+              <span className="min-w-0 flex-1 truncate text-fg">{v.note ?? '—'}</span>
+              <span className="shrink-0 text-xs text-muted">{v.createdBy ?? 'system'} · {relativeTime(v.createdAt)}</span>
+              {isAdmin && v.version !== def.currentVersion && (
+                <button type="button" disabled={busy !== null} onClick={() => void revert(v.version)} className="flex shrink-0 items-center gap-1 text-xs text-muted hover:text-accent">
+                  <RotateCcw size={12} /> {busy === v.version ? 'reverting' : 'revert'}
+                </button>
+              )}
+              {v.version === def.currentVersion && <span className="shrink-0 text-xs" style={{ color: 'var(--theme-success)' }}>current</span>}
+            </div>
+          ))
+        }
+      </QueryState>
     </div>
   )
 }
@@ -725,14 +752,16 @@ const EFFORTS = [
  *  (fit by department/role); On lets an admin force a specific profile. */
 function WorkbenchControl({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data: profiles = [] } = useQuery({
+  // GET /api/workbench is 200 `{ profiles }` for any signed-in user — no 404 to
+  // forgive. Answering `[]` on a failure made every agent read "nothing fits —
+  // no sandbox", which is a claim an admin acts on (they go build a profile
+  // that already exists).
+  const profilesQuery = useQuery({
     queryKey: ['workbench-profiles'],
-    queryFn: async (): Promise<WorkbenchProfileLite[]> => {
-      const r = await fetch('/api/workbench', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { profiles: WorkbenchProfileLite[] }).profiles
-    },
+    queryFn: (): Promise<WorkbenchProfileLite[]> => getList<WorkbenchProfileLite>('/api/workbench', 'profiles'),
   })
+  const profiles = profilesQuery.data ?? []
+  const profilesFailed = profilesQuery.isError && profilesQuery.data === undefined
   const mode = def.workbench ?? 'auto'
   const fits = (p: WorkbenchProfileLite) =>
     (p.autoAttach.departments ?? []).some((d) => d.toLowerCase() === def.department.toLowerCase()) ||
@@ -785,11 +814,32 @@ function WorkbenchControl({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
             </Select>
           )}
           <span className="text-xs text-muted">
-            {mode === 'off' ? 'no sandbox' : resolved ? `→ ${resolved.name}${resolved.harnesses.length ? ` (${resolved.harnesses.join(', ')})` : ''}` : '→ nothing fits — no sandbox'}
+            {mode === 'off'
+              ? 'no sandbox'
+              : profilesFailed
+                ? '→ unknown'
+                : profilesQuery.data === undefined
+                  ? '→ checking'
+                  : resolved
+                    ? `→ ${resolved.name}${resolved.harnesses.length ? ` (${resolved.harnesses.join(', ')})` : ''}`
+                    : '→ nothing fits — no sandbox'}
           </span>
         </div>
       ) : (
-        <div className="text-fg">{mode === 'off' ? 'Off' : resolved ? resolved.name : 'None'}</div>
+        <div className="text-fg">
+          {mode === 'off' ? 'Off' : profilesFailed ? 'Unknown' : profilesQuery.data === undefined ? 'Checking' : resolved ? resolved.name : 'None'}
+        </div>
+      )}
+      {/* "Nothing fits" and "we could not ask" are different answers. Only the
+          first one means an admin should go build a profile. */}
+      {mode !== 'off' && profilesFailed && (
+        <QueryError
+          variant="inline"
+          className="mt-1.5"
+          error={profilesQuery.error}
+          title="Could not load workbench profiles"
+          onRetry={() => void profilesQuery.refetch()}
+        />
       )}
       {isAdmin && mode !== 'off' && resolved && (
         <>
@@ -815,14 +865,17 @@ function WorkbenchTuning({
   const { data: modelsData } = useModels()
   const models = Array.isArray(modelsData) ? [] : (modelsData?.models ?? [])
   // Labels come from the harness REGISTRY (builtin + app-shipped + custom).
-  const { data: registry = [] } = useQuery({
+  // GET /api/workbench/harnesses is 200 `{ harnesses }` or an auth failure —
+  // no 404. The registry is only a LABEL source here (`labelOf` falls back to
+  // the slug), so a failure degrades the copy rather than the control; it still
+  // has to say so instead of silently showing raw slugs.
+  const registryQuery = useQuery({
     queryKey: ['workbench-harnesses'],
-    queryFn: async (): Promise<Array<{ slug: string; label: string }>> => {
-      const r = await fetch('/api/workbench/harnesses', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { harnesses: Array<{ slug: string; label: string }> }).harnesses
-    },
+    queryFn: (): Promise<Array<{ slug: string; label: string }>> =>
+      getList<{ slug: string; label: string }>('/api/workbench/harnesses', 'harnesses'),
   })
+  const registry = registryQuery.data ?? []
+  const registryFailed = registryQuery.isError && registryQuery.data === undefined
   const labelOf = (slug: string) => registry.find((h) => h.slug === slug)?.label ?? slug
   const chosen = def.workbenchHarness && profile.harnesses.includes(def.workbenchHarness) ? def.workbenchHarness : ''
   return (
@@ -839,6 +892,14 @@ function WorkbenchTuning({
         </Select>
         <InfoTip text="The coding tool this agent's workbench jobs run. Auto uses the profile's first harness. The effort models below are handed to it in its own syntax." />
       </div>
+      {registryFailed && (
+        <QueryError
+          variant="inline"
+          error={registryQuery.error}
+          title="Harness names unavailable — showing raw slugs"
+          onRetry={() => void registryQuery.refetch()}
+        />
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[11px] uppercase tracking-wide text-muted">Effort</span>
         {EFFORTS.map(([key, label]) => (
@@ -868,14 +929,15 @@ function WorkbenchTuning({
 /** Explicit per-agent repo grants — the workbench touches ONLY these. */
 function WorkbenchRepos({ agentId }: { agentId: string }) {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery({
+  // The route's only 404 is "unknown agent" — and this panel renders INSIDE the
+  // manage modal for that very agent, so a 404 is an anomaly, not the legitimate
+  // "no such thing" that `getJsonOr404` exists for. Everything throws.
+  const query = useQuery({
     queryKey: ['workbench-repos', agentId],
-    queryFn: async (): Promise<{ available: string[]; granted: string[] } | null> => {
-      const r = await fetch(`/api/workbench/repos/${agentId}`, { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return (await r.json()) as { available: string[]; granted: string[] }
-    },
+    queryFn: (): Promise<{ available: string[]; granted: string[] }> =>
+      getJson<{ available: string[]; granted: string[] }>(`/api/workbench/repos/${agentId}`),
   })
+  const { data } = query
   const toggle = async (repo: string, on: boolean) => {
     const next = on ? [...(data?.granted ?? []), repo] : (data?.granted ?? []).filter((r) => r !== repo)
     await fetch(`/api/workbench/repos/${agentId}`, {
@@ -886,35 +948,43 @@ function WorkbenchRepos({ agentId }: { agentId: string }) {
     })
     await qc.invalidateQueries({ queryKey: ['workbench-repos', agentId] })
   }
-  if (isLoading) return <div className="mt-2"><SkeletonRows rows={1} /></div>
-  if (!data || data.available.length === 0)
-    return (
-      <p className="mt-1.5 text-xs text-muted">
-        No repositories reachable — connect GitHub under <Link to="/admin" className="text-accent hover:underline">Admin → Org</Link> to grant repos.
-      </p>
-    )
   return (
-    <div className="mt-2 space-y-1">
-      <span className="text-[11px] uppercase tracking-wide text-muted">Repos this agent may work</span>
-      <div className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
-        {data.available.map((repo) => {
-          const on = data.granted.includes(repo)
-          return (
-            <button
-              key={repo}
-              type="button"
-              onClick={() => void toggle(repo, !on)}
-              className={cn(
-                'rounded-full border px-2.5 py-0.5 text-xs transition-colors',
-                on ? 'border-[var(--theme-accent-border)] text-fg' : 'border-line-subtle text-muted hover:text-fg',
-              )}
-            >
-              {repo}
-            </button>
-          )
-        })}
-      </div>
-      {data.granted.length === 0 && <p className="text-xs text-muted">Nothing granted yet — the workbench can't touch any repo.</p>}
-    </div>
+    <QueryState
+      query={query}
+      errorTitle="Could not load repository grants"
+      errorVariant="inline"
+      skeleton={<div className="mt-2"><SkeletonRows rows={1} /></div>}
+      isEmpty={(d) => d.available.length === 0}
+      empty={
+        <p className="mt-1.5 text-xs text-muted">
+          No repositories reachable — connect GitHub under <Link to="/admin" className="text-accent hover:underline">Admin → Org</Link> to grant repos.
+        </p>
+      }
+    >
+      {(d) => (
+        <div className="mt-2 space-y-1">
+          <span className="text-[11px] uppercase tracking-wide text-muted">Repos this agent may work</span>
+          <div className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
+            {d.available.map((repo) => {
+              const on = d.granted.includes(repo)
+              return (
+                <button
+                  key={repo}
+                  type="button"
+                  onClick={() => void toggle(repo, !on)}
+                  className={cn(
+                    'rounded-full border px-2.5 py-0.5 text-xs transition-colors',
+                    on ? 'border-[var(--theme-accent-border)] text-fg' : 'border-line-subtle text-muted hover:text-fg',
+                  )}
+                >
+                  {repo}
+                </button>
+              )
+            })}
+          </div>
+          {d.granted.length === 0 && <p className="text-xs text-muted">Nothing granted yet — the workbench can't touch any repo.</p>}
+        </div>
+      )}
+    </QueryState>
   )
 }

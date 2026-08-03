@@ -20,6 +20,7 @@ import { CloseButton } from '@/components/ui/close-button'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { BrainRoutingSelect } from '@/components/kb/brain-select'
 import { IconButton } from '@/components/ui/icon-button'
+import { QueryError } from '@/components/ui/query-state'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
@@ -48,8 +49,20 @@ type Drag = { kind: 'artifact' | 'folder'; id: string } | null
 
 function ArtifactsPage() {
   const qc = useQueryClient()
-  const { data: artifacts = [], isLoading: artifactsLoading } = useArtifacts()
-  const { data: folders = [], isLoading: foldersLoading } = useFolders()
+  // Two reads build one tree, so both rejections have to survive to the render:
+  // "No artifacts yet." is a claim about the owner's WORK, and a store that is
+  // merely unreachable must never be reported as a store that is empty.
+  const artifactsQuery = useArtifacts()
+  const foldersQuery = useFolders()
+  const { data: artifacts = [], isLoading: artifactsLoading } = artifactsQuery
+  const { data: folders = [], isLoading: foldersLoading } = foldersQuery
+  // Whichever half broke, in the words the reader needs. Null = both answered.
+  const treeFailure =
+    artifactsQuery.isError && artifactsQuery.data === undefined
+      ? { title: 'Could not load your artifacts', error: artifactsQuery.error, retry: () => void artifactsQuery.refetch() }
+      : foldersQuery.isError && foldersQuery.data === undefined
+        ? { title: 'Could not load your folders', error: foldersQuery.error, retry: () => void foldersQuery.refetch() }
+        : null
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const activeId = search.a ?? null
@@ -166,6 +179,8 @@ function ArtifactsPage() {
           {artifactsLoading || foldersLoading ? (
             // Both queries feed the same tree — reveal it once, fully formed.
             <SkeletonRows rows={6} className="px-2 py-3" />
+          ) : treeFailure && folders.length === 0 && artifacts.length === 0 ? (
+            <QueryError variant="compact" error={treeFailure.error} title={treeFailure.title} onRetry={treeFailure.retry} />
           ) : folders.length === 0 && artifacts.length === 0 ? (
             <EmptyState variant="inline" title="No artifacts yet." className="px-2 py-6 text-center" />
           ) : (
@@ -193,6 +208,18 @@ function ArtifactsPage() {
               {rootArtifacts.map((a) => (
                 <ArtifactRow key={a.id} artifact={a} depth={0} activeId={activeId} onSelect={setActiveId} setDrag={setDrag} onContextMenu={(e) => openMenu(e, artifactMenu(a))} />
               ))}
+              {/* One half answered, the other didn't. Keep what loaded and say
+                  the tree is INCOMPLETE — replacing a populated pane over a
+                  partial failure loses more than it explains. */}
+              {treeFailure && (
+                <QueryError
+                  variant="inline"
+                  className="px-2 py-3"
+                  error={treeFailure.error}
+                  title={treeFailure.title}
+                  onRetry={treeFailure.retry}
+                />
+              )}
             </>
           )}
         </div>

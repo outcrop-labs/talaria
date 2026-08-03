@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { getList } from '@/lib/fetch-json'
 
 export type TeamRole = 'owner' | 'member'
 export interface Team {
@@ -21,11 +22,7 @@ const post = (url: string, body: unknown) =>
 export function useTeams() {
   return useQuery({
     queryKey: ['teams'],
-    queryFn: async (): Promise<Team[]> => {
-      const r = await fetch('/api/teams', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return (await r.json()).teams
-    },
+    queryFn: (): Promise<Team[]> => getList<Team>('/api/teams', 'teams'),
   })
 }
 
@@ -33,11 +30,7 @@ export function useTeamMembers(teamId: string | null) {
   return useQuery({
     queryKey: ['team-members', teamId],
     enabled: !!teamId,
-    queryFn: async (): Promise<TeamMember[]> => {
-      const r = await fetch(`/api/teams/${teamId}/members`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return (await r.json()).members
-    },
+    queryFn: (): Promise<TeamMember[]> => getList<TeamMember>(`/api/teams/${teamId}/members`, 'members'),
   })
 }
 

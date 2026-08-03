@@ -1,8 +1,10 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Panel } from '@/components/ui/panel'
+import { QueryError } from '@/components/ui/query-state'
 import { Tabs } from '@/components/ui/tabs'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
+import { getJson, getList } from '@/lib/fetch-json'
 import { formatTokens } from '@/lib/cost'
 import { ActivityRow } from '@/components/app/activity-row'
 import { ComputePanel } from '@/components/observability/inference'
@@ -66,48 +68,39 @@ const SEV_COLOR: Record<OverviewAlert['severity'], string> = {
 
 function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
   const nav = useNavigate()
-  const { data: alerts, isLoading: alertsLoading } = useQuery({
+  // "all clear" is a CLAIM about the fleet. It may only come from a 200 that
+  // really carried no problems — a failed /api/alerts has to say so.
+  const alertsQuery = useQuery({
     queryKey: ['alerts'],
-    queryFn: async (): Promise<OverviewAlert[]> => {
-      const r = await fetch('/api/alerts', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { alerts: OverviewAlert[] }).alerts
-    },
+    queryFn: (): Promise<OverviewAlert[]> => getList<OverviewAlert>('/api/alerts', 'alerts'),
     refetchInterval: 60_000,
   })
+  const { data: alerts, isLoading: alertsLoading } = alertsQuery
   const { data: inference } = useQuery({
     queryKey: ['inference'],
-    queryFn: async () => {
-      const r = await fetch('/api/inference', { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json() as Promise<{
+    queryFn: () =>
+      getJson<{
         live: {
           generating: Array<{ agentModel: string; count: number }>
           gateway: { requests: number; errors: number; p50: number | null }
           fleet: { running: number; warming: number; unhealthy: number; down: number }
         }
-      }>
-    },
+      }>('/api/inference'),
     refetchInterval: 15_000,
   })
   const { data: cost } = useQuery({
     queryKey: ['cost'],
-    queryFn: async () => {
-      const r = await fetch('/api/cost', { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json() as Promise<{ totals: { today: { prompt: number; completion: number; cost: number }; month: { cost: number } } }>
-    },
+    queryFn: () =>
+      getJson<{ totals: { today: { prompt: number; completion: number; cost: number }; month: { cost: number } } }>('/api/cost'),
     refetchInterval: 60_000,
   })
-  const { data: audit, isLoading: auditLoading } = useQuery({
+  const auditQuery = useQuery({
     queryKey: ['home-activity', ''],
-    queryFn: async () => {
-      const r = await fetch('/api/activity', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { events: Array<{ at: string; actor: string; detail: string; context: string; href: string }> }).events
-    },
+    queryFn: () =>
+      getList<{ at: string; actor: string; detail: string; context: string; href: string }>('/api/activity', 'events'),
     refetchInterval: 30_000,
   })
+  const { data: audit, isLoading: auditLoading } = auditQuery
 
   const live = inference?.live
   const generating = live?.generating.reduce((n, g) => n + g.count, 0) ?? 0
@@ -129,6 +122,9 @@ function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
           <span className="text-sm font-semibold text-fg">Alerts</span>
           {alertsLoading ? (
             <Skeleton className="h-3 w-8 rounded-full" />
+          ) : alerts === undefined ? (
+            // Unknown, not clear — the strip below carries the reason.
+            <span className="text-xs text-muted">unknown</span>
           ) : problems.length > 0 ? (
             <span className="rounded-full bg-[color:var(--theme-warning)]/15 px-1.5 text-[10px] font-semibold text-[color:var(--theme-warning)]">{problems.length}</span>
           ) : (
@@ -138,6 +134,13 @@ function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
         </button>
         {alertsLoading ? (
           <SkeletonRows rows={2} />
+        ) : alerts === undefined ? (
+          <QueryError
+            variant="inline"
+            error={alertsQuery.error}
+            title="Could not load alerts"
+            onRetry={() => void alertsQuery.refetch()}
+          />
         ) : problems.length > 0 ? (
           <ul className="space-y-1.5">
             {problems.slice(0, 3).map((a, i) => (
@@ -204,7 +207,16 @@ function OverviewPanel({ onOpen }: { onOpen: (t: ObsTab) => void }) {
         </button>
         {auditLoading ? (
           <SkeletonRows rows={5} />
-        ) : (audit ?? []).length === 0 ? (
+        ) : audit === undefined ? (
+          // "Quiet so far." is a fact about the audit log, not about a failed
+          // request — a broken /api/activity says broken.
+          <QueryError
+            variant="inline"
+            error={auditQuery.error}
+            title="Could not load the audit trail"
+            onRetry={() => void auditQuery.refetch()}
+          />
+        ) : audit.length === 0 ? (
           <div className="text-xs text-muted">Quiet so far.</div>
         ) : (
           <ul className="space-y-1">

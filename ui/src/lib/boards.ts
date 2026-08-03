@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getJson, getJsonOr404, getList, HttpError } from '@/lib/fetch-json'
 import type { Effort, Priority, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
 
 /** Subscribe to a board's live event stream — multiplayer. On any event, refetch
@@ -39,18 +40,25 @@ export interface BoardMember {
   role: BoardRole
 }
 
-const j = async (r: Response) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+// Resolve a mutation response. It used to reject with `new Error('403')`, so
+// every mutation built on it showed a bare status number where the server had
+// sent a sentence ("You don't have permission to edit this board"). readJson
+// carries that sentence through, and `HttpError.status` still has the code.
+const j = async (r: Response) => {
+  const data = await r.json().catch(() => null)
+  if (!r.ok) throw new HttpError(r.status, (data as { error?: string } | null)?.error ?? `request failed (${r.status})`)
+  if (data === null) throw new HttpError(r.status, 'The server sent a reply this app could not read.')
+  return data
+}
 const post = (url: string, body: unknown) =>
   fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body) })
 
 export function useBoards() {
   return useQuery({
     queryKey: ['boards'],
-    queryFn: async (): Promise<Board[]> => {
-      const r = await fetch('/api/boards', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return (await r.json()).boards
-    },
+    // A 500 here is what convinced an owner his company's boards were deleted.
+    // It must reach the surface as an error, not as an empty list.
+    queryFn: (): Promise<Board[]> => getList<Board>('/api/boards', 'boards'),
   })
 }
 
@@ -58,11 +66,7 @@ export function useBoards() {
 export function useArchivedBoards() {
   return useQuery({
     queryKey: ['boards', 'archived'],
-    queryFn: async (): Promise<Board[]> => {
-      const r = await fetch('/api/boards?archived=1', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return (await r.json()).boards
-    },
+    queryFn: (): Promise<Board[]> => getList<Board>('/api/boards?archived=1', 'boards'),
   })
 }
 
@@ -74,11 +78,8 @@ export function useBoardTasks(boardId: string | null, includeArchived = false) {
     // safety-net in case the event stream drops; a fast poll would churn
     // re-renders behind an open ticket modal.
     refetchInterval: 30_000,
-    queryFn: async (): Promise<Task[]> => {
-      const r = await fetch(`/api/boards/${boardId}/tasks${includeArchived ? '?archived=1' : ''}`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return (await r.json()).tasks
-    },
+    queryFn: (): Promise<Task[]> =>
+      getList<Task>(`/api/boards/${boardId}/tasks${includeArchived ? '?archived=1' : ''}`, 'tasks'),
   })
 }
 
@@ -92,11 +93,9 @@ export function useBoardAgents(boardId: string | null) {
   return useQuery({
     queryKey: ['board-agents', boardId],
     enabled: !!boardId,
-    queryFn: async (): Promise<BoardAgentConfig> => {
-      const r = await fetch(`/api/boards/${boardId}/agents`, { credentials: 'same-origin' })
-      if (!r.ok) return { allowAll: false, models: [] }
-      return r.json()
-    },
+    // The restrictive default belongs to a board that HAS no policy (a 200),
+    // never to a request that failed — that would silently hide every agent.
+    queryFn: (): Promise<BoardAgentConfig> => getJson<BoardAgentConfig>(`/api/boards/${boardId}/agents`),
   })
 }
 
@@ -145,11 +144,7 @@ export function useBoardLabels(boardId: string | null) {
   return useQuery({
     queryKey: ['board-labels', boardId],
     enabled: !!boardId,
-    queryFn: async (): Promise<BoardLabel[]> => {
-      const r = await fetch(`/api/boards/${boardId}/labels`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return (await r.json()).labels
-    },
+    queryFn: (): Promise<BoardLabel[]> => getList<BoardLabel>(`/api/boards/${boardId}/labels`, 'labels'),
   })
 }
 export const createBoardLabel = (boardId: string, name: string, color?: LabelColor) =>
@@ -174,11 +169,7 @@ export function useBoardViews(boardId: string | null) {
   return useQuery({
     queryKey: ['board-views', boardId],
     enabled: !!boardId,
-    queryFn: async (): Promise<BoardView[]> => {
-      const r = await fetch(`/api/boards/${boardId}/views`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return (await r.json()).views
-    },
+    queryFn: (): Promise<BoardView[]> => getList<BoardView>(`/api/boards/${boardId}/views`, 'views'),
   })
 }
 export const createBoardView = (boardId: string, name: string, config: BoardViewConfig) =>
@@ -202,11 +193,7 @@ export function useBoardMembers(boardId: string | null) {
   return useQuery({
     queryKey: ['board-members', boardId],
     enabled: !!boardId,
-    queryFn: async (): Promise<BoardMember[]> => {
-      const r = await fetch(`/api/boards/${boardId}/members`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return (await r.json()).members
-    },
+    queryFn: (): Promise<BoardMember[]> => getList<BoardMember>(`/api/boards/${boardId}/members`, 'members'),
   })
 }
 
@@ -243,24 +230,31 @@ export function useTask(taskId: string | null) {
   return useQuery({
     queryKey: ['task', taskId],
     enabled: !!taskId,
-    queryFn: async (): Promise<TaskFull | null> => {
-      const r = await fetch(`/api/tasks/${taskId}`, { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return r.json()
-    },
+    // 404 is a real answer here: the ticket was deleted, or the URL is stale.
+    // Anything else (403/500) is a failure and must surface as one.
+    queryFn: (): Promise<TaskFull | null> => getJsonOr404<TaskFull>(`/api/tasks/${taskId}`),
   })
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 export const createBoard = (name: string, teamId?: string | null) => post('/api/boards', { name, teamId }).then(j)
-/** Move a board between teams (null → personal). Owner only. */
-export const moveBoardToTeam = (boardId: string, teamId: string | null) =>
-  fetch(`/api/boards/${boardId}`, {
+/** Move a board between teams (null → personal). Owner only.
+ *
+ *  Resolves to `{ error }` rather than throwing, because the caller is a drag
+ *  handler that shows the message in an alert. It used to swallow the status
+ *  entirely — a 403 resolved to `{}`, the rail said nothing, and the board
+ *  quietly snapped back to its old team on the next refetch. */
+export const moveBoardToTeam = async (boardId: string, teamId: string | null): Promise<{ error?: string }> => {
+  const r = await fetch(`/api/boards/${boardId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
     body: JSON.stringify({ teamId }),
-  }).then((r) => r.json().catch(() => ({})))
+  })
+  const body = (await r.json().catch(() => null)) as { error?: string } | null
+  if (!r.ok) return { error: body?.error ?? `The server refused the move (${r.status}).` }
+  return body ?? {}
+}
 export const createTask = (
   boardId: string,
   input: {

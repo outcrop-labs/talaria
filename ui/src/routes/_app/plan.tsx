@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { UserPlus, X } from 'lucide-react'
 import { ChatView } from '@/components/chat/chat-view'
-import { ConversationSidebar } from '@/components/chat/conversation-sidebar'
+import { ConversationSidebar, type SidebarFailure } from '@/components/chat/conversation-sidebar'
 import { RailSurface, Stage, StageHeader } from '@/components/app/surface'
 import { PlanModal } from '@/components/chat/plan-modal'
 import { PlanDoc, PlanDocSkeleton } from '@/components/chat/plan-doc'
@@ -13,6 +13,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { QueryError } from '@/components/ui/query-state'
 import { alert } from '@/components/ui/confirm'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
@@ -109,9 +110,24 @@ function PlanMembers({ planId }: { planId: string }) {
 
 function PlanPage() {
   const qc = useQueryClient()
-  const { data: fleet, isLoading: agentsLoading } = useAgents()
+  // Both reads keep their query object: the rail and the stage each render a
+  // sentence ("No plans yet with this agent.", "No agents available.") that is
+  // only true of a request that SUCCEEDED and came back empty.
+  const fleetQuery = useAgents()
+  const { data: fleet, isLoading: agentsLoading } = fleetQuery
   const agents = useMemo(() => fleet?.agents ?? [], [fleet])
-  const { data: conversations = [], isLoading: conversationsLoading } = useConversations('plan')
+  const conversationsQuery = useConversations('plan')
+  const { data: conversations = [], isLoading: conversationsLoading } = conversationsQuery
+  // Stale beats blank: a failed BACKGROUND refetch still has good data to show,
+  // so only a failure with nothing behind it becomes a visible failure.
+  const agentsFailure: SidebarFailure =
+    fleetQuery.isError && fleetQuery.data === undefined
+      ? { error: fleetQuery.error, retry: () => void fleetQuery.refetch() }
+      : null
+  const conversationsFailure: SidebarFailure =
+    conversationsQuery.isError && conversationsQuery.data === undefined
+      ? { error: conversationsQuery.error, retry: () => void conversationsQuery.refetch() }
+      : null
   const [selectedAgent, pickAgent] = useStickyAgent('plan', agents)
   // The URL IS the plan selection (/plan?p=<id>) — linkable, back/forward-able.
   const search = Route.useSearch()
@@ -180,6 +196,8 @@ function PlanPage() {
         selectedConversationId={selectedConversationId}
         agentsLoading={agentsLoading}
         conversationsLoading={conversationsLoading}
+        agentsFailure={agentsFailure}
+        conversationsFailure={conversationsFailure}
         onSelectAgent={selectAgent}
         onSelectConversation={selectConversation}
         onNewChat={newPlan}
@@ -277,6 +295,12 @@ function PlanPage() {
             <div className="hidden min-w-0 basis-[44%] border-l border-line-subtle lg:flex">
               <PlanDocSkeleton />
             </div>
+          </div>
+        ) : agentsFailure ? (
+          // "No agents available." is a statement about the FLEET. When the
+          // fleet read itself failed, the only honest thing to report is that.
+          <div className="grid h-full place-items-center">
+            <QueryError error={agentsFailure.error} title="Could not load your agents" onRetry={agentsFailure.retry} />
           </div>
         ) : (
           <div className="grid h-full place-items-center text-sm text-muted">No agents available.</div>

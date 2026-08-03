@@ -17,6 +17,8 @@ import { Panel } from '@/components/ui/panel'
 import { Textarea } from '@/components/ui/textarea'
 import { alert, confirm } from '@/components/ui/confirm'
 import { UserPicker } from '@/components/app/user-picker'
+import { getJson } from '@/lib/fetch-json'
+import { QueryError } from '@/components/ui/query-state'
 import { useAgents } from '@/lib/agents'
 import { useArtifact } from '@/lib/artifacts'
 import { useHasPerm, useSession } from '@/lib/session'
@@ -56,7 +58,8 @@ function ResearchPage() {
   const { data: session } = useSession()
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   const agents = useMemo(() => fleet?.agents ?? [], [fleet])
-  const { data: runs = [], isLoading: runsLoading } = useResearchRuns()
+  const runsQuery = useResearchRuns()
+  const { data: runs = [], isLoading: runsLoading } = runsQuery
 
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
@@ -120,6 +123,15 @@ function ResearchPage() {
               </div>
             ))}
           </div>
+        ) : runsQuery.isError && runsQuery.data === undefined ? (
+          // The run list is someone's research history. "No research yet" over
+          // a failed read invites them to re-run work they already paid for.
+          <QueryError
+            variant="compact"
+            error={runsQuery.error}
+            title="Could not load your research"
+            onRetry={() => void runsQuery.refetch()}
+          />
         ) : runs.length === 0 ? (
           <div className="px-2 py-6 text-center text-xs text-muted">No research yet. Ask something worth knowing.</div>
         ) : (
@@ -266,13 +278,14 @@ function ResearchMembers({ runId }: { runId: string }) {
   const { data: session } = useSession()
   const qc = useQueryClient()
   const [adding, setAdding] = useState(false)
+  // Already rejected on non-2xx; this just routes it through the shared door so
+  // the thrown message is the server's own. The avatars stay hidden on failure
+  // — the run header has no room for an error, and hiding a SHARE control is
+  // the safe direction (it grants nothing and claims nothing).
+  type Member = { userId: string; name: string | null; email: string | null; role: 'owner' | 'collaborator' }
   const { data } = useQuery({
     queryKey: ['research-members', runId],
-    queryFn: async (): Promise<{ members: Array<{ userId: string; name: string | null; email: string | null; role: 'owner' | 'collaborator' }> }> => {
-      const r = await fetch(`/api/research/${runId}/members`, { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<{ members: Member[] }> => getJson<{ members: Member[] }>(`/api/research/${runId}/members`),
   })
   const members = data?.members ?? []
   const isOwner = !!session?.id && session.id === members.find((m) => m.role === 'owner')?.userId

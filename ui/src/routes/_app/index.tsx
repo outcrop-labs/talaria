@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Sparkles, CalendarDays, ChevronDown, ChevronRight, Plus, ExternalLink, Mail, Send, ShieldCheck, Check } from 'lucide-react'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
@@ -12,6 +12,8 @@ import { Modal } from '@/components/ui/modal'
 import { Tabs } from '@/components/ui/tabs'
 import { Chip } from '@/components/ui/chip'
 import { EmptyState } from '@/components/ui/empty-state'
+import { QueryError } from '@/components/ui/query-state'
+import { getJson, getList, readJson } from '@/lib/fetch-json'
 import { AssistantWizard } from '@/components/assistant/assistant-wizard'
 import { NotificationsPanel } from '@/components/app/notifications-panel'
 import { ActivityRow } from '@/components/app/activity-row'
@@ -78,11 +80,7 @@ interface HomeSummary {
 const useHome = () =>
   useQuery({
     queryKey: ['home'],
-    queryFn: async (): Promise<HomeSummary> => {
-      const r = await fetch('/api/home')
-      if (!r.ok) throw new Error('failed to load')
-      return r.json()
-    },
+    queryFn: (): Promise<HomeSummary> => getJson<HomeSummary>('/api/home'),
     refetchInterval: 30_000,
   })
 
@@ -111,7 +109,8 @@ const greeting = (name?: string | null) => {
 function HomePage() {
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
-  const { data, isLoading } = useHome()
+  const home = useHome()
+  const { data } = home
   const { data: channels = [] } = useChannels()
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
@@ -160,12 +159,12 @@ function HomePage() {
             <MailPanel />
           </div>
         )}
-        {tab === 'boards' && <BoardsTab data={data} isLoading={isLoading} />}
+        {tab === 'boards' && <BoardsTab home={home} />}
         {tab === 'comms' && <CommsTab />}
         {tab === 'plans' && <PlansTab />}
         {tab === 'research' && <ResearchTab />}
         {tab === 'docs' && <DocsTab />}
-        {tab === 'fleet' && isAdmin && <FleetTab data={data} />}
+        {tab === 'fleet' && isAdmin && <FleetTab home={home} />}
       </div>
     </div>
   )
@@ -183,15 +182,12 @@ interface FeedEvent {
 function ActivityList({ kinds, title = 'Recent activity', collapsible = false }: { kinds: string[]; title?: string; collapsible?: boolean }) {
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState(!collapsible)
-  const { data, isLoading } = useQuery({
+  const query = useQuery({
     queryKey: ['home-activity', kinds.join(',')],
-    queryFn: async (): Promise<FeedEvent[]> => {
-      const r = await fetch(`/api/activity?kinds=${kinds.join(',')}`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { events: FeedEvent[] }).events
-    },
+    queryFn: (): Promise<FeedEvent[]> => getList<FeedEvent>(`/api/activity?kinds=${kinds.join(',')}`, 'events'),
     refetchInterval: 30_000,
   })
+  const { data, isLoading } = query
   return (
     <Panel>
       {collapsible ? (
@@ -204,11 +200,13 @@ function ActivityList({ kinds, title = 'Recent activity', collapsible = false }:
       )}
       {!expanded ? null : isLoading ? (
         <SkeletonRows rows={6} />
-      ) : (data ?? []).length === 0 ? (
+      ) : data === undefined ? (
+        <QueryError variant="inline" error={query.error} title="Could not load activity" onRetry={() => void query.refetch()} />
+      ) : data.length === 0 ? (
         <div className="text-xs text-muted">Quiet so far.</div>
       ) : (
         <ul className="space-y-1">
-          {data!.slice(0, 12).map((a, i) => (
+          {data.slice(0, 12).map((a, i) => (
             <ActivityRow key={i} actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigate({ to: a.href })} />
           ))}
         </ul>
@@ -225,11 +223,12 @@ const QUEUE_META: Record<QueueKey, { label: string; hint: string; accent: string
   blocked: { label: 'Blocked', hint: 'Stalled, needs you to unblock', accent: 'var(--theme-warning)' },
 }
 
-function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoading: boolean }) {
+function BoardsTab({ home }: { home: UseQueryResult<HomeSummary> }) {
   const navigate = useNavigate()
   const [queue, setQueue] = useState<QueueKey>('triage')
   const { openMenu, menu } = useContextMenu()
   const meta = QUEUE_META[queue]
+  const { data, isLoading } = home
   const items = data?.queues[queue].items ?? []
   return (
     <div className="space-y-6">
@@ -251,7 +250,8 @@ function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoadi
               {isLoading ? (
                 <Skeleton className="h-3 w-6 rounded-full" />
               ) : (
-                <span className="shrink-0 text-xs text-muted">{data?.queues[k].count ?? 0}</span>
+                // A failed /api/home must not read as "0 waiting for you".
+                <span className="shrink-0 text-xs text-muted">{data ? data.queues[k].count : '—'}</span>
               )}
             </button>
           ))}
@@ -261,6 +261,15 @@ function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoadi
           <div className="mb-3 text-xs text-muted">{meta.hint}</div>
           {isLoading ? (
             <SkeletonRows rows={8} />
+          ) : !data ? (
+            // "All clear." is a statement about the queue. A broken /api/home
+            // has no idea whether it's clear, so it must not say so.
+            <QueryError
+              variant="compact"
+              error={home.error}
+              title="Could not load your queues"
+              onRetry={() => void home.refetch()}
+            />
           ) : items.length === 0 ? (
             <div className="py-6 text-center text-xs text-muted">All clear.</div>
           ) : (
@@ -496,7 +505,13 @@ function DocsTab() {
 }
 
 // ── Fleet (admin): status, alerts, spend, and the org pulse ─────────────────
-function FleetTab({ data }: { data: HomeSummary | undefined }) {
+function FleetTab({ home }: { home: UseQueryResult<HomeSummary> }) {
+  const { data } = home
+  // Resolved-with-nothing is impossible here (a 200 always carries the
+  // summary), so an absent payload is either in flight or broken — and those
+  // two must not look alike.
+  if (!data && home.isError)
+    return <QueryError error={home.error} title="Could not load fleet status" onRetry={() => void home.refetch()} />
   if (!data)
     return (
       <div className="grid gap-6 lg:grid-cols-2">
@@ -613,11 +628,7 @@ const BRIEF_ASK: Record<BriefScope, string> = {
 function AssistantBriefing({ scope = 'inbox' }: { scope?: BriefScope }) {
   const { data, isLoading } = useQuery({
     queryKey: ['briefing', scope],
-    queryFn: async (): Promise<BriefingData> => {
-      const r = await fetch(`/api/me/briefing?scope=${scope}`, { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<BriefingData> => getJson<BriefingData>(`/api/me/briefing?scope=${scope}`),
     refetchInterval: (q) => (q.state.data?.generating ? 2_500 : 60_000),
   })
   const [thread, setThread] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
@@ -796,9 +807,10 @@ function AgendaPanel() {
     queryKey: ['agenda'],
     queryFn: async (): Promise<{ events?: AgendaEvent[]; error?: string }> => {
       const r = await fetch('/api/integrations/google/calendar/events')
-      if (r.status === 409 || r.status === 502) return { error: 'unavailable' } // not connected / transient
-      if (!r.ok) throw new Error('failed')
-      return r.json()
+      // 409 (not connected) and 502 (Google hiccup) are ANSWERS this panel
+      // knows how to render — it hides. Every other non-2xx is a failure.
+      if (r.status === 409 || r.status === 502) return { error: 'unavailable' }
+      return readJson<{ events?: AgendaEvent[] }>(r)
     },
     retry: false,
     refetchInterval: 5 * 60_000,
@@ -928,9 +940,9 @@ function MailPanel() {
     queryKey: ['gmail'],
     queryFn: async (): Promise<{ messages?: Mail[]; error?: string }> => {
       const r = await fetch('/api/integrations/google/gmail/messages')
+      // Same contract as Agenda: 409 / 502 mean "nothing to show here".
       if (r.status === 409 || r.status === 502) return { error: 'unavailable' }
-      if (!r.ok) throw new Error('failed')
-      return r.json()
+      return readJson<{ messages?: Mail[] }>(r)
     },
     retry: false,
     refetchInterval: 5 * 60_000,
@@ -1047,15 +1059,14 @@ interface PendingAction {
 // approval — confirm-sends. Hidden when there's nothing to approve.
 function ApprovalsPanel() {
   const qc = useQueryClient()
-  const { data, isError } = useQuery({
+  const query = useQuery({
     queryKey: ['google-pending'],
-    queryFn: async (): Promise<{ pending: PendingAction[] }> => {
-      const r = await fetch('/api/integrations/google/pending')
-      if (!r.ok) return { pending: [] }
-      return r.json()
-    },
+    // An agent waiting to act AS YOU is the last thing that may go quiet on a
+    // 500 — this queue must never be emptied by a failed read.
+    queryFn: (): Promise<{ pending: PendingAction[] }> => getJson<{ pending: PendingAction[] }>('/api/integrations/google/pending'),
     refetchInterval: 60_000,
   })
+  const { data, isError } = query
   const [busy, setBusy] = useState<string | null>(null)
   // In flight → hold the space (same pattern as Agenda/Mail below); only a
   // RESOLVED empty queue may remove the panel, so it never drops in above the
@@ -1067,7 +1078,19 @@ function ApprovalsPanel() {
         <SkeletonRows rows={2} />
       </Panel>
     )
-  const pending = data?.pending ?? []
+  // Broken ≠ nothing to approve: say so instead of disappearing.
+  if (!data)
+    return (
+      <Panel>
+        <QueryError
+          variant="inline"
+          error={query.error}
+          title="Could not check for approvals"
+          onRetry={() => void query.refetch()}
+        />
+      </Panel>
+    )
+  const pending = data.pending
   if (pending.length === 0) return null
 
   const decide = async (id: string, decision: 'approve' | 'reject') => {

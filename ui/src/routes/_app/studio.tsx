@@ -10,6 +10,7 @@ import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { InfoTip } from '@/components/ui/info-tip'
 import { SkeletonRows } from '@/components/ui/skeleton'
+import { QueryError } from '@/components/ui/query-state'
 import { confirm, prompt } from '@/components/ui/confirm'
 import { DropdownMenu } from '@/components/ui/context-menu'
 import { WorkflowDetail } from '@/components/workflows/workflow-detail'
@@ -57,7 +58,12 @@ function StudioPage() {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const qc = useQueryClient()
-  const { data: rawOwners = [], isLoading } = useSkillLibrary()
+  // The skill library IS this page's spine: `owners` drives the rail, the
+  // selection, and the "who am I building for" pane. Dropping its rejection
+  // made a DOWN SKILLS SERVICE render "No agents yet" — a sentence about the
+  // FLEET, from a read that never asked about the fleet.
+  const libraryQuery = useSkillLibrary()
+  const { data: rawOwners = [], isLoading } = libraryQuery
   // PLATFORM skills (talaria-toolkit and friends) are plumbing, not
   // teachable know-how — the Studio doesn't show them at all.
   const owners = rawOwners.map((o) => ({ ...o, skills: o.skills.filter((sk) => !sk.platform) }))
@@ -338,6 +344,14 @@ function StudioPage() {
                 )}
               </section>
             </main>
+          ) : libraryQuery.isError && libraryQuery.data === undefined ? (
+            // Nothing to select because the library read FAILED, not because
+            // the fleet is empty. Name the real problem.
+            <QueryError
+              error={libraryQuery.error}
+              title="Could not load the skill library"
+              onRetry={() => void libraryQuery.refetch()}
+            />
           ) : (
             <EmptyState icon="◍" title="No agents yet" hint="The Studio lights up once the fleet has agents." />
           )}

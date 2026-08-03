@@ -3,6 +3,7 @@
 // board never customized). Helpers keep label/color lookups safe for custom
 // keys and legacy constants alike.
 import { useQuery } from '@tanstack/react-query'
+import { getList } from '@/lib/fetch-json'
 import { STATUS_LABEL } from './task-const'
 import { LABEL_CSS } from '@/components/board/field-pills'
 
@@ -23,11 +24,9 @@ export function useBoardStatuses(boardId: string | null) {
   return useQuery({
     queryKey: ['board-statuses', boardId],
     enabled: !!boardId,
-    queryFn: async (): Promise<BoardStatus[]> => {
-      const r = await fetch(`/api/boards/${boardId}/statuses`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return (await r.json()).statuses
-    },
+    // An empty status set collapses the board to zero columns — that must only
+    // ever happen because the server said so.
+    queryFn: (): Promise<BoardStatus[]> => getList<BoardStatus>(`/api/boards/${boardId}/statuses`, 'statuses'),
   })
 }
 

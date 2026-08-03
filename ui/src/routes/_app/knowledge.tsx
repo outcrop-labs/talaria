@@ -19,6 +19,7 @@ import { inlineEditKeys } from '@/components/ui/control'
 import { Modal } from '@/components/ui/modal'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
+import { QueryError } from '@/components/ui/query-state'
 import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { RichEditor, type RichEditorHandle, type DocSearchFn } from '@/components/ui/rich-editor'
 import { useContextMenu, copyAppLink, DropdownMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
@@ -26,6 +27,7 @@ import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { Combobox } from '@/components/ui/combobox'
 import { useArtifacts, useTargetArtifacts, attachArtifact, detachArtifact } from '@/lib/artifacts'
 import { cn } from '@/lib/cn'
+import { getList } from '@/lib/fetch-json'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
 import { Avatar } from '@/components/ui/avatar'
@@ -62,11 +64,10 @@ function useDocLive(docId: string, mode: 'read' | 'edit') {
   }, [docId, beat])
   return useQuery({
     queryKey: ['kb-live', docId],
-    queryFn: async (): Promise<DocPresence[]> => {
-      const r = await fetch(`/api/kb/docs/${docId}/live`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { active: DocPresence[] }).active
-    },
+    // "You're alone in this doc" must come from a real answer: a failed poll
+    // that resolved to `[]` would drop the other editors' avatars — and the
+    // co-editing warning that goes with them — mid-session.
+    queryFn: (): Promise<DocPresence[]> => getList<DocPresence>(`/api/kb/docs/${docId}/live`, 'active'),
     refetchInterval: 15_000,
   })
 }
@@ -86,11 +87,10 @@ interface KbComment {
 function useDocComments(docId: string) {
   return useQuery({
     queryKey: ['kb-comments', docId],
-    queryFn: async (): Promise<KbComment[]> => {
-      const r = await fetch(`/api/kb/docs/${docId}/comments`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { comments: KbComment[] }).comments
-    },
+    // A failed 20s poll used to overwrite a loaded thread with an empty one —
+    // the comment marks vanished out of the prose. Rejecting keeps the last
+    // good thread on screen instead.
+    queryFn: (): Promise<KbComment[]> => getList<KbComment>(`/api/kb/docs/${docId}/comments`, 'comments'),
     refetchInterval: 20_000,
   })
 }
@@ -140,7 +140,11 @@ export const Route = createFileRoute('/_app/knowledge')({
 // agent-kind docs start from an OKF scaffold.
 function KnowledgePage() {
   const qc = useQueryClient()
-  const { data: spaces = [], isLoading: spacesLoading } = useSpaces()
+  // "No spaces yet." is a claim that the knowledgebase is EMPTY. A read that
+  // failed says nothing about what is in there, so the rejection has to reach
+  // the render instead of being swallowed by a `= []` default.
+  const spacesQuery = useSpaces()
+  const { data: spaces = [], isLoading: spacesLoading } = spacesQuery
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const spaceId = search.space ?? null
@@ -152,7 +156,8 @@ function KnowledgePage() {
   const setDocId = (id: string | null) => setLoc(spaceId, id)
   const [creatingSpace, setCreatingSpace] = useState(false)
   const activeSpace = spaces.find((s) => s.id === spaceId) ?? spaces[0]
-  const { data: docs = [], isLoading: docsLoading } = useDocs(activeSpace?.id ?? null)
+  const docsQuery = useDocs(activeSpace?.id ?? null)
+  const { data: docs = [], isLoading: docsLoading } = docsQuery
 
   useEffect(() => {
     if (!spaceId && spaces[0]) void navigate({ search: { space: spaces[0].id }, replace: true })
@@ -260,7 +265,17 @@ function KnowledgePage() {
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {spacesLoading ? (
             <SkeletonRows rows={6} className="px-2 py-3" />
+          ) : spacesQuery.isError && spacesQuery.data === undefined ? (
+            // Unreachable is not deleted. Without this branch an outage reads
+            // as somebody having wiped the whole knowledgebase.
+            <QueryError
+              variant="compact"
+              error={spacesQuery.error}
+              title="Could not load your spaces"
+              onRetry={() => void spacesQuery.refetch()}
+            />
           ) : spaces.length === 0 ? (
+            // A 200 with no spaces is still a real answer — keep saying so.
             <EmptyState variant="inline" title="No spaces yet." className="px-2 py-6 text-center" />
           ) : (
             spaces.map((s) => (
@@ -278,6 +293,16 @@ function KnowledgePage() {
                   docsLoading ? (
                     // Switching spaces refetches the doc tree — keep its shape.
                     <SkeletonRows rows={6} className="ml-4 mt-1 border-l border-line-subtle py-1 pl-4" />
+                  ) : docsQuery.isError && docsQuery.data === undefined ? (
+                    // Same lie one level down: a space whose doc list 500s
+                    // would otherwise render as a space with nothing in it.
+                    <QueryError
+                      variant="inline"
+                      className="ml-4 mt-1 border-l border-line-subtle py-2 pl-4"
+                      error={docsQuery.error}
+                      title="Could not load this space"
+                      onRetry={() => void docsQuery.refetch()}
+                    />
                   ) : (
                     <DocTree docs={docs} activeId={docId} onSelect={setDocId} onNew={newDoc} onMove={move} onDocMenu={(e, d) => openMenu(e, docMenu(d))} />
                   )
@@ -1025,7 +1050,8 @@ function DocEditor({
   const [pendingQuote, setPendingQuote] = useState<string | null>(null)
   const [selPop, setSelPop] = useState<{ x: number; y: number; quote: string } | null>(null)
   const { data: presence = [] } = useDocLive(docId, mode)
-  const { data: comments = [] } = useDocComments(docId)
+  const commentsQuery = useDocComments(docId)
+  const { data: comments = [] } = commentsQuery
   const openThreads = comments.filter((c) => !c.parentId && !c.resolved).length
   const otherEditors = presence.filter((p) => p.userId !== me?.id && p.mode === 'edit')
   const initMode = useRef(false)
@@ -1533,6 +1559,9 @@ function DocEditor({
           <CommentsPanel
             docId={docId}
             comments={comments}
+            loadFailed={commentsQuery.isError && commentsQuery.data === undefined}
+            loadError={commentsQuery.error}
+            onRetryLoad={() => void commentsQuery.refetch()}
             meId={me?.id ?? null}
             docOwnerId={doc.ownerUserId}
             pendingQuote={pendingQuote}
@@ -1760,6 +1789,9 @@ function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb
 function CommentsPanel({
   docId,
   comments,
+  loadFailed,
+  loadError,
+  onRetryLoad,
   meId,
   docOwnerId,
   pendingQuote,
@@ -1770,6 +1802,10 @@ function CommentsPanel({
 }: {
   docId: string
   comments: KbComment[]
+  /** The thread read FAILED — the empty list below is ignorance, not silence. */
+  loadFailed: boolean
+  loadError: unknown
+  onRetryLoad: () => void
   meId: string | null
   docOwnerId: string | null
   pendingQuote: string | null
@@ -1895,7 +1931,12 @@ function CommentsPanel({
         <CloseButton onClick={onClose} size={13} className="h-6 w-6 rounded p-0" />
       </div>
       <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3">
-        {open.length === 0 && !showResolved && <div className="font-sans text-xs text-muted">No open threads. Select text in the doc to comment on it.</div>}
+        {loadFailed ? (
+          <QueryError variant="inline" error={loadError} title="Could not load comments" onRetry={onRetryLoad} />
+        ) : (
+          open.length === 0 &&
+          !showResolved && <div className="font-sans text-xs text-muted">No open threads. Select text in the doc to comment on it.</div>
+        )}
         {open.map((c) => (
           <Thread key={c.id} root={c} />
         ))}

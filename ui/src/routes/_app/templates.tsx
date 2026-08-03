@@ -10,6 +10,7 @@ import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
 import { InfoTip } from '@/components/ui/info-tip'
 import { SkeletonRows } from '@/components/ui/skeleton'
+import { QueryError } from '@/components/ui/query-state'
 import { confirm } from '@/components/ui/confirm'
 import { useContextMenu, copyAppLink } from '@/components/ui/context-menu'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
@@ -38,7 +39,12 @@ export const Route = createFileRoute('/_app/templates')({
 function TemplatesPage() {
   const { data: session } = useSession()
   const qc = useQueryClient()
-  const { data: templates = [], isLoading } = useTemplates()
+  const templatesQuery = useTemplates()
+  const { data: templates = [], isLoading } = templatesQuery
+  // One read backs BOTH the list and the per-tab counters, and the `= []`
+  // default turned its failure into a confident "Tickets 0 / Plans 0" —
+  // a count is an assertion, so it must not be printed from a read that failed.
+  const failed = templatesQuery.isError && templatesQuery.data === undefined
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const tab: TemplateKind = search.tab ?? 'ticket'
@@ -89,7 +95,10 @@ function TemplatesPage() {
               className={cn('relative flex items-center gap-1.5 px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
             >
               {t.label}
-              <span className="text-[10px] text-muted">{templates.filter((x) => x.kind === t.id).length}</span>
+              {/* An em dash where a number would be: unknown, not zero. */}
+              <span className="text-[10px] text-muted">
+                {isLoading || failed ? '—' : templates.filter((x) => x.kind === t.id).length}
+              </span>
               {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
             </button>
           ))}
@@ -99,6 +108,13 @@ function TemplatesPage() {
           <aside className="space-y-3">
             {isLoading ? (
               <SkeletonRows rows={4} />
+            ) : failed ? (
+              <QueryError
+                variant="compact"
+                error={templatesQuery.error}
+                title="Could not load templates"
+                onRetry={() => void templatesQuery.refetch()}
+              />
             ) : (
               <ul className="space-y-0.5">
                 {list.map((t) => (
@@ -138,7 +154,18 @@ function TemplatesPage() {
             <TemplateDetail key={selected.id} template={selected} blurb={meta.blurb} onChanged={refresh} onDelete={() => void remove(selected)} editorOpen={editorOpen} setEditorOpen={setEditorOpen} />
           ) : (
             <Panel>
-              <EmptyState icon="▣" title={`No ${tab} template selected`} hint={list.length ? 'Pick one on the left, or create a new one.' : 'Create the first one on the left.'} />
+              <EmptyState
+                icon="▣"
+                title={`No ${tab} template selected`}
+                hint={
+                  // "Create the first one" is the same zero-claim in prose.
+                  failed
+                    ? 'The template list could not be loaded — retry on the left.'
+                    : list.length
+                      ? 'Pick one on the left, or create a new one.'
+                      : 'Create the first one on the left.'
+                }
+              />
             </Panel>
           )}
         </div>

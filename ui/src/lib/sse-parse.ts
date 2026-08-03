@@ -39,54 +39,66 @@ export async function* parseAgentStream(body: ReadableStream<Uint8Array>): Async
   const decoder = new TextDecoder()
   let buffer = ''
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
+  // Every exit path — normal end, `break` in the caller's for-await, a throw
+  // from the caller's loop body, an aborted fetch — must release the reader.
+  // Without this a consumer that stops early (chat-view breaks on `queued`)
+  // leaves the lock held and the HTTP connection open forever: one leaked
+  // socket per early exit, and the browser's per-host cap eventually stalls
+  // every other request on the page.
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
 
-    let sep: number
-    while ((sep = buffer.indexOf('\n\n')) !== -1) {
-      const frame = buffer.slice(0, sep)
-      buffer = buffer.slice(sep + 2)
+      let sep: number
+      while ((sep = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, sep)
+        buffer = buffer.slice(sep + 2)
 
-      let eventName = ''
-      const dataLines: string[] = []
-      for (const line of frame.split('\n')) {
-        const t = line.trim()
-        if (t.startsWith('event:')) eventName = t.slice(6).trim()
-        else if (t.startsWith('data:')) dataLines.push(t.slice(5).trim())
-      }
-
-      for (const data of dataLines) {
-        if (!data || data === '[DONE]') continue
-        if (eventName === 'hermes.tool.progress' || eventName === 'claude.tool.progress') {
-          const tool = parseToolProgress(data)
-          if (tool) yield tool
-          continue
+        let eventName = ''
+        const dataLines: string[] = []
+        for (const line of frame.split('\n')) {
+          const t = line.trim()
+          if (t.startsWith('event:')) eventName = t.slice(6).trim()
+          else if (t.startsWith('data:')) dataLines.push(t.slice(5).trim())
         }
-        try {
-          const json = JSON.parse(data) as {
-            choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>
-            usage?: { prompt_tokens?: number; completion_tokens?: number }
+
+        for (const data of dataLines) {
+          if (!data || data === '[DONE]') continue
+          if (eventName === 'hermes.tool.progress' || eventName === 'claude.tool.progress') {
+            const tool = parseToolProgress(data)
+            if (tool) yield tool
+            continue
           }
-          const d = json.choices?.[0]?.delta
-          if (d?.content) yield { type: 'content', text: d.content }
-          else if (d?.reasoning || d?.reasoning_content) {
-            yield { type: 'reasoning', text: d.reasoning || d.reasoning_content || '' }
-          }
-          // Final chunk carries usage when stream_options.include_usage is honoured.
-          if (json.usage && (json.usage.prompt_tokens || json.usage.completion_tokens)) {
-            yield {
-              type: 'usage',
-              promptTokens: json.usage.prompt_tokens ?? 0,
-              completionTokens: json.usage.completion_tokens ?? 0,
+          try {
+            const json = JSON.parse(data) as {
+              choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>
+              usage?: { prompt_tokens?: number; completion_tokens?: number }
             }
+            const d = json.choices?.[0]?.delta
+            if (d?.content) yield { type: 'content', text: d.content }
+            else if (d?.reasoning || d?.reasoning_content) {
+              yield { type: 'reasoning', text: d.reasoning || d.reasoning_content || '' }
+            }
+            // Final chunk carries usage when stream_options.include_usage is honoured.
+            if (json.usage && (json.usage.prompt_tokens || json.usage.completion_tokens)) {
+              yield {
+                type: 'usage',
+                promptTokens: json.usage.prompt_tokens ?? 0,
+                completionTokens: json.usage.completion_tokens ?? 0,
+              }
+            }
+          } catch {
+            /* keep-alive / partial frame */
           }
-        } catch {
-          /* keep-alive / partial frame */
         }
       }
     }
+  } finally {
+    // Swallow: on an errored/aborted stream cancel() rejects with the stored
+    // error, which would otherwise mask the real failure the caller is handling.
+    await reader.cancel().catch(() => {})
   }
 }
 

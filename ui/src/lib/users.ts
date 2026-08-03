@@ -1,5 +1,6 @@
 // Directory of signed-in users — powers the people pickers.
 import { useQuery } from '@tanstack/react-query'
+import { getList } from '@/lib/fetch-json'
 
 export interface DirectoryUser {
   id: string
@@ -10,11 +11,8 @@ export interface DirectoryUser {
 export function useUsers() {
   return useQuery({
     queryKey: ['users'],
-    queryFn: async (): Promise<DirectoryUser[]> => {
-      const r = await fetch('/api/users', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { users: DirectoryUser[] }).users
-    },
+    // An empty directory in a people picker reads as "nobody works here".
+    queryFn: (): Promise<DirectoryUser[]> => getList<DirectoryUser>('/api/users', 'users'),
     staleTime: 30_000,
   })
 }

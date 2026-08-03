@@ -2,6 +2,7 @@
 // how to load their compiled surface modules (build-time glob, code-split per
 // app — an app's bundle only downloads when one of its surfaces renders).
 import { useQuery } from '@tanstack/react-query'
+import { getList } from '@/lib/fetch-json'
 import type { AppSurfaces } from '@/sdk'
 
 export interface AppManifest {
@@ -17,12 +18,7 @@ export interface AppManifest {
 export function useEnabledApps() {
   return useQuery({
     queryKey: ['apps'],
-    queryFn: async (): Promise<AppManifest[]> => {
-      const r = await fetch('/api/apps', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      const j = (await r.json()) as { apps?: AppManifest[] }
-      return j.apps ?? []
-    },
+    queryFn: (): Promise<AppManifest[]> => getList<AppManifest>('/api/apps', 'apps'),
     staleTime: 60_000,
   })
 }

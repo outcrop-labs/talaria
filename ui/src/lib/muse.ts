@@ -1,5 +1,6 @@
 // Client for the drafting muse + model preferences.
 import { useQuery } from '@tanstack/react-query'
+import { getJson } from '@/lib/fetch-json'
 
 export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template' | 'ticket'
 
@@ -55,22 +56,18 @@ export function useModels() {
   return useQuery({
     queryKey: ['gateway-models'],
     staleTime: 60_000,
-    queryFn: async (): Promise<{ models: GatewayModel[]; effective: string | null }> => {
-      const r = await fetch('/api/models', { credentials: 'same-origin' })
-      if (!r.ok) return { models: [], effective: null }
-      return r.json()
-    },
+    queryFn: (): Promise<{ models: GatewayModel[]; effective: string | null }> =>
+      getJson<{ models: GatewayModel[]; effective: string | null }>('/api/models'),
   })
 }
 
 export function usePreferredModel() {
   return useQuery({
     queryKey: ['profile-prefs'],
-    queryFn: async (): Promise<{ preferredModel: string | null }> => {
-      const r = await fetch('/api/profile', { credentials: 'same-origin' })
-      if (!r.ok) return { preferredModel: null }
-      return r.json()
-    },
+    // `preferredModel: null` means "no preference set" — a real 200 answer.
+    // A failed profile read must not look like a cleared preference.
+    queryFn: (): Promise<{ preferredModel: string | null }> =>
+      getJson<{ preferredModel: string | null }>('/api/profile'),
   })
 }
 

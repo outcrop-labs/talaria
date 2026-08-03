@@ -1,5 +1,6 @@
 // Client-side session + provider hooks (thin wrappers over the auth API).
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getJson } from '@/lib/fetch-json'
 import type { ProviderMeta } from '@/server/auth/config'
 
 export interface SessionUser {
@@ -22,10 +23,21 @@ interface SessionResult {
   perms: string[]
 }
 
+// SIGNED OUT IS A 200. /api/auth/session always answers 200 and puts the
+// answer in the body: `{ user: null }` means "nobody is signed in". So a
+// non-2xx from this route is NEVER a logout — it is the session service or the
+// database failing. This used to resolve as `{ user: null }`, which _app.tsx
+// reads as "signed out" and bounces to /login: a backend blip logged everyone
+// out. Now it rejects, the query enters its error state, and nobody moves.
+//
+// The same rule applies INSIDE a 200: `user: null` is the answer "nobody is
+// signed in", but a body with no `user` field at all is a broken contract, and
+// reading the absent key as null signs the person out just as wrongly as a 500
+// used to. getList already refuses to read a missing wrapper key as an empty
+// list; this refuses to read a missing `user` key as a logout.
 const fetchSession = async (): Promise<SessionResult> => {
-  const res = await fetch('/api/auth/session', { credentials: 'same-origin' })
-  if (!res.ok) return { user: null, deniedViews: [], perms: [] }
-  const data = (await res.json()) as { user: SessionUser | null; deniedViews?: string[]; perms?: string[] }
+  const data = await getJson<{ user?: SessionUser | null; deniedViews?: string[]; perms?: string[] }>('/api/auth/session')
+  if (data.user === undefined) throw new Error('malformed response from /api/auth/session: no "user" field')
   return { user: data.user, deniedViews: data.deniedViews ?? [], perms: data.perms ?? [] }
 }
 
@@ -50,11 +62,11 @@ export function useDeniedViews(): string[] {
 export function useProviders() {
   return useQuery({
     queryKey: ['auth-providers'],
-    queryFn: async (): Promise<{ providers: ProviderMeta[]; configured: boolean }> => {
-      const res = await fetch('/api/auth/providers', { credentials: 'same-origin' })
-      if (!res.ok) return { providers: [], configured: false }
-      return res.json()
-    },
+    // `configured: false` is a real server answer ("no provider is set up"),
+    // not a stand-in for a failed request — telling someone their auth is
+    // unconfigured when the box is merely down sends them to the wrong fix.
+    queryFn: (): Promise<{ providers: ProviderMeta[]; configured: boolean }> =>
+      getJson<{ providers: ProviderMeta[]; configured: boolean }>('/api/auth/providers'),
     staleTime: 60_000,
   })
 }

@@ -1,6 +1,7 @@
 // Group-chat client: queries + mutations + live SSE refresh.
 import { useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { readJson as j } from '@/lib/fetch-json'
 
 export type ChannelRole = 'owner' | 'member'
 
@@ -51,11 +52,8 @@ export interface ChannelMessage {
   guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
 }
 
-const j = async <T>(r: Response): Promise<T> => {
-  const data = (await r.json().catch(() => null)) as (T & { error?: string }) | null
-  if (!r.ok || !data) throw new Error(data?.error ?? `request failed (${r.status})`)
-  return data
-}
+// The throw-on-non-2xx helper this module has always had now lives in
+// lib/fetch-json.ts, shared by every query module.
 
 export function useChannels() {
   return useQuery({

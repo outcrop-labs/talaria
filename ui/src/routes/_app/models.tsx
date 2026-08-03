@@ -17,6 +17,8 @@ import { Tabs } from '@/components/ui/tabs'
 import { Skeleton, SkeletonCard, SkeletonRows } from '@/components/ui/skeleton'
 import { Combobox } from '@/components/ui/combobox'
 import { ProviderMark } from '@/components/fleet/provider-mark'
+import { QueryError } from '@/components/ui/query-state'
+import { getJson } from '@/lib/fetch-json'
 import { useSession } from '@/lib/session'
 import {
   addEndpoint,
@@ -54,7 +56,8 @@ type ModelsTab = (typeof MODEL_TABS)[number]['id']
 function ModelsPage() {
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
-  const { data: endpoints = [], isPending: endpointsPending } = useEndpoints(isAdmin)
+  const endpointsQuery = useEndpoints(isAdmin)
+  const { data: endpoints = [], isPending: endpointsPending } = endpointsQuery
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const tab: ModelsTab = search.tab ?? 'models'
@@ -90,6 +93,16 @@ function ModelsPage() {
               <SkeletonCard />
               <SkeletonCard delay={0.15} />
             </div>
+          ) : !endpointsQuery.data ? (
+            // The registry read failed. "No model backends yet — Add a
+            // provider" invites an admin to re-add providers that already
+            // exist (and re-enter their keys) because the list 500'd. Same
+            // guard the Member access panel below already uses.
+            <QueryError
+              error={endpointsQuery.error}
+              title="Could not load your model backends"
+              onRetry={() => void endpointsQuery.refetch()}
+            />
           ) : endpoints.length === 0 ? (
             <EmptyState
               icon="▤"
@@ -430,14 +443,12 @@ interface PlatformAgentRow {
 
 function PlatformAgentsPanel() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  type PlatformAgentsData = { agents: PlatformAgentRow[]; assignments: Record<string, string>; models: string[] }
+  const query = useQuery({
     queryKey: ['platform-agents'],
-    queryFn: async (): Promise<{ agents: PlatformAgentRow[]; assignments: Record<string, string>; models: string[] }> => {
-      const r = await fetch('/api/admin/platform-agents', { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<PlatformAgentsData> => getJson<PlatformAgentsData>('/api/admin/platform-agents'),
   })
+  const { data } = query
   const assign = async (id: string, model: string | null) => {
     await fetch('/api/admin/platform-agents', {
       method: 'PUT',
@@ -447,21 +458,34 @@ function PlatformAgentsPanel() {
     })
     await qc.invalidateQueries({ queryKey: ['platform-agents'] })
   }
+  // A failed read used to shimmer for ever — the skeleton was the only
+  // not-loaded branch, so a 500 looked like a slow network.
   if (!data)
     return (
       <Panel>
-        <Skeleton className="mb-4 h-4 w-32 rounded-full" />
-        <div className="space-y-4">
-          {Array.from({ length: 6 }, (_, i) => (
-            <div key={i} className="flex items-center gap-3">
-              <div className="min-w-0 flex-1 space-y-1.5">
-                <Skeleton className="h-3 w-36 rounded-full" delay={i * 0.1} />
-                <Skeleton className="h-2.5 w-72 rounded-full" delay={i * 0.1 + 0.06} />
-              </div>
-              <Skeleton className="h-8 w-56 shrink-0" delay={i * 0.1} />
+        {query.isError ? (
+          <QueryError
+            variant="compact"
+            error={query.error}
+            title="Could not load platform agents"
+            onRetry={() => void query.refetch()}
+          />
+        ) : (
+          <>
+            <Skeleton className="mb-4 h-4 w-32 rounded-full" />
+            <div className="space-y-4">
+              {Array.from({ length: 6 }, (_, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <Skeleton className="h-3 w-36 rounded-full" delay={i * 0.1} />
+                    <Skeleton className="h-2.5 w-72 rounded-full" delay={i * 0.1 + 0.06} />
+                  </div>
+                  <Skeleton className="h-8 w-56 shrink-0" delay={i * 0.1} />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        )}
       </Panel>
     )
 
@@ -514,14 +538,12 @@ function PlatformAgentsPanel() {
 
 function ModelRolesPanel() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  type ModelRolesData = { roles: ModelRoleRow[]; assignments: Record<string, string>; models: string[] }
+  const query = useQuery({
     queryKey: ['model-roles'],
-    queryFn: async (): Promise<{ roles: ModelRoleRow[]; assignments: Record<string, string>; models: string[] }> => {
-      const r = await fetch('/api/admin/model-roles', { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<ModelRolesData> => getJson<ModelRolesData>('/api/admin/model-roles'),
   })
+  const { data } = query
   const assign = async (role: string, model: string | null) => {
     await fetch('/api/admin/model-roles', {
       method: 'PUT',
@@ -532,21 +554,33 @@ function ModelRolesPanel() {
     await qc.invalidateQueries({ queryKey: ['model-roles'] })
   }
   if (!data)
-    // Card skeleton matching the resolved layout: title bar + label/select rows.
+    // Card skeleton matching the resolved layout: title bar + label/select rows
+    // — but only while it is genuinely still loading.
     return (
       <Panel>
-        <Skeleton className="mb-4 h-4 w-24 rounded-full" />
-        <div className="space-y-4">
-          {Array.from({ length: 6 }, (_, i) => (
-            <div key={i} className="flex items-center gap-3">
-              <div className="min-w-0 flex-1 space-y-1.5">
-                <Skeleton className="h-3 w-40 rounded-full" delay={i * 0.1} />
-                <Skeleton className="h-2.5 w-64 rounded-full" delay={i * 0.1 + 0.06} />
-              </div>
-              <Skeleton className="h-8 w-56 shrink-0" delay={i * 0.1} />
+        {query.isError ? (
+          <QueryError
+            variant="compact"
+            error={query.error}
+            title="Could not load model roles"
+            onRetry={() => void query.refetch()}
+          />
+        ) : (
+          <>
+            <Skeleton className="mb-4 h-4 w-24 rounded-full" />
+            <div className="space-y-4">
+              {Array.from({ length: 6 }, (_, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <Skeleton className="h-3 w-40 rounded-full" delay={i * 0.1} />
+                    <Skeleton className="h-2.5 w-64 rounded-full" delay={i * 0.1 + 0.06} />
+                  </div>
+                  <Skeleton className="h-8 w-56 shrink-0" delay={i * 0.1} />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        )}
       </Panel>
     )
 
@@ -593,14 +627,20 @@ function ModelRolesPanel() {
 function MemberAccessPanel() {
   const qc = useQueryClient()
   const { data: catalog, isPending: catalogPending } = useModels()
-  const { data: settings, isPending: settingsPending } = useQuery({
+  // `['admin-settings']` is ONE cache entry shared with admin.tsx's Organization
+  // and Settings panels. Declare the whole payload, not a private slice of it,
+  // so all three readers agree on what that entry holds (admin.tsx carries the
+  // same interface next to its `useAdminSettings` hook).
+  interface AdminSettings {
+    auditRetentionDays: number
+    org: { name: string; about: string }
+    memberModels: string[]
+  }
+  const settingsQuery = useQuery({
     queryKey: ['admin-settings'],
-    queryFn: async (): Promise<{ memberModels: string[] }> => {
-      const r = await fetch('/api/admin/settings', { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<AdminSettings> => getJson<AdminSettings>('/api/admin/settings'),
   })
+  const { data: settings, isPending: settingsPending } = settingsQuery
   const models = (catalog?.models ?? []).filter((m) => !m.qualified)
   const rawSaved = settings?.memberModels ?? []
   // Models removed from the registry drop out of the list here (and get
@@ -650,6 +690,16 @@ function MemberAccessPanel() {
           </div>
           <SkeletonRows rows={3} />
         </div>
+      ) : !settings ? (
+        // Without the saved allowlist this panel renders an unchecked "Limit
+        // members" box and says "All registered models are available to
+        // members" — the exact opposite of a restrictive policy it failed to read.
+        <QueryError
+          variant="compact"
+          error={settingsQuery.error}
+          title="Could not load member access"
+          onRetry={() => void settingsQuery.refetch()}
+        />
       ) : (
       <>
       <Checkbox

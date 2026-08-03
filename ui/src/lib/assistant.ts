@@ -1,5 +1,6 @@
 // Client for the signed-in user's personal assistant (/api/me/assistant).
 import { useQuery } from '@tanstack/react-query'
+import { getJson } from '@/lib/fetch-json'
 
 export interface AssistantTier {
   name: string
@@ -25,11 +26,10 @@ export interface Assistant {
 export function useAssistant() {
   return useQuery({
     queryKey: ['my-assistant'],
-    queryFn: async (): Promise<Assistant | null> => {
-      const r = await fetch('/api/me/assistant', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return ((await r.json()) as { assistant: Assistant | null }).assistant
-    },
+    // "You have no assistant yet" is a 200 carrying `{ assistant: null }` —
+    // the route never 404s — so any non-2xx is a failure, not an absence.
+    queryFn: async (): Promise<Assistant | null> =>
+      (await getJson<{ assistant: Assistant | null }>('/api/me/assistant')).assistant,
   })
 }
 

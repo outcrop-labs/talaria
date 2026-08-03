@@ -8,6 +8,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { SkeletonRows } from '@/components/ui/skeleton'
+import { QueryState } from '@/components/ui/query-state'
+import { getList } from '@/lib/fetch-json'
 import { relativeTime } from '@/lib/fleet'
 import { streamMuse, type MuseKind } from '@/lib/muse'
 import { cn } from '@/lib/cn'
@@ -217,16 +219,16 @@ export function InternalEditorModal({
     setProposal(null)
   }
 
-  const { data: revisions = [], isLoading: revisionsLoading, refetch } = useQuery({
+  // The LIST read has no 404 (a doc with no snapshots is a 200 with `[]`), so
+  // every non-2xx is a failure. Answering `[]` printed "No saved revisions yet"
+  // over a broken history service — and that is the sentence someone believes
+  // right before they overwrite a document they thought had no backups.
+  const historyQuery = useQuery({
     queryKey: ['history', history],
     enabled: open && !!history,
-    queryFn: async (): Promise<Revision[]> => {
-      const qs = new URLSearchParams(history).toString()
-      const r = await fetch(`/api/history?${qs}`)
-      if (!r.ok) return []
-      return ((await r.json()) as { revisions: Revision[] }).revisions
-    },
+    queryFn: (): Promise<Revision[]> => getList<Revision>(`/api/history?${new URLSearchParams(history).toString()}`, 'revisions'),
   })
+  const { refetch } = historyQuery
 
   const save = async () => {
     const md = ref.current?.getMarkdown() ?? current
@@ -390,12 +392,15 @@ export function InternalEditorModal({
           {showHistory && history && (
             <div className="w-64 shrink-0 overflow-y-auto rounded-xl border border-line-subtle p-1">
               <div className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted">History</div>
-              {revisionsLoading ? (
-                <SkeletonRows rows={4} className="px-2 py-2" />
-              ) : revisions.length === 0 ? (
-                <div className="px-2 py-2 text-xs text-muted">No saved revisions yet.</div>
-              ) : (
-                revisions.map((rev, i) => (
+              <QueryState
+                query={historyQuery}
+                errorTitle="Could not load history"
+                errorVariant="inline"
+                skeleton={<SkeletonRows rows={4} className="px-2 py-2" />}
+                empty={<div className="px-2 py-2 text-xs text-muted">No saved revisions yet.</div>}
+              >
+                {(revisions) =>
+                  revisions.map((rev, i) => (
                   <div
                     key={rev.id}
                     className={cn(
@@ -430,8 +435,9 @@ export function InternalEditorModal({
                       </button>
                     )}
                   </div>
-                ))
-              )}
+                  ))
+                }
+              </QueryState>
             </div>
           )}
         </div>

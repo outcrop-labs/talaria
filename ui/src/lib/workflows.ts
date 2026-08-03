@@ -1,6 +1,7 @@
 // Task workflow client: match rules → instructions/toolkits that ride with
 // dispatched agent work. Managed on /workflows.
 import { useQuery } from '@tanstack/react-query'
+import { getList } from '@/lib/fetch-json'
 
 export interface WorkflowMatch {
   labels?: string[]
@@ -34,22 +35,14 @@ export interface SkillLibraryOwner {
 export function useSkillLibrary() {
   return useQuery({
     queryKey: ['skill-library'],
-    queryFn: async (): Promise<SkillLibraryOwner[]> => {
-      const r = await fetch('/api/skills', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { owners: SkillLibraryOwner[] }).owners
-    },
+    queryFn: (): Promise<SkillLibraryOwner[]> => getList<SkillLibraryOwner>('/api/skills', 'owners'),
   })
 }
 
 export function useWorkflows() {
   return useQuery({
     queryKey: ['workflows'],
-    queryFn: async (): Promise<TaskWorkflow[]> => {
-      const r = await fetch('/api/workflows', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { workflows: TaskWorkflow[] }).workflows
-    },
+    queryFn: (): Promise<TaskWorkflow[]> => getList<TaskWorkflow>('/api/workflows', 'workflows'),
   })
 }
 
@@ -106,11 +99,7 @@ export interface CapabilityGap {
 export function useGaps(status = 'open') {
   return useQuery({
     queryKey: ['gaps', status],
-    queryFn: async (): Promise<CapabilityGap[]> => {
-      const r = await fetch(`/api/gaps?status=${status}`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { gaps: CapabilityGap[] }).gaps
-    },
+    queryFn: (): Promise<CapabilityGap[]> => getList<CapabilityGap>(`/api/gaps?status=${status}`, 'gaps'),
   })
 }
 

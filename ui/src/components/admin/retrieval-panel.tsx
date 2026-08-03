@@ -9,7 +9,9 @@ import { Input } from '@/components/ui/input'
 import { submitOnEnter } from '@/components/ui/control'
 import { Select } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
+import { QueryError, QueryState } from '@/components/ui/query-state'
 import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
+import { getJson, getList } from '@/lib/fetch-json'
 import { useAgents } from '@/lib/agents'
 import { useUsers } from '@/lib/users'
 import { useTeams } from '@/lib/teams'
@@ -50,24 +52,20 @@ interface RagAdmin {
   spaces: Array<{ id: string; name: string; collectionId: string | null }>
 }
 
+// GET /api/rag/collections is 200 `{ collections }` for anyone signed in (it
+// narrows the payload for non-admins rather than 404ing), so a non-2xx is only
+// ever a failure. It used to answer `[]` — which drew the panel with no brains
+// at all and a "Create" box, i.e. an invitation to rebuild what already exists.
 const useCollections = () =>
   useQuery({
     queryKey: ['rag-collections'],
-    queryFn: async (): Promise<RagCollection[]> => {
-      const r = await fetch('/api/rag/collections')
-      if (!r.ok) return []
-      return ((await r.json()) as { collections: RagCollection[] }).collections
-    },
+    queryFn: (): Promise<RagCollection[]> => getList<RagCollection>('/api/rag/collections', 'collections'),
   })
 
 const useRagAdmin = () =>
   useQuery({
     queryKey: ['rag-admin'],
-    queryFn: async (): Promise<RagAdmin> => {
-      const r = await fetch('/api/admin/rag')
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<RagAdmin> => getJson<RagAdmin>('/api/admin/rag'),
     refetchInterval: (q) =>
       q.state.data?.backfill.state === 'running' || q.state.data?.reindex.state === 'running' ? 3_000 : false,
   })
@@ -77,8 +75,10 @@ const useRagAdmin = () =>
 // feed which brain, and the reranker provider.
 export function RetrievalPanel() {
   const qc = useQueryClient()
-  const { data: collections = [], isPending: collectionsPending } = useCollections()
-  const { data: rag, isPending: ragPending } = useRagAdmin()
+  const collectionsQuery = useCollections()
+  const ragQuery = useRagAdmin()
+  const { data: rag, isPending: ragPending } = ragQuery
+  const ragFailed = ragQuery.isError && rag === undefined
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -106,8 +106,18 @@ export function RetrievalPanel() {
         <InfoTip text="The org's RAG brains. Workspace activity and Organization knowledge are automatic. Spin up more for a domain or team, bind who can search each, and point KB spaces at them to curate what they contain." />
       </div>
 
-      {/* Services + backfill */}
+      {/* Services + backfill. A failure here must NOT paint the health dots
+          red — "we could not ask" is not "the vector store is down". */}
       {ragPending && <Skeleton className="mb-4 h-10 w-full rounded-xl" />}
+      {ragFailed && (
+        <QueryError
+          className="mb-4"
+          variant="compact"
+          error={ragQuery.error}
+          title="Could not load retrieval status"
+          onRetry={() => void ragQuery.refetch()}
+        />
+      )}
       {rag && (
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-line-subtle p-3">
           <HealthDot ok={rag.health.qdrant} label="Vector store" />
@@ -161,15 +171,20 @@ export function RetrievalPanel() {
       )}
 
       <div className="space-y-3">
-        {collectionsPending
-          ? [0, 1, 2].map((i) => <SkeletonCard key={i} delay={i * 0.15} />)
-          : collections.map((c) => (
-              <CollectionRow key={c.id} col={c} spaces={rag?.spaces ?? []} />
-            ))}
+        <QueryState
+          query={collectionsQuery}
+          errorTitle="Could not load the org's brains"
+          errorVariant="compact"
+          skeleton={<>{[0, 1, 2].map((i) => <SkeletonCard key={i} delay={i * 0.15} />)}</>}
+        >
+          {(collections) => collections.map((c) => <CollectionRow key={c.id} col={c} spaces={rag?.spaces ?? []} />)}
+        </QueryState>
       </div>
+      {/* Creating a brain while the list is unknown risks a duplicate of one
+          that is already there — hold the box until we know what exists. */}
       <div className="mt-4 flex items-center gap-2 border-t border-line-subtle pt-3">
         <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder="New brain (e.g. Sales playbook)" className="flex-1" onKeyDown={(e) => e.key === 'Enter' && void create()} />
-        <Button size="sm" onClick={() => void create()} disabled={busy || !name.trim()}>
+        <Button size="sm" onClick={() => void create()} disabled={busy || !name.trim() || collectionsQuery.data === undefined}>
           Create
         </Button>
       </div>

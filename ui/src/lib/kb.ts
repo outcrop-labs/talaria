@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { getJsonOr404, getList } from '@/lib/fetch-json'
 
 export type Visibility = 'private' | 'org' | 'public'
 export type EditPolicy = 'owner' | 'org' | 'restricted'
@@ -26,11 +27,9 @@ export const useSpace = (id: string | null) =>
   useQuery({
     queryKey: ['kb-space', id],
     enabled: !!id,
-    queryFn: async (): Promise<KbSpace | null> => {
-      const r = await fetch(`/api/kb/spaces/${id}`)
-      if (!r.ok) return null
-      return ((await r.json()) as { space: KbSpace }).space
-    },
+    // 404 = the space is gone or was never yours: a real "not found".
+    queryFn: async (): Promise<KbSpace | null> =>
+      (await getJsonOr404<{ space: KbSpace }>(`/api/kb/spaces/${id}`))?.space ?? null,
   })
 export interface KbDocMeta {
   id: string
@@ -64,33 +63,23 @@ export interface KbDoc extends KbDocMeta {
 export const useSpaces = () =>
   useQuery({
     queryKey: ['kb-spaces'],
-    queryFn: async (): Promise<KbSpace[]> => {
-      const r = await fetch('/api/kb/spaces')
-      if (!r.ok) return []
-      return ((await r.json()) as { spaces: KbSpace[] }).spaces
-    },
+    queryFn: (): Promise<KbSpace[]> => getList<KbSpace>('/api/kb/spaces', 'spaces'),
   })
 
 export const useDocs = (spaceId: string | null) =>
   useQuery({
     queryKey: ['kb-docs', spaceId],
     enabled: !!spaceId,
-    queryFn: async (): Promise<KbDocMeta[]> => {
-      const r = await fetch(`/api/kb/spaces/${spaceId}/docs`)
-      if (!r.ok) return []
-      return ((await r.json()) as { docs: KbDocMeta[] }).docs
-    },
+    queryFn: (): Promise<KbDocMeta[]> => getList<KbDocMeta>(`/api/kb/spaces/${spaceId}/docs`, 'docs'),
   })
 
 export const useDoc = (id: string | null) =>
   useQuery({
     queryKey: ['kb-doc', id],
     enabled: !!id,
-    queryFn: async (): Promise<KbDoc | null> => {
-      const r = await fetch(`/api/kb/docs/${id}`)
-      if (!r.ok) return null
-      return ((await r.json()) as { doc: KbDoc }).doc
-    },
+    // 404 = the doc is gone or was never yours: a real "not found".
+    queryFn: async (): Promise<KbDoc | null> =>
+      (await getJsonOr404<{ doc: KbDoc }>(`/api/kb/docs/${id}`))?.doc ?? null,
   })
 
 export const createSpace = (name: string) =>
@@ -102,7 +91,13 @@ export const updateSpace = (
 ) => fetch(`/api/kb/spaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
 /** Fetch the current editor grants for a doc / folder / artifact (from its GET
- *  route, which returns `editors`). */
+ *  route, which returns `editors`).
+ *
+ *  KNOWN GAP (audit follow-up, needs a call-site fix): a failed read yields an
+ *  empty grant list, and permissions-modal saves `editors: grants` — so saving
+ *  any unrelated change after a blip would wipe every grant. The modal must
+ *  block Save on a failed load; throwing from here alone would only convert
+ *  that into an unhandled rejection with the same empty list behind it. */
 export const fetchEditors = async (kind: 'docs' | 'spaces' | 'artifacts', id: string): Promise<KbEditor[]> => {
   const r = await fetch(kind === 'artifacts' ? `/api/artifacts/${id}` : `/api/kb/${kind}/${id}`)
   if (!r.ok) return []
@@ -124,9 +119,7 @@ export const useBrains = () =>
   useQuery({
     queryKey: ['rag-collections-public'],
     queryFn: async (): Promise<Array<{ id: string; name: string; kind: string }>> => {
-      const r = await fetch('/api/rag/collections')
-      if (!r.ok) return []
-      const all = ((await r.json()) as { collections: Array<{ id: string; name: string; kind: string }> }).collections
+      const all = await getList<{ id: string; name: string; kind: string }>('/api/rag/collections', 'collections')
       return all.filter((c) => c.kind === 'custom')
     },
   })
@@ -147,6 +140,9 @@ export interface KbSearchHit {
   /** Spaces are documents too (their overview) — hits open the space itself. */
   kind: 'doc' | 'space'
 }
+/** Search-as-you-type, called from bare `.then()` chains in three components.
+ *  Same story as `loadConversation`: throwing needs those call sites to grow a
+ *  failure branch first (audit follow-up). */
 export const searchKb = (q: string) =>
   fetch(`/api/kb/search?q=${encodeURIComponent(q)}`).then((r) => (r.ok ? r.json() : { hits: [] })).then((d) => (d as { hits: KbSearchHit[] }).hits)
 
@@ -160,9 +156,5 @@ export const useBacklinks = (docId: string | null) =>
   useQuery({
     queryKey: ['kb-backlinks', docId],
     enabled: !!docId,
-    queryFn: async (): Promise<KbBacklink[]> => {
-      const r = await fetch(`/api/kb/docs/${docId}/backlinks`)
-      if (!r.ok) return []
-      return ((await r.json()) as { backlinks: KbBacklink[] }).backlinks
-    },
+    queryFn: (): Promise<KbBacklink[]> => getList<KbBacklink>(`/api/kb/docs/${docId}/backlinks`, 'backlinks'),
   })

@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getJson, getList } from '@/lib/fetch-json'
 import type { ToolCall } from '@/lib/sse-parse'
 
 export interface Conversation {
@@ -56,11 +57,8 @@ export function usePlanMembers(planId: string | null) {
   return useQuery({
     queryKey: ['plan-members', planId],
     enabled: !!planId,
-    queryFn: async (): Promise<{ members: PlanMember[]; active: string[] }> => {
-      const r = await fetch(`/api/plans/${planId}/members`, { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<{ members: PlanMember[]; active: string[] }> =>
+      getJson<{ members: PlanMember[]; active: string[] }>(`/api/plans/${planId}/members`),
   })
 }
 
@@ -86,18 +84,17 @@ export const unsharePlan = async (planId: string, userId: string): Promise<void>
 export function useConversations(kind: 'chat' | 'plan' = 'chat') {
   return useQuery({
     queryKey: ['conversations', kind],
-    queryFn: async (): Promise<Conversation[]> => {
-      const r = await fetch(`/api/conversations?kind=${kind}`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      const data = (await r.json()) as { conversations: Conversation[] }
-      return data.conversations
-    },
+    queryFn: (): Promise<Conversation[]> => getList<Conversation>(`/api/conversations?kind=${kind}`, 'conversations'),
     // While any thread has a reply in flight, keep the list fresh so the
     // "working" indicator (and the reply's completion) show up on their own.
     refetchInterval: (q) => (q.state.data?.some((c) => c.working) ? 4_000 : false),
   })
 }
 
+// NOT a useQuery function — chat-view drives it imperatively from effects and
+// polls, none of which have a rejection handler. Left non-throwing on purpose:
+// making it reject here buys unhandled rejections, not an error state. Fixing
+// it properly means giving chat-view a load-failure branch (audit follow-up).
 export async function loadConversation(
   id: string,
 ): Promise<{ conversation: Conversation; messages: StoredMessage[] } | null> {

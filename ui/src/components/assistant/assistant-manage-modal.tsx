@@ -8,10 +8,12 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { InfoTip } from '@/components/ui/info-tip'
 import { Markdown } from '@/components/ui/markdown'
 import { Modal } from '@/components/ui/modal'
+import { QueryError, QueryState } from '@/components/ui/query-state'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { CronsPanel } from '@/components/fleet/agent-crons'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { cn } from '@/lib/cn'
+import { getJson, getList } from '@/lib/fetch-json'
 import { type Assistant } from '@/lib/assistant'
 
 // The assistant's working parts — Schedules, Skills, Memory — rendered inline
@@ -62,12 +64,12 @@ Describe when your assistant should use this skill and how.
 
 function SkillsTab({ assistant }: { assistant: Assistant }) {
   const qc = useQueryClient()
-  const { data: skills = [], isLoading } = useQuery({
+  // `owners` with no entry for this assistant IS a real empty; a 5xx is not.
+  // Narrowing happens after the read so the failure can still reject.
+  const query = useQuery({
     queryKey: ['assistant-skills', assistant.slug],
     queryFn: async (): Promise<SkillSummary[]> => {
-      const r = await fetch('/api/skills', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      const owners = ((await r.json()) as { owners: Array<{ owner: string; skills: SkillSummary[] }> }).owners
+      const owners = await getList<{ owner: string; skills: SkillSummary[] }>('/api/skills', 'owners')
       return owners.find((o) => o.owner === assistant.slug)?.skills ?? []
     },
   })
@@ -102,33 +104,39 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
         <span className="text-xs uppercase tracking-wide text-muted">Skills</span>
         <InfoTip text="Step-by-step playbooks your assistant follows for recurring jobs: weekly summaries, travel planning, whatever you teach it." />
       </div>
-      {isLoading ? (
-        <ul aria-hidden className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
-          {[0, 1, 2].map((i) => (
-            <li key={i} className="flex items-center gap-2 px-3 py-3">
-              <Skeleton className="h-3 w-28 rounded-full" delay={i * 0.12} />
-              <Skeleton className="h-2.5 w-44 rounded-full" delay={i * 0.12 + 0.12} />
-            </li>
-          ))}
-        </ul>
-      ) : skills.length === 0 ? (
-        <EmptyState icon="✦" title="No skills yet" hint="Teach it its first playbook below." />
-      ) : (
-        <ul className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
-          {skills.map((s) => (
-            <li key={s.name}>
-              <button
-                type="button"
-                onClick={() => setOpen(s.name)}
-                className="flex w-full items-baseline gap-2 px-3 py-2 text-left transition-colors hover:bg-card"
-              >
-                <span className="text-sm text-fg">{s.name}</span>
-                <span className="min-w-0 flex-1 truncate text-xs text-muted">{s.description}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <QueryState
+        query={query}
+        errorTitle="Could not load your assistant's skills"
+        errorVariant="compact"
+        skeleton={
+          <ul aria-hidden className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+            {[0, 1, 2].map((i) => (
+              <li key={i} className="flex items-center gap-2 px-3 py-3">
+                <Skeleton className="h-3 w-28 rounded-full" delay={i * 0.12} />
+                <Skeleton className="h-2.5 w-44 rounded-full" delay={i * 0.12 + 0.12} />
+              </li>
+            ))}
+          </ul>
+        }
+        empty={<EmptyState icon="✦" title="No skills yet" hint="Teach it its first playbook below." />}
+      >
+        {(skills) => (
+          <ul className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+            {skills.map((s) => (
+              <li key={s.name}>
+                <button
+                  type="button"
+                  onClick={() => setOpen(s.name)}
+                  className="flex w-full items-baseline gap-2 px-3 py-2 text-left transition-colors hover:bg-card"
+                >
+                  <span className="text-sm text-fg">{s.name}</span>
+                  <span className="min-w-0 flex-1 truncate text-xs text-muted">{s.description}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </QueryState>
       <div className="flex items-center gap-2">
         <Input
           size="sm"
@@ -169,13 +177,15 @@ function SkillEditor({
   onChanged: () => void
 }) {
   const [busy, setBusy] = useState(false)
-  const { data } = useQuery({
+  // This used to hand back whatever the body was, status ignored: a 500 whose
+  // body is `{ error }` became `{ content: undefined }` and a non-JSON body
+  // became `{ content: '' }` — either way the editor mounted EMPTY, and the
+  // first Ctrl+S wrote that emptiness over the real SKILL.md.
+  const query = useQuery({
     queryKey: ['assistant-skill', assistant.slug, name],
-    queryFn: async (): Promise<{ content: string }> => {
-      const r = await fetch(`/api/skills/${assistant.slug}/${name}`, { credentials: 'same-origin' })
-      return ((await r.json().catch(() => null)) as { content: string } | null) ?? { content: '' }
-    },
+    queryFn: (): Promise<{ content: string }> => getJson<{ content: string }>(`/api/skills/${assistant.slug}/${name}`),
   })
+  const { data } = query
 
   const save = async (md: string) => {
     setBusy(true)
@@ -206,7 +216,11 @@ function SkillEditor({
     return (
       <Modal open onClose={onClose} title={`${name} · SKILL.md`} width="max-w-6xl">
         <div className="h-[76vh] pt-2">
-          <SkeletonRows rows={8} />
+          {query.isError ? (
+            <QueryError error={query.error} title={`Could not open ${name}`} onRetry={() => void query.refetch()} />
+          ) : (
+            <SkeletonRows rows={8} />
+          )}
         </div>
       </Modal>
     )
@@ -233,13 +247,17 @@ function SkillEditor({
 
 function MemoryTab({ assistant }: { assistant: Assistant }) {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery({
+  const query = useQuery({
     queryKey: ['assistant-memory', assistant.id],
-    queryFn: async (): Promise<{ content: string; error?: string }> => {
-      const r = await fetch(`/api/memory/${assistant.id}`, { credentials: 'same-origin' })
-      return ((await r.json().catch(() => null)) as { content: string; error?: string } | null) ?? { content: '', error: 'could not load memory' }
-    },
+    // The old shape leaned on the server's `{ error }` field surviving inside a
+    // non-2xx body. A non-2xx WITHOUT that field (a 502 from a proxy, `{}`) fell
+    // through as `{ content: undefined }` and drew "Nothing remembered yet" —
+    // an emptiness claim about a document nobody actually read.
+    queryFn: async (): Promise<{ content: string }> => ({
+      content: (await getJson<{ content?: string }>(`/api/memory/${assistant.id}`)).content ?? '',
+    }),
   })
+  const { data, isLoading } = query
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -270,8 +288,14 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
         </div>
       </div>
     )
-  if (data?.error)
-    return <EmptyState icon="◌" title="Memory unavailable" hint={assistant.running ? data.error : 'Start your assistant to read its memory.'} />
+  // A stopped assistant is an explainable state, not a fault — keep its own
+  // sentence. Anything else shows the server's reason.
+  if (query.isError && data === undefined)
+    return assistant.running ? (
+      <QueryError error={query.error} title="Memory unavailable" onRetry={() => void query.refetch()} />
+    ) : (
+      <EmptyState icon="◌" title="Memory unavailable" hint="Start your assistant to read its memory." />
+    )
 
   return (
     <div className="space-y-4">

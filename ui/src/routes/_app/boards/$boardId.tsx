@@ -9,6 +9,7 @@ import { Gantt } from '@/components/board/gantt'
 import { BoardSettingsModal } from '@/components/board/board-settings-modal'
 import { FilterBar, filtersActive, type BoardFilters } from '@/components/board/filter-bar'
 import { EmptyState } from '@/components/ui/empty-state'
+import { QueryError } from '@/components/ui/query-state'
 import { Input } from '@/components/ui/input'
 import { FieldPill } from '@/components/ui/field-pill'
 import { Chip } from '@/components/ui/chip'
@@ -102,12 +103,15 @@ function BoardPage() {
   const navigate = useNavigate()
   const search = Route.useSearch()
   const { data: me } = useSession()
-  const { data: boards = [], isLoading } = useBoards()
-  const { data: archivedBoards = [] } = useArchivedBoards()
+  const boardsQuery = useBoards()
+  const { data: boards = [], isLoading } = boardsQuery
+  const archivedQuery = useArchivedBoards()
+  const { data: archivedBoards = [], isLoading: archivedLoading } = archivedQuery
   const board = boards.find((b) => b.id === boardId) ?? archivedBoards.find((b) => b.id === boardId)
 
   const showArchived = search.archived ?? false
-  const { data: allTasks = [], isLoading: tasksLoading } = useBoardTasks(board ? boardId : null, showArchived)
+  const tasksQuery = useBoardTasks(board ? boardId : null, showArchived)
+  const { data: allTasks = [], isLoading: tasksLoading } = tasksQuery
   const { data: fleet, isLoading: fleetLoading } = useAgents()
   const { data: boardCfg, isLoading: cfgLoading } = useBoardAgents(board ? boardId : null)
   const { data: members = [] } = useBoardMembers(board ? boardId : null)
@@ -256,7 +260,13 @@ function BoardPage() {
   // must not paint with empty columns while its tasks are still in flight.
   // `!showArchived` keeps the gate to the cold-load path — flipping the archived
   // toggle refetches under the toolbar, not under a full-page skeleton.
-  if (isLoading || (board && !showArchived && tasksLoading))
+  //
+  // The ARCHIVED list is part of the same gate. The two lists race, and a board
+  // that lives only in the archived one would otherwise flash "Board not found
+  // — It may have been deleted" for as long as that request takes: the exact
+  // false-deletion sentence this whole path exists to prevent. Neither list has
+  // spoken until both have.
+  if (isLoading || archivedLoading || (board && !showArchived && tasksLoading))
     return (
       <div className="grid h-full grid-cols-2 gap-3 overflow-hidden p-6 sm:grid-cols-4">
         {[0, 1, 2, 3].map((c) => (
@@ -268,6 +278,32 @@ function BoardPage() {
           </div>
         ))}
       </div>
+    )
+  // ORDER MATTERS. "Board not found — it may have been deleted" is the sentence
+  // that convinced an owner his company's boards were gone; it may only be
+  // reached when the board list genuinely LOADED and this board wasn't in it.
+  // A failed list, or failed tasks, says so instead and offers a retry.
+  // The archived list matters too: this board may be an archived one, and a
+  // failed archived read would otherwise land on the same false "not found".
+  const listQuery = boardsQuery.isError ? boardsQuery : archivedQuery
+  if (!board && listQuery.isError && listQuery.data === undefined)
+    return (
+      <QueryError
+        error={listQuery.error}
+        title="Could not load this board"
+        onRetry={() => {
+          void boardsQuery.refetch()
+          void archivedQuery.refetch()
+        }}
+      />
+    )
+  if (board && tasksQuery.isError && tasksQuery.data === undefined)
+    return (
+      <QueryError
+        error={tasksQuery.error}
+        title={`Could not load ${board.name}`}
+        onRetry={() => void tasksQuery.refetch()}
+      />
     )
   if (!board) return <EmptyState icon="⧉" title="Board not found" hint="It may have been deleted, or you don’t have access." />
 

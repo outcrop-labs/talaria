@@ -1,5 +1,6 @@
 // Template library client: org-wide ticket/plan formats + board bindings.
 import { useQuery } from '@tanstack/react-query'
+import { getList } from '@/lib/fetch-json'
 
 export type TemplateKind = 'ticket' | 'plan'
 
@@ -21,11 +22,7 @@ export interface BoardTemplateBinding {
 export function useTemplates() {
   return useQuery({
     queryKey: ['templates'],
-    queryFn: async (): Promise<Template[]> => {
-      const r = await fetch('/api/templates', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { templates: Template[] }).templates
-    },
+    queryFn: (): Promise<Template[]> => getList<Template>('/api/templates', 'templates'),
   })
 }
 
@@ -33,11 +30,8 @@ export function useBoardTemplates(boardId: string | null) {
   return useQuery({
     queryKey: ['board-templates', boardId],
     enabled: !!boardId,
-    queryFn: async (): Promise<BoardTemplateBinding[]> => {
-      const r = await fetch(`/api/boards/${boardId}/templates`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { bindings: BoardTemplateBinding[] }).bindings
-    },
+    queryFn: (): Promise<BoardTemplateBinding[]> =>
+      getList<BoardTemplateBinding>(`/api/boards/${boardId}/templates`, 'bindings'),
   })
 }
 

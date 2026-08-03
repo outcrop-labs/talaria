@@ -1,5 +1,7 @@
 import { Suspense, lazy, type ComponentType, type LazyExoticComponent } from 'react'
 import { EmptyState } from '@/components/ui/empty-state'
+import { ErrorBoundary } from '@/components/ui/error-boundary'
+import { QueryError } from '@/components/ui/query-state'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { appLoader, useEnabledApps } from '@/lib/apps'
 
@@ -37,9 +39,25 @@ function SurfaceSkeleton() {
 }
 
 export function AppSurface({ slug, surface }: { slug: string; surface: 'work' | 'manage' | 'settings' }) {
-  const { data: apps, isLoading } = useEnabledApps()
-  if (isLoading) return <SurfaceSkeleton />
-  const app = apps?.find((a) => a.slug === slug)
+  const appsQuery = useEnabledApps()
+  const { data: apps } = appsQuery
+  // Three states, not two. `isLoading` alone leaves the failed read looking
+  // identical to a resolved one: `apps` stays undefined, the find below misses,
+  // and the page tells a reader the app is "disabled, not installed, or awaiting
+  // a rebuild" when the truth is /api/apps answered 500 — an accusation that
+  // sends someone off to reinstall something that was never broken.
+  if (appsQuery.isError && apps === undefined)
+    return (
+      <QueryError
+        error={appsQuery.error}
+        title="Could not load your apps"
+        onRetry={() => void appsQuery.refetch()}
+      />
+    )
+  // Undefined with no error is still in flight (first load or a retry after a
+  // cleared cache) — hold the skeleton rather than judging the app missing.
+  if (apps === undefined) return <SurfaceSkeleton />
+  const app = apps.find((a) => a.slug === slug)
   if (!app || !app.surfaces[surface]) {
     return <EmptyState title="App not available" hint="It may be disabled, not installed, or awaiting a rebuild — check Manage → Apps" />
   }
@@ -47,9 +65,16 @@ export function AppSurface({ slug, surface }: { slug: string; surface: 'work' | 
   if (!C) {
     return <EmptyState title="App code not in this build" hint="The app is installed but needs a dev-server reload or a rebuild to load" />
   }
+  // The lazy import can reject — a deploy rotated the chunk hash out from under
+  // an open tab, the app's bundle throws at module scope, or the network drops
+  // mid-fetch. Without a boundary React unmounts the whole tree and the cockpit
+  // goes white. The key is the surface identity, so navigating elsewhere and
+  // back gives the chunk another chance instead of latching the error forever.
   return (
-    <Suspense fallback={<SurfaceSkeleton />}>
-      <C />
-    </Suspense>
+    <ErrorBoundary what={app.name} resetKey={`${slug}:${surface}`}>
+      <Suspense fallback={<SurfaceSkeleton />}>
+        <C />
+      </Suspense>
+    </ErrorBoundary>
   )
 }

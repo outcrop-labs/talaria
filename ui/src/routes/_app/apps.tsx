@@ -9,6 +9,8 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { confirm, alert } from '@/components/ui/confirm'
 import { InfoTip } from '@/components/ui/info-tip'
+import { QueryError } from '@/components/ui/query-state'
+import { getJson } from '@/lib/fetch-json'
 import { useSession } from '@/lib/session'
 import { cn } from '@/lib/cn'
 
@@ -49,11 +51,13 @@ interface AdminApps {
   catalogUrl: string
 }
 
-const fetchAdminApps = async (withCatalog: boolean): Promise<AdminApps | null> => {
-  const r = await fetch(`/api/admin/apps${withCatalog ? '?catalog=1' : ''}`, { credentials: 'same-origin' })
-  if (!r.ok) return null
-  return r.json()
-}
+// `if (!r.ok) return null` made a 500 resolve as a SUCCESSFUL query carrying
+// null, so React Query never entered its error state and both consumers below
+// fell through to their empty states: a broken read rendered "No apps
+// installed", pixel-for-pixel identical to the honest 200-with-nothing. Non-2xx
+// throws; empty and broken are different answers.
+const fetchAdminApps = (withCatalog: boolean): Promise<AdminApps> =>
+  getJson<AdminApps>(`/api/admin/apps${withCatalog ? '?catalog=1' : ''}`)
 
 const post = async (body: Record<string, unknown>): Promise<{ error?: string; slug?: string; pendingBuild?: boolean }> => {
   // POST installs (the action); PUT writes config (enable/disable, catalog).
@@ -116,7 +120,8 @@ function SurfaceChips({ surfaces, mcp }: { surfaces: InstalledApp['surfaces']; m
 
 function InstalledTab({ isAdmin }: { isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery({ queryKey: ['admin-apps'], queryFn: () => fetchAdminApps(false) })
+  const query = useQuery({ queryKey: ['admin-apps'], queryFn: () => fetchAdminApps(false) })
+  const { data, isLoading } = query
   const [busy, setBusy] = useState<string | null>(null)
 
   const refresh = async () => {
@@ -161,8 +166,12 @@ function InstalledTab({ isAdmin }: { isAdmin: boolean }) {
   }
 
   if (isLoading) return <SkeletonRows rows={4} />
-  const apps = data?.apps ?? []
-  const pending = data?.pending ?? []
+  // Without this branch a failed read told an admin their deployment has no
+  // apps — the same sentence the honest empty case shows, and the one that
+  // sends someone reinstalling an app that was never gone.
+  if (!data) return <QueryError error={query.error} title="Could not load installed apps" onRetry={() => void query.refetch()} />
+  const apps = data.apps ?? []
+  const pending = data.pending ?? []
 
   if (apps.length === 0 && pending.length === 0) {
     return (
@@ -227,11 +236,12 @@ function InstalledTab({ isAdmin }: { isAdmin: boolean }) {
 
 function DiscoverTab({ isAdmin }: { isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data, isLoading, refetch, isFetching } = useQuery({
+  const query = useQuery({
     queryKey: ['admin-apps-catalog'],
     queryFn: () => fetchAdminApps(true),
     staleTime: 5 * 60_000,
   })
+  const { data, isLoading, refetch, isFetching } = query
   const [gitUrl, setGitUrl] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -280,6 +290,12 @@ function DiscoverTab({ isAdmin }: { isAdmin: boolean }) {
 
       {isLoading ? (
         <SkeletonRows rows={4} />
+      ) : !data ? (
+        // Distinct from "Marketplace unreachable" below: THAT is the server
+        // telling us it could not reach the catalog feed (a real, reported
+        // answer, with `catalog.error` to quote). This is OUR read of the
+        // server failing, which says nothing about the marketplace at all.
+        <QueryError error={query.error} title="Could not load apps" onRetry={() => void refetch()} />
       ) : (catalog?.apps ?? []).length === 0 ? (
         <EmptyState
           icon="◎"

@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { getJson } from '@/lib/fetch-json'
 
 export interface AgentModel {
   id: string
@@ -11,11 +12,10 @@ export interface AgentModel {
 export function useAgents() {
   return useQuery({
     queryKey: ['agents'],
-    queryFn: async (): Promise<{ agents: AgentModel[]; source: 'gateway' | 'mock' }> => {
-      const res = await fetch('/api/agents', { credentials: 'same-origin' })
-      if (!res.ok) return { agents: [], source: 'mock' }
-      return res.json()
-    },
+    // `source: 'mock'` describes a gateway that answered without a real fleet.
+    // A failed request is not a mock fleet — it is a failure.
+    queryFn: (): Promise<{ agents: AgentModel[]; source: 'gateway' | 'mock' }> =>
+      getJson<{ agents: AgentModel[]; source: 'gateway' | 'mock' }>('/api/agents'),
     staleTime: 30_000,
   })
 }
