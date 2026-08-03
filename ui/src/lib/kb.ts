@@ -90,19 +90,29 @@ export const updateSpace = (
   patch: Partial<Pick<KbSpace, 'name' | 'description' | 'icon' | 'body' | 'visibility' | 'editPolicy'>> & { editors?: KbEditor[] },
 ) => fetch(`/api/kb/spaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
-/** Fetch the current editor grants for a doc / folder / artifact (from its GET
- *  route, which returns `editors`).
+/** The editor grants on a doc / folder / artifact, read from its GET route.
  *
- *  KNOWN GAP (audit follow-up, needs a call-site fix): a failed read yields an
- *  empty grant list, and permissions-modal saves `editors: grants` — so saving
- *  any unrelated change after a blip would wipe every grant. The modal must
- *  block Save on a failed load; throwing from here alone would only convert
- *  that into an unhandled rejection with the same empty list behind it. */
-export const fetchEditors = async (kind: 'docs' | 'spaces' | 'artifacts', id: string): Promise<KbEditor[]> => {
-  const r = await fetch(kind === 'artifacts' ? `/api/artifacts/${id}` : `/api/kb/${kind}/${id}`)
-  if (!r.ok) return []
-  return ((await r.json()) as { editors?: KbEditor[] }).editors ?? []
-}
+ *  THROWS on any non-2xx, and this one has to more than most: the Share modal
+ *  seeds an EDITABLE list from this call and `save()` PUTs that list back
+ *  wholesale. A swallowed failure here does not merely misreport — it hands
+ *  Save an empty list to write over every real grant, destroying them. Reading
+ *  it through `useEditors` gives the modal a real error state to render and a
+ *  `data === undefined` it can gate Save on.
+ *
+ *  A 200 whose `editors` key is missing is a broken contract, not "nobody at
+ *  all" — `getList` rejects that too, for the same reason. */
+export const fetchEditors = (kind: 'docs' | 'spaces' | 'artifacts', id: string): Promise<KbEditor[]> =>
+  getList<KbEditor>(kind === 'artifacts' ? `/api/artifacts/${id}` : `/api/kb/${kind}/${id}`, 'editors')
+
+/** The Share modal's read of the current grants. Enabled only while the modal
+ *  is open, so reopening re-reads rather than trusting a stale copy. The query
+ *  key lives here next to the fetcher — one place owns this read. */
+export const useEditors = (kind: 'docs' | 'spaces' | 'artifacts', id: string, enabled: boolean) =>
+  useQuery({
+    queryKey: ['kb-editors', kind, id],
+    enabled: enabled && !!id,
+    queryFn: () => fetchEditors(kind, id),
+  })
 
 export const deleteSpace = (id: string) => fetch(`/api/kb/spaces/${id}`, { method: 'DELETE' })
 
@@ -140,11 +150,29 @@ export interface KbSearchHit {
   /** Spaces are documents too (their overview) — hits open the space itself. */
   kind: 'doc' | 'space'
 }
-/** Search-as-you-type, called from bare `.then()` chains in three components.
- *  Same story as `loadConversation`: throwing needs those call sites to grow a
- *  failure branch first (audit follow-up). */
-export const searchKb = (q: string) =>
-  fetch(`/api/kb/search?q=${encodeURIComponent(q)}`).then((r) => (r.ok ? r.json() : { hits: [] })).then((d) => (d as { hits: KbSearchHit[] }).hits)
+/** KB search, honestly: a failed search REJECTS, so "nothing matched" and "the
+ *  search broke" are different answers. This is the only function in the app
+ *  that talks to /api/kb/search — reach for it, do not re-derive it. */
+export const searchKbHits = (q: string): Promise<KbSearchHit[]> =>
+  getList<KbSearchHit>(`/api/kb/search?q=${encodeURIComponent(q)}`, 'hits')
+
+/** @deprecated Swallows failures as an empty result — use `searchKbHits` and
+ *  render the rejection.
+ *
+ *  THE LAST SWALLOW, deliberately left in exactly ONE line rather than four:
+ *  every remaining `.then()` search call site funnels through here, so closing
+ *  it is a single edit once those sites can show a failure. They cannot yet —
+ *  all three drop the promise on the floor (`void search(q).then(setState)`),
+ *  so rejecting today buys an unhandled rejection and STALE results, which is
+ *  a worse lie than an empty one, not a better one. The three sites that must
+ *  grow a `.catch` and an error branch before this shim is deleted:
+ *
+ *    routes/_app/knowledge.tsx:422   KbSearch — `void searchKb(t).then(...)`
+ *    routes/_app/knowledge.tsx:111   docSearch — feeds rich-editor's DocLinkPopover
+ *    components/chat/attachments.tsx:112  RefPicker — try/finally, no catch
+ *
+ *  (rich-editor.tsx:437 drops it too, so `docSearch` cannot simply reject.) */
+export const searchKb = (q: string): Promise<KbSearchHit[]> => searchKbHits(q).catch(() => [])
 
 export interface KbBacklink {
   id: string

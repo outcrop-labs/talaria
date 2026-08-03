@@ -14,6 +14,7 @@ import { userAssignee } from '@/lib/assignees'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { useContextMenu, DropdownMenu } from '@/components/ui/context-menu'
 import { Skeleton } from '@/components/ui/skeleton'
+import { QueryError } from '@/components/ui/query-state'
 import { cn } from '@/lib/cn'
 import { EFFORT_LABEL, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
@@ -143,8 +144,13 @@ export function BoardList({
   const { openMenu, menu } = useContextMenu()
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   const { data: me } = useSession()
-  const { data: boardLabels = [] } = useBoardLabels(boardId)
-  const { data: boardStatuses = [] } = useBoardStatuses(boardId)
+  // The kanban's trap in list clothing: `= []` sends grouping and the status
+  // picker down the `TASK_STATUSES` fallback path, so a failed read groups the
+  // board under a workflow it may not use and offers statuses it may not have.
+  const labelsQuery = useBoardLabels(boardId)
+  const statusesQuery = useBoardStatuses(boardId)
+  const boardLabels = labelsQuery.data ?? []
+  const boardStatuses = statusesQuery.data ?? []
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', boardId] })
   const patch = async (taskId: string, p: Parameters<typeof updateTask>[1]) => {
@@ -406,6 +412,29 @@ export function BoardList({
 
   return (
     <div className="flex h-full flex-col">
+      {/* The rows below are the tickets, which loaded. Keep them and mark the
+          reference read that failed — grouping headers, status colours and the
+          status picker are all derived from it. */}
+      {(statusesQuery.isError || labelsQuery.isError) && (
+        <QueryError
+          variant="inline"
+          className="border-b border-line-subtle px-4 py-2"
+          title={
+            statusesQuery.isError
+              ? statusesQuery.data === undefined
+                ? 'Could not load this board’s statuses — grouping falls back to defaults'
+                : 'Statuses may be out of date'
+              : labelsQuery.data === undefined
+                ? 'Could not load labels — the pills below show names without their colours'
+                : 'Labels may be out of date'
+          }
+          error={statusesQuery.isError ? statusesQuery.error : labelsQuery.error}
+          onRetry={() => {
+            if (statusesQuery.isError) void statusesQuery.refetch()
+            if (labelsQuery.isError) void labelsQuery.refetch()
+          }}
+        />
+      )}
       <div className="relative min-h-0 flex-1 overflow-auto p-4">
         {tasks.length === 0 ? (
           <div className="grid h-full place-items-center text-sm text-muted">No tasks match.</div>

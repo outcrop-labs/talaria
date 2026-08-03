@@ -5,6 +5,7 @@ import { ticketMenuEntries } from '@/components/board/ticket-menu'
 import { Input } from '@/components/ui/input'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { useContextMenu } from '@/components/ui/context-menu'
+import { QueryError } from '@/components/ui/query-state'
 import { AssigneesPill, DuePill, EstimatePill, LabelsPill, LABEL_CSS, type PillCtx } from '@/components/board/field-pills'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
@@ -42,8 +43,17 @@ export function Kanban({
   const qc = useQueryClient()
   const { data: fleet } = useAgents()
   const { data: me } = useSession()
-  const { data: boardLabels = [] } = useBoardLabels(board.id)
-  const { data: boardStatuses = [] } = useBoardStatuses(board.id)
+  // Both reads used `= []`, which is indistinguishable from "the server said
+  // this board has no labels / no custom statuses". For STATUSES that is the
+  // worse of the two: an empty set falls through to the default column list
+  // below, so a failed read invents a workflow this board may not have — and
+  // any ticket whose status isn't in the invented set renders in NO column at
+  // all, i.e. work silently disappears off the board.
+  const labelsQuery = useBoardLabels(board.id)
+  const statusesQuery = useBoardStatuses(board.id)
+  const boardLabels = labelsQuery.data ?? []
+  const boardStatuses = statusesQuery.data ?? []
+  const statusesFailed = statusesQuery.isError && statusesQuery.data === undefined
   // Columns: the board's status set (custom or defaults), plus the legacy
   // terminal extras only when occupied.
   const columns = boardStatuses.length
@@ -101,68 +111,102 @@ export function Kanban({
     invalidate()
   }
 
+  // Nothing to fall back on: refuse to draw a made-up board.
+  if (statusesFailed)
+    return (
+      <div className="grid h-full place-items-center p-4">
+        <QueryError
+          title="Could not load this board’s columns"
+          error={statusesQuery.error}
+          onRetry={() => void statusesQuery.refetch()}
+        />
+      </div>
+    )
+
   return (
-    <div className="flex h-full gap-3 overflow-x-auto p-4">
-      {columns.map((col) => {
-        const colTasks = tasks.filter((t) => t.status === col.key)
-        // Column estimate rollup — visible planning weight per column.
-        const colHours = colTasks.reduce((s, t) => s + (t.estimatedHours ?? 0), 0)
-        return (
-          <div
-            key={col.key}
-            onDragOver={canEdit ? (e) => { e.preventDefault(); setDragOver(col.key) } : undefined}
-            onDragLeave={() => setDragOver((d) => (d === col.key ? null : d))}
-            onDrop={
-              canEdit
-                ? (e) => {
-                    e.preventDefault()
-                    const id = e.dataTransfer.getData('text/task')
-                    setDragOver(null)
-                    if (id) void move(id, col.key as TaskStatus)
-                  }
-                : undefined
-            }
-            className={cn(
-              'flex w-80 shrink-0 flex-col rounded-xl bg-sidebar/60 ring-1 ring-transparent transition-shadow',
-              dragOver === col.key && 'ring-[color:var(--theme-accent)]',
-            )}
-          >
-            <div className="flex items-center gap-2 px-3 py-2">
-              <span className="h-2 w-2 rounded-full" style={{ background: col.color }} />
-              <span className="text-xs font-semibold uppercase tracking-wide text-fg">{col.label}</span>
-              <span className="text-xs text-muted">{colTasks.length}</span>
-              {colHours > 0 && (
-                <span className="ml-auto text-[10px] text-muted" title="Total estimated hours in this column">
-                  Σ {fmtHours(colHours)}
-                </span>
+    <div className="flex h-full flex-col">
+      {/* Stale columns/labels beat no board at all — but say which read is old.
+          Labels only tint the pills, so their failure never takes the board. */}
+      {(statusesQuery.isError || labelsQuery.isError) && (
+        <QueryError
+          variant="inline"
+          className="border-b border-line-subtle px-4 py-2"
+          title={
+            statusesQuery.isError
+              ? 'Columns may be out of date'
+              : labelsQuery.data === undefined
+                ? 'Could not load labels — the pills below show names without their colours'
+                : 'Labels may be out of date'
+          }
+          error={statusesQuery.isError ? statusesQuery.error : labelsQuery.error}
+          onRetry={() => {
+            if (statusesQuery.isError) void statusesQuery.refetch()
+            if (labelsQuery.isError) void labelsQuery.refetch()
+          }}
+        />
+      )}
+      <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-4">
+        {columns.map((col) => {
+          const colTasks = tasks.filter((t) => t.status === col.key)
+          // Column estimate rollup — visible planning weight per column.
+          const colHours = colTasks.reduce((s, t) => s + (t.estimatedHours ?? 0), 0)
+          return (
+            <div
+              key={col.key}
+              onDragOver={canEdit ? (e) => { e.preventDefault(); setDragOver(col.key) } : undefined}
+              onDragLeave={() => setDragOver((d) => (d === col.key ? null : d))}
+              onDrop={
+                canEdit
+                  ? (e) => {
+                      e.preventDefault()
+                      const id = e.dataTransfer.getData('text/task')
+                      setDragOver(null)
+                      if (id) void move(id, col.key as TaskStatus)
+                    }
+                  : undefined
+              }
+              className={cn(
+                'flex w-80 shrink-0 flex-col rounded-xl bg-sidebar/60 ring-1 ring-transparent transition-shadow',
+                dragOver === col.key && 'ring-[color:var(--theme-accent)]',
               )}
+            >
+              <div className="flex items-center gap-2 px-3 py-2">
+                <span className="h-2 w-2 rounded-full" style={{ background: col.color }} />
+                <span className="text-xs font-semibold uppercase tracking-wide text-fg">{col.label}</span>
+                <span className="text-xs text-muted">{colTasks.length}</span>
+                {colHours > 0 && (
+                  <span className="ml-auto text-[10px] text-muted" title="Total estimated hours in this column">
+                    Σ {fmtHours(colHours)}
+                  </span>
+                )}
+              </div>
+              <div className="flex-1 space-y-2 overflow-y-auto px-2 pb-2">
+                {colTasks.map((t) => (
+                  <Card
+                    key={t.id}
+                    task={t}
+                    pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, statuses: boardStatuses, boardId: board.id }}
+                    subtasks={childrenOf.get(t.id) ?? []}
+                    parentRef={parentRef(t)}
+                    draggable={canEdit}
+                    dim={dragging === t.id}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('text/task', t.id)
+                      e.dataTransfer.effectAllowed = 'move'
+                      setDragging(t.id)
+                    }}
+                    onDragEnd={() => setDragging(null)}
+                    onOpen={() => onOpen(t.id)}
+                    onContextMenu={(e) => cardMenu(e, t)}
+                  />
+                ))}
+                {canEdit && <AddCard onAdd={(title) => addTo(col.key as TaskStatus, title)} />}
+              </div>
             </div>
-            <div className="flex-1 space-y-2 overflow-y-auto px-2 pb-2">
-              {colTasks.map((t) => (
-                <Card
-                  key={t.id}
-                  task={t}
-                  pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, statuses: boardStatuses, boardId: board.id }}
-                  subtasks={childrenOf.get(t.id) ?? []}
-                  parentRef={parentRef(t)}
-                  draggable={canEdit}
-                  dim={dragging === t.id}
-                  onDragStart={(e) => {
-                    e.dataTransfer.setData('text/task', t.id)
-                    e.dataTransfer.effectAllowed = 'move'
-                    setDragging(t.id)
-                  }}
-                  onDragEnd={() => setDragging(null)}
-                  onOpen={() => onOpen(t.id)}
-                  onContextMenu={(e) => cardMenu(e, t)}
-                />
-              ))}
-              {canEdit && <AddCard onAdd={(title) => addTo(col.key as TaskStatus, title)} />}
-            </div>
-          </div>
-        )
-      })}
-      {menu}
+          )
+        })}
+        {menu}
+      </div>
     </div>
   )
 }

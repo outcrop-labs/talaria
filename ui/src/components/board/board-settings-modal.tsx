@@ -12,6 +12,7 @@ import { Select } from '@/components/ui/select'
 import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
+import { QueryError } from '@/components/ui/query-state'
 import { UserPicker } from '@/components/app/user-picker'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
@@ -95,8 +96,19 @@ export function BoardSettingsModal({
 // the default (it seeds bare tickets and shapes agent drafting on this board).
 function TemplatesSection({ board }: { board: Board }) {
   const qc = useQueryClient()
-  const { data: templates = [], isLoading: templatesLoading } = useTemplates()
-  const { data: bindings = [], isLoading: bindingsLoading } = useBoardTemplates(board.id)
+  // Same class as the tabs below: "No ticket templates in the library yet" is
+  // a statement about the org library, and `= []` let a failed read make it.
+  // The bindings read matters more — its `[]` says "this board binds none",
+  // and saving from that state would UNBIND every template it never read.
+  const templatesQuery = useTemplates()
+  const bindingsQuery = useBoardTemplates(board.id)
+  const templates = templatesQuery.data ?? []
+  const bindings = bindingsQuery.data ?? []
+  const templatesLoading = templatesQuery.isLoading
+  const bindingsLoading = bindingsQuery.isLoading
+  const templatesFailed =
+    (templatesQuery.isError && templatesQuery.data === undefined) ||
+    (bindingsQuery.isError && bindingsQuery.data === undefined)
   const ticketTemplates = templates.filter((t) => t.kind === 'ticket')
   const bound = new Set(bindings.map((b) => b.templateId))
   const defaultId = bindings.find((b) => b.isDefault)?.templateId ?? null
@@ -118,7 +130,19 @@ function TemplatesSection({ board }: { board: Board }) {
           Manage library →
         </Link>
       </div>
-      {templatesLoading || bindingsLoading ? (
+      {templatesFailed ? (
+        // No checkboxes at all while a read is missing: an unchecked box here
+        // is a binding you could destroy by pressing Save.
+        <QueryError
+          variant="compact"
+          title="Could not load ticket templates"
+          error={templatesQuery.error ?? bindingsQuery.error}
+          onRetry={() => {
+            void templatesQuery.refetch()
+            void bindingsQuery.refetch()
+          }}
+        />
+      ) : templatesLoading || bindingsLoading ? (
         <SkeletonRows rows={3} className="rounded-xl border border-line-subtle p-2" />
       ) : ticketTemplates.length === 0 ? (
         <div className="text-xs text-muted">No ticket templates in the library yet. Create one to templatize this board's tickets.</div>
@@ -279,7 +303,12 @@ function GeneralTab({
 
 function PeopleTab({ board }: { board: Board }) {
   const qc = useQueryClient()
-  const { data: members = [], isLoading: membersLoading } = useBoardMembers(board.id)
+  // This list IS the access-control answer. `= []` under it meant a 500 on
+  // /api/boards/:id/members rendered "People with access" over nothing —
+  // telling an owner the board is private to them, from a read that failed.
+  const membersQuery = useBoardMembers(board.id)
+  const members = membersQuery.data ?? []
+  const membersLoading = membersQuery.isLoading
   const [role, setRole] = useState<'editor' | 'viewer'>('editor')
   const [err, setErr] = useState<string | null>(null)
   const refresh = () => qc.invalidateQueries({ queryKey: ['board-members', board.id] })
@@ -313,6 +342,15 @@ function PeopleTab({ board }: { board: Board }) {
       <div className="mt-4 space-y-1">
         <div className="mb-1 text-xs uppercase tracking-wide text-muted">People with access</div>
         {membersLoading && <SkeletonRows rows={3} avatar className="px-1 py-1.5" />}
+        {membersQuery.isError && (
+          <QueryError
+            variant={membersQuery.data === undefined ? 'compact' : 'inline'}
+            className="px-1 py-1.5"
+            title={membersQuery.data === undefined ? 'Could not load who has access' : 'This list may be out of date'}
+            error={membersQuery.error}
+            onRetry={() => void membersQuery.refetch()}
+          />
+        )}
         {members.map((m) => (
           <div key={m.userId} className="flex items-center gap-2 rounded-lg px-1 py-1.5">
             <Avatar name={m.name ?? m.email} className="h-7 w-7" />
@@ -338,9 +376,19 @@ function PeopleTab({ board }: { board: Board }) {
 
 function AgentsTab({ board }: { board: Board }) {
   const qc = useQueryClient()
-  const { data: fleet, isLoading: fleetLoading } = useAgents()
+  const fleetQuery = useAgents()
+  const fleet = fleetQuery.data
+  const fleetLoading = fleetQuery.isLoading
   const options = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
-  const { data: config, isLoading: configLoading } = useBoardAgents(board.id)
+  // The checkbox and the picker are SEEDED from `config`. On rejection the
+  // effect below never runs, so the panel renders "Allow all agents" unchecked
+  // with an empty selection — a maximally restrictive policy invented from a
+  // read that failed, and one Save away from becoming real.
+  const configQuery = useBoardAgents(board.id)
+  const config = configQuery.data
+  const configLoading = configQuery.isLoading
+  const configFailed =
+    (configQuery.isError && config === undefined) || (fleetQuery.isError && fleet === undefined)
   const [allowAll, setAllowAll] = useState(false)
   const [agents, setAgents] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
@@ -370,7 +418,17 @@ function AgentsTab({ board }: { board: Board }) {
       <p className="mb-3 text-xs text-muted">
         Restrictive by default: a ticket can only be assigned to agents allowed here.
       </p>
-      {configLoading || fleetLoading ? (
+      {configFailed ? (
+        <QueryError
+          variant="compact"
+          title="Could not load the agent policy"
+          error={configQuery.error ?? fleetQuery.error}
+          onRetry={() => {
+            void configQuery.refetch()
+            void fleetQuery.refetch()
+          }}
+        />
+      ) : configLoading || fleetLoading ? (
         // The checkbox is seeded from the fetched config — showing it unchecked
         // now would render a false policy that flips after load.
         <div>
@@ -410,7 +468,11 @@ function AgentsTab({ board }: { board: Board }) {
 //    tickets), recolor, delete (strips off tickets). ─────────────────────
 function LabelsTab({ board }: { board: Board }) {
   const qc = useQueryClient()
-  const { data: labels = [] } = useBoardLabels(board.id)
+  // A failed registry read used to render an empty label list under prose that
+  // explains what labels do — read as "this board has none", which invites
+  // creating duplicates of labels that already exist.
+  const labelsQuery = useBoardLabels(board.id)
+  const labels = labelsQuery.data ?? []
   const canEdit = board.role === 'owner' || board.role === 'editor'
   const [draft, setDraft] = useState('')
   const refresh = () => {
@@ -424,6 +486,14 @@ function LabelsTab({ board }: { board: Board }) {
         Labels are shared by everyone on this board. Renaming updates every ticket carrying the label; deleting removes it
         from tickets.
       </p>
+      {labelsQuery.isError && (
+        <QueryError
+          variant={labelsQuery.data === undefined ? 'compact' : 'inline'}
+          title={labelsQuery.data === undefined ? 'Could not load labels' : 'Labels may be out of date'}
+          error={labelsQuery.error}
+          onRetry={() => void labelsQuery.refetch()}
+        />
+      )}
       <ul className="divide-y divide-line-subtle">
         {labels.map((l) => (
           <li key={l.id} className="flex items-center gap-2 py-2">
@@ -474,9 +544,15 @@ function LabelsTab({ board }: { board: Board }) {
             )}
           </li>
         ))}
-        {labels.length === 0 && <li className="py-3 text-xs text-muted">No labels yet.</li>}
+        {/* Only once the server actually SAID so — otherwise the error above
+            and "No labels yet." sit on screen contradicting each other. */}
+        {labels.length === 0 && labelsQuery.data !== undefined && (
+          <li className="py-3 text-xs text-muted">No labels yet.</li>
+        )}
       </ul>
-      {canEdit && (
+      {/* Nothing to add against: the registry never loaded, so "Add" here is a
+          coin flip on whether the label already exists. */}
+      {canEdit && labelsQuery.data !== undefined && (
         <div className="flex gap-2">
           <Input
             size="sm"
@@ -515,7 +591,11 @@ function LabelsTab({ board }: { board: Board }) {
 //    Blocked is system — pinned, not editable. ─────────────────────────────
 function StatusesTab({ board }: { board: Board }) {
   const qc = useQueryClient()
-  const { data: statuses = [] } = useBoardStatuses(board.id)
+  // Worse here than anywhere: an empty list under "Columns and their meaning"
+  // reads as a board with no workflow at all, and the Add box beside it will
+  // happily create a duplicate of a status the server already has.
+  const statusesQuery = useBoardStatuses(board.id)
+  const statuses = statusesQuery.data ?? []
   const canEdit = board.role === 'owner' || board.role === 'editor'
   const [draft, setDraft] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -555,6 +635,14 @@ function StatusesTab({ board }: { board: Board }) {
         where assignment counts as approval — agents only pick up work sitting there. Blocked is always present.
       </p>
       {err && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
+      {statusesQuery.isError && (
+        <QueryError
+          variant={statusesQuery.data === undefined ? 'compact' : 'inline'}
+          title={statusesQuery.data === undefined ? 'Could not load this board’s columns' : 'Columns may be out of date'}
+          error={statusesQuery.error}
+          onRetry={() => void statusesQuery.refetch()}
+        />
+      )}
       <ul className="divide-y divide-line-subtle">
         {statuses.map((st) => (
           <li
@@ -675,7 +763,9 @@ function StatusesTab({ board }: { board: Board }) {
           </li>
         ))}
       </ul>
-      {canEdit && (
+      {/* Same rule as Labels: adding a column while the column set is unknown
+          risks duplicating one the server already has. */}
+      {canEdit && statusesQuery.data !== undefined && (
         <div className="flex gap-2">
           <Input
             size="sm"

@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, Upload, ExternalLink, DownloadCloud, Search, type LucideIcon } from 'lucide-react'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { confirm, alert } from '@/components/ui/confirm'
@@ -20,7 +20,8 @@ import { CloseButton } from '@/components/ui/close-button'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { BrainRoutingSelect } from '@/components/kb/brain-select'
 import { IconButton } from '@/components/ui/icon-button'
-import { QueryError } from '@/components/ui/query-state'
+import { QueryError, QueryState } from '@/components/ui/query-state'
+import { getJson, getList } from '@/lib/fetch-json'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
@@ -793,37 +794,53 @@ function ArtifactPageSkeleton() {
 
 interface Rev { id: string; createdBy: string | null; createdAt: string; size: number }
 function ArtifactHistory({ id, onRestore }: { id: string; onRestore: (content: string) => Promise<void> }) {
-  const [revs, setRevs] = useState<Rev[]>([])
-  const [loading, setLoading] = useState(true)
-  useEffect(() => {
-    setLoading(true)
-    fetch(`/api/history?kind=artifact&id=${id}`)
-      .then((r) => (r.ok ? r.json() : { revisions: [] }))
-      .then((d) => setRevs((d as { revisions: Rev[] }).revisions))
-      .catch(() => setRevs([]))
-      .finally(() => setLoading(false))
-  }, [id])
+  // "No saved revisions yet." is a claim about this artifact's PAST — the one
+  // sentence that tells an owner their earlier drafts are gone. A 500 used to
+  // render that exact sentence, indistinguishable from a genuinely fresh doc.
+  const history = useQuery({
+    queryKey: ['artifact-history', id],
+    queryFn: () => getList<Rev>(`/api/history?kind=artifact&id=${id}`, 'revisions'),
+  })
+  // Restore used to `return` on a non-2xx: a button that does nothing, forever,
+  // with no way to tell a broken restore from a slow one.
+  const [restoreError, setRestoreError] = useState<unknown>(null)
+  const [restoring, setRestoring] = useState<string | null>(null)
   const restore = async (rev: Rev) => {
-    const r = await fetch(`/api/history?kind=artifact&id=${id}&rev=${rev.id}`)
-    if (!r.ok) return
-    const { content } = (await r.json()) as { content: string }
-    await onRestore(content)
+    setRestoreError(null)
+    setRestoring(rev.id)
+    try {
+      const { content } = await getJson<{ content: string }>(`/api/history?kind=artifact&id=${id}&rev=${rev.id}`)
+      await onRestore(content)
+    } catch (e) {
+      setRestoreError(e)
+    } finally {
+      setRestoring(null)
+    }
   }
   return (
     <div>
       <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">History</div>
-      {loading ? (
-        <SkeletonRows rows={4} className="px-2 py-1" />
-      ) : revs.length === 0 ? (
-        <EmptyState variant="inline" title="No saved revisions yet." />
-      ) : (
-        revs.map((r, i) => (
-          <button key={r.id} type="button" onClick={() => void restore(r)} className="block w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-card" title="Restore this version">
-            <div className="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>
-            <div className="text-[11px] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>
-          </button>
-        ))
+      {restoreError !== null && (
+        <QueryError variant="inline" className="mb-2 px-2" title="Could not restore that version" error={restoreError} />
       )}
+      <QueryState
+        query={history}
+        skeleton={<SkeletonRows rows={4} className="px-2 py-1" />}
+        errorTitle="Could not load this artifact’s history"
+        errorVariant="inline"
+        empty={<EmptyState variant="inline" title="No saved revisions yet." />}
+      >
+        {(revs) => (
+          <>
+            {revs.map((r, i) => (
+              <button key={r.id} type="button" disabled={restoring !== null} onClick={() => void restore(r)} className="block w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-card disabled:opacity-60" title="Restore this version">
+                <div className="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>
+                <div className="text-[11px] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>
+              </button>
+            ))}
+          </>
+        )}
+      </QueryState>
     </div>
   )
 }
