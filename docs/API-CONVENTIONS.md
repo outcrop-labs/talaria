@@ -55,6 +55,43 @@ if (caller.model && caller.model !== name)      // A caller we CAN name must mat
 correct where the response carries no per-agent data. Public routes say so in a comment; `llm.v1.*`
 follows the OpenAI wire contract and is exempt from all of this.
 
+A helper that takes an agent but isn't threaded everywhere yet accepts `AgentSubject`
+(`AgentCaller | string`) and asks `subjectProven(subject)` / `subjectModel(subject)` rather than
+reaching for `.legacy` on something that might be a bare model string.
+
+## Agent writes that touch a ticket — import the predicate, never re-derive it
+
+Every agent patch that goes through `updateTask` inherits the HITL invariant automatically:
+`agentSafePatch` (`server/tasks.ts`) strips assignment/planning/archival, redirects terminal moves to
+the board's review column, and refuses the rest. **A route that goes through `updateTask` needs
+nothing else.**
+
+A route that writes something *attached* to a ticket without going through `updateTask` — a usage
+row, a dependency edge, a gap report, a workbench plan comment or PR title — does not inherit it, and
+must ask the one exported predicate:
+
+```ts
+import { closedToAgents } from '@/server/tasks'
+
+const shut = await closedToAgents(task)          // reason string, or null when the agent may write
+if (isAgent && shut) return json({ error: shut }, { status: 403 })
+```
+
+It returns the **reason** rather than a boolean so the refusal reads the same wherever the write
+arrived, and it covers three conditions, not one: archived ticket, archived **board**, closed status
+(a `done` column on that board, or the off-board `failed` / `cancelled`). Pass an already-resolved
+`statusMeta` as the second argument to save the round trip. The same predicate answers the *pull*
+side too — `maybeDispatchTicket` and `assignedWork` ask it before handing an agent work — so the
+queue and the write routes agree by construction rather than by two people remembering.
+
+> **Do not copy it into your route.** Four routes each hand-rolled their own copy, because parallel
+> work split file ownership and `server/tasks.ts` did not export one. All four checked only the
+> closed-status third and silently missed both archival clauses the original grew later — so an agent
+> could keep writing to a ticket a person had archived through any of them. Duplicating an invariant
+> is how the sixth laundering path in a series of six got created; a fifth copy is never the fix.
+> Comments are deliberately outside this gate: commenting stays open on work an agent can no longer
+> edit.
+
 ## Bodies — `parseBody`
 
 ```ts

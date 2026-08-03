@@ -43,21 +43,81 @@ what is done. Row by row, against the table above:
 | Gate item | State | Evidence |
 |---|---|---|
 | **1, 2** migration ordering | **shipped** | `db/pg.ts:1212-1266` — `schema_migrations` keyed by array index, per-statement checksum, per-statement transaction, boot refused if an applied statement changed. Fresh installs no longer die at statement 21. |
-| **11** HITL in `updateTask` | **shipped** | `server/tasks.ts:261-324` (`agentSafePatch`) — the whole function, including the assignment gate at its foot (`:320-322`) that a coerced terminal move falls through to; called from `updateTask` (`:363`), and `HumanApprovalRequired` → 403 at `routes/api/tasks.$id.ts:108`. An agent can no longer close its own ticket via `status: cancelled`, restart its own blocked work, take anything out of review, or write to a closed ticket. **Four** agent-reachable side doors never reach `updateTask` and so mirror the closed-ticket clause themselves — `tasks.$id.usage.ts`, `tasks.$id.dependencies.ts`, `agent.gap.ts:17-19,63` (gap on a closed ticket → 403, with the fix: re-send without `taskId`), and `workbench-mcp.ts:150-151,181` (`authorizeTicket`, board policy + closed-ticket, on every verb that takes a caller-supplied `taskId`). Count them when auditing coverage: an earlier version of this row listed only the first two, which reads as if the other two were unguarded. The predicate is duplicated four times because `server/tasks.ts` does not export it — **follow-up: export one `closedToAgents(task)` from `tasks.ts` and delete the three copies**, before the fifth door is added. |
-| **16** metering | **partly shipped** | `work-dispatch.ts:130` now passes `taskId` as well as `refId`, so dispatch turns reach the ticket's cost rollup. Workbench harness runs are metered — they hold their own `workbench-gateway` key and only the persona key is in `gateway_unmetered_keys` (`fleet-brain.ts:175-191`). **Hermes crons remain unmetered: zero usage rows**, and it is not fixable from the cron surface (`agent-crons.ts:7-16` — a cron turn is byte-identical to a persona turn at the gateway; closing it means Talaria drives the schedule through `proxyChat`). |
+| **11** HITL in `updateTask` | **shipped; the duplicated predicate is now centralized** | `agentSafePatch` (`server/tasks.ts`) carries the whole invariant — archived ticket, archived board, closed ticket, out of review, out of blocked, stranded status, and the assignment gate at its foot that a *coerced* terminal move falls through to. `updateTask` applies it whenever `who.kind === 'agent'`, and `HumanApprovalRequired` becomes a 403 in `routes/api/tasks.$id.ts`. An agent can no longer close its own ticket via `status: cancelled`, restart its own blocked work, take anything out of review, or write to a closed ticket. **Four** agent-reachable side doors never reach `updateTask` and enforce the closed-ticket rule themselves — `tasks.$id.usage.ts`, `tasks.$id.dependencies.ts`, `agent.gap.ts` (gap on a closed ticket → 403, with the fix in the message: re-send without `taskId`), and `authorizeTicket` in `server/workbench-mcp.ts` (board policy **and** closed-ticket, on every verb that takes a caller-supplied `taskId`). Count **four** when auditing coverage: an earlier version of this row listed only the first two, which read as if the other pair were unguarded. All four now import `closedToAgents` from `server/tasks.ts` instead of hand-rolling it — see the note below the table for why there were four copies and what that cost. |
+| **16** metering | **partly shipped** | the dispatch turn's `recordUsage` call in `work-dispatch.ts` now passes `taskId` as well as `refId`, so dispatch turns reach the ticket's cost rollup. Workbench harness runs are metered — they hold their own `workbench-gateway` key and only the persona key is in `gateway_unmetered_keys` (`fleet-brain.ts:175-191`). **Hermes crons remain unmetered: zero usage rows**, and it is not fixable from the cron surface (`agent-crons.ts:7-16` — a cron turn is byte-identical to a persona turn at the gateway; closing it means Talaria drives the schedule through `proxyChat`). |
 | **10** per-agent credentials | **shipped for the API surface, deploy is ordered** | `agent-auth.ts` resolves identity from the agent's own `tak_` credential. Deploying it is **not** a restart: migrate → render → roll → *then* flip `TALARIA_AGENT_KEY_LEGACY=off`, and a personal/elevated assistant is refused outright between deploy and roll. Runbook: [AGENT-KEY-MIGRATION.md](./AGENT-KEY-MIGRATION.md). |
 | **per-agent gateway keys** | **still unbuilt — unchanged** | See below. |
 | **37** backups | **shipped, not scheduled** | `scripts/backup.sh` / `scripts/restore.sh` / [BACKUPS.md](./BACKUPS.md). Nothing schedules it (cron is the operator's job until M1's scheduler), and the restore drill has never actually been run — both called out in `PRICING.md`. |
 | **M0** truth in copy | **shipped** | `README.md` no longer claims "and what it shipped"; `PRICING.md` marks backups and SSO as not-yet-sellable with the specific gaps. |
 
+**Audit task 11 took six rounds, and the sixth was self-inflicted. Worth recording, because the
+cause was the process and not the code.**
+
+Rounds one through five each found a *laundering path* — a way for an agent to reach a terminal or
+assigned state that `agentSafePatch` was supposed to forbid — and each round closed the one it found:
+the two-write self-assignment through an intermediate status (gating moved from the source column to
+the destination); `status: ''` slipping past `patch.status &&` as falsy and blanking the column with
+every guard skipped (presence, not truthiness, plus a board-membership check in `updateTask` ahead of
+it); a terminal move coerced into the review catch and then *returning* instead of falling through to
+the assignment gate; `handoffTarget` guessing a done or agent-start column when the board had no
+hand-off column (it now refuses); and a review key that had been recategorised to `done` passing a
+post-condition that only asserted the key existed. Five patches, five rounds, and each round found
+another — which was the signal that the method was wrong, not that the code was unusually leaky.
+
+The sixth path was different in kind: it was **created by how the work was split**. Rounds were
+parallelised by file ownership, so an agent that did not own `server/tasks.ts` could not export
+anything from it and copy-pasted the closed-ticket predicate instead. That happened four times
+(`tasks.$id.usage.ts`, `tasks.$id.dependencies.ts`, `agent.gap.ts`, `workbench-mcp.ts`), and the
+copies did not track the original as it grew its archival clauses — so the invariant was duplicated
+rather than centralized, and a seventh path was only ever a matter of the next route being added by
+whoever did not own the file. All four copies carried a `FOLLOW-UP` comment asking for exactly the
+fix this round makes.
+
+**This round therefore removes surface area instead of adding a guard.** `server/tasks.ts` now
+exports one `closedToAgents(task, meta?)` — returning the *reason* an agent may not write, or null —
+and all four local copies are deleted. Everything that has to ask "may an agent still write to this
+ticket?" imports it and none of them restates it: `agentSafePatch` (the patch gate), the four side
+doors, and **both dispatch sides** — `maybeDispatchTicket` on the push side and `assignedWork` on the
+heartbeat pull side.
+
+Two real defects fell out of the consolidation rather than being separately hunted, which is the
+argument for doing it this way:
+
+- The four copies each carried only the closed-status third of the rule, so an agent could log spend,
+  add a dependency, file a gap or run a workbench verb against a ticket a person had **archived**, or
+  a ticket on an **archived board**. Importing the predicate closed that in all four at once.
+- `assignedWork` selected on `agent_start` alone, so the heartbeat **handed agents work every write
+  route would then refuse** — archived tickets, tickets on archived boards, tickets parked in a
+  done-category or off-board-keyed pickup column — and the agent looped on them every heartbeat with
+  no way to make progress. The query now selects candidates and lets the predicate decide, rather
+  than restating three conditions in SQL as a sixth copy.
+
+Returning the reason string rather than a boolean is deliberate: the refusal reads the same sentence
+wherever the write arrived, and a new caller cannot invent a vaguer one.
+
+**Still open, plainly:**
+
+- The consolidation is a refactor, not a proof. Nothing in CI fails a route that hand-rolls the
+  predicate again — the structural fix rests on the import being the obvious path and on review.
+  A lint rule (or a test that enumerates agent-reachable ticket writes) is the real close-out.
+- There is **no regression test** for any of the six paths. Every one of them was found by reading,
+  and would be found by reading again.
+- Rounds 1–5's fixes carry forward unchanged — the archival and closed-status clauses now *delegate*
+  to the shared predicate, and nothing else in `agentSafePatch` moved — and they remain unretested.
+  This round did not revisit them.
+- `updateTask` is the choke point for *ticket patches*. It is not a choke point for everything an
+  agent can do to a ticket — the four side doors exist because writes that attach to a ticket
+  (usage rows, dependencies, gap reports, workbench plan comments and PR titles) legitimately do not
+  go through it. Consolidating the predicate makes them consistent; it does not make them one path.
+
 **Per-agent gateway keys are the one gate item that has not moved, and it is the one M2 and M4
 actually depend on.** Audit task 10 gave the *API* surface per-agent identity; the LLM gateway is a
 different plane and still meters by API key:
 
-- Every agent container renders the same `fleet-gateway` credential as `${LLM_API_KEY}`
-  (`fleet-brain.ts:25,97`).
-- `recordGatewayUsage` writes `usage_events.agent_model = caller`, and `caller` is
-  `api:<key name>` (`llm.v1.chat.completions.ts:41`, `llm-gateway.ts:299-313`). So workbench spend —
+- Every agent container renders the same `GATEWAY_KEY_NAME = 'fleet-gateway'` credential as
+  `${LLM_API_KEY}` (`fleet-brain.ts`).
+- `recordGatewayUsage` (`llm-gateway.ts`) writes `usage_events.agent_model = caller`, and `caller` is
+  `` `api:${id.keyName}` `` (`routes/api/llm.v1.chat.completions.ts`). So workbench spend —
   the largest single line item, a coding run outweighing a day of chat — lands in the ledger
   attributed to the **pseudo-agent `api:workbench-gateway`**, not to the agent that drove the run,
   and with no `task_id` at all.

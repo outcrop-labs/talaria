@@ -54,8 +54,8 @@ Do these in order. Steps 1→3 are one maintenance window; step 5 is a separate,
 ## Step 0 — Preflight
 
 **Who breaks at deploy?** Personal and elevated assistants are refused the moment the new code is
-live — not at the flag flip (`agent-auth.ts:342-358`). Everyone else keeps working as a legacy
-caller. Get the list first:
+live — not at the flag flip (the `def.personal || def.elevated` branch in `resolve()`,
+`agent-auth.ts`). Everyone else keeps working as a legacy caller. Get the list first:
 
 ```sh
 psql "$DATABASE_URL" -c "
@@ -68,7 +68,8 @@ Any row with `personal` or `elevated` true is an agent that will 403 with
 you roll its container. On the reference install that is exactly one agent, `dan-personal-dan`; the
 other four resolve legacy and keep working.
 
-**The window must be open.** Absent means on (`agent-auth.ts:150`):
+**The window must be open.** Absent means on (`legacyOpen()` in `agent-auth.ts` reads
+`process.env.TALARIA_AGENT_KEY_LEGACY ?? 'on'`):
 
 ```sh
 grep -n '^TALARIA_AGENT_KEY_LEGACY=' ui/.env || echo 'absent → on (the default). Good.'
@@ -83,11 +84,11 @@ but the roll recreates containers.
 ## Step 1 — Migrate
 
 Deploy the build and restart the app. Migrations run on the app's **first database query**
-(`db/pg.ts:1268-1285`), under an advisory lock, checksummed and append-only — there is no separate
-migrate command to run.
+(`db()` → `ensureMigrated()` → `runMigrations()`, `db/pg.ts`), under an advisory lock, checksummed
+and append-only — there is no separate migrate command to run.
 
-`GET /api/healthz` deliberately uses `getSql()` and **does not** trigger migrations
-(`routes/api/healthz.ts:58-59`), so it proves the process is alive and nothing more. Any real request
+`GET /api/healthz` deliberately uses `getSql()` rather than `db()` and **does not** trigger
+migrations (`routes/api/healthz.ts`), so it proves the process is alive and nothing more. Any real request
 (signing in, step 2's login) runs them.
 
 Check:
@@ -108,7 +109,8 @@ by going straight to steps 2 and 3.
 
 The render mints one `tak_` credential per managed agent, writes
 `TALARIA_AGENT_KEY_<SLUG>` into `fleet/.env`, and rewrites `fleet/docker-compose.yml` so each service
-interpolates its own variable (`fleet-render.ts:176-195, 497`).
+interpolates its own variable (`ensureAgentEnvKeys` and the `env.TALARIA_AGENT_KEY =
+${AGENT_KEY_VAR(def.slug)}` line in the service render, `fleet-render.ts`).
 
 ```sh
 # admin session
@@ -139,11 +141,11 @@ create; they still hold the org-wide key. The render only changed files on disk.
 
 ## Step 3 — Roll the running containers
 
-**Roll, not restart.** `restart` is `docker compose restart` (`fleet-docker.ts:81-85`), which does not
-recreate the container and therefore does **not** pick up the new environment — the agent stays on the
-org-wide key while looking healthy. `POST /api/fleet/reconcile` is not enough either: it only starts
-agents that are *not* running (`fleet-reconcile.ts:31-36`). Only `roll` replaces the container
-(`fleet-reconcile.ts:60-91`).
+**Roll, not restart.** `restart` is `docker compose restart` (`fleetRestart` in `fleet-docker.ts`),
+which does not recreate the container and therefore does **not** pick up the new environment — the
+agent stays on the org-wide key while looking healthy. `POST /api/fleet/reconcile` is not enough
+either: it skips anything already running (`reconcileFleet` in `fleet-reconcile.ts`). Only `roll`
+replaces the container (`rollAgent`, same file).
 
 **Personal and elevated assistants first** — they are the ones that are currently down:
 
@@ -197,7 +199,8 @@ psql "$DATABASE_URL" -c "
 
 ## Step 4 — Wait for every agent to be seen
 
-`last_used_at` is written on every per-agent authentication (`agent-auth.ts:301`). A `null` means that
+`last_used_at` is written on every per-agent authentication (the fire-and-forget
+`update agent_keys set last_used_at = now()` in `resolve()`, `agent-auth.ts`). A `null` means that
 agent has minted a key but has never presented it — the flag would lock it out. Re-render and read the
 warning if you'd rather have it in one line:
 
@@ -238,8 +241,9 @@ step 3.
 
 **Say it plainly: between the deploy (step 1) and the roll (step 3), a personal or elevated assistant
 cannot act for its owner, and cannot use the toolkit at all.** This is not limited to `actingUser`
-— `resolve()` refuses the caller at the door, before any surface gets to decide
-(`agent-auth.ts:342-358`), so every toolkit call from that container 403s with
+— `resolve()` refuses the caller at the door, before any surface gets to decide (the
+`def.personal || def.elevated` branch, `agent-auth.ts`), so every toolkit call from that container
+403s with
 
 ```json
 {"error":"this agent must present its own credential"}
@@ -259,16 +263,17 @@ while the window is open *and* after it closes), and a `restart` does not recrea
 ## fleet/.env
 
 `fleet/.env` holds every agent's plaintext credential. The renderer writes it `0600` in a `0700`
-directory and re-locks both — `writeFleetEnv` chmods the file and its parent on every write
-(`fleet-render.ts:126-130`), and `ensureFleetEnvKey`/`ensureAgentEnvKeys` re-chmod even when there is
-nothing to append (`fleet-render.ts:137-138, 190-191`). Anything looser lets any local account, or
-any workbench agent with a shell, impersonate the whole fleet.
+directory and re-locks both — `writeFleetEnv` chmods the file and its parent on every write, and
+`ensureFleetEnvKey`/`ensureAgentEnvKeys` re-chmod even when there is nothing to append (all three in
+`fleet-render.ts`). Anything looser lets any local account, or any workbench agent with a shell,
+impersonate the whole fleet.
 
 **That is render-time only, and it does not reach an install that hasn't rendered since.** A deployed
 instance keeps whatever modes it already had (`0644` in a `0755` directory, the process umask
-defaults) until a render happens. The same is true of per-agent `secrets.env`: `agent-secrets.ts:64-66`
-chmods the file at write time and never touches its directory (created `0755` by
-`fleet-render.ts:383-385`). So **existing installs need a one-time chmod**, done by hand once:
+defaults) until a render happens. The same is true of per-agent `secrets.env`:
+`materializeAgentSecrets` (`agent-secrets.ts`) chmods the file at write time and never touches its
+directory (created `0755` by the per-agent `mkdir` in `fleet-render.ts`). So **existing installs need
+a one-time chmod**, done by hand once:
 
 ```sh
 cd /path/to/talaria

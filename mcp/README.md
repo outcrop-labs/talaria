@@ -83,17 +83,20 @@ Configure your agent's MCP client (stdio transport):
 
 Board access is restrictive by default: an agent sees a board only if the board
 allows all agents or lists the agent by name (Board settings → Agents). On the
-API side, agent-created tickets are forced to `inbox` with no assignees, `status:
-assigned` is rejected, and `status: done` is coerced to `quality_review`. This MCP
-server additionally never offers the unsafe inputs, so a well-behaved agent never
-even sees them.
+API side an agent that supplies `assignees` on create is refused outright (403,
+`agents cannot assign tickets`), so agent-created tickets land unassigned in the
+board's intake column; entering an agent-start column later is refused for the
+same reason; and a terminal move (`done`, or the off-board `failed` / `cancelled`)
+is redirected to the board's own review column. This MCP server additionally never
+offers the unsafe inputs, so a well-behaved agent never even sees them.
 
 ### The lifecycle is one-way for an agent
 
-`triage_ticket` accepts three statuses, but not from anywhere to anywhere.
-`agentSafePatch` (`ui/src/server/tasks.ts`) refuses three moves outright with a
-403, and the tool descriptions say so — an agent that doesn't know spends turns
-on writes that can't land:
+`triage_ticket` accepts three statuses, but not from anywhere to anywhere. The
+whole rule lives in `agentSafePatch` (`ui/src/server/tasks.ts`) — **not here** —
+and every clause raises `HumanApprovalRequired`, which the route turns into a
+403. The tool descriptions mirror it, because an agent that doesn't know spends
+turns on writes that can't land:
 
 | Move | Agent | Why |
 | --- | --- | --- |
@@ -101,11 +104,23 @@ on writes that can't land:
 | in_progress → `blocked` | yes | parking its own work |
 | in_progress → `quality_review` | yes | handing over for sign-off |
 | blocked → `in_progress` | **no** | entering a start column is assignment; a person restarts parked work |
-| out of `quality_review` | **no** | review is the human sign-off queue — otherwise an agent pulls its own work back off the reviewer's board |
-| any write to a **closed** ticket (`done` / `failed` / `cancelled`) | **no** | sign-off is sticky and covers the record, not just the column. Includes `add_time` |
+| out of the review column | **no** | review is the human sign-off queue — otherwise an agent pulls its own work back off the reviewer's board |
+| any write to a **closed** ticket (a `done` column, or `failed` / `cancelled`) | **no** | sign-off is sticky and covers the record, not just the column. Includes `add_time` |
+| any write to an **archived** ticket, or any ticket on an **archived board** | **no** | archiving hides work from the people watching it; an agent noticing and writing anyway is that stop failing |
+| any move of a ticket **stranded** in a status its board no longer has | **no** | nothing can class it, so a person places it |
+| entering an agent-start column from anywhere else | **no** | the destination is the gate, whether the agent named that column or the terminal-move redirect picked it |
 
-`comment` is the exception and the escape hatch: it stays open on a ticket the
-agent can no longer edit.
+Two consequences worth knowing before you burn a turn on them:
+
+- **The review column belongs to the board, not to this server.** `report_outcome`
+  does not send a literal `quality_review`; the API redirects the terminal move to
+  whatever review column that board has. If the board has **none** — or every
+  review column is also flagged agent-start, which would loop the work straight
+  back into the pickup queue — the write is **refused**, not guessed at, and the
+  error names the board and the setting to fix. That is an admin's problem, not a
+  misbehaving agent.
+- **`comment` is the exception and the escape hatch:** it stays open on a ticket
+  the agent can no longer edit.
 
 
 ## Fleet HTTP mode
