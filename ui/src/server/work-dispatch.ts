@@ -171,11 +171,27 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
 }
 
 /** Dispatch to every AGENT assignee when the ticket sits in an agent-start
- *  column. `onlyAgents` narrows to newly-added assignees on updates. */
+ *  column. `onlyAgents` narrows to newly-added assignees on updates.
+ *
+ *  THE PUSH-SIDE CHOKE POINT. Every caller — createTask, both of updateTask's
+ *  branches, and anything added later — arrives here, and this used to check
+ *  ONE thing: is the ticket's column flagged agent-start? Nothing about closed,
+ *  archived, or an archived board. `updateTask` restated a fragment of the rule
+ *  inline in its status branch (`!meta.doneKeys.includes(...)`) and its
+ *  assignees branch inherited nothing at all, so assigning an agent to a CLOSED
+ *  ticket started a live work session on it. And `doneKeys` was never the whole
+ *  rule anyway: a board owner may legally create an `active + agentStart`
+ *  column labelled "Cancelled" (agentStartConflict refuses only review and
+ *  done), whose key is the off-board terminal `cancelled` — in doneKeys' blind
+ *  spot, in the closed predicate's plain sight.
+ *  So the rule is asked HERE, once, from the same `closedToAgents` the patch
+ *  gate and the heartbeat use. A caller cannot forget it, because a caller
+ *  never states it. */
 export async function maybeDispatchTicket(task: Task, onlyAgents?: string[]): Promise<void> {
-  const { agentAssignees } = await import('./tasks')
+  const { agentAssignees, closedToAgents } = await import('./tasks')
   const meta = await statusMeta(task.boardId)
   if (!meta.agentStartKeys.includes(task.status)) return
+  if (await closedToAgents(task, meta)) return
   const targets = agentAssignees(task.assignees).filter((a) => !onlyAgents || onlyAgents.includes(a))
   for (const agent of targets) {
     void dispatchTicketWork(task, agent)

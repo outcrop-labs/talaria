@@ -147,9 +147,6 @@ async function logTicket(taskId: string | null, actor: string, description: stri
   await logActivity(taskId, actor, 'workbench', description).catch(() => {})
 }
 
-/** Off-board terminal keys — mirrors OFF_BOARD_STATUSES in server/tasks.ts. */
-const OFF_BOARD_STATUSES = ['failed', 'cancelled']
-
 /** THE GATE for a caller-supplied taskId. Verbs here take the ticket from the
  *  agent, and everything downstream either DISCLOSES it (the ticket ref and
  *  title ride into the branch name and, at finish_job, into a public PR title
@@ -158,13 +155,14 @@ const OFF_BOARD_STATUSES = ['failed', 'cancelled']
  *  `updateTask`, so the two rules it carries are enforced here instead:
  *    · the board's agent policy must allow this agent (a ticket on a board the
  *      agent cannot see is not its work — and its title is not its business)
- *    · a ticket a person closed takes no further agent writes
- *  Unknown and not-allowed refuse with the SAME message: a distinct "no such
- *  ticket" would turn this verb into a ticket enumeration oracle.
- *  FOLLOW-UP: the closed-ticket predicate belongs in server/tasks.ts next to
- *  `agentSafePatch` — another agent owns that file this round. */
+ *    · a ticket a person has taken off the table takes no further agent writes
+ *  The second rule is `closedToAgents`, IMPORTED. It used to be a local copy
+ *  carrying only the closed-status third of it, so an agent could start a
+ *  workbench job against an archived ticket — plan comment, artifact chip and
+ *  all. Unknown and not-allowed refuse with the SAME message: a distinct "no
+ *  such ticket" would turn this verb into a ticket enumeration oracle. */
 async function authorizeTicket(subject: AgentSubject, taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { getTask } = await import('./tasks')
+  const { getTask, closedToAgents } = await import('./tasks')
   const task = await getTask(taskId).catch(() => null)
   const deny = {
     ok: false as const,
@@ -176,12 +174,11 @@ async function authorizeTicket(subject: AgentSubject, taskId: string): Promise<{
   // string is read as proven (a legacy caller can never present a privileged
   // name), so this is honest either way.
   if (!(await boardAllowsAgent(task.boardId, subject))) return deny
-  const { statusMeta } = await import('./statuses')
-  const meta = await statusMeta(task.boardId)
-  if (meta.doneKeys.includes(task.status) || OFF_BOARD_STATUSES.includes(task.status)) {
+  const shut = await closedToAgents(task)
+  if (shut) {
     return {
       ok: false,
-      error: `ticket ${task.ticketRef ?? taskId} is closed (${task.status}) — a person signed it off, so nothing more attaches to it. Ask for it to be reopened, or work the follow-up ticket.`,
+      error: `${shut}. Ticket ${task.ticketRef ?? taskId} is "${task.status}". Ask for it to be reopened, or work the follow-up ticket.`,
     }
   }
   return { ok: true }

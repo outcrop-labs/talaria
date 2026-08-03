@@ -4,24 +4,9 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentCaller } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
-import { addDependency, getTask, removeDependency } from '@/server/tasks'
-import { statusMeta } from '@/server/statuses'
+import { addDependency, closedToAgents, getTask, HumanApprovalRequired, removeDependency } from '@/server/tasks'
 
 const Body = z.object({ dependsOnId: z.string().uuid() })
-
-/** Off-board terminal keys — mirrors OFF_BOARD_STATUSES in server/tasks.ts. */
-const OFF_BOARD_STATUSES = ['failed', 'cancelled']
-
-/** The closed-ticket clause of the central invariant (`agentSafePatch`, in
- *  server/tasks.ts), applied here because `addDependency` never reaches
- *  `updateTask`: it writes task_dependencies + a task_activity line directly.
- *  FOLLOW-UP: server/tasks.ts should export this as one predicate so the four
- *  agent-reachable side doors can't drift from the invariant — another agent
- *  owns that file this round, so it is mirrored rather than shared. */
-async function closedToAgents(task: { boardId: string; status: string }): Promise<boolean> {
-  const meta = await statusMeta(task.boardId)
-  return meta.doneKeys.includes(task.status) || OFF_BOARD_STATUSES.includes(task.status)
-}
 
 // POST { dependsOnId } → this ticket is blocked by another. DELETE → remove.
 // Editors or board-allowed agents may add (part of triage); removal is human-only.
@@ -40,11 +25,13 @@ export const Route = createFileRoute('/api/tasks/$id/dependencies')({
           // The CALLER, not its model: board policy's elevated-assistant bypass
           // is org-wide reach, and a legacy caller only asserted its name.
           if (!(await boardAllowsAgent(task.boardId, caller))) return json({ error: 'forbidden' }, { status: 403 })
-          // Sign-off is sticky and covers the RECORD: a dependency edge is a
-          // write to a ticket a person closed, so an agent doesn't get one.
-          if (await closedToAgents(task)) {
-            return json({ error: 'agents cannot change a closed ticket' }, { status: 403 })
-          }
+          // The central agent-write invariant, imported rather than restated:
+          // `addDependency` never reaches `updateTask` (it writes
+          // task_dependencies + a task_activity line directly), so the same
+          // predicate `agentSafePatch` asks is asked here — closed, archived,
+          // and archived-board, all three, from one definition.
+          const shut = await closedToAgents(task)
+          if (shut) return json({ error: shut }, { status: 403 })
           actor = caller.model
           isAgent = true
         } else {
@@ -57,11 +44,24 @@ export const Route = createFileRoute('/api/tasks/$id/dependencies')({
         const dep = await getTask(parsed.data.dependsOnId)
         if (!dep || dep.boardId !== task.boardId) return json({ error: 'must be a ticket on this board' }, { status: 400 })
         // The edge lands on BOTH tickets (it shows in the target's "blocks"
-        // list), so the closed rule applies to the target too.
-        if (isAgent && (await closedToAgents(dep))) {
-          return json({ error: 'agents cannot change a closed ticket — the ticket you named as a blocker is signed off' }, { status: 403 })
+        // list), so the rule applies to the target too.
+        if (isAgent) {
+          const depShut = await closedToAgents(dep)
+          if (depShut) return json({ error: `${depShut}. That is the ticket you named as a blocker.` }, { status: 403 })
         }
-        await addDependency(params.id, parsed.data.dependsOnId, actor)
+        // `addDependency` THROWS on a cycle (X blocks Y, Y blocks X: a graph no
+        // ticket in it can ever satisfy). With no catch that surfaced as an
+        // unhandled 500 with the reason swallowed, so neither an agent nor a
+        // person could tell a server fault from "you just asked for something
+        // impossible". Same shape as tasks.$id PUT: a write that needs a person
+        // is 403, a request that cannot be satisfied is 400, and both carry the
+        // sentence that says why.
+        try {
+          await addDependency(params.id, parsed.data.dependsOnId, actor)
+        } catch (e) {
+          if (e instanceof HumanApprovalRequired) return json({ error: e.message }, { status: 403 })
+          return json({ error: (e as Error).message }, { status: 400 })
+        }
         return json({ ok: true })
       },
       DELETE: async ({ request, params }) => {

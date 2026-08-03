@@ -4,20 +4,7 @@ import { z } from 'zod'
 import { requireAgent } from '@/server/agent-auth'
 import { boardAllowsAgent } from '@/server/boards'
 import { reportGap } from '@/server/gaps'
-import { getTask, logActivity } from '@/server/tasks'
-import { statusMeta } from '@/server/statuses'
-
-/** Off-board terminal keys — mirrors OFF_BOARD_STATUSES in server/tasks.ts. */
-const OFF_BOARD_STATUSES = ['failed', 'cancelled']
-
-/** The closed-ticket clause of the central invariant (`agentSafePatch`, in
- *  server/tasks.ts), applied here because this route never reaches
- *  `updateTask`. FOLLOW-UP: server/tasks.ts should export this as one
- *  predicate — another agent owns that file this round. */
-async function closedToAgents(task: { boardId: string; status: string }): Promise<boolean> {
-  const meta = await statusMeta(task.boardId)
-  return meta.doneKeys.includes(task.status) || OFF_BOARD_STATUSES.includes(task.status)
-}
+import { closedToAgents, getTask, logActivity } from '@/server/tasks'
 
 const Body = z.object({
   kind: z.string().min(2).max(80),
@@ -58,14 +45,14 @@ export const Route = createFileRoute('/api/agent/gap')({
           // The CALLER, not its model: board policy's elevated bypass is only
           // for an identity that was proven, never merely asserted.
           if (!(await boardAllowsAgent(task.boardId, caller))) return refuse
-          // A person signed this ticket off — the gap is still worth recording,
-          // just not ON the closed ticket.
-          if (await closedToAgents(task)) {
+          // A person has taken this ticket off the table (signed off, archived,
+          // or its board archived) — the gap is still worth recording, just not
+          // ON that ticket. The SAME predicate `agentSafePatch` asks: this route
+          // writes an activity line and never reaches `updateTask`.
+          const shut = await closedToAgents(task)
+          if (shut) {
             return json(
-              {
-                error: 'forbidden',
-                message: 'agents cannot change a closed ticket — re-send this gap without taskId and it will still reach the Studio.',
-              },
+              { error: 'forbidden', message: `${shut}. Re-send this gap without taskId and it will still reach the Studio.` },
               { status: 403 },
             )
           }

@@ -97,10 +97,13 @@ export async function statusMeta(boardId: string): Promise<{
   /** Every review-category column on the board (possibly empty). */
   reviewKeys: string[]
   doneKeys: string[]
-  /** The board's intake column — where a new, unassigned ticket lands. Null
-   *  when the board has no open-category column (illegal now that
-   *  REQUIRED_CATEGORIES protects the last one, but reachable in legacy data);
-   *  the caller says so rather than dropping the ticket somewhere. */
+  /** The board's intake column — where a new, unassigned ticket lands. Never a
+   *  terminal column (a done key or an off-board key): an owner may legally
+   *  label an OPEN column "Cancelled", whose slug is the off-board terminal
+   *  key, and a ticket born there is born closed to agents. Null when the board
+   *  has no usable open-category column (illegal now that REQUIRED_CATEGORIES
+   *  protects the last one, but reachable in legacy data); the caller says so
+   *  rather than dropping the ticket somewhere. */
   defaultKey: string | null
   /** The board's PICKUP QUEUE — the column that constitutes assignment
    *  approval. Same rule as reviewKey, and for the same reason: `agentStart[0]
@@ -112,6 +115,13 @@ export async function statusMeta(boardId: string): Promise<{
    *  So: a real agent-start column that is not terminal (done or off-board) and
    *  not the reviewer's sign-off queue, or null. Callers refuse or stay put. */
   assignedKey: string | null
+  /** Is this key TERMINAL on this board — a done-category column, or one of the
+   *  off-board keys that are terminal everywhere? The one definition: callers
+   *  used to write `meta.doneKeys.includes(k) || OFF_BOARD_STATUSES.includes(k)`
+   *  by hand, and the ones that wrote only the first half are how a pickup
+   *  queue keyed `cancelled` became a dispatch target. (Not enumerable as data
+   *  on purpose — a function cannot be half-copied.) */
+  terminal: (key: string) => boolean
 }> {
   const list = await listStatuses(boardId)
   const agentStart = list.filter((s) => s.agentStart).map((s) => s.key)
@@ -124,17 +134,28 @@ export async function statusMeta(boardId: string): Promise<{
   // assertNotLastOfCategory() keeps boards out of that state now.
   const doneKeys = done.length ? done : ['done']
   const terminal = (k: string) => doneKeys.includes(k) || OFF_BOARD_STATUSES.includes(k)
+  // ── One filtered list, three positions ─────────────────────────────────────
+  // reviewKey/assignedKey each called `terminal()` for themselves and
+  // `defaultKey` — added later, by a different hand — did not, so a board owner
+  // who created an open-category column labelled "Cancelled" got an intake that
+  // resolved to the off-board terminal key: every new ticket was born CLOSED to
+  // agents and nothing could triage it. Three separate calls is three chances to
+  // forget, so the rule is applied ONCE, to the list all three pick from.
+  // `placeable` is "a column a resolver may hand a ticket to": never terminal
+  // (a done key or an off-board key), never the system Blocked column
+  // (listStatuses injects it, so it can be list[0]). A fourth sibling added
+  // later inherits the rule by picking from here.
+  const placeable = list.filter((s) => s.category !== 'blocked' && !terminal(s.key))
+  const pick = (f: (s: BoardStatus) => boolean): string | null => placeable.find(f)?.key ?? null
   return {
     keys: list.map((s) => s.key),
     agentStartKeys: agentStart,
-    reviewKey: reviews.find((k) => !agentStart.includes(k) && !terminal(k)) ?? null,
+    reviewKey: pick((s) => s.category === 'review' && !s.agentStart),
     reviewKeys: reviews,
     doneKeys,
-    // Never the system Blocked column (listStatuses injects it, so it can be
-    // list[0]) and never a terminal or sign-off column: an intake that resolves
-    // to one of those places new work somewhere nobody chose.
-    defaultKey: list.find((s) => s.category === 'open')?.key ?? null,
-    assignedKey: agentStart.find((k) => !terminal(k) && !reviews.includes(k)) ?? null,
+    defaultKey: pick((s) => s.category === 'open'),
+    assignedKey: pick((s) => s.agentStart && s.category !== 'review'),
+    terminal,
   }
 }
 

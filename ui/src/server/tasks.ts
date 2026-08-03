@@ -8,6 +8,7 @@ import { taskUsage, type TaskUsage } from './usage'
 import { listJudgeReviews, type JudgeReview } from './judge'
 import { ensureLabels } from './labels'
 import { OFF_BOARD_STATUSES, statusMeta } from './statuses'
+import { boardInfo } from './boards'
 import type { Effort, Priority, QualityReview, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
 
 async function taskBoardId(id: string): Promise<string | null> {
@@ -208,24 +209,59 @@ export class HumanApprovalRequired extends Error {}
  *  key list in statusMeta. */
 const BLOCKED_STATUS = 'blocked'
 
-/** Board name + archival state. `label` is for diagnostics (falls back to the
- *  id); `archivedAt` is load-bearing — an archived BOARD is hidden from the
- *  people watching it exactly like an archived ticket. */
-async function boardInfo(boardId: string): Promise<{ label: string; archivedAt: string | null }> {
-  const sql = await db()
-  const rows = (await sql`select name, archived_at as "archivedAt" from boards where id = ${boardId}`) as unknown as Array<{
-    name: string | null
-    archivedAt: string | Date | null
-  }>
-  const row = rows[0]
-  return {
-    label: row?.name ? `"${row.name}"` : boardId,
-    archivedAt: row?.archivedAt ? new Date(row.archivedAt).toISOString() : null,
-  }
-}
-
 /** Board name for a diagnostic, falling back to the id. Error paths only. */
 const boardLabel = async (boardId: string): Promise<string> => (await boardInfo(boardId)).label
+
+// ── THE agent-write invariant, as one exported predicate ─────────────────────
+// This used to be a private clause of `agentSafePatch` and was COPY-PASTED into
+// four side doors that never reach `updateTask` (log_usage, dependency edges,
+// gap reports, the workbench MCP ticket gate). Every copy carried only the
+// closed-status third of it, so an agent could write to an ARCHIVED ticket, or
+// to a ticket on an archived board, through any of the four. The fix is not a
+// fifth copy: it is that there is nothing left to copy. Everything that has to
+// ask "may an agent still write to this ticket?" — the patch gate, the push-side
+// dispatcher, the heartbeat pull side and every side door — imports THIS.
+//
+// It returns the REASON rather than a boolean so the refusal the caller sends
+// is the same sentence wherever the write arrived, and a new caller cannot
+// invent a vaguer one.
+
+/** The ticket shape the predicate needs. `getTask` returns it; so does the row
+ *  the heartbeat query selects. */
+export interface AgentWriteTarget {
+  boardId: string
+  status: string
+  archivedAt?: string | null
+}
+
+/**
+ * Why an agent may not write to this ticket, or null when it may.
+ *
+ * THREE STOP CONDITIONS, and they are three ends of the same idea — work a
+ * person has taken off the table:
+ *   · the ticket is ARCHIVED — archival hides work from the people watching it,
+ *     which is exactly why an agent may not keep working it;
+ *   · its BOARD is archived — the same act, one level up;
+ *   · its status is CLOSED — a done column on this board, or an off-board
+ *     terminal key. Sign-off is sticky and covers the record, not just the
+ *     column.
+ * Comments are deliberately NOT gated by this: commenting is the agent's
+ * channel on work it can no longer edit.
+ *
+ * Pass `meta` when the caller already resolved it (saves a round trip); it must
+ * be the meta for `task.boardId`.
+ */
+export async function closedToAgents(
+  task: AgentWriteTarget,
+  meta?: Awaited<ReturnType<typeof statusMeta>>,
+): Promise<string | null> {
+  if (task.archivedAt) return 'agents cannot change an archived ticket — a person restores it first'
+  const board = await boardInfo(task.boardId)
+  if (board.archivedAt) return `agents cannot change a ticket on an archived board — a person restores ${board.label} first`
+  const m = meta ?? (await statusMeta(task.boardId))
+  if (m.terminal(task.status)) return 'agents cannot change a closed ticket'
+  return null
+}
 
 // A misconfigured board is an OPERATOR problem, and the only party that sees
 // the API response is the agent that got refused. So log it too — on a slow
@@ -257,7 +293,7 @@ function warnBoardConfig(boardId: string, line: string): void {
  *  admin has to correct must not read as an agent that misbehaved. */
 async function handoffTarget(cur: Task, meta: Awaited<ReturnType<typeof statusMeta>>): Promise<string> {
   const target = meta.reviewKey
-  if (target !== null && meta.reviewKeys.includes(target) && !meta.doneKeys.includes(target) && !meta.agentStartKeys.includes(target)) {
+  if (target !== null && meta.reviewKeys.includes(target) && !meta.terminal(target) && !meta.agentStartKeys.includes(target)) {
     return target
   }
   const board = await boardLabel(cur.boardId)
@@ -301,21 +337,11 @@ async function agentSafePatch(cur: Task, patch: TaskPatch, meta: Awaited<ReturnT
   // because archival hides work from the people watching it — which is the same
   // reason an agent may not keep WORKING something already hidden. A person
   // archives a ticket to stop it; the agent noticing and writing anyway is the
-  // stop failing. (assignedWork stops serving it too, so the pull side agrees.)
-  if (cur.archivedAt) {
-    throw new HumanApprovalRequired('agents cannot change an archived ticket — a person restores it first')
-  }
-  const board = await boardInfo(cur.boardId)
-  if (board.archivedAt) {
-    throw new HumanApprovalRequired(`agents cannot change a ticket on an archived board — a person restores ${board.label} first`)
-  }
-  // Sign-off is sticky, and it covers the RECORD as well as the column: closed
-  // work is what the org signed off on, so an agent does not re-title it,
-  // re-word its outcome, or move it. Comments stay open — that is the agent's
-  // channel on work it can no longer edit.
-  if (meta.doneKeys.includes(cur.status) || OFF_BOARD_STATUSES.includes(cur.status)) {
-    throw new HumanApprovalRequired('agents cannot change a closed ticket')
-  }
+  // stop failing. That, its board-level twin, and the closed-status rule are all
+  // `closedToAgents` now — the same three conditions the side doors and both
+  // dispatch sides ask, from the one definition above.
+  const shut = await closedToAgents(cur, meta)
+  if (shut) throw new HumanApprovalRequired(shut)
   // A review column is the human sign-off QUEUE. Once an agent hands work over,
   // only a person — or the platform, whose judge bounces revisions back — takes
   // it out again. Otherwise the agent pulls its own work off the reviewer's
@@ -352,7 +378,7 @@ async function agentSafePatch(cur: Task, patch: TaskPatch, meta: Awaited<ReturnT
   // agent-start one, which is what made this rewrite launderable. The result
   // still FALLS THROUGH to the assignment gate rather than returning: a coerced
   // destination is still a destination.
-  if (meta.doneKeys.includes(next.status) || OFF_BOARD_STATUSES.includes(next.status)) {
+  if (meta.terminal(next.status)) {
     next.status = (await handoffTarget(cur, meta)) as TaskStatus
   }
   // ENTERING an agent-start column is assignment — the destination is the gate,
@@ -472,42 +498,50 @@ export async function updateTask(id: string, patch: TaskPatch, who: TaskActor): 
   if (patch.archived !== undefined && patch.archived !== !!cur.archivedAt)
     await logActivity(id, who.id, 'archived', patch.archived ? 'archived this ticket' : 'restored this ticket')
 
-  if (patch.status !== undefined && patch.status !== cur.status) {
-    await logActivity(id, who.id, 'status', `moved to ${patch.status}`)
-    // Moving INTO an agent-start column re-dispatches to agent assignees
-    // (human approval by column move) — but never into a column that CLOSES the
-    // ticket. createStatus/updateStatus refuse `done + agent_start` now; this is
-    // the same rule stated where the damage happened, so a legacy row written
-    // before that guard can't still turn signing work off into dispatching it.
-    if (
-      meta.agentStartKeys.includes(patch.status) &&
-      !meta.doneKeys.includes(patch.status) &&
-      !meta.agentStartKeys.includes(cur.status)
-    ) {
-      void (async () => {
-        const fresh = await getTask(id)
-        if (fresh) await (await import('./work-dispatch')).maybeDispatchTicket(fresh)
-      })().catch(() => {})
-    }
+  // THE COLUMN MOVED — however it moved. Gating this on `patch.status !== undefined`
+  // meant PROMOTION BY ASSIGNMENT left nothing on the record: a person patching
+  // only `assignees` moved the ticket out of intake and into the agent pickup
+  // queue, and the ticket's own history said only "assigned to …". The watchers
+  // were not told either. `next.status` is what was actually written, so ask it.
+  if (next.status !== cur.status) {
+    await logActivity(
+      id,
+      who.id,
+      'status',
+      patch.status === undefined ? `moved to ${next.status} (promoted by assignment)` : `moved to ${next.status}`,
+    )
     // Watchers + assigned humans hear about status moves (never the actor).
     const audience = [...(await watcherUserIds(id)), ...humanAssigneeIds(assignees)]
     void notifyTaskUsers(audience, who.id, {
       kind: 'task-status',
-      title: `${cur.ticketRef ?? cur.title}: ${patch.status.replace('_', ' ')}`,
+      title: `${cur.ticketRef ?? cur.title}: ${next.status.replace('_', ' ')}`,
       body: cur.title,
       href: `/boards/${cur.boardId}/${id}`,
     })
   }
+  // ── ONE push-side call ─────────────────────────────────────────────────────
+  // Two things mean "this is now someone's work": the ticket ENTERED a pickup
+  // queue (a person moved the column, or promotion by assignment did), and/or it
+  // GAINED agent assignees. Both used to call maybeDispatchTicket from their own
+  // branch, so a promotion pushed twice and the status branch restated the
+  // closed rule inline — the only place `doneKeys` stood in for the full closed
+  // predicate, which an off-board-keyed pickup queue walked straight through.
+  // Whether the ticket may be dispatched to AT ALL is maybeDispatchTicket's
+  // call now; this decides only whether anything changed enough to ask.
+  const addedAgents =
+    patch.assignees !== undefined ? agentAssignees(assignees).filter((a) => !agentAssignees(cur.assignees).includes(a)) : []
+  const enteredPickup =
+    next.status !== cur.status && meta.agentStartKeys.includes(next.status) && !meta.agentStartKeys.includes(cur.status)
+  if (enteredPickup || addedAgents.length) {
+    void (async () => {
+      const fresh = await getTask(id)
+      // Entering the queue is approval for EVERY agent assignee; a new assignee
+      // on a ticket already sitting there gets only their own push.
+      if (fresh) await (await import('./work-dispatch')).maybeDispatchTicket(fresh, enteredPickup ? undefined : addedAgents)
+    })().catch(() => {})
+  }
   if (patch.assignees !== undefined && assignees.join(',') !== cur.assignees.join(',')) {
     await logActivity(id, who.id, 'assigned', assignees.length ? `assigned to ${assignees.join(', ')}` : 'unassigned')
-    // NEWLY added agents get the work pushed into their run loop.
-    const addedAgents = agentAssignees(assignees).filter((a) => !agentAssignees(cur.assignees).includes(a))
-    if (addedAgents.length) {
-      void (async () => {
-        const fresh = await getTask(id)
-        if (fresh) await (await import('./work-dispatch')).maybeDispatchTicket(fresh, addedAgents)
-      })().catch(() => {})
-    }
     // NEWLY added humans get an inbox nudge.
     const added = humanAssigneeIds(assignees).filter((uid) => !humanAssigneeIds(cur.assignees).includes(uid))
     void notifyTaskUsers(added, who.id, {
@@ -696,18 +730,19 @@ export async function assignedWork(agentName: string): Promise<Array<{ id: strin
   // Custom-status boards: pickup = statuses flagged agent_start. Boards
   // without rows keep the classic ('assigned','in_progress') semantics.
   //
-  // ARCHIVED WORK IS NOT SERVED. Archival is how a person takes work off the
-  // table — agentSafePatch strips `archived` from an agent patch for exactly
-  // that reason — but this query had no archival predicate at all, so a human
-  // archiving a ticket (or a whole board) left the heartbeat handing it back on
-  // the very next poll and the agent carried on working something nobody was
-  // watching. Both levels: the ticket AND its board.
+  // THE PULL SIDE ASKS THE SAME QUESTION THE WRITE SIDE ASKS. This query used
+  // to select on `bs.agent_start` alone, so it handed an agent work that every
+  // write route would then refuse — an archived ticket, a ticket on an archived
+  // board, a ticket parked in a done-category or off-board-keyed pickup queue —
+  // and the agent looped on it every heartbeat with no way to make progress.
+  // Rather than restate the three stop conditions in SQL (a sixth copy, and the
+  // one hardest to keep in step), the query selects CANDIDATES and
+  // `closedToAgents` decides, exactly as it does for `agentSafePatch`,
+  // `maybeDispatchTicket` and every side door.
   const rows = await sql`
-    select t.id, t.title, t.description, t.tags, t.board_id as "boardId"
-    from tasks t join boards b on b.id = t.board_id
+    select t.id, t.title, t.description, t.tags, t.board_id as "boardId", t.status, t.archived_at as "archivedAt"
+    from tasks t
     where t.assignees @> ${sql.json([agentName])}::jsonb
-      and t.archived_at is null
-      and b.archived_at is null
       and (
         t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.agent_start)
         or (
@@ -717,10 +752,26 @@ export async function assignedWork(agentName: string): Promise<Array<{ id: strin
       )
     order by t.created_at asc
   `
+  const items = rows as unknown as Array<{
+    id: string
+    title: string
+    description: string | null
+    tags: string[]
+    boardId: string
+    status: string
+    archivedAt: string | null
+  }>
+  // One statusMeta per distinct board, not per ticket — a heartbeat runs often.
+  const metaByBoard = new Map<string, Awaited<ReturnType<typeof statusMeta>>>()
+  const servable: typeof items = []
+  for (const t of items) {
+    if (!metaByBoard.has(t.boardId)) metaByBoard.set(t.boardId, await statusMeta(t.boardId))
+    if (await closedToAgents(t, metaByBoard.get(t.boardId))) continue
+    servable.push(t)
+  }
   // Matched workflows ride with the pull channel too (plugin-side dispatch).
   const { workflowsForTask } = await import('./workflows')
-  const items = rows as unknown as Array<{ id: string; title: string; description: string | null; tags: string[]; boardId: string }>
   return Promise.all(
-    items.map(async (t) => ({ ...t, workflows: await workflowsForTask(t) })),
+    servable.map(async ({ status: _status, archivedAt: _archivedAt, ...t }) => ({ ...t, workflows: await workflowsForTask(t) })),
   )
 }

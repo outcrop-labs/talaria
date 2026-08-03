@@ -4,25 +4,11 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentCaller, requireAgent } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole } from '@/server/boards'
-import { getTask, logActivity } from '@/server/tasks'
-import { statusMeta } from '@/server/statuses'
+import { closedToAgents, getTask, logActivity } from '@/server/tasks'
 import { routedModelFor } from '@/server/fleet-agents'
 import { recordUsage, taskUsage } from '@/server/usage'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/** Off-board terminal keys — mirrors OFF_BOARD_STATUSES in server/tasks.ts. */
-const OFF_BOARD_STATUSES = ['failed', 'cancelled']
-
-/** The closed-ticket clause of the central invariant (`agentSafePatch`, in
- *  server/tasks.ts), applied here because this route never reaches
- *  `updateTask`: it writes a spend row keyed to the ticket AND an activity
- *  line onto it. FOLLOW-UP: server/tasks.ts should export this as one
- *  predicate — another agent owns that file this round. */
-async function closedToAgents(task: { boardId: string; status: string }): Promise<boolean> {
-  const meta = await statusMeta(task.boardId)
-  return meta.doneKeys.includes(task.status) || OFF_BOARD_STATUSES.includes(task.status)
-}
 
 const Body = z.object({
   promptTokens: z.number().int().min(0).max(100_000_000),
@@ -68,13 +54,14 @@ export const Route = createFileRoute('/api/tasks/$id/usage')({
         if (!(await boardAllowsAgent(task.boardId, poster))) {
           return json({ error: `agent "${name}" is not allowed on this board` }, { status: 403 })
         }
-        // Closed work is what the org signed off on: no more cost lands on it,
-        // and no more activity lines. Same rule as every other agent write.
-        if (await closedToAgents(task)) {
-          return json(
-            { error: 'agents cannot change a closed ticket — this ticket is signed off, so no further spend attaches to it' },
-            { status: 403 },
-          )
+        // Work a person has taken off the table takes no more cost and no more
+        // activity lines. This route never reaches `updateTask` — it writes a
+        // spend row keyed to the ticket AND an activity line onto it — so it
+        // asks the SAME predicate `agentSafePatch` asks, imported, not copied:
+        // closed, archived ticket, archived board, all three.
+        const shut = await closedToAgents(task)
+        if (shut) {
+          return json({ error: `${shut}. No further spend attaches to it.` }, { status: 403 })
         }
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })

@@ -64,6 +64,29 @@ export async function boardRole(userId: string, boardId: string): Promise<BoardR
 
 export const canEdit = (role: BoardRole | null) => role === 'owner' || role === 'editor'
 
+/** Existence + name + ARCHIVAL STATE, in one place.
+ *
+ *  `archivedAt` is the load-bearing field and the reason this lives here rather
+ *  than in each caller: archival is one fact about a board, and it was being
+ *  read (or forgotten) independently by `boardAllowsAgent`, by the agent-write
+ *  predicate in server/tasks.ts, and by the heartbeat query — which is how an
+ *  agent ended up unable to see an archived board, unable to patch its tickets,
+ *  and yet able to CREATE one on it. `label` is for diagnostics and falls back
+ *  to the id. */
+export async function boardInfo(boardId: string): Promise<{ label: string; archivedAt: string | null; exists: boolean }> {
+  const sql = await db()
+  const rows = (await sql`select name, archived_at as "archivedAt" from boards where id = ${boardId}`) as unknown as Array<{
+    name: string | null
+    archivedAt: string | Date | null
+  }>
+  const row = rows[0]
+  return {
+    label: row?.name ? `"${row.name}"` : boardId,
+    archivedAt: row?.archivedAt ? new Date(row.archivedAt).toISOString() : null,
+    exists: !!row,
+  }
+}
+
 /** A short uppercase ticket prefix from the board name (e.g. "Sprint Board" → "SB"). */
 function ticketPrefix(name: string): string {
   const initials = name
@@ -196,8 +219,20 @@ export async function setBoardAgentConfig(boardId: string, allowAll: boolean, mo
  *  policy questions about a third party (invalidAssignee below, board config).
  *  `subjectProven` reads a bare string as proven, so passing `caller.model`
  *  where `caller` is in hand silently discards the legacy flag — every route
- *  under this repo's ownership now passes the caller. */
+ *  under this repo's ownership now passes the caller.
+ *
+ *  ARCHIVAL IS THE THIRD END OF THE SAME RULE. `listBoardsForAgent` and
+ *  `listAllBoards` already hide archived boards, and `closedToAgents` refuses
+ *  writes to a ticket on one — but this predicate, the gate every agent-facing
+ *  board route stands behind, ignored `archived_at` entirely. So an agent could
+ *  not SEE an archived board and could not PATCH its tickets, yet
+ *  `POST /api/boards/:id/tasks` handed it a fresh ticket ref on one. An
+ *  archived board is out of service, for every agent, at every door — including
+ *  the elevated assistant, whose bypass is a policy exemption, not a licence to
+ *  work retired boards. */
 export async function boardAllowsAgent(boardId: string, agent: AgentSubject): Promise<boolean> {
+  const board = await boardInfo(boardId)
+  if (!board.exists || board.archivedAt) return false
   const cfg = await getBoardAgentConfig(boardId)
   if (cfg.allowAll || cfg.models.includes(subjectModel(agent))) return true
   return isElevatedAssistant(agent)
