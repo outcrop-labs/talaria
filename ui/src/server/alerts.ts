@@ -98,7 +98,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
     alerts.push({
       severity: 'critical',
       title: 'Gateway plane unreachable',
-      detail: 'The fleet multiplexer on :8642 is not answering — chat and channel replies will fail.',
+      detail: 'No rendered fleet manifest — Talaria has no agent url or key to reach, so chat and channel replies will fail. Render the fleet from /agents.',
       href: '/agents',
     })
   }

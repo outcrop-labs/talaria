@@ -3,6 +3,7 @@
 // chars/4 estimate flagged `estimated`. Dollar cost comes later (needs
 // per-LLM pricing attribution — see ROADMAP).
 import { db } from './db/pg'
+import { routingFor } from './llm-gateway'
 import { nudgeAutoPrices } from './price-oracle'
 
 export interface UsageInput {
@@ -25,16 +26,23 @@ export interface UsageInput {
 /** Rough token estimate when the gateway doesn't report usage. */
 export const estimateTokens = (chars: number): number => Math.ceil(chars / 4)
 
-/** Which model serves this generation: the requested TIER's endpoint when a
- *  tier was routed, else the agent's current MAIN endpoint. */
-const classCache = new Map<
-  string,
-  { at: number; value: { endpointClass: string; llmModel: string; endpoint: string | null } | null }
->()
-async function classifyAgent(
-  agentModel: string,
-  tier: string | null,
-): Promise<{ endpointClass: string; llmModel: string; endpoint: string | null } | null> {
+/** Which model serves this generation: the requested TIER's model when a tier
+ *  was routed, else the agent's current MAIN model.
+ *
+ *  The agent's stored `endpoint` is a config-time PREFERENCE, not what ran:
+ *  agents call the gateway by model name and `resolveRoute` round-robins the
+ *  pool serving it, so trusting the config can stamp a cloud turn `local` and
+ *  price it at $0. Classify from the gateway's real pool instead and record
+ *  only what's certain — one server is exact, a pool that agrees on class is
+ *  priced by class, a mixed pool leaves the row unattributed rather than
+ *  guessing. */
+interface AgentClass {
+  endpointClass: string | null
+  llmModel: string
+  endpoint: string | null
+}
+const classCache = new Map<string, { at: number; value: AgentClass | null }>()
+async function classifyAgent(agentModel: string, tier: string | null): Promise<AgentClass | null> {
   const cacheKey = `${agentModel}:${tier ?? ''}`
   const hit = classCache.get(cacheKey)
   if (hit && Date.now() - hit.at < 60_000) return hit.value
@@ -56,9 +64,29 @@ async function classifyAgent(
         where d.model = ${agentModel}
       `
   const r = rows[0] as { class: string | null; model: string | null; endpoint: string | null } | undefined
-  const value = r?.class && r.model ? { endpointClass: r.class, llmModel: r.model, endpoint: r.endpoint } : null
+  const value = r?.model ? await classifyModel(r.model, r) : null
   classCache.set(cacheKey, { at: Date.now(), value })
   return value
+}
+
+/** The serving endpoint as the GATEWAY would pick it, narrowed to what we can
+ *  honestly claim. `configured` is the agent's stored spec — the only thing
+ *  left to go on for a model the gateway doesn't serve (a tier still pointed
+ *  at a legacy upstream). */
+async function classifyModel(
+  model: string,
+  configured: { class: string | null; endpoint: string | null },
+): Promise<AgentClass | null> {
+  const { endpoints, upstreamModel } = await routingFor(model)
+  const one = endpoints.length === 1 ? endpoints[0]! : null
+  if (one) return { endpointClass: one.class, llmModel: upstreamModel, endpoint: one.name }
+  if (endpoints.length === 0) {
+    return configured.class ? { endpointClass: configured.class, llmModel: model, endpoint: configured.endpoint } : null
+  }
+  // A pool: the class is certain when every member agrees (local stays $0,
+  // cloud stays visible as unpriced), the endpoint never is.
+  const classes = new Set(endpoints.map((e) => e.class))
+  return { endpointClass: classes.size === 1 ? [...classes][0]! : null, llmModel: upstreamModel, endpoint: null }
 }
 
 export async function recordUsage(u: UsageInput): Promise<void> {

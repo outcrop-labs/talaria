@@ -8,7 +8,15 @@ import { getSetting } from '@/server/audit'
 
 // OpenAI-compatible chat completions over the org's model stack. Streaming and
 // non-streaming both pass through; every call is metered into the ledger with
-// the calling key's identity, priced like everything else.
+// the calling key's identity, priced like everything else — except the one key
+// whose spend a Talaria flow already writes (see below).
+
+// The two Talaria-minted gateway credentials (fleet-brain.ts owns both). Named
+// here only as the DEFAULTS for the settings below; operators can extend the
+// lists, and any other key — an operator's own — is metered and annotated.
+const PERSONA_KEY = 'fleet-gateway'
+const WORKBENCH_KEY = 'workbench-gateway'
+
 export const Route = createFileRoute('/api/llm/v1/chat/completions')({
   server: {
     handlers: {
@@ -32,19 +40,32 @@ export const Route = createFileRoute('/api/llm/v1/chat/completions')({
         }
 
         const caller = `api:${id.keyName}`
-        // Keys whose LLM usage is metered DOWNSTREAM (e.g. the fleet key — agents
-        // route their tool loop through here, but their chat/channel/ticket usage
-        // is already metered by those flows). Skip gateway metering to avoid a
-        // double-count; the guard still runs.
-        const unmetered = await getSetting<string[]>('gateway_unmetered_keys', ['fleet-gateway'])
-        const skipMeter = unmetered.includes(id.keyName)
-        // The same keys mark agent INNER LOOPS (the fleet routes agents' tool
-        // loops through here). Guard caveats are for humans reading a reply —
-        // injecting one into an agent's own loop would contaminate its context,
-        // so annotate/strict never touch these keys' responses (findings still
-        // record, and the chat/channel layer annotates the human-facing copy).
+        // Two questions that used to hang off one setting, and conflating them
+        // cost the ledger its largest line item. Both are answered by the
+        // CALLING KEY, and both lists are maintained by fleet-brain, which
+        // mints the keys — so the two consumers that must be told apart carry
+        // two different credentials rather than sharing one.
+        //
+        // ANNOTATION — is the caller an agent's own tool loop? Guard caveats
+        // are for humans reading a reply; injecting one into an agent's loop
+        // would contaminate its context, so annotate/strict never rewrite
+        // these keys' responses (findings still record, and the chat/channel
+        // layer annotates the human-facing copy). Both the personas' key and
+        // the workbench's are loops.
+        const agentLoopKeys = await getSetting<string[]>('gateway_agent_loop_keys', [PERSONA_KEY, WORKBENCH_KEY])
+        const isAgentLoop = agentLoopKeys.includes(id.keyName)
+        // METERING — does this call's spend already reach the ledger from
+        // another writer? Only on the personas' key: a chat/channel/ticket
+        // turn writes one row from the persona gateway's reported usage for
+        // the whole turn, so metering the N inner-loop calls behind it counts
+        // that turn twice. Everything else is metered HERE because here is the
+        // only place it lands — above all WORKBENCH HARNESS RUNS, which now
+        // hold their own key (a coding run outweighs a day of chat, and it was
+        // recording ~nothing).
+        const unmeteredKeys = await getSetting<string[]>('gateway_unmetered_keys', [PERSONA_KEY])
+        const skipMeter = unmeteredKeys.includes(id.keyName)
         const guardCfg = await getGuardConfig()
-        const mayAnnotate = !skipMeter && (guardCfg.mode === 'annotate' || guardCfg.mode === 'strict')
+        const mayAnnotate = !isAgentLoop && (guardCfg.mode === 'annotate' || guardCfg.mode === 'strict')
         const promptChars = (body.messages as Array<{ content?: unknown }>).reduce(
           (n, m) => n + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length),
           0,

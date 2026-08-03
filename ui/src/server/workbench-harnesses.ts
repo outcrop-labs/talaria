@@ -23,7 +23,17 @@ export interface ResolvedHarness extends HarnessDefinition {
   fullEnv: Record<string, string>
 }
 
-const GATEWAY_ENV = { OPENAI_BASE_URL: '${LLM_BASE_URL}', OPENAI_API_KEY: '${LLM_API_KEY}' }
+// Gateway-auth harnesses reach the same org gateway the personas do, but on
+// their OWN credential (`workbench-gateway`, minted into the fleet .env as
+// LLM_WORKBENCH_API_KEY by fleet-brain). They must: a harness run is spend NO
+// Talaria flow ever sees — no chat/channel/ticket row is written for it — so
+// the gateway is the only place it can enter the ledger, while the personas'
+// key has to stay unmetered there because the flow that drove the turn already
+// writes its row. One shared credential can only be one of those two things,
+// so harness runs were either invisible or doubled every persona turn. The
+// `:-` fallback keeps an operator-overridden fleet (LLM_BASE_URL pointed at a
+// raw upstream, so no gateway brain is provisioned) on the key it configured.
+const GATEWAY_ENV = { OPENAI_BASE_URL: '${LLM_BASE_URL}', OPENAI_API_KEY: '${LLM_WORKBENCH_API_KEY:-${LLM_API_KEY}}' }
 
 const BUILTINS: HarnessDefinition[] = [
   {

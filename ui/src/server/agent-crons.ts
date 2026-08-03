@@ -3,6 +3,17 @@
 // fire INSIDE the agent — Talaria is just the control surface: it reads
 // jobs.json for truth and drives the `hermes cron` CLI for mutations through
 // the running container (docker exec). Requires the container to be up.
+//
+// METERING CAVEAT — a cron fires the agent's own loop on the agent's own
+// config, i.e. the PERSONA gateway key, which the gateway leaves unmetered
+// because a Talaria flow normally writes that turn's ledger row. A cron has no
+// flow, so its spend reaches no ledger. Not fixable from here: `hermes cron
+// create` takes no model/provider/credential (only schedule, prompt, skills,
+// script, workdir), and the scheduler runs inside the single `hermes gateway
+// run` process — so at the gateway a cron turn is byte-identical to a persona
+// turn. Closing it needs the schedule DRIVEN by Talaria (dispatch the prompt
+// through gateway.ts's proxyChat like any other turn, which meters and
+// attributes it for free) instead of by the agent's own ticker.
 import { execFile } from 'node:child_process'
 import { db } from './db/pg'
 import { managedContainer } from './fleet-docker'
