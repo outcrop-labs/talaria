@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { agentMayAccessChannel, channelRole, getChannelMessage, insertChannelMessage, listChannelMessages, listThreadMessages } from '@/server/channels'
 import { notifyDmMessage, notifyUserMentions, triggerAgentReplies } from '@/server/channel-replies'
 import { describeAgent } from '@/server/gateway'
@@ -25,9 +25,12 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
             ? listThreadMessages(params.id, thread)
             : listChannelMessages(params.id, Number.isFinite(since) ? since : -1)
         // Agents in the channel can read it (elevated assistants: any non-DM).
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name || !(await agentMayAccessChannel(params.id, name))) return json({ error: 'forbidden' }, { status: 403 })
+        const reader = await agentCaller(request)
+        if (reader instanceof Response) return reader
+        if (reader) {
+          // The CALLER, not its model — the elevated "any non-DM channel"
+          // bypass is only for a proven identity.
+          if (!(await agentMayAccessChannel(params.id, reader))) return json({ error: 'forbidden' }, { status: 403 })
           return json({ messages: await page() })
         }
         const user = await getSessionUser(request)
@@ -50,9 +53,12 @@ export const Route = createFileRoute('/api/channels/$id/messages')({
 
         // An agent in the channel can post. It doesn't trigger other agents (no
         // reply storms) and can't attach uploads.
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name || !(await agentMayAccessChannel(params.id, name))) return json({ error: 'forbidden' }, { status: 403 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const name = caller.model
+          // The CALLER, not `name`: elevation buys org-wide posting rights.
+          if (!(await agentMayAccessChannel(params.id, caller))) return json({ error: 'forbidden' }, { status: 403 })
           if (!parsed.data.content.trim()) return json({ error: 'bad request' }, { status: 400 })
           const msg = await insertChannelMessage(params.id, 'agent', name, parsed.data.content, 'complete')
           const sql0 = await db()

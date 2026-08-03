@@ -9,9 +9,19 @@
 // Enforcement is the /api/mcp/gw gateway, not config: agents only ever see
 // gateway URLs, and the gateway filters tools/list + rejects tools/call
 // outside the allowed set. Config can't be jailbroken past the registry.
+//
+// IDENTITY: "the acting user" here is a HUMAN, and on a per-user server this
+// module hands out that human's connected credentials (an OAuth bearer token,
+// verbatim, in upstreamHeaders). That is owner-proxying, so it resolves
+// through `assistantOwnerFor(subject)` — which refuses a legacy shared-key
+// caller — and never through `personalAssistantOwners().get(model)`, whose
+// bare-string key `subjectProven` reads as PROVEN. Pass the AgentCaller
+// wherever one is in hand; a bare string is for the listing shapes that have
+// no caller (fleet-render, the admin /api/mcp roster).
 import { db } from './db/pg'
 import { seal, open } from './secretbox'
-import { personalAssistantOwners } from './users'
+import { assistantOwnerFor } from './users'
+import { subjectModel, type AgentSubject } from './agent-auth'
 import { hasOauthTokens, oauthTokenFor } from './mcp-oauth'
 
 export interface McpServer {
@@ -390,8 +400,16 @@ const intersect = (a: string[] | null, b: string[] | null): string[] | null => {
 
 /** What one AGENT may do on one server: assignment ∩ (for a personal
  *  assistant) its owner's user access — with the owner's credentials on
- *  per-user servers. Null = no access at all. */
-export async function effectiveMcpFor(agentModel: string, serverName: string): Promise<EffectiveMcp | null> {
+ *  per-user servers. Null = no access at all.
+ *
+ *  Takes the CALLER wherever the gateway has one. Resolving the acting owner
+ *  hands out that human's connected account — on an OAuth server, literally
+ *  their bearer token in `upstreamHeaders` — so it goes through
+ *  `assistantOwnerFor`, which consults `legacy`, never
+ *  `personalAssistantOwners().get(model)`, whose bare-string key reads as
+ *  proven and would let an ASSERTED identity act as the human. */
+export async function effectiveMcpFor(agent: AgentSubject, serverName: string): Promise<EffectiveMcp | null> {
+  const agentModel = subjectModel(agent)
   const server = await getMcpServer(serverName)
   if (!server || !server.enabled) return null
   const sql = await db()
@@ -407,7 +425,7 @@ export async function effectiveMcpFor(agentModel: string, serverName: string): P
     agentTools = rows[0]?.tools ?? null
   }
 
-  const owner = (await personalAssistantOwners()).get(agentModel) ?? null
+  const owner = await assistantOwnerFor(agent)
   let userTools: string[] | null = null
   let upstreamHeaders = server.headers
   if (owner) {
@@ -442,8 +460,16 @@ export async function effectiveMcpFor(agentModel: string, serverName: string): P
   return { server, tools: intersect(agentTools, userTools), upstreamHeaders }
 }
 
-/** Every server an agent should carry in its rendered config (gateway URLs). */
-export async function serversForAgent(agentModel: string): Promise<Array<{ name: string; timeoutSecs: number | null }>> {
+/** Every server an agent should carry in its rendered config (gateway URLs).
+ *
+ *  This one legitimately answers about a THIRD PARTY — fleet-render and the
+ *  /api/mcp admin listing ask "what should <model> carry?" with no caller in
+ *  hand — so a bare model string stays accepted. It grants nothing on its own:
+ *  the credential is never rendered, only a gateway URL, and the gateway
+ *  re-derives access per request through `effectiveMcpFor`. Pass the caller
+ *  anyway wherever one exists. */
+export async function serversForAgent(agent: AgentSubject): Promise<Array<{ name: string; timeoutSecs: number | null }>> {
+  const agentModel = subjectModel(agent)
   const sql = await db()
   const rows = (await sql`
     select s.name, s.timeout_secs as "timeoutSecs", s.auth_mode as "authMode", (s.oauth is not null) as "oauthEnabled", s.id
@@ -453,7 +479,7 @@ export async function serversForAgent(agentModel: string): Promise<Array<{ name:
     ))
     order by s.name
   `) as unknown as Array<{ name: string; timeoutSecs: number | null; authMode: string; oauthEnabled: boolean; id: string }>
-  const owner = (await personalAssistantOwners()).get(agentModel) ?? null
+  const owner = await assistantOwnerFor(agent)
   const out: Array<{ name: string; timeoutSecs: number | null }> = []
   for (const r of rows) {
     if (r.authMode === 'per-user') {

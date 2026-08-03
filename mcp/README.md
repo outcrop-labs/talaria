@@ -15,10 +15,10 @@ bypass them.
 | `list_tickets` | A board's tickets |
 | `get_ticket` | Full ticket: fields, comments, activity, watchers, reviews, dependencies |
 | `create_ticket` | Create a ticket → lands in **inbox**, unassigned |
-| `triage_ticket` | Priority, effort, labels, description, due date, status → `in_progress` / `blocked` / `quality_review` |
-| `comment` | Comment on a ticket |
-| `report_outcome` | Record outcome/resolution and hand the ticket to **quality review** |
-| `add_time` | Add seconds to the auto-accumulated time-spent |
+| `triage_ticket` | Priority, effort, labels, description, due date, and **forward-only** status moves → `in_progress` / `blocked` / `quality_review` (see below) |
+| `comment` | Comment on a ticket — the one write that stays open on a ticket the agent can no longer edit |
+| `report_outcome` | Record outcome/resolution and hand the ticket to **quality review**. The agent's last status move on that ticket |
+| `add_time` | Add seconds to the auto-accumulated time-spent. Open tickets only |
 | `log_usage` | Report LLM tokens burned on a ticket (prompt/completion, optional model tier) — feeds the ticket's cost rollup and the fleet ledger |
 | `add_dependency` | Mark a ticket blocked by another on the same board |
 
@@ -36,6 +36,24 @@ where granted), **channels** (`list_channels` / `read_channel` /
 cd mcp && npm install && npm run build
 ```
 
+### `mcp/dist` is the thing that runs, and it is gitignored
+
+`npm run build` compiles `src/index.ts` → `dist/index.js`. That file — not `src` —
+is what the app spawns (`ui/src/server/mcp-service.ts`) and what an agent's stdio
+config points at. `dist/` is in `.gitignore`, so **a commit cannot carry it**: a
+fresh clone has no toolkit at all until it is built, and an edit to `src` changes
+nothing at runtime until it is rebuilt. A stale `dist` fails silently — the fleet
+keeps working, against last month's tool descriptions and last month's auth.
+
+Three things keep it current, and you should not need to run the build by hand:
+
+- `scripts/setup.sh` installs `mcp/`'s dependencies and builds it (fresh install).
+- `scripts/dev.sh` rebuilds whenever anything in `mcp/src` is newer than
+  `mcp/dist/index.js`, and refuses to start the stack if that build fails
+  (`TALARIA_SKIP_MCP_BUILD=1` overrides, and says that dist may be stale).
+- CI (`.github/workflows/ci.yml`, job `mcp`) typechecks and builds this package on
+  every PR. It does **not** publish `dist`; it only proves the build works.
+
 Configure your agent's MCP client (stdio transport):
 
 ```json
@@ -46,7 +64,7 @@ Configure your agent's MCP client (stdio transport):
       "args": ["/path/to/talaria/mcp/dist/index.js"],
       "env": {
         "TALARIA_URL": "http://localhost:5273",
-        "TALARIA_AGENT_KEY": "<TALARIA_AGENT_KEY from ui/.env>",
+        "TALARIA_AGENT_KEY": "<this agent's tak_ credential, from fleet/.env>",
         "TALARIA_AGENT_NAME": "sam"
       }
     }
@@ -54,11 +72,12 @@ Configure your agent's MCP client (stdio transport):
 }
 ```
 
-- `TALARIA_AGENT_KEY` authenticates the fleet (same key the register/heartbeat
-  endpoints use).
-- `TALARIA_AGENT_NAME` is the agent's fleet model name. It scopes the per-board
-  agent policy (an agent only sees/touches boards that allow it) and attributes
-  every ticket, comment, and activity entry to the agent.
+- `TALARIA_AGENT_KEY` is the agent's OWN credential (`TALARIA_AGENT_KEY_<SLUG>`
+  in `fleet/.env`, minted per agent by the renderer). Talaria resolves identity
+  from it, which is what makes board policy and tool allowlists enforceable.
+- `TALARIA_AGENT_NAME` is the agent's fleet model name. It is now a CROSS-CHECK:
+  Talaria refuses a request whose name contradicts its credential. It still
+  attributes every ticket, comment, and activity entry to the agent.
 
 ## How it holds the guardrails
 
@@ -69,13 +88,74 @@ assigned` is rejected, and `status: done` is coerced to `quality_review`. This M
 server additionally never offers the unsafe inputs, so a well-behaved agent never
 even sees them.
 
+### The lifecycle is one-way for an agent
+
+`triage_ticket` accepts three statuses, but not from anywhere to anywhere.
+`agentSafePatch` (`ui/src/server/tasks.ts`) refuses three moves outright with a
+403, and the tool descriptions say so — an agent that doesn't know spends turns
+on writes that can't land:
+
+| Move | Agent | Why |
+| --- | --- | --- |
+| assigned → `in_progress` | yes | working what a person gave it |
+| in_progress → `blocked` | yes | parking its own work |
+| in_progress → `quality_review` | yes | handing over for sign-off |
+| blocked → `in_progress` | **no** | entering a start column is assignment; a person restarts parked work |
+| out of `quality_review` | **no** | review is the human sign-off queue — otherwise an agent pulls its own work back off the reviewer's board |
+| any write to a **closed** ticket (`done` / `failed` / `cancelled`) | **no** | sign-off is sticky and covers the record, not just the column. Includes `add_time` |
+
+`comment` is the exception and the escape hatch: it stays open on a ticket the
+agent can no longer edit.
+
 
 ## Fleet HTTP mode
 
 Set `MCP_HTTP_PORT` and talaria-mcp serves the WHOLE fleet over stateless
 streamable HTTP instead of stdio: each request is handled by a fresh server
-bound to the calling agent's identity (`X-Agent-Name` header) and must carry
-the fleet key (`X-Api-Key` = `TALARIA_AGENT_KEY`). Talaria runs this mode
+bound to the calling agent's identity. Auth is PASS-THROUGH: this process has
+no identity of its own, so it forwards each caller's `X-Api-Key` (and
+`X-Agent-Name`) to Talaria, which is the only thing that can validate them.
+Talaria runs this mode
 itself (`ui/src/server/mcp-service.ts`) and injects the connection into every
 rendered agent config — you never start it by hand. Stdio mode (one agent via
 `TALARIA_AGENT_NAME`) remains for external clients.
+
+`MCP_HTTP_HOST` overrides where it listens (comma-separated). The default is
+loopback plus the docker bridge addresses the fleet actually arrives on, rescanned
+periodically because docker brings a compose network's bridge up only once a
+container attaches. Binding `0.0.0.0` publishes the toolkit catalog on every
+interface the host has; do that only behind a network policy.
+
+### Authentication — and the route it depends on
+
+Tool *calls* need no local check: each one ends in a request Talaria
+authenticates. `initialize` and `tools/list` do not — the MCP SDK answers those
+from this process, so without a check the full toolkit catalog (every tool name,
+description and JSON schema: a map of the fleet's write surface) is readable by
+anyone who can open a socket. So before a server is built for a caller, this
+process **verifies the presented credential against Talaria** and caches the
+verdict briefly (60s accepted / 5s refused, keyed by name + a hash of the
+credential). Unreachable Talaria ⇒ `503`, never a pass.
+
+It verifies by issuing an authenticated `GET /api/users` and reading the status
+code. **That makes `/api/users` an authentication oracle for the entire toolkit,**
+and the coupling is the fragile part of this design:
+
+> Narrow `/api/users` — admin-only, session-only, renamed, moved — and every
+> agent's `initialize`/`tools/list` starts failing. The fleet toolkit goes dark
+> **fleet-wide**, and nothing in the resulting errors points at the route change.
+
+The contract that route has to keep, therefore:
+
+| Requirement | Why |
+| --- | --- |
+| Authenticates an agent's own `tak_` credential | it is the credential being verified |
+| `GET`, cheap, no side effects | issued on every cache miss |
+| `401`/`403` on a bad credential | that is the refusal this process forwards |
+| Not `404`/`405` | those mean *the probe itself* broke, not the caller |
+
+If you must change it, repoint the probe first: **`TALARIA_MCP_VERIFY_PATH`**
+overrides the path with no code change. A `404`/`405` from the probe is treated as
+"Talaria unreachable" (`503`, uncached) and logged once per outage with that
+instruction, so the failure is at least diagnosable. `ui/src/server/agent-auth.ts`
+carries the matching warning at the Talaria end.

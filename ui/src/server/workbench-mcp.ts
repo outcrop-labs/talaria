@@ -10,6 +10,7 @@
 // the PR with the templated ticket-linked body. No raw pushes to default —
 // the workbench token is the only credential in the sandbox, and every
 // transition lands in task_activity.
+import { subjectModel, type AgentSubject } from './agent-auth'
 import { db } from './db/pg'
 import { branchAhead, cloneUrl, createBranch, createPullRequest, effectiveBase, grantedRepos, mergeInto, repoFlow } from './github'
 import { resolveWorkbench } from './workbench'
@@ -146,9 +147,61 @@ async function logTicket(taskId: string | null, actor: string, description: stri
   await logActivity(taskId, actor, 'workbench', description).catch(() => {})
 }
 
+/** Off-board terminal keys — mirrors OFF_BOARD_STATUSES in server/tasks.ts. */
+const OFF_BOARD_STATUSES = ['failed', 'cancelled']
+
+/** THE GATE for a caller-supplied taskId. Verbs here take the ticket from the
+ *  agent, and everything downstream either DISCLOSES it (the ticket ref and
+ *  title ride into the branch name and, at finish_job, into a public PR title
+ *  and body) or WRITES to it (a plan comment authored as the agent, the plan
+ *  artifact chip on the ticket, workbench audit lines). None of that reaches
+ *  `updateTask`, so the two rules it carries are enforced here instead:
+ *    · the board's agent policy must allow this agent (a ticket on a board the
+ *      agent cannot see is not its work — and its title is not its business)
+ *    · a ticket a person closed takes no further agent writes
+ *  Unknown and not-allowed refuse with the SAME message: a distinct "no such
+ *  ticket" would turn this verb into a ticket enumeration oracle.
+ *  FOLLOW-UP: the closed-ticket predicate belongs in server/tasks.ts next to
+ *  `agentSafePatch` — another agent owns that file this round. */
+async function authorizeTicket(subject: AgentSubject, taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { getTask } = await import('./tasks')
+  const task = await getTask(taskId).catch(() => null)
+  const deny = {
+    ok: false as const,
+    error: `taskId "${taskId}" is not a ticket you may work — it does not exist, or its board does not allow you. Omit taskId, or ask an admin for access to that board.`,
+  }
+  if (!task) return deny
+  const { boardAllowsAgent } = await import('./boards')
+  // The subject carries proof when the caller threaded it through; a bare model
+  // string is read as proven (a legacy caller can never present a privileged
+  // name), so this is honest either way.
+  if (!(await boardAllowsAgent(task.boardId, subject))) return deny
+  const { statusMeta } = await import('./statuses')
+  const meta = await statusMeta(task.boardId)
+  if (meta.doneKeys.includes(task.status) || OFF_BOARD_STATUSES.includes(task.status)) {
+    return {
+      ok: false,
+      error: `ticket ${task.ticketRef ?? taskId} is closed (${task.status}) — a person signed it off, so nothing more attaches to it. Ask for it to be reopened, or work the follow-up ticket.`,
+    }
+  }
+  return { ok: true }
+}
+
+/** Board policy alone, for the DISCLOSURE point (finish_job): may this agent
+ *  still see this ticket? Deliberately NOT the closed check — a person closing
+ *  the ticket while the job ran should not cost the PR its ticket link. */
+async function ticketStillOurs(agentModel: string, taskId: string): Promise<boolean> {
+  const { getTask } = await import('./tasks')
+  const task = await getTask(taskId).catch(() => null)
+  if (!task) return false
+  const { boardAllowsAgent } = await import('./boards')
+  return boardAllowsAgent(task.boardId, agentModel)
+}
+
 type ToolResult = { ok: true; value: unknown } | { ok: false; error: string }
 
-async function callTool(agentModel: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+async function callTool(subject: AgentSubject, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  const agentModel = subjectModel(subject)
   const agent = await agentByModel(agentModel)
   if (!agent) return { ok: false, error: 'unknown agent' }
   const profile = await resolveWorkbench(agent)
@@ -208,6 +261,15 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const taskId = typeof args.taskId === 'string' && args.taskId ? args.taskId : null
       if (!(await grantedRepos(agent.id)).includes(repo)) return { ok: false, error: `repo "${repo}" is not granted to you — list_repos shows yours` }
       if (effort !== 'light' && !plan.trim()) return { ok: false, error: 'standard/heavy work requires a plan first — describe approach, files, and test strategy in `plan`' }
+      // BEFORE anything reads the ticket: the caller supplied this id, so board
+      // policy and the closed-ticket rule decide whether it may be touched at
+      // all. Everything below (ref + title in the branch name, the plan comment
+      // and artifact chip on the ticket, the audit line, and finish_job's public
+      // PR title) depends on this having passed.
+      if (taskId) {
+        const auth = await authorizeTicket(subject, taskId)
+        if (!auth.ok) return auth
+      }
       // One live job per ticket keeps branches 1:1 with work.
       if (taskId) {
         const dup = await sql`select 1 from workbench_jobs where task_id = ${taskId} and status = 'started' limit 1`
@@ -251,10 +313,16 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
           })
           await saveArtifact(artifact.id, { body: `# Workbench plan — ${ref ? `${ref} · ` : ''}${title || repo}\n\n_${effort} effort · ${repo} · by ${label}_\n\n${plan}` }, agent.model)
           const chip = { id: artifact.id, filename: artifact.title || 'Plan', mime: 'ref/artifact', size: 0, refType: 'artifact' }
-          const [cur] = (await sql`select attachments from tasks where id = ${taskId}`) as unknown as Array<{ attachments: unknown[] }>
+          // Through `updateTask` as the AGENT, never `update tasks set …`: raw
+          // SQL here was the one agent-reachable write to `tasks` that skipped
+          // the human-in-the-loop invariant entirely (it would have re-stamped
+          // a ticket a person closed mid-job). The agent actor also gets the
+          // attachment activity line and the board push for free.
+          const { getTask, updateTask } = await import('./tasks')
+          const cur = await getTask(taskId)
           const have = Array.isArray(cur?.attachments) ? cur.attachments : []
           if (!have.some((a) => (a as { id?: string }).id === artifact.id)) {
-            await sql`update tasks set attachments = ${sql.json([...have, chip] as never)}, updated_at = now() where id = ${taskId}`
+            await updateTask(taskId, { attachments: [...have, chip] }, { kind: 'agent', id: agent.model })
           }
         })().catch(() => {})
       }
@@ -342,6 +410,12 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       if (!cfg.repoCreationOrgs.includes(org)) return { ok: false, error: `org "${org}" is not approved for repo creation (approved: ${cfg.repoCreationOrgs.join(', ')})` }
       if (!repoName) return { ok: false, error: 'name required' }
       const taskId = typeof args.taskId === 'string' && args.taskId ? args.taskId : null
+      // Same gate as start_job: this taskId is stored on the request row and
+      // gets a workbench audit line, so it is authorised rather than believed.
+      if (taskId) {
+        const auth = await authorizeTicket(subject, taskId)
+        if (!auth.ok) return auth
+      }
       const dup = await sql`
         select 1 from workbench_repo_requests where agent_id = ${agent.id} and org = ${org} and name = ${repoName} and status = 'pending' limit 1
       `
@@ -386,7 +460,13 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       if (ahead === 0) return { ok: false, error: 'the branch has no commits yet — push your work first (or finish with abandon:true)' }
       let ticketLine = ''
       let t: Array<{ ticketRef: string | null; title: string }> = []
-      if (job.taskId) {
+      // The ticket ref and TITLE go into a PUBLIC PR title and body, so the
+      // board check is re-run at the disclosure point rather than trusted from
+      // start_job: job rows written before that gate existed (or whose board
+      // grant was revoked since) must not publish a ticket the agent may no
+      // longer see. Losing the link degrades the PR; it never blocks the work.
+      const ticketOk = job.taskId ? await ticketStillOurs(agent.model, job.taskId) : false
+      if (job.taskId && ticketOk) {
         t = (await sql`
           select case when tk.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || tk.ticket_no end as "ticketRef", tk.title
           from tasks tk join boards b on b.id = tk.board_id where tk.id = ${job.taskId}
@@ -400,7 +480,7 @@ async function callTool(agentModel: string, name: string, args: Record<string, u
       const title = t[0] ? `${t[0].ticketRef ? `[${t[0].ticketRef}] ` : ''}${t[0].title}`.slice(0, 100) : `Workbench: ${job.branch}`
       const pr = await createPullRequest(job.repo, { head: job.branch, base, title, body })
       await sql`update workbench_jobs set status = 'pr_open', pr_url = ${pr.url}, summary = ${summary}, updated_at = now() where id = ${job.id}`
-      await logTicket(job.taskId, agent.model, `workbench PR opened: ${pr.url}`)
+      await logTicket(ticketOk ? job.taskId : null, agent.model, `workbench PR opened: ${pr.url}`)
       return { ok: true, value: { prUrl: pr.url, prNumber: pr.number, note: 'Include this PR link in your outcome report.' } }
     }
   }
@@ -436,9 +516,14 @@ interface Rpc {
 const result = (id: unknown, res: unknown) => ({ jsonrpc: '2.0', id: id ?? null, result: res })
 const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } })
 
+/** `agent` takes the resolved AgentCaller where the caller has one — a bare
+ *  model string still works (and is read as proven, which a legacy caller
+ *  cannot exploit: it can never present a privileged name).
+ *  FOLLOW-UP: routes/api/mcp.gw.$server.ts passes `name`; it holds `caller` two
+ *  lines earlier and should pass that instead. Not this round's file. */
 export async function dispatchWorkbenchMcp(
   rpc: Rpc,
-  agentModel: string,
+  agent: AgentSubject,
   allowed: string[] | null,
 ): Promise<{ status: number; body: unknown | null }> {
   const tools = WORKBENCH_TOOLS.filter((t) => allowed === null || allowed.includes(t.name))
@@ -462,7 +547,7 @@ export async function dispatchWorkbenchMcp(
       const tool = tools.find((t) => t.name === rpc.params?.name)
       if (!tool) return { status: 200, body: rpcError(rpc.id, -32602, `tool "${rpc.params?.name}" is not available here`) }
       try {
-        const r = await callTool(agentModel, tool.name, rpc.params?.arguments ?? {})
+        const r = await callTool(agent, tool.name, rpc.params?.arguments ?? {})
         return {
           status: 200,
           body: result(rpc.id, {

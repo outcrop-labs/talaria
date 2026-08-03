@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { createChannel, listChannels, listChannelsForAgent } from '@/server/channels'
 import { maybeSweepIdleChats } from '@/server/comms-decay'
 import { maybeSweepTitles } from '@/server/titler'
@@ -18,10 +18,14 @@ export const Route = createFileRoute('/api/channels')({
     handlers: {
       GET: async ({ request }) => {
         // Agents see the channels they've been added to.
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
-          return json({ channels: await listChannelsForAgent(name) })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          // The CALLER, not its model. `listChannelsForAgent` widens to EVERY
+          // non-DM channel for an elevated assistant, and `subjectProven` reads
+          // a bare string as proven — so `caller.model` here would throw the
+          // legacy flag away and hand org-wide reach to an asserted identity.
+          return json({ channels: await listChannelsForAgent(caller) })
         }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })

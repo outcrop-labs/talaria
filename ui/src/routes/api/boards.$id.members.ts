@@ -5,7 +5,7 @@ import { getSessionUser } from '@/server/auth/session'
 import { boardAllowsAgent, boardRole, canEdit, listMembers, shareBoard, unshareBoard } from '@/server/boards'
 import { db } from '@/server/db/pg'
 import { actingUser } from '@/server/users'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { logAudit } from '@/server/audit'
 
 // GET → members. POST { email, role } → share (owner/editor). DELETE { userId
@@ -17,9 +17,13 @@ export const Route = createFileRoute('/api/boards/$id/members')({
       GET: async ({ request, params }) => {
         // Agents allowed on the board may READ membership (they mutate it
         // blind otherwise); writes below stay identity-proxied.
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name || !(await boardAllowsAgent(params.id, name))) return json({ error: 'forbidden' }, { status: 403 })
+        const agent = await agentCaller(request)
+        if (agent instanceof Response) return agent
+        if (agent) {
+          // The CALLER, not its model: board policy falls back to the
+          // elevated-assistant bypass (org-wide reach), and a bare string reads
+          // as proven — `agent.model` would discard `legacy` silently.
+          if (!(await boardAllowsAgent(params.id, agent))) return json({ error: 'forbidden' }, { status: 403 })
           return json({ members: await listMembers(params.id) })
         }
         const user = await getSessionUser(request)

@@ -1,9 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { getSessionUser } from '@/server/auth/session'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { getResearchRun, researchRole } from '@/server/research'
-import { personalAssistantOwners } from '@/server/users'
+import { assistantOwnerFor } from '@/server/users'
 import { db } from '@/server/db/pg'
 
 // GET → one run + its citation registry (owner / shared member / org runs).
@@ -13,9 +13,12 @@ export const Route = createFileRoute('/api/research/$id')({
     handlers: {
       GET: async ({ request, params }) => {
         let viewer: string | null = null
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          viewer = name ? ((await personalAssistantOwners()).get(name) ?? null) : null
+        const agent = await agentCaller(request)
+        if (agent instanceof Response) return agent
+        if (agent) {
+          // Reading through the owner's eyes is owner-proxying — ask with the
+          // CALLER so an asserted identity sees org runs only.
+          viewer = await assistantOwnerFor(agent)
         } else {
           const user = await getSessionUser(request)
           if (!user) return json({ error: 'unauthorized' }, { status: 401 })

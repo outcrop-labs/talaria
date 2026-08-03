@@ -6,6 +6,7 @@
 import { db } from './db/pg'
 import { publishChannel } from './realtime'
 import { isElevatedAssistant } from './users'
+import { subjectModel, type AgentSubject } from './agent-auth'
 import type { Finding } from './guardrails'
 
 export type ChannelRole = 'owner' | 'member'
@@ -209,12 +210,16 @@ export async function listChannelAgents(channelId: string): Promise<string[]> {
   return (rows as unknown as Array<{ agent_model: string }>).map((r) => r.agent_model)
 }
 
-/** Channels a given agent (by model) has been added to. */
-export async function listChannelsForAgent(model: string): Promise<Channel[]> {
+/** Channels a given agent has been added to. Pass the AgentCaller where one is
+ *  in hand — org-wide reach is only for a caller that PROVED its identity, and
+ *  a bare string reads as proven (`subjectProven`), so `caller.model` here
+ *  quietly throws the legacy flag away. */
+export async function listChannelsForAgent(agent: AgentSubject): Promise<Channel[]> {
   const sql = await db()
+  const model = subjectModel(agent)
   // An elevated assistant sees every live channel and relay — never DMs
   // (human↔human direct messages stay private regardless of elevation).
-  if (await isElevatedAssistant(model)) {
+  if (await isElevatedAssistant(agent)) {
     const all = await sql`
       select c.id, c.name, c.topic, c.kind, c.created_at as "createdAt", c.updated_at as "updatedAt"
       from channels c where c.archived_at is null and c.kind <> 'dm'
@@ -231,10 +236,11 @@ export async function listChannelsForAgent(model: string): Promise<Channel[]> {
 }
 
 /** May this agent read/post in this channel? Membership — or org-wide
- *  elevation, which still never reaches DMs. */
-export async function agentMayAccessChannel(channelId: string, model: string): Promise<boolean> {
-  if ((await listChannelAgents(channelId)).includes(model)) return true
-  if (!(await isElevatedAssistant(model))) return false
+ *  elevation, which still never reaches DMs. Pass the AgentCaller, not its
+ *  model: elevation is only for a proven identity. */
+export async function agentMayAccessChannel(channelId: string, agent: AgentSubject): Promise<boolean> {
+  if ((await listChannelAgents(channelId)).includes(subjectModel(agent))) return true
+  if (!(await isElevatedAssistant(agent))) return false
   const sql = await db()
   const rows = await sql`select 1 from channels where id = ${channelId} and kind <> 'dm' and archived_at is null`
   return rows.length > 0

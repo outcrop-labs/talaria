@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { deleteArtifact, getArtifact, guarded, saveArtifact, setArtifactOfficial, setArtifactRouting, targetsForArtifact } from '@/server/artifacts'
 import { applyArtifactRouting } from '@/server/retrieval/artifact-routing'
 import { indexPlanDoc } from '@/server/plan-doc'
@@ -37,10 +37,12 @@ export const Route = createFileRoute('/api/artifacts/$id')({
         if (!artifact) return json({ error: 'not found' }, { status: 404 })
         const editors = await listEditors('artifact', artifact.id)
         // Agents (over MCP) read org/public artifacts + ones granted to them.
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
+        const reader = await agentCaller(request)
+        if (reader instanceof Response) return reader
+        if (reader) {
+          const name = reader.model
           const allowed = artifact.visibility !== 'private' || editors.some((e) => e.principalType === 'agent' && e.principalId === name)
-          if (!name || !allowed) return json({ error: 'forbidden' }, { status: 403 })
+          if (!allowed) return json({ error: 'forbidden' }, { status: 403 })
           return json({ artifact, editors })
         }
         const gate = await requireUser(request)
@@ -59,11 +61,13 @@ export const Route = createFileRoute('/api/artifacts/$id')({
 
         let actor: string
         let owner = false
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
+        const agent = await agentCaller(request)
+        if (agent instanceof Response) return agent
+        if (agent) {
+          const name = agent.model
           // Editor grant — or an admin-elevated assistant on any non-private artifact.
-          const mayEdit = !!name && (canEditAgent(name, editors) || (artifact.visibility !== 'private' && (await isElevatedAssistant(name))))
-          if (!name || !mayEdit) return json({ error: 'forbidden' }, { status: 403 })
+          const mayEdit = canEditAgent(name, editors) || (artifact.visibility !== 'private' && (await isElevatedAssistant(agent)))
+          if (!mayEdit) return json({ error: 'forbidden' }, { status: 403 })
           actor = name
           body.visibility = undefined
           body.editPolicy = undefined

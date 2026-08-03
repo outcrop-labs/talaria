@@ -7,11 +7,39 @@
 // construction here, and the Talaria API enforces them again server-side
 // (assign → 403, done → quality_review).
 //
+// The lifecycle is ONE-WAY for an agent, and the tool descriptions below say so
+// because an agent that doesn't know burns turns on writes that 403
+// (server/tasks.ts agentSafePatch):
+//   • blocked → in_progress   refused — only a person restarts parked work
+//   • anything out of review  refused — review is the human sign-off queue
+//   • ANY write to a closed   refused (done / failed / cancelled). The ticket
+//                             patch, add_time, log_usage and add_dependency
+//                             alike — the last two enforce it on their own
+//                             routes because they never reach updateTask.
+//                             Comments stay open: that is the agent's channel
+//                             on work it can no longer edit.
+//
+// Nothing here re-implements those rules — Talaria enforces them and this
+// process only has to STATE them, so a description that drifts from the API is
+// a bug in the description.
+//
 // Env:
 //   TALARIA_URL        base URL of the Talaria app (default http://localhost:5273)
-//   TALARIA_AGENT_KEY  the fleet agent key (required)
-//   TALARIA_AGENT_NAME this agent's fleet model name (required; scopes board
-//                      policy and attributes all activity)
+//   TALARIA_AGENT_KEY  this agent's own Talaria credential (required). Talaria
+//                      resolves identity FROM it; the name below is a cross-check.
+//   TALARIA_AGENT_NAME this agent's fleet model name (required in stdio mode)
+//   MCP_HTTP_PORT      serve the whole fleet over HTTP instead of stdio
+//   MCP_HTTP_HOST      comma-separated bind addresses for that listener
+//                      (default: loopback + the docker bridges — see below)
+//   TALARIA_MCP_VERIFY_PATH
+//                      the Talaria route HTTP mode authenticates callers against
+//                      (default /api/users). Load-bearing — see `verify()`.
+//
+// BUILD: this compiles to mcp/dist, which is gitignored and which the app
+// SPAWNS (ui/src/server/mcp-service.ts). Nothing about editing this file makes
+// the running toolkit change — `npm run build` here does, and scripts/dev.sh +
+// scripts/setup.sh run it for you. A stale dist is silent: it serves last
+// month's tool descriptions and last month's auth to the whole fleet.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -20,21 +48,18 @@ import { z } from 'zod'
 const BASE = (process.env.TALARIA_URL ?? 'http://localhost:5273').replace(/\/+$/, '')
 const KEY = process.env.TALARIA_AGENT_KEY ?? ''
 const AGENT = process.env.TALARIA_AGENT_NAME ?? ''
-/** When set, serve MCP over streamable HTTP for the WHOLE fleet (per-request
- *  agent identity via X-Agent-Name) instead of stdio for one agent. */
+/** When set, serve MCP over streamable HTTP for the WHOLE fleet instead of
+ *  stdio for one agent. Multi-tenant, so it carries NO identity of its own:
+ *  each request's credential is passed straight through to Talaria, which is
+ *  the only thing that can say who the caller is. */
 const HTTP_PORT = Number(process.env.MCP_HTTP_PORT ?? 0)
 
-if (!KEY) {
-  console.error('talaria-mcp: TALARIA_AGENT_KEY is required')
-  process.exit(1)
-}
-
-function makeApi(agent: string) {
+function makeApi(agent: string, key: string) {
   return async function api(method: string, path: string, body?: unknown): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: {
-      'x-api-key': KEY,
+      'x-api-key': key,
       'x-agent-name': agent,
       ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
     },
@@ -58,9 +83,10 @@ function makeApi(agent: string) {
 const ok = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] })
 
 // One server instance per identity: stdio builds it once for the env agent;
-// HTTP mode builds per request (stateless) for the connecting agent.
-function buildServer(agent: string): McpServer {
-  const api = makeApi(agent)
+// HTTP mode builds per request (stateless) for the connecting agent, with the
+// credential THAT agent presented.
+function buildServer(agent: string, key: string): McpServer {
+  const api = makeApi(agent, key)
   const server = new McpServer({ name: 'talaria', version: '0.1.0' })
 
 // Statuses an agent may set. No 'assigned' (humans assign), no 'done' (the API
@@ -133,7 +159,7 @@ server.registerTool(
   async ({ uploadId }) => {
     // Raw bytes, not JSON — bypass the shared api() helper.
     const res = await fetch(`${BASE}/api/uploads/${encodeURIComponent(uploadId)}`, {
-      headers: { 'x-api-key': KEY, 'x-agent-name': agent },
+      headers: { 'x-api-key': key, 'x-agent-name': agent },
     })
     if (!res.ok) throw new Error(`Talaria API ${res.status}: ${(await res.text()).slice(0, 300)}`)
     const mime = res.headers.get('content-type') ?? 'application/octet-stream'
@@ -194,7 +220,7 @@ server.registerTool(
   'triage_ticket',
   {
     description:
-      'Triage a ticket: adjust priority, effort, labels, description, due date, or move it between in_progress / blocked / quality_review. Assigning and completing stay human-only.',
+      'Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a closed ticket (done / failed / cancelled) are a person\'s call and return 403 — so once you have parked or reported, stop moving the ticket and use comment instead, which stays open on work you can no longer edit. Assigning and marking done are human-only.',
     inputSchema: {
       taskId: z.string(),
       title: z.string().min(1).max(300).optional(),
@@ -205,7 +231,12 @@ server.registerTool(
       dueDate: z.string().datetime().optional(),
       startDate: z.string().datetime().optional().describe('When work begins (Gantt bars run start → due)'),
       color: z.enum(['slate', 'bronze', 'green', 'amber', 'red', 'blue', 'purple', 'teal', 'pink', 'orange', 'lime', 'cyan', 'indigo', 'magenta', 'olive', 'brown']).optional().describe('Color-code the ticket (shows on cards + gantt)'),
-      status: z.enum(AGENT_STATUSES).optional(),
+      status: z
+        .enum(AGENT_STATUSES)
+        .optional()
+        .describe(
+          'Forward only. in_progress is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and quality_review are one-way: a person moves it after that.',
+        ),
     },
   },
   async ({ taskId, ...body }) => ok(await api('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, body)),
@@ -227,7 +258,7 @@ server.registerTool(
   'report_outcome',
   {
     description:
-      'Report the outcome of work on a ticket and hand it to quality review. A human signs off on done.',
+      "Report the outcome of work on a ticket and hand it to the board's review column (\"Quality review\" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment.",
     inputSchema: {
       taskId: z.string(),
       outcome: z.string().max(50_000).describe('What was accomplished'),
@@ -235,7 +266,28 @@ server.registerTool(
       errorMessage: z.string().max(50_000).optional().describe('If the work failed, what went wrong'),
     },
   },
-  async ({ taskId, ...body }) => ok(await api('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, { ...body, status: 'quality_review' })),
+  async ({ taskId, ...body }) => {
+    // The review column belongs to the BOARD, not to this file. 'quality_review'
+    // is only the default board's key; a board that renamed or replaced its
+    // review column has no such status, and updateTask rejects the patch with
+    // "is not a status on this board" (400) BEFORE the agent invariant ever
+    // runs — so the hardcoded literal 400s exactly where handing work over
+    // matters most, and no endpoint tells an agent what the column is called.
+    //
+    // Ask the invariant instead of guessing: agentSafePatch redirects EVERY
+    // terminal move to that board's review key, and the off-board terminals
+    // ('failed' / 'cancelled') are legal on every board by construction. So on
+    // the one failure that means "this board is named differently", re-send a
+    // terminal move and let the server pick the column. The ticket lands in
+    // review either way; only the spelling was ever in question.
+    const put = (status: string) => api('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, { ...body, status })
+    try {
+      return ok(await put('quality_review'))
+    } catch (e) {
+      if (!/is not a status on this board/.test((e as Error).message)) throw e
+      return ok(await put('cancelled'))
+    }
+  },
 )
 
 server.registerTool(
@@ -256,7 +308,8 @@ server.registerTool(
 server.registerTool(
   'add_time',
   {
-    description: "Add time spent to a ticket's auto-accumulated total.",
+    description:
+      "Add time spent to a ticket's auto-accumulated total. Log it as you work. Only an OPEN ticket accepts it — a closed one (done / failed / cancelled) refuses every agent write including this, with 403, so time you never logged before sign-off cannot be added afterwards. Still fine while the ticket sits in blocked or quality_review.",
     inputSchema: {
       taskId: z.string(),
       seconds: z.number().int().min(1).max(86_400).describe('Seconds of work to add'),
@@ -529,7 +582,7 @@ server.registerTool(
   'log_usage',
   {
     description:
-      "Report the LLM tokens you burned working a ticket. Feeds the ticket's cost rollup and the fleet ledger.",
+      "Report the LLM tokens you burned working a ticket. Feeds the ticket's cost rollup and the fleet ledger. Log it as you go: only an OPEN ticket accepts it — a closed one (done / failed / cancelled) refuses with 403, so spend you never reported before sign-off cannot be attached afterwards. Still fine while the ticket sits in blocked or quality review.",
     inputSchema: {
       taskId: z.string(),
       promptTokens: z.number().int().min(0).describe('Prompt/input tokens used'),
@@ -544,7 +597,8 @@ server.registerTool(
 server.registerTool(
   'add_dependency',
   {
-    description: 'Mark a ticket as blocked by another ticket on the same board.',
+    description:
+      'Mark a ticket as blocked by another ticket on the same board. Both tickets must be OPEN — the edge shows on both, and a closed one (done / failed / cancelled) refuses with 403 like every other agent write. Removing an edge is a human call.',
     inputSchema: {
       taskId: z.string().describe('The blocked ticket'),
       dependsOnId: z.string().describe('The ticket it depends on'),
@@ -720,10 +774,128 @@ server.registerTool(
 if (HTTP_PORT) {
   // Fleet mode: one HTTP endpoint every containerized agent connects to
   // (config-injected url + headers). Stateless streamable HTTP: each POST is
-  // handled by a fresh server bound to the calling agent's identity. Auth:
-  // the fleet key must ride along — the port is host-bound for containers.
+  // handled by a fresh server bound to the calling agent's identity. Auth is
+  // PASS-THROUGH: this process cannot validate a per-agent credential (no DB),
+  // so it forwards whatever the caller presented and lets Talaria decide.
+  //
+  // Pass-through is right for tool CALLS — every one of them ends in a request
+  // Talaria authenticates. It is not the whole story for `initialize` and
+  // `tools/list`, which the MCP SDK answers from this process and which
+  // therefore never reach Talaria at all: without the two guards below, the
+  // complete toolkit catalog (every tool name, description and JSON schema —
+  // a map of the fleet's write surface) is readable by anyone who can open a
+  // socket to this port. Both guards are applied, because each covers what the
+  // other cannot:
+  //   · BIND — loopback plus the docker bridges the fleet reaches us on,
+  //     instead of 0.0.0.0. Takes the port off the LAN entirely.
+  //   · VERIFY — the presented credential is checked against Talaria before a
+  //     server is built for it, so a container on the bridge still cannot
+  //     enumerate the catalog without a credential Talaria accepts.
   const { StreamableHTTPServerTransport } = await import('@modelcontextprotocol/sdk/server/streamableHttp.js')
   const { createServer } = await import('node:http')
+  const { networkInterfaces } = await import('node:os')
+  const { createHash, timingSafeEqual } = await import('node:crypto')
+
+  /** Where to listen. `0.0.0.0` published the catalog on every interface the
+   *  host has; the fleet only ever arrives over the docker bridge (the
+   *  chassis' `extra_hosts: host.docker.internal:host-gateway` resolves to a
+   *  bridge address) and Talaria's own service calls arrive over loopback.
+   *  Bind exactly those. MCP_HTTP_HOST overrides with an explicit
+   *  comma-separated list for topologies this can't infer — a published
+   *  container port needs `0.0.0.0` and the network policy around it. */
+  const bindHosts = (): string[] => {
+    const override = (process.env.MCP_HTTP_HOST ?? '').trim()
+    if (override) return [...new Set(override.split(',').map((h) => h.trim()).filter(Boolean))]
+    const hosts = new Set(['127.0.0.1'])
+    for (const [iface, addrs] of Object.entries(networkInterfaces())) {
+      if (!/^(docker|br-|podman|cni-)/.test(iface)) continue
+      for (const a of addrs ?? []) if (a.family === 'IPv4' && !a.internal) hosts.add(a.address)
+    }
+    return [...hosts]
+  }
+
+  const sameSecret = (a: string, b: string): boolean => {
+    const ab = Buffer.from(a)
+    const bb = Buffer.from(b)
+    return ab.length === bb.length && timingSafeEqual(ab, bb)
+  }
+
+  /** Latched so a broken probe logs once per outage, not once per request. */
+  let probeBroken = false
+
+  // Verified callers, so a chatty client doesn't pay a round trip per request.
+  // Keyed by (name, hash of credential) — never the credential itself.
+  const VERIFY_TTL_MS = 60_000
+  const REFUSED_TTL_MS = 5_000
+  const seen = new Map<string, { ok: boolean; status: number; at: number }>()
+
+  /** The Talaria route this process authenticates against — see the coupling
+   *  warning on `verify`. The env var is the escape hatch: it repoints the probe
+   *  without a release, which is what makes narrowing `/api/users` a survivable
+   *  change instead of a fleet-wide outage. */
+  const VERIFY_PATH = (process.env.TALARIA_MCP_VERIFY_PATH ?? '/api/users').trim()
+
+  /** Is this credential one Talaria accepts, for this name? This process holds
+   *  no DB and cannot answer that itself, so it asks the only thing that can —
+   *  a cheap authenticated GET, which exercises exactly the resolution
+   *  (`agent-auth`) every tool call would hit anyway. Four outcomes:
+   *    ok            serve the request
+   *    401/403       refuse with the same code — the credential is not one
+   *                  Talaria knows, or contradicts the claimed name
+   *    404/405       the probe route is gone, renamed, or no longer answers an
+   *                  agent GET. NOT a verdict about the caller: 503, uncached,
+   *                  and shouted about (see below)
+   *    unreachable   503, NOT cached, and never waved through: an unverifiable
+   *                  caller is not a verified one, and every tool this process
+   *                  exposes is broken anyway while Talaria is down.
+   *
+   *  ⚠ LOAD-BEARING COUPLING. Using a product route as the probe makes it an
+   *  AUTHENTICATION ORACLE for the entire toolkit: narrow `/api/users` to
+   *  admins or to session auth and every agent's `initialize`/`tools/list`
+   *  starts 401ing, which takes the fleet toolkit dark with no error that
+   *  points at the cause. `/api/users` was chosen because its agent branch is
+   *  nothing but `agentCaller()` — the same resolution a tool call hits — but
+   *  the contract it has to keep is narrow: agent-credential auth, GET, cheap,
+   *  401/403 (not 404) on a bad credential. That contract is written down in
+   *  mcp/README.md ("Authentication") and mirrored at the Talaria end in
+   *  `ui/src/server/agent-auth.ts`, so neither side can be changed without
+   *  reading it. Repoint with TALARIA_MCP_VERIFY_PATH rather than editing this. */
+  const verify = async (agent: string, key: string): Promise<{ ok: boolean; status: number }> => {
+    // Talaria's own service-to-service calls (the MCP gateway's catalog
+    // refresh, the admin connection test) present the org-wide fleet key this
+    // process was started with. Recognizing it here costs no round trip and
+    // grants nothing beyond the catalog — it is still a secret, and every tool
+    // call made with it is authenticated by Talaria on arrival.
+    if (KEY && sameSecret(key, KEY)) return { ok: true, status: 200 }
+    const id = `${agent}\u0000${createHash('sha256').update(key).digest('hex')}`
+    const hit = seen.get(id)
+    if (hit && Date.now() - hit.at < (hit.ok ? VERIFY_TTL_MS : REFUSED_TTL_MS)) return { ok: hit.ok, status: hit.status }
+    const res = await fetch(`${BASE}${VERIFY_PATH}`, {
+      method: 'GET',
+      headers: { 'x-api-key': key, 'x-agent-name': agent },
+      signal: AbortSignal.timeout(8_000),
+    }).catch(() => null)
+    if (!res) return { ok: false, status: 503 }
+    // The probe route itself is gone/narrowed. Say so LOUDLY and name the fix:
+    // the symptom an operator sees is "the whole toolkit stopped working", and
+    // nothing else in either process would connect that to a route change.
+    if (res.status === 404 || res.status === 405) {
+      if (!probeBroken) {
+        probeBroken = true
+        console.error(
+          `talaria-mcp: verification probe GET ${BASE}${VERIFY_PATH} returned ${res.status} — the toolkit cannot authenticate ANY agent and is dark fleet-wide. That route is this process's authentication oracle; if it moved or was narrowed, set TALARIA_MCP_VERIFY_PATH to an agent-authenticated GET (see mcp/README.md "Authentication").`,
+        )
+      }
+      return { ok: false, status: 503 }
+    }
+    if (!res.ok && res.status !== 401 && res.status !== 403) return { ok: false, status: 503 } // Talaria unwell, not the caller
+    probeBroken = false
+    const verdict = { ok: res.ok, status: res.ok ? 200 : res.status, at: Date.now() }
+    seen.set(id, verdict)
+    if (seen.size > 500) for (const [k, v] of seen) if (Date.now() - v.at > VERIFY_TTL_MS) seen.delete(k)
+    return { ok: verdict.ok, status: verdict.status }
+  }
+
   const readBody = (req: import('node:http').IncomingMessage): Promise<unknown> =>
     new Promise((resolve, reject) => {
       const chunks: Buffer[] = []
@@ -738,14 +910,16 @@ if (HTTP_PORT) {
       req.on('error', reject)
     })
 
-  createServer((req, res) => {
+  const handle = (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): void => {
     void (async () => {
       if (!req.url?.startsWith('/mcp') || req.method !== 'POST') {
         res.writeHead(req.method === 'GET' || req.method === 'DELETE' ? 405 : 404).end()
         return
       }
-      if (req.headers['x-api-key'] !== KEY) {
-        res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'bad key' }))
+      const auth = String(req.headers.authorization ?? '')
+      const callerKey = String(req.headers['x-api-key'] ?? '') || (auth.startsWith('Bearer ') ? auth.slice(7) : '')
+      if (!callerKey) {
+        res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'agent credential required' }))
         return
       }
       const agent = String(req.headers['x-agent-name'] ?? '')
@@ -753,8 +927,23 @@ if (HTTP_PORT) {
         res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'x-agent-name required' }))
         return
       }
+      // BEFORE a server is built for this caller — building one is what makes
+      // the catalog answerable, and `initialize`/`tools/list` never reach
+      // Talaria to be authenticated on the way.
+      const check = await verify(agent, callerKey)
+      if (!check.ok) {
+        res.writeHead(check.status, { 'content-type': 'application/json' }).end(
+          JSON.stringify({
+            error:
+              check.status === 503
+                ? 'cannot reach Talaria to authenticate this credential'
+                : `Talaria rejected this credential for "${agent}" (${check.status})`,
+          }),
+        )
+        return
+      }
       const body = await readBody(req)
-      const server = buildServer(agent)
+      const server = buildServer(agent, callerKey)
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
       res.on('close', () => {
         void transport.close()
@@ -769,13 +958,47 @@ if (HTTP_PORT) {
         /* headers already sent */
       }
     })
-  }).listen(HTTP_PORT, '0.0.0.0', () => console.error(`talaria-mcp: fleet HTTP on :${HTTP_PORT} → ${BASE}`))
+  }
+
+  // One listener per address rather than one wildcard listener — and RESCANNED,
+  // because the address set is not static: docker brings a compose network's
+  // bridge device up when the first container attaches and down when the last
+  // one leaves, and `os.networkInterfaces()` only reports interfaces that are
+  // UP. A one-shot scan would therefore miss the fleet's own bridge whenever
+  // this process starts before the fleet does. Re-scan on a slow interval,
+  // bind what is new, and let a failed bind be retried by the next pass; the
+  // interval stays REFERENCED so a process that has bound nothing yet keeps
+  // trying (and keeps saying so) instead of exiting into silence.
+  const listening = new Set<string>()
+  const bind = (host: string): void => {
+    if (listening.has(host)) return
+    listening.add(host)
+    const srv = createServer(handle)
+    srv.on('error', (e: Error) => {
+      listening.delete(host)
+      console.error(`talaria-mcp: could not bind ${host}:${HTTP_PORT} — ${e.message}`)
+    })
+    srv.listen(HTTP_PORT, host, () => console.error(`talaria-mcp: fleet HTTP on ${host}:${HTTP_PORT} → ${BASE}`))
+  }
+  const scan = (): void => {
+    const hosts = bindHosts()
+    if (!hosts.length) console.error('talaria-mcp: no bindable address found — set MCP_HTTP_HOST')
+    for (const host of hosts) bind(host)
+  }
+  scan()
+  setInterval(scan, 30_000)
 } else {
+  // stdio serves ONE agent, so this process holds that agent's credential.
+  // (HTTP mode holds none — every request brings its own.)
+  if (!KEY) {
+    console.error('talaria-mcp: TALARIA_AGENT_KEY is required in stdio mode')
+    process.exit(1)
+  }
   if (!AGENT) {
     console.error('talaria-mcp: TALARIA_AGENT_NAME is required in stdio mode')
     process.exit(1)
   }
-  const server = buildServer(AGENT)
+  const server = buildServer(AGENT, KEY)
   await server.connect(new StdioServerTransport())
   console.error(`talaria-mcp: connected (agent "${AGENT}" → ${BASE})`)
 }

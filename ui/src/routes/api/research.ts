@@ -3,9 +3,9 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { listResearchRuns, RESEARCH_MODES, startResearch } from '@/server/research'
-import { canUseAgentModel, personalAssistantOwners } from '@/server/users'
+import { assistantOwnerFor, canUseAgentModel } from '@/server/users'
 import { db } from '@/server/db/pg'
 
 const Body = z.object({
@@ -26,9 +26,12 @@ export const Route = createFileRoute('/api/research')({
       GET: async ({ request }) => {
         // Scope to the viewer: a user sees their own + shared + org runs; an
         // agent sees through its owner's eyes (general agents: org runs only).
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          const owner = name ? ((await personalAssistantOwners()).get(name) ?? null) : null
+        const viewer = await agentCaller(request)
+        if (viewer instanceof Response) return viewer
+        if (viewer) {
+          // The CALLER: seeing a human's private runs is owner-proxying, so an
+          // asserted identity resolves to no owner (org runs only).
+          const owner = await assistantOwnerFor(viewer)
           return json({ runs: await listResearchRuns(owner), modes: RESEARCH_MODES })
         }
         const user = await getSessionUser(request)
@@ -42,11 +45,12 @@ export const Route = createFileRoute('/api/research')({
         let agentModel: string
         let ownerUserId: string | null
         let requestedBy: string
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const name = caller.model
           agentModel = name // an agent researches in its own field
-          ownerUserId = (await personalAssistantOwners()).get(name) ?? null
+          ownerUserId = await assistantOwnerFor(caller)
           requestedBy = name
         } else {
           const user = await getSessionUser(request)

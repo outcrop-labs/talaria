@@ -2,8 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { personalAssistantOwners } from '@/server/users'
+import { agentCaller } from '@/server/agent-auth'
+import { assistantOwnerFor } from '@/server/users'
 import { createDoc, getSpace, listDocs, saveDoc } from '@/server/kb'
 import { canRead, canReadAgent, grantedItemIds, grantedItemIdsForAgent, listEditors } from '@/server/kb-perms'
 import { logAudit } from '@/server/audit'
@@ -25,9 +25,10 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
         if (!space) return json({ docs: [] })
         // Agents (over MCP): gate the tree on agent space-access, then filter docs
         // by their own audience (inherited from the readable folder, or granted).
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const name = caller.model
           if (!canReadAgent(space, name, await listEditors('space', params.id))) return json({ docs: [] })
           const grantedA = await grantedItemIdsForAgent('doc', name)
           const docsA = (await listDocs(params.id)).filter((d) => d.permsInherited || grantedA.has(d.id) || canReadAgent(d, name))
@@ -53,9 +54,10 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
         // Agents (over MCP) create docs in spaces they can read. Agent docs
         // start as drafts — they never ground the org brain until a human
         // officializes them, so the write guardrail holds.
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const name = caller.model
           const space = await getSpace(params.id)
           if (!space || !canReadAgent(space, name, await listEditors('space', params.id))) {
             return json({ error: 'forbidden' }, { status: 403 })
@@ -68,7 +70,8 @@ export const Route = createFileRoute('/api/kb/spaces/$id/docs')({
             createdBy: name,
             // A personal assistant's doc belongs to its owner — otherwise the
             // human could never re-share what their assistant wrote for them.
-            ownerUserId: (await personalAssistantOwners()).get(name) ?? null,
+            // Asked with the CALLER — owner-proxying needs proven identity.
+            ownerUserId: await assistantOwnerFor(caller),
           })
           const saved = body.body ? await saveDoc(doc.id, { body: body.body }, name) : doc
           return json({ doc: saved ?? doc })

@@ -2,6 +2,7 @@
 // the share mechanism (role: owner | editor | viewer).
 import { db } from './db/pg'
 import { isElevatedAssistant } from './users'
+import { subjectModel, type AgentSubject } from './agent-auth'
 
 export type BoardRole = 'owner' | 'editor' | 'viewer'
 
@@ -187,11 +188,19 @@ export async function setBoardAgentConfig(boardId: string, allowAll: boolean, mo
 
 /** Whether an agent may be assigned on a board. Restrictive by default — a board
  *  allows an agent only if allow-all is on OR the agent is explicitly listed.
- *  An admin-elevated personal assistant passes everywhere (org-wide access). */
-export async function boardAllowsAgent(boardId: string, model: string): Promise<boolean> {
+ *  An admin-elevated personal assistant passes everywhere (org-wide access) —
+ *  but only when the CALLER proved it is that assistant: pass the AgentCaller,
+ *  not its model, wherever one is in hand.
+ *
+ *  A bare model string remains accepted for the one shape that has NO caller:
+ *  policy questions about a third party (invalidAssignee below, board config).
+ *  `subjectProven` reads a bare string as proven, so passing `caller.model`
+ *  where `caller` is in hand silently discards the legacy flag — every route
+ *  under this repo's ownership now passes the caller. */
+export async function boardAllowsAgent(boardId: string, agent: AgentSubject): Promise<boolean> {
   const cfg = await getBoardAgentConfig(boardId)
-  if (cfg.allowAll || cfg.models.includes(model)) return true
-  return isElevatedAssistant(model)
+  if (cfg.allowAll || cfg.models.includes(subjectModel(agent))) return true
+  return isElevatedAssistant(agent)
 }
 
 /** Validate a mixed assignee list: `user:<uuid>` entries must be board

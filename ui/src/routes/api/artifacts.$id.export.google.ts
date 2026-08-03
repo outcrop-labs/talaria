@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { actorOf, requireUser } from '@/server/api-guard'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller, refuseLegacy } from '@/server/agent-auth'
 import { logAudit } from '@/server/audit'
 import { getArtifact, guarded, recordGoogleExport } from '@/server/artifacts'
 import { canRead, listEditors } from '@/server/kb-perms'
@@ -26,14 +26,26 @@ export const Route = createFileRoute('/api/artifacts/$id/export/google')({
 
         try {
           let file
-          if (checkAgentKey(request)) {
-            const name = agentName(request)
+          const agent = await agentCaller(request)
+          if (agent instanceof Response) return agent
+          if (agent) {
+            // Writing into a human's Drive (personal assistant) or the shared
+            // ORG Drive is acting AS someone — the same grant the Gmail and
+            // Calendar agent routes refuse to a legacy caller, and this one
+            // must too. The shared org key proves fleet membership, not
+            // identity, so "I am <any ordinary agent>" cannot buy org Drive
+            // write access.
+            const denied = refuseLegacy(agent, 'Google Drive export')
+            if (denied) return denied
+            const name = agent.model
             const allowed =
               artifact.visibility !== 'private' || editors.some((e) => e.principalType === 'agent' && e.principalId === name)
-            if (!name || !allowed) return json({ error: 'forbidden' }, { status: 403 })
+            if (!allowed) return json({ error: 'forbidden' }, { status: 403 })
             // Resolve the agent's Google identity (owner for personal assistants,
-            // shared org account for general fleet agents).
-            const google = await resolveAgentGoogle(name, Date.now())
+            // shared org account for general fleet agents). Pass the CALLER —
+            // resolveAgentGoogle re-checks proof, so this route's guard is a
+            // layer rather than the only one.
+            const google = await resolveAgentGoogle(agent, Date.now())
             if (!google) {
               return json({ error: 'not_connected', message: 'No Google account is connected for this agent (its owner, or the org account).' }, { status: 409 })
             }
