@@ -1,7 +1,9 @@
 // Postgres — durable state (users, roles, per-agent access, conversations,
-// messages). postgres.js (no native build). Migrations run once, lazily, on
-// first query. Cached on globalThis so HMR doesn't open a new pool each reload.
+// messages). postgres.js (no native build). Migrations run lazily on the first
+// query, once per statement ever (see schema_migrations below), under an
+// advisory lock. Cached on globalThis so HMR doesn't open a new pool each reload.
 
+import { createHash } from 'node:crypto'
 import postgres from 'postgres'
 import { initSecretbox } from '../secretbox'
 
@@ -18,6 +20,11 @@ export function getSql(): Sql {
 }
 
 // One statement per entry (postgres.js extended protocol is one-statement).
+// APPEND-ONLY: a statement's index is its identity in schema_migrations, so new
+// migrations go at the END — never inserted next to related ones. Editing or
+// inserting mid-array trips the checksum check and the app refuses to boot.
+// Each entry runs exactly once per database; DML here is a one-shot backfill,
+// not a rule that re-asserts itself on every start.
 const MIGRATIONS: string[] = [
   `create table if not exists users (
      id uuid primary key default gen_random_uuid(),
@@ -146,14 +153,7 @@ const MIGRATIONS: string[] = [
   `create index if not exists task_activity_task_idx on task_activity(task_id, created_at desc)`,
   // Ticket refs (BOARD-12): a per-board prefix + monotonic counter.
   `alter table boards add column if not exists ticket_prefix text`,
-  `alter table research_runs add column if not exists title text`,
-  `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
-  `alter table channel_messages add column if not exists edited_at timestamptz`,
-  `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
   `alter table users add column if not exists allowed_manage_views text[] not null default '{}'`,
-  `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
-  `alter table kb_docs add column if not exists okf text`,
-  `update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null)`,
   `create table if not exists invites (
     id uuid primary key default gen_random_uuid(),
     email text not null,
@@ -185,18 +185,6 @@ const MIGRATIONS: string[] = [
     created_at timestamptz not null default now(),
     verified_at timestamptz
   )`,
-  `create table if not exists kb_comments (
-    id uuid primary key default gen_random_uuid(),
-    doc_id uuid not null references kb_docs(id) on delete cascade,
-    parent_id uuid references kb_comments(id) on delete cascade,
-    author_user_id uuid references users(id) on delete set null,
-    author text not null,
-    quote text,
-    content text not null,
-    resolved boolean not null default false,
-    created_at timestamptz not null default now()
-  )`,
-  `create index if not exists kb_comments_doc_idx on kb_comments(doc_id, created_at)`,
   `create table if not exists mcp_servers (
     id uuid primary key default gen_random_uuid(),
     name text not null unique,
@@ -259,17 +247,6 @@ const MIGRATIONS: string[] = [
     allowed boolean not null,
     created_at timestamptz not null default now(),
     primary key (user_id, perm)
-  )`,
-  `insert into user_permissions (user_id, perm, allowed)
-     select id, 'models.mint-keys', true from users where can_mint_keys
-     on conflict (user_id, perm) do nothing`,
-  `create table if not exists channel_message_reactions (
-    message_id uuid not null references channel_messages(id) on delete cascade,
-    emoji text not null,
-    actor text not null,
-    actor_type text not null default 'user',
-    created_at timestamptz not null default now(),
-    primary key (message_id, emoji, actor)
   )`,
   `alter table boards add column if not exists ticket_seq integer not null default 0`,
   // Richer task fields (ripped from mission-control): ticket no, effort, the
@@ -362,6 +339,20 @@ const MIGRATIONS: string[] = [
      unique (channel_id, seq)
    )`,
   `create index if not exists channel_messages_idx on channel_messages(channel_id, seq)`,
+  // Threads hang off a root message (a reply carries the root's id); edited_at
+  // marks a message the author revised in place.
+  `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
+  `alter table channel_messages add column if not exists edited_at timestamptz`,
+  `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
+  // Emoji reactions; actor is the user's email or the agent model.
+  `create table if not exists channel_message_reactions (
+    message_id uuid not null references channel_messages(id) on delete cascade,
+    emoji text not null,
+    actor text not null,
+    actor_type text not null default 'user',
+    created_at timestamptz not null default now(),
+    primary key (message_id, emoji, actor)
+  )`,
   // Notifications — user-facing inbox (mentions today; more kinds later).
   `create table if not exists notifications (
      id uuid primary key default gen_random_uuid(),
@@ -419,6 +410,9 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now(),
      updated_at timestamptz not null default now()
    )`,
+  // agent_defs is the registry of record: drop 1:1 chat grants for models that
+  // are no longer defined.
+  `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
   // Local-vs-cloud attribution on the token ledger: which upstream model class
   // served the generation (from the agent's main endpoint at generation time).
   `alter table usage_events add column if not exists endpoint_class text`,
@@ -492,6 +486,10 @@ const MIGRATIONS: string[] = [
    )`,
   // Who may mint keys (admins always may; this grants others).
   `alter table users add column if not exists can_mint_keys boolean not null default false`,
+  // Carry the flag into the permission catalog, which superseded it.
+  `insert into user_permissions (user_id, perm, allowed)
+     select id, 'models.mint-keys', true from users where can_mint_keys
+     on conflict (user_id, perm) do nothing`,
   // Extra request-body defaults deep-merged into every outbound call to this
   // endpoint (e.g. OpenRouter's provider allowlist / data_collection deny).
   `alter table llm_endpoints add column if not exists request_defaults jsonb not null default '{}'`,
@@ -619,6 +617,26 @@ const MIGRATIONS: string[] = [
      updated_at timestamptz not null default now()
    )`,
   `create index if not exists kb_docs_space_idx on kb_docs(space_id, parent_id, sort)`,
+  // A space's OKF concept doc — the machine-readable summary of the space,
+  // kept as a normal (hidden) doc so the Librarian edits it like any other.
+  `alter table kb_spaces add column if not exists okf_doc_id uuid references kb_docs(id) on delete set null`,
+  // Hidden agent-facing OKF body on a doc. Only a space's OKF doc is truly
+  // 'agent' kind; everything else that predates the split is human.
+  `alter table kb_docs add column if not exists okf text`,
+  `update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null)`,
+  // Inline comments on a doc — threaded, optionally anchored to a quote.
+  `create table if not exists kb_comments (
+    id uuid primary key default gen_random_uuid(),
+    doc_id uuid not null references kb_docs(id) on delete cascade,
+    parent_id uuid references kb_comments(id) on delete cascade,
+    author_user_id uuid references users(id) on delete set null,
+    author text not null,
+    quote text,
+    content text not null,
+    resolved boolean not null default false,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists kb_comments_doc_idx on kb_comments(doc_id, created_at)`,
   // Outline-parity: per-doc emoji icon, and a full-text search index over
   // title + body so the knowledgebase is searchable at scale.
   `alter table kb_docs add column if not exists icon text`,
@@ -908,6 +926,9 @@ const MIGRATIONS: string[] = [
      completed_at timestamptz
    )`,
   `create index if not exists research_runs_created_idx on research_runs(created_at desc)`,
+  // A generated short title for the run; the UI shows the raw question until
+  // it lands.
+  `alter table research_runs add column if not exists title text`,
   `create table if not exists research_sources (
      id uuid primary key default gen_random_uuid(),
      run_id uuid not null references research_runs(id) on delete cascade,
@@ -1175,16 +1196,84 @@ const MIGRATIONS: string[] = [
      generated_at timestamptz not null default now(),
      primary key (user_id, scope)
    )`,
+  // Per-agent credentials: the secret an agent presents to prove WHO it is
+  // (agent-auth), replacing the org-wide key + self-declared x-agent-name.
+  // sha256 for lookup (auth never decrypts); a sealed copy so a wiped
+  // fleet/.env can be re-materialized without rotating every container.
+  `create table if not exists agent_keys (
+     agent_id uuid primary key references agent_defs(id) on delete cascade,
+     key_hash text not null unique,
+     key_enc text not null,
+     created_at timestamptz not null default now(),
+     last_used_at timestamptz
+   )`,
 ]
+
+// One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
+// is what makes the append-only rule enforceable rather than aspirational.
+const SCHEMA_MIGRATIONS = `create table if not exists schema_migrations (
+   id integer primary key,
+   checksum text not null,
+   applied_at timestamptz not null default now()
+ )`
+
+// Fixed advisory-lock key: two instances booting at once queue instead of
+// racing. `create table if not exists` is not atomic against a concurrent
+// create, and initSecretbox's select-then-insert would double-insert v1.
+const MIGRATION_LOCK = 8_314_207
+
+// Whitespace-insensitive, so reindenting a statement is not a schema change.
+function checksum(stmt: string): string {
+  return createHash('sha256').update(stmt.replace(/\s+/g, ' ').trim()).digest('hex')
+}
+
+async function runMigrations(sql: Sql): Promise<void> {
+  // Advisory locks are session-scoped, so the lock holds a reserved connection
+  // of its own while the statements below run on the pool. Everything —
+  // including creating the bookkeeping table — happens inside it.
+  const lock = await sql.reserve()
+  try {
+    await lock`select pg_advisory_lock(${MIGRATION_LOCK})`
+    await lock.unsafe(SCHEMA_MIGRATIONS)
+    const rows = (await lock`select id, checksum from schema_migrations`) as unknown as Array<{ id: number; checksum: string }>
+    const applied = new Map(rows.map((r) => [r.id, r.checksum]))
+    for (const [i, stmt] of MIGRATIONS.entries()) {
+      const sum = checksum(stmt)
+      const prev = applied.get(i)
+      if (prev === sum) continue
+      // A statement that changed under an id we already applied means the array
+      // was edited in place or something was inserted mid-array — every index
+      // after it now describes a different statement than the one this database
+      // ran. Refuse to boot rather than apply the rest against a schema the
+      // array no longer describes.
+      if (prev)
+        throw new Error(
+          `[pg] migration ${i} changed after it was applied — MIGRATIONS is append-only: add new statements at the END of the array`,
+        )
+      // Its own transaction: a failure part-way leaves every earlier statement
+      // applied AND recorded, so the next boot resumes here instead of replaying.
+      await sql.begin(async (tx) => {
+        await tx.unsafe(stmt)
+        await tx`insert into schema_migrations (id, checksum) values (${i}, ${sum})`
+      })
+    }
+    // Load/create the data key so seal()/open() are synchronous thereafter.
+    await initSecretbox(sql)
+  } finally {
+    await lock`select pg_advisory_unlock(${MIGRATION_LOCK})`.catch(() => {})
+    lock.release()
+  }
+}
 
 function ensureMigrated(): Promise<void> {
   if (!g.__talariaMigrated) {
-    const sql = getSql()
-    g.__talariaMigrated = (async () => {
-      for (const stmt of MIGRATIONS) await sql.unsafe(stmt)
-      // Load/create the data key so seal()/open() are synchronous thereafter.
-      await initSecretbox(sql)
-    })()
+    // Drop the cached promise if the run fails, so the next db() retries: a
+    // cached rejection poisons every later call for the life of the process.
+    const run: Promise<void> = runMigrations(getSql()).catch((e) => {
+      if (g.__talariaMigrated === run) g.__talariaMigrated = undefined
+      throw e
+    })
+    g.__talariaMigrated = run
   }
   return g.__talariaMigrated
 }
