@@ -52,5 +52,31 @@ done
 
 [ -d ui/node_modules ] || (cd ui && npm install --no-fund --no-audit)
 
+# The fleet's Talaria toolkit. mcp/ compiles to mcp/dist/index.js, which the app
+# SPAWNS (ui/src/server/mcp-service.ts) — and mcp/dist is gitignored, so a pull,
+# a rebase or an edit to mcp/src changes nothing at runtime until it is rebuilt.
+# Nothing did that before this step, so every agent kept talking to whatever dist
+# happened to be on disk: stale tool descriptions and, worse, stale AUTH.
+# TALARIA_SKIP_MCP_BUILD=1 to get past a build you are mid-way through fixing.
+if [ "${TALARIA_SKIP_MCP_BUILD:-0}" = "1" ]; then
+  echo "▸ toolkit MCP — skipped (TALARIA_SKIP_MCP_BUILD=1); mcp/dist may be stale"
+else
+  [ -d mcp/node_modules ] || (cd mcp && npm install --no-fund --no-audit)
+  # Rebuild when dist is missing or ANY source file is newer than it. `find -newer`
+  # rather than a timestamp we cache, so a `git checkout` of an older src still
+  # triggers (its mtime is the checkout time, i.e. newer).
+  if [ ! -f mcp/dist/index.js ] || [ -n "$(find mcp/src -newer mcp/dist/index.js -print -quit)" ]; then
+    echo "▸ toolkit MCP → mcp/dist"
+    (cd mcp && npm run build) || {
+      echo "✗ mcp/ failed to build — mcp/dist is now STALE or missing and the fleet toolkit" >&2
+      echo "  will serve the old build (or nothing at all). Fix mcp/src, or re-run with" >&2
+      echo "  TALARIA_SKIP_MCP_BUILD=1 if you meant to leave it." >&2
+      exit 1
+    }
+  else
+    echo "▸ toolkit MCP — mcp/dist up to date"
+  fi
+fi
+
 echo "▸ app → http://localhost:5273"
 cd ui && exec npm run dev

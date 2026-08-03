@@ -1,0 +1,123 @@
+# Talaria CI — typecheck only.
+#
+# WHAT THIS DOES
+#   On every pull request and every push to main: install ui/ from the lockfile
+#   and run `tsc --noEmit`. That is the whole job. It takes roughly a minute.
+#
+# WHY ONLY THAT
+#   As of this file's creation the repo has no tests, no linter and no formatter.
+#   `tsc --noEmit` is the single automated correctness signal that exists, and it
+#   is a strong one here: tsconfig.json turns on `strict`, `noUncheckedIndexedAccess`,
+#   `noUnusedLocals` and `noUnusedParameters`. Until now it only ran when a human
+#   remembered to run it. Every PR-numbered commit in this repo's history merged
+#   with nothing automated having run on it. This closes that gap and nothing else.
+#
+# DELIBERATELY LEFT OUT (do not treat these as oversights)
+#   - Test steps. There are no tests to run. Add the step in the same job when
+#     there are; do not add a green step that asserts nothing.
+#   - Lint / format. That is a separate decision (audit task 19) with its own
+#     rollout cost — a linter added on day one against an unlinted codebase
+#     produces hundreds of failures and gets disabled. Not this file's problem.
+#   - Build (`vite build`) and any deploy. `tsc --noEmit` already covers the
+#     type surface; a full build roughly triples the runtime for a weaker signal.
+#   - `adapter/`, `plugin/` and `scripts/` — no build or typecheck to run at all.
+#
+# ADDED SINCE: the `mcp` job. `mcp/src/index.ts` is ~1000 lines that ui's tsc
+#   never sees, and it mediates every agent write, so it now typechecks here on
+#   its own package.json/tsconfig. It also BUILDS: `mcp/dist` is gitignored and
+#   spawned at runtime by the app (`ui/src/server/mcp-service.ts`), so `tsc`
+#   emitting cleanly is the only signal CI can give that a developer's rebuild
+#   will succeed. The artifact is thrown away — CI does not ship dist; dev.sh
+#   and setup.sh build it locally.
+#   - `paths:` filters. Tempting (a docs-only push does not need this), but a
+#     required status check that is skipped by a path filter reports "pending"
+#     forever and blocks the merge. Not worth the sixty seconds.
+#
+# NOTES FOR WHOEVER TOUCHES THIS NEXT
+#   - Node 22 is a hard floor, not a preference: @tanstack/react-start declares
+#     `engines.node >= 22.12.0` and vite 7 declares `^20.19.0 || >=22.12.0`.
+#     Node 20 will fail to install. If you add a .nvmrc at the repo root, switch
+#     this to `node-version-file:` so there is one source of truth.
+#   - `ui/tsconfig.json` includes `../apps`, so this needs a full-repo checkout,
+#     not a sparse one.
+#   - `ui/src/routeTree.gen.ts` is committed, so no codegen step is needed before
+#     typechecking. If that ever becomes gitignored, this workflow breaks and the
+#     fix is to run the router generator here, not to loosen tsconfig.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to the same PR/branch cancels the in-flight run. Keeps the queue
+# short and stops people waiting on results for a commit they already replaced.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: typecheck (ui)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: ui
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+          cache: npm
+          # Path is relative to the repo root, NOT to defaults.working-directory.
+          cache-dependency-path: ui/package-lock.json
+
+      # --no-audit/--no-fund shave a few seconds and produce no signal we act on.
+      # `npm ci` (not `install`) so the lockfile is authoritative and a drifting
+      # package.json fails here instead of silently resolving to something else.
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+  mcp:
+    name: typecheck + build (mcp)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: mcp
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # Emit for real. `--noEmit` above proves the types; this proves the thing
+      # dev.sh and setup.sh actually run can produce mcp/dist/index.js, which is
+      # what the app spawns. Fails the job if it can't.
+      - name: Build
+        run: npm run build
+
+      - name: Verify build output
+        run: test -s dist/index.js
