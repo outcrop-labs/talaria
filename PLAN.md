@@ -29,36 +29,39 @@ a whole fleet of Hermes agents.
 
 ## The fleet engine (current)
 
-Underneath the app is the fleet runtime. The current shape is the **gateway plane**: a fleet multiplexer
-(port 8642) that exposes your whole fleet through one endpoint so Talaria can reach every agent uniformly.
+Underneath the app is the fleet runtime. Talaria **renders** it: every agent's persona gateway is published
+on its own stable loopback port, and the rendered manifest (`fleet/fleet.json`) maps each model to that
+agent's url and key. There is no multiplexer in front of the fleet — Talaria reads the manifest and reaches
+each agent directly.
 
-- `/v1/models` lists the whole fleet (each agent shows up as a model).
-- `/v1/chat` is routed by model to the right agent, with a per-agent key, streamed over SSE.
+- The manifest is the fleet listing: each agent is a model, each model tier an entry beside it.
+- Chat is routed by model to the right agent, with that agent's own key, streamed over SSE.
 
-You declare a fleet once (a manifest that maps each model to a gateway url and key), and every node stays a
-full Hermes agent. A small Hermes plugin rides on each agent: it registers, heartbeats for work, and reports
-its results up to `quality_review` (never straight to `done`, so a human signs off). Talaria keeps its own
-state (boards, tickets, teams, cost, activity) in its own Postgres and Redis, owned rather than proxied.
+The manifest is rendered from each agent's stored version, never hand-declared, and every node stays a full
+Hermes agent. A small Hermes plugin rides on each agent: it registers, heartbeats for work, and reports its
+results up to `quality_review` (never straight to `done`, so a human signs off). Agents' own LLM calls run
+the other way, through Talaria's gateway, so the fleet has exactly one upstream. Talaria keeps its own state
+(boards, tickets, teams, cost, activity) in its own Postgres and Redis, owned rather than proxied.
 
 ```
                      Talaria UI  (our own app)
                            │
                            ▼
          ┌──────────────────────────────┐
-         │ GATEWAY PLANE  :8642          │
-         │ fleet multiplexer             │
-         │ • /v1/models = whole fleet    │
-         │ • /v1/chat routed by model    │
-         │   to the right agent, per-    │
-         │   agent key, SSE streamed     │
+         │ RENDERED FLEET MANIFEST      │
+         │ fleet/fleet.json             │
+         │ • model → that agent's url   │
+         │   + key                      │
+         │ • chat goes direct, per-     │
+         │   agent key, SSE streamed    │
          └───────────────┬──────────────┘
-           per-agent      │                     Talaria's own Postgres/Redis
-           routing        ▼                     (boards, tickets, teams, cost,
+           direct         │                     Talaria's own Postgres/Redis
+           per-agent      ▼                     (boards, tickets, teams, cost,
    ┌────────┬────────┬────────┐                 activity, owned not proxied)
    ▼        ▼        ▼        ▼                          ▲
  agent-1  agent-2  …      agent-N ──────────────────────┘
  gateway  gateway         gateway     register / heartbeat / report
-   (each a full Hermes agent)
+   (each a full Hermes agent, persona gateway on its own loopback port)
 ```
 
 This is the piece that is shipped and running today, alongside the product surfaces — the PM suite, Comms,

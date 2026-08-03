@@ -20,8 +20,40 @@ if (user instanceof Response) return user
 Resource ACLs (board membership, KB perms, ownership) stay inline after the guard — guards answer
 "who are you / what class of thing may you do", ACLs answer "may you do it to THIS".
 
-Non-session auth: agent routes use `checkAgentKey` + `agentName` (fleet key); public routes say so
-in a comment; `llm.v1.*` follows the OpenAI wire contract and is exempt from all of this.
+Non-session auth: agent routes resolve the caller from its own `tak_` credential via
+`server/agent-auth.ts` — never from a header. Same `instanceof Response` shape as the guards:
+
+```ts
+const agent = await requireAgent(request)   // agent-only routes: caller or 401
+if (agent instanceof Response) return agent
+
+const agent = await agentCaller(request)    // dual-auth: null → fall through to session auth
+if (agent instanceof Response) return agent // a credential WAS presented and rejected
+if (agent) { … }                            // agent.id · agent.model · agent.legacy
+```
+
+`x-agent-name` is a cross-check that can narrow access, never grant it; a name contradicting the
+credential is a 403. `agent.legacy` marks a caller authenticated by the org-wide `TALARIA_AGENT_KEY`
+during the migration window — identity asserted, not proven, so anything granting privilege must
+refuse it.
+
+Fleet-plane endpoints carry their subject in the URL or body, and they take one of two guards — not
+the same one:
+
+```ts
+if (!(await checkFleetKey(request))) return …   // agents/register: ANY fleet credential.
+                                                // An agent registers before it has its own.
+
+const caller = await fleetCaller(request)       // agents/$id/heartbeat: same validation as
+if (caller instanceof Response) return caller   // agentCaller, but an UNNAMED legacy caller
+if (!caller) return …                           // resolves to { model: null } instead of a 400.
+if (caller.model && caller.model !== name)      // A caller we CAN name must match the subject —
+  return json({ error: … }, { status: 403 })    // that's what stops A reading B's work queue.
+```
+
+`checkFleetKey` answers "does this credential belong to the fleet" and nothing else, so it is only
+correct where the response carries no per-agent data. Public routes say so in a comment; `llm.v1.*`
+follows the OpenAI wire contract and is exempt from all of this.
 
 ## Bodies — `parseBody`
 

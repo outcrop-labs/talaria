@@ -40,7 +40,8 @@ your team, and watch the work (and what it costs) move in one place.
   comes up beside the old one and traffic cuts over only when it's healthy. Nobody's conversation dies
   to an edit.
 - **See the money.** Every generation is metered, priced, and attributed per agent, per ticket, and
-  per model, so you know exactly what your AI workforce costs and what it shipped.
+  per model, so you know exactly what your AI workforce costs. What it *shipped* — throughput and
+  quality beside the spend — is on the way.
 - **Free to self-host, forever.** MIT-licensed, runs on your hardware, keeps every other tool you
   love. A managed cloud is coming for teams who'd rather not run it themselves.
 

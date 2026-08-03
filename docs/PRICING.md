@@ -30,10 +30,23 @@ have context. Self-hosting is free forever regardless of anything here._
 | Tier | Price | Org agents | Human seats (each incl. their personal assistant) | Step-up |
 |---|---|---|---|---|
 | Self-hosted | free forever | ∞ | ∞ | The trust anchor and the funnel |
-| Starter | ~$99/mo | 3 | 5 incl., then ~$10/seat | Dedicated private instance, daily backups, BYO keys |
+| Starter | ~$99/mo | 3 | 5 incl., then ~$10/seat | Dedicated private instance, backups*, BYO keys |
 | Team | ~$299/mo | 10 | 20 incl. | Included inference allowance, longer audit retention, priority support |
-| Business | ~$799/mo | 25 | 50 incl., volume beyond | SSO, custom domain, compliance retention, guardrail/judge SLAs |
+| Business | ~$799/mo | 25 | 50 incl., volume beyond | SSO*, custom domain, compliance retention, guardrail/judge SLAs |
 | Enterprise | custom | custom | custom | Multi-instance / multitenancy, or supported deployment on their infra |
+
+**\* Not sellable yet — what's still missing before either tier ships:**
+- **Backups.** The artifact and the way back both exist now: `scripts/backup.sh` dumps Postgres and
+  every upload blob in all three storage modes, verifies the dump (`gzip -t` plus the `pg_dump`
+  completion trailer) and writes `SHA256SUMS`; `scripts/restore.sh` verifies those checksums before
+  touching anything. Redis is a *deliberate* exclusion, not a gap — sessions and ephemeral state,
+  blast radius is everyone signs out ([BACKUPS.md](./BACKUPS.md)). What's left for the Starter claim
+  of *automated daily backups with a documented restore*: (1) **nothing schedules it** — cron or a
+  systemd timer is the operator's job today, and the in-app scheduler is a later milestone; (2) **the
+  restore drill has never actually been run** — BACKUPS.md documents one, but a backup nobody has
+  restored isn't a backup we can sell.
+- **SSO.** Auth is password + Google OAuth (`ui/src/server/auth/`). No SAML, no OIDC beyond Google,
+  no SCIM.
 
 **Expansion levers (the whole growth story):**
 - **+1 org agent ~$20/mo**: "hire another teammate."

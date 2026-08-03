@@ -32,7 +32,8 @@ The project management suite, the fleet engine, and auth are live and running:
   One `talaria` network, providers registered in-app, provider secrets encrypted in the DB — no bridge,
   no Dockerfiles.
 - **Redis-backed auth** ✅. A pluggable, env-gated provider registry (Google OAuth or username/password),
-  stateless HMAC sessions, and a login screen that renders only what's enabled.
+  opaque Redis-backed sessions (the cookie carries only a session id), and a login screen that
+  renders only what's enabled.
 - **Guardrails** ✅. Agents can create and triage work, but they can't assign it to themselves or mark
   their own work done. Assigned and done stay a human's call; agents report up to `quality_review`.
 - **Agent MCP (`talaria-mcp`)** ✅. An MCP server ([`mcp/`](./mcp)) exposing only the safe tools — list,

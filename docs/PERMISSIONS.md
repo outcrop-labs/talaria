@@ -27,10 +27,18 @@ them enforce the same resolution server-side (`requireView`).
 
 ## The permission catalog
 
-13 permissions across Agents / Work / Knowledge / Artifacts / Files / Templates / Models — e.g.
-`agents.manage`, `research.run`, `plans.create`, `boards.create`, `comms.channels`, `kb.edit`,
-`kb.official`, `artifacts.create`, `artifacts.publish`, `files.upload`, `templates.manage`,
-`models.mint-keys`. Each ships a sensible member default.
+13 permissions in five groups (`server/permissions.ts` is the catalog; the groups are what Admin →
+People renders):
+
+- **Agents** — `agents.manage`.
+- **Work** — `research.run`, `plans.create`, `boards.create`.
+- **Comms** — `comms.channels`, `comms.relays`.
+- **Content** — `kb.edit`, `kb.official`, `artifacts.create`, `artifacts.publish`, `files.upload`,
+  `templates.manage`.
+- **Models** — `models.mint-keys`.
+
+Each ships a sensible member default; the ones that are **off** by default are `agents.manage`,
+`kb.official`, `artifacts.publish`, `templates.manage`, and `models.mint-keys`.
 
 **Resolution, most specific wins:**
 
