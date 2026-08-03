@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { parseBody, requireUser } from '@/server/api-guard'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { searchForPrincipal } from '@/server/retrieval'
 
 const Body = z.object({
@@ -20,9 +20,10 @@ export const Route = createFileRoute('/api/rag/search')({
     handlers: {
       POST: async ({ request }) => {
         let principal: { userId?: string; agentModel?: string } | null = null
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const name = caller.model
           principal = { agentModel: name }
         } else {
           const user = await requireUser(request)

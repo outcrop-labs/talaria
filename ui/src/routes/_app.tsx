@@ -6,6 +6,7 @@ import { MercuryBackdrop } from '@/components/mercury-backdrop'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { NavRail } from '@/components/app/nav-rail'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
+import { QueryError } from '@/components/ui/query-state'
 import { Avatar } from '@/components/ui/avatar'
 import { useDeniedViews, useLogout, useSession, type SessionUser } from '@/lib/session'
 import { ADMIN_VIEWS } from '@/lib/nav'
@@ -16,12 +17,17 @@ export const Route = createFileRoute('/_app')({
 })
 
 function AppLayout() {
-  const { data: user, isLoading, isSuccess } = useSession()
+  const session = useSession()
+  const { data: user, isLoading, isSuccess } = session
   const denied = useDeniedViews()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const navigate = useNavigate()
   const logout = useLogout()
 
+  // Only a SUCCESSFUL session read saying "nobody is signed in" sends anyone to
+  // /login. /api/auth/session answers 200 with `{ user: null }` when you're
+  // signed out, so a non-2xx means the backend blipped — and `isSuccess` is
+  // false for it now, which is the whole point: a blip is not a logout.
   useEffect(() => {
     if (isSuccess && !user) void navigate({ to: '/login' })
   }, [isSuccess, user, navigate])
@@ -48,6 +54,31 @@ function AppLayout() {
       void navigate({ to: '/' })
     }
   }, [user, denied, pathname, navigate])
+
+  // The session read FAILED (not "signed out" — that is a 200 with a null user).
+  // Say so inside the real chrome and offer a retry. Shimmering forever would be
+  // the same lie in slower motion, and bouncing to /login — what a swallowed 500
+  // used to do — is worse still: it reads as "you have been signed out".
+  if (session.isError && !user) {
+    return (
+      <>
+        <MercuryBackdrop />
+        <div className="flex h-screen flex-col">
+          <header className="relative z-40 flex items-center justify-between gap-3 border-b border-line-subtle px-6 py-3 backdrop-blur">
+            <Brand />
+            <ThemeToggle />
+          </header>
+          <div className="min-h-0 flex-1">
+            <QueryError
+              error={session.error}
+              title="Could not reach your session"
+              onRetry={() => void session.refetch()}
+            />
+          </div>
+        </div>
+      </>
+    )
+  }
 
   if (isLoading || !user) {
     // The session gate used to blank the WHOLE app ("no content, then BAM").

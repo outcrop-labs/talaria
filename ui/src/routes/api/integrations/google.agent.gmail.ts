@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { refuseLegacy, requireAgent } from '@/server/agent-auth'
 import { listRecentMessagesWithToken } from '@/server/google/gmail'
 import { resolveAgentGoogle, resolveAgentPrincipal } from '@/server/google/agent-google'
 import { queueAction } from '@/server/google/pending-actions'
@@ -23,9 +23,14 @@ export const Route = createFileRoute('/api/integrations/google/agent/gmail')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        if (!checkAgentKey(request)) return json({ error: 'unauthorized' }, { status: 401 })
-        const name = agentName(request)
-        if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await requireAgent(request)
+        if (caller instanceof Response) return caller
+        // Acting as a HUMAN — the owner's mailbox (or the shared org one). A
+        // legacy shared-key caller only ASSERTS which agent it is, so it never
+        // reaches a token; the refusal names the container to roll.
+        const denied = refuseLegacy(caller, 'Gmail access')
+        if (denied) return denied
+        const name = caller.model
         const google = await resolveAgentGoogle(name, Date.now())
         if (!google) return json({ error: 'not_connected', message: 'No Google account is connected for this agent (its owner, or the org account).' }, { status: 409 })
         const q = new URL(request.url).searchParams.get('q') || 'in:inbox'
@@ -36,9 +41,14 @@ export const Route = createFileRoute('/api/integrations/google/agent/gmail')({
         }
       },
       POST: async ({ request }) => {
-        if (!checkAgentKey(request)) return json({ error: 'unauthorized' }, { status: 401 })
-        const name = agentName(request)
-        if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await requireAgent(request)
+        if (caller instanceof Response) return caller
+        // Acting as a HUMAN — the owner's mailbox (or the shared org one). A
+        // legacy shared-key caller only ASSERTS which agent it is, so it never
+        // reaches a token; the refusal names the container to roll.
+        const denied = refuseLegacy(caller, 'Gmail access')
+        if (denied) return denied
+        const name = caller.model
         const parsed = Draft.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const principal = await resolveAgentPrincipal(name)

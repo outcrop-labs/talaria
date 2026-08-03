@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { createSpace, listSpaces } from '@/server/kb'
 import { canRead, canReadAgent, grantedItemIds, grantedItemIdsForAgent } from '@/server/kb-perms'
 import { logAudit } from '@/server/audit'
@@ -15,9 +15,10 @@ export const Route = createFileRoute('/api/kb/spaces')({
     handlers: {
       GET: async ({ request }) => {
         // Agents (over MCP) see org/public spaces + ones granted to them.
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const name = caller.model
           const granted = await grantedItemIdsForAgent('space', name)
           const spaces = (await listSpaces()).filter((s) => granted.has(s.id) || canReadAgent(s, name))
           return json({ spaces })
@@ -36,9 +37,10 @@ export const Route = createFileRoute('/api/kb/spaces')({
         // Agents (over MCP) may create spaces too — a space is just a shelf,
         // and docs stay drafts until a human officializes them. No owner, so
         // sharing/deletion stay human calls.
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const name = caller.model
           const dup = (await listSpaces()).find((s) => s.name.trim().toLowerCase() === body.name.trim().toLowerCase())
           if (dup) return json({ space: dup }) // find-or-create: agents retry; duplicates rot the KB
           return json({ space: await createSpace({ ...body, createdBy: name, ownerUserId: null }) })

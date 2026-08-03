@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { requireAgent } from '@/server/agent-auth'
 import { agentMessageUser } from '@/server/outreach'
 
 const Body = z.object({
@@ -18,9 +18,9 @@ export const Route = createFileRoute('/api/agent/message-user')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        if (!checkAgentKey(request)) return json({ error: 'unauthorized' }, { status: 401 })
-        const agent = agentName(request)
-        if (!agent) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await requireAgent(request)
+        if (caller instanceof Response) return caller
+        const agent = caller.model
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const result = await agentMessageUser(agent, parsed.data.to, parsed.data.message)
