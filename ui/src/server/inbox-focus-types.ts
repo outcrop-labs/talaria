@@ -48,7 +48,17 @@ export interface InboxMessageMetadata {
   focus?: InboxFocusContext | null
   actor?: { type: 'human' | 'assistant'; id: string | null; label: string }
   delegateModel?: string | null
+  responseModel?: string | null
+  mode?: 'normal' | 'fast' | 'plan'
   decisionId?: string | null
+}
+
+export interface InboxMessageAttachment {
+  id: string
+  filename: string
+  mime: string
+  size: number
+  refType?: 'kb-doc' | 'artifact'
 }
 
 export type InboxActivityStatus =
@@ -70,6 +80,9 @@ export type InboxTimelineEntry =
       focus: InboxFocusContext | null
       actor: InboxMessageMetadata['actor'] | null
       delegateModel: string | null
+      responseModel: string | null
+      mode: 'normal' | 'fast' | 'plan' | null
+      attachments: InboxMessageAttachment[]
     }
   | {
       kind: 'context'

@@ -7,7 +7,7 @@ import {
   touchConversation,
   updateAssistant,
 } from './conversations'
-import { requestText } from './inbox-focus-assistant'
+import { requestGatewayText, requestText } from './inbox-focus-assistant'
 import {
   findFocusItemForUser,
   focusAssistantFor,
@@ -26,6 +26,9 @@ import {
   normalizeInboxTimelineTimestamp,
   type InboxTimelineRecord,
 } from '@/lib/inbox-focus-timeline'
+import { gatewayModelsFor } from './model-access'
+import { attachmentTextBlocks, canAccessUpload, resolveAttachments } from './uploads'
+import { refBlocks, resolveRefs, type MessageRef } from './refs'
 import type {
   FocusActionResult,
   FocusCommandResponse,
@@ -33,6 +36,7 @@ import type {
   InboxConversationPage,
   InboxFocusContext,
   InboxMessageMetadata,
+  InboxMessageAttachment,
   InboxTimelineEntry,
   FocusSourceType,
 } from './inbox-focus-types'
@@ -80,12 +84,46 @@ export async function ensureInboxConversation(userId: string, agentModel: string
 async function recentInboxHistory(conversationId: string): Promise<InboxModelTurn[]> {
   const sql = await db()
   const rows = (await sql`
-    select role, content from messages
+    select role, content, attachments from messages
     where conversation_id = ${conversationId} and role in ('user', 'assistant')
       and status = 'complete' and content <> ''
     order by seq desc limit 20
-  `) as unknown as InboxModelTurn[]
-  return limitInboxModelHistory(rows.reverse())
+  `) as unknown as Array<InboxModelTurn & { attachments: unknown }>
+  const mapped = await Promise.all(rows.reverse().map(async (row) => ({
+    role: row.role,
+    content: row.role === 'user'
+      ? `${row.content}${refBlocks(row.attachments)}${await attachmentTextBlocks(row.attachments)}`
+      : row.content,
+  })))
+  return limitInboxModelHistory(mapped)
+}
+
+function publicAttachments(value: unknown): InboxMessageAttachment[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const attachment = item as Record<string, unknown>
+    if (
+      typeof attachment.id !== 'string'
+      || typeof attachment.filename !== 'string'
+      || typeof attachment.mime !== 'string'
+      || typeof attachment.size !== 'number'
+    ) return []
+    return [{
+      id: attachment.id,
+      filename: attachment.filename,
+      mime: attachment.mime,
+      size: attachment.size,
+      ...(attachment.refType === 'kb-doc' || attachment.refType === 'artifact' ? { refType: attachment.refType } : {}),
+    }]
+  })
+}
+
+async function validatedResponseModel(user: SessionUser, requested: string | null | undefined): Promise<string | null> {
+  if (!requested) return null
+  const allowed = await gatewayModelsFor(user.role)
+  if (!allowed.some((model) => model.id === requested)) throw new Error('That response model is no longer available to this account.')
+  return requested
 }
 
 function messageEntry(input: {
@@ -95,6 +133,7 @@ function messageEntry(input: {
   status: 'streaming' | 'complete' | 'error'
   createdAt: string
   metadata: InboxMessageMetadata
+  attachments?: InboxMessageAttachment[]
 }): InboxTimelineEntry {
   return buildInboxTimeline([{ recordType: 'message', ...input }]).find((entry) => entry.kind === 'message')!
 }
@@ -130,11 +169,21 @@ export async function* runInboxConversationCommand(
     instruction: string
     focusKey?: string | null
     delegateModel?: string | null
-    delegateTier?: string | null
+    responseModel?: string | null
+    mode?: 'normal' | 'fast' | 'plan'
+    attachmentIds?: string[]
+    refs?: MessageRef[]
     signal?: AbortSignal
   },
 ): AsyncGenerator<InboxCommandEvent> {
   const assistant = await focusAssistantFor(user.id)
+  const responseModel = await validatedResponseModel(user, input.responseModel)
+  const mode = input.mode ?? 'normal'
+  const modeInstruction = mode === 'plan'
+    ? '\n\n[Plan mode: answer with a concise plan or clarifying question. Do not propose or imply execution.]'
+    : mode === 'fast'
+      ? '\n\n[Fast mode: answer directly and keep the response brief.]'
+      : ''
   const conversationId = await ensureInboxConversation(user.id, assistant.model)
   const item = input.focusKey ? await findFocusItemForUser(user, input.focusKey) : null
   if (input.focusKey && !item) {
@@ -143,27 +192,45 @@ export async function* runInboxConversationCommand(
   }
 
   const focus = item ? focusContext(item) : null
+  const requestedAttachmentIds = input.attachmentIds ?? []
+  const attachmentAccess = await Promise.all(requestedAttachmentIds.map((id) => canAccessUpload(id, {
+    userId: user.id,
+    who: user.email ?? user.name,
+    isAdmin: user.role === 'admin',
+  })))
+  const uploads = await resolveAttachments(requestedAttachmentIds.filter((_, index) => attachmentAccess[index]))
+  const referenceChips = await resolveRefs(user, input.refs ?? [])
+  const messageAttachments = [...uploads, ...referenceChips]
+  const attachmentContext = `${refBlocks(messageAttachments)}${await attachmentTextBlocks(messageAttachments)}`
+  const visibleAttachments = publicAttachments(messageAttachments)
   const history = await recentInboxHistory(conversationId)
   const createdAt = new Date().toISOString()
   const userMetadata: InboxMessageMetadata = {
     focus,
     actor: { type: 'human', id: user.id, label: actorOf(user) },
+    responseModel,
+    mode,
   }
   const userSeq = await nextSeq(conversationId)
-  const userMessageId = await insertUserMessage(conversationId, userSeq, input.instruction, [], user.id, userMetadata as unknown as Record<string, unknown>)
+  const userMessageId = await insertUserMessage(conversationId, userSeq, input.instruction, messageAttachments, user.id, userMetadata as unknown as Record<string, unknown>)
   const assistantMetadata: InboxMessageMetadata = {
     focus,
     actor: { type: 'assistant', id: assistant.model, label: assistant.name ?? 'Scout' },
     delegateModel: input.delegateModel ?? null,
+    responseModel,
+    mode,
   }
   const assistantMessageId = await insertStreamingAssistant(conversationId, userSeq + 1, assistantMetadata as unknown as Record<string, unknown>)
   await touchConversation(conversationId)
   yield {
     type: 'conversation',
     conversationId,
-    entry: messageEntry({ id: userMessageId, role: 'user', content: input.instruction, status: 'complete', createdAt, metadata: userMetadata }),
+    entry: messageEntry({ id: userMessageId, role: 'user', content: input.instruction, status: 'complete', createdAt, metadata: userMetadata, attachments: visibleAttachments }),
   }
-  yield { type: 'status', label: focus ? 'Reviewing the active decision' : 'Thinking with Scout' }
+  yield {
+    type: 'status',
+    label: mode === 'plan' ? 'Planning with Scout' : mode === 'fast' ? 'Answering quickly' : focus ? 'Reviewing the active decision' : 'Thinking with Scout',
+  }
 
   try {
     let content: string
@@ -173,7 +240,9 @@ export async function* runInboxConversationCommand(
         key: item.key,
         instruction: input.instruction,
         delegateModel: input.delegateModel,
-        delegateTier: input.delegateTier,
+        responseModel,
+        mode,
+        attachmentContext,
         history,
         signal: input.signal,
       })
@@ -190,12 +259,15 @@ export async function* runInboxConversationCommand(
       }
     } else {
       const prompt = buildInboxConversationPrompt({
-        instruction: input.instruction,
+        instruction: `${input.instruction}${modeInstruction}${attachmentContext}`,
         focus: null,
         history,
         allowedActionIds: [],
       })
-      content = assistant.configured && assistant.model
+      content = responseModel
+        ? await requestGatewayText(responseModel, [{ role: 'user', content: prompt }], `user:${user.email ?? user.id}`, input.signal)
+          ?? 'Scout is temporarily unavailable. No tools or mutations were attempted.'
+        : assistant.configured && assistant.model
         ? await requestText(assistant.model, [{ role: 'user', content: prompt }], 20_000, input.signal)
           ?? 'Scout is temporarily unavailable. No tools or mutations were attempted.'
         : 'Your personal assistant is not configured yet. You can still use the safe actions in the Focus Queue.'
@@ -232,6 +304,7 @@ interface TimelineSqlRow {
   content: string | null
   messageStatus: 'streaming' | 'complete' | 'error' | null
   metadata: InboxMessageMetadata | null
+  attachments: unknown
   decisionStatus: string | null
   actionId: string | null
   instruction: string | null
@@ -248,14 +321,14 @@ async function timelineRows(conversationId: string, cursor?: string | null): Pro
   const rows = (await sql`
     select * from (
       select 'message'::text as "recordType", m.id, m.created_at as "createdAt",
-             m.role, m.content, m.status as "messageStatus", m.metadata,
+             m.role, m.content, m.status as "messageStatus", m.metadata, m.attachments,
              null::text as "decisionStatus", null::text as "actionId", null::text as instruction,
              null::jsonb as proposal, null::jsonb as outcome, null::jsonb as focus,
              null::timestamptz as "expiresAt", null::timestamptz as "completedAt"
       from messages m where m.conversation_id = ${conversationId} and m.role in ('user', 'assistant')
       union all
       select 'decision'::text as "recordType", d.id, d.created_at as "createdAt",
-             null::text as role, null::text as content, null::text as "messageStatus", null::jsonb as metadata,
+             null::text as role, null::text as content, null::text as "messageStatus", null::jsonb as metadata, null::jsonb as attachments,
              d.status as "decisionStatus", d.action_id as "actionId", d.instruction,
              d.proposal, d.outcome, d.focus_context as focus, d.expires_at as "expiresAt", d.completed_at as "completedAt"
       from inbox_decisions d where d.conversation_id = ${conversationId} and d.focus_context is not null
@@ -326,6 +399,7 @@ export async function getInboxConversation(user: SessionUser, cursor?: string | 
         content: row.content ?? '',
         status: row.messageStatus,
         metadata: row.metadata ?? {},
+        attachments: publicAttachments(row.attachments),
       })
     } else {
       const record = await timelineRecordForDecision(user, row)

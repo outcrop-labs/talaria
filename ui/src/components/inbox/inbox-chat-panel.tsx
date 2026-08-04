@@ -21,14 +21,16 @@ import {
   RotateCcw,
   X,
 } from 'lucide-react'
-import { AgentChip } from '@/components/chat/agent-picker'
+import { useQuery } from '@tanstack/react-query'
+import { MessageAttachments, PendingAttachments } from '@/components/chat/attachments'
 import { ChatComposer, type ChatComposerHandle } from '@/components/chat/chat-composer'
-import { TierPicker } from '@/components/chat/tier-picker'
+import { ScoutComposerControls, type ScoutMode } from '@/components/inbox/scout-composer-controls'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Markdown } from '@/components/ui/markdown'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
+import { splitAttachments, uploadFile, type Attachment } from '@/lib/attachments'
 import { mergeInboxTimelinePages } from '@/lib/inbox-focus-timeline'
 import {
   DEFAULT_INBOX_PANEL_WIDTH,
@@ -43,10 +45,13 @@ import {
   type FocusItem,
   type InboxTimelineEntry,
 } from '@/lib/inbox-focus'
+import { useModels } from '@/lib/muse'
+import { useSkillLibrary } from '@/lib/workflows'
 
 const PANEL_COLLAPSED_KEY = 'talaria:inbox-chat-collapsed'
 const PANEL_COLLAPSED_EVENT = 'talaria:inbox-chat-collapsed'
-const PANEL_WIDTH_KEY = 'talaria:inbox-chat-width'
+// v2 adopts the 700px Paper composer as the default while retaining resizing.
+const PANEL_WIDTH_KEY = 'talaria:inbox-chat-width-v2'
 let collapsedFallback = false
 let widthFallback = DEFAULT_INBOX_PANEL_WIDTH
 
@@ -135,6 +140,22 @@ interface StreamingTurn {
   content: string
 }
 
+export interface InboxCommandOptions {
+  focusKey: string | null
+  delegateModel: string | null
+  responseModel: string | null
+  mode: ScoutMode
+  attachmentIds: string[]
+  refs: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
+}
+
+interface AgentMcpSummary {
+  id: string
+  slug: string
+  displayName: string
+  servers: Array<{ name: string; extras: string[] }>
+}
+
 export const InboxChatPanel = forwardRef<
   InboxChatPanelHandle,
   {
@@ -144,7 +165,7 @@ export const InboxChatPanel = forwardRef<
     busy: boolean
     notice: string | null
     streaming: StreamingTurn | null
-    onSubmit: (instruction: string, options: { focusKey: string | null; delegateModel: string | null; delegateTier: string | null }) => void
+    onSubmit: (instruction: string, options: InboxCommandOptions) => void
     onConfirm: (entry: Extract<InboxTimelineEntry, { kind: 'activity' }>) => void
     onCancel: (entry: Extract<InboxTimelineEntry, { kind: 'activity' }>) => void
     onRetry: (entry: Extract<InboxTimelineEntry, { kind: 'activity' }>) => void
@@ -158,8 +179,22 @@ export const InboxChatPanel = forwardRef<
   const { width: savedWidth, setWidth: setSavedWidth } = usePanelWidth()
   const conversation = useInboxFocusConversation()
   const { data: agentData, isLoading: agentsLoading } = useAgents()
+  const models = useModels()
+  const skills = useSkillLibrary()
+  const mcp = useQuery({
+    queryKey: ['inbox-scout-mcp'],
+    queryFn: async (): Promise<{ agents: AgentMcpSummary[] }> => {
+      const response = await fetch('/api/mcp', { credentials: 'same-origin' })
+      if (!response.ok) return { agents: [] }
+      return response.json() as Promise<{ agents: AgentMcpSummary[] }>
+    },
+    staleTime: 30_000,
+  })
   const [delegateModel, setDelegateModel] = useState('')
-  const [tier, setTier] = useState('')
+  const [responseModel, setResponseModel] = useState('')
+  const [mode, setMode] = useState<ScoutMode>('normal')
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [detachedKey, setDetachedKey] = useState<string | null>(null)
   const [hiddenOutput, setHiddenOutput] = useState(false)
   const [dragWidth, setDragWidth] = useState<number | null>(null)
@@ -200,7 +235,60 @@ export const InboxChatPanel = forwardRef<
     ],
     [agentData?.agents, assistant],
   )
-  const selectedAgent = agentData?.agents.find((agent) => agent.id === delegateModel)
+
+  useEffect(() => {
+    const available = models.data?.models ?? []
+    if (available.length === 0) {
+      if (!models.isLoading) setResponseModel('')
+      return
+    }
+    if (available.some((model) => model.id === responseModel)) return
+    const preferred = models.data?.effective
+    setResponseModel(available.some((model) => model.id === preferred) ? preferred! : available[0]!.id)
+  }, [models.data?.effective, models.data?.models, models.isLoading, responseModel])
+
+  const effectiveAgentModel = delegateModel || assistant?.model || ''
+  const skillOwner = skills.data?.find((owner) => owner.model === effectiveAgentModel)
+  const skillItems = useMemo(() => {
+    const owners = skills.data ?? []
+    const selected = owners.filter((owner) => owner.owner === 'shared' || owner.model === effectiveAgentModel)
+    const seen = new Set<string>()
+    return selected.flatMap((owner) => owner.skills.map((skill) => ({
+      id: `${owner.owner}:${skill.name}`,
+      label: skill.name,
+      detail: owner.owner === 'shared' ? 'Shared' : owner.label,
+    }))).filter((skill) => {
+      if (seen.has(skill.label)) return false
+      seen.add(skill.label)
+      return true
+    })
+  }, [effectiveAgentModel, skills.data])
+  const mcpItems = useMemo(() => {
+    const roster = mcp.data?.agents ?? []
+    const selected = roster.find((agent) => agent.slug === skillOwner?.owner)
+      ?? roster.find((agent) => agent.displayName === (delegateModel
+        ? agentData?.agents.find((agent) => agent.id === delegateModel)?.label
+        : assistant?.name))
+    return (selected?.servers ?? []).map((server) => ({
+      id: `${selected?.id ?? 'agent'}:${server.name}`,
+      label: server.name,
+      detail: server.extras.includes('built-in') ? 'Built in' : server.extras.includes('managed') ? 'Managed' : undefined,
+    }))
+  }, [agentData?.agents, assistant?.name, delegateModel, mcp.data?.agents, skillOwner?.owner])
+
+  const addAttachment = useCallback((attachment: Attachment) => {
+    setAttachments((current) => current.some((item) => item.id === attachment.id) ? current : [...current, attachment])
+    setAttachmentError(null)
+  }, [])
+
+  const uploadFiles = useCallback(async (files: File[]) => {
+    setAttachmentError(null)
+    for (const file of files) {
+      const result = await uploadFile(file)
+      if ('error' in result) setAttachmentError(result.error)
+      else addAttachment(result)
+    }
+  }, [addAttachment])
 
   const expand = useCallback(() => {
     setCollapsed(false)
@@ -338,14 +426,19 @@ export const InboxChatPanel = forwardRef<
   }
 
   const submit = (markdown: string) => {
-    const instruction = markdown.trim()
+    const instruction = markdown.trim() || (attachments.length ? 'Review the attached context.' : '')
     if (!instruction || busy) return
+    const split = splitAttachments(attachments)
     onSubmit(instruction, {
       focusKey: attached && active ? active.key : null,
       delegateModel: delegateModel || null,
-      delegateTier: tier || null,
+      responseModel: responseModel || null,
+      mode,
+      attachmentIds: split.attachmentIds,
+      refs: split.refs,
     })
     composerRef.current?.clear()
+    setAttachments([])
   }
 
   if (collapsed) {
@@ -446,7 +539,17 @@ export const InboxChatPanel = forwardRef<
             </div>
           ) : (
             <div className="space-y-5">
-              {entries.map((entry) => <TimelineEntry key={entry.id} entry={entry} onConfirm={onConfirm} onCancel={onCancel} onRetry={onRetry} onUndo={onUndo} />)}
+              {entries.map((entry) => (
+                <TimelineEntry
+                  key={entry.id}
+                  entry={entry}
+                  readOnly={!focusMode}
+                  onConfirm={onConfirm}
+                  onCancel={onCancel}
+                  onRetry={onRetry}
+                  onUndo={onUndo}
+                />
+              ))}
               {streaming && (
                 <>
                   <div className="ml-auto max-w-[86%] rounded-xl rounded-br-sm border border-line bg-raised px-3 py-2.5 font-sans text-[13px] leading-5 text-fg">
@@ -464,8 +567,9 @@ export const InboxChatPanel = forwardRef<
           )}
         </div>
 
-        <div className="shrink-0 border-t border-line bg-sidebar/95 p-3 backdrop-blur">
+        <div className="shrink-0 border-t border-line bg-sidebar/95 p-2 backdrop-blur">
           {notice && <div role="status" className="mb-2 rounded-md border border-line bg-panel px-3 py-2 font-sans text-[11px] leading-4 text-muted">{notice}</div>}
+          {attachmentError && <div role="alert" className="mb-2 rounded-md border border-danger/45 bg-panel px-3 py-2 font-sans text-[11px] leading-4 text-danger">{attachmentError}</div>}
           {active && (
             <div className="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2">
               <Paperclip size={12} className={attached ? 'text-accent' : 'text-ink-dim'} />
@@ -477,19 +581,33 @@ export const InboxChatPanel = forwardRef<
               </button>
             </div>
           )}
-          <div className="rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
+          <div className="flex flex-col gap-2 rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
+            <PendingAttachments items={attachments} onRemove={(id) => setAttachments((current) => current.filter((item) => item.id !== id))} />
             <ChatComposer
               ref={composerRef}
               placeholder={attached ? 'Tell Scout what should happen…' : 'Message Scout…'}
-              compactOnNarrow
               onSubmit={submit}
+              onFiles={(files) => void uploadFiles(files)}
               onEscape={() => window.innerWidth < 1400 && collapse()}
               disabled={busy}
-              rightControls={
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <AgentChip agents={agents} value={delegateModel} onChange={(value) => { setDelegateModel(value); setTier('') }} />
-                  <TierPicker tiers={selectedAgent?.tiers ?? []} value={tier} onChange={setTier} />
-                </div>
+              canSend={attachments.length > 0 || undefined}
+              controlRail={
+                <ScoutComposerControls
+                  agents={agents}
+                  agentValue={delegateModel}
+                  onAgentChange={setDelegateModel}
+                  models={models.data?.models ?? []}
+                  modelValue={responseModel}
+                  onModelChange={setResponseModel}
+                  modelsLoading={models.isLoading}
+                  mode={mode}
+                  onModeChange={setMode}
+                  mcpItems={mcpItems}
+                  skillItems={skillItems}
+                  onAttach={addAttachment}
+                  onTranscript={(text) => composerRef.current?.insertText(text)}
+                  disabled={busy}
+                />
               }
             />
           </div>
@@ -505,12 +623,14 @@ export const InboxChatPanel = forwardRef<
 
 function TimelineEntry({
   entry,
+  readOnly,
   onConfirm,
   onCancel,
   onRetry,
   onUndo,
 }: {
   entry: InboxTimelineEntry
+  readOnly: boolean
   onConfirm: (entry: Extract<InboxTimelineEntry, { kind: 'activity' }>) => void
   onCancel: (entry: Extract<InboxTimelineEntry, { kind: 'activity' }>) => void
   onRetry: (entry: Extract<InboxTimelineEntry, { kind: 'activity' }>) => void
@@ -527,7 +647,12 @@ function TimelineEntry({
   }
   if (entry.kind === 'message') {
     if (entry.role === 'user') {
-      return <div className="ml-auto max-w-[86%] rounded-xl rounded-br-sm border border-line bg-raised px-3 py-2.5 font-sans text-[13px] leading-5 text-fg"><Markdown>{entry.content}</Markdown></div>
+      return (
+        <div className="ml-auto max-w-[86%] rounded-xl rounded-br-sm border border-line bg-raised px-3 py-2.5 font-sans text-[13px] leading-5 text-fg">
+          <Markdown>{entry.content}</Markdown>
+          <MessageAttachments items={entry.attachments} />
+        </div>
+      )
     }
     return (
       <div className="border-t border-line pt-4">
@@ -556,17 +681,17 @@ function TimelineEntry({
         <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-surface p-2.5 font-mono text-[10px] leading-4 text-muted">{exactPreview(entry.details)}</pre>
       )}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {entry.activity === 'confirmation' && entry.confirmationToken && (
+        {!readOnly && entry.activity === 'confirmation' && entry.confirmationToken && (
           <>
             <Button size="sm" onClick={() => onConfirm(entry)}>Confirm exact action</Button>
             <Button size="sm" variant="ghost" onClick={() => onCancel(entry)}>Cancel</Button>
           </>
         )}
-        {entry.activity === 'failure' && entry.actionId && <Button size="sm" variant="outline" onClick={() => onRetry(entry)}>Retry</Button>}
-        {entry.activity === 'completion' && entry.undoExpiresAt
+        {!readOnly && entry.activity === 'failure' && entry.actionId && <Button size="sm" variant="outline" onClick={() => onRetry(entry)}>Retry</Button>}
+        {!readOnly && entry.activity === 'completion' && entry.undoExpiresAt
           ? <Button size="sm" variant="ghost" onClick={() => onUndo(entry)}><RotateCcw size={12} /> Undo</Button>
           : entry.activity === 'completion' && <a href={entry.focus.sourceHref} className={buttonClasses({ variant: 'ghost', size: 'sm' })}><ExternalLink size={12} /> View result</a>}
-        {(entry.activity === 'failure' || entry.activity === 'cancellation') && <a href={entry.focus.sourceHref} className={buttonClasses({ variant: 'ghost', size: 'sm' })}>Open source</a>}
+        {(entry.activity === 'failure' || entry.activity === 'cancellation' || (readOnly && (entry.activity === 'proposal' || entry.activity === 'confirmation'))) && <a href={entry.focus.sourceHref} className={buttonClasses({ variant: 'ghost', size: 'sm' })}>Open source</a>}
       </div>
     </section>
   )

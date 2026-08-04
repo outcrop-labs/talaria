@@ -8,7 +8,13 @@ const Body = z.object({
   key: z.string().min(1).max(600).nullable().optional(),
   instruction: z.string().trim().min(1).max(20_000),
   delegateModel: z.string().max(300).nullable().optional(),
-  delegateTier: z.string().max(100).nullable().optional(),
+  responseModel: z.string().max(300).nullable().optional(),
+  mode: z.enum(['normal', 'fast', 'plan']).default('normal'),
+  attachmentIds: z.array(z.string().uuid()).max(12).default([]),
+  refs: z.array(z.object({
+    type: z.enum(['kb-doc', 'artifact']),
+    id: z.string().uuid(),
+  })).max(6).default([]),
 })
 
 export const Route = createFileRoute('/api/inbox/focus/command')({
@@ -29,7 +35,10 @@ export const Route = createFileRoute('/api/inbox/focus/command')({
                 instruction: body.instruction,
                 focusKey: body.key,
                 delegateModel: body.delegateModel,
-                delegateTier: body.delegateTier,
+                responseModel: body.responseModel,
+                mode: body.mode,
+                attachmentIds: body.attachmentIds,
+                refs: body.refs,
                 signal: request.signal,
               })) {
                 controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`))

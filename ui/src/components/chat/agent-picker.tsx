@@ -131,10 +131,12 @@ export function AgentChip({
   agents,
   value,
   onChange,
+  className,
 }: {
   agents: { id: string; label: string; role?: string }[]
   value: string
   onChange: (id: string) => void
+  className?: string
 }) {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
@@ -182,7 +184,7 @@ export function AgentChip({
           setQ('')
           setOpen((v) => !v)
         }}
-        className={chipPrimary}
+        className={cn(chipPrimary, className)}
         title="Agent for this conversation"
       >
         <span className="max-w-28 truncate">{current?.label ?? value}</span>

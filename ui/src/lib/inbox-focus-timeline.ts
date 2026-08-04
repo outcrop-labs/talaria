@@ -13,6 +13,7 @@ export type InboxTimelineRecord =
       content: string
       status: 'streaming' | 'complete' | 'error'
       metadata: InboxMessageMetadata | null
+      attachments?: Array<{ id: string; filename: string; mime: string; size: number; refType?: 'kb-doc' | 'artifact' }>
     }
   | {
       recordType: 'decision'
@@ -124,6 +125,9 @@ export function buildInboxTimeline(records: InboxTimelineRecord[]): InboxTimelin
         focus,
         actor: record.metadata?.actor ?? null,
         delegateModel: record.metadata?.delegateModel ?? null,
+        responseModel: record.metadata?.responseModel ?? null,
+        mode: record.metadata?.mode ?? null,
+        attachments: record.attachments ?? [],
       })
     } else {
       entries.push(activityFor(record))

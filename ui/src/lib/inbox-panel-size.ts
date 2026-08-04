@@ -1,4 +1,6 @@
-export const DEFAULT_INBOX_PANEL_WIDTH = 520
+// Paper's Composer / Default is 700px wide; 717px leaves the panel's 8px
+// side padding and hairlines while rendering that control rail at 1:1 scale.
+export const DEFAULT_INBOX_PANEL_WIDTH = 717
 export const MIN_INBOX_PANEL_WIDTH = 320
 export const MAX_INBOX_PANEL_WIDTH = 720
 

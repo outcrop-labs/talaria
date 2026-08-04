@@ -16,7 +16,8 @@ import { logAudit } from './audit'
 import { completeQualityReview, getTask, type TaskStatus } from './tasks'
 import { statusMeta } from './statuses'
 import { routedModelFor } from './fleet-agents'
-import { requestJsonObject } from './inbox-focus-assistant'
+import { requestGatewayJsonObject, requestJsonObject } from './inbox-focus-assistant'
+import { gatewayModelsFor } from './model-access'
 import {
   asIso,
   buildInboxConversationPrompt,
@@ -814,6 +815,24 @@ async function commandFromModel(
   return validateCommandObject(await requestJsonObject(model, prompt, 6_000, signal), allowedActionIds)
 }
 
+async function validResponseModel(user: SessionUser, requested: string | null | undefined): Promise<string | null> {
+  if (!requested) return null
+  const allowed = await gatewayModelsFor(user.role)
+  if (!allowed.some((model) => model.id === requested)) throw new Error('That response model is no longer available to this account.')
+  return requested
+}
+
+async function commandFromGatewayModel(
+  user: SessionUser,
+  model: string,
+  prompt: string,
+  allowedActionIds: ReadonlySet<string>,
+  signal?: AbortSignal,
+): Promise<{ kind: 'clarification' | 'proposal'; message: string; actionId?: string; payload?: Record<string, unknown> } | null> {
+  const value = await requestGatewayJsonObject(model, prompt, `user:${user.email ?? user.id}`, signal)
+  return validateCommandObject(value, allowedActionIds)
+}
+
 export async function runFocusCommand(
   user: SessionUser,
   input: {
@@ -821,6 +840,9 @@ export async function runFocusCommand(
     instruction: string
     delegateModel?: string | null
     delegateTier?: string | null
+    responseModel?: string | null
+    mode?: 'normal' | 'fast' | 'plan'
+    attachmentContext?: string
     history?: Array<{ role: 'user' | 'assistant'; content: string }>
     signal?: AbortSignal
   },
@@ -829,13 +851,15 @@ export async function runFocusCommand(
   if (!item) return null
   const assistant = await focusAssistantFor(user.id)
   const delegateModel = await validDelegate(user.id, input.delegateModel, input.delegateTier)
-  const deterministic = deterministicProposal(item, input.instruction)
+  const responseModel = await validResponseModel(user, input.responseModel)
+  const mode = input.mode ?? 'normal'
+  const deterministic = mode === 'plan' ? null : deterministicProposal(item, input.instruction)
   const allowedActionIds = new Set(deterministic ? [deterministic.actionId] : [])
   let response: { kind: 'clarification' | 'proposal'; message: string; actionId?: string; payload?: Record<string, unknown> } | null = null
   let specialistResponse: { kind: 'clarification' | 'proposal'; message: string; actionId?: string; payload?: Record<string, unknown> } | null = null
 
   const sharedPrompt = buildInboxConversationPrompt({
-    instruction: input.instruction,
+    instruction: `${input.instruction}${input.attachmentContext ?? ''}`,
     focus: {
       key: item.key,
       question: item.question,
@@ -847,7 +871,7 @@ export async function runFocusCommand(
     allowedActionIds: [...allowedActionIds],
   })
 
-  if (delegateModel) {
+  if (delegateModel && mode !== 'fast') {
     specialistResponse = await commandFromModel(
       delegateModel,
       ['[Inbox Focus Queue specialist consultation. Tools are disabled. Do not execute anything.]', sharedPrompt].join('\n'),
@@ -856,14 +880,19 @@ export async function runFocusCommand(
     )
   }
 
-  if (assistant.configured && assistant.model) {
+  if (mode === 'fast' && deterministic) {
+    response = { kind: 'proposal', ...deterministic }
+  } else if (responseModel || (assistant.configured && assistant.model)) {
     const prompt = [
       '[Inbox Focus Queue command. Tools are disabled. Do not execute anything.]',
+      `[Response mode: ${mode}. ${mode === 'plan' ? 'Return a plan or clarification only; no executable action is allowed.' : mode === 'fast' ? 'Be brief and direct.' : 'Balance clarity and actionability.'}]`,
       'You are the personal assistant and final orchestrator. Assess the bounded specialist suggestion, if any.',
       `Specialist suggestion: ${JSON.stringify(specialistResponse)}`,
       sharedPrompt,
     ].join('\n')
-    response = await commandFromModel(assistant.model, prompt, allowedActionIds, input.signal)
+    response = responseModel
+      ? await commandFromGatewayModel(user, responseModel, prompt, allowedActionIds, input.signal)
+      : await commandFromModel(assistant.model!, prompt, allowedActionIds, input.signal)
   }
 
   response ??= specialistResponse
@@ -881,7 +910,7 @@ export async function runFocusCommand(
     item,
     instruction: input.instruction,
     actionId: response.actionId ?? null,
-    agentModel: assistant.model,
+    agentModel: responseModel ?? assistant.model,
     delegateModel,
     status: response.actionId ? 'proposed' : 'completed',
     proposal: response.actionId

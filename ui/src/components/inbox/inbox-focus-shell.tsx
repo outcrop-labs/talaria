@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { InboxChatPanel, type InboxChatPanelHandle } from '@/components/inbox/inbox-chat-panel'
+import { InboxChatPanel, type InboxChatPanelHandle, type InboxCommandOptions } from '@/components/inbox/inbox-chat-panel'
 import {
   runInboxFocusAction,
   streamInboxFocusCommand,
@@ -205,13 +205,17 @@ export function InboxFocusShell({ children, attachActiveDecision }: { children: 
 
   const submitCommand = async (
     instruction: string,
-    options: { focusKey: string | null; delegateModel: string | null; delegateTier: string | null },
+    options: InboxCommandOptions,
   ) => {
     const trimmedInstruction = instruction.trim()
     if (!trimmedInstruction || !beginBusy('command')) return
     setFailure(null)
     setAssistantMessage(null)
-    setStreaming({ user: instruction, status: options.focusKey ? 'Reviewing the active decision' : 'Thinking with Scout', content: '' })
+    setStreaming({
+      user: instruction,
+      status: options.mode === 'plan' ? 'Planning with Scout' : options.mode === 'fast' ? 'Answering quickly' : options.focusKey ? 'Reviewing the active decision' : 'Thinking with Scout',
+      content: '',
+    })
     const controller = new AbortController()
     commandAbortRef.current = controller
     let commandResult: Exclude<import('@/lib/inbox-focus').FocusCommandResponse, { status: 'stale' }> | null = null
@@ -221,7 +225,10 @@ export function InboxFocusShell({ children, attachActiveDecision }: { children: 
         key: options.focusKey,
         instruction: trimmedInstruction,
         delegateModel: options.delegateModel,
-        delegateTier: options.delegateTier,
+        responseModel: options.responseModel,
+        mode: options.mode,
+        attachmentIds: options.attachmentIds,
+        refs: options.refs,
       }, controller.signal)) {
         if (event.type === 'status') setStreaming((current) => current ? { ...current, status: event.label } : current)
         if (event.type === 'content') setStreaming((current) => current ? { ...current, content: current.content + event.text } : current)

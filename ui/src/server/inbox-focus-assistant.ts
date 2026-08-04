@@ -1,5 +1,6 @@
 import { parseAgentStream } from '@/lib/sse-parse'
 import { proxyChat } from './gateway'
+import { completeViaGateway } from './llm-gateway'
 
 function parseJsonObject(text: string): unknown {
   const start = text.indexOf('{')
@@ -85,4 +86,33 @@ export async function requestJsonObject(model: string, prompt: string, max = 6_0
   } finally {
     deadline.dispose()
   }
+}
+
+/** Use a user-selectable org gateway model without giving it tools. This is
+ *  distinct from proxyChat(), whose model ids are fleet agents/personas. */
+export async function requestGatewayText(
+  model: string,
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  caller: string,
+  parentSignal?: AbortSignal,
+): Promise<string | null> {
+  parentSignal?.throwIfAborted()
+  const result = await completeViaGateway(model, messages, { temperature: 0.2, caller })
+  parentSignal?.throwIfAborted()
+  return result.text.trim() || null
+}
+
+export async function requestGatewayJsonObject(
+  model: string,
+  prompt: string,
+  caller: string,
+  parentSignal?: AbortSignal,
+): Promise<unknown> {
+  const text = await requestGatewayText(
+    model,
+    [{ role: 'user', content: `${prompt}\n\nReturn exactly one JSON object and no prose outside it.` }],
+    caller,
+    parentSignal,
+  )
+  return text ? parseJsonObject(text) : null
 }

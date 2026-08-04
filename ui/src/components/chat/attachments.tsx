@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, FileText, BookOpen, Gem, Upload } from 'lucide-react'
+import { X, FileText, BookOpen, FolderUp, Gem, ImagePlus, Upload } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 import { cn } from '@/lib/cn'
 import { SkeletonRows } from '@/components/ui/skeleton'
@@ -14,10 +14,16 @@ import { attachmentUrl, humanSize, isImage, uploadFile, type Attachment } from '
 // the model and persists the chip on the message.
 export function AttachButton({ onAttach, disabled }: { onAttach: (a: Attachment) => void; disabled?: boolean }) {
   const fileRef = useRef<HTMLInputElement>(null)
+  const photoRef = useRef<HTMLInputElement>(null)
+  const folderRef = useRef<HTMLInputElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
   const [pick, setPick] = useState<'kb-doc' | 'artifact' | null>(null)
+
+  useEffect(() => {
+    folderRef.current?.setAttribute('webkitdirectory', '')
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -50,6 +56,8 @@ export function AttachButton({ onAttach, disabled }: { onAttach: (a: Attachment)
   return (
     <div ref={wrapRef} className="relative">
       <input ref={fileRef} type="file" multiple hidden onChange={(e) => void pickFiles(e.target.files)} />
+      <input ref={photoRef} type="file" accept="image/*" multiple hidden onChange={(e) => void pickFiles(e.target.files)} />
+      <input ref={folderRef} type="file" multiple hidden onChange={(e) => void pickFiles(e.target.files)} />
       {/* The `+` attach tile: 36×36, radius 6, hairline border, mono glyph (spec §7). */}
       <button
         type="button"
@@ -91,6 +99,26 @@ export function AttachButton({ onAttach, disabled }: { onAttach: (a: Attachment)
                 }}
               >
                 <Upload size={13} className="text-muted" /> Upload file
+              </button>
+              <button
+                type="button"
+                className={item}
+                onClick={() => {
+                  setOpen(false)
+                  photoRef.current?.click()
+                }}
+              >
+                <ImagePlus size={13} className="text-muted" /> Add photos
+              </button>
+              <button
+                type="button"
+                className={item}
+                onClick={() => {
+                  setOpen(false)
+                  folderRef.current?.click()
+                }}
+              >
+                <FolderUp size={13} className="text-muted" /> Add folder
               </button>
             </>
           )}

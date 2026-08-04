@@ -63,6 +63,30 @@ test('detached messages do not create a context boundary', () => {
   assert.deepEqual(timeline.map((entry) => entry.kind), ['message'])
 })
 
+test('timeline messages preserve composer selections and visible attachment metadata', () => {
+  const timeline = buildInboxTimeline([{
+    recordType: 'message',
+    id: '00000000-0000-4000-8000-000000000007',
+    createdAt: '2026-08-03T12:00:07.000Z',
+    role: 'user',
+    content: 'Review the attached context.',
+    status: 'complete',
+    metadata: { responseModel: 'anthropic/claude-sonnet', mode: 'plan' },
+    attachments: [{
+      id: '00000000-0000-4000-8000-000000000008',
+      filename: 'brief.md',
+      mime: 'text/markdown',
+      size: 128,
+    }],
+  }])
+  const entry = timeline[0]
+  assert.equal(entry?.kind, 'message')
+  if (entry?.kind !== 'message') return
+  assert.equal(entry.responseModel, 'anthropic/claude-sonnet')
+  assert.equal(entry.mode, 'plan')
+  assert.deepEqual(entry.attachments.map((attachment) => attachment.filename), ['brief.md'])
+})
+
 test('timeline cursors round-trip their exact ordering key', () => {
   const createdAt = normalizeInboxTimelineTimestamp(records[2]!.createdAt)
   const cursor = encodeInboxTimelineCursor(createdAt, records[2]!.id)

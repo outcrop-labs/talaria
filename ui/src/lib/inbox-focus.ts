@@ -105,7 +105,15 @@ export function runInboxFocusAction(input: {
 }
 
 export async function* streamInboxFocusCommand(
-  input: { key?: string | null; instruction: string; delegateModel?: string | null; delegateTier?: string | null },
+  input: {
+    key?: string | null
+    instruction: string
+    delegateModel?: string | null
+    responseModel?: string | null
+    mode?: 'normal' | 'fast' | 'plan'
+    attachmentIds?: string[]
+    refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
+  },
   signal?: AbortSignal,
 ): AsyncGenerator<InboxCommandEvent> {
   const response = await fetch('/api/inbox/focus/command', {

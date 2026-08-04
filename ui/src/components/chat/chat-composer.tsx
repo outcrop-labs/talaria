@@ -55,10 +55,13 @@ export const ChatComposer = forwardRef<
     leftControls?: React.ReactNode
     /** Host controls rendered at the END of the bottom row (send hint, tiers, stop). */
     rightControls?: React.ReactNode
+    /** Complete replacement for the bottom rail. Used by surfaces whose
+     *  control order is part of the product contract (for example Scout). */
+    controlRail?: React.ReactNode
     /** Dense docks may hide the formatting strip below the sm breakpoint. */
     compactOnNarrow?: boolean
   }
->(function ChatComposer({ placeholder, mentionables, onSubmit, onFiles, onEscape, onEmptyChange, disabled, canSend, leftControls, rightControls, compactOnNarrow }, ref) {
+>(function ChatComposer({ placeholder, mentionables, onSubmit, onFiles, onEscape, onEmptyChange, disabled, canSend, leftControls, rightControls, controlRail, compactOnNarrow }, ref) {
   const [empty, setEmpty] = useState(true)
   // Refs so the keymap (bound once at editor creation) sees fresh handlers.
   const submitRef = useRef<() => void>(() => {})
@@ -113,7 +116,7 @@ export const ChatComposer = forwardRef<
       // tile (spec §7).
       attributes: {
         class: 'tiptap max-h-40 overflow-y-auto py-3.5 pl-3.5 pr-14 font-sans text-sm leading-5',
-        style: 'min-height:4.75rem',
+        style: 'min-height:4.625rem',
       },
       handlePaste: (_view, event) => {
         const files = Array.from(event.clipboardData?.files ?? [])
@@ -162,13 +165,19 @@ export const ChatComposer = forwardRef<
         <EditorContent editor={editor} />
         <SendButton className="absolute right-2 top-2" enabled={sendEnabled} onClick={() => submitRef.current()} />
       </div>
-      <div className="flex min-w-0 items-center gap-1.5">
-        {leftControls}
-        {leftControls != null && <span className="mx-1 h-5 border-l border-line" />}
-        {editor && <ComposerToolbar editor={editor} className={compactOnNarrow ? 'hidden sm:flex' : undefined} />}
-        <span className="flex-1" />
-        {rightControls}
-      </div>
+      {controlRail != null ? (
+        <div className="flex h-10 min-w-0 items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {controlRail}
+        </div>
+      ) : (
+        <div className="flex h-10 min-w-0 items-center gap-1.5">
+          {leftControls}
+          {leftControls != null && <span className="mx-1 h-5 border-l border-line" />}
+          {editor && <ComposerToolbar editor={editor} className={compactOnNarrow ? 'hidden sm:flex' : undefined} />}
+          <span className="flex-1" />
+          {rightControls}
+        </div>
+      )}
     </div>
   )
 })
