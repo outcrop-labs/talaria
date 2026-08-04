@@ -5,7 +5,7 @@ export type PanelProps = React.HTMLAttributes<HTMLElement> & {
   as?: 'div' | 'section' | 'article' | 'aside'
 }
 
-/** The core Gentle-dew surface (spec §8): panel fill on ground, 1px hairline,
+/** The core Mercury surface (spec §8): panel fill on ground, 1px hairline,
  *  radius 8 — matte, no glow. Reuse for cards/dialogs — don't re-style.
  *
  *  Owns the card padding (p-6) so density stays consistent app-wide — don't

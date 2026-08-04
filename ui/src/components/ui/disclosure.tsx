@@ -4,7 +4,7 @@ import { cn } from '@/lib/cn'
 
 // A clean collapsible section — collapsed by default. Reuse for thinking traces,
 // tool calls, and any other secondary detail that shouldn't clutter the thread.
-// Gentle dew (spec §10): compact mono trigger row on a raised hairline card.
+// Mercury (spec §10): compact mono trigger row on a raised hairline card.
 export function Disclosure({
   title,
   icon,

@@ -30,7 +30,7 @@ import { listQuery } from '@/components/ui/query-state'
 import { useEnabledApps } from '@/lib/apps'
 import { SidebarWorkOverview } from '@/components/app/sidebar-work-overview'
 
-// Gentle dew shell (spec §5): one collapsible nav — 208px sidebar ⇄ 64px icon
+// Mercury shell (spec §5): one collapsible nav — 208px sidebar ⇄ 64px icon
 // rail. The choice persists in localStorage, but the server can't see
 // localStorage — reading it during the first render made SSR (expanded) and
 // client (collapsed) disagree and hydration fail. useSyncExternalStore is the

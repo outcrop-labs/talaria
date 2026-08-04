@@ -1,6 +1,6 @@
 // The one segmented control — a bordered group of exclusive options. Use for
 // small mode switches (read/edit, list/grid); Tabs for page-level sections.
-// Gentle dew: the AUTO/MANUAL mono toggle from board `8A-0` — hairline group,
+// Mercury: the AUTO/MANUAL mono toggle from board `8A-0` — hairline group,
 // active cell raised + readout, inactive cells muted, mono uppercase labels.
 import { cn } from '@/lib/cn'
 import { focusRing } from './control'

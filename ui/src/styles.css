@@ -5,7 +5,7 @@
 @variant dark (&:where(.dark, .dark *));
 
 /* ════════════════════════════════════════════════════════════════════════
-   GENTLE DEW — Talaria's design system (docs/design/gentle-dew-spec.md).
+   MERCURY — Talaria's design system (docs/design/mercury-spec.md).
 
    Neutral-first operational UI: near-black instrument surfaces, crisp cream
    readout, one warm gold (#C8B46C) for brand/action/attention, and safety
@@ -46,7 +46,7 @@
   --motion-ambient: 2100ms;
 }
 
-/* ── Mercury Dark — Gentle dew instrument surfaces (spec §1, exact) ──────── */
+/* ── Mercury Dark — Mercury instrument surfaces (spec §1, exact) ──────── */
 [data-theme='mercury'] {
   color-scheme: dark;
 
@@ -83,7 +83,7 @@
   --theme-chart-1: #68b6c8; /* Data-viz blue */
   --theme-chart-2: #d77968; /* Data-viz coral */
 
-  /* No neon glow — Gentle dew is matte. A soft shadow only. */
+  /* No neon glow — Mercury is matte. A soft shadow only. */
   --theme-glow: 0 2px 10px rgba(0, 0, 0, 0.4);
 
   --theme-header-bg: #090a09; /* Top strip sits on ground (spec §6) */
@@ -268,7 +268,7 @@ body {
 .theme-accent { color: var(--theme-accent); }
 .theme-accent-bg { background-color: var(--theme-accent); }
 
-/* Brand tint — FLAT warm gold (Gentle dew). The bronze gradient is retired;
+/* Brand tint — FLAT warm gold. The bronze gradient is retired;
    the class names stay so existing usages keep working. */
 .mercury-gradient { background-color: var(--theme-accent); }
 .mercury-text { color: var(--theme-accent); }
@@ -282,7 +282,7 @@ body {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Gentle dew motion grammar (spec §9). Loaders are rows of small rounded
+   Mercury motion grammar (spec §9). Loaders are rows of small rounded
    bars (3×12px, like the chip meters) in surface/signal colours. Apply a
    .gd-* class per bar and stagger with animation-delay; colour comes from
    the element (background/currentColor). Timing ladder:
@@ -367,7 +367,7 @@ body {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Gentle dew syntax highlighting (highlight.js token classes). Warm gold
+   Mercury syntax highlighting (highlight.js token classes). Warm gold
    keywords, success-green strings, ink-dim comments, chart blue/coral for
    builtins/tags — legible on the ground-inset code surface in both modes.
    ════════════════════════════════════════════════════════════════════════ */

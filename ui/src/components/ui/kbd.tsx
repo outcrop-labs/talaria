@@ -1,7 +1,7 @@
 // Keyboard-key chip + the composer's contextual key hint. Chats are meant to
 // be keyboard-driven — these make the keys visible right where the action is,
 // fading in only when the shortcut is actually available.
-// Gentle dew: raised tile + hairline + 10px mono chrome voice.
+// Mercury: raised tile + hairline + 10px mono chrome voice.
 import { cn } from '@/lib/cn'
 
 export function Kbd({ children, className }: { children: React.ReactNode; className?: string }) {

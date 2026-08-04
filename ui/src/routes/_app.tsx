@@ -12,7 +12,7 @@ import { useDeniedViews, useLogout, useSession } from '@/lib/session'
 import { ADMIN_VIEWS } from '@/lib/nav'
 import { shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
 
-// Authenticated app shell (Gentle dew, spec §5–6): the collapsible nav rail
+// Authenticated app shell (Mercury, spec §5–6): the collapsible nav rail
 // spans the full height on the left; the top strip sits above the active view
 // (Outlet) on the right. The brand lives in the rail, not the strip.
 export const Route = createFileRoute('/_app')({

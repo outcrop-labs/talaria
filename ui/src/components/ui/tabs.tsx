@@ -1,4 +1,4 @@
-// The one tab strip — Gentle-dew tile tabs (boards `44Y-0`/`8A-0`): mono
+// The one tab strip — Mercury tile tabs (boards `44Y-0`/`8A-0`): mono
 // uppercase labels, the active tab a raised hairline tile, dashed-gold
 // keyboard focus. Every tabbed surface uses this; nobody re-rolls it.
 import { cn } from '@/lib/cn'

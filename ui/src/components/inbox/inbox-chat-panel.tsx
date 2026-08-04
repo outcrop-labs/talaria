@@ -51,7 +51,8 @@ import { useSkillLibrary } from '@/lib/workflows'
 
 const PANEL_COLLAPSED_KEY = 'talaria:inbox-chat-collapsed'
 const PANEL_COLLAPSED_EVENT = 'talaria:inbox-chat-collapsed'
-// v2 adopts the 700px Paper composer as the default while retaining resizing.
+// v2 adopts the 700px composer width from the design spec as the default,
+// while retaining resizing.
 const PANEL_WIDTH_KEY = 'talaria:inbox-chat-width-v2'
 let collapsedFallback = false
 let widthFallback = DEFAULT_INBOX_PANEL_WIDTH

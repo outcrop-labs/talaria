@@ -1,6 +1,6 @@
 // The plan rail — LEFT, on the shared Rail primitives (agent picker up top,
 // this agent's plans below, plans shared with you at the end). Rows follow
-// the Gentle dew session-list pattern (spec §10): status dot, 13px sans
+// the Mercury session-list pattern (spec §10): status dot, 13px sans
 // title, right-aligned mono meta/time; the active row carries the gold dot.
 import { Plus } from 'lucide-react'
 import { cn } from '@/lib/cn'

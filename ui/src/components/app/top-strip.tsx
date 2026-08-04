@@ -7,7 +7,7 @@ import { NAV } from '@/lib/nav'
 import { useEnabledApps, type AppManifest } from '@/lib/apps'
 import type { SessionUser } from '@/lib/session'
 
-// Gentle dew top strip (spec §6): breadcrumb readout, compact search
+// Mercury top strip (spec §6): breadcrumb readout, compact search
 // affordance, and the account chip. The brand lives in the sidebar now —
 // this strip is pure chrome on the ground surface.
 export function TopStrip({ user, onLogout }: { user: SessionUser; onLogout: () => void }) {

@@ -1,8 +1,14 @@
-# Gentle Dew — Talaria UI Design Specification
+# Mercury — Talaria UI Design Specification
 
-Source of truth: Paper file **"Gentle dew"** — https://app.paper.design/file/01KYWTP9AFQ3NJD8M8FC2GKZBY/1-0
-Extracted 2026-07-31 from the live file (45 artboards) via computed styles + JSX export —
-values below are **exact** unless marked (approx). Artboard IDs noted for re-verification.
+**This document is the source of truth.** Values below are **exact** unless marked
+(approx), and the implementation is expected to match them rather than any external file.
+
+_Provenance: originally extracted 2026-07-31 (45 artboards, via computed styles + JSX
+export) from a Paper exploration titled "Gentle dew". That file lives in a personal
+account, so it is credited here as the design's origin and is deliberately NOT the
+reference — a house design system cannot depend on a third-party document one person
+can revoke. Artboard IDs are kept inline only as breadcrumbs for anyone who still has
+access._
 
 **Canonical (follow exactly):** color foundations, type, spacing, Icon Rail, Sidebar, LOGO,
 Composer/Default, hover states, motion grammar.

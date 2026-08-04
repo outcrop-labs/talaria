@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Search } from 'lucide-react'
 import { cn } from '@/lib/cn'
 
-// Gentle dew chat chrome vocabulary (spec §7 + §10) — the shared class
+// Mercury chat chrome vocabulary (spec §7 + §10) — the shared class
 // strings and micro-components every composer/chat surface leans on, so the
 // rail chips, icon tiles, and picker popovers stay pixel-identical across
 // chat, channels, comms, and any prompt surface.

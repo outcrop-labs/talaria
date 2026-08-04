@@ -2,7 +2,7 @@
 // things done (chat, channels, boards, inbox); MANAGE is the control plane for
 // the people running the platform (fleet, models, compute, cost, audit);
 // SYSTEM holds Settings (everyone) and Admin (role-locked) — moved out of the
-// user menu into the sidebar per the Gentle dew design (spec §5).
+// user menu into the sidebar per the Mercury design (spec §5).
 
 import type { LucideIcon } from 'lucide-react'
 import {

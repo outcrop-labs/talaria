@@ -23,7 +23,7 @@ export const IconButton = forwardRef<
       title={title}
       aria-label={title}
       className={cn(
-        // Gentle dew icon tile (spec §8): radius 6, raised when active,
+        // Mercury icon tile (spec §8): radius 6, raised when active,
         // hover-token fill, danger only ever tints the glyph — never a fill.
         'grid shrink-0 place-items-center rounded-md transition-colors disabled:opacity-40',
         focusRing,

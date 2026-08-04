@@ -1,7 +1,7 @@
 import { cn } from '@/lib/cn'
 
 // The Talaria brand — gold "A"-delta mark + spaced-caps wordmark
-// (Gentle dew spec §4, exact SVG from the design file).
+// (Mercury spec §4, exact SVG from the design file).
 export function Brand({ className, showTag = false }: { className?: string; showTag?: boolean }) {
   return (
     <div className={cn('flex items-center gap-2.5', className)}>

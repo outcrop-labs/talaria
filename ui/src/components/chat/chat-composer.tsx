@@ -21,7 +21,7 @@ import type { Mentionable } from '@/components/chat/mentions'
 // Shift+Enter is always a soft newline. Messages travel as markdown, which is
 // exactly what the message list renders and agents read.
 //
-// Gentle dew anatomy (spec §7): the editor sits in an INSET prompt well —
+// Mercury anatomy (spec §7): the editor sits in an INSET prompt well —
 // ground background, hairline border, radius 6 — with the gold 36×36 send
 // tile pinned top-right; every other control lives on the 36px chip rail
 // below. The host supplies the outer #141312 panel (strong border, radius 8,
@@ -155,7 +155,7 @@ export const ChatComposer = forwardRef<
     clear: () => editor?.commands.clearContent(true),
   }))
 
-  // Slack's split, Gentle dew's skin: the inset prompt well (with the gold
+  // Slack's split, Mercury's skin: the inset prompt well (with the gold
   // send tile inside, top-right) on top; every other control — attach, emoji,
   // formatting, pickers, stop — on the 36px chip rail below.
   const sendEnabled = !disabled && (canSend ?? !empty)
