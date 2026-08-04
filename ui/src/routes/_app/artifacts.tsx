@@ -482,7 +482,8 @@ function FolderNode({
 function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
   const qc = useQueryClient()
   const { data: me } = useSession()
-  const { data: artifact } = useArtifact(id)
+  const artifactQuery = useArtifact(id)
+  const artifact = artifactQuery.data
   const editorRef = useRef<RichEditorHandle>(null)
   const [title, setTitle] = useState('')
   const [saving, setSaving] = useState(false)
@@ -568,6 +569,20 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
   }
   const googleLabel = artifact?.kind === 'sheet' ? 'Export to Google Sheets' : artifact?.kind === 'file' ? 'Export to Google Drive' : 'Export to Google Docs'
 
+  // `if (!artifact)` covered all three answers, so a 500 and a deleted artifact
+  // both left fourteen skeleton nodes shimmering — measured unchanged at +53s
+  // in a browser, with no error, no retry, and no way to tell which it was.
+  // `useArtifact` resolves `null` only for a real 404 and rejects otherwise.
+  if (artifactQuery.isError && artifact === undefined)
+    return (
+      <QueryError
+        error={artifactQuery.error}
+        title="Could not load this document"
+        onRetry={() => void artifactQuery.refetch()}
+      />
+    )
+  if (artifact === null)
+    return <EmptyState icon="⧉" title="Document not found" hint="It may have been deleted, or it is no longer shared with you." />
   // Kind is unknown until the fetch lands, so use the doc-page shape (toolbar
   // + centered prose bars) as the default stand-in for every kind.
   if (!artifact) return <ArtifactPageSkeleton />

@@ -6,12 +6,12 @@ import { Input } from '@/components/ui/input'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { useContextMenu } from '@/components/ui/context-menu'
 import { QueryError } from '@/components/ui/query-state'
-import { AssigneesPill, DuePill, EstimatePill, LabelsPill, LABEL_CSS, type PillCtx } from '@/components/board/field-pills'
+import { AssigneesPill, DuePill, EstimatePill, LabelsPill, LABEL_CSS, isClosedStatus, type PillCtx } from '@/components/board/field-pills'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
 import { archiveTask, createTask, updateTask, useBoardLabels, type Board, type BoardMember } from '@/lib/boards'
 import { plainText } from '@/lib/plain-text'
-import { EFFORT_LABEL, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, type Task, type TaskStatus } from '@/lib/task-const'
+import { EFFORT_LABEL, OFF_BOARD_STATUSES, PRIORITY_COLOR, STATUS_LABEL, TASK_STATUSES, pgNum, pgNumOr, type Task, type TaskStatus } from '@/lib/task-const'
 import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
 import { useSession } from '@/lib/session'
 
@@ -59,8 +59,11 @@ export function Kanban({
   const columns = boardStatuses.length
     ? [
         ...boardStatuses.map((st) => ({ key: st.key, label: st.label, color: statusColorOf(st.key, boardStatuses) })),
-        ...(['failed', 'cancelled'] as const)
-          .filter((k) => tasks.some((t) => t.status === k))
+        // The legacy terminal extras, from the ONE off-board list (lib/task-const).
+        // This was a `['failed','cancelled']` literal — a third copy of a set
+        // that decides which columns exist, sitting eight lines under a comment
+        // about work vanishing when a ticket's status has no column.
+        ...OFF_BOARD_STATUSES.filter((k) => tasks.some((t) => t.status === k))
           .map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: COL_ACCENT[k] ?? 'var(--theme-muted)' })),
       ]
     : TASK_STATUSES.map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: COL_ACCENT[k] ?? 'var(--theme-muted)' }))
@@ -149,7 +152,10 @@ export function Kanban({
         {columns.map((col) => {
           const colTasks = tasks.filter((t) => t.status === col.key)
           // Column estimate rollup — visible planning weight per column.
-          const colHours = colTasks.reduce((s, t) => s + (t.estimatedHours ?? 0), 0)
+          // pgNumOr, not `?? 0`: estimatedHours arrives as a STRING (see
+          // PgNumeric), so `s + t.estimatedHours` concatenated — "04.5" — and
+          // fmtHours then called .toFixed on a string.
+          const colHours = colTasks.reduce((s, t) => s + pgNumOr(t.estimatedHours, 0), 0)
           return (
             <div
               key={col.key}
@@ -234,7 +240,16 @@ function Card({
   onOpen: () => void
   onContextMenu: (e: React.MouseEvent) => void
 }) {
-  const doneKids = subtasks.filter((s) => s.status === 'done').length
+  // `isClosedStatus`, not `s.status === 'done'`. The literal asked the DEFAULT
+  // workflow's question: on a board whose done column is `shipped` or `merged`
+  // — which custom statuses make legal — every finished sub-task counted as
+  // outstanding and the rollup read "0/5" forever. It also disagreed with the
+  // due pill on the same card, which has always asked `isClosedStatus` through
+  // `isOverdueTask`: a sub-task in a custom done column was simultaneously "not
+  // done" here and "not overdue" there.
+  const doneKids = subtasks.filter((s) => isClosedStatus(s.status, pillCtx.statuses)).length
+  // Wire numeric → number once, at the top, rather than at each read.
+  const estimate = pgNum(task.estimatedHours)
   return (
     <div
       draggable={draggable}
@@ -268,9 +283,9 @@ function Card({
                 </span>
               )}
               {task.effort && <span className="rounded border border-line-subtle px-1 text-[9px] font-semibold text-muted">{EFFORT_LABEL[task.effort]}</span>}
-              {task.estimatedHours != null && (
+              {estimate != null && (
                 <span className="rounded border border-line-subtle px-1 text-[9px] font-semibold text-muted" title="Estimate">
-                  {fmtHours(task.estimatedHours)}
+                  {fmtHours(estimate)}
                 </span>
               )}
               {task.archivedAt && <span className="rounded border border-line-subtle px-1 text-[9px] uppercase tracking-wide text-muted">archived</span>}

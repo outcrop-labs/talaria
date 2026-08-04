@@ -6,7 +6,7 @@ import { Markdown } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
-import { QueryError } from '@/components/ui/query-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { confirm } from '@/components/ui/confirm'
 import { cn } from '@/lib/cn'
 import { useQueryClient } from '@tanstack/react-query'
@@ -66,13 +66,14 @@ export function ChannelView({
   const detailFailed = detailQuery.isError && detail === undefined
   const channelAgents = detail?.agents ?? []
   const members = detail?.members ?? []
-  // The one flatten left standing here, deliberately: the directory only maps
-  // an author's email to their display name, and the fallback below derives
-  // the label from the message's OWN author field. A failed lookup shows
-  // "jon" instead of "Jon Iler" — degraded, but not a claim about anything the
-  // read failed to fetch. Written as an explicit `?? []` so it can't be
-  // mistaken for the destructure-default pattern this round removed.
-  const users = useUsers().data ?? []
+  // The directory only maps an author's email to their display name, and the
+  // fallback below derives the label from the message's OWN author field, so a
+  // failed lookup shows "jon" instead of "Jon Iler" — degraded, not a claim
+  // about anything. It was still written `useUsers().data ?? []`, which throws
+  // the query away on the line that made it: the degradation was reasoned
+  // about, but nothing downstream could ever SAY it was degraded.
+  const usersList = listQuery(useUsers(), { title: 'Names may be showing as email addresses', variant: 'inline' })
+  const users = usersList.rows
   const { data: session } = useSession()
   useChannelEvents(channelId)
   const [error, setError] = useState<string | null>(null)
@@ -176,6 +177,10 @@ export function ChannelView({
               onRetry={() => void detailQuery.refetch()}
             />
           )}
+          {/* Deliberately quiet: without the directory each message still names
+              its own author, so this degrades a display name rather than
+              inventing an absence. It says so anyway. */}
+          {usersList.failed && usersList.notice}
           {messagesQuery.isError && messagesQuery.data === undefined ? (
             <QueryError
               title="Could not load messages"

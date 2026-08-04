@@ -19,7 +19,7 @@ import { inlineEditKeys } from '@/components/ui/control'
 import { Modal } from '@/components/ui/modal'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
-import { QueryError } from '@/components/ui/query-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { RichEditor, type RichEditorHandle, type DocSearchFn } from '@/components/ui/rich-editor'
 import { useContextMenu, copyAppLink, DropdownMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
@@ -27,7 +27,7 @@ import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { Combobox } from '@/components/ui/combobox'
 import { useArtifacts, useTargetArtifacts, attachArtifact, detachArtifact } from '@/lib/artifacts'
 import { cn } from '@/lib/cn'
-import { getList } from '@/lib/fetch-json'
+import { getJson, getList } from '@/lib/fetch-json'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
 import { Avatar } from '@/components/ui/avatar'
@@ -109,11 +109,13 @@ const docSearch: DocSearchFn = async (q) => {
   if (!q.trim()) return []
   const [hits, artifacts] = await Promise.all([
     searchKb(q),
-    fetch('/api/artifacts', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : { artifacts: [] }))
-      .then((d: { artifacts?: Array<{ id: string; title: string; kind: string }> }) =>
-        (d.artifacts ?? []).filter((a) => a.title.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 6),
-      )
+    // `r.ok ? r.json() : { artifacts: [] }` resolved a 500 into "no artifacts
+    // match that" inside a link picker — the writer concludes the document
+    // they are looking for does not exist and goes and makes another one.
+    // getJson throws; the catch below still degrades to KB-only results rather
+    // than failing the whole search, but only AFTER a real failure.
+    getJson<{ artifacts?: Array<{ id: string; title: string; kind: string }> }>('/api/artifacts')
+      .then((d) => (d.artifacts ?? []).filter((a) => a.title.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 6))
       .catch(() => [] as Array<{ id: string; title: string; kind: string }>),
   ])
   return [
@@ -125,12 +127,24 @@ const docSearch: DocSearchFn = async (q) => {
   ]
 }
 
+const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
+
 export const Route = createFileRoute('/_app/knowledge')({
   // ?space=<id>&doc=<id> deep-link the tree selection — the URL IS the state.
-  validateSearch: (search: Record<string, unknown>): { space?: string; doc?: string } => ({
-    ...(typeof search.space === 'string' && search.space ? { space: search.space } : {}),
-    ...(typeof search.doc === 'string' && search.doc ? { doc: search.doc } : {}),
-  }),
+  //
+  // `d` is accepted as an alias for `doc` because SIX link builders spell it
+  // that way — this file's own "Copy link" on a doc (twice), the cross-reference
+  // picker, the comment notification, and the OKF resource line — and a search
+  // key this function does not name is DROPPED. Every one of those links opened
+  // the knowledgebase root instead of the document, silently: the same class of
+  // bug as a swallowed error, one layer up. Normalizing here fixes all six and
+  // any seventh, which chasing the call sites would not. `s` is taken for the
+  // same reason before someone writes the matching short form for the space.
+  validateSearch: (search: Record<string, unknown>): { space?: string; doc?: string } => {
+    const space = str(search.space) ?? str(search.s)
+    const doc = str(search.doc) ?? str(search.d)
+    return { ...(space ? { space } : {}), ...(doc ? { doc } : {}) }
+  },
   component: KnowledgePage,
 })
 
@@ -159,9 +173,15 @@ function KnowledgePage() {
   const docsQuery = useDocs(activeSpace?.id ?? null)
   const { data: docs = [], isLoading: docsLoading } = docsQuery
 
+  // Landing without a space picks the first one. It must NOT drop the doc: a
+  // `?doc=…` link that arrives without a space was rewritten to `?space=…`
+  // alone, so the document the link pointed at was thrown away between the
+  // click and the first paint, and the reader got the folder overview with no
+  // sign anything had been asked for.
   useEffect(() => {
-    if (!spaceId && spaces[0]) void navigate({ search: { space: spaces[0].id }, replace: true })
-  }, [spaces, spaceId, navigate])
+    if (!spaceId && spaces[0])
+      void navigate({ search: { space: spaces[0].id, ...(docId ? { doc: docId } : {}) }, replace: true })
+  }, [spaces, spaceId, docId, navigate])
 
   const newSpace = async (name: string) => {
     const { space } = await createSpace(name)
@@ -698,7 +718,8 @@ const editorShell = (fullscreen: boolean) =>
 // ── Space overview (top-level folder = document) ────────────────────────────
 function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewDoc: () => void; onDeleted: () => void }) {
   const qc = useQueryClient()
-  const { data: space } = useSpace(spaceId)
+  const spaceQuery = useSpace(spaceId)
+  const space = spaceQuery.data
   const editorRef = useRef<RichEditorHandle>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [name, setName] = useState('')
@@ -738,6 +759,20 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
   }
   const saveBody = () => save({ name: name.trim() || 'Untitled', body: editorRef.current?.getMarkdown() ?? space?.body ?? '' })
 
+  // `if (!space)` used to cover all three answers at once, so a 500 and a
+  // deleted folder both shimmered nine placeholder bars for ever. `useSpace`
+  // rejects on failure and resolves to `null` for a real 404 — the two ARE
+  // distinguishable here, this branch simply never looked.
+  if (spaceQuery.isError && space === undefined)
+    return (
+      <QueryError
+        error={spaceQuery.error}
+        title="Could not load this folder"
+        onRetry={() => void spaceQuery.refetch()}
+      />
+    )
+  if (space === null)
+    return <EmptyState icon="⧉" title="Folder not found" hint="It may have been deleted, or you don’t have access." />
   if (!space) return <DocPageSkeleton bars={9} />
 
   return (
@@ -1022,9 +1057,14 @@ function DocEditor({
   folderName?: string
 }) {
   const qc = useQueryClient()
-  const { data: doc } = useDoc(docId)
+  const docQuery = useDoc(docId)
+  const doc = docQuery.data
   const { data: me } = useSession()
-  const { data: backlinks = [], isLoading: backlinksLoading } = useBacklinks(docId)
+  // "Nothing links here" is a claim about the whole knowledge base; a failed
+  // read must not make it.
+  const backlinksList = listQuery(useBacklinks(docId), { title: 'Could not load backlinks', variant: 'inline' })
+  const backlinks = backlinksList.rows
+  const backlinksLoading = backlinksList.pending
   const editorRef = useRef<RichEditorHandle>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [title, setTitle] = useState('')
@@ -1049,7 +1089,11 @@ function DocEditor({
   const readRef = useRef<HTMLDivElement>(null)
   const [pendingQuote, setPendingQuote] = useState<string | null>(null)
   const [selPop, setSelPop] = useState<{ x: number; y: number; quote: string } | null>(null)
-  const { data: presence = [] } = useDocLive(docId, mode)
+  // Presence drives the multiplayer avatars and the read-mode auto-refresh.
+  // Defaulted it says "you are alone in here" during an outage, which is when
+  // two people are most likely to overwrite each other.
+  const presenceList = listQuery(useDocLive(docId, mode), { title: 'Could not see who else is here', variant: 'inline' })
+  const presence = presenceList.rows
   const commentsQuery = useDocComments(docId)
   const { data: comments = [] } = commentsQuery
   const openThreads = comments.filter((c) => !c.parentId && !c.resolved).length
@@ -1151,6 +1195,18 @@ function DocEditor({
     nodes?.[index]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
+  // Same three answers, same collapse: twelve skeleton bars that never resolve,
+  // for a 500 and for a document that genuinely no longer exists.
+  if (docQuery.isError && doc === undefined)
+    return (
+      <QueryError
+        error={docQuery.error}
+        title="Could not load this document"
+        onRetry={() => void docQuery.refetch()}
+      />
+    )
+  if (doc === null)
+    return <EmptyState icon="⧉" title="Document not found" hint="It may have been deleted, or you don’t have access." />
   if (!doc) return <DocPageSkeleton breadcrumb bars={12} />
 
   return (
@@ -1227,6 +1283,7 @@ function DocEditor({
             OKF
           </button>
         )}
+        {presenceList.notice}
         {/* Who's here: green ring = editing right now. */}
         {presence.length > 1 && (
           <div className="flex shrink-0 -space-x-1.5">
@@ -1511,6 +1568,9 @@ function DocEditor({
                 </div>
               </div>
             )}
+            {backlinksList.notice && (
+              <div className="mx-auto max-w-[46rem] px-6 pb-4">{backlinksList.notice}</div>
+            )}
             {!backlinksLoading && backlinks.length > 0 && (
               <div className="mx-auto max-w-[46rem] px-6 pb-10">
                 <div className="border-t border-line-subtle pt-4">
@@ -1641,9 +1701,14 @@ const VisibilityIcon = ({ v }: { v: 'private' | 'org' | 'public' }) =>
 // Attach any artifact to a KB doc (the "attach an artifact to anything" spec).
 function ArtifactAttachments({ docId }: { docId: string }) {
   const qc = useQueryClient()
-  const { data: attached = [], isLoading: attachedLoading } = useTargetArtifacts('kb-doc', docId)
-  const { data: all = [], isLoading: allLoading } = useArtifacts()
-  const loading = attachedLoading || allLoading
+  // Two defaults, two different lies: an empty `attached` says this document
+  // has nothing attached to it, and an empty `all` says there is nothing in
+  // the org to attach.
+  const attachedList = listQuery(useTargetArtifacts('kb-doc', docId), { title: 'Could not load this document’s attachments', variant: 'inline' })
+  const allList = listQuery(useArtifacts(), { title: 'Could not load your artifacts', variant: 'inline' })
+  const attached = attachedList.rows
+  const all = allList.rows
+  const loading = attachedList.pending || allList.pending
   const attachedIds = new Set(attached.map((a) => a.id))
   const options = all.filter((a) => !attachedIds.has(a.id)).map((a) => ({ value: a.id, label: a.title, sub: a.kind }))
   const refresh = () => qc.invalidateQueries({ queryKey: ['artifacts-for', 'kb-doc', docId] })
@@ -1668,6 +1733,8 @@ function ArtifactAttachments({ docId }: { docId: string }) {
         <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
           <Paperclip size={12} /> Attachments
         </div>
+        {attachedList.notice}
+        {allList.notice}
         {attached.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {attached.map((a) => (
@@ -1707,17 +1774,34 @@ interface Rev {
 function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb-space'; id: string; onRestore: (content: string) => Promise<void> }) {
   const [revs, setRevs] = useState<Rev[]>([])
   const [loading, setLoading] = useState(true)
+  // `r.ok ? r.json() : { revisions: [] }` told the owner of a document that it
+  // has NO VERSION HISTORY — on the one rail whose entire purpose is restoring
+  // a previous version. If the read fails the honest answer is "we could not
+  // read it", not "there is nothing to go back to".
+  const [error, setError] = useState<unknown>(null)
+  const [reload, setReload] = useState(0)
   const [preview, setPreview] = useState<{ rev: Rev; content: string } | null>(null)
   const [restoring, setRestoring] = useState(false)
   useEffect(() => {
     // Both kb-doc and kb-space history key on the item id (like memory).
+    let live = true
     setLoading(true)
-    fetch(`/api/history?kind=${kind}&id=${id}`)
-      .then((r) => (r.ok ? r.json() : { revisions: [] }))
-      .then((d) => setRevs((d as { revisions: Rev[] }).revisions))
-      .catch(() => setRevs([]))
-      .finally(() => setLoading(false))
-  }, [kind, id])
+    setError(null)
+    getJson<{ revisions?: Rev[] }>(`/api/history?kind=${kind}&id=${id}`)
+      .then((d) => {
+        if (!live) return
+        setRevs(d.revisions ?? [])
+      })
+      .catch((e: unknown) => {
+        if (!live) return
+        setRevs([])
+        setError(e)
+      })
+      .finally(() => live && setLoading(false))
+    return () => {
+      live = false
+    }
+  }, [kind, id, reload])
 
   const open = async (rev: Rev) => {
     const r = await fetch(`/api/history?kind=${kind}&id=${id}&rev=${rev.id}`)
@@ -1731,6 +1815,13 @@ function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb
       <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">History</div>
       {loading ? (
         <SkeletonRows rows={4} className="px-2 py-1" />
+      ) : error ? (
+        <QueryError
+          variant="inline"
+          title="Could not load this document’s history"
+          error={error}
+          onRetry={() => setReload((n) => n + 1)}
+        />
       ) : revs.length === 0 ? (
         <EmptyState variant="inline" title="No saved revisions yet." />
       ) : (

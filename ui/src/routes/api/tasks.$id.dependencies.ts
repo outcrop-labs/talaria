@@ -2,9 +2,9 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { agentCaller } from '@/server/agent-auth'
+import { agentCaller, type AgentCaller } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit } from '@/server/boards'
-import { addDependency, closedToAgents, getTask, HumanApprovalRequired, removeDependency } from '@/server/tasks'
+import { addDependency, agentTicketRefusal, getTask, HumanApprovalRequired, removeDependency } from '@/server/tasks'
 
 const Body = z.object({ dependsOnId: z.string().uuid() })
 
@@ -18,7 +18,10 @@ export const Route = createFileRoute('/api/tasks/$id/dependencies')({
         const task = await getTask(params.id)
         if (!task) return json({ error: 'not found' }, { status: 404 })
         let actor: string
-        let isAgent = false
+        // The AGENT itself, not a boolean — the second check below needs the
+        // same subject the first one used, and a bare `isAgent` flag left the
+        // caller's identity to be re-narrowed at a distance.
+        let agent: AgentCaller | null = null
         const caller = await agentCaller(request)
         if (caller instanceof Response) return caller
         if (caller) {
@@ -30,10 +33,10 @@ export const Route = createFileRoute('/api/tasks/$id/dependencies')({
           // task_dependencies + a task_activity line directly), so the same
           // predicate `agentSafePatch` asks is asked here — closed, archived,
           // and archived-board, all three, from one definition.
-          const shut = await closedToAgents(task)
+          const shut = await agentTicketRefusal(task, caller, 'write')
           if (shut) return json({ error: shut }, { status: 403 })
           actor = caller.model
-          isAgent = true
+          agent = caller
         } else {
           const user = await getSessionUser(request)
           if (!user || !canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
@@ -45,8 +48,8 @@ export const Route = createFileRoute('/api/tasks/$id/dependencies')({
         if (!dep || dep.boardId !== task.boardId) return json({ error: 'must be a ticket on this board' }, { status: 400 })
         // The edge lands on BOTH tickets (it shows in the target's "blocks"
         // list), so the rule applies to the target too.
-        if (isAgent) {
-          const depShut = await closedToAgents(dep)
+        if (agent) {
+          const depShut = await agentTicketRefusal(dep, agent, 'write')
           if (depShut) return json({ error: `${depShut}. That is the ticket you named as a blocker.` }, { status: 403 })
         }
         // `addDependency` THROWS on a cycle (X blocks Y, Y blocks X: a graph no

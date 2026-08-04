@@ -7,7 +7,7 @@ import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Combobox } from '@/components/ui/combobox'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
-import { QueryError } from '@/components/ui/query-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { getJson, getList } from '@/lib/fetch-json'
 import { useDeniedViews, useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
@@ -55,7 +55,10 @@ function SettingsPage() {
   const setTab = (t: SettingsTab) => void nav({ search: t === 'profile' ? {} : { tab: t } })
   // Enabled apps with a settings surface get their own tab, labeled by the
   // app — only for people granted the app (apps are explicit-grant).
-  const { data: enabledApps = [] } = useEnabledApps()
+  // A failed /api/apps used to remove app settings TABS with no trace — the
+  // settings for an app you have simply were not there.
+  const appsList = listQuery(useEnabledApps(), { title: 'Could not load app settings tabs', variant: 'inline' })
+  const enabledApps = appsList.rows
   const deniedForApps = useDeniedViews()
   const appTabs = enabledApps
     .filter((a) => a.surfaces.settings && !deniedForApps.includes(`/x/${a.slug}`))
@@ -91,6 +94,7 @@ function SettingsPage() {
       <div className="mx-auto w-full max-w-2xl">
         <h1 className="mercury-text mb-4 text-lg font-semibold">Settings</h1>
         <Tabs items={[...SETTINGS_TABS, ...appTabs]} value={tab} onChange={setTab} className="mb-6" />
+        {appsList.notice && <div className="-mt-4 mb-6">{appsList.notice}</div>}
         {tab === 'profile' && (
         <section className="mercury-panel rounded-2xl p-6">
           <div className="mb-4 flex items-center gap-3">

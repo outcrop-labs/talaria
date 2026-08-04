@@ -7,6 +7,7 @@
 // fixed statuses), so nothing changes until a board customizes.
 import { db } from './db/pg'
 import { publishBoard } from './realtime'
+import type { TaskStatus } from '@/lib/task-const'
 
 export type StatusCategory = 'open' | 'active' | 'review' | 'done'
 
@@ -84,9 +85,24 @@ export async function listStatuses(boardId: string): Promise<BoardStatus[]> {
  *  a done column: `reviewKey` resolved to 'quality_review' on a board where
  *  'quality_review' had been recategorised to `done`, so "report a result"
  *  wrote "closed, signed off". Resolvers do not invent destinations — callers
- *  that find nothing must refuse. */
-export async function statusMeta(boardId: string): Promise<{
+ *  that find nothing must refuse.
+ *
+ *  ONE FILTERED LIST ANSWERS "WHERE MAY A TICKET BE PLACED?". `placeable` (see
+ *  below) is that answer, and EVERY destination field here is picked from it.
+ *  Nothing outside this file may re-derive a destination from `listStatuses` —
+ *  three callers did (the dispatch prompt's "work in this column" hint, the
+ *  judge's revision bounce, the human reviewer's "request changes"), each
+ *  spelling `list.find(s => s.category === 'active')`, and each therefore able
+ *  to hand out a column keyed `cancelled`. `activeKey` is the field they all
+ *  needed. */
+export interface StatusMeta {
   keys: string[]
+  /** The RAW `agent_start` flag set — every column carrying it, terminal or
+   *  human-gated or not. This is the REFUSAL set, and deliberately the widest
+   *  one: entering any of these is assignment, which an agent may not do for
+   *  itself. Never use it to pick a destination or to decide what to serve —
+   *  `pickupKeys`/`workingKeys` are the filtered answers for that. Refusals
+   *  take the widest set, destinations the narrowest. */
   agentStartKeys: string[]
   /** Where an agent's terminal move is redirected: the first review-category
    *  column a PERSON can actually sign off from — so never one that is itself
@@ -115,6 +131,25 @@ export async function statusMeta(boardId: string): Promise<{
    *  So: a real agent-start column that is not terminal (done or off-board) and
    *  not the reviewer's sign-off queue, or null. Callers refuse or stay put. */
   assignedKey: string | null
+  /** Every column work may actually be PICKED UP from: agent-start, placeable,
+   *  and not a review column. `assignedKey` is its first entry. A review column
+   *  that also carries `agent_start` (legacy data — agentStartConflict refuses
+   *  the write now) is NOT one: the review-exit rule freezes anything parked
+   *  there, so dispatching into it or serving it on the heartbeat produces an
+   *  agent that loops forever on work it can never move. */
+  pickupKeys: string[]
+  /** Every column a WORK SESSION may continue in: pickup queues plus the active
+   *  (working) columns. Placeable, so never terminal and never the system
+   *  Blocked column; never a review column, for the same reason as
+   *  `pickupKeys`. This is the one answer to "is this ticket still in play for
+   *  its agent?" — the session loop and the heartbeat both ask it. */
+  workingKeys: string[]
+  /** The board's first WORKING column — where an agent parks a ticket while it
+   *  works, where the judge bounces a revision back to, and where a human
+   *  "request changes" sends it. Placeable, so a column labelled "Cancelled"
+   *  (slug: the off-board terminal key) can never be it. Null when the board
+   *  has no active column at all; callers fall back to `assignedKey` or say so. */
+  activeKey: string | null
   /** Is this key TERMINAL on this board — a done-category column, or one of the
    *  off-board keys that are terminal everywhere? The one definition: callers
    *  used to write `meta.doneKeys.includes(k) || OFF_BOARD_STATUSES.includes(k)`
@@ -122,7 +157,9 @@ export async function statusMeta(boardId: string): Promise<{
    *  queue keyed `cancelled` became a dispatch target. (Not enumerable as data
    *  on purpose — a function cannot be half-copied.) */
   terminal: (key: string) => boolean
-}> {
+}
+
+export async function statusMeta(boardId: string): Promise<StatusMeta> {
   const list = await listStatuses(boardId)
   const agentStart = list.filter((s) => s.agentStart).map((s) => s.key)
   const reviews = list.filter((s) => s.category === 'review').map((s) => s.key)
@@ -147,6 +184,14 @@ export async function statusMeta(boardId: string): Promise<{
   // later inherits the rule by picking from here.
   const placeable = list.filter((s) => s.category !== 'blocked' && !terminal(s.key))
   const pick = (f: (s: BoardStatus) => boolean): string | null => placeable.find(f)?.key ?? null
+  const all = (f: (s: BoardStatus) => boolean): string[] => placeable.filter(f).map((s) => s.key)
+  // A review column is the human sign-off queue at BOTH ends: an agent may not
+  // move a ticket out of one, so a review column can never be somewhere work is
+  // picked up or continued — whatever its `agent_start` flag says. Stating that
+  // once, here, is what stops `assignedWork` re-serving a frozen ticket on
+  // every heartbeat while `agentSafePatch` refuses every move out of it.
+  const pickupKeys = all((s) => s.agentStart && s.category !== 'review')
+  const workingKeys = all((s) => (s.agentStart || s.category === 'active') && s.category !== 'review')
   return {
     keys: list.map((s) => s.key),
     agentStartKeys: agentStart,
@@ -154,7 +199,10 @@ export async function statusMeta(boardId: string): Promise<{
     reviewKeys: reviews,
     doneKeys,
     defaultKey: pick((s) => s.category === 'open'),
-    assignedKey: pick((s) => s.agentStart && s.category !== 'review'),
+    assignedKey: pickupKeys[0] ?? null,
+    pickupKeys,
+    workingKeys,
+    activeKey: pick((s) => s.category === 'active'),
     terminal,
   }
 }
@@ -348,21 +396,50 @@ export async function reorderStatuses(boardId: string, keys: string[]): Promise<
 /** Delete a status; its tickets move to `reassignTo` (a status key). The last
  *  intake, the last review catch and the last terminal column are protected —
  *  the workflow needs all three, and statusMeta resolves each of them to a real
- *  key. Same rule as updateStatus (see REQUIRED_CATEGORIES). */
-export async function deleteStatus(boardId: string, key: string, reassignTo: string): Promise<void> {
+ *  key. Same rule as updateStatus (see REQUIRED_CATEGORIES).
+ *
+ *  THE REASSIGNMENT IS AN ORDINARY STATUS MOVE, and `actor` is why this takes
+ *  one. `assertSignoffColumnEmpty` REFUSES to recategorise a review column that
+ *  still holds tickets, in as many words, because that "would release them back
+ *  to the agents with nothing on the record saying they left review" — and its
+ *  refusal recommends deleting the column instead. So the recommended path did
+ *  the exact thing the refused path was blocked for, and rather more: a bulk
+ *  `update tasks set status = …` writes no activity row, never stamps
+ *  `completed_at` when the tickets land in a done column, tells no watcher, and
+ *  never reaches the push side when they land in a pickup queue. Four things
+ *  `updateTask` does, that a second writer of `tasks.status` has to remember.
+ *  Adding the missing activity row would have made this the second writer that
+ *  remembers ONE of the four — the shape every one of these rounds has been
+ *  unpicking. So there is no second writer: each ticket moves through
+ *  `updateTask`, as the person who deleted the column, and inherits all four.
+ *  N updates instead of one statement is the price, and deleting a populated
+ *  column is a rare admin action; being wrong four ways was the alternative. */
+export async function deleteStatus(boardId: string, key: string, reassignTo: string, actor: string): Promise<void> {
   if (key === 'blocked') throw new Error('Blocked is a system status')
   await materialize(boardId)
   const sql = await db()
-  const [victim] = (await sql`select id, key, category from board_statuses where key = ${key} and board_id = ${boardId}`) as unknown as Array<{
+  const [victim] = (await sql`select id, key, label, category from board_statuses where key = ${key} and board_id = ${boardId}`) as unknown as Array<{
     id: string
     key: string
+    label: string
     category: string
   }>
   if (!victim) return
   await assertNotLastOfCategory(boardId, victim.id, victim.category)
   const meta = await statusMeta(boardId)
   if (!meta.keys.includes(reassignTo) || reassignTo === victim.key) throw new Error('pick a surviving status for its tickets')
-  await sql`update tasks set status = ${reassignTo}, updated_at = now() where board_id = ${boardId} and status = ${victim.key}`
+  const doomed = (await sql`
+    select id from tasks where board_id = ${boardId} and status = ${victim.key} order by created_at asc
+  `) as unknown as Array<{ id: string }>
+  // Dynamic import: server/tasks.ts imports this module, so a static one would
+  // close the cycle.
+  const { updateTask } = await import('./tasks')
+  // BEFORE the column is dropped: `updateTask` refuses a status the board does
+  // not have, and while this move is legal the one being vacated must still
+  // resolve for the ticket it is reading.
+  for (const t of doomed) {
+    await updateTask(t.id, { status: reassignTo as TaskStatus, statusNote: `the "${victim.label}" column was deleted` }, { kind: 'human', id: actor })
+  }
   await sql`delete from board_statuses where id = ${victim.id}`
   publishBoard(boardId, { type: 'board' })
 }

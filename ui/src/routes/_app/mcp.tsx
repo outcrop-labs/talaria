@@ -15,7 +15,7 @@ import { Modal } from '@/components/ui/modal'
 import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
-import { QueryState } from '@/components/ui/query-state'
+import { listQuery, QueryState } from '@/components/ui/query-state'
 import { confirm } from '@/components/ui/confirm'
 import { cn } from '@/lib/cn'
 import { getJson, getList } from '@/lib/fetch-json'
@@ -161,7 +161,12 @@ function resolveScopePick(
 function ServerCard({ server: s }: { server: McpServerRow }) {
   const qc = useQueryClient()
   const { data: fleet } = useAgents()
-  const { data: users = [] } = useUsers()
+  // Access RULES are shown per person by name. Defaulted to `[]` a failed
+  // directory read rendered each existing rule as a truncated raw id and the
+  // "add a person" picker as empty — an access table that looks like it is
+  // about strangers, on a server that grants tool use.
+  const usersList = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
+  const users = usersList.rows
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const { openMenu, menu } = useContextMenu()
@@ -387,6 +392,7 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
               onPick={(id) => void patch({ userAccess: { userId: id, allowed: true, tools: null } })}
             />
           </div>
+          {usersList.notice}
           {s.userAccess.length === 0 ? (
             <EmptyState variant="inline" className="px-1.5 py-1 text-muted/70" title="Everyone with an assigned agent may use it." />
           ) : (

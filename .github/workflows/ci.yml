@@ -20,7 +20,60 @@
 #     produces hundreds of failures and gets disabled. Not this file's problem.
 #   - Build (`vite build`) and any deploy. `tsc --noEmit` already covers the
 #     type surface; a full build roughly triples the runtime for a weaker signal.
-#   - `adapter/`, `plugin/` and `scripts/` — no build or typecheck to run at all.
+#   - `adapter/` and `plugin/` — no build or typecheck to run at all. (`scripts/`
+#     was on this list too until the `invariants` job below; it is still not
+#     typechecked, it is EXECUTED.)
+#
+# ADDED SINCE: the `invariants` job. `tsc` cannot see the failure this repo
+#   actually keeps having. Seven consecutive review rounds found the same shape
+#   of bug — a predicate that decides whether an AGENT may write to a ticket, or
+#   which statuses are terminal, written out by hand at a new call site instead
+#   of imported — and every one of those copies typechecked perfectly, because a
+#   copy of a correct expression is a correct expression until the original
+#   changes. Each round centralized one predicate and the next round found the
+#   neighbouring one that had not been. Nothing in CI failed for any of it.
+#   `scripts/check-invariants.mjs` fails on the specific patterns that history
+#   says are wrong, and prints what to write instead. It is plain Node with ZERO
+#   dependencies, so this job needs no install step and finishes in seconds —
+#   which is also why it is not eslint (a linter is a dependency, a config, and a
+#   rollout against an unlinted codebase; see audit task 19).
+#   The rules live in that file, commented; amend them there, not here.
+#
+#   VERIFIED, not assumed. The commit that added the check said "NOT VERIFIED";
+#   it has since been exercised against a throwaway copy of the tree. Each of the
+#   six rules was re-introduced as a deliberate violation and each one failed the
+#   run, naming the file, the line and the fix. So were the three checks that
+#   guard the rules themselves, which matter more than the rules do:
+#     · the canonical definition RENAMED     -> `…-home-is-empty` fires, because a
+#       duplicate-definition rule whose subject no longer exists passes forever.
+#       This is not hypothetical: it is what happened when `closedToAgents`
+#       became `agentTicketRefusal`, and this post-check is what caught it.
+#     · the two OFF_BOARD_STATUSES lists made to DISAGREE -> cross-check fires.
+#     · a censused occurrence FIXED without lowering the count -> `…-census-stale`
+#       fires, so the census shrinks as debt is paid and can never rot into a
+#       standing amnesty for code that was cleaned up years ago.
+#
+#   KNOWN BLIND SPOTS (real, and cheap to close when they start to matter):
+#     · It scans `ui/src` and `mcp/src` only. `apps/` is compiled by ui's
+#       tsconfig and `apps/contacts/app.tsx` is a React surface that could grow a
+#       swallowing queryFn tomorrow; `adapter/`, `plugin/` and `scripts/` are
+#       unscanned too. Add them to SOURCE_DIRS in the script — it is one array.
+#     · Whole-line comments are stripped, trailing ones are not, so a pattern
+#       hidden after code on the same line still matches. Deliberate: a false
+#       positive costs one comment rewrite, a false negative costs a round.
+#     · The duplicate-definition rule reports the line where the match's leading
+#       whitespace starts, not the declaration — off by the size of the preceding
+#       blank/comment run. Cosmetic, but the file promises an exact line.
+#
+#   A NOTE THAT IS NOT ABOUT THIS FILE: `components/board/gantt.tsx` is the third
+#   board view on `useBoardStatuses`, and unlike `kanban.tsx` and
+#   `board-list.tsx` it does not refuse to draw when that read fails with no
+#   cached data — it renders every bar from an invented status set and prints a
+#   banner calling its own output "guesses", so `isOverdueTask` loses the board's
+#   terminal categories and finished work can show as overdue. Same hazard,
+#   diagnosed in its own comment, warned about rather than refused. No rule here
+#   catches it (the shape is an ABSENCE, which regex cannot see); it needs the
+#   four-line refusal the other two views have.
 #
 # ADDED SINCE: the `mcp` job. `mcp/src/index.ts` is ~1000 lines that ui's tsc
 #   never sees, and it mediates every agent write, so it now typechecks here on
@@ -61,6 +114,29 @@ permissions:
   contents: read
 
 jobs:
+  # Deliberately FIRST and deliberately dependency-free: it needs no `npm ci`,
+  # so it reports in well under a minute and a PR that re-introduces a known bug
+  # learns that before the typecheck jobs have finished installing.
+  invariants:
+    name: invariants (no deps)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+          # No `cache:` on purpose — there is nothing to install, and asking for
+          # a cache without a lockfile path fails the step.
+
+      # Reads ui/src and mcp/src. Every failure names the file, the line, and
+      # the thing to write instead; if you think a match is a false positive,
+      # argue it in the PR rather than widening the pattern.
+      - name: Check invariants
+        run: node scripts/check-invariants.mjs
+
   typecheck:
     name: typecheck (ui)
     runs-on: ubuntu-latest

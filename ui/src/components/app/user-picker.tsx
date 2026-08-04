@@ -1,5 +1,6 @@
 import { Combobox } from '@/components/ui/combobox'
 import type { ControlSize } from '@/components/ui/control'
+import { listQuery } from '@/components/ui/query-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 import { useUsers, type DirectoryUser } from '@/lib/users'
@@ -21,7 +22,16 @@ export function UserPicker({
   size?: ControlSize
   className?: string
 }) {
-  const { data: users = [], isLoading } = useUsers()
+  // Not `{ data: users = [] }`: an empty directory and a 500 are the same `[]`,
+  // and this picker's whole job is to say who exists. Over an outage it used to
+  // render "Everyone's already here" and disable itself — a confident, wrong
+  // answer with no way to retry.
+  const {
+    rows: users,
+    notice,
+    failed,
+    pending,
+  } = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
   const excluded = new Set(exclude)
   const options = users
     .filter((u) => !excluded.has(u.id))
@@ -29,20 +39,26 @@ export function UserPicker({
 
   // While the directory loads, a disabled empty picker would read as "no one to
   // add" (and swallow the click) — hold the slot with a combobox-shaped shimmer.
-  if (isLoading) return <Skeleton className={cn(size === 'sm' ? 'h-9' : 'h-11', 'w-full', className)} />
+  if (pending) return <Skeleton className={cn(size === 'sm' ? 'h-9' : 'h-11', 'w-full', className)} />
+  // The directory is gone: say so where the picker was, rather than offering an
+  // empty one. `notice` carries its own Retry. A stale directory keeps the
+  // picker and wears the marker — you can still pick someone you can see.
+  if (failed) return <div className={className}>{notice}</div>
 
   return (
-    <Combobox
-      options={options}
-      selected={[]}
-      onChange={([id]) => {
-        const user = users.find((u) => u.id === id)
-        if (user) onPick(user)
-      }}
-      placeholder={options.length ? placeholder : 'Everyone’s already here'}
-      disabled={options.length === 0}
-      size={size}
-      className={className}
-    />
+    <div className={className}>
+      {notice}
+      <Combobox
+        options={options}
+        selected={[]}
+        onChange={([id]) => {
+          const user = users.find((u) => u.id === id)
+          if (user) onPick(user)
+        }}
+        placeholder={options.length ? placeholder : 'Everyone’s already here'}
+        disabled={options.length === 0}
+        size={size}
+      />
+    </div>
   )
 }

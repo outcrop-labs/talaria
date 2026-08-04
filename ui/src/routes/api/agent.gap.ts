@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { requireAgent } from '@/server/agent-auth'
 import { boardAllowsAgent } from '@/server/boards'
 import { reportGap } from '@/server/gaps'
-import { closedToAgents, getTask, logActivity } from '@/server/tasks'
+import { agentTicketRefusal, getTask, logActivity } from '@/server/tasks'
 
 const Body = z.object({
   kind: z.string().min(2).max(80),
@@ -49,7 +49,7 @@ export const Route = createFileRoute('/api/agent/gap')({
           // or its board archived) — the gap is still worth recording, just not
           // ON that ticket. The SAME predicate `agentSafePatch` asks: this route
           // writes an activity line and never reaches `updateTask`.
-          const shut = await closedToAgents(task)
+          const shut = await agentTicketRefusal(task, caller, 'write')
           if (shut) {
             return json(
               { error: 'forbidden', message: `${shut}. Re-send this gap without taskId and it will still reach the Studio.` },

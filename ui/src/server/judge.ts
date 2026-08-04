@@ -179,9 +179,16 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
         // writes as the PLATFORM, not as an agent: the human-in-the-loop
         // invariant is Talaria's to enforce, and sending work back for
         // revision is the one move only it makes.
-        const { listStatuses, statusMeta } = await import('./statuses')
+        const { statusMeta } = await import('./statuses')
         const meta = await statusMeta(task.boardId)
-        const active = (await listStatuses(task.boardId)).find((st) => st.category === 'active')?.key ?? meta.assignedKey
+        // The bounce destination is a DESTINATION, so it comes from statusMeta's
+        // `placeable` list — `activeKey`, the same field the dispatch prompt and
+        // the human reviewer's "request changes" now use. This was
+        // `listStatuses(...).find(st => st.category === 'active')?.key`, which
+        // does not exclude terminal columns: on a board whose first active column
+        // is labelled "Cancelled" the judge CLOSED the ticket it meant to send
+        // back for revision.
+        const active = meta.activeKey ?? meta.assignedKey
         const { updateTask } = await import('./tasks')
         // No raw-SQL fallback: forcing the status past updateTask skips every
         // validation the board's columns exist for, and a bounce that can't

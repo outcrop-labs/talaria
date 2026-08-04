@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentCaller, requireAgent } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole } from '@/server/boards'
-import { closedToAgents, getTask, logActivity } from '@/server/tasks'
+import { agentTicketRefusal, getTask, logActivity } from '@/server/tasks'
 import { routedModelFor } from '@/server/fleet-agents'
 import { recordUsage, taskUsage } from '@/server/usage'
 
@@ -59,7 +59,7 @@ export const Route = createFileRoute('/api/tasks/$id/usage')({
         // spend row keyed to the ticket AND an activity line onto it — so it
         // asks the SAME predicate `agentSafePatch` asks, imported, not copied:
         // closed, archived ticket, archived board, all three.
-        const shut = await closedToAgents(task)
+        const shut = await agentTicketRefusal(task, poster, 'write')
         if (shut) {
           return json({ error: `${shut}. No further spend attaches to it.` }, { status: 403 })
         }

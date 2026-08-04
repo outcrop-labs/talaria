@@ -9,19 +9,49 @@
 //
 // The lifecycle is ONE-WAY for an agent, and the tool descriptions below say so
 // because an agent that doesn't know burns turns on writes that 403
-// (server/tasks.ts agentSafePatch):
+// (server/tasks.ts — `agentSafePatch` for the ticket patch, the exported
+// exported `agentTicketRefusal` for every door that never reaches it):
 //   • blocked → in_progress   refused — only a person restarts parked work
 //   • anything out of review  refused — review is the human sign-off queue
-//   • ANY write to a closed   refused (done / failed / cancelled). The ticket
-//                             patch, add_time, log_usage and add_dependency
-//                             alike — the last two enforce it on their own
-//                             routes because they never reach updateTask.
-//                             Comments stay open: that is the agent's channel
-//                             on work it can no longer edit.
+//   • ANY write to work a person TOOK OFF THE TABLE — and that is THREE
+//                             conditions, not one:
+//                               · the status is CLOSED (done / failed / cancelled)
+//                               · the TICKET is archived
+//                               · its BOARD is archived
+//                             They refuse identically, with the same sentence,
+//                             at every door: the ticket patch, add_time,
+//                             report_outcome, log_usage, add_dependency, and
+//                             report_gap's taskId. The last three never reach
+//                             updateTask, so they ask the SAME predicate on
+//                             their own routes — one definition, not four
+//                             copies of a third of it (which is what they
+//                             were: closed-only, so an archived ticket sailed
+//                             through).
+//   • COMMENTS, and this is the one place the three conditions come APART:
+//                               · CLOSED ticket   → comment still lands. That
+//                                 is the agent's channel on work it can no
+//                                 longer edit, and it is the whole exemption.
+//                               · ARCHIVED ticket, or archived BOARD → refused
+//                                 like everything else. Archiving withdraws the
+//                                 work from view; there is no channel on it.
+//                             (server/tasks.ts `agentTicketRefusal`, intent
+//                             'comment' — it skips ONE clause, not three.)
 //
 // Nothing here re-implements those rules — Talaria enforces them and this
 // process only has to STATE them, so a description that drifts from the API is
-// a bug in the description.
+// a bug in the description, and it drifts in BOTH directions:
+//   · UNDER-stating — naming only "closed" tells an agent it may write to an
+//     archived ticket. It finds out by spending a turn on a 403.
+//   · OVER-stating — `comment` claimed it stayed open on an archived ticket,
+//     which the API has never allowed. Worse than a wasted turn: it taught the
+//     agent that archiving is not a real stop, on the one tool whose entire
+//     purpose is being the exception.
+// Prose cannot import a predicate, so it drifts. It CAN interpolate one string:
+// the refusal sentences below are written once (`LIVE_ONLY`, `COMMENT_INSTEAD`,
+// `COMMENT_EXEMPTION`) and every description that names a refusal uses them, so
+// widening the rule is one edit and a new tool cannot quietly say less. What
+// interpolation cannot catch — a description that hand-rolls the sentence
+// anyway — `auditRefusalProse` shouts about at startup.
 //
 // Env:
 //   TALARIA_URL        base URL of the Talaria app (default http://localhost:5273)
@@ -82,12 +112,73 @@ function makeApi(agent: string, key: string) {
 
 const ok = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] })
 
+// ── The refusal prose, written ONCE ──────────────────────────────────────────
+// These were seven hand-written copies of the same sentence, which is exactly
+// how three of them (log_usage, add_dependency, report_gap) came to name only
+// "closed" while the API had long refused archival too, and how `comment` came
+// to promise the opposite of what the API does. A shared constant is the
+// closest prose gets to importing a predicate: widening the rule is ONE edit
+// here, and a description that interpolates cannot say less than the others.
+
+/** The three conditions, in the order the API asks them. Never spell these out
+ *  inline — interpolate, so there is one sentence to keep true. */
+const OFF_THE_TABLE = 'closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD'
+
+/** For every write door: the ticket patch, add_time, log_usage, add_dependency,
+ *  report_outcome, report_gap's taskId. */
+const LIVE_ONLY = `Only a LIVE ticket accepts it — one that is ${OFF_THE_TABLE} refuses this with 403, like every other agent write.`
+
+/** The pointer to the escape hatch, with its real limit attached. */
+const COMMENT_INSTEAD =
+  'Use comment instead — but only on a CLOSED ticket: comments are your channel on work you can no longer edit, and archival (of the ticket or its board) closes that channel too.'
+
+/** For the `comment` tool itself: the ONE place the three conditions come apart. */
+const COMMENT_EXEMPTION = `Comment is the one write that survives sign-off: a CLOSED ticket (done / failed / cancelled) still takes comments when every other agent write 403s. It is NOT a way around archival — an ARCHIVED ticket, or one on an ARCHIVED BOARD, refuses comments too, because archiving withdraws the work from the people watching it.`
+
+/** Tool names whose descriptions drifted from the API. Filled at registration.
+ *  Prose is not typechecked and CI does not read it, so the only thing that can
+ *  notice a NEW tool hand-rolling this sentence is the process that serves it. */
+function refusalProseGap(description: string): string | null {
+  if (!/\bclosed\b/i.test(description)) return null // says nothing about refusals
+  const archival = /\barchived\b/i.test(description)
+  const board = /archived board/i.test(description)
+  if (archival && board) return null
+  return !archival ? 'names "closed" and nothing about archival' : 'names archival but not an ARCHIVED BOARD'
+}
+
+/** Shouted once per process, never fatal: a drifting sentence is a bad reason
+ *  to take the fleet's toolkit down, and an operator who sees this line can fix
+ *  it in one edit. Promoting it to a hard failure belongs in CI
+ *  (scripts/check-invariants.mjs), which can afford to be fatal. */
+let proseAudited = false
+function auditRefusalProse(gaps: Array<[string, string]>): void {
+  if (proseAudited) return
+  proseAudited = true
+  if (!gaps.length) return
+  console.error(
+    `talaria-mcp: tool descriptions drifted from the API's refusal rule — ${gaps
+      .map(([name, why]) => `${name} (${why})`)
+      .join('; ')}. A ticket refuses agent writes when it is ${OFF_THE_TABLE}; a description naming only "closed" spends an agent a turn on a 403. Interpolate LIVE_ONLY / COMMENT_EXEMPTION in mcp/src/index.ts instead of writing the sentence again.`,
+  )
+}
+
 // One server instance per identity: stdio builds it once for the env agent;
 // HTTP mode builds per request (stateless) for the connecting agent, with the
 // credential THAT agent presented.
 function buildServer(agent: string, key: string): McpServer {
   const api = makeApi(agent, key)
   const server = new McpServer({ name: 'talaria', version: '0.1.0' })
+
+  // Wrapped ONCE here rather than renaming every `server.registerTool` call
+  // below, so the check covers tools that do not exist yet — the only ones that
+  // can still get this wrong. Registration is otherwise untouched.
+  const gaps: Array<[string, string]> = []
+  const register = server.registerTool.bind(server) as typeof server.registerTool
+  ;(server as { registerTool: typeof server.registerTool }).registerTool = ((name: string, config: unknown, cb: unknown) => {
+    const why = refusalProseGap(String((config as { description?: string } | null)?.description ?? ''))
+    if (why) gaps.push([name, why])
+    return (register as unknown as (...a: unknown[]) => unknown)(name, config, cb)
+  }) as unknown as typeof server.registerTool
 
 // Statuses an agent may set. No 'assigned' (humans assign), no 'done' (the API
 // would coerce it to quality_review anyway — we don't even offer it).
@@ -98,7 +189,8 @@ const EFFORTS = ['xs', 's', 'm', 'l', 'xl'] as const
 server.registerTool(
   'list_boards',
   {
-    description: 'List the boards this agent is allowed to work on.',
+    description:
+      'List the boards this agent is allowed to work on. Boards a person archived are out of service and are not listed — every tool refuses them, so a board id you got from somewhere else and cannot see here will 403.',
     inputSchema: {},
   },
   async () => ok(await api('GET', '/api/boards')),
@@ -108,7 +200,7 @@ server.registerTool(
   'list_tickets',
   {
     description:
-      "List a board's tickets. Each carries status, priority, assignees (agent ids and humans as user:<id>), labels, due date, human estimate (estimatedHours), sub-task parent (parentId), and comment count. Optional filters narrow the list.",
+      "List a board's tickets. Each carries status, priority, assignees (agent ids and humans as user:<id>), labels, due date, human estimate (estimatedHours), sub-task parent (parentId), and comment count. Archived tickets are not listed — a person took them off the table and they refuse every agent write. Optional filters narrow the list.",
     inputSchema: {
       boardId: z.string().describe('Board id (from list_boards)'),
       status: z.string().optional().describe('Only this status (inbox/assigned/in_progress/blocked/quality_review/done)'),
@@ -220,7 +312,7 @@ server.registerTool(
   'triage_ticket',
   {
     description:
-      'Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a closed ticket (done / failed / cancelled) are a person\'s call and return 403 — so once you have parked or reported, stop moving the ticket and use comment instead, which stays open on work you can no longer edit. Assigning and marking done are human-only.',
+      `Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — ${OFF_THE_TABLE} — are a person's call and return 403. So once you have parked or reported, stop moving the ticket. ${COMMENT_INSTEAD} Assigning and marking done are human-only.`,
     inputSchema: {
       taskId: z.string(),
       title: z.string().min(1).max(300).optional(),
@@ -245,7 +337,8 @@ server.registerTool(
 server.registerTool(
   'comment',
   {
-    description: 'Comment on a ticket.',
+    description:
+      `Comment on a ticket. ${COMMENT_EXEMPTION}`,
     inputSchema: {
       taskId: z.string(),
       content: z.string().min(1).max(20_000).describe('Markdown comment body'),
@@ -258,7 +351,7 @@ server.registerTool(
   'report_outcome',
   {
     description:
-      "Report the outcome of work on a ticket and hand it to the board's review column (\"Quality review\" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment.",
+      `Report the outcome of work on a ticket and hand it to the board's review column ("Quality review" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. ${LIVE_ONLY} ${COMMENT_INSTEAD}`,
     inputSchema: {
       taskId: z.string(),
       outcome: z.string().max(50_000).describe('What was accomplished'),
@@ -294,12 +387,12 @@ server.registerTool(
   'report_gap',
   {
     description:
-      "Report a capability gap — use ONLY when you genuinely cannot do assigned work properly: a tool or access you're missing, or an org-specific process you'd be guessing at. NOT for small tasks you can simply do with your own judgment, and never twice for the same kind of work (repeats are deduplicated; the team is already aware). The team sees gaps ranked by recurrence and can build a workflow/skill to cover them.",
+      `Report a capability gap — use ONLY when you genuinely cannot do assigned work properly: a tool or access you're missing, or an org-specific process you'd be guessing at. NOT for small tasks you can simply do with your own judgment, and never twice for the same kind of work (repeats are deduplicated; the team is already aware). The team sees gaps ranked by recurrence and can build a workflow/skill to cover them. taskId is optional and gated: it writes a line onto that ticket, so a board you are not allowed on — or a ticket that is ${OFF_THE_TABLE} — refuses the whole call with 403. Re-send without taskId and the gap still reaches the team.`,
     inputSchema: {
       kind: z.string().min(2).max(80).describe('Short slug naming the kind of work, e.g. "invoice-reconciliation"'),
       missing: z.string().min(5).max(300).describe("One line: what you can't do properly and why"),
       needs: z.string().max(5000).optional().describe('What a flow would need to cover: steps, tools, access, decisions'),
-      taskId: z.string().optional().describe('The ticket that surfaced the gap'),
+      taskId: z.string().optional().describe(`The ticket that surfaced the gap — omit it if that ticket is ${OFF_THE_TABLE}; the gap still lands`),
     },
   },
   async (body) => ok(await api('POST', '/api/agent/gap', body)),
@@ -309,7 +402,7 @@ server.registerTool(
   'add_time',
   {
     description:
-      "Add time spent to a ticket's auto-accumulated total. Log it as you work. Only an OPEN ticket accepts it — a closed one (done / failed / cancelled) refuses every agent write including this, with 403, so time you never logged before sign-off cannot be added afterwards. Still fine while the ticket sits in blocked or quality_review.",
+      `Add time spent to a ticket's auto-accumulated total. Log it as you work. ${LIVE_ONLY} Time you never logged before sign-off cannot be added afterwards. Still fine while the ticket sits in blocked or quality_review.`,
     inputSchema: {
       taskId: z.string(),
       seconds: z.number().int().min(1).max(86_400).describe('Seconds of work to add'),
@@ -582,7 +675,7 @@ server.registerTool(
   'log_usage',
   {
     description:
-      "Report the LLM tokens you burned working a ticket. Feeds the ticket's cost rollup and the fleet ledger. Log it as you go: only an OPEN ticket accepts it — a closed one (done / failed / cancelled) refuses with 403, so spend you never reported before sign-off cannot be attached afterwards. Still fine while the ticket sits in blocked or quality review.",
+      `Report the LLM tokens you burned working a ticket. Feeds the ticket's cost rollup and the fleet ledger. Log it as you go: ${LIVE_ONLY} Spend you never reported before sign-off cannot be attached afterwards. Still fine while the ticket sits in blocked or quality review.`,
     inputSchema: {
       taskId: z.string(),
       promptTokens: z.number().int().min(0).describe('Prompt/input tokens used'),
@@ -598,7 +691,7 @@ server.registerTool(
   'add_dependency',
   {
     description:
-      'Mark a ticket as blocked by another ticket on the same board. Both tickets must be OPEN — the edge shows on both, and a closed one (done / failed / cancelled) refuses with 403 like every other agent write. Removing an edge is a human call.',
+      `Mark a ticket as blocked by another ticket on the same board. The edge lands on BOTH tickets, so BOTH must be live: one that is ${OFF_THE_TABLE} refuses with 403 on either side of the edge, and the error names which. Removing an edge is a human call.`,
     inputSchema: {
       taskId: z.string().describe('The blocked ticket'),
       dependsOnId: z.string().describe('The ticket it depends on'),
@@ -768,6 +861,7 @@ server.registerTool(
   async ({ boardId, add, remove }) => ok(await api('PUT', `/api/boards/${encodeURIComponent(boardId)}/agents`, { add, remove })),
 )
 
+  auditRefusalProse(gaps)
   return server
 }
 
@@ -835,6 +929,20 @@ if (HTTP_PORT) {
    *  change instead of a fleet-wide outage. */
   const VERIFY_PATH = (process.env.TALARIA_MCP_VERIFY_PATH ?? '/api/users').trim()
 
+  // Said at BOOT, not only after the outage. The failure mode of this coupling
+  // is that nobody knew it existed: the probe route gets narrowed for a good
+  // product reason, the fleet's toolkit goes dark, and the error an operator
+  // reads is "tools/list 401" with nothing pointing at a permissions change in
+  // a people directory. One line in the startup log means the sentence "the
+  // toolkit authenticates against GET /api/users" is already in the operator's
+  // scrollback when they go looking. Only when the default is in use — an
+  // operator who set the env var has read this.
+  if (!process.env.TALARIA_MCP_VERIFY_PATH) {
+    console.error(
+      `talaria-mcp: authenticating every agent against GET ${BASE}${VERIFY_PATH} — a PRODUCT route serving as this toolkit's authentication oracle. Narrowing it (admin-only, session-only, moved, renamed) takes the fleet toolkit dark fleet-wide; set TALARIA_MCP_VERIFY_PATH to another agent-authenticated GET first. See mcp/README.md § "Authentication — and the route it depends on".`,
+    )
+  }
+
   /** Is this credential one Talaria accepts, for this name? This process holds
    *  no DB and cannot answer that itself, so it asks the only thing that can —
    *  a cheap authenticated GET, which exercises exactly the resolution
@@ -856,10 +964,23 @@ if (HTTP_PORT) {
    *  points at the cause. `/api/users` was chosen because its agent branch is
    *  nothing but `agentCaller()` — the same resolution a tool call hits — but
    *  the contract it has to keep is narrow: agent-credential auth, GET, cheap,
-   *  401/403 (not 404) on a bad credential. That contract is written down in
-   *  mcp/README.md ("Authentication") and mirrored at the Talaria end in
-   *  `ui/src/server/agent-auth.ts`, so neither side can be changed without
-   *  reading it. Repoint with TALARIA_MCP_VERIFY_PATH rather than editing this. */
+   *  401/403 (not 404) on a bad credential.
+   *
+   *  THE CONTRACT IS WRITTEN AT BOTH ENDS, and "the other end" means three
+   *  files, because the person who breaks this is not reading this one:
+   *    · mcp/README.md § "Authentication — and the route it depends on"
+   *    · ui/src/server/agent-auth.ts — the resolution the probe exercises
+   *    · ui/src/routes/api/users.ts — THE ROUTE ITSELF, the file someone edits
+   *      when they decide the people directory should be admin-only. A warning
+   *      that lives one module away from the edit does not get read; that route
+   *      must carry the marker "the MCP toolkit authenticates against this
+   *      route" beside its handler. (Still MISSING there as of this change —
+   *      this file could not add it under its ownership; it is the one thing
+   *      standing between a routine permissions tightening and a dark fleet.)
+   *  The durable fix is a purpose-built probe (`GET /api/agent/whoami`: auth,
+   *  no payload, nothing a product decision would ever want to narrow) pointed
+   *  at with TALARIA_MCP_VERIFY_PATH. Until then, repoint with that env var
+   *  rather than editing this. */
   const verify = async (agent: string, key: string): Promise<{ ok: boolean; status: number }> => {
     // Talaria's own service-to-service calls (the MCP gateway's catalog
     // refresh, the admin connection test) present the org-wide fleet key this

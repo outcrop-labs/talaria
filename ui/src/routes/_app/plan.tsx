@@ -13,7 +13,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { QueryError } from '@/components/ui/query-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { alert } from '@/components/ui/confirm'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
@@ -151,7 +151,12 @@ function PlanPage() {
   // The template a NEW plan's living doc seeds from ('' = automatic: the plan
   // agent's bound plan template). Locked in when the first turn creates the plan.
   const [templateId, setTemplateId] = useState('')
-  const { data: templates = [], isLoading: templatesLoading } = useTemplates()
+  // Defaulted, a failed template read made the picker DISAPPEAR (the
+  // `planTemplates.length > 0 &&` below), so a new plan silently seeded from
+  // the agent default with no sign the choice had ever existed.
+  const templatesList = listQuery(useTemplates(), { title: 'Could not load plan templates', variant: 'inline' })
+  const templates = templatesList.rows
+  const templatesLoading = templatesList.pending
   const planTemplates = useMemo(() => templates.filter((t) => t.kind === 'plan'), [templates])
   // Bumped when an agent turn lands; the doc pane syncs itself on it.
   const [turnSignal, setTurnSignal] = useState(0)
@@ -217,6 +222,8 @@ function PlanPage() {
                     // Hold the template picker's spot so the header doesn't
                     // re-layout when templates land.
                     <Skeleton className="h-9 w-40 rounded-xl" />
+                  ) : templatesList.failed ? (
+                    templatesList.notice
                   ) : (
                     planTemplates.length > 0 && (
                       <label className="flex items-center gap-1.5 text-xs text-muted" title="The structure the living document starts from. Automatic uses the agent's bound plan template.">

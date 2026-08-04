@@ -14,6 +14,7 @@ import { useBoards, useArchivedBoards, moveBoardToTeam, type Board } from '@/lib
 import { useTeams } from '@/lib/teams'
 import { useNotifications } from '@/lib/notifications'
 import { useDeniedViews, useHasPerm, type SessionUser } from '@/lib/session'
+import { listQuery } from '@/components/ui/query-state'
 import { useEnabledApps } from '@/lib/apps'
 
 // The main application menu. The Boards item expands to the user's boards
@@ -28,7 +29,11 @@ export function NavRail({ user }: { user: SessionUser }) {
   // Enabled apps slot into the sections as if they shipped with the platform:
   // work surfaces under Work, manage surfaces under Manage (grant-gated like
   // any core Manage view via deniedViews).
-  const { data: apps = [] } = useEnabledApps()
+  // Query handling only. `{ data: apps = [] }` discarded the query on the line
+  // that made it, so a failed /api/apps silently removed every app's nav entry
+  // — the surface just is not in the rail, and nothing anywhere says why.
+  const appsList = listQuery(useEnabledApps(), { title: 'App links unavailable', variant: 'inline' })
+  const apps = appsList.rows
   const appItems: Record<string, NavItem[]> = {
     Work: apps.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work!, icon: a.icon })),
     Manage: apps.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage!, icon: a.icon })),
@@ -73,6 +78,8 @@ export function NavRail({ user }: { user: SessionUser }) {
           </div>
         )
       })}
+
+      {appsList.notice && <div className="mt-auto px-2">{appsList.notice}</div>}
 
       <CreateBoardModal open={creating} onClose={() => setCreating(false)} />
       <TeamsModal open={teamsOpen} onClose={() => setTeamsOpen(false)} />

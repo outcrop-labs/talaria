@@ -9,7 +9,7 @@ import { Maximize2, ChevronLeft, Archive, ArchiveRestore, Trash2 } from 'lucide-
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { CloseButton } from '@/components/ui/close-button'
 import { EmptyState } from '@/components/ui/empty-state'
-import { QueryError } from '@/components/ui/query-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { getList } from '@/lib/fetch-json'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { Select } from '@/components/ui/select'
@@ -85,12 +85,22 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
   const canEdit = board.role === 'owner' || board.role === 'editor'
   const me = user?.email ?? user?.name ?? ''
   // Board tickets for the dependency picker (exclude self + already-linked).
-  const { data: boardTasks = [] } = useBoardTasks(board.id)
+  // Four `{ data: x = [] }` defaults used to live here, and each one furnished a
+  // control with a confident wrong answer: no dependencies to link, no
+  // teammates to assign, no labels on this board, and a Status menu quietly
+  // showing the hard-coded fallback instead of this board's own columns. None
+  // of the four could reach its error — the query object was thrown away on the
+  // same line it was created. `listQuery` hands back the rows AND the sentence.
+  const tasksList = listQuery(useBoardTasks(board.id), { title: 'Could not load this board’s tickets', variant: 'inline' })
+  const boardTasks = tasksList.rows
   // @mention board members in comments + description — the people the server
   // notifies (tasks comment/description paths). Tokens mirror the server's.
-  const { data: boardMembers = [] } = useBoardMembers(board.id)
-  const { data: boardLabels = [] } = useBoardLabels(board.id)
-  const { data: boardStatuses = [] } = useBoardStatuses(board.id)
+  const membersList = listQuery(useBoardMembers(board.id), { title: 'Could not load who’s on this board', variant: 'inline' })
+  const boardMembers = membersList.rows
+  const labelsList = listQuery(useBoardLabels(board.id), { title: 'Could not load this board’s labels', variant: 'inline' })
+  const boardLabels = labelsList.rows
+  const statusesList = listQuery(useBoardStatuses(board.id), { title: 'Could not load this board’s columns', variant: 'inline' })
+  const boardStatuses = statusesList.rows
   const mentionables = boardMembers
     .map((m) => ({ insert: userMentionInsert(m), label: m.name ?? m.email ?? m.userId, sub: m.email ?? undefined }))
     .filter((m) => m.insert)
@@ -349,6 +359,9 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                       </option>
                     ))}
                   </Select>
+                  {/* Without this the menu silently degrades to the built-in
+                      statuses and looks like the board simply has those. */}
+                  {statusesList.notice}
                 </Prop>
                 <Prop label="Priority">
                   <Select value={t.priority} disabled={!canEdit} onChange={(e) => save({ priority: e.target.value as Priority })} size="sm" className="w-full">
@@ -368,6 +381,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     size="sm"
                     placeholder="Unassigned"
                   />
+                  {membersList.notice}
                 </Prop>
                 <div className="grid grid-cols-2 gap-2">
                   <Prop label="Effort">
@@ -538,6 +552,10 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                         placeholder="Add dependency"
                       />
                     )}
+                    {/* The picker is fed by the board's ticket list. When that
+                        read fails it offers nothing, which reads as "this board
+                        has no other tickets" — say what actually happened. */}
+                    {tasksList.notice}
                   </div>
                 </Prop>
                 {data!.blocks.length > 0 && (
@@ -559,6 +577,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     disabled={!canEdit}
                     size="sm"
                   />
+                  {labelsList.notice}
                 </Prop>
                 <Prop label={`Watchers (${data!.watchers.length})`}>
                   <div className="space-y-1">

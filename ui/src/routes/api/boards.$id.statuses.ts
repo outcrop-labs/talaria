@@ -111,7 +111,10 @@ export const Route = createFileRoute('/api/boards/$id/statuses')({
         const body = await parseBody(request, z.object({ statusKey: z.string().min(1).max(40), reassignTo: z.string().max(40) }))
         if (body instanceof Response) return body
         try {
-          await deleteStatus(params.id, body.statusKey, body.reassignTo)
+          // The actor is threaded through because the reassignment lands on each
+          // ticket's activity log — deleting a column moves work, and the person
+          // who did it owns that move.
+          await deleteStatus(params.id, body.statusKey, body.reassignTo, user.email ?? user.name ?? 'user')
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })

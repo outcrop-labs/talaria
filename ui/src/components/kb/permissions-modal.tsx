@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
 import { SkeletonRows } from '@/components/ui/skeleton'
-import { QueryError } from '@/components/ui/query-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { useUsers } from '@/lib/users'
 import { useAgents } from '@/lib/agents'
 import { useEditors, type EditPolicy, type GrantRole, type KbEditor, type Visibility } from '@/lib/kb'
@@ -56,11 +56,17 @@ export function PermissionsModal({
   folderName?: string
   onSave: (patch: { visibility: Visibility; editPolicy: EditPolicy; editors: KbEditor[]; permsInherited?: boolean }) => Promise<void>
 }) {
-  const { data: users = [], isLoading: usersLoading } = useUsers()
+  // The grants query below was fixed in an earlier round; the DIRECTORY that
+  // resolves those grants to names was not. `{ data: users = [] }` meant a 500
+  // on /api/users rendered a live grant as the bare principal id — "u2" sitting
+  // in an access list, with nothing anywhere saying the directory read failed
+  // and no way to retry it. The picker beside it silently lost every person too.
+  const usersList = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
+  const users = usersList.rows
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   // Until both principal lists resolve, grants would render as raw ids and the
   // add picker would be empty — hold the list's shape instead.
-  const principalsLoading = usersLoading || agentsLoading
+  const principalsLoading = usersList.pending || agentsLoading
   const [vis, setVis] = useState<Visibility>(visibility)
   // `save()` PUTs the grant list back WHOLESALE, so this list is never allowed
   // to hold a value nobody read off the server. It is derived, not copied: the
@@ -232,6 +238,10 @@ export function PermissionsModal({
             <SkeletonRows rows={3} avatar className="px-1 py-2" />
           ) : (
           <div className="space-y-1">
+            {/* The grants below are real; it is their NAMES that are missing.
+                Without this line an id in an access list reads as the grant
+                itself being junk. */}
+            {usersList.notice}
             {/* Owner row (implicit editor) */}
             <div className="flex items-center gap-2.5 rounded-lg px-1 py-1.5">
               <Avatar name={label} className="h-7 w-7 shrink-0 text-[10px]" />

@@ -110,14 +110,25 @@ export interface WorkflowDelivery {
   toolkits: Array<{ server: string; tools?: string[] }>
 }
 
+/** The match itself, against a list the caller already holds. Batch callers
+ *  (the heartbeat walks every servable ticket) MUST use this with one
+ *  `listWorkflows()` hoisted out of their loop — calling `workflowsForTask` per
+ *  ticket re-read the whole table each time. Kept as the single expression of
+ *  the match so the hot path cannot drift from the one-off path. */
+export function workflowsFrom(
+  all: TaskWorkflow[],
+  t: Pick<Task, 'title' | 'description' | 'tags' | 'boardId'>,
+): WorkflowDelivery[] {
+  return all
+    .filter((h) => matchWorkflow(h, t))
+    .map((h) => ({ name: h.name, skills: h.skills, toolkits: h.toolkits }))
+}
+
 /** The workflow payload delivered WITH the work (dispatch + heartbeat + get_ticket). */
 export async function workflowsForTask(
   t: Pick<Task, 'title' | 'description' | 'tags' | 'boardId'>,
 ): Promise<WorkflowDelivery[]> {
-  const all = await listWorkflows()
-  return all
-    .filter((h) => matchWorkflow(h, t))
-    .map((h) => ({ name: h.name, skills: h.skills, toolkits: h.toolkits }))
+  return workflowsFrom(await listWorkflows(), t)
 }
 
 /** A compact, model-readable map of the org's routing: enabled workflows with

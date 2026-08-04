@@ -12,7 +12,7 @@ import { Modal } from '@/components/ui/modal'
 import { Tabs } from '@/components/ui/tabs'
 import { Chip } from '@/components/ui/chip'
 import { EmptyState } from '@/components/ui/empty-state'
-import { QueryError } from '@/components/ui/query-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { getJson, getList, readJson } from '@/lib/fetch-json'
 import { AssistantWizard } from '@/components/assistant/assistant-wizard'
 import { NotificationsPanel } from '@/components/app/notifications-panel'
@@ -111,14 +111,21 @@ function HomePage() {
   const isAdmin = session?.role === 'admin'
   const home = useHome()
   const { data } = home
-  const { data: channels = [] } = useChannels()
+  // Feeds the Comms badge count. Defaulted, a failed read renders "no unread" —
+  // the one thing a badge exists to deny. Suppressing the badge is only half the
+  // fix: a missing badge is indistinguishable from a genuine zero, and the lie
+  // is told from EVERY tab, not just Comms, so CommsTab's own notice cannot
+  // cover for it. The marker goes under the tab strip, where it is visible
+  // wherever you are standing.
+  const channelsList = listQuery(useChannels(), { title: 'Unread counts unavailable', variant: 'inline' })
+  const channels = channelsList.rows
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const tab: HomeTab = search.tab ?? 'inbox'
   const setTab = (t: HomeTab) => void navigate({ search: t === 'inbox' ? {} : { tab: t } })
 
   // Console posture: one tab per work area, badge = where attention is needed.
-  const unreadComms = channels.reduce((n, c) => n + (c.unreadCount ?? 0), 0)
+  const unreadComms = channelsList.failed ? 0 : channels.reduce((n, c) => n + (c.unreadCount ?? 0), 0)
   const tabs: { id: HomeTab; label: string; badge?: number }[] = [
     { id: 'inbox', label: 'Inbox', badge: data?.unread || undefined },
     { id: 'boards', label: 'Boards', badge: data?.queues.triage.count || undefined },
@@ -149,6 +156,7 @@ function HomePage() {
             ),
           }))}
         />
+        {channelsList.notice}
 
         {tab === 'inbox' && (
           <div className="space-y-6">
@@ -313,7 +321,8 @@ function BoardsTab({ home }: { home: UseQueryResult<HomeSummary> }) {
 function CommsTab() {
   const navigate = useNavigate()
   const { openMenu, menu } = useContextMenu()
-  const { data: channels = [], isLoading } = useChannels()
+  // "All caught up." over a 500 — on the landing surface, about messages.
+  const { rows: channels, notice, failed, pending: isLoading } = listQuery(useChannels(), { title: 'Could not load your channels', variant: 'compact' })
   const unread = channels.filter((c) => (c.unreadCount ?? 0) > 0)
   const label = (c: (typeof channels)[number]) =>
     c.kind === 'dm' ? (c.peer?.name ?? c.peer?.email ?? 'DM') : `#${c.name}`
@@ -322,9 +331,10 @@ function CommsTab() {
       <AssistantBriefing scope="comms" />
       <Panel>
         <div className="mb-3 text-sm font-semibold text-fg">Unread</div>
+        {notice}
         {isLoading ? (
           <SkeletonRows rows={4} />
-        ) : unread.length === 0 ? (
+        ) : failed ? null : unread.length === 0 ? (
           <div className="text-xs text-muted">All caught up.</div>
         ) : (
           <ul className="divide-y divide-line-subtle">
@@ -360,7 +370,9 @@ function CommsTab() {
 function PlansTab() {
   const navigate = useNavigate()
   const { openMenu, menu } = useContextMenu()
-  const { data: plans = [], isLoading } = useConversations('plan')
+  // The original "No boards yet over a 500", verbatim, on Home: a failed read
+  // renders "No plans yet. Start one on /plan." to an owner whose plans exist.
+  const { rows: plans, notice, failed, pending: isLoading } = listQuery(useConversations('plan'), { title: 'Could not load your plans', variant: 'compact' })
   const { data: fleet } = useAgents()
   const agentLabel = (id: string) => fleet?.agents.find((a) => a.id === id)?.label ?? id
   return (
@@ -368,9 +380,10 @@ function PlansTab() {
       <AssistantBriefing scope="plans" />
       <Panel>
         <div className="mb-3 text-sm font-semibold text-fg">Plans</div>
+        {notice}
         {isLoading ? (
           <SkeletonRows rows={5} />
-        ) : plans.length === 0 ? (
+        ) : failed ? null : plans.length === 0 ? (
           <EmptyState variant="inline" title="No plans yet. Start one on /plan." />
         ) : (
           <ul className="divide-y divide-line-subtle">
@@ -417,15 +430,16 @@ const RUN_DOT: Record<string, string> = {
 function ResearchTab() {
   const navigate = useNavigate()
   const { openMenu, menu } = useContextMenu()
-  const { data: runs = [], isLoading } = useResearchRuns()
+  const { rows: runs, notice, failed, pending: isLoading } = listQuery(useResearchRuns(), { title: 'Could not load your research', variant: 'compact' })
   return (
     <div className="space-y-6">
       <AssistantBriefing scope="research" />
       <Panel>
         <div className="mb-3 text-sm font-semibold text-fg">Research</div>
+        {notice}
         {isLoading ? (
           <SkeletonRows rows={5} />
-        ) : runs.length === 0 ? (
+        ) : failed ? null : runs.length === 0 ? (
           <div className="text-xs text-muted">Nothing researched yet. Ask something on /research.</div>
         ) : (
           <ul className="divide-y divide-line-subtle">
@@ -465,15 +479,16 @@ function ResearchTab() {
 function DocsTab() {
   const navigate = useNavigate()
   const { openMenu, menu } = useContextMenu()
-  const { data: artifacts = [], isLoading } = useArtifacts()
+  const { rows: artifacts, notice, failed, pending: isLoading } = listQuery(useArtifacts(), { title: 'Could not load your documents', variant: 'compact' })
   const recent = [...artifacts].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, 12)
   return (
     <div className="space-y-6">
       <Panel>
         <div className="mb-3 text-sm font-semibold text-fg">Recently updated</div>
+        {notice}
         {isLoading ? (
           <SkeletonRows rows={6} />
-        ) : recent.length === 0 ? (
+        ) : failed ? null : recent.length === 0 ? (
           <EmptyState variant="inline" title="No documents yet." />
         ) : (
           <ul className="divide-y divide-line-subtle">
@@ -1063,7 +1078,13 @@ function ApprovalsPanel() {
     queryKey: ['google-pending'],
     // An agent waiting to act AS YOU is the last thing that may go quiet on a
     // 500 — this queue must never be emptied by a failed read.
-    queryFn: (): Promise<{ pending: PendingAction[] }> => getJson<{ pending: PendingAction[] }>('/api/integrations/google/pending'),
+    // `getList`, not `getJson<{pending}>`: a 200 whose `pending` key is missing
+    // is a BROKEN CONTRACT, and `getJson` handed that body straight through, so
+    // `data.pending.length` two lines down threw and took the whole Home route
+    // to the catch boundary — the landing surface replaced by "This view failed
+    // to load". getList refuses the body instead, which lands in the error
+    // branch this panel already has. Same rule as every other list read.
+    queryFn: (): Promise<PendingAction[]> => getList<PendingAction>('/api/integrations/google/pending', 'pending'),
     refetchInterval: 60_000,
   })
   const { data, isError } = query
@@ -1090,7 +1111,7 @@ function ApprovalsPanel() {
         />
       </Panel>
     )
-  const pending = data.pending
+  const pending = data
   if (pending.length === 0) return null
 
   const decide = async (id: string, decision: 'approve' | 'reject') => {

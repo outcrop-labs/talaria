@@ -16,11 +16,12 @@ bypass them.
 | `get_ticket` | Full ticket: fields, comments, activity, watchers, reviews, dependencies |
 | `create_ticket` | Create a ticket → lands in **inbox**, unassigned |
 | `triage_ticket` | Priority, effort, labels, description, due date, and **forward-only** status moves → `in_progress` / `blocked` / `quality_review` (see below) |
-| `comment` | Comment on a ticket — the one write that stays open on a ticket the agent can no longer edit |
+| `comment` | Comment on a ticket — the one write that survives **sign-off** (a closed ticket still takes comments). Not a way around archival |
 | `report_outcome` | Record outcome/resolution and hand the ticket to **quality review**. The agent's last status move on that ticket |
-| `add_time` | Add seconds to the auto-accumulated time-spent. Open tickets only |
-| `log_usage` | Report LLM tokens burned on a ticket (prompt/completion, optional model tier) — feeds the ticket's cost rollup and the fleet ledger |
-| `add_dependency` | Mark a ticket blocked by another on the same board |
+| `add_time` | Add seconds to the auto-accumulated time-spent. Live tickets only |
+| `log_usage` | Report LLM tokens burned on a ticket (prompt/completion, optional model tier) — feeds the ticket's cost rollup and the fleet ledger. Live tickets only |
+| `add_dependency` | Mark a ticket blocked by another on the same board. Both ends must be live |
+| `report_gap` | Report a capability gap. `taskId` is optional and gated — without it the gap still lands |
 
 Beyond the PM tools above, the toolkit also carries **artifacts**
 (create/update/list/get + `export_to_google_doc`), **knowledge base**
@@ -110,7 +111,48 @@ turns on writes that can't land:
 | any move of a ticket **stranded** in a status its board no longer has | **no** | nothing can class it, so a person places it |
 | entering an agent-start column from anywhere else | **no** | the destination is the gate, whether the agent named that column or the terminal-move redirect picked it |
 
-Two consequences worth knowing before you burn a turn on them:
+**"Live" is one word for three conditions.** A ticket takes agent writes only
+while its status is not closed (`done` column / `failed` / `cancelled`), the
+ticket is not archived, and its board is not archived. One exported predicate in
+`ui/src/server/tasks.ts` — `agentTicketRefusal` — answers that, *and* the board's
+agent policy, for every door, and returns the *reason*, so the refusal reads the
+same sentence wherever the write arrived.
+
+Counting the doors is a losing game (this file has claimed four and five, and
+was wrong within a round each time) because the number only ever grew when
+someone re-expressed the rule by hand. What matters is that no door expresses it
+itself:
+
+| Door | Reaches the predicate via |
+| --- | --- |
+| the ticket patch (`triage_ticket`, `report_outcome`, `add_time`) | `agentSafePatch` inside `updateTask` |
+| `log_usage`, `add_dependency` (both ends), `report_gap`'s `taskId` | their own routes — they never reach `updateTask` |
+| `comment` | its route, with intent `comment` — see below |
+| the workbench MCP's ticket audit lines, **including `finish_job --abandon`** | `logTicket` → `authorizeTicket` (`ui/src/server/workbench-mcp.ts`) |
+| the ticket a workbench verb names in its arguments | `ticketArg` → `authorizeTicket` — parse and gate are one call, so a verb cannot hold an ungated `taskId` |
+
+A `task_activity` row on a ticket **is** a write to that ticket, which is why
+the audit lines are in that list at all.
+
+**The one clause that comes apart: comments.** `agentTicketRefusal` takes an
+intent, and `comment` skips exactly ONE of the four stop conditions — the closed
+status. A **closed** ticket still takes comments (the agent's channel on work it
+can no longer edit); an **archived** ticket, or one on an **archived board**,
+does not, because archiving withdraws the work from the people watching it. The
+`comment` tool description used to promise the opposite, which is worse than an
+under-stated refusal: it taught agents that archival was not a real stop, on the
+one tool whose entire job is being the exception.
+
+Every tool description in `src/index.ts` that mentions a refusal must therefore
+name all three conditions — and must not promise more than `comment` actually
+gets. They no longer spell the sentence out: `LIVE_ONLY`, `COMMENT_INSTEAD` and
+`COMMENT_EXEMPTION` are defined once at the top of that file and interpolated,
+so widening the rule is one edit. A description that hand-rolls the sentence
+anyway is caught at startup by `auditRefusalProse`, which logs the offending
+tool names to stderr (loud, never fatal — a bad sentence is not a reason to take
+the fleet's toolkit down).
+
+Three consequences worth knowing before you burn a turn on them:
 
 - **The review column belongs to the board, not to this server.** `report_outcome`
   does not send a literal `quality_review`; the API redirects the terminal move to
@@ -119,8 +161,12 @@ Two consequences worth knowing before you burn a turn on them:
   back into the pickup queue — the write is **refused**, not guessed at, and the
   error names the board and the setting to fix. That is an admin's problem, not a
   misbehaving agent.
-- **`comment` is the exception and the escape hatch:** it stays open on a ticket
-  the agent can no longer edit.
+- **`comment` is the exception and the escape hatch — but only past sign-off.**
+  It stays open on a *closed* ticket the agent can no longer edit. It is refused
+  on an archived ticket and on an archived board, like every other write.
+- **An archived board is out of service at every door.** `boardAllowsAgent`
+  refuses it, so an archived board is not listed, its tickets are not readable,
+  and `create_ticket` on one 403s — not just the writes in the table above.
 
 
 ## Fleet HTTP mode
@@ -172,5 +218,35 @@ The contract that route has to keep, therefore:
 If you must change it, repoint the probe first: **`TALARIA_MCP_VERIFY_PATH`**
 overrides the path with no code change. A `404`/`405` from the probe is treated as
 "Talaria unreachable" (`503`, uncached) and logged once per outage with that
-instruction, so the failure is at least diagnosable. `ui/src/server/agent-auth.ts`
-carries the matching warning at the Talaria end.
+instruction, so the failure is at least diagnosable.
+
+**Where the warning has to live.** The person who breaks this is not reading
+`mcp/src/index.ts`; they are tightening a permissions check on a people
+directory. So the coupling is stated at every file that edit passes through:
+
+| File | Carries |
+| --- | --- |
+| `mcp/src/index.ts` (`verify`) | the ⚠ coupling note and the repoint instruction |
+| `ui/src/server/agent-auth.ts` | the matching warning on the resolution the probe exercises |
+| `ui/src/routes/api/users.ts` | **still missing** — the route handler itself, and the only file a narrowing edit is guaranteed to open |
+| the startup log | one line naming the coupling on every boot that uses the default probe, so the sentence is already in an operator's scrollback before the outage |
+
+The `users.ts` marker is the one thing standing between a routine permissions
+tightening and a dark fleet, and a warning one module away does not get read.
+Paste this above that route's `GET` handler:
+
+```ts
+// ⚠ THE MCP TOOLKIT AUTHENTICATES EVERY AGENT AGAINST THIS ROUTE.
+// mcp/src/index.ts (HTTP mode) holds no DB, so it verifies a connecting agent's
+// credential by issuing an authenticated GET here and reading the status code.
+// Narrowing this — admin-only, session-only, moved, renamed — makes every
+// agent's initialize/tools/list 401 and takes the fleet toolkit dark, with no
+// error that points here. If you must: repoint TALARIA_MCP_VERIFY_PATH at
+// another agent-authenticated GET first. See mcp/README.md § Authentication.
+```
+
+The durable fix is to stop borrowing a product route: a purpose-built
+`GET /api/agent/whoami` (agent-credential auth, no payload, nothing a product
+decision would ever want to narrow) pointed at with `TALARIA_MCP_VERIFY_PATH`
+removes the oracle from `/api/users` entirely. Until that exists, the three
+markers above are what keep the coupling from being invisible.

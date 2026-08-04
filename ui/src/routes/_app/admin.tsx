@@ -28,7 +28,7 @@ import { SectionHeader } from '@/components/ui/section-header'
 import { useSavedFlash } from '@/components/ui/save-button'
 import { CopyButton } from '@/components/ui/copy-link-button'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
-import { QueryError } from '@/components/ui/query-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { getJson, getList } from '@/lib/fetch-json'
 import { cn } from '@/lib/cn'
 
@@ -133,7 +133,13 @@ function AdminPage() {
   // Enabled apps join the per-person view checklist as EXPLICIT grants —
   // every app view (work and manage) defaults denied for members; an admin
   // adds each one per person, same storage as core Manage views.
-  const { data: enabledApps = [] } = useEnabledApps()
+  // This one is not cosmetic. `allowedManageViews` is written back WHOLESALE
+  // from `manageViews` below, so with the app list defaulted to `[]` a failed
+  // /api/apps meant that toggling any unrelated view silently REVOKED every
+  // app manage grant the person had — a permissions write derived from a read
+  // that never happened.
+  const appsList = listQuery(useEnabledApps(), { title: 'Could not load installed apps', variant: 'inline' })
+  const enabledApps = appsList.rows
   const appViews = [
     ...enabledApps.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work! })),
     ...enabledApps.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage! })),
@@ -317,10 +323,14 @@ function AdminPage() {
                           }
                           multiple
                           size="sm"
+                          // Editing writes the whole allow-list back. While the
+                          // app views are missing, that write would drop them.
+                          disabled={appsList.failed}
                           placeholder="Work views"
                           className="min-w-0 flex-1"
                         />
                       </div>
+                      {appsList.notice && <div className="pl-10">{appsList.notice}</div>}
                       {perms && <UserPermChips userId={u.id} perms={perms} />}
                     </>
                   )}

@@ -61,6 +61,86 @@ export function QueryError({
   )
 }
 
+/** What a list read is doing right now, with the failure ALREADY RENDERED. */
+export interface ListQuery<T> {
+  /** The rows. `[]` here means the server said `[]`, or the read has not
+   *  happened yet — check `pending`/`failed` before calling it empty. */
+  rows: T[]
+  /** Render this. `null` when the read is fine; otherwise it is the failure,
+   *  already shaped and already wired to Retry. It is the entire reason this
+   *  function exists: you cannot obtain `rows` without also being handed the
+   *  sentence that says they are missing. */
+  notice: ReactNode
+  /** The read failed and there is NOTHING to show. Render `notice` INSTEAD of
+   *  the list — an empty list next to an error reads as "and also there are
+   *  none", which is a second lie on top of the first. */
+  failed: boolean
+  /** The read failed but stale rows are still on screen. Render `notice`
+   *  ABOVE the list: stale beats blank, as long as it says it's stale. */
+  stale: boolean
+  /** First load, still in flight. Show your skeleton — NOT an empty state. */
+  pending: boolean
+}
+
+/** THE way to read a list query.
+ *
+ *  `const { data: users = [] } = useUsers()` was the most-copied line in this
+ *  app and every copy is the same lie: `[]` is what you get from a 200 with no
+ *  rows AND from a 500, so the surface renders "nobody works here" over an
+ *  outage. Thirty-nine call sites wrote it. Every one of them also *discarded
+ *  the query object*, which is what made the error unreachable — not an
+ *  oversight at each site, a shape that had no room for the error.
+ *
+ *  This is that shape with room for the error. It returns the rows AND the
+ *  failure, so the failure cannot be left behind at the call site: the only
+ *  way to skip it now is to bind `notice` and then not render it, which is
+ *  more work than rendering it and reads as deliberate in review.
+ *
+ *  `title` is required on purpose. "Could not load this" is never as useful as
+ *  "Could not load who has access", and the moment the compiler asks you for a
+ *  sentence you have to decide what this list actually is.
+ *
+ *  A 200 carrying `[]` gets `failed: false, notice: null` and your own empty
+ *  state, exactly as before. Empty and broken stay different answers.
+ */
+export function listQuery<T>(
+  // Same `Pick` as QueryState, and for the same reason: `isPending` +
+  // `fetchStatus` are the only way to tell a DISABLED query (`enabled: !!id`)
+  // from a slow one.
+  query: Pick<UseQueryResult<T[]>, 'data' | 'isError' | 'error' | 'refetch' | 'isPending' | 'fetchStatus'>,
+  opts: {
+    /** What could not be loaded, in the surface's own words. */
+    title: string
+    /** Shown when stale rows are still up. Defaults to a "may be out of date" line. */
+    staleTitle?: string
+    /** Density of the replacement notice (`failed`). The stale marker is always inline. */
+    variant?: 'full' | 'compact' | 'inline'
+  },
+): ListQuery<T> {
+  const { data, isError, error, refetch, isPending, fetchStatus } = query
+  const rows = data ?? []
+  const failed = isError && data === undefined
+  const stale = isError && data !== undefined
+  const retry = () => void refetch()
+  return {
+    rows,
+    failed,
+    stale,
+    pending: data === undefined && isPending && fetchStatus !== 'idle',
+    notice: failed ? (
+      <QueryError error={error} title={opts.title} variant={opts.variant ?? 'compact'} onRetry={retry} />
+    ) : stale ? (
+      <QueryError
+        error={error}
+        title={opts.staleTitle ?? 'This list may be out of date'}
+        variant="inline"
+        onRetry={retry}
+        className="mb-2"
+      />
+    ) : null,
+  }
+}
+
 const isEmptyValue = (d: unknown): boolean => (Array.isArray(d) ? d.length === 0 : d === null)
 
 export function QueryState<T>({

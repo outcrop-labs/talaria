@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { submitOnEnter } from '@/components/ui/control'
 import { Select } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
-import { QueryError, QueryState } from '@/components/ui/query-state'
+import { listQuery, QueryError, QueryState } from '@/components/ui/query-state'
 import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
 import { getJson, getList } from '@/lib/fetch-json'
 import { useAgents } from '@/lib/agents'
@@ -214,11 +214,17 @@ const HealthDot = ({ ok, label }: { ok: boolean; label: string }) => (
 function CollectionRow({ col, spaces }: { col: RagCollection; spaces: Array<{ id: string; name: string; collectionId: string | null }> }) {
   const qc = useQueryClient()
   const { data: fleet, isPending: agentsPending } = useAgents()
-  const { data: users = [], isPending: usersPending } = useUsers()
-  const { data: teams = [], isPending: teamsPending } = useTeams()
+  // These two feed the pickers that decide WHO CAN RETRIEVE this collection.
+  // Defaulted to `[]` they turned a failed directory read into a picker with no
+  // options and existing grants shown as unresolved ids — an access-control
+  // surface quietly reporting that the people it grants to do not exist.
+  const usersList = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
+  const teamsList = listQuery(useTeams(), { title: 'Could not load teams', variant: 'inline' })
+  const users = usersList.rows
+  const teams = teamsList.rows
   // Until the directories land the comboboxes would misrepresent the bindings
   // (zero options, nothing selected) — hold their slots with bars instead.
-  const pickersPending = agentsPending || usersPending || teamsPending
+  const pickersPending = agentsPending || usersList.pending || teamsList.pending
   const bindingsAll = col.bindings.some((b) => b.principalType === 'all')
   const boundUsers = col.bindings.filter((b) => b.principalType === 'user').map((b) => b.principalId!).filter(Boolean)
   const boundAgents = col.bindings.filter((b) => b.principalType === 'agent').map((b) => b.principalId!).filter(Boolean)
@@ -315,6 +321,12 @@ function CollectionRow({ col, spaces }: { col: RagCollection; spaces: Array<{ id
                 placeholder="Bind agents"
                 className="min-w-0 flex-1"
               />
+            </div>
+          )}
+          {!bindingsAll && (teamsList.notice || usersList.notice) && (
+            <div className="space-y-1">
+              {teamsList.notice}
+              {usersList.notice}
             </div>
           )}
           <div className="flex items-center gap-2">

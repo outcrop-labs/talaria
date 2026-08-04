@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/select'
 import { RichEditor } from '@/components/ui/rich-editor'
 import { Generating } from '@/components/ui/generating'
 import { Skeleton } from '@/components/ui/skeleton'
+import { listQuery } from '@/components/ui/query-state'
 import { addDependency, createTask, useBoards } from '@/lib/boards'
 import { useTemplates } from '@/lib/templates'
 import type { AgentModel } from '@/lib/agents'
@@ -40,8 +41,15 @@ export function PlanModal({
   agents: AgentModel[]
 }) {
   const qc = useQueryClient()
-  const { data: boards = [], isLoading: boardsLoading } = useBoards()
-  const { data: templates = [], isLoading: templatesLoading } = useTemplates()
+  // A 500 on either of these used to leave a Select reading "Pick a board" with
+  // nothing under it — indistinguishable from an account with no boards, and
+  // the Draft button stays disabled with no reason given.
+  const boardsList = listQuery(useBoards(), { title: 'Could not load your boards', variant: 'inline' })
+  const templatesList = listQuery(useTemplates(), { title: 'Could not load ticket templates', variant: 'inline' })
+  const boards = boardsList.rows
+  const templates = templatesList.rows
+  const boardsLoading = boardsList.pending
+  const templatesLoading = templatesList.pending
   const [agentModel, setAgentModel] = useState(agents[0]?.id ?? '')
   const [tier, setTier] = useState('')
   const [boardId, setBoardId] = useState('')
@@ -209,6 +217,7 @@ export function PlanModal({
                     ))}
                   </Select>
                 )}
+                {boardsList.notice}
               </div>
               <div>
                 <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Ticket template</label>
@@ -224,6 +233,7 @@ export function PlanModal({
                     ))}
                   </Select>
                 )}
+                {templatesList.notice}
               </div>
             </div>
             {note && (

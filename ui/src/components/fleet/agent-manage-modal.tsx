@@ -12,7 +12,7 @@ import { Generating } from '@/components/ui/generating'
 import { Select } from '@/components/ui/select'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
-import { QueryError, QueryState } from '@/components/ui/query-state'
+import { listQuery, QueryError, QueryState } from '@/components/ui/query-state'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { InfoTip } from '@/components/ui/info-tip'
 import { cn } from '@/lib/cn'
@@ -178,8 +178,19 @@ function SummaryTab({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
 // agent drafts or creates tickets, and shape its plan documents.
 function TemplateBindings({ def, isAdmin }: { def: AgentDef; isAdmin: boolean }) {
   const qc = useQueryClient()
-  const { data: templates = [], isLoading } = useTemplates()
-  const nameOf = (id: string | null) => templates.find((t) => t.id === id)?.name ?? '—'
+  // `{ data: templates = [] }` made a failed /api/templates look like "there
+  // are no templates" — the Select offers only the fallback option, and the
+  // read-only cells below render an em-dash, which says "nothing bound" about
+  // an agent that may well have a binding.
+  const {
+    rows: templates,
+    notice: templatesNotice,
+    failed: templatesFailed,
+    pending: isLoading,
+  } = listQuery(useTemplates(), { title: 'Could not load templates', variant: 'inline' })
+  const nameOf = (id: string | null) =>
+    // A bound id we cannot resolve is not "none" — show the id, not an em-dash.
+    id === null ? '—' : (templates.find((t) => t.id === id)?.name ?? (templatesFailed ? id : '—'))
   const bind = async (patch: { ticketTemplateId?: string | null; planTemplateId?: string | null }) => {
     await patchAgentMeta(def.id, patch)
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
@@ -232,6 +243,7 @@ function TemplateBindings({ def, isAdmin }: { def: AgentDef; isAdmin: boolean })
           <Stat label="Plan documents" value={nameOf(def.planTemplateId)} />
         </div>
       )}
+      {templatesNotice}
     </div>
   )
 }

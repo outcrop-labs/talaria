@@ -71,18 +71,34 @@ row, a dependency edge, a gap report, a workbench plan comment or PR title — d
 must ask the one exported predicate:
 
 ```ts
-import { closedToAgents } from '@/server/tasks'
+import { agentTicketRefusal } from '@/server/tasks'
 
-const shut = await closedToAgents(task)          // reason string, or null when the agent may write
-if (isAgent && shut) return json({ error: shut }, { status: 403 })
+const shut = await agentTicketRefusal(task, caller, 'write')  // reason string, or null when it may
+if (shut) return json({ error: shut }, { status: 403 })
 ```
 
 It returns the **reason** rather than a boolean so the refusal reads the same wherever the write
-arrived, and it covers three conditions, not one: archived ticket, archived **board**, closed status
-(a `done` column on that board, or the off-board `failed` / `cancelled`). Pass an already-resolved
-`statusMeta` as the second argument to save the round trip. The same predicate answers the *pull*
-side too — `maybeDispatchTicket` and `assignedWork` ask it before handing an agent work — so the
-queue and the write routes agree by construction rather than by two people remembering.
+arrived, and it covers **four** conditions, not one: the board's **agent policy** (revoked, never
+granted, board gone), archived ticket, archived **board**, and — for `'write'` only — closed status
+(a `done` column on that board, or the off-board `failed` / `cancelled`). The agent is a **required**
+argument: `closedToAgents`, its predecessor, took only the ticket and so could not ask the policy
+half, which is how a board owner revoking a grant 403'd every write route while the heartbeat kept
+serving the same ticket forever.
+
+The third argument is the intent. `'comment'` skips the closed-status clause and nothing else —
+commenting stays open on work an agent can no longer edit, which is deliberate — but archival stops
+it at **both** levels, because archival withdraws the work rather than closing it, and a channel
+nobody is watching is not a channel. Reads are not this question: an agent that passes
+`boardAllowsAgent` may read the ticket, because reading changes nothing.
+
+Pass a `boardFacts()` as the optional fourth argument when you are in a **loop** — it is a per-pass
+cache (board archival, agent policy, `statusMeta`), never an answer, so it cannot be for the wrong
+board. Creating one per request is free; not passing one in a loop is an N+1.
+
+The same predicate answers the *pull* and *session* sides too — `maybeDispatchTicket`, `assignedWork`
+and the work-session loop all ask it before handing (or continuing to hand) an agent work — so the
+queue, the live session and the write routes agree by construction rather than by three people
+remembering.
 
 > **Do not copy it into your route.** Four routes each hand-rolled their own copy, because parallel
 > work split file ownership and `server/tasks.ts` did not export one. All four checked only the
@@ -91,6 +107,91 @@ queue and the write routes agree by construction rather than by two people remem
 > is how the sixth laundering path in a series of six got created; a fifth copy is never the fix.
 > Comments are deliberately outside this gate: commenting stays open on work an agent can no longer
 > edit.
+
+### CI fails a second definition — `scripts/check-invariants.mjs`
+
+The paragraph above was true and documented before four routes hand-rolled the predicate anyway, so
+it is no longer only a convention. `node scripts/check-invariants.mjs` runs as the first job on every
+PR (`.github/workflows/ci.yml`, no install step, seconds) and **fails the build** on:
+
+| pattern | what to write instead |
+| --- | --- |
+| a second `function agentTicketRefusal` / `const agentTicketRefusal` anywhere outside `server/tasks.ts` | `import { agentTicketRefusal } from '@/server/tasks'` |
+| `s.category === 'active'` outside `server/statuses.ts` — an active-column lookup re-derived from `listStatuses` | `meta.activeKey` (where a ticket goes while it is worked) or `meta.workingKeys` (is it still in play?) — both picked from the one `placeable` list, so neither can be a terminal column |
+| `doneKeys.includes(k) \|\| OFF_BOARD_STATUSES.includes(k)` outside `server/statuses.ts` | `meta.terminal(k)` — `statusMeta()` returns it as a **function** precisely so it cannot be half-copied |
+| a bare `doneKeys.includes(...)` outside the two places on the census | `meta.terminal(k)`, unless you truly mean the narrower "is this a done-**category** column", in which case say so on the census |
+| `'failed'` next to `'cancelled'` as a literal or a type union, outside the two declarations | `import { OFF_BOARD_STATUSES } from '@/lib/task-const'` |
+| `if (!r.ok) return []` / `null` / `{}`, `r.ok ? … : []`, or `.catch(() => [])` **inside a `queryFn`** | let it throw — a resolved-on-failure query reports SUCCESS carrying emptiness, and the UI renders "nothing here" for "we could not ask" |
+
+Every failure names the file, the line and the fix. The last row is not an API rule but it is the
+same disease on the read side, so it lives in the same check.
+
+Two mechanisms back the table. **Rules** are absolute: legal only in the file that defines the thing.
+**Censuses** are exact counts for patterns that are legitimate in a named few places — a file that
+gains an occurrence fails, *and a file that loses its last one also fails*, so the list shrinks as
+debt is paid and can never settle into a standing amnesty. If a match is genuinely wrong, argue it in
+the PR; widening the pattern to go green is how the previous six rounds happened.
+
+**Adding a rule is cheap and expected.** When a review finds an invariant that was re-derived by
+hand, centralize it *and* add the pattern — the structural fix alone rests entirely on the next
+reviewer noticing, which is exactly the assumption that has failed seven times.
+
+### The one off-board status list
+
+`OFF_BOARD_STATUSES` (`failed`, `cancelled`) is declared in **`ui/src/lib/task-const.ts`**, the file
+both halves may import: the client cannot reach `server/`, but `server/` already imports from
+`@/lib`. `TaskStatus` derives from it, so the type union cannot drift from the list.
+
+`server/statuses.ts` still carries its own copy next to the resolvers that exclude it; CI fails if
+the two ever disagree. The fix is one line — make that file import the shared constant — and the
+cross-check then finds nothing to compare and retires itself.
+
+On the client the matching question — "is this ticket finished **on this board**?" — is
+`isClosedStatus(key, statuses)` in `components/board/field-pills.tsx`. It is board-aware, so it is
+the only correct answer once custom statuses exist: a board whose done column is `shipped` has no
+`done` key at all, and `t.status === 'done'` is then permanently false. Import it rather than
+comparing to a literal.
+
+### Columns you could not read are not columns you may invent
+
+Every board view resolves `useBoardStatuses(boardId)` and falls back to `TASK_STATUSES` when the
+result is empty. That fallback cannot tell "this board has no custom statuses" from "the read
+failed", and the two have opposite correct behaviours: the first is a normal board, the second is a
+**made-up workflow**. A ticket whose status is not in the invented set renders in no column at all —
+work that has silently disappeared from the board, with no error anywhere on screen.
+
+So a surface that draws tickets *into* columns must refuse rather than guess:
+
+```ts
+const statusesQuery = useBoardStatuses(board.id)
+const statusesFailed = statusesQuery.isError && statusesQuery.data === undefined
+if (statusesFailed) return <QueryError title="Could not load this board’s columns" … />
+```
+
+The `data === undefined` half is what makes it a refusal and not a regression: a *cached* set that
+failed to refresh is stale, not absent, and stale columns beat no board at all — that case gets the
+inline banner instead. `kanban.tsx` and `board-list.tsx` do this. `gantt.tsx` does **not** (see the
+note in `ci.yml`); it warns and draws the chart anyway.
+
+### Wire numerics — `numeric` and `bigint` arrive as strings
+
+postgres.js hands `numeric` and `int8` back as **strings**, and there is no `types` override on the
+pool, so `estimated_hours` and `time_spent_seconds` are strings by the time they reach a component
+that has them typed `number`. Declare them `PgNumeric` (`@/lib/task-const`) and read them through
+`pgNum` / `pgNumOr` / `taskTimeSpent`.
+
+This is not pedantry, and it is mostly invisible to `tsc` — implicit coercion means the arithmetic
+compiles and silently misbehaves:
+
+- `patch.estimatedHours !== cur.estimatedHours` in `updateTask` compares a number from the request
+  body against a string from the row, so re-saving an unchanged estimate logs a spurious activity
+  line every time.
+- `sum + t.estimatedHours` concatenates instead of adding — `"04.5"`.
+- A comparator returning the raw value sorts lexically: `"100"` before `"99"`.
+- `if (!seconds) return '—'` never fires for zero, because `"0"` is truthy.
+
+The permanent fix is a postgres.js `types` override in `server/db/pg.ts` (audit task 21), after which
+`PgNumeric` collapses back to `number` and the coercions become no-ops.
 
 ## Bodies — `parseBody`
 

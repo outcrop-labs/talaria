@@ -7,8 +7,10 @@ import { publishBoard } from './realtime'
 import { taskUsage, type TaskUsage } from './usage'
 import { listJudgeReviews, type JudgeReview } from './judge'
 import { ensureLabels } from './labels'
-import { OFF_BOARD_STATUSES, statusMeta } from './statuses'
-import { boardInfo } from './boards'
+import { OFF_BOARD_STATUSES, statusMeta, type StatusMeta } from './statuses'
+import { boardAllowsAgent, boardFacts, boardInfo, type BoardFacts } from './boards'
+import { subjectModel, type AgentSubject } from './agent-auth'
+import { pgNum } from '@/lib/task-const'
 import type { Effort, Priority, QualityReview, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
 
 async function taskBoardId(id: string): Promise<string | null> {
@@ -212,19 +214,29 @@ const BLOCKED_STATUS = 'blocked'
 /** Board name for a diagnostic, falling back to the id. Error paths only. */
 const boardLabel = async (boardId: string): Promise<string> => (await boardInfo(boardId)).label
 
-// ── THE agent-write invariant, as one exported predicate ─────────────────────
-// This used to be a private clause of `agentSafePatch` and was COPY-PASTED into
-// four side doors that never reach `updateTask` (log_usage, dependency edges,
-// gap reports, the workbench MCP ticket gate). Every copy carried only the
-// closed-status third of it, so an agent could write to an ARCHIVED ticket, or
-// to a ticket on an archived board, through any of the four. The fix is not a
-// fifth copy: it is that there is nothing left to copy. Everything that has to
-// ask "may an agent still write to this ticket?" — the patch gate, the push-side
-// dispatcher, the heartbeat pull side and every side door — imports THIS.
+// ── THE agent-authority question, as ONE exported predicate ──────────────────
+// "May this agent act on this ticket?" had four answers in the tree, and each
+// round of this work found the next one by fixing the last. The history is the
+// argument for what follows:
+//   · `agentSafePatch` held it privately, and four side doors that never reach
+//     `updateTask` (log_usage, dependency edges, gap reports, the workbench MCP
+//     ticket gate) COPIED the closed-status third of it — so an agent could
+//     write to an archived ticket through any of the four.
+//   · `closedToAgents` then held it, imported by eight call sites — and it asked
+//     nothing about BOARD POLICY, so a board owner revoking an agent's grant
+//     403'd every write route while `assignedWork` kept serving the ticket on
+//     every heartbeat.
+//   · `ticketState` in work-dispatch.ts was a fourth spelling that asked NEITHER
+//     archival clause, so archiving a ticket (or its board) did not stop the
+//     live work session already running on it.
+// So the predicate now asks BOTH halves of the question — the board's agent
+// policy AND the ticket's own state — and the agent is a required argument. It
+// is no longer possible to ask half of it, because there is no longer a
+// function that answers half of it.
 //
-// It returns the REASON rather than a boolean so the refusal the caller sends
-// is the same sentence wherever the write arrived, and a new caller cannot
-// invent a vaguer one.
+// It returns the REASON rather than a boolean so the refusal is the same
+// sentence wherever the write arrived, and a new caller cannot invent a vaguer
+// one.
 
 /** The ticket shape the predicate needs. `getTask` returns it; so does the row
  *  the heartbeat query selects. */
@@ -234,32 +246,59 @@ export interface AgentWriteTarget {
   archivedAt?: string | null
 }
 
+/** What the agent is trying to do. The two verbs differ in EXACTLY one clause,
+ *  which is why they are one function and not two:
+ *   · `write`   — change the ticket, or hang a record off it (status, fields,
+ *                 dependency edges, spend rows, workbench jobs).
+ *   · `comment` — say something on it. A CLOSED ticket still takes comments:
+ *                 that is the agent's channel on work it can no longer edit,
+ *                 and it is deliberate. Archival is not that; see below. */
+export type AgentIntent = 'write' | 'comment'
+
 /**
- * Why an agent may not write to this ticket, or null when it may.
+ * Why an agent may not act on this ticket, or null when it may.
  *
- * THREE STOP CONDITIONS, and they are three ends of the same idea — work a
- * person has taken off the table:
- *   · the ticket is ARCHIVED — archival hides work from the people watching it,
- *     which is exactly why an agent may not keep working it;
+ * FOUR STOP CONDITIONS, in the order a person would ask them:
+ *   · the BOARD does not allow this agent — revoked, never granted, or the
+ *     board is archived//gone. The board question and the ticket question were
+ *     separate predicates and the pull side asked only one of them;
+ *   · the ticket is ARCHIVED — a person took this work off the table;
  *   · its BOARD is archived — the same act, one level up;
  *   · its status is CLOSED — a done column on this board, or an off-board
  *     terminal key. Sign-off is sticky and covers the record, not just the
- *     column.
- * Comments are deliberately NOT gated by this: commenting is the agent's
- * channel on work it can no longer edit.
+ *     column. WRITE ONLY: see `AgentIntent`.
  *
- * Pass `meta` when the caller already resolved it (saves a round trip); it must
- * be the meta for `task.boardId`.
+ * WHY ARCHIVAL STOPS COMMENTS TOO, at both levels. The comment exemption exists
+ * for work "the agent can no longer edit" but a person is still looking at — a
+ * signed-off ticket sitting in a done column on a live board. Archival is not
+ * that: it withdraws the work from view. Board archival already refused agent
+ * comments (it runs through `boardAllowsAgent`) while ticket archival did not,
+ * which is one act of a person's meaning two different things one level apart.
+ * Made consistent in the direction that keeps the exemption's stated reason
+ * true: closed keeps its channel, archived does not have one, at either level.
+ * READS are not this question — an agent that can see the board can read the
+ * ticket, because reading changes nothing.
+ *
+ * `facts` is a per-pass CACHE, never an answer: pass one when looping so the
+ * board is resolved once, omit it and one is made here.
  */
-export async function closedToAgents(
+export async function agentTicketRefusal(
   task: AgentWriteTarget,
-  meta?: Awaited<ReturnType<typeof statusMeta>>,
+  agent: AgentSubject,
+  intent: AgentIntent,
+  facts: BoardFacts = boardFacts(),
 ): Promise<string | null> {
-  if (task.archivedAt) return 'agents cannot change an archived ticket — a person restores it first'
-  const board = await boardInfo(task.boardId)
-  if (board.archivedAt) return `agents cannot change a ticket on an archived board — a person restores ${board.label} first`
-  const m = meta ?? (await statusMeta(task.boardId))
-  if (m.terminal(task.status)) return 'agents cannot change a closed ticket'
+  const board = await facts.info(task.boardId)
+  if (!(await boardAllowsAgent(task.boardId, agent, facts))) {
+    if (board.exists && board.archivedAt) {
+      return `agents cannot work a ticket on an archived board — a person restores ${board.label} first`
+    }
+    return `agent "${subjectModel(agent)}" is not allowed on this board`
+  }
+  if (task.archivedAt) return 'agents cannot work an archived ticket — a person restores it first'
+  if (intent === 'comment') return null
+  const meta = await facts.meta(task.boardId)
+  if (meta.terminal(task.status)) return 'agents cannot change a closed ticket'
   return null
 }
 
@@ -288,25 +327,31 @@ function warnBoardConfig(boardId: string, line: string): void {
  *  ordinary owner-facing statuses route.
  *
  *  So the destination is CHECKED, not assumed: a real review-category column,
- *  not a done column, not an agent-start pickup queue. When there isn't one the
- *  write is REFUSED, and the refusal names the board and the fix — a board an
- *  admin has to correct must not read as an agent that misbehaved. */
-async function handoffTarget(cur: Task, meta: Awaited<ReturnType<typeof statusMeta>>): Promise<string> {
-  const target = meta.reviewKey
-  if (target !== null && meta.reviewKeys.includes(target) && !meta.terminal(target) && !meta.agentStartKeys.includes(target)) {
-    return target
-  }
+ *  not a done column, not an agent-start pickup queue. That check now lives
+ *  ENTIRELY in `statusMeta` — `reviewKey` is picked from `placeable` (never
+ *  terminal, never Blocked) and additionally requires `!agentStart`, so all
+ *  three conditions hold by construction. This function used to re-assert them
+ *  here (`reviewKeys.includes(target) && !terminal(target) &&
+ *  !agentStartKeys.includes(target)`), which was dead the day `placeable`
+ *  landed — and a dead restatement of an invariant is the exact shape that
+ *  drifts from the live one and becomes the next round's finding. A non-null
+ *  `reviewKey` IS the answer. When there isn't one the write is REFUSED, and the
+ *  refusal names the board and the fix — a board an admin has to correct must
+ *  not read as an agent that misbehaved. */
+async function handoffTarget(cur: Task, meta: StatusMeta): Promise<string> {
+  if (meta.reviewKey !== null) return meta.reviewKey
   const board = await boardLabel(cur.boardId)
-  // Review columns EXIST but every one is also an agent-start pickup queue —
-  // data that predates the cross-validation (statuses.ts now refuses to write
-  // or keep it). Handing off there would loop, so say exactly that, and exactly
-  // which switch to flip. Without this the write died on the assignment gate
-  // below as a bare "agents cannot assign tickets": true of the symptom,
-  // useless about the cause.
+  // Review columns EXIST but not one of them can hold a hand-off: each is
+  // either also an agent-start pickup queue (handing off would loop straight
+  // back to the agent) or itself terminal (a review column labelled
+  // "Cancelled"). Both are data that predates the cross-validation — statuses.ts
+  // refuses to write it now — and both need an admin, so say which switch to
+  // flip. Without this the write died on the assignment gate below as a bare
+  // "agents cannot assign tickets": true of the symptom, useless about the cause.
   if (meta.reviewKeys.length) {
     const cols = meta.reviewKeys.map((k) => `"${k}"`).join(', ')
     const many = meta.reviewKeys.length > 1
-    const line = `board ${board} has no usable review column: ${cols} ${many ? 'are review columns' : 'is a review column'} but also flagged agent-start, so handing work off would drop it straight back into the agent pickup queue. Clear "agent start" on ${many ? 'those columns' : 'that column'} (board settings → statuses), or add a review column that agents do not pick up from.`
+    const line = `board ${board} has no usable review column: ${cols} ${many ? 'are review columns' : 'is a review column'} but ${many ? 'each is' : 'it is'} also flagged agent-start or itself terminal, so handing work off would drop it straight back into the agent pickup queue (or close it). Clear "agent start" on ${many ? 'those columns' : 'that column'} and rename ${many ? 'any' : 'it'} whose key is "failed"/"cancelled" (board settings → statuses), or add a review column that agents do not pick up from.`
     warnBoardConfig(cur.boardId, line)
     throw new Error(line)
   }
@@ -321,7 +366,13 @@ async function handoffTarget(cur: Task, meta: Awaited<ReturnType<typeof statusMe
  *  back out of review) instead of quietly doing something else. The clauses
  *  below are the whole invariant — a person assigns, a person signs off, a
  *  person unblocks, and what a person signed off on stays put. */
-async function agentSafePatch(cur: Task, patch: TaskPatch, meta: Awaited<ReturnType<typeof statusMeta>>): Promise<TaskPatch> {
+async function agentSafePatch(
+  cur: Task,
+  patch: TaskPatch,
+  agent: AgentSubject,
+  meta: StatusMeta,
+  facts: BoardFacts,
+): Promise<TaskPatch> {
   // ── PRESENCE, NOT TRUTHINESS ───────────────────────────────────────────────
   // Every guard below asks `patch.status !== undefined`, never `patch.status`.
   // `status: ''` is a legal JSON value and a FALSY one, so `patch.status && …`
@@ -337,10 +388,11 @@ async function agentSafePatch(cur: Task, patch: TaskPatch, meta: Awaited<ReturnT
   // because archival hides work from the people watching it — which is the same
   // reason an agent may not keep WORKING something already hidden. A person
   // archives a ticket to stop it; the agent noticing and writing anyway is the
-  // stop failing. That, its board-level twin, and the closed-status rule are all
-  // `closedToAgents` now — the same three conditions the side doors and both
-  // dispatch sides ask, from the one definition above.
-  const shut = await closedToAgents(cur, meta)
+  // stop failing. That, its board-level twin, the board's agent policy and the
+  // closed-status rule are all `agentTicketRefusal` now — the same question the
+  // side doors, the heartbeat and both dispatch sides ask, from the one
+  // definition above.
+  const shut = await agentTicketRefusal(cur, agent, 'write', facts)
   if (shut) throw new HumanApprovalRequired(shut)
   // A review column is the human sign-off QUEUE. Once an agent hands work over,
   // only a person — or the platform, whose judge bounces revisions back — takes
@@ -417,6 +469,12 @@ export interface TaskPatch {
   attachments?: unknown[]
   /** Seconds to add to accumulated time-spent (agents report per iteration). */
   addTimeSpentSeconds?: number
+  /** WHY the column moved, when the reason is not visible from the move itself
+   *  — appended to the one 'status' activity line this function writes. It
+   *  exists so a caller with a reason does not have to become a second writer of
+   *  `tasks.status` to record one: `deleteStatus` reassigns a doomed column's
+   *  tickets through here and says so. Never a substitute for the move itself. */
+  statusNote?: string
 }
 
 export async function updateTask(id: string, patch: TaskPatch, who: TaskActor): Promise<Task | null> {
@@ -425,7 +483,10 @@ export async function updateTask(id: string, patch: TaskPatch, who: TaskActor): 
   if (!cur) return null
 
   const pick = <T>(v: T | undefined, fallback: T): T => (v === undefined ? fallback : v)
-  const meta = await statusMeta(cur.boardId)
+  // One pass over this board's facts for the whole update — the agent gate, the
+  // status resolvers and the dispatch decision all read from it.
+  const facts = boardFacts()
+  const meta = await facts.meta(cur.boardId)
   // PRESENCE, not truthiness — and this is the door every other status rule
   // stands behind. `status: ''` passed `patch.status &&` as absent while the
   // writer below treated it as present, so an agent could blank a ticket's
@@ -437,7 +498,11 @@ export async function updateTask(id: string, patch: TaskPatch, who: TaskActor): 
     throw new Error(`"${patch.status}" is not a status on this board`)
   }
   if (who.kind === 'agent') {
-    patch = await agentSafePatch(cur, patch, meta)
+    // `who.id` IS the agent's fleet model id (TaskActor documents it as such),
+    // so the board-policy half of the invariant is answered from the same actor
+    // every other clause is answered from — no route needs to remember to check
+    // it separately, and one added later inherits it.
+    patch = await agentSafePatch(cur, patch, who.id, meta, facts)
     // Post-condition on the REWRITTEN patch (terminal moves land in the review
     // catch): whatever an agent write is about to store names a column this
     // board actually has. handoffTarget now guarantees the category as well —
@@ -504,12 +569,8 @@ export async function updateTask(id: string, patch: TaskPatch, who: TaskActor): 
   // queue, and the ticket's own history said only "assigned to …". The watchers
   // were not told either. `next.status` is what was actually written, so ask it.
   if (next.status !== cur.status) {
-    await logActivity(
-      id,
-      who.id,
-      'status',
-      patch.status === undefined ? `moved to ${next.status} (promoted by assignment)` : `moved to ${next.status}`,
-    )
+    const why = patch.statusNote ?? (patch.status === undefined ? 'promoted by assignment' : null)
+    await logActivity(id, who.id, 'status', `moved to ${next.status}${why ? ` (${why})` : ''}`)
     // Watchers + assigned humans hear about status moves (never the actor).
     const audience = [...(await watcherUserIds(id)), ...humanAssigneeIds(assignees)]
     void notifyTaskUsers(audience, who.id, {
@@ -557,7 +618,10 @@ export async function updateTask(id: string, patch: TaskPatch, who: TaskActor): 
     await logActivity(id, who.id, 'effort', patch.effort ? `effort → ${patch.effort.toUpperCase()}` : 'effort cleared')
   // `estimatedHours: 0` is a real estimate and a FALSY one — it used to be
   // stored as 0 and reported as "estimate cleared". null is the clear.
-  if (patch.estimatedHours !== undefined && patch.estimatedHours !== cur.estimatedHours)
+  // Compare through `pgNum`: the patch carries a number off the API body while
+  // the row carries a STRING (postgres.js hands back `numeric` unparsed), so a
+  // raw `!==` was always true and every re-save wrote a spurious "estimate → 4h".
+  if (patch.estimatedHours !== undefined && pgNum(patch.estimatedHours) !== pgNum(cur.estimatedHours))
     await logActivity(id, who.id, 'estimate', patch.estimatedHours === null ? 'estimate cleared' : `estimate → ${patch.estimatedHours}h`)
   if (patch.parentId !== undefined && patch.parentId !== cur.parentId)
     await logActivity(id, who.id, 'parent', patch.parentId ? 'made a sub-task' : 'promoted to top level')
@@ -727,29 +791,56 @@ export async function listActivity(taskId: string): Promise<TaskActivity[]> {
 /** Work assigned to an agent (by name), across all boards — for heartbeat. */
 export async function assignedWork(agentName: string): Promise<Array<{ id: string; title: string; description: string | null; workflows: unknown[] }>> {
   const sql = await db()
-  // Custom-status boards: pickup = statuses flagged agent_start. Boards
-  // without rows keep the classic ('assigned','in_progress') semantics.
-  //
-  // THE PULL SIDE ASKS THE SAME QUESTION THE WRITE SIDE ASKS. This query used
-  // to select on `bs.agent_start` alone, so it handed an agent work that every
-  // write route would then refuse — an archived ticket, a ticket on an archived
-  // board, a ticket parked in a done-category or off-board-keyed pickup queue —
-  // and the agent looped on it every heartbeat with no way to make progress.
-  // Rather than restate the three stop conditions in SQL (a sixth copy, and the
-  // one hardest to keep in step), the query selects CANDIDATES and
-  // `closedToAgents` decides, exactly as it does for `agentSafePatch`,
-  // `maybeDispatchTicket` and every side door.
+  // ── THE PULL SIDE ASKS THE SAME QUESTIONS THE WRITE SIDE ASKS ──────────────
+  // Both of them, and neither in its own words. The history of this one query
+  // is the whole lesson:
+  //   · it selected on `bs.agent_start` alone, so it handed an agent work every
+  //     write route would then refuse — an archived ticket, a ticket on an
+  //     archived board, a ticket in a done-category or off-board-keyed pickup
+  //     queue — and the agent looped on it every heartbeat;
+  //   · then it asked `closedToAgents`, which said nothing about the board's
+  //     AGENT POLICY, so a board owner revoking a grant through the ordinary
+  //     settings path 403'd every write while the heartbeat kept serving;
+  //   · and the SQL still carried a status predicate of its own — `agent_start`,
+  //     plus a hardcoded legacy `('assigned','in_progress')` pair — which is a
+  //     FIFTH spelling of "where may a ticket be worked?", and it DISAGREED with
+  //     `workingKeys`: an agent that obeyed step 2 of its own dispatch prompt and
+  //     moved the ticket into the board's active column fell off the heartbeat
+  //     mid-session, because an active column need not carry `agent_start`.
+  // So the SQL states NO rule. It narrows by ASSIGNMENT, and by a (board, key)
+  // pair list built from `workingKeys` itself — the SQL is now a projection of
+  // the one predicate rather than a rival to it. The legacy branch went with it:
+  // `listStatuses` already answers for a board with no rows (it returns the
+  // shipped defaults), so `statusMeta` is right about legacy boards too and the
+  // literal pair had nothing left to do.
+  const boards = (await sql`
+    select distinct board_id as "boardId" from tasks where assignees @> ${sql.json([agentName])}::jsonb
+  `) as unknown as Array<{ boardId: string }>
+  // ONE pass over board facts for the whole heartbeat — columns, archival AND
+  // agent policy, each resolved once per distinct board rather than once per
+  // ticket. The hand-rolled `metaByBoard` map that used to live here memoised
+  // only `statusMeta`, so `closedToAgents` re-read `boardInfo` for every
+  // candidate: an N+1 on the hottest read in the product, and it existed
+  // because the caller was memoising an ANSWER instead of holding a cache. A
+  // board the agent is not allowed on is dropped HERE, before its tickets are
+  // ever fetched.
+  const facts = boardFacts()
+  const pairBoards: string[] = []
+  const pairKeys: string[] = []
+  for (const { boardId } of boards) {
+    if (!(await boardAllowsAgent(boardId, agentName, facts))) continue
+    for (const key of (await facts.meta(boardId)).workingKeys) {
+      pairBoards.push(boardId)
+      pairKeys.push(key)
+    }
+  }
+  if (!pairBoards.length) return []
   const rows = await sql`
     select t.id, t.title, t.description, t.tags, t.board_id as "boardId", t.status, t.archived_at as "archivedAt"
     from tasks t
+    join unnest(${pairBoards}::text[], ${pairKeys}::text[]) as w(board_id, status)
+      on w.board_id = t.board_id::text and w.status = t.status
     where t.assignees @> ${sql.json([agentName])}::jsonb
-      and (
-        t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.agent_start)
-        or (
-          not exists (select 1 from board_statuses bs where bs.board_id = t.board_id)
-          and t.status in ('assigned', 'in_progress')
-        )
-      )
     order by t.created_at asc
   `
   const items = rows as unknown as Array<{
@@ -761,17 +852,26 @@ export async function assignedWork(agentName: string): Promise<Array<{ id: strin
     status: string
     archivedAt: string | null
   }>
-  // One statusMeta per distinct board, not per ticket — a heartbeat runs often.
-  const metaByBoard = new Map<string, Awaited<ReturnType<typeof statusMeta>>>()
+  // The pairs above already answered "is this column in play?"; this is the
+  // TICKET half of the same authority question — its own archival, and the
+  // board's, re-asked from the one predicate rather than restated in SQL.
   const servable: typeof items = []
   for (const t of items) {
-    if (!metaByBoard.has(t.boardId)) metaByBoard.set(t.boardId, await statusMeta(t.boardId))
-    if (await closedToAgents(t, metaByBoard.get(t.boardId))) continue
+    if (await agentTicketRefusal(t, agentName, 'write', facts)) continue
     servable.push(t)
   }
   // Matched workflows ride with the pull channel too (plugin-side dispatch).
-  const { workflowsForTask } = await import('./workflows')
-  return Promise.all(
-    servable.map(async ({ status: _status, archivedAt: _archivedAt, ...t }) => ({ ...t, workflows: await workflowsForTask(t) })),
-  )
+  // ONE read of the workflow list for the whole heartbeat: calling
+  // `workflowsForTask` per ticket re-read the table each time — the same N+1 as
+  // `boardInfo`, hiding one line lower. Workflows are org-wide, not
+  // board-scoped, so there is nothing to key a cache by; the list is read once
+  // and handed to `workflowsFrom`, which is the SAME match the one-off path
+  // uses. Spelling the filter out here instead would have made this the round's
+  // own counter-example: a second expression of a rule, free to drift.
+  const { listWorkflows, workflowsFrom } = await import('./workflows')
+  const flows = servable.length ? await listWorkflows() : []
+  return servable.map(({ status: _status, archivedAt: _archivedAt, ...t }) => ({
+    ...t,
+    workflows: workflowsFrom(flows, t),
+  }))
 }
