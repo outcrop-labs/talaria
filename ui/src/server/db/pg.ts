@@ -1207,6 +1207,62 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now(),
      last_used_at timestamptz
    )`,
+
+  // ── Merged from origin/main #202 (Gentle Dew workspace + Scout focus queue) ──
+  // APPENDED, not merged in place. Their branch fixed the same fresh-install P0
+  // by moving the forward-referencing statements to the TAIL; ours moved each
+  // after its dependency and added index-keyed checksums. Adopting their order
+  // would shift every index and make the checksum guard refuse to boot on any
+  // database that already ran ours. Their ordering fix is therefore dropped as
+  // redundant, and only their genuinely NEW statements land here — at the end,
+  // which is the append-only rule this runner enforces.
+  `create index if not exists messages_conversation_timeline_idx
+     on messages(conversation_id, created_at desc, id desc)`,
+  `alter table messages add column if not exists metadata jsonb not null default '{}'`,
+  `create table if not exists inbox_focus_state (
+     user_id uuid not null references users(id) on delete cascade,
+     source_type text not null,
+     source_id text not null,
+     snoozed_until timestamptz,
+     viewed_at timestamptz,
+     content_fingerprint text,
+     brief jsonb,
+     brief_generated_at timestamptz,
+     updated_at timestamptz not null default now(),
+     primary key (user_id, source_type, source_id)
+   )`,
+  `create index if not exists inbox_focus_state_snooze_idx
+     on inbox_focus_state(user_id, snoozed_until)`,
+  `create table if not exists inbox_decisions (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     source_type text not null,
+     source_id text not null,
+     instruction text,
+     action_id text,
+     agent_model text,
+     delegate_model text,
+     status text not null,
+     proposal jsonb,
+     outcome jsonb,
+     confirmation_token_hash text,
+     expires_at timestamptz,
+     created_at timestamptz not null default now(),
+     confirmed_at timestamptz,
+     completed_at timestamptz
+   )`,
+  `create index if not exists inbox_decisions_user_idx
+     on inbox_decisions(user_id, created_at desc)`,
+  `create index if not exists inbox_decisions_confirmation_idx
+     on inbox_decisions(user_id, confirmation_token_hash) where status = 'proposed'`,
+  `alter table inbox_decisions add column if not exists conversation_id uuid references conversations(id) on delete set null`,
+  `alter table inbox_decisions add column if not exists user_message_id uuid references messages(id) on delete set null`,
+  `alter table inbox_decisions add column if not exists assistant_message_id uuid references messages(id) on delete set null`,
+  `alter table inbox_decisions add column if not exists focus_context jsonb`,
+  `create unique index if not exists conversations_inbox_user_idx
+     on conversations(user_id) where kind = 'inbox' and archived = false`,
+  `create index if not exists inbox_decisions_conversation_timeline_idx
+     on inbox_decisions(conversation_id, created_at desc, id desc) where conversation_id is not null`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

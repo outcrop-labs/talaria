@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/cn'
+import { popHeader, popPanel } from '@/components/chat/chat-chrome'
 
 // A full, searchable emoji picker. The ~1900-emoji dataset (@emoji-mart/data) is
 // lazy-loaded on first open so it never weighs down the initial bundle. Renders
-// as a click-away popover; the caller positions the trigger.
+// as a click-away popover (§7 popover shell); the caller positions the trigger.
 
 interface EmojiEntry {
   id: string
@@ -90,14 +91,15 @@ export function EmojiPicker({
     <div
       ref={ref}
       className={cn(
-        'absolute top-full z-30 mt-1 w-72 rounded-xl border border-line bg-card p-2 shadow-lg',
+        popPanel,
+        'absolute top-full z-30 mt-1 w-72 p-2',
         align === 'right' ? 'right-0' : 'left-0',
       )}
     >
       <Input autoFocus size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search emoji" className="mb-2" />
       <div className="max-h-64 overflow-y-auto">
         {all.length === 0 ? (
-          <div className="py-8 text-center text-xs text-muted">Loading</div>
+          <div className="py-8 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Loading</div>
         ) : results ? (
           results.length === 0 ? (
             <div className="py-8 text-center text-xs text-muted">No emoji found.</div>
@@ -110,7 +112,7 @@ export function EmojiPicker({
             if (entries.length === 0) return null
             return (
               <div key={cat.id} className="mb-1">
-                <div className="px-1 py-1 text-[10px] uppercase tracking-wide text-muted">{cat.label}</div>
+                <div className={cn(popHeader, 'px-1 py-1')}>{cat.label}</div>
                 <Grid entries={entries} onPick={onPick} />
               </div>
             )
@@ -118,7 +120,11 @@ export function EmojiPicker({
         )}
       </div>
       {onClear && (
-        <button type="button" onClick={onClear} className="mt-1 w-full rounded-md py-1 text-[11px] text-muted hover:text-fg">
+        <button
+          type="button"
+          onClick={onClear}
+          className="mt-1 w-full rounded-md py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg"
+        >
           Remove icon
         </button>
       )}
@@ -130,7 +136,7 @@ function Grid({ entries, onPick }: { entries: EmojiEntry[]; onPick: (e: string) 
   return (
     <div className="grid grid-cols-8 gap-0.5">
       {entries.map((e) => (
-        <button key={e.id} type="button" title={e.name} onClick={() => onPick(e.native)} className="grid h-8 place-items-center rounded text-lg hover:bg-sidebar">
+        <button key={e.id} type="button" title={e.name} onClick={() => onPick(e.native)} className="grid h-8 place-items-center rounded-md text-lg transition-colors hover:bg-hover">
           {e.native}
         </button>
       ))}

@@ -13,7 +13,9 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
       ref={ref}
       className={cn(
         controlSizes[size],
-        'rounded-xl border border-line bg-[var(--theme-input)] px-2.5 font-sans text-fg outline-none transition-colors focus:border-accent',
+        // Spec §8: raised tile bg, hairline border, radius 6, gold focus ring.
+        'rounded-md border border-line bg-[var(--theme-input)] px-2.5 font-sans text-sm text-fg outline-none transition-colors',
+        'focus:border-accent focus:ring-2 focus:ring-accent-soft',
         className,
       )}
       {...props}

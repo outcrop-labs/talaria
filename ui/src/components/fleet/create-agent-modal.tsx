@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Loader2, Sparkles, Trash2 } from 'lucide-react'
+import { Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Generating } from '@/components/ui/generating'
+import { Generating, GeneratingBars } from '@/components/ui/generating'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
@@ -145,13 +145,13 @@ export function CreateAgentModal({
             />
           </div>
           {generating && (
-            <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border border-line-subtle p-3 font-[var(--font-mono)] text-xs leading-5 text-muted">
+            <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line bg-surface p-3 font-mono text-xs leading-5 text-muted">
               {genPreview || 'Designing'}
-              <span className="animate-pulse text-accent">▍</span>
+              <span className="gd-pulse text-accent">▍</span>
             </pre>
           )}
-          {genErr && <p className="text-xs text-[color:var(--theme-danger)]">{genErr}</p>}
-          <div className="flex items-center gap-3 border-t border-line-subtle pt-4">
+          {genErr && <p className="text-xs text-danger">{genErr}</p>}
+          <div className="flex items-center gap-3 border-t border-line pt-4">
             <button type="button" className="text-xs text-muted hover:text-fg" onClick={() => setStep('review')}>
               Configure manually →
             </button>
@@ -160,7 +160,7 @@ export function CreateAgentModal({
               Cancel
             </Button>
             <Button onClick={() => void generate(purpose, false)} disabled={generating || !purpose.trim()}>
-              {generating && <Loader2 size={14} className="animate-spin" />}
+              {generating && <GeneratingBars bars={3} variant="weave" step={0.15} />}
               {generating ? 'Designing' : 'Design agent'}
             </Button>
           </div>
@@ -176,31 +176,31 @@ export function CreateAgentModal({
       <div className="max-h-[75vh] space-y-5 overflow-y-auto pr-1">
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Name</label>
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
             <Input value={displayName} onChange={(e) => onName(e.target.value)} placeholder="Remy" autoFocus={!generated} />
           </div>
           <div>
-            <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Handle</label>
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</label>
             <Input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="remy" />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Role</label>
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role</label>
             <Input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Research Analyst" />
           </div>
           <div>
-            <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Department</label>
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Department</label>
             <Input value={department} onChange={(e) => setDepartment(e.target.value)} placeholder="research" />
           </div>
         </div>
-        <p className="-mt-2 text-xs text-muted">
+        <p className="-mt-2 font-sans text-xs text-muted">
           Role is the roster title; department is the routing/mount key. The fleet model id becomes{' '}
-          {slug || 'handle'}-{department || 'department'}.
+          <span className="font-mono text-fg">{slug || 'handle'}-{department || 'department'}</span>.
         </p>
 
         <div>
-          <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">
+          <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             Chassis template <span className="normal-case">(model tiers, tools, and plugins carry over)</span>
           </label>
           <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className="w-full">
@@ -214,7 +214,7 @@ export function CreateAgentModal({
         </div>
 
         <div>
-          <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Soul</label>
+          <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Soul</label>
           {soul.trim() ? (
             // Rich like the post-creation soul editor; autosave keeps `soul`
             // fresh for create + refine, reseeded whenever muse redrafts.
@@ -228,8 +228,8 @@ export function CreateAgentModal({
 
         {skills.length > 0 && (
           <div>
-            <label className="mb-1.5 block text-[11px] uppercase tracking-wide text-muted">Starter skills</label>
-            <ul className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Starter skills</label>
+            <ul className="divide-y divide-line rounded-lg border border-line">
               {skills.map((s) => (
                 <SkillPreviewRow key={s.name} skill={s} onRemove={() => setSkills(skills.filter((x) => x.name !== s.name))} />
               ))}
@@ -247,7 +247,7 @@ export function CreateAgentModal({
         )}
 
         <label className="flex cursor-pointer items-center gap-2 text-sm text-fg">
-          <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} className="accent-[color:var(--theme-accent)]" />
+          <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} className="accent-accent" />
           Start the container now
         </label>
         {busy && (
@@ -260,12 +260,8 @@ export function CreateAgentModal({
             lines={3}
           />
         )}
-        {err && (
-          <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>
-            {err}
-          </div>
-        )}
-        <div className="flex items-center gap-2 border-t border-line-subtle pt-4">
+        {err && <div className="text-sm text-danger">{err}</div>}
+        <div className="flex items-center gap-2 border-t border-line pt-4">
           {!preselect && (
             <button type="button" className="text-xs text-muted hover:text-fg" onClick={() => setStep('describe')}>
               ← Describe instead
@@ -293,12 +289,12 @@ function SkillPreviewRow({ skill, onRemove }: { skill: { name: string; content: 
           <span className="text-sm text-fg">{skill.name}</span>
           <span className="ml-2 text-xs text-muted">{expanded ? 'hide' : 'view'}</span>
         </button>
-        <button type="button" title="Drop this skill" onClick={onRemove} className="shrink-0 text-muted transition-colors hover:text-[color:var(--theme-danger)]">
+        <button type="button" title="Drop this skill" onClick={onRemove} className="shrink-0 text-muted transition-colors hover:text-danger">
           <Trash2 size={14} />
         </button>
       </div>
       {expanded && (
-        <pre className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line-subtle p-3 font-[var(--font-mono)] text-xs leading-5 text-muted">
+        <pre className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-line bg-surface p-3 font-mono text-xs leading-5 text-muted">
           {skill.content}
         </pre>
       )}
@@ -319,7 +315,7 @@ function RefineBar({
 }) {
   const [text, setText] = useState('')
   return (
-    <div className={cn('space-y-2 rounded-xl border border-line-subtle p-3.5', busy && 'opacity-90')}>
+    <div className={cn('space-y-2 rounded-lg border border-line p-3.5', busy && 'opacity-90')}>
       <div className="flex items-end gap-2.5">
         <Sparkles size={14} className="mb-3 shrink-0 text-accent" />
         <Textarea
@@ -352,12 +348,12 @@ function RefineBar({
         </Button>
       </div>
       {busy && preview !== null && (
-        <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line-subtle p-2.5 font-[var(--font-mono)] text-[11px] leading-4 text-muted">
+        <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded-md border border-line bg-surface p-2.5 font-mono text-[11px] leading-4 text-muted">
           {preview || 'Designing'}
-          <span className="animate-pulse text-accent">▍</span>
+          <span className="gd-pulse text-accent">▍</span>
         </pre>
       )}
-      {error && <p className="text-xs text-[color:var(--theme-danger)]">{error}</p>}
+      {error && <p className="text-xs text-danger">{error}</p>}
     </div>
   )
 }

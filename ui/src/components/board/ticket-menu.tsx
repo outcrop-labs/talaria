@@ -44,7 +44,7 @@ export function ticketMenuEntries(t: Task, o: TicketMenuOpts): ContextMenuEntry[
           : TASK_STATUSES.map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: undefined as string | undefined }))
         ).map((st) => ({
           label: st.label,
-          icon: st.color ? <span className="h-2 w-2 rounded-full" style={{ background: st.color }} /> : undefined,
+          icon: st.color ? <span className="h-1.5 w-1.5 rounded-full" style={{ background: st.color }} /> : undefined,
           checked: t.status === st.key,
           onSelect: () => o.onPatch({ status: st.key as TaskStatus }),
         })),

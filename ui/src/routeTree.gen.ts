@@ -93,6 +93,7 @@ import { Route as ApiKeysIdRouteImport } from './routes/api/keys.$id'
 import { Route as ApiKbSpacesRouteImport } from './routes/api/kb.spaces'
 import { Route as ApiKbSearchRouteImport } from './routes/api/kb.search'
 import { Route as ApiIntegrationsGoogleRouteImport } from './routes/api/integrations/google'
+import { Route as ApiInboxFocusRouteImport } from './routes/api/inbox.focus'
 import { Route as ApiGapsIdRouteImport } from './routes/api/gaps.$id'
 import { Route as ApiFleetRenderRouteImport } from './routes/api/fleet.render'
 import { Route as ApiFleetReconcileRouteImport } from './routes/api/fleet.reconcile'
@@ -163,6 +164,11 @@ import { Route as ApiIntegrationsGooglePendingRouteImport } from './routes/api/i
 import { Route as ApiIntegrationsGoogleOrgRouteImport } from './routes/api/integrations/google.org'
 import { Route as ApiIntegrationsGoogleConnectRouteImport } from './routes/api/integrations/google.connect'
 import { Route as ApiIntegrationsGoogleCallbackRouteImport } from './routes/api/integrations/google.callback'
+import { Route as ApiInboxFocusSummaryRouteImport } from './routes/api/inbox.focus.summary'
+import { Route as ApiInboxFocusStateRouteImport } from './routes/api/inbox.focus.state'
+import { Route as ApiInboxFocusConversationRouteImport } from './routes/api/inbox.focus.conversation'
+import { Route as ApiInboxFocusCommandRouteImport } from './routes/api/inbox.focus.command'
+import { Route as ApiInboxFocusActionsRouteImport } from './routes/api/inbox.focus.actions'
 import { Route as ApiFleetEndpointsIdRouteImport } from './routes/api/fleet.endpoints.$id'
 import { Route as ApiFleetDefsIdRouteImport } from './routes/api/fleet.defs.$id'
 import { Route as ApiChannelsIdReadRouteImport } from './routes/api/channels.$id.read'
@@ -639,6 +645,11 @@ const ApiIntegrationsGoogleRoute = ApiIntegrationsGoogleRouteImport.update({
   path: '/api/integrations/google',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiInboxFocusRoute = ApiInboxFocusRouteImport.update({
+  id: '/api/inbox/focus',
+  path: '/api/inbox/focus',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiGapsIdRoute = ApiGapsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -994,6 +1005,32 @@ const ApiIntegrationsGoogleCallbackRoute =
     path: '/callback',
     getParentRoute: () => ApiIntegrationsGoogleRoute,
   } as any)
+const ApiInboxFocusSummaryRoute = ApiInboxFocusSummaryRouteImport.update({
+  id: '/summary',
+  path: '/summary',
+  getParentRoute: () => ApiInboxFocusRoute,
+} as any)
+const ApiInboxFocusStateRoute = ApiInboxFocusStateRouteImport.update({
+  id: '/state',
+  path: '/state',
+  getParentRoute: () => ApiInboxFocusRoute,
+} as any)
+const ApiInboxFocusConversationRoute =
+  ApiInboxFocusConversationRouteImport.update({
+    id: '/conversation',
+    path: '/conversation',
+    getParentRoute: () => ApiInboxFocusRoute,
+  } as any)
+const ApiInboxFocusCommandRoute = ApiInboxFocusCommandRouteImport.update({
+  id: '/command',
+  path: '/command',
+  getParentRoute: () => ApiInboxFocusRoute,
+} as any)
+const ApiInboxFocusActionsRoute = ApiInboxFocusActionsRouteImport.update({
+  id: '/actions',
+  path: '/actions',
+  getParentRoute: () => ApiInboxFocusRoute,
+} as any)
 const ApiFleetEndpointsIdRoute = ApiFleetEndpointsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -1380,6 +1417,7 @@ export interface FileRoutesByFullPath {
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/gaps/$id': typeof ApiGapsIdRoute
+  '/api/inbox/focus': typeof ApiInboxFocusRouteWithChildren
   '/api/integrations/google': typeof ApiIntegrationsGoogleRouteWithChildren
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
@@ -1432,6 +1470,11 @@ export interface FileRoutesByFullPath {
   '/api/channels/$id/read': typeof ApiChannelsIdReadRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/inbox/focus/actions': typeof ApiInboxFocusActionsRoute
+  '/api/inbox/focus/command': typeof ApiInboxFocusCommandRoute
+  '/api/inbox/focus/conversation': typeof ApiInboxFocusConversationRoute
+  '/api/inbox/focus/state': typeof ApiInboxFocusStateRoute
+  '/api/inbox/focus/summary': typeof ApiInboxFocusSummaryRoute
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
@@ -1589,6 +1632,7 @@ export interface FileRoutesByTo {
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/gaps/$id': typeof ApiGapsIdRoute
+  '/api/inbox/focus': typeof ApiInboxFocusRouteWithChildren
   '/api/integrations/google': typeof ApiIntegrationsGoogleRouteWithChildren
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
@@ -1641,6 +1685,11 @@ export interface FileRoutesByTo {
   '/api/channels/$id/read': typeof ApiChannelsIdReadRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/inbox/focus/actions': typeof ApiInboxFocusActionsRoute
+  '/api/inbox/focus/command': typeof ApiInboxFocusCommandRoute
+  '/api/inbox/focus/conversation': typeof ApiInboxFocusConversationRoute
+  '/api/inbox/focus/state': typeof ApiInboxFocusStateRoute
+  '/api/inbox/focus/summary': typeof ApiInboxFocusSummaryRoute
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
@@ -1800,6 +1849,7 @@ export interface FileRoutesById {
   '/api/fleet/reconcile': typeof ApiFleetReconcileRoute
   '/api/fleet/render': typeof ApiFleetRenderRoute
   '/api/gaps/$id': typeof ApiGapsIdRoute
+  '/api/inbox/focus': typeof ApiInboxFocusRouteWithChildren
   '/api/integrations/google': typeof ApiIntegrationsGoogleRouteWithChildren
   '/api/kb/search': typeof ApiKbSearchRoute
   '/api/kb/spaces': typeof ApiKbSpacesRouteWithChildren
@@ -1852,6 +1902,11 @@ export interface FileRoutesById {
   '/api/channels/$id/read': typeof ApiChannelsIdReadRoute
   '/api/fleet/defs/$id': typeof ApiFleetDefsIdRouteWithChildren
   '/api/fleet/endpoints/$id': typeof ApiFleetEndpointsIdRouteWithChildren
+  '/api/inbox/focus/actions': typeof ApiInboxFocusActionsRoute
+  '/api/inbox/focus/command': typeof ApiInboxFocusCommandRoute
+  '/api/inbox/focus/conversation': typeof ApiInboxFocusConversationRoute
+  '/api/inbox/focus/state': typeof ApiInboxFocusStateRoute
+  '/api/inbox/focus/summary': typeof ApiInboxFocusSummaryRoute
   '/api/integrations/google/callback': typeof ApiIntegrationsGoogleCallbackRoute
   '/api/integrations/google/connect': typeof ApiIntegrationsGoogleConnectRoute
   '/api/integrations/google/org': typeof ApiIntegrationsGoogleOrgRouteWithChildren
@@ -2011,6 +2066,7 @@ export interface FileRouteTypes {
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
     | '/api/gaps/$id'
+    | '/api/inbox/focus'
     | '/api/integrations/google'
     | '/api/kb/search'
     | '/api/kb/spaces'
@@ -2063,6 +2119,11 @@ export interface FileRouteTypes {
     | '/api/channels/$id/read'
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
+    | '/api/inbox/focus/actions'
+    | '/api/inbox/focus/command'
+    | '/api/inbox/focus/conversation'
+    | '/api/inbox/focus/state'
+    | '/api/inbox/focus/summary'
     | '/api/integrations/google/callback'
     | '/api/integrations/google/connect'
     | '/api/integrations/google/org'
@@ -2220,6 +2281,7 @@ export interface FileRouteTypes {
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
     | '/api/gaps/$id'
+    | '/api/inbox/focus'
     | '/api/integrations/google'
     | '/api/kb/search'
     | '/api/kb/spaces'
@@ -2272,6 +2334,11 @@ export interface FileRouteTypes {
     | '/api/channels/$id/read'
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
+    | '/api/inbox/focus/actions'
+    | '/api/inbox/focus/command'
+    | '/api/inbox/focus/conversation'
+    | '/api/inbox/focus/state'
+    | '/api/inbox/focus/summary'
     | '/api/integrations/google/callback'
     | '/api/integrations/google/connect'
     | '/api/integrations/google/org'
@@ -2430,6 +2497,7 @@ export interface FileRouteTypes {
     | '/api/fleet/reconcile'
     | '/api/fleet/render'
     | '/api/gaps/$id'
+    | '/api/inbox/focus'
     | '/api/integrations/google'
     | '/api/kb/search'
     | '/api/kb/spaces'
@@ -2482,6 +2550,11 @@ export interface FileRouteTypes {
     | '/api/channels/$id/read'
     | '/api/fleet/defs/$id'
     | '/api/fleet/endpoints/$id'
+    | '/api/inbox/focus/actions'
+    | '/api/inbox/focus/command'
+    | '/api/inbox/focus/conversation'
+    | '/api/inbox/focus/state'
+    | '/api/inbox/focus/summary'
     | '/api/integrations/google/callback'
     | '/api/integrations/google/connect'
     | '/api/integrations/google/org'
@@ -2605,6 +2678,7 @@ export interface RootRouteChildren {
   ApiAuthPasswordRoute: typeof ApiAuthPasswordRoute
   ApiAuthProvidersRoute: typeof ApiAuthProvidersRoute
   ApiAuthSessionRoute: typeof ApiAuthSessionRoute
+  ApiInboxFocusRoute: typeof ApiInboxFocusRouteWithChildren
   ApiIntegrationsGoogleRoute: typeof ApiIntegrationsGoogleRouteWithChildren
   ApiKbSearchRoute: typeof ApiKbSearchRoute
   ApiKbSpacesRoute: typeof ApiKbSpacesRouteWithChildren
@@ -3218,6 +3292,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiIntegrationsGoogleRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/inbox/focus': {
+      id: '/api/inbox/focus'
+      path: '/api/inbox/focus'
+      fullPath: '/api/inbox/focus'
+      preLoaderRoute: typeof ApiInboxFocusRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/gaps/$id': {
       id: '/api/gaps/$id'
       path: '/$id'
@@ -3707,6 +3788,41 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/integrations/google/callback'
       preLoaderRoute: typeof ApiIntegrationsGoogleCallbackRouteImport
       parentRoute: typeof ApiIntegrationsGoogleRoute
+    }
+    '/api/inbox/focus/summary': {
+      id: '/api/inbox/focus/summary'
+      path: '/summary'
+      fullPath: '/api/inbox/focus/summary'
+      preLoaderRoute: typeof ApiInboxFocusSummaryRouteImport
+      parentRoute: typeof ApiInboxFocusRoute
+    }
+    '/api/inbox/focus/state': {
+      id: '/api/inbox/focus/state'
+      path: '/state'
+      fullPath: '/api/inbox/focus/state'
+      preLoaderRoute: typeof ApiInboxFocusStateRouteImport
+      parentRoute: typeof ApiInboxFocusRoute
+    }
+    '/api/inbox/focus/conversation': {
+      id: '/api/inbox/focus/conversation'
+      path: '/conversation'
+      fullPath: '/api/inbox/focus/conversation'
+      preLoaderRoute: typeof ApiInboxFocusConversationRouteImport
+      parentRoute: typeof ApiInboxFocusRoute
+    }
+    '/api/inbox/focus/command': {
+      id: '/api/inbox/focus/command'
+      path: '/command'
+      fullPath: '/api/inbox/focus/command'
+      preLoaderRoute: typeof ApiInboxFocusCommandRouteImport
+      parentRoute: typeof ApiInboxFocusRoute
+    }
+    '/api/inbox/focus/actions': {
+      id: '/api/inbox/focus/actions'
+      path: '/actions'
+      fullPath: '/api/inbox/focus/actions'
+      preLoaderRoute: typeof ApiInboxFocusActionsRouteImport
+      parentRoute: typeof ApiInboxFocusRoute
     }
     '/api/fleet/endpoints/$id': {
       id: '/api/fleet/endpoints/$id'
@@ -4628,6 +4744,26 @@ const ApiAuthGoogleRouteWithChildren = ApiAuthGoogleRoute._addFileChildren(
   ApiAuthGoogleRouteChildren,
 )
 
+interface ApiInboxFocusRouteChildren {
+  ApiInboxFocusActionsRoute: typeof ApiInboxFocusActionsRoute
+  ApiInboxFocusCommandRoute: typeof ApiInboxFocusCommandRoute
+  ApiInboxFocusConversationRoute: typeof ApiInboxFocusConversationRoute
+  ApiInboxFocusStateRoute: typeof ApiInboxFocusStateRoute
+  ApiInboxFocusSummaryRoute: typeof ApiInboxFocusSummaryRoute
+}
+
+const ApiInboxFocusRouteChildren: ApiInboxFocusRouteChildren = {
+  ApiInboxFocusActionsRoute: ApiInboxFocusActionsRoute,
+  ApiInboxFocusCommandRoute: ApiInboxFocusCommandRoute,
+  ApiInboxFocusConversationRoute: ApiInboxFocusConversationRoute,
+  ApiInboxFocusStateRoute: ApiInboxFocusStateRoute,
+  ApiInboxFocusSummaryRoute: ApiInboxFocusSummaryRoute,
+}
+
+const ApiInboxFocusRouteWithChildren = ApiInboxFocusRoute._addFileChildren(
+  ApiInboxFocusRouteChildren,
+)
+
 interface ApiIntegrationsGoogleOrgRouteChildren {
   ApiIntegrationsGoogleOrgCallbackRoute: typeof ApiIntegrationsGoogleOrgCallbackRoute
   ApiIntegrationsGoogleOrgConnectRoute: typeof ApiIntegrationsGoogleOrgConnectRoute
@@ -4845,6 +4981,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthPasswordRoute: ApiAuthPasswordRoute,
   ApiAuthProvidersRoute: ApiAuthProvidersRoute,
   ApiAuthSessionRoute: ApiAuthSessionRoute,
+  ApiInboxFocusRoute: ApiInboxFocusRouteWithChildren,
   ApiIntegrationsGoogleRoute: ApiIntegrationsGoogleRouteWithChildren,
   ApiKbSearchRoute: ApiKbSearchRoute,
   ApiKbSpacesRoute: ApiKbSpacesRouteWithChildren,

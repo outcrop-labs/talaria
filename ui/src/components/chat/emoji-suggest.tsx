@@ -4,6 +4,7 @@ import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
 import { PluginKey } from '@tiptap/pm/state'
 import { ReactRenderer } from '@tiptap/react'
 import { cn } from '@/lib/cn'
+import { popPanel, popRow } from '@/components/chat/chat-chrome'
 import { searchEmoji, type EmojiEntry } from '@/lib/emoji'
 
 // ":" emoji autocomplete for the chat composer — the TipTap counterpart of
@@ -40,7 +41,7 @@ const EmojiList = forwardRef<MenuHandle, { items: EmojiEntry[]; command: (item: 
 
     if (items.length === 0) return null
     return (
-      <div className="w-56 rounded-xl border border-line bg-card p-1 shadow-lg">
+      <div className={cn(popPanel, 'w-56')}>
         {items.map((item, i) => (
           <button
             key={item.ch}
@@ -50,13 +51,10 @@ const EmojiList = forwardRef<MenuHandle, { items: EmojiEntry[]; command: (item: 
               e.preventDefault()
               command(item)
             }}
-            className={cn(
-              'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left',
-              i === active ? 'bg-sidebar' : 'hover:bg-sidebar',
-            )}
+            className={cn(popRow, i === active && 'bg-hover')}
           >
             <span className="text-base">{item.ch}</span>
-            <span className="truncate text-xs text-muted">:{item.names[0]}:</span>
+            <span className="truncate font-mono text-[11px] tracking-[0.02em] text-muted">:{item.names[0]}:</span>
           </button>
         ))}
       </div>

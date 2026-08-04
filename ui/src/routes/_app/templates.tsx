@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Panel } from '@/components/ui/panel'
+import { Tabs } from '@/components/ui/tabs'
+import { Chip } from '@/components/ui/chip'
 import { Markdown } from '@/components/ui/markdown'
 import { EmptyState } from '@/components/ui/empty-state'
 import { InfoTip } from '@/components/ui/info-tip'
@@ -82,27 +84,28 @@ function TemplatesPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-5xl space-y-6">
         <div className="flex items-center gap-1.5">
-          <h1 className="mercury-text text-2xl font-semibold">Templates</h1>
+          <h1 className="font-sans text-2xl font-semibold tracking-tight text-fg">Templates</h1>
           <InfoTip text="The markdown skeletons work starts from. Resolution order everywhere: explicit pick → agent binding → board default → freeform." />
         </div>
 
-        <div className="flex gap-1 border-b border-line-subtle">
-          {TEMPLATE_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn('relative flex items-center gap-1.5 px-3 py-2 text-sm transition-colors', tab === t.id ? 'text-fg' : 'text-muted hover:text-fg')}
-            >
-              {t.label}
-              {/* An em dash where a number would be: unknown, not zero. */}
-              <span className="text-[10px] text-muted">
-                {isLoading || failed ? '—' : templates.filter((x) => x.kind === t.id).length}
-              </span>
-              {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
-            </button>
-          ))}
-        </div>
+        <Tabs
+          items={TEMPLATE_TABS.map((t) => ({
+            id: t.id,
+            label: (
+              <>
+                {t.label}
+                {/* An em dash where a number would be: unknown, not zero. A
+                    count is an assertion — never print one from a read that
+                    hasn't landed or has failed. */}
+                <span className="ml-1.5 text-ink-dim">
+                  {isLoading || failed ? '—' : templates.filter((x) => x.kind === t.id).length}
+                </span>
+              </>
+            ),
+          }))}
+          value={tab}
+          onChange={setTab}
+        />
 
         <div className="grid gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
           <aside className="space-y-3">
@@ -131,8 +134,8 @@ function TemplatesPage() {
                         ])
                       }
                       className={cn(
-                        'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors',
-                        selected?.id === t.id ? 'bg-card text-fg' : 'text-muted hover:bg-card hover:text-fg',
+                        'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors',
+                        selected?.id === t.id ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
                       )}
                     >
                       <span className="min-w-0 flex-1 truncate font-sans">{t.name}</span>
@@ -142,7 +145,7 @@ function TemplatesPage() {
                 {list.length === 0 && <li className="px-2.5 py-2 text-xs text-muted">None yet.</li>}
               </ul>
             )}
-            <div className="flex items-center gap-1.5 border-t border-line-subtle pt-3">
+            <div className="flex items-center gap-1.5 border-t border-line pt-3">
               <Input size="sm" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder={`New ${tab} template`} onKeyDown={(e) => e.key === 'Enter' && void create()} />
               <Button size="sm" variant="outline" disabled={!newName.trim()} onClick={() => void create()}>
                 <Plus size={14} />
@@ -208,24 +211,24 @@ function TemplateDetail({
     <Panel>
       <div className="mb-4 flex items-center gap-2">
         <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} onBlur={() => name.trim() && name !== template.name && void save({ name: name.trim() })} className="max-w-xs font-sans" />
-        <span className="rounded border border-line-subtle px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">{template.kind}</span>
-        <span className="ml-auto text-xs text-muted">{relativeTime(template.updatedAt)}</span>
+        <Chip>{template.kind}</Chip>
+        <span className="ml-auto font-mono text-[11px] text-muted">{relativeTime(template.updatedAt)}</span>
       </div>
 
       <div className="mb-4">
         <div className="mb-1 flex items-center gap-1.5">
-          <span className="text-[11px] uppercase tracking-wide text-muted">Skeleton</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Skeleton</span>
           <InfoTip text={blurb} />
           <Button size="sm" variant="outline" className="ml-auto" onClick={() => setEditorOpen(true)}>
             Edit
           </Button>
         </div>
         {template.body.trim() ? (
-          <div className="max-h-80 overflow-y-auto rounded-xl border border-line-subtle bg-card px-4 py-3 text-sm">
+          <div className="max-h-80 overflow-y-auto rounded-lg border border-line bg-card px-4 py-3 text-sm">
             <Markdown className="tiptap">{template.body}</Markdown>
           </div>
         ) : (
-          <button type="button" onClick={() => setEditorOpen(true)} className="w-full rounded-xl border border-dashed border-line-subtle px-4 py-6 text-center text-xs text-muted transition-colors hover:border-line hover:text-fg">
+          <button type="button" onClick={() => setEditorOpen(true)} className="w-full rounded-lg border border-dashed border-line px-4 py-6 text-center text-xs text-muted transition-colors hover:border-line-strong hover:text-fg">
             Empty. Open the editor — or let Muse draft it from a description.
           </button>
         )}
@@ -233,7 +236,7 @@ function TemplateDetail({
 
       <div>
         <div className="mb-1 flex items-center gap-1.5">
-          <span className="text-[11px] uppercase tracking-wide text-muted">Agent guidance</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent guidance</span>
           <InfoTip text="Prompt-only: travels with the template into the model's instructions but is never shown on the ticket or plan itself." />
         </div>
         <Textarea autoGrow rows={2} value={guidance} onChange={(e) => setGuidance(e.target.value)} onBlur={() => guidance !== template.guidance && void save({ guidance })} className="max-h-40 text-xs" placeholder='e.g. "Always fill acceptance criteria; keep Out of scope honest."' />

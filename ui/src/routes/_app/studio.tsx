@@ -156,7 +156,7 @@ function StudioPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-6xl">
         <div className="mb-6 flex items-center gap-1.5">
-          <h1 className="mercury-text text-2xl font-semibold">Studio</h1>
+          <h1 className="font-sans text-2xl font-semibold tracking-tight text-fg">Studio</h1>
           <InfoTip text="Build your agents, one at a time: what each one knows (skills), what work gets routed to it (workflows), and what it's asked for help with. Pick who you're building for on the left." />
         </div>
 
@@ -177,7 +177,7 @@ function StudioPage() {
         <div className="grid gap-8 lg:grid-cols-[15rem_minmax(0,1fr)]">
           {/* ── Who you're building for ── */}
           <aside className="space-y-1">
-            <div className="mb-2 px-2.5 text-[11px] uppercase tracking-wide text-muted">Building for</div>
+            <div className="mb-2 px-2.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Building for</div>
             {agents.map((o) => {
               const meta = agentMeta(o)
               const openCount = ownerGaps(o).length
@@ -187,8 +187,8 @@ function StudioPage() {
                   type="button"
                   onClick={() => select(o.owner)}
                   className={cn(
-                    'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors',
-                    selectedKey === o.owner ? 'bg-card' : 'hover:bg-card/50',
+                    'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
+                    selectedKey === o.owner ? 'bg-raised' : 'hover:bg-hover',
                   )}
                 >
                   <Avatar name={o.label} className="h-8 w-8 shrink-0 text-xs" />
@@ -201,16 +201,16 @@ function StudioPage() {
                 </button>
               )
             })}
-            <div className="my-2 border-t border-line-subtle" />
+            <div className="my-2 border-t border-line" />
             <button
               type="button"
               onClick={() => select('shared')}
               className={cn(
-                'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors',
-                selectedKey === 'shared' ? 'bg-card' : 'hover:bg-card/50',
+                'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
+                selectedKey === 'shared' ? 'bg-raised' : 'hover:bg-hover',
               )}
             >
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line-subtle text-sm text-muted">✦</span>
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line text-sm text-muted">✦</span>
               <span className="min-w-0 flex-1">
                 <span className={cn('block truncate text-sm font-medium', selectedKey === 'shared' ? 'text-fg' : 'text-muted')}>Every agent</span>
                 <span className="block text-[11px] text-muted">shared know-how</span>
@@ -224,7 +224,7 @@ function StudioPage() {
             <main className="min-w-0 space-y-8">
               <div className="flex items-center gap-4">
                 {selected.owner === 'shared' ? (
-                  <span className="flex h-14 w-14 items-center justify-center rounded-2xl border border-line-subtle text-2xl text-muted">✦</span>
+                  <span className="flex h-14 w-14 items-center justify-center rounded-lg border border-line bg-raised text-2xl text-muted">✦</span>
                 ) : (
                   <Avatar name={selected.label} className="h-14 w-14 text-lg" />
                 )}
@@ -252,7 +252,7 @@ function StudioPage() {
                   />
                   <div className="space-y-2">
                     {ownerGaps(selected).map((g) => (
-                      <Panel key={g.id} className="border-[color:var(--theme-warning)]/25">
+                      <Panel key={g.id} className="border-warning/25">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-medium text-fg">{g.kind.replace(/-/g, ' ')}</span>
                           <Chip tone="warn">{g.seenCount}×</Chip>
@@ -313,7 +313,7 @@ function StudioPage() {
                   </Panel>
                 ) : (
                   <Panel className="p-0">
-                    <div className="divide-y divide-line-subtle">
+                    <div className="divide-y divide-line">
                       {selected.skills.map((s) => (
                         <SkillRow
                           key={s.name}
@@ -355,13 +355,13 @@ function StudioPage() {
                   </Panel>
                 ) : (
                   <Panel className="p-0">
-                    <div className="divide-y divide-line-subtle">
+                    <div className="divide-y divide-line">
                       {routedTo(selected).map((w) => (
                         <button
                           key={w.id}
                           type="button"
                           onClick={() => void navigate({ search: { a: selectedKey, w: w.id } })}
-                          className="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-card/40"
+                          className="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-hover"
                         >
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-sm font-medium text-fg">{w.name}</span>
@@ -426,11 +426,12 @@ function StudioPage() {
   )
 }
 
+// §8 section header: 10px mono uppercase ink-dim label, prose hint beside it.
 function SectionTitle({ title, hint, action }: { title: string; hint: string; action?: React.ReactNode }) {
   return (
-    <div className="mb-2 flex items-baseline gap-2">
-      <h3 className="text-sm font-semibold text-fg">{title}</h3>
-      <span className="min-w-0 truncate text-xs text-muted">{hint}</span>
+    <div className="mb-2 flex min-h-6 items-center gap-2">
+      <h3 className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{title}</h3>
+      <span className="min-w-0 truncate font-sans text-xs text-muted">{hint}</span>
       {action && <span className="ml-auto">{action}</span>}
     </div>
   )
@@ -468,7 +469,7 @@ function SkillRow({
   }
 
   return (
-    <div className="group flex w-full items-center gap-3 px-5 py-3 transition-colors hover:bg-card/40">
+    <div className="group flex w-full items-center gap-3 px-5 py-3 transition-colors hover:bg-hover">
       <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
         <span className="flex items-center gap-2">
           <span className="truncate text-sm font-medium text-fg">{skill.name}</span>

@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useRef } from 'react'
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react'
 import { EditorContent, useEditor, useEditorState, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
@@ -9,6 +9,8 @@ import { Bold, Code, Italic, List, ListOrdered, SquareCode, Strikethrough, TextQ
 import { cn } from '@/lib/cn'
 import { MentionSuggest } from '@/components/ui/mention-suggest'
 import { EmojiSuggest } from '@/components/chat/emoji-suggest'
+import { SendButton } from '@/components/chat/composer-buttons'
+import { focusGold } from '@/components/chat/chat-chrome'
 import { emojify } from '@/lib/emoji'
 import type { Mentionable } from '@/components/chat/mentions'
 
@@ -18,6 +20,12 @@ import type { Mentionable } from '@/components/chat/mentions'
 // except inside a code block, where it makes a newline (Slack semantics);
 // Shift+Enter is always a soft newline. Messages travel as markdown, which is
 // exactly what the message list renders and agents read.
+//
+// Gentle dew anatomy (spec §7): the editor sits in an INSET prompt well —
+// ground background, hairline border, radius 6 — with the gold 36×36 send
+// tile pinned top-right; every other control lives on the 36px chip rail
+// below. The host supplies the outer #141312 panel (strong border, radius 8,
+// padding 8) so attachment chips can ride between well and rail.
 
 export interface ChatComposerHandle {
   focus: () => void
@@ -39,12 +47,22 @@ export const ChatComposer = forwardRef<
     /** Notifies emptiness changes so the host can drive its send hint. */
     onEmptyChange?: (empty: boolean) => void
     disabled?: boolean
+    /** Host override for the send tile's enabled state (e.g. pending
+     *  attachments make an empty editor sendable). Falls back to "editor has
+     *  content" when omitted. */
+    canSend?: boolean
     /** Host controls rendered at the START of the bottom row (attach, emoji). */
     leftControls?: React.ReactNode
     /** Host controls rendered at the END of the bottom row (send hint, tiers, stop). */
     rightControls?: React.ReactNode
+    /** Complete replacement for the bottom rail. Used by surfaces whose
+     *  control order is part of the product contract (for example Scout). */
+    controlRail?: React.ReactNode
+    /** Dense docks may hide the formatting strip below the sm breakpoint. */
+    compactOnNarrow?: boolean
   }
->(function ChatComposer({ placeholder, mentionables, onSubmit, onFiles, onEscape, onEmptyChange, disabled, leftControls, rightControls }, ref) {
+>(function ChatComposer({ placeholder, mentionables, onSubmit, onFiles, onEscape, onEmptyChange, disabled, canSend, leftControls, rightControls, controlRail, compactOnNarrow }, ref) {
+  const [empty, setEmpty] = useState(true)
   // Refs so the keymap (bound once at editor creation) sees fresh handlers.
   const submitRef = useRef<() => void>(() => {})
   const escapeRef = useRef<(() => void) | undefined>(onEscape)
@@ -93,7 +111,13 @@ export const ChatComposer = forwardRef<
     ],
     content: '',
     editorProps: {
-      attributes: { class: 'tiptap max-h-40 overflow-y-auto px-3 py-2.5 text-sm', style: 'min-height:2.75rem' },
+      // Prompt well interior: transparent 14/20 sans on the ground inset,
+      // 14px padding, min-height ~76px, right side clearing the 36px send
+      // tile (spec §7).
+      attributes: {
+        class: 'tiptap max-h-40 overflow-y-auto py-3.5 pl-3.5 pr-14 font-sans text-sm leading-5',
+        style: 'min-height:4.625rem',
+      },
       handlePaste: (_view, event) => {
         const files = Array.from(event.clipboardData?.files ?? [])
         if (files.length === 0) return false
@@ -109,7 +133,10 @@ export const ChatComposer = forwardRef<
         return true
       },
     },
-    onUpdate: ({ editor }) => onEmptyChange?.(editor.isEmpty),
+    onUpdate: ({ editor }) => {
+      setEmpty(editor.isEmpty)
+      onEmptyChange?.(editor.isEmpty)
+    },
   })
 
   submitRef.current = () => {
@@ -128,25 +155,36 @@ export const ChatComposer = forwardRef<
     clear: () => editor?.commands.clearContent(true),
   }))
 
-  // Slack's split: the message area is the whole top half, every control —
-  // attach, emoji, formatting, send affordances — lives on the bottom row.
+  // Slack's split, Gentle dew's skin: the inset prompt well (with the gold
+  // send tile inside, top-right) on top; every other control — attach, emoji,
+  // formatting, pickers, stop — on the 36px chip rail below.
+  const sendEnabled = !disabled && (canSend ?? !empty)
   return (
-    <div className="min-w-0 flex-1">
-      <EditorContent editor={editor} />
-      <div className="flex items-center gap-0.5 border-t border-line-subtle px-1.5 pb-0.5 pt-1">
-        {leftControls}
-        {leftControls != null && <span className="mx-1 h-4 border-l border-line-subtle" />}
-        {editor && <ComposerToolbar editor={editor} />}
-        <span className="flex-1" />
-        {rightControls}
+    <div className="flex min-w-0 flex-1 flex-col gap-2">
+      <div className="relative rounded-md border border-line bg-surface">
+        <EditorContent editor={editor} />
+        <SendButton className="absolute right-2 top-2" enabled={sendEnabled} onClick={() => submitRef.current()} />
       </div>
+      {controlRail != null ? (
+        <div className="flex h-10 min-w-0 items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {controlRail}
+        </div>
+      ) : (
+        <div className="flex h-10 min-w-0 items-center gap-1.5">
+          {leftControls}
+          {leftControls != null && <span className="mx-1 h-5 border-l border-line" />}
+          {editor && <ComposerToolbar editor={editor} className={compactOnNarrow ? 'hidden sm:flex' : undefined} />}
+          <span className="flex-1" />
+          {rightControls}
+        </div>
+      )}
     </div>
   )
 })
 
 /** Slack's little formatting row, under the input. Buttons toggle marks on the
  *  selection; everything they do is also typeable as markdown. */
-function ComposerToolbar({ editor }: { editor: Editor }) {
+function ComposerToolbar({ editor, className }: { editor: Editor; className?: string }) {
   const active = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -179,8 +217,9 @@ function ComposerToolbar({ editor }: { editor: Editor }) {
         action()
       }}
       className={cn(
-        'grid h-6 w-6 place-items-center rounded transition-colors',
-        on ? 'bg-sidebar text-fg' : 'text-muted hover:bg-sidebar hover:text-fg',
+        'grid h-7 w-7 place-items-center rounded-md transition-colors',
+        on ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+        focusGold,
       )}
     >
       {children}
@@ -188,7 +227,7 @@ function ComposerToolbar({ editor }: { editor: Editor }) {
   )
   const c = () => editor.chain().focus()
   return (
-    <div className="flex items-center gap-0.5">
+    <div className={cn('flex items-center gap-0.5', className)}>
       <Btn on={active.bold} title="Bold (⌘B or **text**)" action={() => c().toggleBold().run()}>
         <Bold size={13} />
       </Btn>
@@ -198,14 +237,14 @@ function ComposerToolbar({ editor }: { editor: Editor }) {
       <Btn on={active.strike} title="Strikethrough (~~text~~)" action={() => c().toggleStrike().run()}>
         <Strikethrough size={13} />
       </Btn>
-      <span className="mx-1 h-4 border-l border-line-subtle" />
+      <span className="mx-1 h-5 border-l border-line" />
       <Btn on={active.code} title="Inline code (`code`)" action={() => c().toggleCode().run()}>
         <Code size={13} />
       </Btn>
       <Btn on={active.codeBlock} title="Code block (```)" action={() => c().toggleCodeBlock().run()}>
         <SquareCode size={13} />
       </Btn>
-      <span className="mx-1 h-4 border-l border-line-subtle" />
+      <span className="mx-1 h-5 border-l border-line" />
       <Btn on={active.bulletList} title="Bulleted list (- item)" action={() => c().toggleBulletList().run()}>
         <List size={13} />
       </Btn>

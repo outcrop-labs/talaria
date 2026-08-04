@@ -5,14 +5,14 @@ import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/empty-state'
-import { InfoTip } from '@/components/ui/info-tip'
 import { Markdown } from '@/components/ui/markdown'
 import { Modal } from '@/components/ui/modal'
 import { QueryError, QueryState } from '@/components/ui/query-state'
+import { SectionHeader } from '@/components/ui/section-header'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
+import { Tabs } from '@/components/ui/tabs'
 import { CronsPanel } from '@/components/fleet/agent-crons'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
-import { cn } from '@/lib/cn'
 import { getJson, getList } from '@/lib/fetch-json'
 import { type Assistant } from '@/lib/assistant'
 
@@ -27,21 +27,7 @@ export function AssistantPanels({ assistant }: { assistant: Assistant }) {
   const [tab, setTab] = useState<Tab>('Schedules')
   return (
     <div className="space-y-5">
-      <div className="flex gap-1 border-b border-line-subtle pb-2">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setTab(t)}
-            className={cn(
-              'rounded-lg px-3 py-1 text-sm transition-colors',
-              tab === t ? 'bg-card font-medium text-fg' : 'text-muted hover:text-fg',
-            )}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
+      <Tabs items={TABS.map((t) => ({ id: t, label: t }))} value={tab} onChange={setTab} className="border-b border-line pb-2" />
       {tab === 'Schedules' && <CronsPanel agentId={assistant.id} />}
       {tab === 'Skills' && <SkillsTab assistant={assistant} />}
       {tab === 'Memory' && <MemoryTab assistant={assistant} />}
@@ -100,16 +86,21 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-1.5">
-        <span className="text-xs uppercase tracking-wide text-muted">Skills</span>
-        <InfoTip text="Step-by-step playbooks your assistant follows for recurring jobs: weekly summaries, travel planning, whatever you teach it." />
-      </div>
+      <SectionHeader
+        className="mb-0"
+        title="Skills"
+        info="Step-by-step playbooks your assistant follows for recurring jobs: weekly summaries, travel planning, whatever you teach it."
+        // The count is meta ABOUT the read, so it only exists once the read
+        // resolved: `rows.length` on a failure would print `00`, which is a
+        // claim ("you have no skills") the server never made.
+        action={query.data && query.data.length > 0 ? String(query.data.length).padStart(2, '0') : undefined}
+      />
       <QueryState
         query={query}
         errorTitle="Could not load your assistant's skills"
         errorVariant="compact"
         skeleton={
-          <ul aria-hidden className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+          <ul aria-hidden className="divide-y divide-line rounded-lg border border-line">
             {[0, 1, 2].map((i) => (
               <li key={i} className="flex items-center gap-2 px-3 py-3">
                 <Skeleton className="h-3 w-28 rounded-full" delay={i * 0.12} />
@@ -121,13 +112,13 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
         empty={<EmptyState icon="✦" title="No skills yet" hint="Teach it its first playbook below." />}
       >
         {(skills) => (
-          <ul className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+          <ul className="divide-y divide-line rounded-lg border border-line">
             {skills.map((s) => (
               <li key={s.name}>
                 <button
                   type="button"
                   onClick={() => setOpen(s.name)}
-                  className="flex w-full items-baseline gap-2 px-3 py-2 text-left transition-colors hover:bg-card"
+                  className="flex w-full items-baseline gap-2 px-3 py-2 text-left transition-colors hover:bg-hover"
                 >
                   <span className="text-sm text-fg">{s.name}</span>
                   <span className="min-w-0 flex-1 truncate text-xs text-muted">{s.description}</span>
@@ -158,7 +149,7 @@ function SkillsTab({ assistant }: { assistant: Assistant }) {
           <Plus size={14} /> Add
         </Button>
       </div>
-      {error && <p className="text-xs text-[color:var(--theme-danger)]">{error}</p>}
+      {error && <p className="text-xs text-danger">{error}</p>}
       {open !== null && <SkillEditor assistant={assistant} name={open} onClose={() => setOpen(null)} onChanged={() => void refresh()} />}
     </div>
   )
@@ -279,11 +270,12 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
   if (isLoading)
     return (
       <div className="space-y-4">
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs uppercase tracking-wide text-muted">Memory</span>
-          <InfoTip text="What it remembers about you and your work. It updates this itself as you go, and you can edit or prune it any time. Every save is snapshotted, so nothing is ever lost." />
-        </div>
-        <div aria-hidden className="max-h-72 rounded-lg border border-line-subtle p-3">
+        <SectionHeader
+          className="mb-0"
+          title="Memory"
+          info="What it remembers about you and your work. It updates this itself as you go, and you can edit or prune it any time. Every save is snapshotted, so nothing is ever lost."
+        />
+        <div aria-hidden className="max-h-72 rounded-lg border border-line p-3">
           <SkeletonRows rows={8} />
         </div>
       </div>
@@ -299,12 +291,13 @@ function MemoryTab({ assistant }: { assistant: Assistant }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-1.5">
-        <span className="text-xs uppercase tracking-wide text-muted">Memory</span>
-        <InfoTip text="What it remembers about you and your work. It updates this itself as you go, and you can edit or prune it any time. Every save is snapshotted, so nothing is ever lost." />
-      </div>
+      <SectionHeader
+        className="mb-0"
+        title="Memory"
+        info="What it remembers about you and your work. It updates this itself as you go, and you can edit or prune it any time. Every save is snapshotted, so nothing is ever lost."
+      />
       {data?.content ? (
-        <div className="max-h-72 overflow-y-auto rounded-lg border border-line-subtle p-3 text-sm">
+        <div className="max-h-72 overflow-y-auto rounded-lg border border-line p-3 text-sm">
           <Markdown>{data.content}</Markdown>
         </div>
       ) : (

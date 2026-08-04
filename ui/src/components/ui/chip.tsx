@@ -1,15 +1,17 @@
-// Small shared vocabulary: kind/status chips, health dots, and the quiet red
-// link that destructive actions use instead of a button.
+// Small shared vocabulary: kind/status chips, health dots, and the quiet
+// destructive link (orange text, never a fill) that destructive actions use
+// instead of a button.
 import { cn } from '@/lib/cn'
+import { focusGold } from '@/components/chat/chat-chrome'
 
 export type ChipTone = 'neutral' | 'accent' | 'success' | 'warn' | 'danger'
 
 const TONES: Record<ChipTone, string> = {
-  neutral: 'border-line-subtle text-muted',
+  neutral: 'border-line text-muted',
   accent: 'border-[var(--theme-accent-border)] text-accent',
-  success: 'border-[color:var(--theme-success)]/40 text-[color:var(--theme-success)]',
-  warn: 'border-[color:var(--theme-warning)]/40 text-[color:var(--theme-warning)]',
-  danger: 'border-[color:var(--theme-danger)]/40 text-[color:var(--theme-danger)]',
+  success: 'border-success/40 text-success',
+  warn: 'border-warning/40 text-warning',
+  danger: 'border-danger/40 text-danger',
 }
 
 export interface ChipProps {
@@ -26,11 +28,12 @@ export interface ChipProps {
 }
 
 /** Bordered micro-chip for kinds/modes ("DOC", "Brief", "custom") — and, with
- *  `onSelect`/`onRemove`, the one filter-pill and removable-token primitive. */
+ *  `onSelect`/`onRemove`, the one filter-pill and removable-token primitive.
+ *  Mono chrome voice; selected = raised tile + strong hairline + readout. */
 export function Chip({ children, className, title, tone = 'neutral', onSelect, selected, onRemove }: ChipProps) {
   const base = cn(
-    'shrink-0 rounded border px-1.5 text-[10px] font-semibold uppercase tracking-wide',
-    selected ? 'border-[var(--theme-accent-border)] bg-card text-fg' : TONES[tone],
+    'shrink-0 rounded border px-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.05em]',
+    selected ? 'border-line-strong bg-raised text-fg' : TONES[tone],
     onSelect && !selected && 'transition-colors hover:text-fg',
     className,
   )
@@ -45,7 +48,7 @@ export function Chip({ children, className, title, tone = 'neutral', onSelect, s
             e.stopPropagation()
             onRemove()
           }}
-          className="ml-1 text-muted transition-colors hover:text-[color:var(--theme-danger)]"
+          className="ml-1 text-muted transition-colors hover:text-danger"
         >
           ✕
         </button>
@@ -54,7 +57,7 @@ export function Chip({ children, className, title, tone = 'neutral', onSelect, s
   )
   if (onSelect) {
     return (
-      <button type="button" title={title} onClick={onSelect} className={cn(base, 'inline-flex items-center')}>
+      <button type="button" title={title} onClick={onSelect} className={cn(base, 'inline-flex items-center', focusGold)}>
         {body}
       </button>
     )
@@ -76,19 +79,23 @@ const DOT_COLOR: Record<DotStatus, string> = {
   accent: 'var(--theme-accent)',
 }
 
-/** The one status dot — h-2, status decides the color, `pulse` for live. */
+/** The one status dot — 6px round (spec §8), status decides the color
+ *  (green healthy / gold attention / orange failure), `pulse` for live:
+ *  MONITOR BREATHE on the ambient budget (spec §9), only while the state
+ *  is actually active. */
 export function StatusDot({ status, pulse, title, className }: { status: DotStatus; pulse?: boolean; title?: string; className?: string }) {
   return (
     <span
       title={title}
-      className={cn('inline-block h-2 w-2 shrink-0 rounded-full', pulse && 'animate-pulse', className)}
+      className={cn('inline-block h-1.5 w-1.5 shrink-0 rounded-full', pulse && 'gd-breathe', className)}
       style={{ background: DOT_COLOR[status] }}
     />
   )
 }
 
-/** Destructive trigger: a quiet red link, never a button — it must not pull
- *  focus. Pair with the confirm() dialog for the deliberate step. */
+/** Destructive trigger: a quiet mono link that turns safety-orange on hover —
+ *  never an orange fill, and never a button that pulls focus. Pair with the
+ *  confirm() dialog for the deliberate step. */
 export function DangerLink({
   onClick,
   children,
@@ -106,7 +113,7 @@ export function DangerLink({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        'text-xs text-muted underline-offset-2 transition-colors hover:text-[color:var(--theme-danger)] hover:underline disabled:opacity-40',
+        'font-mono text-[10px] uppercase tracking-[0.05em] text-muted underline-offset-2 transition-colors hover:text-danger hover:underline disabled:opacity-40',
         className,
       )}
     >

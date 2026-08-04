@@ -30,7 +30,7 @@ function SurfaceSkeleton() {
     <div className="p-8">
       <div className="mx-auto max-w-5xl space-y-6">
         <Skeleton className="h-6 w-56 rounded-full" />
-        <div className="mercury-panel rounded-2xl p-6">
+        <div className="rounded-lg border border-line bg-panel p-6">
           <SkeletonRows rows={6} />
         </div>
       </div>

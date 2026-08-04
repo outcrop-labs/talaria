@@ -1,13 +1,35 @@
-// The application menu — two mental modes. WORK is where everyone gets things
-// done (chat, channels, boards, inbox); MANAGE is the control plane for the
-// people running the platform (fleet, models, compute, cost, audit) and is
-// admin-only. Settings and Admin live under the USER MENU, not the sidebar —
-// the rail is for work surfaces only.
+// The application menu — three mental modes. WORK is where everyone gets
+// things done (chat, channels, boards, inbox); MANAGE is the control plane for
+// the people running the platform (fleet, models, compute, cost, audit);
+// SYSTEM holds Settings (everyone) and Admin (role-locked) — moved out of the
+// user menu into the sidebar per the Gentle dew design (spec §5).
+
+import type { LucideIcon } from 'lucide-react'
+import {
+  Activity,
+  BookOpen,
+  Bot,
+  CalendarRange,
+  Cpu,
+  FileBox,
+  FolderSearch,
+  Hexagon,
+  Inbox,
+  LayoutGrid,
+  LayoutTemplate,
+  MessageCircle,
+  PlugZap,
+  Settings,
+  Settings2,
+  Shield,
+} from 'lucide-react'
 
 export interface NavItem {
   to: string
   label: string
-  icon: string
+  /** Lucide icon component for core items; enabled apps inject string glyphs
+   *  (their manifest `icon`) — renderers must handle both. */
+  icon: LucideIcon | string
   adminOnly?: boolean
 }
 
@@ -47,13 +69,13 @@ export const NAV: NavSection[] = [
   {
     title: 'Work',
     items: [
-      { to: '/', label: 'Inbox', icon: '▽' },
-      { to: '/comms', label: 'Comms', icon: '◈' },
-      { to: '/plan', label: 'Plan', icon: '⊞' },
-      { to: '/boards', label: 'Boards', icon: '⧉' },
-      { to: '/research', label: 'Research', icon: '◎' },
-      { to: '/knowledge', label: 'Knowledge', icon: '❖' },
-      { to: '/artifacts', label: 'Artifacts', icon: '◆' },
+      { to: '/', label: 'Inbox', icon: Inbox },
+      { to: '/comms', label: 'Comms', icon: MessageCircle },
+      { to: '/plan', label: 'Plan', icon: CalendarRange },
+      { to: '/boards', label: 'Boards', icon: LayoutGrid },
+      { to: '/research', label: 'Research', icon: FolderSearch },
+      { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
+      { to: '/artifacts', label: 'Artifacts', icon: FileBox },
     ],
   },
   {
@@ -61,20 +83,32 @@ export const NAV: NavSection[] = [
     // they've been granted (deniedViews computes the default-denied set).
     title: 'Manage',
     items: [
-      { to: '/agents', label: 'Agents', icon: '◍' },
-      { to: '/models', label: 'Models', icon: '▤' },
-      { to: '/mcp', label: 'MCP', icon: '⌁' },
-      { to: '/templates', label: 'Templates', icon: '▣' },
-      { to: '/studio', label: 'Agent Studio', icon: '⚙' },
-      { to: '/observability', label: 'Observability', icon: '◉' },
-      { to: '/apps', label: 'Apps', icon: '⬡' },
+      { to: '/agents', label: 'Agents', icon: Bot },
+      { to: '/models', label: 'Models', icon: Cpu },
+      { to: '/mcp', label: 'MCP', icon: PlugZap },
+      { to: '/templates', label: 'Templates', icon: LayoutTemplate },
+      { to: '/studio', label: 'Agent Studio', icon: Settings2 },
+      { to: '/observability', label: 'Observability', icon: Activity },
+      { to: '/apps', label: 'Apps', icon: Hexagon },
+    ],
+  },
+  {
+    // Settings is always reachable (never gateable); Admin stays role-locked
+    // via adminOnly (it feeds ADMIN_VIEWS below, same as before the move).
+    title: 'System',
+    items: [
+      { to: '/settings', label: 'Settings', icon: Settings },
+      { to: '/admin', label: 'Admin', icon: Shield, adminOnly: true },
     ],
   },
 ]
 
 /** Routes members can never reach regardless of grants. Manage views moved to
- *  the grantable set; Admin (under the user menu) stays role-locked. */
+ *  the grantable set; Admin (now in the sidebar SYSTEM section) stays
+ *  role-locked via its adminOnly flag. */
 export const ADMIN_VIEWS: string[] = [
-  ...NAV.flatMap((s) => s.items.filter((i) => s.adminOnly || i.adminOnly).map((i) => i.to)),
-  '/admin',
+  ...new Set([
+    ...NAV.flatMap((s) => s.items.filter((i) => s.adminOnly || i.adminOnly).map((i) => i.to)),
+    '/admin',
+  ]),
 ]

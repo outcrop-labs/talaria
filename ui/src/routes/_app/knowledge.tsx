@@ -24,6 +24,7 @@ import { EmojiPicker } from '@/components/ui/emoji-picker'
 import { RichEditor, type RichEditorHandle, type DocSearchFn } from '@/components/ui/rich-editor'
 import { useContextMenu, copyAppLink, DropdownMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { PermissionsModal } from '@/components/kb/permissions-modal'
+import { popPanel } from '@/components/chat/chat-chrome'
 import { Combobox } from '@/components/ui/combobox'
 import { useArtifacts, useTargetArtifacts, attachArtifact, detachArtifact } from '@/lib/artifacts'
 import { cn } from '@/lib/cn'
@@ -415,11 +416,12 @@ function SpaceRow({
   }
   return (
     <div
-      className={cn('group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm', active ? 'text-fg' : 'text-muted hover:text-fg')}
+      className={cn('group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors', active ? 'bg-card text-fg' : 'text-muted hover:bg-hover hover:text-fg')}
       onContextMenu={onContextMenu}
     >
       <button type="button" onClick={onSelect} onDoubleClick={() => setEditing(true)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
-        <span>{space.icon ?? '📚'}</span>
+        {/* Fixed icon lane so titles align across rows (§8 list pattern). */}
+        <span className="w-4 shrink-0 text-center">{space.icon ?? '📚'}</span>
         <span className="truncate font-medium">{space.name}</span>
       </button>
     </div>
@@ -463,7 +465,7 @@ function KbSearch({ onOpen }: { onOpen: (hit: KbSearchHit) => void }) {
         className="pl-7"
       />
       {open && hits.length > 0 && (
-        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-80 overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-lg">
+        <div className={cn(popPanel, 'absolute left-0 right-0 top-full z-20 mt-1 max-h-80 overflow-y-auto')}>
           {hits.map((h) => (
             <button
               key={h.id}
@@ -473,12 +475,12 @@ function KbSearch({ onOpen }: { onOpen: (hit: KbSearchHit) => void }) {
                 onOpen(h)
                 setOpen(false)
               }}
-              className="flex w-full flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left hover:bg-sidebar"
+              className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover"
             >
               <span className="flex items-center gap-1.5 text-xs text-fg">
-                <span>{h.icon ?? '📄'}</span>
+                <span className="w-4 shrink-0 text-center">{h.icon ?? '📄'}</span>
                 <span className="truncate font-medium">{h.title}</span>
-                <span className="ml-auto shrink-0 text-[10px] text-muted">{h.spaceName}</span>
+                <span className="ml-auto shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{h.spaceName}</span>
               </span>
               {h.snippet && <span className="line-clamp-2 text-[11px] text-muted" dangerouslySetInnerHTML={{ __html: h.snippet }} />}
             </button>
@@ -564,11 +566,12 @@ function DocTree({
           onDocMenu={onDocMenu}
         />
       ))}
+      {/* Ghost actions (§8): mono uppercase, muted → readout. */}
       <div className="flex gap-1 pt-1">
-        <button type="button" onClick={() => onNew('human')} className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted hover:text-accent">
+        <button type="button" onClick={() => onNew('human')} className="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg">
           <Plus size={11} /> Doc
         </button>
-        <button type="button" onClick={() => onNew('agent')} className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted hover:text-accent" title="OKF-structured for agents">
+        <button type="button" onClick={() => onNew('agent')} className="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg" title="OKF-structured for agents">
           <Bot size={11} /> Agent doc
         </button>
       </div>
@@ -624,8 +627,8 @@ function DocRow({
         }}
         onContextMenu={(e) => onDocMenu(e, doc)}
         className={cn(
-          'group relative flex items-center gap-1 rounded-md py-1 pr-1 text-xs',
-          activeId === doc.id ? 'bg-card text-fg' : 'text-muted hover:text-fg',
+          'group relative flex items-center gap-1 rounded-md py-1 pr-1 text-xs transition-colors',
+          activeId === doc.id ? 'bg-card text-fg' : 'text-muted hover:bg-hover hover:text-fg',
           pos === 'inside' && 'ring-1 ring-accent/60',
         )}
         style={{ paddingLeft: depth * 12 + 4 }}
@@ -635,14 +638,17 @@ function DocRow({
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className={cn('shrink-0 rounded p-0.5 hover:bg-sidebar', !hasKids && 'invisible')}
+          className={cn('shrink-0 rounded p-0.5 hover:bg-card2', !hasKids && 'invisible')}
         >
           <ChevronRight size={12} className={cn('transition-transform', expanded && 'rotate-90')} />
         </button>
         <button type="button" onClick={() => onSelect(doc.id)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-          {doc.icon ? <span className="shrink-0 text-[13px] leading-none">{doc.icon}</span> : doc.kind === 'agent' ? <Bot size={12} className="shrink-0" /> : <FileText size={12} className="shrink-0" />}
+          {/* Fixed icon lane (§8): emoji and lucide icons share one slot. */}
+          <span className="grid w-4 shrink-0 place-items-center">
+            {doc.icon ? <span className="text-[13px] leading-none">{doc.icon}</span> : doc.kind === 'agent' ? <Bot size={12} /> : <FileText size={12} />}
+          </span>
           <span className="min-w-0 flex-1 truncate">{doc.title}</span>
-          {doc.official && <Star size={11} className="shrink-0 text-[color:var(--theme-warning)]" />}
+          {doc.official && <Star size={11} className="shrink-0 text-warning" />}
         </button>
         <button
           type="button"
@@ -652,7 +658,7 @@ function DocRow({
             setExpanded(true)
           }}
           title="New nested doc"
-          className="shrink-0 rounded p-0.5 text-muted opacity-0 hover:bg-sidebar hover:text-accent group-hover:opacity-100"
+          className="shrink-0 rounded p-0.5 text-muted opacity-0 hover:bg-card2 hover:text-fg group-hover:opacity-100"
         >
           <Plus size={12} />
         </button>
@@ -779,7 +785,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
     <div className={editorShell(fullscreen)}>
       <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
         <div className="relative shrink-0">
-          <button type="button" onClick={() => setEmojiOpen((v) => !v)} className="rounded-lg px-1 text-xl leading-none hover:bg-card" title="Set icon">
+          <button type="button" onClick={() => setEmojiOpen((v) => !v)} className="rounded-md px-1 text-xl leading-none transition-colors hover:bg-hover" title="Set icon">
             {space.icon ?? '📚'}
           </button>
           {emojiOpen && (
@@ -808,7 +814,7 @@ function SpaceEditor({ spaceId, onNewDoc, onDeleted }: { spaceId: string; onNewD
         ) : (
           <div className="min-w-0 flex-1">
             <h1 className="truncate font-sans text-lg font-semibold text-fg">{space.name}</h1>
-            <div className="truncate text-[11px] text-muted">space overview</div>
+            <div className="truncate font-mono text-[10px] uppercase tracking-[0.05em] text-muted">space overview</div>
           </div>
         )}
         <Chip className="font-normal">Folder</Chip>
@@ -1022,7 +1028,8 @@ function TocPanel({
 }) {
   return (
     <div className="w-56 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
-      <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-muted">
+      {/* §8 section header: 10px mono uppercase 0.08em ink-dim. */}
+      <div className="mb-2 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
         <span>Contents</span>
         <CloseButton onClick={onClose} size={12} className="p-0 hover:bg-transparent" />
       </div>
@@ -1233,7 +1240,7 @@ function DocEditor({
           <button
             type="button"
             onClick={() => setEmojiOpen((v) => !v)}
-            className="rounded-lg px-1 text-xl leading-none hover:bg-card"
+            className="rounded-md px-1 text-xl leading-none transition-colors hover:bg-hover"
             title="Set icon"
           >
             {doc.icon ?? '📄'}
@@ -1267,7 +1274,8 @@ function DocEditor({
         ) : (
           <div className="min-w-0 flex-1">
             <h1 className="truncate font-sans text-lg font-semibold text-fg">{doc.title}</h1>
-            <div className="truncate text-[11px] text-muted">
+            {/* Timestamp meta rides in the mono chrome voice (spec §2). */}
+            <div className="truncate font-mono text-[10px] tracking-[0.05em] text-muted">
               edited {relativeTime(doc.updatedAt)}
               {doc.updatedBy ? ` by ${doc.updatedBy}` : ''}
             </div>
@@ -1277,7 +1285,7 @@ function DocEditor({
           <button
             type="button"
             onClick={() => setOkfOpen(true)}
-            className="shrink-0 rounded border border-accent/40 bg-accent/10 px-1.5 text-[10px] uppercase tracking-wide text-accent transition-colors hover:bg-accent/20"
+            className="shrink-0 rounded border border-accent/40 bg-accent/10 px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-accent transition-colors hover:bg-accent/20"
             title="This promoted document carries an agent-facing OKF summary, maintained by the Librarian. Click to view."
           >
             OKF
@@ -1291,10 +1299,10 @@ function DocEditor({
               <span key={p.userId} className="relative" title={`${p.name}${p.mode === 'edit' ? ' — editing' : ''}`}>
                 <Avatar
                   name={p.name}
-                  className={cn('h-6 w-6 text-[10px] ring-2 ring-surface', p.mode === 'edit' && 'ring-[color:var(--theme-success)]')}
+                  className={cn('h-6 w-6 text-[10px] ring-2 ring-surface', p.mode === 'edit' && 'ring-success')}
                 />
                 {p.mode === 'edit' && (
-                  <Pencil size={8} className="absolute -bottom-0.5 -right-0.5 rounded-full bg-surface text-[color:var(--theme-success)]" />
+                  <Pencil size={8} className="absolute -bottom-0.5 -right-0.5 rounded-full bg-surface text-success" />
                 )}
               </span>
             ))}
@@ -1302,7 +1310,7 @@ function DocEditor({
         )}
         {mode === 'edit' && otherEditors.length > 0 && (
           <span
-            className="shrink-0 rounded-full bg-[color:var(--theme-warning)]/15 px-2 py-0.5 text-[11px] text-[color:var(--theme-warning)]"
+            className="shrink-0 rounded-md bg-warning/15 px-2 py-0.5 text-[11px] text-warning"
             title="Someone else is editing too — last save wins, so coordinate or take turns"
           >
             also editing: {otherEditors.map((p) => p.name).join(', ')}
@@ -1337,7 +1345,7 @@ function DocEditor({
         {doc.official ? (
           <button
             type="button"
-            className="flex shrink-0 items-center gap-1 rounded-full border border-[color:var(--theme-warning)]/50 bg-[color:var(--theme-warning)]/10 px-2.5 py-1 text-xs text-[color:var(--theme-warning)] transition-colors hover:bg-[color:var(--theme-warning)]/20"
+            className="flex shrink-0 items-center gap-1 rounded-md border border-warning/50 bg-warning/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-warning transition-colors hover:bg-warning/20"
             title="Official — grounds every agent via the org brain. Click to demote (double confirm)."
             onClick={async () => {
               if (!(await confirm({ title: 'Demote from official?', message: `“${doc.title}” currently grounds every agent through the org brain. Demoting removes it from retrieval.`, confirmLabel: 'Continue' }))) return
@@ -1389,7 +1397,7 @@ function DocEditor({
       </div>
 
       {doc.visibility === 'public' && doc.publicSlug && (
-        <div className="flex items-center gap-2 border-b border-line-subtle bg-card/40 px-6 py-1.5 text-xs text-muted">
+        <div className="flex items-center gap-2 border-b border-line-subtle bg-panel px-6 py-1.5 font-mono text-[11px] text-muted">
           <Globe size={12} /> Public link:
           <code className="text-fg">{typeof window !== 'undefined' ? `${window.location.origin}/kb/${doc.publicSlug}` : `/kb/${doc.publicSlug}`}</code>
         </div>
@@ -1519,11 +1527,11 @@ function DocEditor({
             {selPop && (
               <div
                 style={{ left: selPop.x, top: Math.max(selPop.y, 4) }}
-                className="absolute z-20 flex -translate-x-1/2 -translate-y-full overflow-hidden rounded-lg border border-line bg-card text-xs text-fg shadow-lg"
+                className="absolute z-20 flex -translate-x-1/2 -translate-y-full overflow-hidden rounded-md border border-line bg-panel text-xs text-fg shadow-[var(--theme-shadow-2)]"
               >
                 <button
                   type="button"
-                  className="px-2 py-1 transition-colors hover:bg-sidebar"
+                  className="px-2 py-1 transition-colors hover:bg-hover"
                   onMouseDown={(e) => {
                     e.preventDefault()
                     setPendingQuote(selPop.quote)
@@ -1537,7 +1545,7 @@ function DocEditor({
                 <span className="my-1 border-l border-line-subtle" />
                 <button
                   type="button"
-                  className="px-2 py-1 text-accent transition-colors hover:bg-sidebar"
+                  className="px-2 py-1 text-accent transition-colors hover:bg-hover"
                   onMouseDown={(e) => {
                     e.preventDefault()
                     setMuseSel({ text: selPop.quote, source: 'read' })
@@ -1574,7 +1582,7 @@ function DocEditor({
             {!backlinksLoading && backlinks.length > 0 && (
               <div className="mx-auto max-w-[46rem] px-6 pb-10">
                 <div className="border-t border-line-subtle pt-4">
-                  <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+                  <div className="mb-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
                     <Link2 size={12} /> Linked from
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -1583,7 +1591,7 @@ function DocEditor({
                         key={b.id}
                         type="button"
                         onClick={() => onSelect(b.id)}
-                        className="flex items-center gap-1.5 rounded-lg border border-line-subtle px-2 py-1 text-xs text-muted hover:text-fg"
+                        className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-muted transition-colors hover:bg-hover hover:text-fg"
                       >
                         <span>{b.icon ?? '📄'}</span>
                         <span className="max-w-[16rem] truncate">{b.title}</span>
@@ -1664,7 +1672,8 @@ function DocEditor({
               What agents read instead of the full document: an Open Knowledge Format concept the Librarian maintains from the
               promoted content. It refreshes automatically when this document changes.
             </p>
-            <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded-xl bg-card/60 p-3 text-xs leading-relaxed text-fg">{doc.okf}</pre>
+            {/* Code-family content sits in a ground-inset well (spec §1). */}
+            <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap rounded-md border border-line bg-surface p-3 font-mono text-xs leading-relaxed text-fg">{doc.okf}</pre>
             {isOwner && (
               <div className="flex justify-end border-t border-line-subtle pt-3">
                 <Button size="sm" variant="outline" onClick={() => void save({ regenerateOkf: true } as never)}>
@@ -1716,7 +1725,7 @@ function ArtifactAttachments({ docId }: { docId: string }) {
     return (
       <div aria-hidden className="mx-auto max-w-[46rem] px-6 pb-10">
         <div className="border-t border-line-subtle pt-4">
-          <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+          <div className="mb-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             <Paperclip size={12} /> Attachments
           </div>
           <div className="flex flex-wrap gap-2">
@@ -1730,7 +1739,7 @@ function ArtifactAttachments({ docId }: { docId: string }) {
   return (
     <div className="mx-auto max-w-[46rem] px-6 pb-10">
       <div className="border-t border-line-subtle pt-4">
-        <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+        <div className="mb-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
           <Paperclip size={12} /> Attachments
         </div>
         {attachedList.notice}
@@ -1738,15 +1747,15 @@ function ArtifactAttachments({ docId }: { docId: string }) {
         {attached.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {attached.map((a) => (
-              <span key={a.id} className="flex items-center gap-1.5 rounded-lg border border-line-subtle px-2 py-1 text-xs text-muted">
+              <span key={a.id} className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-muted">
                 <span>{a.icon ?? '◆'}</span>
                 <span className="max-w-[14rem] truncate text-fg">{a.title}</span>
-                <span className="text-[9px] uppercase tracking-wide">{a.kind}</span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.05em]">{a.kind}</span>
                 <CloseButton
                   size={11}
                   label="Detach"
                   onClick={async () => { await detachArtifact(a.id, 'kb-doc', docId); await refresh() }}
-                  className="p-0 hover:bg-transparent hover:text-[color:var(--theme-danger)]"
+                  className="p-0 hover:bg-transparent hover:text-danger"
                 />
               </span>
             ))}
@@ -1812,7 +1821,7 @@ function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb
 
   return (
     <div>
-      <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">History</div>
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">History</div>
       {loading ? (
         <SkeletonRows rows={4} className="px-2 py-1" />
       ) : error ? (
@@ -1830,10 +1839,10 @@ function HistoryRail({ kind = 'kb-doc', id, onRestore }: { kind?: 'kb-doc' | 'kb
             key={r.id}
             type="button"
             onClick={() => void open(r)}
-            className="block w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-card"
+            className="block w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover"
           >
             <div className="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>
-            <div className="text-[11px] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>
+            <div className="font-mono text-[10px] tracking-[0.05em] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>
           </button>
         ))
       )}
@@ -1954,9 +1963,10 @@ function CommentsPanel({
   const repliesOf = (id: string) => comments.filter((c) => c.parentId === id)
 
   const Thread = ({ root }: { root: KbComment }) => (
-    <div data-kb-thread={root.id} className={cn('space-y-2 rounded-xl border border-line-subtle/70 p-2.5', root.resolved && 'opacity-60')}>
+    <div data-kb-thread={root.id} className={cn('space-y-2 rounded-lg border border-line-subtle p-2.5', root.resolved && 'opacity-60')}>
+      {/* Quoted passage — same warning-gold tint as the in-doc comment mark. */}
       {root.quote && (
-        <div className="border-l-2 border-accent/50 pl-2 font-sans text-[11px] italic text-muted line-clamp-2">“{root.quote}”</div>
+        <div className="border-l-2 border-warning/50 pl-2 font-sans text-[11px] italic text-muted line-clamp-2">“{root.quote}”</div>
       )}
       <CommentBody c={root} meId={meId} onDelete={() => void remove(root.id)} />
       {repliesOf(root.id).map((r) => (
@@ -1990,7 +2000,7 @@ function CommentsPanel({
             className="min-h-0 flex-1 text-xs"
           />
         ) : (
-          <button type="button" onClick={() => setReplyTo(root.id)} className="text-[11px] text-muted hover:text-accent">
+          <button type="button" onClick={() => setReplyTo(root.id)} className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg">
             Reply
           </button>
         )}
@@ -1998,7 +2008,7 @@ function CommentsPanel({
           <button
             type="button"
             onClick={() => void setResolved(root.id, !root.resolved)}
-            className="ml-auto flex items-center gap-1 text-[11px] text-muted hover:text-[color:var(--theme-success)]"
+            className="ml-auto flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-success"
             title={root.resolved ? 'Reopen this thread' : 'Resolve this thread'}
           >
             <CheckCircle2 size={12} /> {root.resolved ? 'Reopen' : 'Resolve'}
@@ -2010,12 +2020,13 @@ function CommentsPanel({
 
   return (
     <aside className="flex w-80 shrink-0 flex-col border-l border-line-subtle">
+      {/* §8 section header row: mono uppercase dim + right-aligned mono meta. */}
       <div className="flex items-center gap-2 border-b border-line-subtle px-3 py-2">
         <MessageSquareText size={13} className="text-muted" />
-        <span className="text-sm font-semibold text-fg">Comments</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Comments</span>
         <span className="flex-1" />
         {resolved.length > 0 && (
-          <button type="button" onClick={() => setShowResolved((v) => !v)} className="text-[11px] text-muted hover:text-fg">
+          <button type="button" onClick={() => setShowResolved((v) => !v)} className="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg">
             {showResolved ? 'Hide resolved' : `Resolved (${resolved.length})`}
           </button>
         )}
@@ -2035,7 +2046,7 @@ function CommentsPanel({
       </div>
       <div className="border-t border-line-subtle p-3">
         {pendingQuote && (
-          <div className="mb-1.5 flex items-start gap-1.5 border-l-2 border-accent/50 pl-2 font-sans text-[11px] italic text-muted">
+          <div className="mb-1.5 flex items-start gap-1.5 border-l-2 border-warning/50 pl-2 font-sans text-[11px] italic text-muted">
             <span className="min-w-0 flex-1 line-clamp-2">“{pendingQuote}”</span>
             <CloseButton onClick={onQuoteConsumed} size={11} className="shrink-0 p-0 hover:bg-transparent" />
           </div>
@@ -2068,12 +2079,12 @@ function CommentBody({ c, meId, onDelete }: { c: KbComment; meId: string | null;
       <div className="flex items-baseline gap-1.5">
         <Avatar name={c.author} className="h-4 w-4 self-center text-[8px]" />
         <span className="text-xs font-medium text-fg">{c.author}</span>
-        <span className="text-[10px] text-muted">{relativeTime(c.createdAt)}</span>
+        <span className="font-mono text-[10px] tracking-[0.05em] text-muted">{relativeTime(c.createdAt)}</span>
         {c.authorUserId === meId && (
           <button
             type="button"
             onClick={onDelete}
-            className="ml-auto text-muted opacity-0 transition-opacity hover:text-[color:var(--theme-danger)] group-hover/comment:opacity-100"
+            className="ml-auto text-muted opacity-0 transition-opacity hover:text-danger group-hover/comment:opacity-100"
             title="Delete your comment"
           >
             <Trash2 size={11} />
@@ -2180,12 +2191,16 @@ function MuseBar({
           />
         </div>
       )}
+      {/* §10 proposed-action card: hairline panel, gold left bar, mono label. */}
       {proposal !== null && (
-        <div className="max-h-56 overflow-y-auto rounded-xl border border-accent/30 bg-card/40 p-3">
-          <Markdown className="tiptap text-sm">{proposal}</Markdown>
+        <div className="rounded-lg border border-line border-l-2 border-l-accent bg-panel">
+          <div className="px-3 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Proposed draft</div>
+          <div className="max-h-56 overflow-y-auto p-3 pt-1">
+            <Markdown className="tiptap text-sm">{proposal}</Markdown>
+          </div>
         </div>
       )}
-      {error && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{error}</div>}
+      {error && <div className="text-xs text-danger">{error}</div>}
       <div className="flex items-end gap-2">
         <Sparkles size={14} className="mb-2.5 shrink-0 text-accent" />
         <Textarea

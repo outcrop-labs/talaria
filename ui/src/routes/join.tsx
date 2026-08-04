@@ -2,8 +2,10 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
+import { Brand } from '@/components/brand'
 import { MercuryBackdrop } from '@/components/mercury-backdrop'
-import { Button } from '@/components/ui/button'
+import { Button, buttonClasses } from '@/components/ui/button'
+import { Panel } from '@/components/ui/panel'
 import { Skeleton } from '@/components/ui/skeleton'
 import { errorMessage, readJson } from '@/lib/fetch-json'
 import { useSession } from '@/lib/session'
@@ -51,7 +53,10 @@ function JoinPage() {
     <>
       <MercuryBackdrop />
       <div className="grid min-h-screen place-items-center p-6">
-        <div className="mercury-panel w-full max-w-md rounded-2xl p-8 text-center">
+        <Panel className="w-full max-w-md p-8 text-center">
+          <div className="mb-6 flex justify-center">
+            <Brand />
+          </div>
           {!token ? (
             <p className="text-sm text-muted">This join link is missing its token.</p>
           ) : isPending ? (
@@ -84,12 +89,9 @@ function JoinPage() {
               <h1 className="mb-2 font-sans text-lg font-semibold text-fg">Join {data.orgName}</h1>
               <p className="mb-6 font-sans text-sm text-muted">
                 {data.invitedBy ? `${data.invitedBy} invited you` : 'You were invited'} to {data.orgName}'s Talaria workspace.
-                Sign in with Google using <span className="text-fg">{data.email}</span> and you're in.
+                Sign in with Google using <span className="font-mono text-[13px] text-fg">{data.email}</span> and you're in.
               </p>
-              <a
-                href="/api/auth/google"
-                className="inline-block rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-surface transition-opacity hover:opacity-90"
-              >
+              <a href="/api/auth/google" className={buttonClasses({ className: 'w-full' })}>
                 Continue with Google
               </a>
               <p className="mt-4 font-sans text-[11px] text-muted/80">
@@ -97,7 +99,7 @@ function JoinPage() {
               </p>
             </>
           )}
-        </div>
+        </Panel>
       </div>
     </>
   )

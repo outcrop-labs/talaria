@@ -226,14 +226,14 @@ export function StudioGuide({
               >
                 <span
                   className={cn(
-                    'flex h-5 w-5 items-center justify-center rounded-full border text-[10px]',
-                    i === step ? 'border-accent text-fg' : i < step ? 'border-accent text-accent' : 'border-line-subtle',
+                    'flex h-5 w-5 items-center justify-center rounded-full border font-mono text-[10px]',
+                    i === step ? 'border-accent text-fg' : i < step ? 'border-accent text-accent' : 'border-line',
                   )}
                 >
                   {i < step ? '✓' : i + 1}
                 </span>
                 {s}
-                {i < STEPS.length - 1 && <span className="mx-0.5 h-px w-4 bg-line-subtle" />}
+                {i < STEPS.length - 1 && <span className="mx-0.5 h-px w-4 bg-line" />}
               </button>
             ))}
           </div>
@@ -283,7 +283,7 @@ export function StudioGuide({
                 <span className="text-xs font-medium text-fg">Or mentioning</span>
                 <Tokens value={keywords} onChange={setKeywords} placeholder="Add a phrase…" />
               </div>
-              <p className="rounded-lg border border-line-subtle bg-card/40 px-3 py-2 text-xs text-muted">{sentence()}</p>
+              <p className="rounded-lg border border-line bg-card/40 px-3 py-2 font-sans text-xs text-muted">{sentence()}</p>
             </div>
           )}
 
@@ -310,7 +310,7 @@ export function StudioGuide({
                     Muse is drafting <GeneratingDots />
                   </span>
                 )}
-                {museError && <span className="text-xs text-[color:var(--theme-danger)]">{museError}</span>}
+                {museError && <span className="text-xs text-danger">{museError}</span>}
               </div>
               {skillMd &&
                 (editingMd ? (
@@ -320,7 +320,7 @@ export function StudioGuide({
                     type="button"
                     onClick={() => !drafting && setEditingMd(true)}
                     title="Click to edit"
-                    className="block max-h-72 w-full overflow-y-auto rounded-xl border border-line-subtle bg-card/40 px-4 py-3 text-left text-sm"
+                    className="block max-h-72 w-full overflow-y-auto rounded-lg border border-line bg-card/40 px-4 py-3 text-left text-sm"
                   >
                     <Markdown className="tiptap">{skillMd}</Markdown>
                   </button>
@@ -341,15 +341,15 @@ export function StudioGuide({
                     <Radio key={o.owner} name="owner" checked={owner === o.owner} onChange={() => setOwnerPick(o.owner)} label={`Just ${o.label}`} />
                   ))}
                 {editable.length === 0 && (
-                  <p className="text-xs text-[color:var(--theme-warning)]">You don’t have edit access to any agent’s skills — ask an admin for access.</p>
+                  <p className="text-xs text-warning">You don’t have edit access to any agent’s skills — ask an admin for access.</p>
                 )}
               </div>
-              <p className="rounded-lg border border-line-subtle bg-card/40 px-3 py-2 text-xs text-muted">{sentence()}</p>
-              {error && <p className="text-xs text-[color:var(--theme-danger)]">{error}</p>}
+              <p className="rounded-lg border border-line bg-card/40 px-3 py-2 font-sans text-xs text-muted">{sentence()}</p>
+              {error && <p className="text-xs text-danger">{error}</p>}
             </div>
           )}
 
-          <div className="flex items-center justify-between border-t border-line-subtle pt-3">
+          <div className="flex items-center justify-between border-t border-line pt-3">
             <Button variant="ghost" size="sm" onClick={step === 0 ? onClose : () => setStep(step - 1)}>
               {step === 0 ? 'Cancel' : 'Back'}
             </Button>

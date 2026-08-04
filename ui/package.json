@@ -8,7 +8,8 @@
     "dev": "vite dev --port 5273",
     "build": "vite build",
     "start": "node server-entry.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:focus": "tsx --test src/server/inbox-focus-policy.test.ts src/server/inbox-focus-chat.test.ts src/lib/inbox-focus-timeline.test.ts src/lib/inbox-panel-size.test.ts"
   },
   "dependencies": {
     "@emoji-mart/data": "^1.2.1",

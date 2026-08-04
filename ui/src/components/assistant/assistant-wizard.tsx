@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Loader2, Sparkles } from 'lucide-react'
+import { Sparkles } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { RichEditor } from '@/components/ui/rich-editor'
 import { Steps } from '@/components/ui/steps'
+import { GeneratingBars } from '@/components/ui/generating'
+import { focusGold } from '@/components/chat/chat-chrome'
 import { cn } from '@/lib/cn'
 import { useSession } from '@/lib/session'
 import { HANDLE_RE, createAssistant, suggestHandle, type Assistant } from '@/lib/assistant'
@@ -15,6 +17,9 @@ import { HANDLE_RE, createAssistant, suggestHandle, type Assistant } from '@/lib
 // Everything is optional-with-good-defaults so the flow never blocks on ideas —
 // but every choice that matters (name, handle, voice) is theirs to make.
 const STEPS = ['Name', 'Personality', 'Launch'] as const
+
+// §8 field label: 10px mono uppercase 0.08em ink-dim.
+const fieldLabel = 'mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'
 
 const PRESETS = [
   {
@@ -108,7 +113,7 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
         Back
       </Button>
       <Button size="sm" onClick={() => void launch()} disabled={busy}>
-        {busy && <Loader2 size={14} className="animate-spin" />}
+        {busy && <GeneratingBars bars={3} variant="weave" step={0.15} />}
         {busy ? 'Creating' : 'Create assistant'}
       </Button>
     </div>
@@ -121,7 +126,7 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
 
         {created ? (
           <div className="space-y-2 py-2 text-center">
-            <span className="mx-auto grid h-11 w-11 place-items-center rounded-2xl bg-accent/15 text-accent">
+            <span className="mx-auto grid h-11 w-11 place-items-center rounded-lg bg-accent-soft text-accent">
               <Sparkles size={20} />
             </span>
             <div className="text-sm font-medium text-fg">{created.displayName} is ready</div>
@@ -136,11 +141,11 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
               Your assistant is a real agent that's just yours: its own memory, skills, and tools. Start by naming it.
             </p>
             <div>
-              <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
+              <label className={fieldLabel}>Name</label>
               <Input value={name} onChange={(e) => rename(e.target.value)} placeholder="Maxie" autoFocus maxLength={60} />
             </div>
             <div>
-              <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Handle</label>
+              <label className={fieldLabel}>Handle</label>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted">@</span>
                 <Input
@@ -153,7 +158,7 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
                   maxLength={30}
                 />
               </div>
-              <p className={cn('mt-1 text-xs', handle && !handleOk ? 'text-[color:var(--theme-danger)]' : 'text-muted')}>
+              <p className={cn('mt-1 text-xs', handle && !handleOk ? 'text-danger' : 'text-muted')}>
                 {handle && !handleOk
                   ? 'Lowercase letters and numbers only, starting with a letter (2–30 characters).'
                   : "How agents and integrations refer to it. Can't be changed later."}
@@ -176,10 +181,9 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
                   setPersonaRev((r) => r + 1) // reseed the editor with the preset
                 }}
                   className={cn(
-                    'rounded-full border px-3 py-1 text-xs transition-colors',
-                    personality === p.text
-                      ? 'border-[var(--theme-accent)] text-accent'
-                      : 'border-line-subtle text-muted hover:border-line hover:text-fg',
+                    'rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+                    focusGold,
+                    personality === p.text ? 'border-accent text-accent' : 'border-line text-muted hover:bg-hover hover:text-fg',
                   )}
                 >
                   {p.label}
@@ -200,21 +204,21 @@ export function AssistantWizard({ onClose }: { onClose: () => void }) {
         ) : (
           <div className="space-y-3">
             <p className="text-sm text-muted">Ready to go. Creating it starts a private workspace. This can take a minute.</p>
-            <dl className="space-y-2 rounded-lg border border-line-subtle p-3 text-sm">
-              <div className="flex gap-2">
-                <dt className="w-24 shrink-0 text-xs uppercase tracking-wide text-muted">Name</dt>
+            <dl className="space-y-2 rounded-lg border border-line bg-panel p-3 text-sm">
+              <div className="flex items-baseline gap-2">
+                <dt className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</dt>
                 <dd className="text-fg">{name.trim()}</dd>
               </div>
-              <div className="flex gap-2">
-                <dt className="w-24 shrink-0 text-xs uppercase tracking-wide text-muted">Handle</dt>
-                <dd className="text-fg">@{handle}</dd>
+              <div className="flex items-baseline gap-2">
+                <dt className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</dt>
+                <dd className="font-mono text-[13px] text-fg">@{handle}</dd>
               </div>
-              <div className="flex gap-2">
-                <dt className="w-24 shrink-0 text-xs uppercase tracking-wide text-muted">Personality</dt>
+              <div className="flex items-baseline gap-2">
+                <dt className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Personality</dt>
                 <dd className="min-w-0 text-fg">{personality.trim() || <span className="text-muted">Warm, direct, and useful (default)</span>}</dd>
               </div>
             </dl>
-            {error && <p className="text-xs text-[color:var(--theme-danger)]">{error}</p>}
+            {error && <p className="text-xs text-danger">{error}</p>}
           </div>
         )}
       </div>

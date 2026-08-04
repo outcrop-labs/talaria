@@ -64,14 +64,14 @@ function PlanMembers({ planId }: { planId: string }) {
           <span key={m.userId} className="group relative" title={`${m.name ?? m.email}${m.role === 'owner' ? ' (owner)' : ''}${active.has(m.userId) ? ', here now' : ''}`}>
             <Avatar
               name={m.name ?? m.email ?? '?'}
-              className={cn('h-6 w-6 text-[10px] ring-2 ring-surface', active.has(m.userId) && 'ring-[color:var(--theme-success,#22c55e)]')}
+              className={cn('h-6 w-6 text-[10px] ring-2 ring-surface', active.has(m.userId) && 'ring-success')}
             />
             {(isOwner && m.role !== 'owner') || (m.userId === session?.id && m.role === 'collaborator') ? (
               <button
                 type="button"
                 title={m.userId === session?.id ? 'Leave this plan' : `Remove ${m.name ?? m.email}`}
                 onClick={() => void unsharePlan(planId, m.userId).then(refresh)}
-                className="absolute -right-1 -top-1 hidden h-3.5 w-3.5 place-items-center rounded-full bg-card text-muted shadow group-hover:grid hover:text-fg"
+                className="absolute -right-1 -top-1 hidden h-3.5 w-3.5 place-items-center rounded-full bg-raised text-muted shadow group-hover:grid hover:text-fg"
               >
                 <X size={9} />
               </button>
@@ -221,12 +221,15 @@ function PlanPage() {
                   ) : templatesLoading ? (
                     // Hold the template picker's spot so the header doesn't
                     // re-layout when templates land.
-                    <Skeleton className="h-9 w-40 rounded-xl" />
+                    <Skeleton className="h-9 w-40 rounded-md" />
                   ) : templatesList.failed ? (
+                    // The template read failed: say so inline. Falling through
+                    // to the picker would hide the failure behind a list that
+                    // only looks empty.
                     templatesList.notice
                   ) : (
                     planTemplates.length > 0 && (
-                      <label className="flex items-center gap-1.5 text-xs text-muted" title="The structure the living document starts from. Automatic uses the agent's bound plan template.">
+                      <label className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted" title="The structure the living document starts from. Automatic uses the agent's bound plan template.">
                         Template
                         <Select size="sm" value={templateId} onChange={(e) => setTemplateId(e.target.value)} className="w-44">
                           <option value="">Automatic (agent default)</option>
@@ -256,6 +259,8 @@ function PlanPage() {
                 agentModel={selectedAgent}
                 agentLabel={current.label}
                 tiers={current.tiers ?? []}
+                agents={agents}
+                onAgentChange={selectAgent}
                 conversationId={selectedConversationId}
                 newChatSignal={newChatSignal}
                 onCreated={onCreated}
@@ -275,10 +280,10 @@ function PlanPage() {
               ) : (
                 <div className="flex min-w-0 flex-1 flex-col border-l border-line-subtle">
                   <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
-                    <span className="text-[10px] font-semibold uppercase tracking-wide text-muted">Plan document</span>
+                    <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Plan document</span>
                   </div>
                   <div className="grid flex-1 place-items-center p-8 text-center">
-                    <div className="max-w-56 text-xs leading-relaxed text-muted">
+                    <div className="max-w-56 font-sans text-xs leading-relaxed text-muted">
                       The living document builds here as you talk. {current.label} keeps it current, and you can edit it directly.
                     </div>
                   </div>
@@ -293,10 +298,12 @@ function PlanPage() {
           <div aria-hidden className="flex h-full min-h-0">
             <div className="min-w-0 flex-1 overflow-hidden p-6">
               <div className="mx-auto flex w-full max-w-[var(--chat-content-max-width)] flex-col gap-4">
-                <Skeleton className="h-14 w-3/5 self-end rounded-2xl" />
-                <Skeleton className="h-24 w-4/5 rounded-2xl" delay={0.12} />
-                <Skeleton className="h-12 w-1/2 self-end rounded-2xl" delay={0.24} />
-                <Skeleton className="h-20 w-3/4 rounded-2xl" delay={0.36} />
+                {/* Chat flattens onto the panel (spec §10) — the stand-in
+                    blocks wear the same radius-8 panels the messages will. */}
+                <Skeleton className="h-14 w-3/5 self-end rounded-lg" />
+                <Skeleton className="h-24 w-4/5 rounded-lg" delay={0.12} />
+                <Skeleton className="h-12 w-1/2 self-end rounded-lg" delay={0.24} />
+                <Skeleton className="h-20 w-3/4 rounded-lg" delay={0.36} />
               </div>
             </div>
             <div className="hidden min-w-0 basis-[44%] border-l border-line-subtle lg:flex">
@@ -310,7 +317,7 @@ function PlanPage() {
             <QueryError error={agentsFailure.error} title="Could not load your agents" onRetry={agentsFailure.retry} />
           </div>
         ) : (
-          <div className="grid h-full place-items-center text-sm text-muted">No agents available.</div>
+          <div className="grid h-full place-items-center font-sans text-sm text-muted">No agents available.</div>
         )}
       </Stage>
 

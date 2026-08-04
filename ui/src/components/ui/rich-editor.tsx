@@ -47,6 +47,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { focusGold, popPanel } from '@/components/chat/chat-chrome'
 import { Modal } from '@/components/ui/modal'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -228,11 +229,19 @@ export const RichEditor = forwardRef<RichEditorHandle, {
       className={cn(
         'overflow-hidden',
         fill && 'flex h-full min-h-0 flex-col',
-        // Editors carry the off-bronze-black input surface so they never rely on
-        // the background behind them — EXCEPT `prose` mode, a flush page-like
-        // document surface (no box, no fill) that inherits the panel.
+        // Editors carry the raised input surface (spec §8: raised tile bg +
+        // hairline + radius 6 + gold focus) so they never rely on the background
+        // behind them — EXCEPT `prose` mode, a flush page-like document surface
+        // (no box, no fill) that inherits the panel.
         !prose && editable && 'bg-[var(--theme-input)]',
-        !bare && !prose && cn('rounded-xl border', editable ? 'border-line' : 'border-transparent'),
+        !bare &&
+          !prose &&
+          cn(
+            'rounded-md border',
+            editable
+              ? 'border-line transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-[var(--theme-accent-border)]'
+              : 'border-transparent',
+          ),
         prose && 're-prose',
         className,
       )}
@@ -262,7 +271,10 @@ function TableBtn({ label, title, onClick }: { label: string; title: string; onC
         e.preventDefault()
         onClick()
       }}
-      className="rounded px-1.5 py-0.5 text-[11px] text-muted transition-colors hover:bg-sidebar hover:text-fg"
+      className={cn(
+        'rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg',
+        focusGold,
+      )}
     >
       {label}
     </button>
@@ -328,7 +340,11 @@ function Toolbar({ editor, onSubmit, docSearch }: { editor: Editor | null; onSub
       title={title}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
-      className={cn('grid h-7 w-7 place-items-center rounded transition-colors', active ? 'bg-card2 text-accent' : 'text-muted hover:bg-card hover:text-fg')}
+      className={cn(
+        'grid h-7 w-7 place-items-center rounded-md transition-colors',
+        active ? 'bg-raised text-accent' : 'text-muted hover:bg-hover hover:text-fg',
+        focusGold,
+      )}
     >
       <Icon size={16} strokeWidth={2} />
     </button>
@@ -401,7 +417,12 @@ function Toolbar({ editor, onSubmit, docSearch }: { editor: Editor | null; onSub
           title="Send (Ctrl+Enter)"
           onMouseDown={(e) => e.preventDefault()}
           onClick={onSubmit}
-          className="ml-auto flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-surface transition-all hover:brightness-110"
+          className={cn(
+            // Primary button (spec §8): gold fill, dark ground glyph/label, mono
+            // uppercase, radius 6.
+            'ml-auto flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.05em] text-surface transition-all hover:brightness-110',
+            focusGold,
+          )}
         >
           <SendHorizontal size={14} strokeWidth={2} />
           Send
@@ -443,7 +464,7 @@ function DocLinkPopover({
     }
   }, [q, search])
   return (
-    <div ref={ref} className="absolute left-0 top-full z-30 mt-1 w-72 rounded-xl border border-line bg-card p-1.5 shadow-lg">
+    <div ref={ref} className={cn('absolute left-0 top-full z-30 mt-1 w-72', popPanel)}>
       <Input autoFocus size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search documents" className="mb-1.5" />
       <div className="max-h-64 overflow-y-auto">
         {results.length === 0 ? (
@@ -455,7 +476,7 @@ function DocLinkPopover({
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => onPick(d)}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-sidebar hover:text-fg"
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left font-sans text-[13px] text-muted transition-colors hover:bg-hover hover:text-fg"
             >
               <span>{d.icon ?? '📄'}</span>
               <span className="min-w-0 flex-1 truncate">{d.title}</span>
@@ -504,7 +525,7 @@ function LinkModal({
           onApply()
         }}
       >
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">URL</label>
+        <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">URL</label>
         <Input
           autoFocus
           value={url}
@@ -553,7 +574,7 @@ function ImageModal({
           onApply()
         }}
       >
-        <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Image URL</label>
+        <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Image URL</label>
         <Input autoFocus value={url} onChange={(e) => onUrl(e.target.value)} placeholder="https:///image.png" className="w-full" />
       </form>
     </Modal>

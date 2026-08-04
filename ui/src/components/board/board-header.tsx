@@ -33,7 +33,7 @@ export function BoardHeader({ board, onSettings }: { board: Board; onSettings: (
   return (
     <div className="flex items-center gap-3 border-b border-line-subtle px-5 py-3">
       {board.archivedAt && (
-        <span className="flex items-center gap-1 rounded-md border border-line-subtle bg-card px-2 py-0.5 text-[11px] text-muted">
+        <span className="flex items-center gap-1 rounded-md border border-line bg-raised px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
           <Archive size={12} /> Archived
         </span>
       )}
@@ -44,13 +44,13 @@ export function BoardHeader({ board, onSettings }: { board: Board; onSettings: (
           onChange={(e) => setName(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => e.key === 'Enter' && commit()}
-          className="min-w-0 flex-1 border-0 bg-transparent text-lg font-semibold text-fg outline-none"
+          className="min-w-0 flex-1 border-0 bg-transparent font-sans text-lg font-semibold text-fg outline-none"
         />
       ) : (
         <button
           type="button"
           onClick={() => canEdit && !board.archivedAt && setEditing(true)}
-          className="min-w-0 flex-1 truncate text-left text-lg font-semibold text-fg"
+          className="min-w-0 flex-1 truncate text-left font-sans text-lg font-semibold text-fg"
           title={canEdit ? 'Rename' : undefined}
         >
           {board.name}
@@ -76,7 +76,7 @@ export function BoardHeader({ board, onSettings }: { board: Board; onSettings: (
           <Avatar key={m.userId} name={m.email ?? m.name} className="h-7 w-7 ring-2 ring-[color:var(--theme-panel)]" />
         ))}
         {members.length > 5 && (
-          <span className="grid h-7 w-7 place-items-center rounded-full border border-line bg-card text-[10px] text-muted ring-2 ring-[color:var(--theme-panel)]">
+          <span className="grid h-7 w-7 place-items-center rounded-full border border-line-strong bg-raised font-mono text-[10px] tracking-[0.05em] text-muted ring-2 ring-[color:var(--theme-panel)]">
             +{members.length - 5}
           </span>
         )}
@@ -86,7 +86,7 @@ export function BoardHeader({ board, onSettings }: { board: Board; onSettings: (
         <button
           type="button"
           onClick={onSettings}
-          className="grid h-8 w-8 place-items-center rounded-lg text-muted transition-colors hover:bg-card hover:text-fg"
+          className="grid h-8 w-8 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
           title="Board settings"
           aria-label="Board settings"
         >

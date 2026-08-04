@@ -72,10 +72,11 @@ interface ChatPayload {
  *  is re-read on every attempt (a re-render may have moved the agent's port),
  *  and the completion streams the moment the agent is back. The user just sees
  *  a slightly longer thinking state; nobody's work is lost to an edit. */
-export async function proxyChat(payload: ChatPayload, opts: { waitMs?: number } = {}): Promise<Response> {
+export async function proxyChat(payload: ChatPayload, opts: { waitMs?: number; signal?: AbortSignal } = {}): Promise<Response> {
   const deadline = Date.now() + (opts.waitMs ?? 120_000)
   let attempt = 0
   for (;;) {
+    opts.signal?.throwIfAborted()
     const manifest = await readManifest()
     const entry = manifest.find((m) => m.model === payload.model)
     if (!entry && attempt >= 2) return mockChatStream(payload) // never rendered — not a restart
@@ -90,6 +91,7 @@ export async function proxyChat(payload: ChatPayload, opts: { waitMs?: number } 
         // include_usage: the final chunk reports token counts for the ledger
         // (gateways that don't support it just ignore the option).
         body: JSON.stringify({ ...payload, stream: true, stream_options: { include_usage: true } }),
+        signal: opts.signal,
       }).catch(() => null)
       // 502/503/504 = the gateway process is up but not serving yet — keep waiting.
       if (upstream && ![502, 503, 504].includes(upstream.status)) {
@@ -104,7 +106,17 @@ export async function proxyChat(payload: ChatPayload, opts: { waitMs?: number } 
     }
 
     if (Date.now() >= deadline) return unavailableChatStream(payload)
-    await new Promise((r) => setTimeout(r, Math.min(5_000, 1_500 * ++attempt)))
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer)
+        reject(opts.signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+      }
+      const timer = setTimeout(() => {
+        opts.signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }, Math.min(5_000, 1_500 * ++attempt))
+      opts.signal?.addEventListener('abort', onAbort, { once: true })
+    })
   }
 }
 

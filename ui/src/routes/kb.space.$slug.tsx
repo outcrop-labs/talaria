@@ -61,7 +61,7 @@ function PublicSpacePage() {
 
   return (
     <PublicShell>
-      <h1 className="mb-5 flex items-center gap-2 text-3xl font-semibold text-fg">
+      <h1 className="mb-5 flex items-center gap-2 font-sans text-3xl font-semibold tracking-tight text-fg">
         <span>{state.space.icon ?? '📚'}</span>
         {state.space.name}
       </h1>

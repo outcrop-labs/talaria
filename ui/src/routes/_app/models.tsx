@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
+import { Checkbox, Toggle } from '@/components/ui/checkbox'
 import { confirm } from '@/components/ui/confirm'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
@@ -18,6 +18,9 @@ import { Skeleton, SkeletonCard, SkeletonRows } from '@/components/ui/skeleton'
 import { Combobox } from '@/components/ui/combobox'
 import { ProviderMark } from '@/components/fleet/provider-mark'
 import { QueryError } from '@/components/ui/query-state'
+import { Chip } from '@/components/ui/chip'
+import { popPanel, popRow } from '@/components/chat/chat-chrome'
+import { cn } from '@/lib/cn'
 import { getJson } from '@/lib/fetch-json'
 import { useSession } from '@/lib/session'
 import {
@@ -77,7 +80,7 @@ function ModelsPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-4xl space-y-6">
         <div className="flex items-center gap-3">
-          <h1 className="mercury-text text-2xl font-semibold">Models</h1>
+          <h1 className="font-sans text-2xl font-semibold tracking-tight text-fg">Models</h1>
           {tab === 'models' && (
             <Button size="sm" className="ml-auto" onClick={() => setAdding(true)}>
               Add provider
@@ -129,9 +132,10 @@ function ModelsPage() {
 
 function Section({ title, endpoints }: { title: string; endpoints: LlmEndpoint[] }) {
   if (endpoints.length === 0) return null
+  // §8 section header: 10px mono uppercase ink-dim + right-aligned mono count.
   return (
     <div>
-      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">{title}</h2>
+      <SectionHeader className="mb-2" title={title} action={String(endpoints.length).padStart(2, '0')} />
       <div className="space-y-3">
         {endpoints.map((e) => (
           <EndpointCard key={e.id} ep={e} />
@@ -157,15 +161,17 @@ function EndpointCard({ ep }: { ep: LlmEndpoint }) {
         <ProviderMark provider={ep.provider} name={ep.name} />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
-            <span className="text-sm font-semibold text-fg">{ep.name}</span>
+            <span className="font-sans text-sm font-semibold text-fg">{ep.name}</span>
             <span
-              className="shrink-0 text-[11px]"
-              style={{ color: ep.class === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}
+              className={cn(
+                'shrink-0 font-mono text-[10px] uppercase tracking-[0.05em]',
+                ep.class === 'local' ? 'text-success' : 'text-accent',
+              )}
             >
               {ep.class === 'local' ? 'self-hosted' : 'cloud'}
             </span>
           </div>
-          <div className="truncate text-xs text-muted">
+          <div className="truncate font-mono text-[11px] text-muted">
             {ep.models.length} model{ep.models.length === 1 ? '' : 's'}
             {ep.baseUrl && ` · ${ep.baseUrl}`}
           </div>
@@ -246,7 +252,7 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
   return (
     <Modal open onClose={onClose} title={`${ep.name} · ${ep.provider}`} width="max-w-2xl">
       <div className="space-y-5">
-        <div className="flex items-center gap-3 text-xs text-muted">
+        <div className="flex items-center gap-3 font-mono text-[11px] text-muted">
           {ep.baseUrl && <span className="truncate">{ep.baseUrl}</span>}
           <span className="ml-auto" />
           {ep.provider === 'custom' ? (
@@ -255,7 +261,7 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
               <option value="cloud">cloud</option>
             </Select>
           ) : (
-            <span style={{ color: ep.class === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)' }}>
+            <span className={cn('uppercase tracking-[0.05em]', ep.class === 'local' ? 'text-success' : 'text-accent')}>
               {ep.class === 'local' ? 'self-hosted' : 'cloud'}
             </span>
           )}
@@ -263,12 +269,12 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
 
         {/* Provider API key — stored encrypted at rest, never shown again */}
         <section>
-          <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted">
+          <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             <span>API key</span>
             {ep.hasKey ? (
-              <span style={{ color: 'var(--theme-success)' }}>● encrypted key stored</span>
+              <span className="tracking-[0.05em] text-success">● encrypted key stored</span>
             ) : (
-              <span>none stored{ep.apiKeyEnv ? `, using $${ep.apiKeyEnv}` : ''}</span>
+              <span className="tracking-[0.05em] text-muted">none stored{ep.apiKeyEnv ? `, using $${ep.apiKeyEnv}` : ''}</span>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -294,13 +300,13 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
 
         {/* Models the org can use from this provider */}
         <section>
-          <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Available models</div>
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Available models</div>
           {ep.models.length > 0 ? (
-            <div className="mb-2 divide-y divide-line-subtle">
+            <div className="mb-2 divide-y divide-line">
               {ep.models.map((m) => (
-                <div key={m} className="flex items-center gap-2 py-1.5 text-sm">
-                  <span className="min-w-0 flex-1 truncate text-fg">{m}</span>
-                  <button type="button" onClick={() => removeModel(m)} className="shrink-0 text-xs text-muted hover:text-[color:var(--theme-danger)]">
+                <div key={m} className="flex items-center gap-2 py-1.5 text-sm transition-colors hover:bg-hover">
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{m}</span>
+                  <button type="button" onClick={() => removeModel(m)} className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger">
                     Remove
                   </button>
                 </div>
@@ -315,9 +321,9 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
 
         {ep.class === 'cloud' && (
           <section>
-            <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Pricing · $/1M tokens (in / out)</div>
+            <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Pricing · $/1M tokens (in / out)</div>
             <div className="space-y-1.5">
-              <div className="flex items-center gap-2 text-xs">
+              <div className="flex items-center gap-2 font-mono text-xs">
                 <span className="min-w-0 flex-1 truncate text-muted">endpoint default (fallback)</span>
                 <Input size="sm" type="number" defaultValue={ep.priceInPerMtok ?? ''} placeholder="in" className="w-20 shrink-0"
                   onBlur={(e) => { const v = e.target.value.trim(); void run(patchEndpoint(ep.id, { priceInPerMtok: v === '' ? null : Number(v) })) }} />
@@ -338,9 +344,9 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
                   void run(patchEndpoint(ep.id, { modelPrices: next }))
                 }
                 return (
-                  <div key={m} className="flex items-center gap-2 text-xs">
+                  <div key={m} className="flex items-center gap-2 font-mono text-xs">
                     <span className="min-w-0 flex-1 truncate text-fg">{m}</span>
-                    {!overridden && auto && <span className="shrink-0" style={{ color: 'var(--theme-success)' }}>auto</span>}
+                    {!overridden && auto && <span className="shrink-0 text-success">auto</span>}
                     {!overridden && !auto && <span className="shrink-0 text-muted">unpriced</span>}
                     <Input size="sm" type="number" defaultValue={p?.in ?? ''} placeholder={auto ? String(auto.in) : 'in'} className="w-20 shrink-0" onBlur={(e) => setPrice('in', e.target.value.trim())} />
                     <Input size="sm" type="number" defaultValue={p?.out ?? ''} placeholder={auto ? String(auto.out) : 'out'} className="w-20 shrink-0" onBlur={(e) => setPrice('out', e.target.value.trim())} />
@@ -356,9 +362,9 @@ function EndpointModal({ ep, onClose }: { ep: LlmEndpoint; onClose: () => void }
         {cascading && (
           <Generating label="Removing across the fleet: new agent versions, re-render, rolling the affected agents" lines={2} />
         )}
-        {err && <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
+        {err && <div className="text-xs text-danger">{err}</div>}
 
-        <div className="flex items-center gap-2 border-t border-line-subtle pt-3">
+        <div className="flex items-center gap-2 border-t border-line pt-3">
           <Button
             variant="ghost"
             size="sm"
@@ -403,13 +409,13 @@ function ModelAdder({ catalog, existing, onAdd }: { catalog: string[]; existing:
         </Button>
       </div>
       {open && suggestions.length > 0 && (
-        <div className="mercury-panel absolute z-10 mt-1 max-h-52 w-full overflow-y-auto rounded-xl p-1">
+        <div className={cn(popPanel, 'absolute z-10 mt-1 max-h-52 w-full overflow-y-auto')}>
           {suggestions.map((m) => (
             <button
               key={m}
               type="button"
               onMouseDown={(e) => { e.preventDefault(); add(m) }}
-              className="flex w-full items-center rounded-lg px-2 py-1.5 text-left text-sm text-muted transition-colors hover:bg-card hover:text-fg"
+              className={cn(popRow, 'font-mono text-xs text-muted hover:text-fg')}
             >
               {m}
             </button>
@@ -495,20 +501,18 @@ function PlatformAgentsPanel() {
         title="Platform agents"
         info="Talaria's own sub-agents — the workers behind internal jobs like distilling chats and drafting with Muse. Separate from your Hermes fleet: each has its own harness and skills, and you pick its model here. Unset = auto (each job's own sensible chain)."
       />
-      <ul className="divide-y divide-line-subtle">
+      <ul className="divide-y divide-line">
         {data.agents.map((a) => (
           <li key={a.id} className="flex items-center gap-3 py-3">
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 text-sm text-fg">
+              <div className="flex items-center gap-2 font-sans text-sm text-fg">
                 {a.label}
                 {a.skills.map((sk) => (
-                  <span key={sk} className="rounded bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted">
-                    {sk}
-                  </span>
+                  <Chip key={sk}>{sk}</Chip>
                 ))}
               </div>
               <div className="font-sans text-xs text-muted">{a.job}</div>
-              <div className="text-[11px] text-muted/80">Auto: {a.auto}</div>
+              <div className="font-mono text-[11px] text-muted/80">Auto: {a.auto}</div>
             </div>
             {a.assignable ? (
               <Select
@@ -525,7 +529,7 @@ function PlatformAgentsPanel() {
                 ))}
               </Select>
             ) : (
-              <span className="w-56 shrink-0 text-right text-xs text-muted" title={a.auto}>
+              <span className="w-56 shrink-0 text-right font-mono text-[11px] text-muted" title={a.auto}>
                 fixed by design
               </span>
             )}
@@ -590,19 +594,15 @@ function ModelRolesPanel() {
         title="Model roles"
         info="Which model handles each class of activity. Unset = auto (a sensible pick from what's registered). Agents' own brains are configured per agent and unaffected."
       />
-      <ul className="divide-y divide-line-subtle">
+      <ul className="divide-y divide-line">
         {data.roles.map((r) => (
           <li key={r.role} className="flex items-center gap-3 py-2.5">
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 text-sm text-fg">
+              <div className="flex items-center gap-2 font-sans text-sm text-fg">
                 {r.label}
-                {!r.wired && (
-                  <span className="rounded bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted" title="This slot takes effect when its surface lands.">
-                    reserved
-                  </span>
-                )}
+                {!r.wired && <Chip title="This slot takes effect when its surface lands.">reserved</Chip>}
               </div>
-              <div className="text-xs text-muted">{r.hint}</div>
+              <div className="font-sans text-xs text-muted">{r.hint}</div>
             </div>
             <Select
               size="sm"
@@ -709,18 +709,18 @@ function MemberAccessPanel() {
         label="Limit members to selected models"
       />
       {restricted && (
-        <div className="space-y-1 rounded-xl border border-line-subtle p-2">
+        <div className="space-y-1 rounded-lg border border-line p-2">
           {models.map((m) => (
-            <label key={m.id} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-card">
+            <label key={m.id} className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-hover">
               <input
                 type="checkbox"
                 checked={selection.includes(m.id)}
                 onChange={() => toggle(m.id)}
-                className="mt-1 shrink-0 accent-[var(--theme-accent)]"
+                className="mt-1 shrink-0 accent-accent"
               />
               <span className="min-w-0">
-                <span className="block truncate text-sm text-fg">{m.label ?? m.id}</span>
-                <span className="block truncate text-xs text-muted">{m.blurb || m.id}</span>
+                <span className="block truncate font-sans text-sm text-fg">{m.label ?? m.id}</span>
+                <span className="block truncate font-sans text-xs text-muted">{m.blurb || m.id}</span>
               </span>
             </label>
           ))}
@@ -767,20 +767,12 @@ function PrivacyRow({ ep, run }: { ep: LlmEndpoint; run: (p: Promise<{ error?: s
     void run(patchEndpoint(ep.id, { requestDefaults: next }))
   }
   return (
-    <div className="mt-4 flex items-start gap-2.5 border-t border-line-subtle pt-3">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={on}
-        onClick={toggle}
-        className="mt-0.5 h-4 w-7 shrink-0 rounded-full transition-colors"
-        style={{ background: on ? 'var(--theme-success)' : 'var(--theme-line)' }}
-      >
-        <span className="block h-3 w-3 rounded-full bg-white transition-transform" style={{ transform: on ? 'translateX(14px)' : 'translateX(2px)' }} />
-      </button>
+    <div className="mt-4 flex items-start gap-2.5 border-t border-line pt-3">
+      {/* The §8 toggle primitive: gold knob on a warm track when on. */}
+      <Toggle checked={on} onChange={toggle} className="mt-0.5 shrink-0" />
       <div className="min-w-0">
-        <div className="text-xs font-medium text-fg">No-train routing {on && <span style={{ color: 'var(--theme-success)' }}>· on</span>}</div>
-        <div className="text-[11px] text-muted">
+        <div className="text-xs font-medium text-fg">No-train routing {on && <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-success">· on</span>}</div>
+        <div className="font-sans text-[11px] text-muted">
           {ep.provider === 'openrouter'
             ? 'Restrict to US, no-store provider pools and deny data collection on every request.'
             : 'Send data_collection: deny with every request (honored where the provider supports it).'}
@@ -830,7 +822,7 @@ function AddProviderModal({ open, onClose, onAdded }: { open: boolean; onClose: 
     <Modal open={open} onClose={onClose} title="Add provider">
       <div className="space-y-4">
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Provider</label>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Provider</label>
           <Combobox
             options={PROVIDER_PRESETS.map((p) => ({
               value: p.key,
@@ -844,12 +836,12 @@ function AddProviderModal({ open, onClose, onAdded }: { open: boolean; onClose: 
           />
         </div>
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
           <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder={preset.key} />
         </div>
         {preset.configurableUrl && (
           <div>
-            <label className="mb-1 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+            <label className="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
               Base URL
               <InfoTip text="LAN and loopback hosts count as self-hosted in the cost split, inferred automatically." />
             </label>
@@ -857,23 +849,19 @@ function AddProviderModal({ open, onClose, onAdded }: { open: boolean; onClose: 
           </div>
         )}
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">API key</label>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">API key</label>
           <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste the provider key" autoComplete="off" />
           <InfoTip className="mt-1" text="Stored encrypted at rest (AES-256-GCM), never written to a config file or shown again." />
         </div>
         <details>
-          <summary className="cursor-pointer text-[11px] uppercase tracking-wide text-muted">Advanced: env-var fallback</summary>
+          <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim transition-colors hover:text-muted">Advanced: env-var fallback</summary>
           <div className="mt-2">
             <Input value={apiKeyEnv} onChange={(e) => setApiKeyEnv(e.target.value)} placeholder={preset.apiKeyEnv ?? 'MY_PROVIDER_KEY'} />
             <InfoTip className="mt-1" text="Optional: an env-var name to read the key from if none is stored above (ops override)." />
           </div>
         </details>
-        {err && (
-          <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>
-            {err}
-          </div>
-        )}
-        <div className="flex justify-end gap-2 border-t border-line-subtle pt-3">
+        {err && <div className="text-sm text-danger">{err}</div>}
+        <div className="flex justify-end gap-2 border-t border-line pt-3">
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>

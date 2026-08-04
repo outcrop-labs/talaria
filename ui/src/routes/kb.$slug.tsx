@@ -62,7 +62,7 @@ function PublicDocPage() {
 
   return (
     <PublicShell meta={`Updated ${relativeTime(state.doc.updatedAt)}`}>
-      <h1 className="mb-5 text-3xl font-semibold text-fg">{state.doc.title}</h1>
+      <h1 className="mb-5 font-sans text-3xl font-semibold tracking-tight text-fg">{state.doc.title}</h1>
       <Markdown className="tiptap">{state.doc.body}</Markdown>
     </PublicShell>
   )

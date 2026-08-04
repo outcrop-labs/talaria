@@ -359,9 +359,17 @@ function queryFnBodies(src) {
   return bodies
 }
 
+// An "empty" is not only `[]` / `null` / `{}`. The #202 merge shipped
+// `if (!response.ok) return { agents: [] }` — a WRAPPED empty, which the first
+// two patterns below missed entirely, so a failed /api/mcp read told the Scout
+// composer the agent had no MCP servers. Any object literal whose values are
+// all empty arrays/nulls is the same lie, so match that shape too.
+const EMPTY = String.raw`(?:\[\s*\]|null|undefined|\{\s*\}|\{[^{}]*:\s*(?:\[\s*\]|null)\s*(?:,[^{}]*:\s*(?:\[\s*\]|null)\s*)*\})`
 const SWALLOWS = [
-  { re: /if\s*\(\s*!\s*[\w.]+\.ok\s*\)\s*return\s*(?:\[\s*\]|null|\{\s*\}|undefined)/g, note: 'if (!r.ok) return <empty>' },
-  { re: /\.catch\s*\(\s*\(\s*\)\s*=>\s*\(?\s*(?:\[\s*\]|null|\{\s*\}|undefined)/g, note: '.catch(() => <empty>)' },
+  { re: new RegExp(String.raw`if\s*\(\s*!\s*[\w.]+\.ok\s*\)\s*return\s*${EMPTY}`, 'g'), note: 'if (!r.ok) return <empty>' },
+  { re: new RegExp(String.raw`\.catch\s*\(\s*\(\s*\)\s*=>\s*\(?\s*${EMPTY}`, 'g'), note: '.catch(() => <empty>)' },
+  // `r.ok ? r.json() : <empty>` — the ternary spelling of the same thing.
+  { re: new RegExp(String.raw`\.ok\s*\?[^:]{0,80}:\s*\(?\s*${EMPTY}`, 'g'), note: 'r.ok ? … : <empty>' },
 ]
 
 function scanQueryFns(src) {

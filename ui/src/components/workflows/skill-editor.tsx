@@ -64,7 +64,7 @@ export function StudioSkillEditor({
   if (!data)
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={query.isError ? onClose : undefined}>
-        <div className="w-full max-w-3xl space-y-3 rounded-2xl bg-[var(--theme-panel)] p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="w-full max-w-3xl space-y-3 rounded-lg border border-line bg-[var(--theme-panel)] p-6" onClick={(e) => e.stopPropagation()}>
           {query.isError ? (
             <QueryError
               variant="compact"

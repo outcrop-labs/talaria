@@ -2,7 +2,6 @@ import { useNavigate } from '@tanstack/react-router'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { cn } from '@/lib/cn'
 import { Avatar } from '@/components/ui/avatar'
 import { Chip } from '@/components/ui/chip'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -78,21 +77,13 @@ export function AuditPanel() {
     <div className="space-y-6">
       <div className="flex items-center gap-1.5">
         <div className="ml-auto flex gap-1.5">
+          {/* Source filters — the one filter-pill primitive (Chip). */}
           {available.map((k) => {
             const on = active.includes(k)
             return (
-              <button
-                key={k}
-                type="button"
-                title={KIND_META[k].blurb}
-                onClick={() => toggle(k)}
-                className={cn(
-                  'rounded-full border px-3 py-1 text-xs transition-colors',
-                  on ? 'border-accent text-fg' : 'border-line-subtle text-muted hover:text-fg',
-                )}
-              >
+              <Chip key={k} title={KIND_META[k].blurb} onSelect={() => toggle(k)} selected={on} className="px-2.5 py-1">
                 {KIND_META[k].icon} {KIND_META[k].label}
-              </button>
+              </Chip>
             )
           })}
         </div>
@@ -113,34 +104,35 @@ export function AuditPanel() {
           .filter((k) => byKind.get(k)?.length)
           .map((k) => (
             <section key={k}>
-              <div className="mb-2 flex items-baseline gap-2">
-                <span className="text-muted">{KIND_META[k].icon}</span>
-                <h2 className="text-sm font-semibold text-fg">{KIND_META[k].label}</h2>
-                <span className="text-xs text-muted">{KIND_META[k].blurb}</span>
-                <span className="ml-auto text-xs text-muted">{byKind.get(k)!.length}</span>
+              {/* §8 section header: mono dim label + right-aligned mono count. */}
+              <div className="mb-2 flex min-h-6 items-center gap-2">
+                <span className="text-ink-dim">{KIND_META[k].icon}</span>
+                <h2 className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{KIND_META[k].label}</h2>
+                <span className="min-w-0 truncate font-sans text-xs text-muted">{KIND_META[k].blurb}</span>
+                <span className="ml-auto font-mono text-[10px] tracking-[0.05em] text-muted">{String(byKind.get(k)!.length).padStart(2, '0')}</span>
               </div>
               <Panel className="p-0">
-                <div className="divide-y divide-line-subtle">
+                <div className="divide-y divide-line">
                   {byKind.get(k)!.map((e, i) => (
                     <button
                       key={`${e.at}-${i}`}
                       type="button"
                       onClick={() => void navigate({ to: e.href })}
-                      className="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors hover:bg-card"
+                      className="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors hover:bg-hover"
                     >
                       <Avatar name={e.actor} className="mt-0.5 h-6 w-6 shrink-0 text-xs" />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-baseline gap-2">
-                          <span className="truncate text-sm font-medium text-fg">{e.actor}</span>
-                          <span className="shrink-0 text-xs text-muted">{e.context}</span>
+                          <span className="truncate font-sans text-sm font-medium text-fg">{e.actor}</span>
+                          <span className="shrink-0 font-mono text-[11px] text-muted">{e.context}</span>
                           {e.type && (
                             <Chip tone={WARN_TYPES.has(e.type) ? 'warn' : 'neutral'} className="shrink-0">
                               {e.type}
                             </Chip>
                           )}
-                          <span className="ml-auto shrink-0 text-xs text-muted">{relativeTime(e.at)}</span>
+                          <span className="ml-auto shrink-0 font-mono text-[11px] text-muted">{relativeTime(e.at)}</span>
                         </div>
-                        <div className="truncate text-sm text-muted">{e.detail}</div>
+                        <div className="truncate font-sans text-sm text-muted">{e.detail}</div>
                       </div>
                     </button>
                   ))}

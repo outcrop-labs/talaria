@@ -49,20 +49,14 @@ export function LoginScreen({ error }: { error?: string }) {
           <p className="mb-6 text-center text-sm text-muted">Sign in to command your fleet.</p>
 
           {error && ERROR_COPY[error] && (
-            <div
-              className="mb-4 rounded-lg border px-3 py-2 text-center text-sm"
-              style={{
-                borderColor: 'var(--theme-danger)',
-                color: 'var(--theme-danger)',
-                background: 'color-mix(in srgb, var(--theme-danger) 8%, transparent)',
-              }}
-            >
+            // Failure speaks safety-orange as an outline, never a fill (spec §8).
+            <div className="mb-4 rounded-md border border-danger/40 px-3 py-2 text-center font-sans text-sm text-danger">
               {ERROR_COPY[error]}
             </div>
           )}
 
           {!configured && (
-            <div className="mb-4 rounded-lg border border-line px-3 py-2 text-center text-xs text-muted">
+            <div className="mb-4 rounded-md border border-line px-3 py-2 text-center text-xs text-muted">
               Server auth isn’t configured yet (set <code>AUTH_SECRET</code> and enable a provider).
             </div>
           )}
@@ -118,7 +112,7 @@ function Divider() {
   return (
     <div className="flex items-center gap-3">
       <div className="h-px flex-1 border-t border-line" />
-      <span className="text-xs uppercase tracking-wider text-muted">or</span>
+      <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">or</span>
       <div className="h-px flex-1 border-t border-line" />
     </div>
   )
@@ -171,7 +165,7 @@ function PasswordForm() {
         value={password}
         onChange={(e) => setPassword(e.target.value)}
       />
-      {err && <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>{err}</div>}
+      {err && <div className="font-sans text-sm text-danger">{err}</div>}
       <Button type="submit" disabled={busy || !username || !password}>
         {busy ? 'Signing in' : 'Sign in'}
       </Button>

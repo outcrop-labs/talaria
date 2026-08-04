@@ -26,14 +26,14 @@ export function LabelPicker({
       {value.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {value.map((t) => (
-            <span key={t} className="flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-xs text-muted">
+            <span key={t} className="flex items-center gap-1 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-muted">
               {t}
               {!disabled && (
                 <button
                   type="button"
                   aria-label={`Remove ${t}`}
                   onClick={() => onChange(value.filter((x) => x !== t))}
-                  className="hover:text-[color:var(--theme-danger)]"
+                  className="transition-colors hover:text-danger"
                 >
                   ✕
                 </button>

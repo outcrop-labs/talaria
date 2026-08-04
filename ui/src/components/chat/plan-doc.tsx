@@ -167,12 +167,12 @@ function DocEditor({ id, planId, syncSignal = 0 }: { id: string; planId: string;
   return (
     <div className={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'flex-1')}>
       <div className="flex items-center gap-2 border-b border-line-subtle px-4 py-2">
-        <span className="text-[11px] uppercase tracking-wide text-muted">Plan document</span>
-        <span className="min-w-0 flex-1 truncate text-sm text-fg">{artifact.title}</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Plan document</span>
+        <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{artifact.title}</span>
         <Button size="sm" variant="outline" onClick={() => void sync()} disabled={syncing} title="The agent rewrites the document from the conversation so far">
           {syncing ? 'Syncing' : 'Sync from chat'}
         </Button>
-        <span className="shrink-0 text-[11px] text-muted">Auto-saves</span>
+        <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">Auto-saves</span>
         <Link to="/artifacts" className="shrink-0 text-[11px] text-accent hover:underline" title="Open in Artifacts">
           Open ↗
         </Link>

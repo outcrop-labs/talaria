@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { CheckCheck, ClipboardList, Plus, Settings, SquarePen } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { focusGold, popPanel, popRow } from '@/components/chat/chat-chrome'
 import { Avatar } from '@/components/ui/avatar'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
@@ -14,6 +15,7 @@ import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components
 import { CountPill, Rail, RailRow, RailSurface } from '@/components/app/surface'
 import { QueryError } from '@/components/ui/query-state'
 import { ChannelView } from '@/components/chat/channel-view'
+import { SessionRowBody } from '@/components/chat/conversation-sidebar'
 import { ChannelSettingsModal } from '@/components/chat/channel-settings'
 import { PlanModal } from '@/components/chat/plan-modal'
 import { useAgents } from '@/lib/agents'
@@ -37,10 +39,13 @@ export const Route = createFileRoute('/_app/comms')({
   component: CommsPage,
   // ?c=<channelId> deep-links a channel/DM; ?a=<agentModel>&x=<convId>
   // deep-links an agent conversation (agent-outreach notifications land here).
-  validateSearch: (search: Record<string, unknown>): { c?: string; a?: string; x?: string } => ({
+  // ?t=agent (the /chat redirect) asks for the chat workspace: default to the
+  // first agent's fresh thread instead of the first channel.
+  validateSearch: (search: Record<string, unknown>): { c?: string; a?: string; x?: string; t?: 'agent' } => ({
     ...(typeof search.c === 'string' && search.c ? { c: search.c } : {}),
     ...(typeof search.a === 'string' && search.a ? { a: search.a } : {}),
     ...(typeof search.x === 'string' && search.x ? { x: search.x } : {}),
+    ...(search.t === 'agent' ? { t: 'agent' as const } : {}),
   }),
 })
 
@@ -134,16 +139,26 @@ function CommsPage() {
   const people = users.filter((u) => u.id !== session?.id)
   const dmByPeer = useMemo(() => new Map(dms.map((c) => [c.peer?.userId, c])), [dms])
 
-  // Default to the first channel; heal a selection that vanished (archived).
-  // Both are replace-navigations — housekeeping shouldn't pollute history.
+  // Default selection; heal a selection that vanished (archived). All are
+  // replace-navigations — housekeeping shouldn't pollute history.
+  // /chat lands here with ?t=agent: the chat workspace must be directly
+  // reachable, so default to the first agent's fresh thread (§7 composer)
+  // instead of the first channel; no agents → channel default as usual.
   useEffect(() => {
+    if (!sel && search.t === 'agent') {
+      if (fleetLoading) return
+      if (fleet[0]) {
+        setSel({ t: 'agent', model: fleet[0].id, conversationId: null }, { replace: true })
+        return
+      }
+    }
     if (channels.length === 0 && isLoading) return
     if (!sel && channels[0]) setSel({ t: 'channel', id: channels[0].id }, { replace: true })
     if (sel?.t === 'channel' && channels.length > 0 && !channels.some((c) => c.id === sel.id)) {
       setSel(channels[0] ? { t: 'channel', id: channels[0].id } : null, { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channels, sel, isLoading])
+  }, [channels, sel, isLoading, search.t, fleet, fleetLoading])
 
   const selected: Channel | null = sel?.t === 'channel' ? (channels.find((c) => c.id === sel.id) ?? null) : null
   const { data: detail, isLoading: detailLoading } = useChannelDetail(selected?.id ?? null)
@@ -217,7 +232,12 @@ function CommsPage() {
   return (
     <RailSurface>
       <Rail title="Comms">
-        <Section label="Channels" createPlaceholder="channel name" onCreate={mayCreateChannels ? (v) => void create(v, 'channel') : undefined}>
+        <Section
+          label="Channels"
+          meta={rooms.length > 0 ? String(rooms.length).padStart(2, '0') : undefined}
+          createPlaceholder="channel name"
+          onCreate={mayCreateChannels ? (v) => void create(v, 'channel') : undefined}
+        >
           {rooms.map((c) => (
             <RailRow key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
               {/* display:contents wrapper — carries the context menu without touching row layout */}
@@ -242,7 +262,12 @@ function CommsPage() {
             ))}
         </Section>
 
-        <Section label="Relays" createPlaceholder="what's it about?" onCreate={mayStartRelays ? (v) => void create(v, 'group') : undefined}>
+        <Section
+          label="Relays"
+          meta={relays.length > 0 ? String(relays.length).padStart(2, '0') : undefined}
+          createPlaceholder="what's it about?"
+          onCreate={mayStartRelays ? (v) => void create(v, 'group') : undefined}
+        >
           {relays.map((c) => (
             <RailRow key={c.id} active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
               <span className="contents" onContextMenu={(e) => openMenu(e, channelRowMenu(c))}>
@@ -266,7 +291,7 @@ function CommsPage() {
             ))}
         </Section>
 
-        <Section label="Teammates">
+        <Section label="Teammates" meta={people.length > 0 ? String(people.length).padStart(2, '0') : undefined}>
           {people.map((u) => {
             const dm = dmByPeer.get(u.id)
             return (
@@ -304,7 +329,7 @@ function CommsPage() {
             ))}
         </Section>
 
-        <Section label="Agents">
+        <Section label="Agents" meta={fleet.length > 0 ? String(fleet.length).padStart(2, '0') : undefined}>
           {fleet.map((a) => {
             const activeAgent = sel?.t === 'agent' && sel.model === a.id
             const agentThreads = conversations.filter((c) => c.agentModel === a.id)
@@ -324,10 +349,10 @@ function CommsPage() {
                       <span className="shrink-0 opacity-60">◍</span>
                       <span className="min-w-0 flex-1 truncate">{a.label}</span>
                       {conversations.some((c) => c.agentModel === a.id && c.working) && (
-                        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" title="working on a reply" />
+                        <span className="gd-breathe h-1.5 w-1.5 shrink-0 rounded-full bg-accent" title="working on a reply" />
                       )}
                       {activeAgent && sel.conversationId === null && (
-                        <span className="shrink-0 text-[10px] text-muted">new</span>
+                        <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">new</span>
                       )}
                       {agentThreads.length > 0 && !activeAgent && (
                         <span
@@ -354,7 +379,7 @@ function CommsPage() {
                       key={c.id}
                       active={activeAgent && sel.conversationId === c.id}
                       onClick={() => setSel({ t: 'agent', model: a.id, conversationId: c.id })}
-                      className="pl-7 text-xs"
+                      className="pl-7"
                     >
                       <span
                         className="contents"
@@ -380,8 +405,8 @@ function CommsPage() {
                           ])
                         }
                       >
-                        <span className="min-w-0 flex-1 truncate">{c.title || 'Untitled'}</span>
-                        {c.working && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />}
+                        {/* §10 session-row anatomy, shared with the Plan rail. */}
+                        <SessionRowBody conv={c} active={activeAgent && sel.conversationId === c.id} />
                       </span>
                     </RailRow>
                   ))}
@@ -423,6 +448,7 @@ function CommsPage() {
             fleet={fleet}
             conversationId={sel.conversationId}
             newChatSignal={fresh}
+            onSwitchAgent={openAgent}
             onNewThread={() => newThread(sel.model)}
             onCreated={(id) => {
               setSel({ t: 'agent', model: sel.model, conversationId: id })
@@ -545,6 +571,7 @@ function AgentDmPane({
   fleet,
   conversationId,
   newChatSignal,
+  onSwitchAgent,
   onNewThread,
   onCreated,
 }: {
@@ -552,6 +579,9 @@ function AgentDmPane({
   fleet: { id: string; label: string; tiers?: string[] }[]
   conversationId: string | null
   newChatSignal: number
+  /** The composer rail's agent chip switches agents route-level — same
+   *  behavior as clicking the agent in the sidebar (working thread or fresh). */
+  onSwitchAgent: (model: string) => void
   onNewThread: () => void
   onCreated: (id: string) => void
 }) {
@@ -572,6 +602,8 @@ function AgentDmPane({
           agentModel={model}
           agentLabel={agent.label}
           tiers={agent.tiers ?? []}
+          agents={fleet}
+          onAgentChange={onSwitchAgent}
           conversationId={conversationId}
           newChatSignal={newChatSignal}
           onCreated={onCreated}
@@ -583,13 +615,18 @@ function AgentDmPane({
 
 // Sidebar section: the create affordance is a small "+" IN the heading (Slack-
 // style) that expands to an inline name input — no chunky buttons under lists.
+// Header = the §8 canonical: 10px mono uppercase 0.08em ink-dim, right-aligned
+// mono meta (live row count, `CHANNELS … 08`).
 function Section({
   label,
+  meta,
   createPlaceholder,
   onCreate,
   children,
 }: {
   label: string
+  /** Right-aligned mono meta — real counts only, no fabricated data. */
+  meta?: string
   createPlaceholder?: string
   onCreate?: (name: string) => void
   children: React.ReactNode
@@ -604,14 +641,19 @@ function Section({
   }
   return (
     <div className="mb-4">
-      <div className="mb-1 flex items-center px-2">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</span>
+      <div className="mb-1 flex h-6 items-center gap-1.5 px-2">
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</span>
+        <span className="ml-auto" />
+        {meta && <span className="font-mono text-[10px] tracking-[0.05em] text-muted">{meta}</span>}
         {onCreate && (
           <button
             type="button"
             title={`New ${label.toLowerCase().replace(/s$/, '')}`}
             onClick={() => setCreating(true)}
-            className="ml-auto grid h-5 w-5 place-items-center rounded text-muted transition-colors hover:bg-card hover:text-fg"
+            className={cn(
+              'grid h-5 w-5 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg',
+              focusGold,
+            )}
           >
             <Plus size={13} />
           </button>
@@ -674,22 +716,23 @@ function HeaderPicker({
         type="button"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          'flex items-center gap-1.5 rounded-lg border border-line-subtle px-2 py-1 text-xs transition-colors hover:text-fg',
-          open ? 'bg-card text-fg' : 'text-muted',
+          'flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs transition-colors hover:bg-hover hover:text-fg',
+          focusGold,
+          open ? 'bg-raised text-fg' : 'text-muted',
         )}
       >
         {/* Truncated avatar stack — fixed width so the header never jiggles. */}
         <span className="flex w-11 shrink-0 justify-start -space-x-2">
           {chosen.slice(0, 3).map((o) => (
-            <Avatar key={o.value} name={o.label} className="h-5 w-5 shrink-0 text-[9px] ring-2 ring-[color:var(--theme-bg)]" />
+            <Avatar key={o.value} name={o.label} className="h-5 w-5 shrink-0 text-[9px] ring-2 ring-surface" />
           ))}
           {chosen.length > 3 && (
-            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-card text-[9px] text-muted ring-2 ring-[color:var(--theme-bg)]">
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-raised text-[9px] text-muted ring-2 ring-surface">
               +{chosen.length - 3}
             </span>
           )}
           {chosen.length === 0 && (
-            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-dashed border-line-subtle text-[9px] text-muted">
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-dashed border-line text-[9px] text-muted">
               +
             </span>
           )}
@@ -699,7 +742,7 @@ function HeaderPicker({
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="mercury-panel absolute right-0 top-full z-20 mt-1 max-h-64 w-56 overflow-y-auto rounded-xl p-1">
+          <div className={cn(popPanel, 'absolute right-0 top-full z-20 mt-1 max-h-64 w-56 overflow-y-auto')}>
             {options.length === 0 && <div className="px-2 py-1.5 text-xs text-muted">Nothing to add.</div>}
             {options.map((o) => {
               const on = picked.has(o.value)
@@ -711,14 +754,14 @@ function HeaderPicker({
                   title={o.locked ? 'The owner stays' : undefined}
                   onClick={() => void onToggle(o.value, !on)}
                   className={cn(
-                    'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors',
-                    o.locked ? 'cursor-default opacity-60' : 'hover:bg-card',
+                    popRow,
+                    o.locked && 'cursor-default opacity-60 hover:bg-transparent',
                     on ? 'text-fg' : 'text-muted',
                   )}
                 >
                   <Avatar name={o.label} className="h-5 w-5 shrink-0 text-[10px]" />
                   <span className="min-w-0 flex-1 truncate">{o.label}</span>
-                  {on && <span className="shrink-0 text-[color:var(--theme-success)]">✓</span>}
+                  {on && <span className="shrink-0 text-success">✓</span>}
                 </button>
               )
             })}
@@ -737,7 +780,7 @@ function IconAction({ title, onClick, children }: { title: string; onClick: () =
       title={title}
       aria-label={title}
       onClick={onClick}
-      className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-card hover:text-fg"
+      className={cn('grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg', focusGold)}
     >
       {children}
     </button>

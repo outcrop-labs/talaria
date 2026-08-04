@@ -9,6 +9,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { popPanel } from '@/components/chat/chat-chrome'
 import { prompt } from './confirm'
 
 // A slash-command menu (like Outline's block menu): type "/" to insert a block.
@@ -80,10 +81,10 @@ const SlashMenu = forwardRef<MenuHandle, { items: SlashItem[]; command: (item: S
   }))
 
   if (items.length === 0) {
-    return <div className="w-64 rounded-xl border border-line bg-card p-3 text-xs text-muted shadow-lg">No blocks match.</div>
+    return <div className={cn(popPanel, 'w-64 p-3 font-sans text-xs text-muted')}>No blocks match.</div>
   }
   return (
-    <div ref={listRef} className="max-h-72 w-64 overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-lg">
+    <div ref={listRef} className={cn(popPanel, 'max-h-72 w-64 overflow-y-auto')}>
       {items.map((item, i) => {
         const Icon = item.icon
         return (
@@ -96,14 +97,14 @@ const SlashMenu = forwardRef<MenuHandle, { items: SlashItem[]; command: (item: S
               e.preventDefault()
               command(item)
             }}
-            className={cn('flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left', i === active ? 'bg-sidebar' : 'hover:bg-sidebar')}
+            className={cn('flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors', i === active ? 'bg-hover' : 'hover:bg-hover')}
           >
-            <span className={cn('grid h-7 w-7 shrink-0 place-items-center rounded-md border border-line-subtle', i === active ? 'text-accent' : 'text-muted')}>
+            <span className={cn('grid h-7 w-7 shrink-0 place-items-center rounded-md border border-line bg-raised', i === active ? 'text-accent' : 'text-muted')}>
               <Icon size={15} />
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-xs font-medium text-fg">{item.title}</span>
-              <span className="block truncate text-[11px] text-muted">{item.hint}</span>
+              <span className="block truncate font-sans text-[13px] font-medium text-fg">{item.title}</span>
+              <span className="block truncate font-sans text-[11px] text-muted">{item.hint}</span>
             </span>
           </button>
         )

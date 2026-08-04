@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Smile } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { Input } from '@/components/ui/input'
+import { popPanel, popRow, tileBase } from '@/components/chat/chat-chrome'
 import { EMOJI, searchEmoji, type EmojiEntry } from '@/lib/emoji'
 
 // Emoji entry points for composers: the :shortcode: autocomplete (mirrors the
@@ -81,7 +82,7 @@ export function EmojiShortcodeMenu({
   className?: string
 }) {
   return (
-    <div className={cn('mercury-panel z-10 w-56 overflow-hidden rounded-xl p-1', className)}>
+    <div className={cn(popPanel, 'z-10 w-56 overflow-hidden', className)}>
       {state.options.map((e, i) => (
         <button
           key={e.ch}
@@ -90,13 +91,10 @@ export function EmojiShortcodeMenu({
             ev.preventDefault()
             onPick(e.ch)
           }}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm',
-            i === picked ? 'bg-card text-fg' : 'text-muted',
-          )}
+          className={cn(popRow, i === picked ? 'bg-hover text-fg' : 'text-muted')}
         >
           <span className="text-base">{e.ch}</span>
-          <span className="truncate text-xs">:{e.names[0]}:</span>
+          <span className="truncate font-mono text-[11px] tracking-[0.02em]">:{e.names[0]}:</span>
         </button>
       ))}
     </div>
@@ -137,12 +135,12 @@ export function EmojiButton({ onPick, disabled }: { onPick: (ch: string) => void
           setOpen((v) => !v)
           setQ('')
         }}
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-sidebar hover:text-fg disabled:opacity-40"
+        className={tileBase}
       >
-        <Smile size={14} />
+        <Smile size={15} />
       </button>
       {open && (
-        <div className="absolute bottom-full left-0 z-30 mb-1 w-72 rounded-xl border border-line bg-card p-2 shadow-lg">
+        <div className={cn(popPanel, 'absolute bottom-full left-0 z-30 mb-1.5 w-72 p-2')}>
           <Input
             autoFocus
             size="sm"
@@ -161,7 +159,7 @@ export function EmojiButton({ onPick, disabled }: { onPick: (ch: string) => void
                   onPick(e.ch)
                   setOpen(false)
                 }}
-                className="grid h-8 w-8 place-items-center rounded-md text-lg transition-colors hover:bg-sidebar"
+                className="grid h-8 w-8 place-items-center rounded-md text-lg transition-colors hover:bg-hover"
               >
                 {e.ch}
               </button>

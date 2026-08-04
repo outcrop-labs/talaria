@@ -33,6 +33,7 @@ export interface MessageRow {
   authorLabel?: string | null
   /** Confab-guard findings on an assistant reply (annotate/strict modes). */
   guard?: Finding[] | null
+  metadata?: Record<string, unknown>
 }
 
 /** The user's conversations of a given kind, newest activity first. `working`
@@ -124,13 +125,14 @@ export async function getConversation(
     select c.id, c.agent_model as "agentModel", c.title, c.updated_at as "updatedAt",
            case when c.user_id = ${userId} then 'owner' else 'collaborator' end as role
     from conversations c
-    where c.id = ${conversationId} and (c.user_id = ${userId} or (c.kind = 'plan' and exists(
+    where c.id = ${conversationId} and c.kind in ('chat', 'plan')
+      and (c.user_id = ${userId} or (c.kind = 'plan' and exists(
       select 1 from conversation_members cm where cm.conversation_id = c.id and cm.user_id = ${userId}
     )))
   `
   if (conv.length === 0) return null
   const messages = await sql`
-    select m.role, m.content, m.reasoning, m.tools, m.status, m.seq, m.attachments, m.guard,
+    select m.role, m.content, m.reasoning, m.tools, m.status, m.seq, m.attachments, m.guard, m.metadata,
            m.author_user_id as "authorUserId", coalesce(u.name, u.email) as "authorLabel"
     from messages m left join users u on u.id = m.author_user_id
     where m.conversation_id = ${conversationId} order by m.seq asc
@@ -170,7 +172,7 @@ export async function ownedConversation(
   const sql = await db()
   const rows = await sql`
     select agent_model as "agentModel", kind, title from conversations
-    where id = ${conversationId} and user_id = ${userId}
+    where id = ${conversationId} and user_id = ${userId} and kind in ('chat', 'plan')
   `
   return rows.length ? (rows[0] as { agentModel: string; kind: 'chat' | 'plan'; title: string | null }) : null
 }
@@ -187,7 +189,8 @@ export async function accessibleConversation(
            plan_template_id as "planTemplateId",
            case when user_id = ${userId} then 'owner' else 'collaborator' end as role
     from conversations c
-    where id = ${conversationId} and (user_id = ${userId} or (kind = 'plan' and exists(
+    where id = ${conversationId} and kind in ('chat', 'plan')
+      and (user_id = ${userId} or (kind = 'plan' and exists(
       select 1 from conversation_members cm where cm.conversation_id = c.id and cm.user_id = ${userId}
     )))
   `
@@ -238,11 +241,12 @@ export async function insertUserMessage(
   content: string,
   attachments: unknown[] = [],
   authorUserId: string | null = null,
+  metadata: Record<string, unknown> = {},
 ): Promise<string> {
   const sql = await db()
   const rows = await sql`
-    insert into messages (conversation_id, seq, role, content, status, attachments, author_user_id)
-    values (${conversationId}, ${seq}, 'user', ${content}, 'complete', ${sql.json(attachments as never)}, ${authorUserId})
+    insert into messages (conversation_id, seq, role, content, status, attachments, author_user_id, metadata)
+    values (${conversationId}, ${seq}, 'user', ${content}, 'complete', ${sql.json(attachments as never)}, ${authorUserId}, ${sql.json(metadata as never)})
     returning id
   `
   return (rows[0] as { id: string }).id
@@ -269,10 +273,11 @@ export async function activeStreamingAssistant(conversationId: string): Promise<
 }
 
 /** Create the assistant row (status='streaming'); returns its id. */
-export async function insertStreamingAssistant(conversationId: string, seq: number): Promise<string> {
+export async function insertStreamingAssistant(conversationId: string, seq: number, metadata: Record<string, unknown> = {}): Promise<string> {
   const sql = await db()
   const rows = await sql`
-    insert into messages (conversation_id, seq, role, status) values (${conversationId}, ${seq}, 'assistant', 'streaming')
+    insert into messages (conversation_id, seq, role, status, metadata)
+    values (${conversationId}, ${seq}, 'assistant', 'streaming', ${sql.json(metadata as never)})
     returning id
   `
   return (rows[0] as { id: string }).id

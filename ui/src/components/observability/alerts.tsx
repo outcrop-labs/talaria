@@ -56,28 +56,28 @@ export function AlertsPanel() {
         >
           {(alerts) => (
           <Panel className="p-0">
-            <div className="divide-y divide-line-subtle">
+            <div className="divide-y divide-line">
               {alerts.map((a, i) => (
                 <button
                   key={i}
                   type="button"
                   onClick={() => void navigate({ to: a.href })}
-                  className="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors hover:bg-card"
+                  className="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors hover:bg-hover"
                 >
-                  <span className="mt-0.5 w-5 shrink-0 text-center text-xs" style={{ color: SEV[a.severity].color }}>
+                  <span className="mt-0.5 w-5 shrink-0 text-center font-mono text-xs" style={{ color: SEV[a.severity].color }}>
                     {SEV[a.severity].icon}
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
-                      <span className="truncate text-sm font-medium text-fg">{a.title}</span>
+                      <span className="truncate font-sans text-sm font-medium text-fg">{a.title}</span>
                       <span
-                        className="shrink-0 rounded border px-1 text-[10px] uppercase tracking-wide"
-                        style={{ color: SEV[a.severity].color, borderColor: 'var(--theme-line-subtle)' }}
+                        className="shrink-0 rounded border border-line px-1 font-mono text-[10px] uppercase tracking-[0.05em]"
+                        style={{ color: SEV[a.severity].color }}
                       >
                         {SEV[a.severity].label}
                       </span>
                     </div>
-                    <div className="text-sm text-muted">{a.detail}</div>
+                    <div className="font-sans text-sm text-muted">{a.detail}</div>
                   </div>
                 </button>
               ))}

@@ -75,20 +75,20 @@ function diffLines(oldText: string, newText: string): DiffLine[] | null {
 function DiffView({ diff, fallback }: { diff: DiffLine[] | null; fallback: string }) {
   if (!diff)
     return (
-      <div className="h-full overflow-y-auto rounded-xl border border-line-subtle p-3">
+      <div className="h-full overflow-y-auto rounded-lg border border-line p-3">
         <p className="mb-2 text-xs text-muted">Too large to diff. Showing the revision's full content.</p>
-        <pre className="whitespace-pre-wrap font-[var(--font-mono)] text-xs text-fg">{fallback}</pre>
+        <pre className="whitespace-pre-wrap font-mono text-xs text-fg">{fallback}</pre>
       </div>
     )
   const changed = diff.some((l) => l.type === 'add' || l.type === 'del')
   if (!changed)
     return (
-      <div className="grid h-full place-items-center rounded-xl border border-line-subtle text-sm text-muted">
+      <div className="grid h-full place-items-center rounded-lg border border-line text-sm text-muted">
         Identical to the editor's current content.
       </div>
     )
   return (
-    <div className="h-full overflow-y-auto rounded-xl border border-line-subtle py-1">
+    <div className="h-full overflow-y-auto rounded-lg border border-line py-1">
       {diff.map((l, idx) =>
         l.type === 'skip' ? (
           <div key={idx} className="px-3 py-1 text-center text-[11px] text-muted">
@@ -98,7 +98,7 @@ function DiffView({ diff, fallback }: { diff: DiffLine[] | null; fallback: strin
           <div
             key={idx}
             className={cn(
-              'whitespace-pre-wrap px-3 font-[var(--font-mono)] text-xs leading-5',
+              'whitespace-pre-wrap px-3 font-mono text-xs leading-5',
               l.type === 'add' && 'bg-[color-mix(in_srgb,var(--theme-success)_14%,transparent)] text-fg',
               l.type === 'del' && 'bg-[color-mix(in_srgb,var(--theme-danger)_12%,transparent)] text-muted',
               l.type === 'same' && 'text-muted',
@@ -325,10 +325,10 @@ export function InternalEditorModal({
                   {proposalDiff === 'text' || generating ? (
                     <pre
                       ref={streamRef}
-                      className="h-full overflow-y-auto whitespace-pre-wrap rounded-xl border border-[var(--theme-accent-border,var(--theme-accent))] p-3 font-[var(--font-mono)] text-xs leading-5 text-fg"
+                      className="h-full overflow-y-auto whitespace-pre-wrap rounded-lg border border-[var(--theme-accent-border,var(--theme-accent))] p-3 font-mono text-xs leading-5 text-fg"
                     >
                       {proposal}
-                      {generating && <span className="animate-pulse text-accent">▍</span>}
+                      {generating && <span className="gd-pulse text-accent">▍</span>}
                     </pre>
                   ) : (
                     <DiffView diff={proposalDiff} fallback={proposal} />
@@ -367,10 +367,10 @@ export function InternalEditorModal({
                     setDirty(true)
                   }}
                   spellCheck={false}
-                  className="min-h-0 w-full flex-1 resize-none rounded-xl border border-line bg-[var(--theme-input)] p-3 font-[var(--font-mono)] text-xs leading-5 text-fg outline-none focus:border-accent"
+                  className="min-h-0 w-full flex-1 resize-none rounded-md border border-line bg-[var(--theme-input)] p-3 font-mono text-xs leading-5 text-fg outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent-soft"
                 />
               ) : (
-                <pre className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded-xl border border-line-subtle p-3 font-[var(--font-mono)] text-xs leading-5 text-fg">
+                <pre className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line bg-surface p-3 font-mono text-xs leading-5 text-fg">
                   {current}
                 </pre>
               )
@@ -390,8 +390,8 @@ export function InternalEditorModal({
             )}
           </div>
           {showHistory && history && (
-            <div className="w-64 shrink-0 overflow-y-auto rounded-xl border border-line-subtle p-1">
-              <div className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted">History</div>
+            <div className="w-64 shrink-0 overflow-y-auto rounded-lg border border-line p-1">
+              <div className="px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">History</div>
               <QueryState
                 query={historyQuery}
                 errorTitle="Could not load history"
@@ -404,19 +404,19 @@ export function InternalEditorModal({
                   <div
                     key={rev.id}
                     className={cn(
-                      'group flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs',
-                      diffing?.rev.id === rev.id && 'bg-card',
-                      i !== 0 && 'cursor-pointer transition-colors hover:bg-card',
+                      'group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs',
+                      diffing?.rev.id === rev.id && 'bg-raised',
+                      i !== 0 && 'cursor-pointer transition-colors hover:bg-hover',
                     )}
                     onClick={i === 0 ? undefined : () => void openDiff(rev)}
                     title={i === 0 ? undefined : 'Show changes since this revision'}
                   >
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-fg">
-                        {rev.version !== undefined && <span className="mr-1.5 font-[var(--font-mono)] text-accent">v{rev.version}</span>}
+                        {rev.version !== undefined && <span className="mr-1.5 font-mono text-accent">v{rev.version}</span>}
                         {i === 0 ? 'Current' : relativeTime(rev.createdAt)}
                       </div>
-                      <div className="truncate text-[11px] text-muted">
+                      <div className="truncate font-mono text-[11px] text-muted">
                         {rev.createdBy ?? 'unknown'} · {rev.size.toLocaleString()} chars
                       </div>
                       {rev.note && <div className="truncate text-[11px] italic text-muted">{rev.note}</div>}
@@ -468,8 +468,8 @@ export function InternalEditorModal({
             </Button>
           </div>
         )}
-        {museError && <p className="text-xs text-[color:var(--theme-danger)]">{museError}</p>}
-        <div className="flex items-center gap-2 border-t border-line-subtle pt-3">
+        {museError && <p className="text-xs text-danger">{museError}</p>}
+        <div className="flex items-center gap-2 border-t border-line pt-3">
           {muse && editable && (
             <Button
               variant={museOpen ? 'outline' : 'ghost'}
@@ -486,7 +486,7 @@ export function InternalEditorModal({
             </Button>
           )}
           {footerExtra}
-          <span className="ml-auto text-[11px] text-muted">{editable && dirty ? 'Unsaved changes · ⌘S to save' : ''}</span>
+          <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{editable && dirty ? 'Unsaved changes · ⌘S to save' : ''}</span>
           <Button variant="ghost" size="sm" onClick={onClose}>
             Close
           </Button>
@@ -508,12 +508,12 @@ export function InternalEditorModal({
         transition={{ type: 'tween', duration: 0.18, ease: 'easeOut' }}
         className="absolute inset-0 z-30 flex flex-col bg-[var(--theme-panel)]"
       >
-        <div className="flex shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-3.5">
+        <div className="flex shrink-0 items-center gap-2 border-b border-line px-6 py-3.5">
           <button
             type="button"
             onClick={onClose}
             title="Back"
-            className="grid h-7 w-7 place-items-center rounded-lg text-muted transition-colors hover:bg-card hover:text-fg"
+            className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
           >
             <ChevronLeft size={16} />
           </button>

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2 } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
-import { InfoTip } from '@/components/ui/info-tip'
+import { GeneratingBars } from '@/components/ui/generating'
+import { SectionHeader } from '@/components/ui/section-header'
 import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -49,31 +49,31 @@ function TargetFields({ t, secret, onChange, onSecret }: { t: TargetConfig; secr
   return (
     <>
       <label className="text-xs text-muted">
-        Endpoint
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Endpoint</span>
         <Input value={t.endpoint} onChange={(e) => onChange({ endpoint: e.target.value })} placeholder="https://s3.us-west-004.backblazeb2.com" className="mt-1 w-full" />
       </label>
       <label className="text-xs text-muted">
-        Bucket
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Bucket</span>
         <Input value={t.bucket} onChange={(e) => onChange({ bucket: e.target.value })} placeholder="talaria-uploads" className="mt-1 w-full" />
       </label>
       <label className="text-xs text-muted">
-        Region <span className="opacity-70">(blank = derived from endpoint)</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Region</span> <span className="opacity-70">(blank = derived from endpoint)</span>
         <Input value={t.region} onChange={(e) => onChange({ region: e.target.value })} placeholder="auto" className="mt-1 w-full" />
       </label>
       <label className="text-xs text-muted">
-        Key prefix <span className="opacity-70">(optional, ends with /)</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key prefix</span> <span className="opacity-70">(optional, ends with /)</span>
         <Input value={t.prefix} onChange={(e) => onChange({ prefix: e.target.value })} placeholder="talaria/" className="mt-1 w-full" />
       </label>
       <label className="text-xs text-muted">
-        Access key ID
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Access key ID</span>
         <Input value={t.accessKeyId} onChange={(e) => onChange({ accessKeyId: e.target.value })} className="mt-1 w-full" />
       </label>
       <label className="text-xs text-muted">
-        Secret access key
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Secret access key</span>
         <Input type="password" value={secret} onChange={(e) => onSecret(e.target.value)} placeholder={t.hasSecret ? '•••••••• (saved)' : ''} className="mt-1 w-full" />
       </label>
       <label className="flex items-center gap-2 text-xs text-muted sm:col-span-2">
-        <input type="checkbox" checked={t.pathStyle} onChange={(e) => onChange({ pathStyle: e.target.checked })} />
+        <input type="checkbox" checked={t.pathStyle} onChange={(e) => onChange({ pathStyle: e.target.checked })} className="accent-accent" />
         Path-style requests <span className="opacity-70">(works everywhere; uncheck only for virtual-host buckets)</span>
       </label>
     </>
@@ -111,7 +111,7 @@ export function StoragePanel() {
     return (
       <Panel>
         <Skeleton className="mb-4 h-4 w-20 rounded-full" />
-        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-line-subtle p-3">
+        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line p-3">
           <Skeleton className="h-3 w-32 rounded-full" />
           <Skeleton className="h-3 w-36 rounded-full" delay={0.12} />
           <Skeleton className="h-3 w-32 rounded-full" delay={0.24} />
@@ -193,23 +193,24 @@ export function StoragePanel() {
 
   return (
     <Panel>
-      <div className="mb-4 flex items-center gap-1.5">
-        <span className="text-sm font-semibold text-fg">Storage</span>
-        <InfoTip text="Where uploaded files live. Local disk keeps everything on this machine; the built-in bucket is Talaria's own bundled object store (no cloud account needed); external works with any S3-compatible service — AWS S3, Backblaze B2, Cloudflare R2, MinIO. Each file remembers where it was stored, so switching never breaks existing links. A replica mirrors every file to a second provider for redundancy." />
-      </div>
+      <SectionHeader
+        className="mb-4"
+        title="Storage"
+        info="Where uploaded files live. Local disk keeps everything on this machine; the built-in bucket is Talaria's own bundled object store (no cloud account needed); external works with any S3-compatible service — AWS S3, Backblaze B2, Cloudflare R2, MinIO. Each file remembers where it was stored, so switching never breaks existing links. A replica mirrors every file to a second provider for redundancy."
+      />
 
-      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-line-subtle p-3 text-xs text-muted">
-        <span><span className="text-fg">{data.stats.local}</span> on disk ({fmtBytes(data.stats.localBytes)})</span>
-        <span><span className="text-fg">{data.stats.internal}</span> in the built-in bucket</span>
-        <span><span className="text-fg">{data.stats.s3}</span> in external storage</span>
+      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line p-3 text-xs text-muted">
+        <span><span className="font-mono text-fg">{data.stats.local}</span> on disk (<span className="font-mono">{fmtBytes(data.stats.localBytes)}</span>)</span>
+        <span><span className="font-mono text-fg">{data.stats.internal}</span> in the built-in bucket</span>
+        <span><span className="font-mono text-fg">{data.stats.s3}</span> in external storage</span>
         {migrating && (
-          <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> moving {data.migrate!.moved}/{data.migrate!.total}</span>
+          <span className="flex items-center gap-1.5"><GeneratingBars bars={3} variant="breathe" step={0.2} /> moving <span className="font-mono">{data.migrate!.moved}/{data.migrate!.total}</span></span>
         )}
         {syncing && (
-          <span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> syncing {data.sync!.moved}/{data.sync!.total} to replica</span>
+          <span className="flex items-center gap-1.5"><GeneratingBars bars={3} variant="breathe" step={0.2} /> syncing <span className="font-mono">{data.sync!.moved}/{data.sync!.total}</span> to replica</span>
         )}
-        {!migrating && data.migrate?.failed ? <span className="text-[color:var(--theme-danger)]">{data.migrate.failed} failed to move</span> : null}
-        {!syncing && data.sync?.failed ? <span className="text-[color:var(--theme-danger)]">{data.sync.failed} failed to sync</span> : null}
+        {!migrating && data.migrate?.failed ? <span className="text-danger">{data.migrate.failed} failed to move</span> : null}
+        {!syncing && data.sync?.failed ? <span className="text-danger">{data.sync.failed} failed to sync</span> : null}
         {inBucket && data.stats.local > 0 && !migrating && (
           <Button size="sm" variant="outline" className="ml-auto" onClick={() => void migrate()} disabled={busy}>
             Move local files to bucket
@@ -219,7 +220,7 @@ export function StoragePanel() {
 
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="text-xs text-muted">
-          Mode
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Mode</span>
           <Select value={form.mode} onChange={(e) => set({ mode: e.target.value as StorageAdmin['config']['mode'] })} className="mt-1 w-full">
             <option value="local">Local disk</option>
             <option value="internal">Built-in bucket (bundled MinIO)</option>
@@ -228,7 +229,7 @@ export function StoragePanel() {
         </label>
         {form.mode === 'internal' && (
           <div className="self-end pb-1 text-xs text-muted">
-            {data.internal.endpoint} · bucket <span className="text-fg">{data.internal.bucket}</span>
+            <span className="font-mono text-[11px]">{data.internal.endpoint}</span> · bucket <span className="font-mono text-[11px] text-fg">{data.internal.bucket}</span>
             <span className="opacity-70"> — creds via TALARIA_S3_* env; bucket auto-created</span>
           </div>
         )}
@@ -236,9 +237,9 @@ export function StoragePanel() {
       </div>
 
       {/* Replica — mirror every blob to a second provider */}
-      <div className="mt-4 rounded-xl border border-line-subtle p-3">
+      <div className="mt-4 rounded-md border border-line p-3">
         <label className="flex items-center gap-2 text-xs font-medium text-fg">
-          <input type="checkbox" checked={form.replica.enabled} onChange={(e) => setReplica({ enabled: e.target.checked })} />
+          <input type="checkbox" checked={form.replica.enabled} onChange={(e) => setReplica({ enabled: e.target.checked })} className="accent-accent" />
           Replicate to a second provider
         </label>
         <p className="mt-1 text-xs text-muted">
@@ -269,7 +270,7 @@ export function StoragePanel() {
             Test connection
           </Button>
         )}
-        {note && <span className={`text-xs ${note.ok ? 'text-muted' : 'text-[color:var(--theme-danger)]'}`}>{note.text}</span>}
+        {note && <span className={`text-xs ${note.ok ? 'text-muted' : 'text-danger'}`}>{note.text}</span>}
       </div>
     </Panel>
   )

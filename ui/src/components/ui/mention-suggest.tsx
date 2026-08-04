@@ -4,6 +4,7 @@ import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
 import { PluginKey } from '@tiptap/pm/state'
 import { ReactRenderer } from '@tiptap/react'
 import { cn } from '@/lib/cn'
+import { popPanel } from '@/components/chat/chat-chrome'
 import type { Mentionable } from '@/components/chat/mentions'
 
 // "@" people-mention autocomplete for RichEditor — the TipTap counterpart of
@@ -51,7 +52,7 @@ const MentionList = forwardRef<MenuHandle, { items: Mentionable[]; command: (ite
 
     if (items.length === 0) return null
     return (
-      <div ref={listRef} className="max-h-56 w-60 overflow-y-auto rounded-xl border border-line bg-card p-1 shadow-lg">
+      <div ref={listRef} className={cn(popPanel, 'max-h-56 w-60 overflow-y-auto')}>
         {items.map((item, i) => (
           <button
             key={item.insert}
@@ -62,10 +63,10 @@ const MentionList = forwardRef<MenuHandle, { items: Mentionable[]; command: (ite
               e.preventDefault()
               command(item)
             }}
-            className={cn('flex w-full items-baseline gap-2 rounded-lg px-2 py-1.5 text-left', i === active ? 'bg-sidebar' : 'hover:bg-sidebar')}
+            className={cn('flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left transition-colors', i === active ? 'bg-hover' : 'hover:bg-hover')}
           >
-            <span className="truncate text-xs font-medium text-fg">{item.label}</span>
-            {item.sub && <span className="ml-auto truncate text-[11px] text-muted">{item.sub}</span>}
+            <span className="truncate font-sans text-[13px] text-fg">{item.label}</span>
+            {item.sub && <span className="ml-auto truncate font-mono text-[10px] tracking-[0.05em] text-muted">{item.sub}</span>}
           </button>
         ))}
       </div>

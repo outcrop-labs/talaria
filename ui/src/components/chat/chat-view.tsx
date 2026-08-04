@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { useContextMenu } from '@/components/ui/context-menu'
+import { AgentChip } from '@/components/chat/agent-picker'
 import { TierPicker } from '@/components/chat/tier-picker'
 import { StopButton } from '@/components/chat/composer-buttons'
 import { KeyHint } from '@/components/ui/kbd'
 import { type Mentionable } from '@/components/chat/mentions'
 import { EmojiButton } from '@/components/chat/emoji'
 import { ChatComposer, type ChatComposerHandle } from '@/components/chat/chat-composer'
+import { MessageAvatar } from '@/components/chat/chat-chrome'
 import { AttachButton, PendingAttachments, MessageAttachments } from '@/components/chat/attachments'
 import { GuardCaveat, type GuardFinding } from '@/components/chat/guard-caveat'
 import { Markdown } from '@/components/ui/markdown'
 import { Disclosure } from '@/components/ui/disclosure'
+import { GeneratingBars, GeneratingDots, GeneratingHelix } from '@/components/ui/generating'
 import { Skeleton } from '@/components/ui/skeleton'
 import { resolveAgentMedia } from '@/lib/agent-media'
 import { queueChatMessage, streamChat } from '@/lib/chat'
@@ -47,6 +50,8 @@ export function ChatView({
   agentModel,
   agentLabel,
   tiers = [],
+  agents = [],
+  onAgentChange,
   conversationId,
   newChatSignal,
   onCreated,
@@ -60,6 +65,13 @@ export function ChatView({
   agentLabel: string
   /** Requestable model tiers for this agent (alias names). */
   tiers?: string[]
+  /** Fleet options for the composer rail's agent chip (spec §7). A
+   *  conversation is bound to its agent, so picking a different one is
+   *  route-level: `onAgentChange` swaps to that agent's thread — the same
+   *  behavior as picking the agent in the host's sidebar. Chip renders only
+   *  when both are provided. */
+  agents?: { id: string; label: string; role?: string }[]
+  onAgentChange?: (id: string) => void
   conversationId: string | null
   newChatSignal: number
   onCreated: (id: string) => void
@@ -290,27 +302,28 @@ export function ChatView({
       <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto px-6 py-6">
         {loadingConversation ? (
           // Conversation-shaped shimmer while the thread's history loads —
-          // alternating user/assistant bubbles, never the "Talk to X" hero.
+          // flattened message rows (avatar square + name + body), never the
+          // "Talk to X" hero.
           <div aria-hidden className="space-y-5">
-            {Array.from({ length: 5 }, (_, i) =>
-              i % 2 === 0 ? (
-                <div key={i} className="flex justify-end">
-                  <Skeleton className="h-10 w-[60%] rounded-2xl" delay={i * 0.12} />
+            {Array.from({ length: 5 }, (_, i) => (
+              <div key={i} className="flex gap-2.5">
+                <Skeleton className="mt-0.5 h-6 w-6 shrink-0 rounded" delay={i * 0.12} />
+                <div className="min-w-0 flex-1 space-y-2 pt-1">
+                  <Skeleton className="h-2.5 w-24 rounded-full" delay={i * 0.12} />
+                  <div style={{ width: ['62%', '84%', '48%', '90%', '70%'][i] }}>
+                    <Skeleton className="h-2.5 w-full rounded-full" delay={i * 0.12 + 0.06} />
+                  </div>
                 </div>
-              ) : (
-                <div key={i} className="flex justify-start">
-                  <Skeleton className={i === 1 ? 'h-24 w-[75%] rounded-2xl' : 'h-16 w-[70%] rounded-2xl'} delay={i * 0.12} />
-                </div>
-              ),
-            )}
+              </div>
+            ))}
           </div>
         ) : messages.length === 0 ? (
           <div className="grid h-full place-items-center text-center">
             <div>
-              <div className="mercury-text mb-1 text-lg font-semibold">
+              <div className="mb-1 font-sans text-lg font-semibold text-fg">
                 {kind === 'plan' ? `Plan with ${agentLabel}` : `Talk to ${agentLabel}`}
               </div>
-              <div className="text-sm text-muted">
+              <div className="font-sans text-sm text-muted">
                 {kind === 'plan'
                   ? 'Think through the work together, then draft tickets and send them to a board.'
                   : 'Ask anything. Memory, skills, and tools intact.'}
@@ -324,17 +337,13 @@ export function ChatView({
                 { label: 'Copy text', disabled: !m.content, onSelect: () => void navigator.clipboard.writeText(m.content) },
               ])
             return m.role === 'user' ? (
-              // In multiplayer plans, label user turns whenever more than one
-              // human voice appears in the thread.
-              <UserBubble
+              // Flattened user turn (spec §10) — the author name keeps the
+              // multiplayer voices apart on shared plans.
+              <UserTurn
                 key={i}
                 content={m.content}
                 attachments={m.attachments}
-                author={
-                  m.authorLabel && messages.some((o) => o.role === 'user' && o.authorLabel && o.authorLabel !== m.authorLabel)
-                    ? m.authorLabel
-                    : null
-                }
+                author={m.authorLabel ?? null}
                 onContextMenu={copyMenu}
               />
             ) : (
@@ -342,6 +351,7 @@ export function ChatView({
                 key={i}
                 message={m}
                 agentModel={agentModel}
+                agentLabel={agentLabel}
                 live={(streaming || resuming) && i === messages.length - 1}
                 onContextMenu={copyMenu}
               />
@@ -352,8 +362,10 @@ export function ChatView({
       </div>
 
       <div className="relative px-6 pb-6">
+        {/* The composer panel (spec §7): #141312 body, strong 1px border,
+            radius 8, 8px padding/gap, matte float shadow. */}
         <div
-          className="mercury-panel rounded-2xl p-2"
+          className="flex flex-col gap-2 rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]"
           onDragOver={(e) => {
             if (e.dataTransfer.types.includes('Files')) e.preventDefault()
           }}
@@ -371,7 +383,7 @@ export function ChatView({
           <PendingAttachments items={attachments} onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} />
           <ChatComposer
             ref={composerRef}
-            placeholder={`Message ${agentLabel}`}
+            placeholder={`What would you like ${agentLabel} to work on?`}
             mentionables={mentionables}
             onSubmit={(md) => void send(md)}
             onFiles={(files) => {
@@ -383,6 +395,7 @@ export function ChatView({
             }}
             onEscape={streaming ? stop : undefined}
             onEmptyChange={setComposerEmpty}
+            canSend={!composerEmpty || attachments.length > 0}
             leftControls={
               <>
                 <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} disabled={streaming} />
@@ -391,6 +404,10 @@ export function ChatView({
             }
             rightControls={
               <>
+                {/* Spec §7 rail order: agent chip, then model chip. */}
+                {agents.length > 0 && onAgentChange && (
+                  <AgentChip agents={agents} value={agentModel} onChange={onAgentChange} />
+                )}
                 {tiers.length > 0 && <TierPicker tiers={tiers} value={tier} onChange={setTier} />}
                 {streaming && <StopButton onClick={stop} />}
                 <KeyHint
@@ -408,7 +425,9 @@ export function ChatView({
   )
 }
 
-function UserBubble({
+/** Flattened user turn (spec §10): avatar square + name row, 14px sans body —
+ *  no heavy bubble. */
+function UserTurn({
   content,
   attachments,
   author,
@@ -419,31 +438,37 @@ function UserBubble({
   author?: string | null
   onContextMenu?: (e: React.MouseEvent) => void
 }) {
+  const name = author ?? 'You'
   return (
-    <div className="flex flex-col items-end">
-      {author && <div className="mb-0.5 pr-1 text-[10px] font-medium text-muted">{author}</div>}
-      <div
-        className="max-w-[85%] rounded-2xl border px-4 py-2.5 text-sm text-[color:var(--chat-user-foreground)]"
-        style={{ background: 'var(--chat-user-bg)', borderColor: 'var(--chat-user-border)' }}
-        onContextMenu={onContextMenu}
-      >
-        {/* Markdown, like every other message surface — a user turn was the
-            one bubble still rendering raw text. */}
-        <Markdown>{content}</Markdown>
-        {attachments && attachments.length > 0 && <MessageAttachments items={attachments} />}
+    <div className="flex gap-2.5" onContextMenu={onContextMenu}>
+      <MessageAvatar name={name} className="mt-0.5" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="font-sans text-[13px] font-medium text-fg">{name}</span>
+        </div>
+        <div className="font-sans text-sm text-fg">
+          {/* Markdown, like every other message surface — a user turn was the
+              one bubble still rendering raw text. */}
+          <Markdown>{content}</Markdown>
+          {attachments && attachments.length > 0 && <MessageAttachments items={attachments} />}
+        </div>
       </div>
     </div>
   )
 }
 
+/** Flattened assistant turn (spec §10): avatar square + agent name, compact
+ *  mono tool rows, 14px sans body. */
 function AssistantTurn({
   message,
   agentModel,
+  agentLabel,
   live,
   onContextMenu,
 }: {
   message: DisplayMessage
   agentModel: string
+  agentLabel: string
   live: boolean
   onContextMenu?: (e: React.MouseEvent) => void
 }) {
@@ -453,12 +478,16 @@ function AssistantTurn({
   const empty = !content && !hasReasoning && !hasTools
 
   return (
-    <div className="flex justify-start">
-      <div
-        className="max-w-[85%] space-y-2 rounded-2xl border px-4 py-2.5 text-sm text-[color:var(--chat-assistant-foreground)]"
-        style={{ background: 'var(--chat-assistant-bg)', borderColor: 'var(--chat-assistant-border)' }}
-        onContextMenu={onContextMenu}
-      >
+    <div className="flex gap-2.5" onContextMenu={onContextMenu}>
+      <MessageAvatar name={agentLabel} className="mt-0.5" />
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="flex items-baseline gap-2">
+          <span className="font-sans text-[13px] font-medium text-fg">{agentLabel}</span>
+          <span className="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
+            agent
+          </span>
+        </div>
+
         {hasReasoning && (
           <Disclosure title="Thinking" icon={<span>✦</span>}>
             <div className="whitespace-pre-wrap text-xs text-muted">{reasoning}</div>
@@ -467,18 +496,17 @@ function AssistantTurn({
 
         {hasTools && (
           <Disclosure title={`${tools!.length} tool ${tools!.length === 1 ? 'call' : 'calls'}`} icon={<span>⚙</span>}>
-            <ul className="space-y-1.5">
+            {/* Compact mono tool rows, hairline separated (spec §10). */}
+            <ul className="divide-y divide-line">
               {tools!.map((t, i) => (
-                <li key={t.id ?? `${t.name}-${i}`} className="flex items-start gap-2 text-xs">
+                <li key={t.id ?? `${t.name}-${i}`} className="flex items-start gap-2 py-1.5 font-mono text-[11px] first:pt-0 last:pb-0">
                   <span className="mt-0.5 shrink-0">
                     <ToolStatus status={t.status} />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="font-semibold text-fg">{t.name}</span>
+                    <span className="text-fg">{t.name}</span>
                     {t.label && (
-                      <span className="mt-0.5 block whitespace-pre-wrap break-words font-[var(--font-mono)] text-muted">
-                        {t.label}
-                      </span>
+                      <span className="mt-0.5 block whitespace-pre-wrap break-words text-muted">{t.label}</span>
                     )}
                   </span>
                 </li>
@@ -487,17 +515,21 @@ function AssistantTurn({
           </Disclosure>
         )}
 
-        {content && <Markdown>{resolveAgentMedia(content, agentModel)}</Markdown>}
+        {content && (
+          <div className="font-sans text-sm text-fg">
+            <Markdown>{resolveAgentMedia(content, agentModel)}</Markdown>
+          </div>
+        )}
         {!live && <GuardCaveat findings={guard} />}
 
-        {empty && live && (
-          <span className="inline-flex gap-1 py-1">
-            <Dot /> <Dot delay={0.15} /> <Dot delay={0.3} />
-          </span>
-        )}
-        {content && live && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-accent align-middle" />}
+        {/* Spec §9 state mapping: submitting (awaiting the first token) rides
+            the fast gold SIGNAL WEAVE; once reasoning/tools stream but prose
+            hasn't landed, the CONTEXT HELIX loops on the standard budget. */}
+        {empty && live && <GeneratingDots className="py-1" />}
+        {!empty && !content && live && <GeneratingHelix className="py-1" />}
+        {content && live && <span className="gd-pulse ml-0.5 inline-block h-4 w-1.5 bg-accent align-middle" />}
         {!live && status === 'streaming' && (
-          <div className="text-xs text-muted">· saved (was in progress)</div>
+          <div className="font-mono text-[11px] text-muted">· saved (was in progress)</div>
         )}
         {!live && status === 'error' && (
           <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
@@ -512,13 +544,11 @@ function AssistantTurn({
 }
 
 function ToolStatus({ status }: { status: 'running' | 'completed' }) {
+  // Tool in flight = STAGE SCAN on the standard budget (spec §9), scaled to
+  // the 11px mono row; done = the quiet green check.
   return status === 'completed' ? (
     <span className="text-[color:var(--theme-success)]">✓</span>
   ) : (
-    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent" />
+    <GeneratingBars bars={4} variant="scan" step={0.18} className="text-accent [&>span]:h-[9px]" />
   )
-}
-
-function Dot({ delay = 0 }: { delay?: number }) {
-  return <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted" style={{ animationDelay: `${delay}s` }} />
 }
