@@ -58,6 +58,8 @@ const MIGRATIONS: string[] = [
      unique (conversation_id, seq)
    )`,
   `create index if not exists messages_conv_idx on messages(conversation_id, seq)`,
+  `create index if not exists messages_conversation_timeline_idx
+     on messages(conversation_id, created_at desc, id desc)`,
   // Fleet agent registry — Talaria's own "brain" (ripped from mission-control's
   // agents table). Agents register + heartbeat to Talaria, not MC.
   `create table if not exists fleet_agents (
@@ -799,7 +801,7 @@ const MIGRATIONS: string[] = [
   // Stable host port per agent, so the app (on the host) reaches each agent's
   // persona gateway directly — no separate bridge/multiplexer container.
   `alter table agent_defs add column if not exists gateway_port int`,
-  // Conversation kind — 'chat' (default) or 'plan' (the planning surface).
+  // Conversation kind — chat, plan, or the private singleton Inbox stream.
   `alter table conversations add column if not exists kind text not null default 'chat'`,
   // Ticket/plan templates — an org-wide library of markdown skeletons + prompt
   // guidance. Tickets and plan docs stay markdown; the skeleton IS the schema.
@@ -859,6 +861,9 @@ const MIGRATIONS: string[] = [
    )`,
   // Who wrote a user turn — multiplayer plans need voices told apart.
   `alter table messages add column if not exists author_user_id uuid references users(id) on delete set null`,
+  // Server-owned message metadata carries Inbox focus context and attribution.
+  // It is never included in generic model history or exposed through Comms.
+  `alter table messages add column if not exists metadata jsonb not null default '{}'`,
   // Research runs: cited research pipelines (Recon / Brief / Expedition). The
   // report itself is a doc artifact; sources carry the [n] citation registry.
   `create table if not exists research_runs (
@@ -1145,6 +1150,56 @@ const MIGRATIONS: string[] = [
      generated_at timestamptz not null default now(),
      primary key (user_id, scope)
    )`,
+  // Focus Queue: per-user display state and assistant brief cache. Source rows
+  // stay authoritative; this table only records snooze/view state and a brief
+  // keyed to the source fingerprint that produced it.
+  `create table if not exists inbox_focus_state (
+     user_id uuid not null references users(id) on delete cascade,
+     source_type text not null,
+     source_id text not null,
+     snoozed_until timestamptz,
+     viewed_at timestamptz,
+     content_fingerprint text,
+     brief jsonb,
+     brief_generated_at timestamptz,
+     updated_at timestamptz not null default now(),
+     primary key (user_id, source_type, source_id)
+   )`,
+  `create index if not exists inbox_focus_state_snooze_idx
+     on inbox_focus_state(user_id, snoozed_until)`,
+  // Focus Queue decisions deliberately retain only durable inputs and outcomes,
+  // never partial agent streams or conversational scratch. A hashed,
+  // short-lived token gates identity-bearing external actions.
+  `create table if not exists inbox_decisions (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     source_type text not null,
+     source_id text not null,
+     instruction text,
+     action_id text,
+     agent_model text,
+     delegate_model text,
+     status text not null,
+     proposal jsonb,
+     outcome jsonb,
+     confirmation_token_hash text,
+     expires_at timestamptz,
+     created_at timestamptz not null default now(),
+     confirmed_at timestamptz,
+     completed_at timestamptz
+   )`,
+  `create index if not exists inbox_decisions_user_idx
+     on inbox_decisions(user_id, created_at desc)`,
+  `create index if not exists inbox_decisions_confirmation_idx
+     on inbox_decisions(user_id, confirmation_token_hash) where status = 'proposed'`,
+  `alter table inbox_decisions add column if not exists conversation_id uuid references conversations(id) on delete set null`,
+  `alter table inbox_decisions add column if not exists user_message_id uuid references messages(id) on delete set null`,
+  `alter table inbox_decisions add column if not exists assistant_message_id uuid references messages(id) on delete set null`,
+  `alter table inbox_decisions add column if not exists focus_context jsonb`,
+  `create unique index if not exists conversations_inbox_user_idx
+     on conversations(user_id) where kind = 'inbox' and archived = false`,
+  `create index if not exists inbox_decisions_conversation_timeline_idx
+     on inbox_decisions(conversation_id, created_at desc, id desc) where conversation_id is not null`,
   // Late patches — these reference tables created above, so they must stay at
   // the tail of the list or a FRESH database fails its very first migration
   // ("relation ... does not exist"; existing DBs never noticed).

@@ -55,8 +55,10 @@ export const ChatComposer = forwardRef<
     leftControls?: React.ReactNode
     /** Host controls rendered at the END of the bottom row (send hint, tiers, stop). */
     rightControls?: React.ReactNode
+    /** Dense docks may hide the formatting strip below the sm breakpoint. */
+    compactOnNarrow?: boolean
   }
->(function ChatComposer({ placeholder, mentionables, onSubmit, onFiles, onEscape, onEmptyChange, disabled, canSend, leftControls, rightControls }, ref) {
+>(function ChatComposer({ placeholder, mentionables, onSubmit, onFiles, onEscape, onEmptyChange, disabled, canSend, leftControls, rightControls, compactOnNarrow }, ref) {
   const [empty, setEmpty] = useState(true)
   // Refs so the keymap (bound once at editor creation) sees fresh handlers.
   const submitRef = useRef<() => void>(() => {})
@@ -163,7 +165,7 @@ export const ChatComposer = forwardRef<
       <div className="flex min-w-0 items-center gap-1.5">
         {leftControls}
         {leftControls != null && <span className="mx-1 h-5 border-l border-line" />}
-        {editor && <ComposerToolbar editor={editor} />}
+        {editor && <ComposerToolbar editor={editor} className={compactOnNarrow ? 'hidden sm:flex' : undefined} />}
         <span className="flex-1" />
         {rightControls}
       </div>
@@ -173,7 +175,7 @@ export const ChatComposer = forwardRef<
 
 /** Slack's little formatting row, under the input. Buttons toggle marks on the
  *  selection; everything they do is also typeable as markdown. */
-function ComposerToolbar({ editor }: { editor: Editor }) {
+function ComposerToolbar({ editor, className }: { editor: Editor; className?: string }) {
   const active = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -216,7 +218,7 @@ function ComposerToolbar({ editor }: { editor: Editor }) {
   )
   const c = () => editor.chain().focus()
   return (
-    <div className="flex items-center gap-0.5">
+    <div className={cn('flex items-center gap-0.5', className)}>
       <Btn on={active.bold} title="Bold (⌘B or **text**)" action={() => c().toggleBold().run()}>
         <Bold size={13} />
       </Btn>

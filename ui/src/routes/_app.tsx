@@ -4,9 +4,11 @@ import { Brand, WingMark } from '@/components/brand'
 import { MercuryBackdrop } from '@/components/mercury-backdrop'
 import { NavRail, useNavCollapsed } from '@/components/app/nav-rail'
 import { TopStrip } from '@/components/app/top-strip'
+import { InboxFocusShell } from '@/components/inbox/inbox-focus-shell'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useDeniedViews, useLogout, useSession } from '@/lib/session'
 import { ADMIN_VIEWS } from '@/lib/nav'
+import { shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
 
 // Authenticated app shell (Gentle dew, spec §5–6): the collapsible nav rail
 // spans the full height on the left; the top strip sits above the active view
@@ -19,6 +21,7 @@ function AppLayout() {
   const { data: user, isLoading, isSuccess } = useSession()
   const denied = useDeniedViews()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const tab = useRouterState({ select: (s) => (s.location.search as { tab?: string }).tab })
   const navigate = useNavigate()
   const logout = useLogout()
 
@@ -59,7 +62,9 @@ function AppLayout() {
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <TopStrip user={user} onLogout={() => void logout()} />
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-            <Outlet />
+            <InboxFocusShell attachActiveDecision={shouldAttachInboxDecision(pathname, tab)}>
+              <Outlet />
+            </InboxFocusShell>
           </div>
         </div>
       </div>

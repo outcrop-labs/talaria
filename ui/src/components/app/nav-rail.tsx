@@ -21,9 +21,10 @@ import { cn } from '@/lib/cn'
 import { NAV, type NavItem } from '@/lib/nav'
 import { useBoards, useArchivedBoards, moveBoardToTeam, type Board } from '@/lib/boards'
 import { useTeams } from '@/lib/teams'
-import { useNotifications } from '@/lib/notifications'
+import { useInboxFocus, useInboxFocusSummary } from '@/lib/inbox-focus'
 import { useDeniedViews, useHasPerm, type SessionUser } from '@/lib/session'
 import { useEnabledApps } from '@/lib/apps'
+import { SidebarWorkOverview } from '@/components/app/sidebar-work-overview'
 
 // Gentle dew shell (spec §5): one collapsible nav — 208px sidebar ⇄ 64px icon
 // rail. The choice persists in localStorage, but the server can't see
@@ -83,7 +84,10 @@ export function NavRail({ user }: { user: SessionUser }) {
   const [creating, setCreating] = useState(false)
   const [teamsOpen, setTeamsOpen] = useState(false)
   const { collapsed, toggleCollapsed } = useNavCollapsed()
-  const unread = useNotifications().data?.unread ?? 0
+  const isInbox = pathname === '/' || pathname === '/inbox'
+  const inboxQueue = useInboxFocus({ enabled: isInbox })
+  const inboxSummary = useInboxFocusSummary({ enabled: !isInbox })
+  const unread = isInbox ? (inboxQueue.data?.counts.total ?? 0) : (inboxSummary.data?.count ?? 0)
   // Enabled apps slot into the sections as if they shipped with the platform:
   // work surfaces under Work, manage surfaces under Manage (grant-gated like
   // any core Manage view via deniedViews).
@@ -180,7 +184,9 @@ export function NavRail({ user }: { user: SessionUser }) {
         <Brand />
       </div>
 
-      <div className="mt-5 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+      <SidebarWorkOverview />
+
+      <div className="mt-3 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
         {sections.map((section) => (
           <div key={section.title}>
             <div className="flex h-6 items-center px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
