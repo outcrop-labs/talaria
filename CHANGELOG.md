@@ -22,8 +22,9 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
 - **Gentle Dew turns Talaria into a focused operator workspace.** A unified
   near-black visual system now carries the full authenticated product, while
   Inbox becomes a risk-ranked decision queue with source evidence, guarded
-  actions, persistent history, and an adjustable Scout panel that follows the
-  operator across work surfaces. The Paper-matched composer keeps attachments,
+  actions, persistent history, and an adjustable assistant panel that follows
+  the operator across work surfaces — addressing the owner's own assistant by
+  the name they gave it. The Paper-matched composer keeps attachments,
   agent and model selection, response modes, MCP access, skills, help, and
   dictation in one conversation flow without weakening existing approvals.
 - **Platform hardening: one API dialect, a modular UI kit, a complete SDK.**

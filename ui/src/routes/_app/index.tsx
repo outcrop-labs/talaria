@@ -165,7 +165,7 @@ function ConsoleHomePage({ tab }: { tab: Exclude<HomeTab, 'inbox'> }) {
         />
         {channelsList.notice}
 
-        {/* The inbox tab is the Scout focus queue now (HomePage renders
+        {/* The inbox tab is the focus queue now (HomePage renders
             <FocusInbox> before this console ever mounts), which is why the
             old inbox stack — briefing, notifications, approvals — is gone
             from here. `home` goes into BoardsTab whole, not pre-unwrapped:

@@ -239,7 +239,10 @@ export function buildInboxConversationPrompt(input: {
     return [
       '[Detached general Inbox conversation.]',
       'Tools are disabled. Do not call tools or propose executable mutations.',
-      'Answer as Scout, the personal assistant. Keep the response concise and useful.',
+      // Deliberately unnamed: an agent's identity comes from its own rendered
+      // persona, which already anchors it to the owner and the organization.
+      // Naming an assistant here would override that for every customer.
+      'Answer as the owner’s personal assistant. Keep the response concise and useful.',
       'Do not reveal private chain-of-thought. Provide only the final answer and, when useful, a short rationale summary.',
       `Recent visible conversation: ${JSON.stringify(history)}`,
       `Owner message: ${input.instruction}`,

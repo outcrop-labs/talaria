@@ -1208,7 +1208,7 @@ const MIGRATIONS: string[] = [
      last_used_at timestamptz
    )`,
 
-  // ── Merged from origin/main #202 (Gentle Dew workspace + Scout focus queue) ──
+  // ── Merged from origin/main #202 (Gentle Dew workspace + focus queue) ──
   // APPENDED, not merged in place. Their branch fixed the same fresh-install P0
   // by moving the forward-referencing statements to the TAIL; ours moved each
   // after its dependency and added index-keyed checksums. Adopting their order

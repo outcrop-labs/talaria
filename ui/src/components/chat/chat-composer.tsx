@@ -56,7 +56,7 @@ export const ChatComposer = forwardRef<
     /** Host controls rendered at the END of the bottom row (send hint, tiers, stop). */
     rightControls?: React.ReactNode
     /** Complete replacement for the bottom rail. Used by surfaces whose
-     *  control order is part of the product contract (for example Scout). */
+     *  control order is part of the product contract (the Inbox composer, for one). */
     controlRail?: React.ReactNode
     /** Dense docks may hide the formatting strip below the sm breakpoint. */
     compactOnNarrow?: boolean

@@ -361,7 +361,7 @@ function queryFnBodies(src) {
 
 // An "empty" is not only `[]` / `null` / `{}`. The #202 merge shipped
 // `if (!response.ok) return { agents: [] }` — a WRAPPED empty, which the first
-// two patterns below missed entirely, so a failed /api/mcp read told the Scout
+// two patterns below missed entirely, so a failed /api/mcp read told the assistant
 // composer the agent had no MCP servers. Any object literal whose values are
 // all empty arrays/nulls is the same lie, so match that shape too.
 const EMPTY = String.raw`(?:\[\s*\]|null|undefined|\{\s*\}|\{[^{}]*:\s*(?:\[\s*\]|null)\s*(?:,[^{}]*:\s*(?:\[\s*\]|null)\s*)*\})`

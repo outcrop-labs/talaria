@@ -120,7 +120,7 @@ export function AgentPicker({
   )
 }
 
-/** The composer rail's agent chip (spec §7): SCOUT-style — strong border,
+/** The composer rail's agent chip (spec §7): assistant-chip style — strong border,
  *  mono uppercase agent name, 3×12 meter marking where the pick sits in the
  *  fleet (capped at the spec's five bars) — opening the §7 popover (search
  *  row with ⌘K hint, mono header, right-aligned mono role meta, dashed-gold

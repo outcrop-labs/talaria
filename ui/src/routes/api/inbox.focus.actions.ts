@@ -25,7 +25,7 @@ export const Route = createFileRoute('/api/inbox/focus/actions')({
         const body = await parseBody(request, Body)
         if (body instanceof Response) return body
         const release = acquireInboxFocusLock(user.id)
-        if (!release) return json({ status: 'failed', message: 'Scout is already handling another Inbox action.' }, { status: 409 })
+        if (!release) return json({ status: 'failed', message: 'Your assistant is already handling another Inbox action.' }, { status: 409 })
         let result
         try {
           result = await attachTimelineToActionResult(user, await runFocusAction(user, body))

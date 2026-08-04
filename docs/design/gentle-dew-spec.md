@@ -172,7 +172,7 @@ The signature component. Applies to chat, channels/comms, and any prompt surface
   (~16px, stroke ground `#090A09`). Disabled: raised tile + muted glyph.
 
 ### Control rail (bottom row, 40px zone; chips 36px tall)
-Left→right: `+` attach (36×36, border `#302D29`, mono `+`); agent chip `SCOUT` (border
+Left→right: `+` attach (36×36, border `#302D29`, mono `+`); agent chip (border
 **`#4A4640`**, text 10px mono `#E7E2DB`, + meter: five 3×12 bars, gap ~2, lit bars
 `#C8B46C`, unlit raised-tone); model chip `✳ FABLE 5` (same anatomy, 10px glyph icon);
 mode chip `NORMAL MODE` (border `#302D29`, muted text); `● MCP 3` (7px gold dot + mono);

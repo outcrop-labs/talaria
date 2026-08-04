@@ -24,7 +24,7 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { MessageAttachments, PendingAttachments } from '@/components/chat/attachments'
 import { ChatComposer, type ChatComposerHandle } from '@/components/chat/chat-composer'
-import { ScoutComposerControls, type ScoutMode } from '@/components/inbox/scout-composer-controls'
+import { AssistantComposerControls, type AssistantMode } from '@/components/inbox/assistant-composer-controls'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { Markdown } from '@/components/ui/markdown'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -145,7 +145,7 @@ export interface InboxCommandOptions {
   focusKey: string | null
   delegateModel: string | null
   responseModel: string | null
-  mode: ScoutMode
+  mode: AssistantMode
   attachmentIds: string[]
   refs: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
 }
@@ -176,6 +176,11 @@ export const InboxChatPanel = forwardRef<
   { active, focusMode, assistant, busy, notice, streaming, onSubmit, onConfirm, onCancel, onRetry, onUndo },
   ref,
 ) {
+  // The owner named their assistant; use that name everywhere it appears. The
+  // fallback is deliberately generic rather than a product name — an agent's
+  // identity comes from its own persona, and hard-coding one here would put a
+  // stranger's agent name in front of every customer.
+  const assistantName = assistant?.name ?? 'your assistant'
   const { collapsed, setCollapsed } = usePanelCollapsed()
   const { width: savedWidth, setWidth: setSavedWidth } = usePanelWidth()
   const conversation = useInboxFocusConversation()
@@ -183,7 +188,7 @@ export const InboxChatPanel = forwardRef<
   const models = useModels()
   const skills = useSkillLibrary()
   const mcp = useQuery({
-    queryKey: ['inbox-scout-mcp'],
+    queryKey: ['inbox-assistant-mcp'],
     // A failed read is not "this agent has no MCP servers". Swallowing it here
     // would make the tool picker quietly under-report what the agent can do,
     // with no way for anything downstream to tell that apart from a real empty
@@ -193,7 +198,7 @@ export const InboxChatPanel = forwardRef<
   })
   const [delegateModel, setDelegateModel] = useState('')
   const [responseModel, setResponseModel] = useState('')
-  const [mode, setMode] = useState<ScoutMode>('normal')
+  const [mode, setMode] = useState<AssistantMode>('normal')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [detachedKey, setDetachedKey] = useState<string | null>(null)
@@ -229,7 +234,7 @@ export const InboxChatPanel = forwardRef<
     () => [
       {
         id: '',
-        label: assistant?.name ?? 'Scout',
+        label: assistant?.name ?? 'your assistant',
         role: assistant?.configured ? 'Personal orchestrator' : 'Not configured',
       },
       ...(agentData?.agents ?? []).filter((agent) => agent.id !== assistant?.model),
@@ -444,22 +449,22 @@ export const InboxChatPanel = forwardRef<
 
   if (collapsed) {
     return (
-      <aside className="relative z-20 flex h-full w-11 shrink-0 flex-col items-center border-r border-line bg-sidebar py-3" aria-label="Scout conversation collapsed">
+      <aside className="relative z-20 flex h-full w-11 shrink-0 flex-col items-center border-r border-line bg-sidebar py-3" aria-label="Assistant conversation collapsed">
         <button
           ref={expandButtonRef}
           type="button"
           onClick={expand}
-          aria-label="Expand Scout conversation"
+          aria-label="Expand assistant conversation"
           aria-expanded={false}
           className="relative grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg"
         >
           <ChevronRight size={14} />
-          {hiddenOutput && <span className="absolute right-0 top-0 h-1.5 w-1.5 rounded-full bg-accent" aria-label="New Scout output" />}
+          {hiddenOutput && <span className="absolute right-0 top-0 h-1.5 w-1.5 rounded-full bg-accent" aria-label="New assistant output" />}
         </button>
-        <div className="mt-5 grid h-8 w-8 place-items-center rounded-md border border-line text-muted" title="Scout">
+        <div className="mt-5 grid h-8 w-8 place-items-center rounded-md border border-line text-muted" title={assistantName}>
           <Bot size={14} />
         </div>
-        {(busy || conversation.data?.pages[0]?.working) && <span className="mt-2 h-1.5 w-1.5 animate-pulse rounded-full bg-success" aria-label="Scout is working" />}
+        {(busy || conversation.data?.pages[0]?.working) && <span className="mt-2 h-1.5 w-1.5 animate-pulse rounded-full bg-success" aria-label="Assistant is working" />}
         <MessageSquareText size={14} className="mt-auto text-ink-dim" />
       </aside>
     )
@@ -467,18 +472,18 @@ export const InboxChatPanel = forwardRef<
 
   return (
     <>
-      <button type="button" onClick={collapse} aria-label="Close Scout overlay" className="absolute inset-0 z-30 bg-black/45 min-[1400px]:hidden" />
+      <button type="button" onClick={collapse} aria-label="Close assistant overlay" className="absolute inset-0 z-30 bg-black/45 min-[1400px]:hidden" />
       <aside
         className={cn(
           'absolute inset-y-0 left-0 z-40 flex shrink-0 flex-col border-r border-line bg-sidebar shadow-[var(--theme-shadow-3)] min-[1400px]:relative min-[1400px]:z-20 min-[1400px]:shadow-none',
           !resizing && 'motion-safe:transition-[width,transform] motion-safe:duration-200',
         )}
         style={{ width: `min(${panelWidth}px, calc(100% - 44px))` }}
-        aria-label="Scout conversation"
+        aria-label="Assistant conversation"
       >
         <div
           role="separator"
-          aria-label="Resize Scout conversation"
+          aria-label="Resize assistant conversation"
           aria-orientation="vertical"
           aria-valuemin={MIN_INBOX_PANEL_WIDTH}
           aria-valuemax={MAX_INBOX_PANEL_WIDTH}
@@ -503,11 +508,11 @@ export const InboxChatPanel = forwardRef<
         <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
           <span className="grid h-7 w-7 place-items-center rounded-md border border-line text-muted"><Bot size={14} /></span>
           <div className="min-w-0 flex-1">
-            <div className="truncate font-sans text-[13px] font-medium text-fg">Scout</div>
+            <div className="truncate font-sans text-[13px] font-medium text-fg">{assistantName}</div>
             <div className="font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">{focusMode ? 'Inbox conversation' : 'Assistant conversation'}</div>
           </div>
           <span className={cn('h-1.5 w-1.5 rounded-full', busy || conversation.data?.pages[0]?.working ? 'animate-pulse bg-success' : 'bg-line-strong')} aria-hidden />
-          <button type="button" onClick={collapse} aria-label="Collapse Scout conversation" aria-expanded className="grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg">
+          <button type="button" onClick={collapse} aria-label="Collapse assistant conversation" aria-expanded className="grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg">
             <ChevronLeft size={14} />
           </button>
         </header>
@@ -534,7 +539,7 @@ export const InboxChatPanel = forwardRef<
             <div className="grid min-h-[320px] place-items-center text-center">
               <div className="max-w-xs">
                 <span className="mx-auto grid h-10 w-10 place-items-center rounded-full border border-line text-muted"><Bot size={16} /></span>
-                <h2 className="mt-4 font-sans text-base font-medium text-fg">{focusMode ? 'Work through Inbox with Scout' : 'Talk with Scout from anywhere'}</h2>
+                <h2 className="mt-4 font-sans text-base font-medium text-fg">{focusMode ? `Work through Inbox with ${assistantName}` : `Talk with ${assistantName} from anywhere`}</h2>
                 <p className="mt-2 font-sans text-xs leading-5 text-muted">{focusMode ? 'The active decision is attached by default. Remove it to have a general, non-executing conversation.' : 'This conversation stays with you as you move through Talaria. General messages do not execute tools or mutations.'}</p>
               </div>
             </div>
@@ -586,14 +591,14 @@ export const InboxChatPanel = forwardRef<
             <PendingAttachments items={attachments} onRemove={(id) => setAttachments((current) => current.filter((item) => item.id !== id))} />
             <ChatComposer
               ref={composerRef}
-              placeholder={attached ? 'Tell Scout what should happen…' : 'Message Scout…'}
+              placeholder={attached ? `Tell ${assistantName} what should happen…` : `Message ${assistantName}…`}
               onSubmit={submit}
               onFiles={(files) => void uploadFiles(files)}
               onEscape={() => window.innerWidth < 1400 && collapse()}
               disabled={busy}
               canSend={attachments.length > 0 || undefined}
               controlRail={
-                <ScoutComposerControls
+                <AssistantComposerControls
                   agents={agents}
                   agentValue={delegateModel}
                   onAgentChange={setDelegateModel}
@@ -613,7 +618,7 @@ export const InboxChatPanel = forwardRef<
             />
           </div>
           <div className="mt-1.5 flex items-center justify-between gap-2 px-1 font-mono text-[8px] uppercase tracking-[0.06em] text-ink-dim">
-            <span>{assistant?.configured ? `${assistant.name ?? 'Scout'} orchestrates` : 'Assistant not configured'}</span>
+            <span>{assistant?.configured ? `${assistant.name ?? 'your assistant'} orchestrates` : 'Assistant not configured'}</span>
             <span>{agentsLoading ? 'Loading' : delegateModel ? 'Specialist ready' : attached ? 'Decision attached' : 'No tools'}</span>
           </div>
         </div>
@@ -659,7 +664,7 @@ function TimelineEntry({
       <div className="border-t border-line pt-4">
         {entry.delegateModel && <div className="mb-2 font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">Consulted {entry.delegateModel}</div>}
         {entry.status === 'error'
-          ? <p className="font-sans text-xs text-danger">Scout did not finish this response.</p>
+          ? <p className="font-sans text-xs text-danger">Your assistant did not finish this response.</p>
           : <div className="font-sans text-[13px] leading-5 text-fg"><Markdown>{entry.content}</Markdown></div>}
       </div>
     )
