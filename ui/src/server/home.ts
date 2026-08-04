@@ -30,13 +30,16 @@ export interface OrgGlance {
   costToday: { tokens: number; usd: number } | null
 }
 
+/** The three human queues, scoped to what this user can see. */
+export interface HomeQueues {
+  triage: { count: number; items: WorkItem[] } // inbox — needs a human to assign
+  review: { count: number; items: WorkItem[] } // quality_review — needs sign-off
+  blocked: { count: number; items: WorkItem[] } // blocked — needs unblocking
+}
+
 export interface HomeSummary {
   org: OrgGlance
-  queues: {
-    triage: { count: number; items: WorkItem[] } // inbox — needs a human to assign
-    review: { count: number; items: WorkItem[] } // quality_review — needs sign-off
-    blocked: { count: number; items: WorkItem[] } // blocked — needs unblocking
-  }
+  queues: HomeQueues
   unread: number
   boards: number
   fleet: { online: number; total: number; down: string[] }
@@ -45,7 +48,15 @@ export interface HomeSummary {
 // Full lists — the Boards console shows everything per queue (capped sanely).
 const WINDOW = 100
 
-export async function homeSummary(userId: string, role: 'admin' | 'member' = 'member'): Promise<HomeSummary> {
+/** The queue pass on its own, without the org/fleet glance around it.
+ *
+ *  Split out for the daily digest (server/digest.ts), which needs exactly these
+ *  three numbers for every user in the workspace and none of the glance. Calling
+ *  `homeSummary` per user would have run `containerStatus` — a Docker round trip
+ *  — once per recipient, and an email that says "2 tickets in QA" must count
+ *  them the SAME WAY the screen does, so copying the query into the digest was
+ *  never an option. One definition, two callers. */
+export async function homeQueues(userId: string): Promise<HomeQueues> {
   const sql = await db()
 
   // One pass over the user's visible, active tickets in the three human queues.
@@ -82,6 +93,13 @@ export async function homeSummary(userId: string, role: 'admin' | 'member' = 'me
     const items = (rows as Array<WorkItem & { queue: string }>).filter((r) => r.queue === queue)
     return { count: items.length, items: items.slice(0, WINDOW) }
   }
+
+  return { triage: bucket('triage'), review: bucket('review'), blocked: bucket('blocked') }
+}
+
+export async function homeSummary(userId: string, role: 'admin' | 'member' = 'member'): Promise<HomeSummary> {
+  const sql = await db()
+  const queues = await homeQueues(userId)
 
   const [{ unread }] = (await sql`
     select count(*)::int as unread from notifications where user_id = ${userId} and read_at is null
@@ -128,7 +146,7 @@ export async function homeSummary(userId: string, role: 'admin' | 'member' = 'me
         ? { tokens: cost.totals.today.prompt + cost.totals.today.completion, usd: cost.totals.today.cost }
         : null,
     },
-    queues: { triage: bucket('triage'), review: bucket('review'), blocked: bucket('blocked') },
+    queues,
     unread,
     boards,
     fleet: { online: managed.length - down.length, total: managed.length, down },

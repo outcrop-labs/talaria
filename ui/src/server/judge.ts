@@ -12,6 +12,10 @@ import { resolveTemplate } from './templates'
 import { getSetting, setSetting } from './audit'
 import { db } from './db/pg'
 import { publishBoard } from './realtime'
+import { addNotification } from './notifications'
+// './tasks' and './approvals' are reached with `await import` further down, not
+// statically: tasks.ts imports THIS file (`listJudgeReviews`) and approvals.ts
+// imports tasks.ts, so either static edge would close a cycle.
 
 export interface JudgeConfig {
   enabled: boolean
@@ -112,6 +116,72 @@ function parseVerdict(text: string): { verdict: Verdict; summary: string; issues
   }
 }
 
+/** Tell the people who can act on it that the gate stopped.
+ *
+ *  WHO — and how much — is `audienceFor` in server/approvals.ts, the one answer
+ *  to that question in the product. The authority is `{ by: 'board' }`: this
+ *  escalation IS the `ticket_review` approval, and both routes that end one
+ *  (api/tasks.$id PATCH, api/tasks.$id.review POST) require
+ *  `canEdit(boardRole(user, boardId))`. Board editors are therefore exactly the
+ *  people who can approve it, ask for changes, or close it.
+ *
+ *  WHAT THIS REPLACED, because it was wrong in both directions at once:
+ *  `owners.length ? owners : await adminUserIds()`, under a comment claiming it
+ *  was "the same rule" as the approvals path and citing a function that does not
+ *  exist. On an unassigned ticket it sent the ticket's TITLE and the judge's
+ *  issue list to every org admin — including admins with no membership of that
+ *  board, the disclosure the approval escalation had just closed, through a
+ *  different door — while the board's own editors, the only people who could do
+ *  anything about it, were never told at all.
+ *
+ *  When the board has no editors, nobody can act on it. The FACT still travels,
+ *  because an agent's finished work is now parked indefinitely, so the admins
+ *  get a stall report — no ticket title, no verdict, no issue list, and no deep
+ *  link they would be 403'd from. Adding an editor to that board is a thing an
+ *  admin can do; deciding the ticket is not. `fact` is non-empty only when
+ *  `content` is empty, so nobody is told twice.
+ *
+ *  The kind IS the class (`judge_escalation`): `notifyClassOf` accepts a class
+ *  id directly, so the "Judge escalations" control in Settings governs this
+ *  line and no mapping table needs an entry. Until this call site existed that
+ *  control configured nothing at all.
+ *
+ *  Best-effort and logged, never thrown: the judge runs detached from the
+ *  request that moved the ticket, and a notification failure must not lose the
+ *  verdict row that was already written. */
+async function tellHumansTheGateStopped(
+  task: { boardId: string },
+  taskId: string,
+  n: { title: string; body: string },
+): Promise<void> {
+  try {
+    // Dynamic for the same reason as the imports at the top of this file:
+    // approvals.ts → tasks.ts → judge.ts, so a static edge would close a cycle.
+    const { audienceFor } = await import('./approvals')
+    const who = await audienceFor({ by: 'board', boardId: task.boardId })
+    for (const userId of who.content) {
+      await addNotification(userId, {
+        kind: 'judge_escalation',
+        title: n.title,
+        body: n.body,
+        href: `/boards/${task.boardId}/${taskId}`,
+      }).catch((e: unknown) => console.error(`[judge] could not notify ${userId} of an escalation:`, e))
+    }
+    for (const userId of who.fact) {
+      await addNotification(userId, {
+        kind: 'judge_escalation',
+        title: 'A QA gate stopped on a board nobody can act on',
+        body:
+          'The quality gate handed a ticket back to a person, and that board has no members who can ' +
+          'approve it, ask for changes or close it — so the work is parked indefinitely and the details ' +
+          'are not shown here. Add an editor to the board and they will be able to see it and decide it.',
+      }).catch((e: unknown) => console.error(`[judge] could not report a stalled escalation to ${userId}:`, e))
+    }
+  } catch (e) {
+    console.error('[judge] could not raise the escalation notification:', e)
+  }
+}
+
 /** Run the judge for a task now (best-effort; swallows its own errors so it can
  *  be fired without blocking the request that triggered the transition). */
 export async function runJudgeForTask(taskId: string): Promise<JudgeReview | null> {
@@ -159,6 +229,21 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
     const label = `QA judge: ${verdict}${issues.length ? ` (${issues.length} issue${issues.length > 1 ? 's' : ''})` : ''}`
     await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'judge', ${label})`
 
+    const detail = [summary, ...issues.map((i) => `- ${i}`)].filter(Boolean).join('\n')
+
+    // "escalate" is the judge saying a HUMAN has to decide this — ambiguous
+    // requirements, a risky action, a claim it cannot assess, or a verdict it
+    // could not even parse. In advisory mode nothing moves the ticket and in
+    // enforcing mode nothing bounces it, so before this line the entire effect
+    // of an escalation was a row in an activity feed on a ticket nobody had a
+    // reason to open. That is the silence this milestone exists to end.
+    if (verdict === 'escalate') {
+      await tellHumansTheGateStopped(task, taskId, {
+        title: `QA judge escalated: ${task.title}`,
+        body: `The quality gate could not sign this off and handed it to a person.\n\n${detail}`,
+      })
+    }
+
     // Enforcing mode: bounce a "revise" back to the agent with the issues, bounded
     // by MAX_REVISIONS, then stop looping and escalate to a human. "pass" and
     // "escalate" always go to the human (never auto-approve).
@@ -202,6 +287,15 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
         await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'status', ${note})`
       } else {
         await sql`insert into task_activity (task_id, actor, type, description) values (${taskId}, ${actor}, 'judge', ${`revision limit reached (${MAX_REVISIONS}) — needs a human`})`
+        // The loop has given up. The agent will not be asked again, the ticket
+        // is parked in review, and the ONLY thing that changes it now is a
+        // person — so a person is told, for the same reason as above.
+        await tellHumansTheGateStopped(task, taskId, {
+          title: `QA judge gave up after ${MAX_REVISIONS} revisions: ${task.title}`,
+          body:
+            `The agent has been sent back ${MAX_REVISIONS} times and the work still does not satisfy the ticket. ` +
+            `It stays in review until you approve it, ask for changes yourself, or close it.\n\n${detail}`,
+        })
       }
     }
 
