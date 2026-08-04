@@ -12,7 +12,11 @@ import { AssistantWizard } from './assistant-wizard'
 import { AssistantPanels } from './assistant-manage-modal'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 import { cn } from '@/lib/cn'
+import { focusGold } from '@/components/chat/chat-chrome'
 import { HANDLE_RE, updateAssistant, useAssistant } from '@/lib/assistant'
+
+// §8 field label: 10px mono uppercase 0.08em ink-dim.
+const fieldLabel = 'mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'
 
 // Settings › Assistant — the WHOLE of a member's personal agent in one place:
 // identity (name, @handle), personality, which model powers it, on/off, and
@@ -46,7 +50,7 @@ export function AssistantSection() {
   // personality editor block, and the tab strip below the divider.
   if (isLoading)
     return (
-      <section aria-hidden className="mercury-panel rounded-2xl p-6">
+      <section aria-hidden className="rounded-lg border border-line bg-panel p-6">
         <div className="mb-4 flex items-center gap-3">
           <Skeleton className="h-10 w-10 shrink-0 rounded-full" />
           <div className="min-w-0 flex-1 space-y-2">
@@ -71,7 +75,7 @@ export function AssistantSection() {
           <Skeleton className="h-6 w-16 rounded-full" delay={0.24} />
         </div>
         <Skeleton className="mb-6 h-20 w-full rounded-xl" delay={0.12} />
-        <div className="flex gap-2 border-t border-line-subtle pt-5">
+        <div className="flex gap-2 border-t border-line pt-5">
           <Skeleton className="h-8 w-24 rounded-lg" />
           <Skeleton className="h-8 w-16 rounded-lg" delay={0.12} />
           <Skeleton className="h-8 w-16 rounded-lg" delay={0.24} />
@@ -81,7 +85,7 @@ export function AssistantSection() {
 
   if (!assistant) {
     return (
-      <section className="mercury-panel rounded-2xl p-6">
+      <section className="rounded-lg border border-line bg-panel p-6">
         <EmptyState
           icon={<Sparkles size={24} />}
           title="No assistant yet"
@@ -120,16 +124,15 @@ export function AssistantSection() {
   }
 
   return (
-    <section className="mercury-panel rounded-2xl p-6">
+    <section className="rounded-lg border border-line bg-panel p-6">
       <div className="mb-4 flex items-center gap-3">
         <Avatar name={assistant.displayName} className="h-10 w-10" />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-fg">{assistant.displayName}</div>
-          <div className="flex items-center gap-1.5 text-xs text-muted">
-            <span
-              className="h-1.5 w-1.5 rounded-full"
-              style={{ background: assistant.running ? 'var(--theme-success)' : 'var(--theme-line)' }}
-            />
+          {/* Identity meta speaks mono (spec §2 metadata voice); 6px status dot
+              green=online, hairline-toned=off (spec §8 status dots). */}
+          <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted">
+            <span className={cn('h-1.5 w-1.5 rounded-full', assistant.running ? 'bg-success' : 'bg-line')} />
             @{assistant.slug} · {assistant.running ? 'online' : 'offline'}
             {assistant.currentModel && <span className="truncate"> · {assistant.currentModel}</span>}
           </div>
@@ -164,11 +167,11 @@ export function AssistantSection() {
 
       <div className="mb-4 grid gap-4 sm:grid-cols-2">
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
+          <label className={fieldLabel}>Name</label>
           <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
         </div>
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Handle</label>
+          <label className={fieldLabel}>Handle</label>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted">@</span>
             <Input
@@ -179,14 +182,16 @@ export function AssistantSection() {
             />
           </div>
           {handle !== '' && !HANDLE_RE.test(handle) && (
-            <p className="mt-1 text-xs text-[color:var(--theme-danger)]">2–30 lowercase letters/numbers, starting with a letter.</p>
+            <p className="mt-1 text-xs text-danger">2–30 lowercase letters/numbers, starting with a letter.</p>
           )}
         </div>
       </div>
 
       {assistant.tiers.length > 0 && (
         <div className="mb-4">
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Model</label>
+          <label className={fieldLabel}>Model</label>
+          {/* Tier chips per §7/§8 chip anatomy: radius 6, mono 10px uppercase;
+              the active tier reads gold, inactive hairline+muted → hover. */}
           <div className="flex flex-wrap gap-1.5">
             {assistant.tiers.map((t) => (
               <button
@@ -198,8 +203,9 @@ export function AssistantSection() {
                   void updateAssistant({ model: t.name }).then(() => qc.invalidateQueries({ queryKey: ['my-assistant'] }))
                 }
                 className={cn(
-                  'rounded-full border px-3 py-1 text-xs capitalize transition-colors',
-                  t.active ? 'border-[var(--theme-accent)] text-accent' : 'border-line-subtle text-muted hover:border-line hover:text-fg',
+                  'rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+                  focusGold,
+                  t.active ? 'border-accent text-accent' : 'border-line text-muted hover:bg-hover hover:text-fg',
                 )}
               >
                 {t.name}
@@ -210,7 +216,7 @@ export function AssistantSection() {
       )}
 
       <div className="mb-1 flex items-center">
-        <label className="text-[11px] uppercase tracking-wide text-muted">Personality</label>
+        <label className={cn(fieldLabel, 'mb-0')}>Personality</label>
         <button type="button" className="ml-auto text-xs text-accent hover:underline" onClick={() => setPersonaEditor(true)}>
           Open editor
         </button>
@@ -258,9 +264,9 @@ export function AssistantSection() {
         </Button>
         <span className="text-xs text-muted">Changes apply right away. Your assistant restarts with them.</span>
       </div>
-      {saved && <div className="mt-2 text-xs text-[color:var(--theme-success)]">Saved</div>}
-      {error && <div className="mt-2 text-xs text-[color:var(--theme-danger)]">{error}</div>}
-      <div className="mt-6 border-t border-line-subtle pt-5">
+      {saved && <div className="mt-2 text-xs text-success">Saved</div>}
+      {error && <div className="mt-2 text-xs text-danger">{error}</div>}
+      <div className="mt-6 border-t border-line pt-5">
         <AssistantPanels assistant={assistant} />
       </div>
     </section>

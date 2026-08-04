@@ -4,6 +4,7 @@
 // one or two primary actions and anything destructive/deploying.
 import { forwardRef } from 'react'
 import { cn } from '@/lib/cn'
+import { focusRing } from './control'
 
 export const IconButton = forwardRef<
   HTMLButtonElement,
@@ -22,10 +23,13 @@ export const IconButton = forwardRef<
       title={title}
       aria-label={title}
       className={cn(
-        'grid shrink-0 place-items-center rounded-lg transition-colors disabled:opacity-40',
+        // Gentle dew icon tile (spec §8): radius 6, raised when active,
+        // hover-token fill, danger only ever tints the glyph — never a fill.
+        'grid shrink-0 place-items-center rounded-md transition-colors disabled:opacity-40',
+        focusRing,
         size === 'sm' ? 'h-7 w-7' : 'h-8 w-8',
-        active ? 'bg-card text-fg' : 'text-muted hover:bg-card',
-        danger ? 'hover:text-[color:var(--theme-danger)]' : 'hover:text-fg',
+        active ? 'bg-raised text-fg' : 'text-muted hover:bg-hover',
+        danger ? 'hover:text-danger' : 'hover:text-fg',
         className,
       )}
       {...rest}

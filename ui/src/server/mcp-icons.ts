@@ -2,6 +2,8 @@
 // the DuckDuckGo favicon CDN — fast — else the site's own favicon) and are
 // WARMED in bulk whenever a library page is served, so cards paint from cache
 // instead of fanning out cold fetches per image.
+import { publicIconDomain } from '@/lib/icon-domain'
+
 const cache = new Map<string, { at: number; buf: ArrayBuffer; ct: string } | { at: number; miss: true }>()
 const CACHE_MS = 24 * 60 * 60 * 1000
 const MAX_BYTES = 512 * 1024
@@ -20,12 +22,13 @@ const fetchIcon = async (url: string): Promise<{ buf: ArrayBuffer; ct: string } 
   }
 }
 
-const candidatesFor = (key: { src?: string | null; domain?: string | null }): string[] =>
-  key.src
-    ? [key.src]
-    : key.domain
-      ? [`https://icons.duckduckgo.com/ip3/${key.domain}.ico`, `https://${key.domain}/favicon.ico`]
-      : []
+// Internal/non-public hosts (IP literals, single-label names, localhost) get
+// no candidates — the resolver never dials inside the network and misses fast.
+const candidatesFor = (key: { src?: string | null; domain?: string | null }): string[] => {
+  if (key.src) return [key.src]
+  const domain = publicIconDomain(key.domain)
+  return domain ? [`https://icons.duckduckgo.com/ip3/${domain}.ico`, `https://${domain}/favicon.ico`] : []
+}
 
 export async function resolveIcon(key: { src?: string | null; domain?: string | null }): Promise<{ buf: ArrayBuffer; ct: string } | null> {
   const id = key.src ?? key.domain ?? ''

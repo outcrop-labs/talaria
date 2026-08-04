@@ -48,7 +48,10 @@ export function SaveButton({
       >
         {children}
       </Button>
-      {saved && <span className="text-xs text-[color:var(--theme-success)]">Saved</span>}
+      {/* Confirmation reads as mono telemetry in the success signal (spec §8). */}
+      {saved && (
+        <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-success">Saved</span>
+      )}
     </span>
   )
 }

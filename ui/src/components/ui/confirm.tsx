@@ -25,7 +25,8 @@ interface DialogSpec {
   message?: ReactNode
   confirmLabel?: string
   cancelLabel?: string
-  /** Style the confirm action as destructive (red). */
+  /** Style the confirm action as destructive — orange outline, never orange
+   *  fill (Gentle dew spec §8 DANGER ZONE). */
   danger?: boolean
   /** prompt only. */
   placeholder?: string
@@ -114,7 +115,7 @@ export function ConfirmHost() {
             </Button>
           )}
           <Button
-            variant={spec?.danger ? 'danger' : 'primary'}
+            variant={spec?.danger ? 'danger-outline' : 'primary'}
             size="sm"
             onClick={accept}
           >

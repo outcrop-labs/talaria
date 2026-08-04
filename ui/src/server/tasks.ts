@@ -24,7 +24,7 @@ const TASK_SELECT = `select t.id, t.board_id as "boardId",
   case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') || '-' || t.ticket_no end as "ticketRef",
   t.title, t.description, t.status, t.priority, t.effort, t.assignees, t.created_by as "createdBy",
   t.due_date as "dueDate", t.start_date as "startDate", t.color, t.tags, t.attachments, t.time_spent_seconds as "timeSpentSeconds",
-  t.estimated_hours as "estimatedHours", t.parent_id as "parentId",
+  t.estimated_hours::float8 as "estimatedHours", t.parent_id as "parentId",
   (select count(*)::int from task_comments c where c.task_id = t.id) as "commentCount",
   t.outcome, t.resolution, t.error_message as "errorMessage",
   t.created_at as "createdAt", t.updated_at as "updatedAt", t.completed_at as "completedAt",
@@ -361,6 +361,56 @@ export async function addReview(taskId: string, reviewer: string, status: 'appro
   await logActivity(taskId, reviewer, 'review', status === 'approved' ? 'approved this task' : 'requested changes')
   const bid = await taskBoardId(taskId)
   if (bid) publishBoard(bid, { type: 'task', taskId })
+}
+
+export async function completeQualityReview(
+  taskId: string,
+  reviewer: string,
+  reviewStatus: 'approved' | 'rejected',
+  nextStatus: TaskStatus,
+): Promise<Task | null> {
+  const sql = await db()
+  const current = await getTask(taskId)
+  if (!current) return null
+  const meta = await statusMeta(current.boardId)
+  if (!meta.reviewKeys.includes(current.status)) return null
+  if (!meta.keys.includes(nextStatus)) throw new Error(`"${nextStatus}" is not a status on this board`)
+  const completedAt = meta.doneKeys.includes(nextStatus) ? (current.completedAt ?? new Date().toISOString()) : null
+  const updated = await sql.begin(async (tx) => {
+    const rows = await tx`
+      update tasks set status = ${nextStatus}, completed_at = ${completedAt}, updated_at = now()
+      where id = ${taskId} and status = ${current.status}
+      returning id
+    `
+    if (!rows.length) return false
+    await tx`
+      insert into quality_reviews (task_id, reviewer, status)
+      values (${taskId}, ${reviewer}, ${reviewStatus})
+    `
+    await tx`
+      insert into task_activity (task_id, actor, type, description) values
+        (${taskId}, ${reviewer}, 'review', ${reviewStatus === 'approved' ? 'approved this task' : 'requested changes'}),
+        (${taskId}, ${reviewer}, 'status', ${`moved to ${nextStatus}`})
+    `
+    return true
+  })
+  if (!updated) return null
+
+  if (meta.agentStartKeys.includes(nextStatus) && !meta.agentStartKeys.includes(current.status)) {
+    void (async () => {
+      const fresh = await getTask(taskId)
+      if (fresh) await (await import('./work-dispatch')).maybeDispatchTicket(fresh)
+    })().catch(() => {})
+  }
+  const audience = [...(await watcherUserIds(taskId)), ...humanAssigneeIds(current.assignees)]
+  void notifyTaskUsers(audience, reviewer, {
+    kind: 'task-status',
+    title: `${current.ticketRef ?? current.title}: ${nextStatus.replace('_', ' ')}`,
+    body: current.title,
+    href: `/boards/${current.boardId}/${taskId}`,
+  })
+  publishBoard(current.boardId, { type: 'task', taskId })
+  return getTask(taskId)
 }
 
 // ── Dependencies (blocked-by / blocks) ───────────────────────────────────────

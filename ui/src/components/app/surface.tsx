@@ -34,10 +34,10 @@ export function Rail({
   className?: string
 }) {
   return (
-    <aside className={cn('flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar', className)}>
+    <aside className={cn('flex h-full w-72 shrink-0 flex-col border-r border-line bg-sidebar', className)}>
       {(title || actions) && (
-        <div className="flex h-12 shrink-0 items-center gap-1.5 border-b border-line-subtle px-4">
-          {title && <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg">{title}</span>}
+        <div className="flex h-12 shrink-0 items-center gap-1.5 border-b border-line px-4">
+          {title && <span className="min-w-0 flex-1 truncate font-sans text-sm font-semibold text-fg">{title}</span>}
           {actions}
         </div>
       )}
@@ -70,9 +70,9 @@ export function StageHeader({
   className?: string
 }) {
   return (
-    <header className={cn('flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-5', className)}>
-      <span className="min-w-0 shrink truncate text-sm font-semibold text-fg">{title}</span>
-      {meta && <span className="min-w-0 truncate text-xs text-muted">{meta}</span>}
+    <header className={cn('flex h-12 shrink-0 items-center gap-2 border-b border-line px-5', className)}>
+      <span className="min-w-0 shrink truncate font-sans text-sm font-semibold text-fg">{title}</span>
+      {meta && <span className="min-w-0 truncate font-mono text-[11px] text-muted">{meta}</span>}
       <span className="ml-auto" />
       {actions}
     </header>
@@ -84,7 +84,7 @@ export function RailSection({ label, action, children }: { label: string; action
   return (
     <div className="mb-4">
       <div className="mb-1 flex items-center px-2">
-        <span className="flex-1 text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</span>
+        <span className="flex-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</span>
         {action}
       </div>
       <ul className="space-y-0.5">{children}</ul>
@@ -110,8 +110,8 @@ export function RailRow({
         type="button"
         onClick={onClick}
         className={cn(
-          'flex w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-card',
-          active ? 'bg-card text-fg' : 'text-muted',
+          'flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left font-sans text-sm transition-colors hover:bg-card2 hover:text-fg',
+          active ? 'bg-raised text-fg' : 'text-muted',
           className,
         )}
       >
@@ -121,11 +121,12 @@ export function RailRow({
   )
 }
 
-/** Count pill (unread, pending) — one look everywhere. */
+/** Count readout (unread, pending) — one look everywhere. Gentle dew keeps
+ *  counts in the mono chrome voice (spec §5); gold = attention, not a fill. */
 export function CountPill({ count, className }: { count?: number; className?: string }) {
   if (!count) return null
   return (
-    <span className={cn('ml-auto shrink-0 rounded-full bg-accent px-1.5 text-[10px] font-semibold leading-4 text-surface', className)}>
+    <span className={cn('ml-auto shrink-0 font-mono text-[10px] font-medium tracking-[0.05em] text-accent', className)}>
       {count > 99 ? '99+' : count}
     </span>
   )

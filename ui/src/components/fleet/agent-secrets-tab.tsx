@@ -63,12 +63,12 @@ export function SecretsTab({ agentId }: { agentId: string }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-xs leading-relaxed text-muted">
+      <p className="font-sans text-xs leading-relaxed text-muted">
         Environment variables just for this agent: a vendor token, a service key. Encrypted at rest, write-only here,
         and injected into the container when it starts from Talaria (Start recreates it with the latest values).
       </p>
       {isLoading ? (
-        <ul aria-hidden className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+        <ul aria-hidden className="divide-y divide-line rounded-lg border border-line">
           {[0, 1].map((i) => (
             <li key={i} className="flex items-center gap-3 px-3.5 py-3.5">
               <Skeleton className="h-3 w-32 rounded-full" delay={i * 0.12} />
@@ -80,19 +80,19 @@ export function SecretsTab({ agentId }: { agentId: string }) {
       ) : secrets.length === 0 ? (
         <EmptyState icon={<KeyRound size={22} />} title="No secrets" hint="Everything it needs comes from the shared platform env." />
       ) : (
-        <ul className="divide-y divide-line-subtle rounded-lg border border-line-subtle">
+        <ul className="divide-y divide-line rounded-lg border border-line">
           {secrets.map((s) => (
-            <li key={s.name} className="flex items-center gap-3 px-3.5 py-2.5">
-              <code className="text-sm text-fg">{s.name}</code>
-              <span className="text-xs text-muted">••••••••</span>
-              <span className="ml-auto shrink-0 text-[11px] text-muted">
+            <li key={s.name} className="flex items-center gap-3 px-3.5 py-2.5 transition-colors hover:bg-hover">
+              <code className="font-mono text-sm text-fg">{s.name}</code>
+              <span className="font-mono text-xs text-muted">••••••••</span>
+              <span className="ml-auto shrink-0 font-mono text-[11px] text-muted">
                 {s.updatedBy ?? 'unknown'} · {relativeTime(s.updatedAt)}
               </span>
               <button
                 type="button"
                 title="Remove"
                 onClick={() => void remove(s.name)}
-                className="shrink-0 text-muted transition-colors hover:text-[color:var(--theme-danger)]"
+                className="shrink-0 text-muted transition-colors hover:text-danger"
               >
                 <Trash2 size={14} />
               </button>
@@ -119,7 +119,7 @@ export function SecretsTab({ agentId }: { agentId: string }) {
         </Button>
       </div>
       {name && !nameOk && <p className="text-xs text-muted">UPPER_SNAKE, 2–64 chars, starts with a letter.</p>}
-      {err && <p className="text-xs text-[color:var(--theme-danger)]">{err}</p>}
+      {err && <p className="text-xs text-danger">{err}</p>}
     </div>
   )
 }

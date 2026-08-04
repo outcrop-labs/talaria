@@ -2,10 +2,12 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Gauge, Loader2, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Gauge, Trash2, UserPlus, X } from 'lucide-react'
+import { GeneratingDots, GeneratingHelix } from '@/components/ui/generating'
 import { RailSurface, Rail, Stage, StageHeader } from '@/components/app/surface'
 import { Chip, DangerLink, StatusDot, type DotStatus } from '@/components/ui/chip'
 import { ComposerPicker } from '@/components/chat/composer-picker'
+import { SendButton } from '@/components/chat/composer-buttons'
 import { AgentPicker } from '@/components/chat/agent-picker'
 import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { KeyHint } from '@/components/ui/kbd'
@@ -121,7 +123,7 @@ function ResearchPage() {
             ))}
           </div>
         ) : runs.length === 0 ? (
-          <div className="px-2 py-6 text-center text-xs text-muted">No research yet. Ask something worth knowing.</div>
+          <EmptyState variant="compact" icon="◎" title="No research yet." hint="Ask something worth knowing." />
         ) : (
           <ul className="space-y-0.5">
             {runs.map((r) => (
@@ -139,7 +141,7 @@ function ResearchPage() {
                     ])
                   }
                   className={cn(
-                    'group w-full rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-card',
+                    'group w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover',
                     selectedId === r.id ? 'bg-card' : '',
                   )}
                 >
@@ -149,7 +151,7 @@ function ResearchPage() {
                     {canDelete(r) && (
                       <Trash2
                         size={13}
-                        className="hidden shrink-0 text-muted hover:text-[color:var(--theme-danger)] group-hover:block"
+                        className="hidden shrink-0 text-muted transition-colors hover:text-danger group-hover:block"
                         onClick={(e) => {
                           e.stopPropagation()
                           void remove(r)
@@ -157,7 +159,8 @@ function ResearchPage() {
                       />
                     )}
                   </div>
-                  <div className="mt-0.5 flex items-center gap-2 pl-3.5 text-[10px] text-muted">
+                  {/* §10 session-row meta: 10px mono chrome voice. */}
+                  <div className="mt-0.5 flex items-center gap-2 pl-3.5 font-mono text-[10px] tracking-[0.05em] text-muted">
                     <Chip>{MODE_META[r.mode].label}</Chip>
                     <span className="truncate">{r.requestedBy}</span>
                     <span className="ml-auto shrink-0">{relativeTime(r.createdAt)}</span>
@@ -199,23 +202,35 @@ function ResearchPage() {
               bottom of the stage. Depth and acting agent ride along as
               composer pills, tier-picker style. */}
           <div className="px-6 pb-6 pt-2">
-            <div className="mercury-panel mx-auto w-full max-w-[var(--chat-content-max-width)] rounded-2xl p-2">
+            {/* §7 composer anatomy: panel body, STRONG hairline, radius 8,
+                p-2, matte float shadow — with the prompt in a ground inset. */}
+            <div className="mx-auto w-full max-w-[var(--chat-content-max-width)] rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)]">
               <div className="flex items-end gap-2">
-                <Textarea
-                  autoGrow
-                  rows={1}
-                  value={question}
-                  disabled={!mayRun}
-                  onChange={(e) => setQuestion(e.target.value)}
-                  placeholder={mayRun ? 'What should we find out?' : 'You don’t have permission to run research'}
-                  className="max-h-40 min-h-[2.75rem] border-0 bg-transparent focus:border-0"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      void start()
-                    }
-                  }}
-                />
+                <div className="relative min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1">
+                  <Textarea
+                    autoGrow
+                    rows={1}
+                    value={question}
+                    disabled={!mayRun}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    placeholder={mayRun ? 'What should we find out?' : 'You don’t have permission to run research'}
+                    className="max-h-40 min-h-[2.75rem] border-0 bg-transparent pr-12 focus:border-0"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        void start()
+                      }
+                    }}
+                  />
+                  {/* §7 signature affordance: gold send tile inside the well,
+                      top-right — mouse/touch path to start a run. */}
+                  <SendButton
+                    className="absolute right-2 top-2"
+                    title="Start (⏎)"
+                    enabled={mayRun && !starting && !!question.trim() && !!agent}
+                    onClick={() => void start()}
+                  />
+                </div>
                 <KeyHint keys="⏎" label="start" visible={!!question.trim() && !!agent} className="self-end mb-3" />
                 <ComposerPicker
                   icon={Gauge}
@@ -230,10 +245,10 @@ function ResearchPage() {
                   }))}
                 />
                 {starting && (
-                  <span className="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><Loader2 size={15} className="animate-spin text-muted" /></span>
+                  <span className="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><GeneratingDots /></span>
                 )}
               </div>
-              {error && <div className="px-2 pb-1 text-xs text-[color:var(--theme-danger)]">{error}</div>}
+              {error && <div className="px-2 pb-1 pt-1 text-xs text-danger">{error}</div>}
             </div>
           </div>
         </div>
@@ -371,14 +386,15 @@ function RunView({ runId }: { runId: string }) {
 
   return (
     <div className="mx-auto w-full max-w-[var(--chat-content-max-width)] space-y-4 p-8">
-      <div className="flex items-center gap-2 text-xs text-muted">
+      {/* Run meta line — chrome voice: 11px mono muted (spec §2). */}
+      <div className="flex items-center gap-2 font-mono text-[11px] text-muted">
         <Avatar name={run.agentModel} className="h-6 w-6 text-[10px]" />
         <span>by {run.requestedBy}</span>
         {run.stats.sources !== undefined && <span>· {run.stats.sources} sources ({run.stats.cited} cited)</span>}
         <span className="ml-auto" />
         <ResearchMembers runId={runId} />
         {run.artifactId && (
-          <Link to="/artifacts" className="flex shrink-0 items-center gap-1 text-xs text-muted hover:text-fg">
+          <Link to="/artifacts" className="flex shrink-0 items-center gap-1 text-muted transition-colors hover:text-fg">
             Open in Artifacts <ExternalLink size={12} />
           </Link>
         )}
@@ -386,7 +402,7 @@ function RunView({ runId }: { runId: string }) {
 
       {(run.status === 'queued' || run.status === 'running') && (
         <Panel className="flex items-center gap-3">
-          <Loader2 size={16} className="animate-spin text-accent" />
+          <GeneratingHelix />
           <div className="min-w-0">
             <div className="text-sm text-fg">{run.status === 'queued' ? 'Queued' : 'Researching'}</div>
             {run.phase && <div className="truncate text-xs text-muted">{run.phase}</div>}
@@ -395,9 +411,7 @@ function RunView({ runId }: { runId: string }) {
       )}
       {run.status === 'error' && (
         <Panel>
-          <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>
-            {run.error ?? 'The run failed.'}
-          </div>
+          <div className="text-sm text-danger">{run.error ?? 'The run failed.'}</div>
         </Panel>
       )}
 

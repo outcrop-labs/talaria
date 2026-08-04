@@ -60,7 +60,7 @@ export function StudioSkillEditor({
   if (!data)
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-        <div className="w-full max-w-3xl space-y-3 rounded-2xl bg-[var(--theme-panel)] p-6">
+        <div className="w-full max-w-3xl space-y-3 rounded-lg border border-line bg-[var(--theme-panel)] p-6">
           <Skeleton className="h-2.5 w-2/3 rounded-full" />
           <Skeleton className="h-2.5 w-full rounded-full" delay={0.12} />
           <Skeleton className="h-2.5 w-3/4 rounded-full" delay={0.24} />

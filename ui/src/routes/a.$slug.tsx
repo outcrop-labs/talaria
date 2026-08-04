@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
+import { buttonClasses } from '@/components/ui/button'
 import { Markdown } from '@/components/ui/markdown'
 import { Skeleton } from '@/components/ui/skeleton'
 import { relativeTime } from '@/lib/fleet'
@@ -58,7 +59,7 @@ function PublicArtifactPage() {
 
   return (
     <PublicShell meta={`Updated ${relativeTime(state.a.updatedAt)}`}>
-      <h1 className="mb-5 flex items-center gap-2 text-3xl font-semibold text-fg">
+      <h1 className="mb-5 flex items-center gap-2 font-sans text-3xl font-semibold tracking-tight text-fg">
         <span>{state.a.icon ?? '📄'}</span>
         {state.a.title}
       </h1>
@@ -71,7 +72,7 @@ function PublicArtifactPage() {
           href={`/api/artifacts/public/${slug}/download`}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-2 rounded-lg border border-line-subtle px-4 py-2 text-sm text-fg hover:border-[var(--theme-accent-border)]"
+          className={buttonClasses({ variant: 'outline' })}
         >
           ⬇ Download {state.a.title}
         </a>
@@ -93,13 +94,14 @@ function PublicSheet({ body }: { body: string }) {
   const [head = [], ...rows] = grid
   return (
     <div className="overflow-x-auto">
+      {/* §8 table voice: mono uppercase chrome header, hairline grid, hover fill. */}
       <table className="border-collapse text-sm">
         <thead>
-          <tr>{head.map((h, i) => <th key={i} className="border border-line-subtle bg-card px-3 py-1.5 text-left font-semibold text-fg">{h}</th>)}</tr>
+          <tr>{head.map((h, i) => <th key={i} className="border border-line bg-panel px-3 py-1.5 text-left font-mono text-[10px] font-medium uppercase tracking-[0.05em] text-ink-dim">{h}</th>)}</tr>
         </thead>
         <tbody>
           {rows.map((row, ri) => (
-            <tr key={ri}>{row.map((cell, ci) => <td key={ci} className="border border-line-subtle px-3 py-1.5 text-fg">{cell}</td>)}</tr>
+            <tr key={ri} className="transition-colors duration-120 hover:bg-hover">{row.map((cell, ci) => <td key={ci} className="border border-line px-3 py-1.5 font-sans text-fg">{cell}</td>)}</tr>
           ))}
         </tbody>
       </table>

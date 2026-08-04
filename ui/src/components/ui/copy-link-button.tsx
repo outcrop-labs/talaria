@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link2, Copy, Check } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { focusRing } from './control'
 
 /** The one copy-to-clipboard affordance: icon (or icon+label) that flashes a
  *  check. Pass `value` for literal text, or `path` for an app link (origin
@@ -36,7 +37,12 @@ export function CopyButton({
         setCopied(true)
         setTimeout(() => setCopied(false), 1200)
       }}
-      className={cn('flex items-center gap-1 rounded-md p-1 text-muted transition-colors hover:bg-card hover:text-fg', className)}
+      className={cn(
+        // Ghost icon affordance (spec §8): muted → readout, hover-token fill.
+        'flex items-center gap-1 rounded-md p-1 text-muted transition-colors hover:bg-hover hover:text-fg',
+        focusRing,
+        className,
+      )}
     >
       {copied ? <Check size={13} /> : path ? <Link2 size={13} /> : <Copy size={13} />}
       {label && <span>{copied ? 'Copied' : label}</span>}

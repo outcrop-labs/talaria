@@ -2,8 +2,10 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Loader2, Copy, RotateCw, Repeat, Trash2, UserPlus, Plus } from 'lucide-react'
+import { Play, Square, SlidersHorizontal, Archive, CalendarClock, Import, LayoutGrid, List, Copy, RotateCw, Repeat, Trash2, UserPlus, Plus } from 'lucide-react'
+import { GeneratingBars } from '@/components/ui/generating'
 import { Panel } from '@/components/ui/panel'
+import { Segmented } from '@/components/ui/segmented'
 import { confirm } from '@/components/ui/confirm'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -50,14 +52,13 @@ function BrainChip({ brain }: { brain?: AgentBrainHealth }) {
   const bad = brain.targets.filter((t) => !t.ok)
   if (bad.length === 0) return null
   const detail = bad.map((t) => `${t.kind}${t.name ? ` "${t.name}"` : ''} → ${t.endpoint}/${t.model}: ${t.reason}`).join('\n')
+  // Signal reads as an OUTLINE chip (spec §8: orange is never a fill).
   return (
     <span
       title={detail}
       className={cn(
-        'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
-        !brain.ok
-          ? 'bg-[color:var(--theme-danger)]/15 text-[color:var(--theme-danger)]'
-          : 'bg-[color:var(--theme-warning)]/15 text-[color:var(--theme-warning)]',
+        'shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em]',
+        !brain.ok ? 'border-danger/40 text-danger' : 'border-warning/40 text-warning',
       )}
     >
       {!brain.ok ? 'brain unroutable' : `${bad.length} tier${bad.length === 1 ? '' : 's'} down`}
@@ -96,23 +97,23 @@ function AgentsPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-5xl space-y-6">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="mercury-text text-2xl font-semibold">Agents</h1>
+          <h1 className="font-sans text-2xl font-semibold tracking-tight text-fg">Agents</h1>
           {t ? (
-            <span className="text-sm text-muted">{t.online}/{t.agents} online · {t.activeToday} active today</span>
+            <span className="font-mono text-[11px] tracking-[0.05em] text-muted">{t.online}/{t.agents} online · {t.activeToday} active today</span>
           ) : fleetLoading ? (
             // Hold the slot so the toolbar doesn't jog when the totals land.
             <Skeleton className="h-3 w-40" />
           ) : null}
           <div className="ml-auto flex items-center gap-2">
-            {/* Grid / list toggle */}
-            <div className="flex rounded-lg border border-line-subtle p-0.5">
-              <button type="button" onClick={() => setView('grid')} className={cn('rounded-md p-1.5', view === 'grid' ? 'bg-card text-fg' : 'text-muted')} title="Grid">
-                <LayoutGrid size={15} />
-              </button>
-              <button type="button" onClick={() => setView('list')} className={cn('rounded-md p-1.5', view === 'list' ? 'bg-card text-fg' : 'text-muted')} title="List">
-                <List size={15} />
-              </button>
-            </div>
+            {/* Grid / list toggle — the §8 segmented tile pair. */}
+            <Segmented
+              options={[
+                { id: 'grid', label: <LayoutGrid size={14} />, title: 'Grid' },
+                { id: 'list', label: <List size={14} />, title: 'List' },
+              ]}
+              value={view}
+              onChange={setView}
+            />
             {isAdmin && (
               <>
                 <Button size="sm" className="w-9 px-0" onClick={() => setCreating(true)} title="New agent" aria-label="New agent">
@@ -171,7 +172,7 @@ function AgentsPage() {
           </div>
         ) : (
           <Panel className="p-0">
-            <ul className="divide-y divide-line-subtle">
+            <ul className="divide-y divide-line">
               {defs.map((d) => (
                 <AgentListRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} brain={brainByAgent.get(d.model)} onDuplicate={() => setDuplicateFrom(d)} />
               ))}
@@ -200,8 +201,8 @@ function IconBtn({ icon, title, onClick, danger, disabled }: { icon: React.React
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        'grid h-8 w-8 place-items-center rounded-lg text-muted transition-colors hover:bg-card disabled:opacity-40',
-        danger ? 'hover:text-[color:var(--theme-danger)]' : 'hover:text-fg',
+        'grid h-8 w-8 place-items-center rounded-md text-muted transition-colors hover:bg-hover disabled:opacity-40',
+        danger ? 'hover:text-danger' : 'hover:text-fg',
       )}
     >
       {icon}
@@ -239,7 +240,7 @@ function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; r
   const isAdmin = session?.role === 'admin'
   const { pending, act } = useAgentControls(d)
   const [retiring, setRetiring] = useState(false)
-  if (pending) return <Loader2 size={15} className="animate-spin text-muted" />
+  if (pending) return <GeneratingBars bars={3} variant="weave" step={0.15} className="text-muted" />
   // Retired agents: re-hire (re-enable + start), duplicate as a template, or
   // delete forever (admin) — the only truly destructive lifecycle action.
   if (!d.enabled)
@@ -265,7 +266,7 @@ function Controls({ def: d, running, onManage, onDuplicate }: { def: AgentDef; r
       {retiring && <RetireModal def={d} onClose={() => setRetiring(false)} onConfirm={() => void act('retire', 'retiring')} />}
       {/* Start/stop stands apart from the rest — it's the lifecycle switch,
           not another management action. Filled glyphs so they read at 14px. */}
-      <span aria-hidden className="mx-1.5 h-4 w-px bg-line-subtle" />
+      <span aria-hidden className="mx-1.5 h-4 w-px bg-line" />
       {running ? (
         <>
           <IconBtn icon={<Square size={14} fill="currentColor" />} title="Stop" onClick={() => void act('stop', 'stopping')} />
@@ -307,7 +308,7 @@ function RetireModal({ def: d, onClose, onConfirm }: { def: AgentDef; onClose: (
           </label>
           <Input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={d.slug} autoFocus />
         </div>
-        <div className="flex justify-end gap-2 border-t border-line-subtle pt-3">
+        <div className="flex justify-end gap-2 border-t border-line pt-3">
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
@@ -388,9 +389,10 @@ function useAgentMenu(d: AgentDef, running: boolean, onManage: () => void, onDup
 
 function StatusDot({ def: d, containers }: { def: AgentDef; containers: AgentContainers | null }) {
   const { health } = healthOf(d, containers)
+  // Spec §8 status dot: 6–7px round, signal color carries the meaning.
   return (
     <span
-      className={cn('h-2.5 w-2.5 shrink-0 rounded-full', health === 'warming' && 'animate-pulse')}
+      className={cn('h-[7px] w-[7px] shrink-0 rounded-full', health === 'warming' && 'gd-breathe')}
       style={{ background: HEALTH_COLOR[health] }}
       title={health === 'warming' ? 'warming up' : health}
     />
@@ -429,7 +431,7 @@ function AgentListRow({ def: d, containers, endpoints, brain, onDuplicate }: { d
   const { onContextMenu, overlays } = useAgentMenu(d, running, () => setManage(true), onDuplicate)
   return (
     <>
-      <li onContextMenu={onContextMenu} className={cn('flex items-center gap-3 px-4 py-3', !d.enabled && 'opacity-60')}>
+      <li onContextMenu={onContextMenu} className={cn('flex items-center gap-3 px-4 py-3 transition-colors hover:bg-hover', !d.enabled && 'opacity-60')}>
         <StatusDot def={d} containers={containers} />
         <Avatar name={d.displayName} className="h-7 w-7" />
         <button type="button" onClick={() => setManage(true)} className="min-w-0 flex-1 text-left">

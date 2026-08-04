@@ -6,6 +6,7 @@
 import { forwardRef } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { focusGold } from '@/components/chat/chat-chrome'
 
 export const FieldPill = forwardRef<
   HTMLButtonElement,
@@ -33,13 +34,18 @@ export const FieldPill = forwardRef<
       // so rows/cards underneath never fire).
       onMouseDown={(e) => e.stopPropagation()}
       className={cn(
-        'group/pill inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-left text-[11px] transition-colors',
+        // Chip-family control (spec §8): radius 6, raised tile when engaged,
+        // hover fill card2, dashed-gold keyboard focus. Chip chrome voice
+        // (spec §2): mono UPPERCASE + letterspacing — never italic.
+        'group/pill inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-left font-mono text-[10px] uppercase leading-3 tracking-[0.05em] transition-colors',
+        focusGold,
         active
-          ? 'border-line bg-card text-fg'
+          ? 'border-line-strong bg-raised text-fg'
           : persistent
-            ? 'border-line-subtle bg-card/40 text-muted hover:border-line hover:bg-card hover:text-fg'
-            : 'border-transparent text-muted hover:border-line hover:bg-card hover:text-fg',
-        empty && 'italic',
+            ? 'border-line-subtle bg-raised/40 text-muted hover:border-line hover:bg-hover hover:text-fg'
+            : 'border-transparent text-muted hover:border-line hover:bg-hover hover:text-fg',
+        // Unset placeholder: dimmest ink, same voice (no italics in Gentle Dew).
+        !active && empty && 'text-ink-dim',
         className,
       )}
       {...rest}

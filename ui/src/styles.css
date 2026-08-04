@@ -5,24 +5,25 @@
 @variant dark (&:where(.dark, .dark *));
 
 /* ════════════════════════════════════════════════════════════════════════
-   MERCURY — Talaria's design system, sampled from the planet itself.
+   GENTLE DEW — Talaria's design system (docs/design/gentle-dew-spec.md).
 
-   Palette derived from MESSENGER imagery (true + enhanced colour). Mercury is
-   nearly monochrome — a warm graphite→taupe→bone ramp (saturation ~1–9%) whose
-   only real chroma is a faint warm ochre (~30°) and cool slate (~230°). So the
-   neutrals are sampled warm greys; the accent is Mercury's warmest authentic
-   tone, a muted bronze/ochre (never neon). Typeface: IBM Plex Mono, everywhere.
+   Neutral-first operational UI: near-black instrument surfaces, crisp cream
+   readout, one warm gold (#C8B46C) for brand/action/attention, and safety
+   orange (#EE6018) reserved for failure/destructive only. Matte — no glows.
+   Voices: IBM Plex Mono is the CHROME voice, IBM Plex Sans the READING voice.
 
-   The `--theme-*` names match hermes-workspace's contract so its components lift
-   unchanged. Two modes: `mercury` (dark) and `mercury-light`.
+   The `--theme-*` names keep hermes-workspace's contract so its components
+   lift unchanged. Two modes: `mercury` (dark, default) and `mercury-light`
+   (derived warm paper-white).
    ════════════════════════════════════════════════════════════════════════ */
 
 :root {
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
-  /* Two registers: mono is the CHROME voice (nav, labels, chips, buttons,
-     identifiers, config); sans is the READING/BUSINESS voice — anywhere
-     someone reads paragraphs or types real content (markdown surfaces,
-     editors, inputs, board card/list text). Apply via `font-sans`. */
+  /* Two registers (spec §2): sans is the READING/BUSINESS voice — headings,
+     body, message text, nav labels, input content — and is the app DEFAULT
+     (inherited from the base below). Mono is the CHROME voice (section
+     headers, chips, metadata, telemetry, counts, identifiers, button labels)
+     and is always opt-in via `font-mono`. */
   --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif;
   --font-display: var(--font-mono);
 
@@ -31,129 +32,152 @@
      var(--theme-line) — without this alias those paint TRANSPARENT (invisible
      skeletons, borderless tiptap tables, blank status dots). */
   --theme-line: var(--theme-border);
+  /* Same protection for the other raw-CSS spellings found in the codebase. */
+  --theme-line-subtle: var(--theme-border-subtle);
+  --theme-fg: var(--theme-text);
 
-  /* A subtle metallic-bronze gradient (brand mark only — not a glow). */
-  --mercury-grad: linear-gradient(135deg, #b98f5a 0%, #d0aa76 100%);
+  /* Brand is a single FLAT warm gold — the old bronze gradient is retired. */
+  --brand-gold: #c8b46c;
   --chat-content-max-width: 900px;
+
+  /* Motion grammar timing ladder (spec §9): loop budgets for loaders. */
+  --motion-immediate: 750ms;
+  --motion-standard: 1200ms;
+  --motion-ambient: 2100ms;
 }
 
-/* ── Mercury Dark — warm basalt/graphite, muted bronze accent ────────────── */
+/* ── Mercury Dark — Gentle dew instrument surfaces (spec §1, exact) ──────── */
 [data-theme='mercury'] {
   color-scheme: dark;
 
-  --theme-bg: #141312;
-  --theme-sidebar: #1a1917;
-  --theme-panel: #1e1c1a;
-  --theme-card: #24221f;
-  --theme-card2: #2c2926;
-  --theme-border: #38342e;
-  --theme-border-subtle: #292623;
-  --theme-text: #e7e2db;
-  --theme-muted: #a49b8f;
+  --theme-bg: #090a09; /* Ground — app background + inset wells */
+  --theme-sidebar: #141312; /* Panel — sidebar/rail surface */
+  --theme-panel: #141312; /* Panel — panels, cards, composer body */
+  --theme-raised: #1e1c1a; /* Raised — active tiles, chips, inputs */
+  --theme-hover: #24221f; /* Hover fill on rows/items/buttons */
+  --theme-card: var(--theme-raised);
+  --theme-card2: var(--theme-hover);
+  --theme-border: #302d29; /* Hairline */
+  --theme-border-strong: #4a4640; /* Emphasized hairline */
+  --theme-border-subtle: #232019; /* A step darker than the hairline */
+  --theme-text: #e7e2db; /* Readout cream */
+  --theme-muted: #8e877e; /* Secondary text / inactive */
+  --theme-ink-dim: #5f5a53; /* Dimmest ink — section headers */
 
-  --theme-shadow-1: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --theme-shadow-2: 0 4px 18px rgba(0, 0, 0, 0.5);
-  --theme-shadow-3: 0 14px 44px rgba(0, 0, 0, 0.6);
-  --theme-glass: rgba(20, 19, 18, 0.82);
+  --theme-shadow-1: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --theme-shadow-2: 0 8px 24px rgba(0, 0, 0, 0.28); /* composer float (spec §3) */
+  --theme-shadow-3: 0 14px 44px rgba(0, 0, 0, 0.5);
+  --theme-glass: rgba(9, 10, 9, 0.82);
 
-  --theme-focus: #b98f5a;
-  --theme-accent: #b98f5a;
-  --theme-accent-secondary: #d0aa76;
-  --theme-accent-subtle: rgba(185, 143, 90, 0.12);
-  --theme-accent-border: rgba(185, 143, 90, 0.32);
-  --theme-active: #c99f6a;
-  --theme-link: #c9a06a;
+  --theme-focus: #c8b46c;
+  --theme-accent: #c8b46c; /* Warm gold — brand + action */
+  --theme-accent-secondary: #d9c98f; /* Lighter gold */
+  --theme-accent-subtle: rgba(200, 180, 108, 0.12);
+  --theme-accent-border: rgba(200, 180, 108, 0.32);
+  --theme-active: #c8b46c;
+  --theme-link: #c8b46c;
 
-  --theme-success: #86a06d;
-  --theme-warning: #d09a4a;
-  --theme-danger: #c56a5c;
+  --theme-success: #a0ca92; /* Healthy / connected */
+  --theme-warning: #c8b46c; /* Attention (same gold as accent, by design) */
+  --theme-danger: #ee6018; /* Safety orange — failure/destructive ONLY */
+  --theme-chart-1: #68b6c8; /* Data-viz blue */
+  --theme-chart-2: #d77968; /* Data-viz coral */
 
-  /* No neon glow — Mercury is matte. A soft shadow only. */
-  --theme-glow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  /* No neon glow — Gentle dew is matte. A soft shadow only. */
+  --theme-glow: 0 2px 10px rgba(0, 0, 0, 0.4);
 
-  --theme-header-bg: #1a1917;
-  --theme-header-border: #38342e;
+  --theme-header-bg: #090a09; /* Top strip sits on ground (spec §6) */
+  --theme-header-border: #302d29;
 
-  --chat-user-bg: #2b2620;
-  --chat-user-border: rgba(185, 143, 90, 0.22);
+  /* Chat flattens onto the panel — no heavy bubbles (spec §10). */
+  --chat-user-bg: #141312;
+  --chat-user-border: #302d29;
   --chat-user-foreground: #e7e2db;
-  --chat-assistant-bg: #1e1c1a;
-  --chat-assistant-border: #292623;
+  --chat-assistant-bg: #141312;
+  --chat-assistant-border: #232019;
   --chat-assistant-foreground: #e7e2db;
 
-  --composer-bg: #1a1917;
-  --composer-border: #38342e;
-  --composer-placeholder: #a49b8f;
+  /* Composer: panel body, STRONG hairline, ground inset well (spec §7). */
+  --composer-bg: #141312;
+  --composer-border: #4a4640;
+  --composer-placeholder: #8e877e;
 
-  --tool-card-bg: #1e1c1a;
-  --tool-card-border: #38342e;
+  --tool-card-bg: #141312;
+  --tool-card-border: #302d29;
   --tool-card-title: #e7e2db;
-  --tool-card-muted: #a49b8f;
+  --tool-card-muted: #8e877e;
 
-  --code-bg: #100f0e;
-  --code-border: #292623;
-  --code-foreground: #d0aa76;
+  /* Code renders as a ground-family inset well. */
+  --code-bg: #090a09;
+  --code-border: #302d29;
+  --code-foreground: #e7e2db;
 
-  --theme-input: #1a1917;
+  --theme-input: #1e1c1a; /* Inputs sit on raised tiles (spec §8) */
 }
 
-/* ── Mercury Light — warm regolith daylight, deep bronze accent ──────────── */
+/* ── Mercury Light — derived warm paper-white (spec §1 "Derived light") ──── */
 [data-theme='mercury-light'] {
   color-scheme: light;
 
-  --theme-bg: #e9e5df;
-  --theme-sidebar: #e1ddd5;
-  --theme-panel: #ebe7e1;
-  --theme-card: #f5f2ec;
-  --theme-card2: #ded9d0;
-  --theme-border: #cabfb1;
-  --theme-border-subtle: #d8d1c6;
-  --theme-text: #221f1b;
-  --theme-muted: #6f675b;
+  --theme-bg: #f2f0eb; /* Ground — warm paper-white */
+  --theme-sidebar: #faf8f4; /* Panel */
+  --theme-panel: #faf8f4;
+  --theme-raised: #ffffff; /* Raised */
+  --theme-hover: #ece8e0; /* Hover fill */
+  --theme-card: var(--theme-raised);
+  --theme-card2: var(--theme-hover);
+  --theme-border: #dcd6cc; /* Hairline */
+  --theme-border-strong: #c9c2b6; /* Emphasized hairline */
+  --theme-border-subtle: #e6e1d8; /* A step lighter than the hairline */
+  --theme-text: #1b1917;
+  --theme-muted: #6e675d;
+  --theme-ink-dim: #8a8378;
 
-  --theme-shadow-1: 0 1px 2px rgba(34, 31, 27, 0.06);
-  --theme-shadow-2: 0 4px 16px rgba(34, 31, 27, 0.08);
-  --theme-shadow-3: 0 14px 40px rgba(34, 31, 27, 0.12);
-  --theme-glass: rgba(233, 229, 223, 0.9);
+  --theme-shadow-1: 0 1px 2px rgba(27, 25, 23, 0.06);
+  --theme-shadow-2: 0 8px 24px rgba(27, 25, 23, 0.1);
+  --theme-shadow-3: 0 14px 40px rgba(27, 25, 23, 0.14);
+  --theme-glass: rgba(242, 240, 235, 0.9);
 
-  --theme-focus: #8a6a3a;
-  --theme-accent: #8a6a3a;
-  --theme-accent-secondary: #a07f4d;
-  --theme-accent-subtle: rgba(138, 106, 58, 0.1);
-  --theme-accent-border: rgba(138, 106, 58, 0.28);
-  --theme-active: #77592f;
-  --theme-link: #8a6a3a;
+  --theme-focus: #8f7a33;
+  --theme-accent: #8f7a33; /* Gold, darkened for contrast on paper */
+  --theme-accent-secondary: #a38f45;
+  --theme-accent-subtle: rgba(143, 122, 51, 0.1);
+  --theme-accent-border: rgba(143, 122, 51, 0.3);
+  --theme-active: #8f7a33;
+  --theme-link: #8f7a33;
 
-  --theme-success: #4f7a3e;
-  --theme-warning: #a76a1e;
-  --theme-danger: #b04a3c;
+  --theme-success: #5e7f4e;
+  --theme-warning: #8f7a33;
+  --theme-danger: #c8500f;
+  --theme-chart-1: #3e7a8a;
+  --theme-chart-2: #b05a4a;
 
-  --theme-glow: 0 2px 8px rgba(34, 31, 27, 0.12);
+  --theme-glow: 0 2px 8px rgba(27, 25, 23, 0.1);
 
-  --theme-header-bg: #e1ddd5;
-  --theme-header-border: #cabfb1;
+  --theme-header-bg: #f2f0eb;
+  --theme-header-border: #dcd6cc;
 
-  --chat-user-bg: #ece2d1;
-  --chat-user-border: rgba(138, 106, 58, 0.25);
-  --chat-user-foreground: #221f1b;
-  --chat-assistant-bg: #f2eee7;
-  --chat-assistant-border: #d8d1c6;
-  --chat-assistant-foreground: #221f1b;
+  --chat-user-bg: #faf8f4;
+  --chat-user-border: #dcd6cc;
+  --chat-user-foreground: #1b1917;
+  --chat-assistant-bg: #faf8f4;
+  --chat-assistant-border: #e6e1d8;
+  --chat-assistant-foreground: #1b1917;
 
-  --composer-bg: #f5f2ec;
-  --composer-border: #cabfb1;
-  --composer-placeholder: #6f675b;
+  --composer-bg: #faf8f4;
+  --composer-border: #c9c2b6;
+  --composer-placeholder: #6e675d;
 
-  --tool-card-bg: #ebe7e1;
-  --tool-card-border: #cabfb1;
-  --tool-card-title: #221f1b;
-  --tool-card-muted: #6f675b;
+  --tool-card-bg: #faf8f4;
+  --tool-card-border: #dcd6cc;
+  --tool-card-title: #1b1917;
+  --tool-card-muted: #6e675d;
 
-  --code-bg: #e1ddd5;
-  --code-border: #cabfb1;
-  --code-foreground: #77592f;
+  --code-bg: #edeae2;
+  --code-border: #dcd6cc;
+  --code-foreground: #1b1917;
 
-  --theme-input: #f5f2ec;
+  --theme-input: #ffffff;
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -170,15 +194,22 @@
   --color-panel: var(--theme-panel);
   --color-card: var(--theme-card);
   --color-card2: var(--theme-card2);
+  --color-raised: var(--theme-raised);
+  --color-hover: var(--theme-hover);
+  --color-hover-surface: var(--theme-hover);
   --color-line: var(--theme-border);
+  --color-line-strong: var(--theme-border-strong);
   --color-line-subtle: var(--theme-border-subtle);
   --color-fg: var(--theme-text);
   --color-muted: var(--theme-muted);
+  --color-ink-dim: var(--theme-ink-dim);
   --color-accent: var(--theme-accent);
   --color-accent-soft: var(--theme-accent-subtle);
   --color-success: var(--theme-success);
   --color-warning: var(--theme-warning);
   --color-danger: var(--theme-danger);
+  --color-chart-1: var(--theme-chart-1);
+  --color-chart-2: var(--theme-chart-2);
 }
 
 /* ── Base ────────────────────────────────────────────────────────────────── */
@@ -187,7 +218,11 @@ body,
 #root {
   background-color: var(--theme-bg);
   color: var(--theme-text);
-  font-family: var(--font-mono);
+  /* Default voice is SANS — the reading voice (spec §2: headings, body,
+     interface copy). Mono is chrome-only and always opts in via `font-mono`;
+     defaulting to mono made every unvoiced heading/paragraph render in the
+     chrome voice. */
+  font-family: var(--font-sans);
 }
 
 body {
@@ -233,14 +268,10 @@ body {
 .theme-accent { color: var(--theme-accent); }
 .theme-accent-bg { background-color: var(--theme-accent); }
 
-/* Brand mark only — a restrained metallic bronze, not a glow. */
-.mercury-gradient { background-image: var(--mercury-grad); }
-.mercury-text {
-  background-image: var(--mercury-grad);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
+/* Brand tint — FLAT warm gold (Gentle dew). The bronze gradient is retired;
+   the class names stay so existing usages keep working. */
+.mercury-gradient { background-color: var(--theme-accent); }
+.mercury-text { color: var(--theme-accent); }
 
 /* A matte, glassy panel — the core surface treatment (no coloured glow). */
 .mercury-panel {
@@ -251,20 +282,106 @@ body {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Mercury syntax highlighting (highlight.js token classes). Warm bronze +
-   muted moss/slate/lilac — legible on the code surface in both modes.
+   Gentle dew motion grammar (spec §9). Loaders are rows of small rounded
+   bars (3×12px, like the chip meters) in surface/signal colours. Apply a
+   .gd-* class per bar and stagger with animation-delay; colour comes from
+   the element (background/currentColor). Timing ladder:
+     immediate (inline tool response) · standard (agent stage / fetch) ·
+     ambient (background monitor).
+   ════════════════════════════════════════════════════════════════════════ */
+.gd-bar {
+  display: inline-block;
+  width: 3px;
+  height: 12px;
+  border-radius: 999px;
+  background-color: currentColor;
+}
+
+/* SIGNAL WEAVE — quick bar-weave burst (submitting). */
+@keyframes gd-weave {
+  0%, 100% { transform: scaleY(0.4); opacity: 0.6; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+/* STAGE SCAN — stepped scan across segment bars (tool activity). */
+@keyframes gd-scan {
+  0%, 12% { opacity: 1; }
+  32%, 100% { opacity: 0.25; }
+}
+/* MONITOR BREATHE — slow breathing opacity (background monitor). */
+@keyframes gd-breathe {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.9; }
+}
+/* CONTEXT HELIX — looping multi-colour bar orbit (reasoning / generating).
+   Bars ride a small vertical orbit with a scale swell; stagger per bar and
+   alternate chart-1 / gold / chart-2 so the row reads as a woven helix. */
+@keyframes gd-helix {
+  0%, 100% { transform: translateY(2px) scaleY(0.5); opacity: 0.55; }
+  25% { transform: translateY(0) scaleY(1); opacity: 1; }
+  50% { transform: translateY(-2px) scaleY(0.5); opacity: 0.7; }
+  75% { transform: translateY(0) scaleY(1); opacity: 1; }
+}
+/* Two-state opacity pulse — also the reduced-motion fallback for the rest. */
+@keyframes gd-pulse {
+  0%, 49.9% { opacity: 1; }
+  50%, 100% { opacity: 0.35; }
+}
+
+.gd-weave {
+  animation: gd-weave var(--motion-immediate) ease-in-out infinite;
+  transform-origin: center;
+}
+.gd-scan { animation: gd-scan var(--motion-standard) linear infinite; }
+.gd-breathe { animation: gd-breathe var(--motion-ambient) ease-in-out infinite; }
+.gd-pulse { animation: gd-pulse var(--motion-standard) linear infinite; }
+.gd-helix {
+  animation: gd-helix var(--motion-standard) ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* ── Entrances (spec §9): 150–250ms fade + small travel for popovers/menus.
+   Exits stay shorter by being instant unmounts. ─────────────────────────── */
+@keyframes gd-enter {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+}
+@keyframes gd-enter-fade {
+  from { opacity: 0; }
+}
+.gd-enter { animation: gd-enter 180ms ease-out; }
+
+/* Reduced motion: no travel/scale — swap every motif for the two-state
+   opacity pulse; the status label and semantic colour stay unchanged.
+   Entrances degrade to fade-only. */
+@media (prefers-reduced-motion: reduce) {
+  .gd-weave,
+  .gd-scan,
+  .gd-breathe,
+  .gd-helix {
+    animation: gd-pulse var(--motion-ambient) linear infinite;
+    transform: none;
+  }
+  /* gd-pulse is already the sanctioned two-state fallback; just relax it to
+     the ambient cadence so every reduced-motion indicator shares one rhythm. */
+  .gd-pulse { animation-duration: var(--motion-ambient); }
+  .gd-enter { animation: gd-enter-fade 150ms ease-out; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Gentle dew syntax highlighting (highlight.js token classes). Warm gold
+   keywords, success-green strings, ink-dim comments, chart blue/coral for
+   builtins/tags — legible on the ground-inset code surface in both modes.
    ════════════════════════════════════════════════════════════════════════ */
 .hljs { color: var(--code-foreground); background: transparent; }
 
 [data-theme='mercury'] {
-  --hl-keyword: #c9a06a; --hl-string: #9db08a; --hl-comment: #6f675b;
-  --hl-number: #d0aa76; --hl-title: #d8c8a2; --hl-attr: #b98f5a;
-  --hl-builtin: #b0a3cc; --hl-tag: #c56a5c; --hl-meta: #8c96aa;
+  --hl-keyword: #c8b46c; --hl-string: #a0ca92; --hl-comment: #5f5a53;
+  --hl-number: #d9c98f; --hl-title: #e3d9b8; --hl-attr: #bfa963;
+  --hl-builtin: #68b6c8; --hl-tag: #d77968; --hl-meta: #8e877e;
 }
 [data-theme='mercury-light'] {
-  --hl-keyword: #8a5a1e; --hl-string: #4f7a3e; --hl-comment: #8f8778;
-  --hl-number: #77592f; --hl-title: #6d4a1e; --hl-attr: #8a6a3a;
-  --hl-builtin: #6b5aa0; --hl-tag: #b04a3c; --hl-meta: #4a5a6e;
+  --hl-keyword: #8f7a33; --hl-string: #5e7f4e; --hl-comment: #8a8378;
+  --hl-number: #7a6829; --hl-title: #6b5a1f; --hl-attr: #7d6a2c;
+  --hl-builtin: #3e7a8a; --hl-tag: #b05a4a; --hl-meta: #6e675d;
 }
 
 .hljs-comment, .hljs-quote { color: var(--hl-comment); font-style: italic; }

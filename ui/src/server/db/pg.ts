@@ -58,6 +58,8 @@ const MIGRATIONS: string[] = [
      unique (conversation_id, seq)
    )`,
   `create index if not exists messages_conv_idx on messages(conversation_id, seq)`,
+  `create index if not exists messages_conversation_timeline_idx
+     on messages(conversation_id, created_at desc, id desc)`,
   // Fleet agent registry — Talaria's own "brain" (ripped from mission-control's
   // agents table). Agents register + heartbeat to Talaria, not MC.
   `create table if not exists fleet_agents (
@@ -146,14 +148,7 @@ const MIGRATIONS: string[] = [
   `create index if not exists task_activity_task_idx on task_activity(task_id, created_at desc)`,
   // Ticket refs (BOARD-12): a per-board prefix + monotonic counter.
   `alter table boards add column if not exists ticket_prefix text`,
-  `alter table research_runs add column if not exists title text`,
-  `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
-  `alter table channel_messages add column if not exists edited_at timestamptz`,
-  `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
   `alter table users add column if not exists allowed_manage_views text[] not null default '{}'`,
-  `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
-  `alter table kb_docs add column if not exists okf text`,
-  `update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null)`,
   `create table if not exists invites (
     id uuid primary key default gen_random_uuid(),
     email text not null,
@@ -185,18 +180,6 @@ const MIGRATIONS: string[] = [
     created_at timestamptz not null default now(),
     verified_at timestamptz
   )`,
-  `create table if not exists kb_comments (
-    id uuid primary key default gen_random_uuid(),
-    doc_id uuid not null references kb_docs(id) on delete cascade,
-    parent_id uuid references kb_comments(id) on delete cascade,
-    author_user_id uuid references users(id) on delete set null,
-    author text not null,
-    quote text,
-    content text not null,
-    resolved boolean not null default false,
-    created_at timestamptz not null default now()
-  )`,
-  `create index if not exists kb_comments_doc_idx on kb_comments(doc_id, created_at)`,
   `create table if not exists mcp_servers (
     id uuid primary key default gen_random_uuid(),
     name text not null unique,
@@ -259,17 +242,6 @@ const MIGRATIONS: string[] = [
     allowed boolean not null,
     created_at timestamptz not null default now(),
     primary key (user_id, perm)
-  )`,
-  `insert into user_permissions (user_id, perm, allowed)
-     select id, 'models.mint-keys', true from users where can_mint_keys
-     on conflict (user_id, perm) do nothing`,
-  `create table if not exists channel_message_reactions (
-    message_id uuid not null references channel_messages(id) on delete cascade,
-    emoji text not null,
-    actor text not null,
-    actor_type text not null default 'user',
-    created_at timestamptz not null default now(),
-    primary key (message_id, emoji, actor)
   )`,
   `alter table boards add column if not exists ticket_seq integer not null default 0`,
   // Richer task fields (ripped from mission-control): ticket no, effort, the
@@ -829,7 +801,7 @@ const MIGRATIONS: string[] = [
   // Stable host port per agent, so the app (on the host) reaches each agent's
   // persona gateway directly — no separate bridge/multiplexer container.
   `alter table agent_defs add column if not exists gateway_port int`,
-  // Conversation kind — 'chat' (default) or 'plan' (the planning surface).
+  // Conversation kind — chat, plan, or the private singleton Inbox stream.
   `alter table conversations add column if not exists kind text not null default 'chat'`,
   // Ticket/plan templates — an org-wide library of markdown skeletons + prompt
   // guidance. Tickets and plan docs stay markdown; the skeleton IS the schema.
@@ -889,6 +861,9 @@ const MIGRATIONS: string[] = [
    )`,
   // Who wrote a user turn — multiplayer plans need voices told apart.
   `alter table messages add column if not exists author_user_id uuid references users(id) on delete set null`,
+  // Server-owned message metadata carries Inbox focus context and attribution.
+  // It is never included in generic model history or exposed through Comms.
+  `alter table messages add column if not exists metadata jsonb not null default '{}'`,
   // Research runs: cited research pipelines (Recon / Brief / Expedition). The
   // report itself is a doc artifact; sources carry the [n] citation registry.
   `create table if not exists research_runs (
@@ -1175,6 +1150,99 @@ const MIGRATIONS: string[] = [
      generated_at timestamptz not null default now(),
      primary key (user_id, scope)
    )`,
+  // Focus Queue: per-user display state and assistant brief cache. Source rows
+  // stay authoritative; this table only records snooze/view state and a brief
+  // keyed to the source fingerprint that produced it.
+  `create table if not exists inbox_focus_state (
+     user_id uuid not null references users(id) on delete cascade,
+     source_type text not null,
+     source_id text not null,
+     snoozed_until timestamptz,
+     viewed_at timestamptz,
+     content_fingerprint text,
+     brief jsonb,
+     brief_generated_at timestamptz,
+     updated_at timestamptz not null default now(),
+     primary key (user_id, source_type, source_id)
+   )`,
+  `create index if not exists inbox_focus_state_snooze_idx
+     on inbox_focus_state(user_id, snoozed_until)`,
+  // Focus Queue decisions deliberately retain only durable inputs and outcomes,
+  // never partial agent streams or conversational scratch. A hashed,
+  // short-lived token gates identity-bearing external actions.
+  `create table if not exists inbox_decisions (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references users(id) on delete cascade,
+     source_type text not null,
+     source_id text not null,
+     instruction text,
+     action_id text,
+     agent_model text,
+     delegate_model text,
+     status text not null,
+     proposal jsonb,
+     outcome jsonb,
+     confirmation_token_hash text,
+     expires_at timestamptz,
+     created_at timestamptz not null default now(),
+     confirmed_at timestamptz,
+     completed_at timestamptz
+   )`,
+  `create index if not exists inbox_decisions_user_idx
+     on inbox_decisions(user_id, created_at desc)`,
+  `create index if not exists inbox_decisions_confirmation_idx
+     on inbox_decisions(user_id, confirmation_token_hash) where status = 'proposed'`,
+  `alter table inbox_decisions add column if not exists conversation_id uuid references conversations(id) on delete set null`,
+  `alter table inbox_decisions add column if not exists user_message_id uuid references messages(id) on delete set null`,
+  `alter table inbox_decisions add column if not exists assistant_message_id uuid references messages(id) on delete set null`,
+  `alter table inbox_decisions add column if not exists focus_context jsonb`,
+  `create unique index if not exists conversations_inbox_user_idx
+     on conversations(user_id) where kind = 'inbox' and archived = false`,
+  `create index if not exists inbox_decisions_conversation_timeline_idx
+     on inbox_decisions(conversation_id, created_at desc, id desc) where conversation_id is not null`,
+  // Late patches — these reference tables created above, so they must stay at
+  // the tail of the list or a FRESH database fails its very first migration
+  // ("relation ... does not exist"; existing DBs never noticed).
+  `create table if not exists kb_comments (
+    id uuid primary key default gen_random_uuid(),
+    doc_id uuid not null references kb_docs(id) on delete cascade,
+    parent_id uuid references kb_comments(id) on delete cascade,
+    author_user_id uuid references users(id) on delete set null,
+    author text not null,
+    quote text,
+    content text not null,
+    resolved boolean not null default false,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists kb_comments_doc_idx on kb_comments(doc_id, created_at)`,
+  `create table if not exists channel_message_reactions (
+    message_id uuid not null references channel_messages(id) on delete cascade,
+    emoji text not null,
+    actor text not null,
+    actor_type text not null default 'user',
+    created_at timestamptz not null default now(),
+    primary key (message_id, emoji, actor)
+  )`,
+  `insert into user_permissions (user_id, perm, allowed)
+     select id, 'models.mint-keys', true from users where can_mint_keys
+     on conflict (user_id, perm) do nothing`,
+  `alter table research_runs add column if not exists title text`,
+  `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
+  `alter table channel_messages add column if not exists edited_at timestamptz`,
+  `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
+  `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
+  `alter table kb_docs add column if not exists okf text`,
+  // kb.ts SPACE_COLS selects okf_doc_id unconditionally, so fresh installs
+  // need the column too (nullable; legacy DBs already have it).
+  `alter table kb_spaces add column if not exists okf_doc_id uuid references kb_docs(id) on delete set null`,
+  // One-time data fix for legacy DBs only: kb_spaces.okf_doc_id predates this
+  // migration list and doesn't exist on fresh installs — guard on the column.
+  `do $$ begin
+     if exists (select 1 from information_schema.columns
+                where table_schema = 'public' and table_name = 'kb_spaces' and column_name = 'okf_doc_id') then
+       update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null);
+     end if;
+   end $$`,
 ]
 
 function ensureMigrated(): Promise<void> {

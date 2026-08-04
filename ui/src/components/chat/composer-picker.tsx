@@ -1,16 +1,22 @@
-// The composer's compact choice pill — the TierPicker pattern, generalized:
+// The composer's compact choice chip — the TierPicker pattern, generalized:
 // an icon + current value that opens a portaled popover. Use for anything a
 // composer needs decided at send time (model tier, research depth, acting
 // agent) instead of parking wide controls in rails or headers.
+//
+// Gentle dew (spec §7): a secondary 36px mono chip (hairline border, muted →
+// readout on hover) over the §7 popover pattern — search row with ⌘K hint,
+// panel bg, mono section header, right-aligned mono meta, hover fill,
+// dashed-gold selected row.
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Check, type LucideIcon } from 'lucide-react'
+import { type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { PopSearch, chipSecondary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
 
 export interface ComposerOption {
   value: string
   label: string
-  /** Secondary line in the popover (tagline, role, timing). */
+  /** Right-aligned mono meta in the popover (tagline, role, timing). */
   sub?: string
 }
 
@@ -32,8 +38,10 @@ export function ComposerPicker({
   className?: string
 }) {
   const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
   const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -43,7 +51,8 @@ export function ComposerPicker({
     }
     place()
     const onDoc = (e: MouseEvent) => {
-      if (!btnRef.current?.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (!btnRef.current?.contains(t) && !panelRef.current?.contains(t)) setOpen(false)
     }
     window.addEventListener('resize', place)
     window.addEventListener('scroll', place, true)
@@ -56,32 +65,37 @@ export function ComposerPicker({
   }, [open])
 
   const current = options.find((o) => o.value === value)
+  const needle = q.trim().toLowerCase()
+  const visible = options.filter(
+    (o) => !needle || o.label.toLowerCase().includes(needle) || o.sub?.toLowerCase().includes(needle),
+  )
   return (
     <>
       <button
         ref={btnRef}
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          'flex shrink-0 items-center gap-1.5 self-end mb-[7px] rounded-full border border-line-subtle px-2.5 py-1.5 text-xs text-muted transition-colors hover:border-accent hover:text-fg',
-          className,
-        )}
+        onClick={() => {
+          setQ('')
+          setOpen((v) => !v)
+        }}
+        className={cn(chipSecondary, className)}
         title={title}
       >
-        <Icon size={13} />
+        <Icon size={12} />
         <span className="max-w-28 truncate">{current?.label ?? value}</span>
-        <ChevronDown size={12} />
       </button>
       {open &&
         pos &&
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            className="mercury-panel fixed z-[60] min-w-48 overflow-hidden rounded-xl p-1"
+            ref={panelRef}
+            className={cn(popPanel, 'fixed z-[60] min-w-56 overflow-hidden')}
             style={{ left: pos.left, bottom: pos.bottom }}
           >
-            <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted">{menuLabel}</div>
-            {options.map((o) => (
+            <PopSearch value={q} onChange={setQ} placeholder={`Search ${menuLabel.toLowerCase()}`} />
+            <div className={popHeader}>{menuLabel}</div>
+            {visible.map((o) => (
               <button
                 key={o.value}
                 type="button"
@@ -89,18 +103,17 @@ export function ComposerPicker({
                   onChange(o.value)
                   setOpen(false)
                 }}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-card',
-                  o.value === value ? 'text-fg' : 'text-muted',
-                )}
+                className={cn(popRow, o.value === value ? popRowSelected : 'text-muted')}
               >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">{o.label}</span>
-                  {o.sub && <span className="block truncate text-[10px] text-muted">{o.sub}</span>}
-                </span>
-                {o.value === value && <Check size={13} className="shrink-0 text-accent" />}
+                <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                {o.sub && (
+                  <span className="max-w-44 shrink-0 truncate text-right font-mono text-[10px] tracking-[0.05em] text-ink-dim">
+                    {o.sub}
+                  </span>
+                )}
               </button>
             ))}
+            {visible.length === 0 && <div className="px-2 py-1.5 font-sans text-[13px] text-muted">No matches</div>}
           </div>,
           document.body,
         )}

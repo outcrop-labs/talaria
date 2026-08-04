@@ -70,7 +70,7 @@ export function ChannelSettingsModal({
     <Modal open={open} onClose={onClose} title={`#${channelName} settings`}>
       <div className="space-y-5">
         <section>
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">People</div>
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">People</div>
           <ul className="space-y-1">
             {detail.members.map((m) => (
               <li key={m.userId} className="flex items-center gap-2 text-sm">
@@ -102,7 +102,7 @@ export function ChannelSettingsModal({
         </section>
 
         <section>
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Agents</div>
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agents</div>
           <p className="mb-2 text-xs text-muted">@mention an agent in the channel to bring it into the conversation.</p>
           <Combobox
             options={agentOptions}

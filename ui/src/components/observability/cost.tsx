@@ -2,6 +2,7 @@ import { SkeletonCard, SkeletonRows } from '@/components/ui/skeleton'
 import { Avatar } from '@/components/ui/avatar'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
+import { SectionHeader } from '@/components/ui/section-header'
 import { StatCard } from '@/components/ui/stat-card'
 import { relativeTime } from '@/lib/fleet'
 import { agentLabel, formatCost, formatTokens, useCost, type CostOverview, type CostTotals } from '@/lib/cost'
@@ -62,8 +63,10 @@ export function CostPanel() {
               />
             </div>
 
+            {/* Missing pricing is attention (gold), not failure — orange stays
+                reserved for real failures (spec §1 semantics). */}
             {(t?.unpricedCloudTokens ?? 0) > 0 && (
-              <p className="text-xs" style={{ color: 'var(--theme-danger)' }}>
+              <p className="text-xs text-warning">
                 {formatTokens(t!.unpricedCloudTokens)} cloud tokens have no price configured. Set per-model pricing on
                 the Models page so spend is complete.
               </p>
@@ -75,40 +78,44 @@ export function CostPanel() {
 
             {perDay.length > 1 && (
               <Panel>
-                <div className="mb-3 flex items-baseline gap-4">
-                  <h2 className="text-sm font-semibold text-fg">Tokens per day · last 14 days</h2>
-                  <span className="inline-flex items-center gap-1.5 text-xs text-muted">
-                    <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-success)' }} /> self-hosted
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 text-xs text-muted">
-                    <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-accent)' }} /> cloud
-                  </span>
-                </div>
+                <SectionHeader
+                  title="Tokens per day · last 14 days"
+                  action={
+                    <>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-success)' }} /> self-hosted
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full" style={{ background: 'var(--theme-chart-1)' }} /> cloud
+                      </span>
+                    </>
+                  }
+                />
                 <DailyBars days={perDay} />
               </Panel>
             )}
 
             <Panel>
-              <h2 className="mb-4 text-sm font-semibold text-fg">By agent · 30 days</h2>
-              <ul className="divide-y divide-line-subtle">
+              <SectionHeader title="By agent · 30 days" action={String(perAgent.length).padStart(2, '0')} />
+              <ul className="divide-y divide-line">
                 {perAgent.map((a) => {
                   const d = agentLabel(a.agentModel)
                   return (
-                    <li key={a.agentModel} className="flex items-center gap-3 py-3">
+                    <li key={a.agentModel} className="flex items-center gap-3 py-3 transition-colors hover:bg-hover">
                       <Avatar name={d.label} className="h-6 w-6" />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm text-fg">{d.label}</span>
-                        <span className="block truncate text-xs text-muted">{d.role}</span>
+                        <span className="block truncate font-sans text-sm text-fg">{d.label}</span>
+                        <span className="block truncate font-sans text-xs text-muted">{d.role}</span>
                       </span>
-                      <span className="w-20 text-right text-xs text-muted">{formatTokens(a.prompt)} in</span>
-                      <span className="w-20 text-right text-xs text-muted">{formatTokens(a.completion)} out</span>
-                      <span className="w-16 text-right text-xs" style={{ color: 'var(--theme-success)' }}>
+                      <span className="w-20 text-right font-mono text-[11px] text-muted">{formatTokens(a.prompt)} in</span>
+                      <span className="w-20 text-right font-mono text-[11px] text-muted">{formatTokens(a.completion)} out</span>
+                      <span className="w-16 text-right font-mono text-[11px] text-success">
                         {a.localShare === null ? '—' : `${Math.round(a.localShare * 100)}% self-hosted`}
                       </span>
-                      <span className="w-20 text-right text-sm text-fg">{formatTokens(a.prompt + a.completion)}</span>
-                      <span className="w-16 text-right text-xs text-muted">{formatCost(a.cost)}</span>
-                      <span className="w-16 text-right text-xs text-muted">{a.generations} gen</span>
-                      <span className="w-20 text-right text-xs text-muted">{relativeTime(a.lastUsed)}</span>
+                      <span className="w-20 text-right font-mono text-sm text-fg">{formatTokens(a.prompt + a.completion)}</span>
+                      <span className="w-16 text-right font-mono text-[11px] text-muted">{formatCost(a.cost)}</span>
+                      <span className="w-16 text-right font-mono text-[11px] text-muted">{a.generations} gen</span>
+                      <span className="w-20 text-right font-mono text-[11px] text-muted">{relativeTime(a.lastUsed)}</span>
                     </li>
                   )
                 })}
@@ -128,12 +135,13 @@ export function CostPanel() {
   )
 }
 
-/** Segment colors: hue family = class (green local, bronze cloud), lightness
- *  step = model within the family. Identity is never color-alone — every
- *  segment has a legend chip with the model name and exact tokens. */
+/** Segment colors: hue family = class (green local, chart-blue cloud — gold
+ *  stays reserved for action/attention, spec §1), lightness step = model
+ *  within the family. Identity is never color-alone — every segment has a
+ *  legend chip with the model name and exact tokens. */
 const segmentColor = (cls: 'local' | 'cloud' | null, idxInClass: number): string => {
   if (cls === null) return 'var(--theme-line)'
-  const base = cls === 'local' ? 'var(--theme-success)' : 'var(--theme-accent)'
+  const base = cls === 'local' ? 'var(--theme-success)' : 'var(--theme-chart-1)'
   const lighten = Math.min(idxInClass * 22, 66)
   return lighten ? `color-mix(in oklab, ${base}, white ${lighten}%)` : base
 }
@@ -163,8 +171,8 @@ function SplitPanel({
 
   return (
     <Panel>
-      <h2 className="mb-2 text-sm font-semibold text-fg">Self-hosted vs cloud · 30 days</h2>
-      <p className="mb-4 text-xs text-muted">
+      <SectionHeader className="mb-2" title="Self-hosted vs cloud · 30 days" />
+      <p className="mb-4 font-sans text-xs text-muted">
         {formatTokens(split.local)} on your own hardware · {formatTokens(split.cloud)} on cloud APIs
         {split.other > 0 && ` · ${formatTokens(split.other)} unattributed`}
         {attributed > 0 && ` — ${Math.round((split.local / total) * 100)}% self-hosted`}
@@ -178,7 +186,7 @@ function SplitPanel({
           />
         ))}
       </div>
-      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-muted">
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 font-mono text-[11px] text-muted">
         {segments.map((s) => (
           <span key={s.label} className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: s.color }} />
@@ -210,12 +218,12 @@ function DailyBars({ days }: { days: Array<CostTotals & { day: string; local: nu
         return (
           <div key={d.day} className="group flex h-full min-w-0 flex-1 flex-col justify-end text-center" title={title}>
             {other > 0 && (
-              <div className="mx-auto w-full max-w-7 rounded-t opacity-40" style={{ height: px(other), background: 'var(--theme-accent)' }} />
+              <div className="mx-auto w-full max-w-7 rounded-t opacity-40" style={{ height: px(other), background: 'var(--theme-chart-1)' }} />
             )}
             {d.cloud > 0 && (
               <div
                 className={`mx-auto w-full max-w-7 ${other ? 'mt-px' : 'rounded-t'}`}
-                style={{ height: px(d.cloud), background: 'var(--theme-accent)' }}
+                style={{ height: px(d.cloud), background: 'var(--theme-chart-1)' }}
               />
             )}
             {d.local > 0 && (
@@ -224,8 +232,8 @@ function DailyBars({ days }: { days: Array<CostTotals & { day: string; local: nu
                 style={{ height: px(d.local), background: 'var(--theme-success)' }}
               />
             )}
-            {v === 0 && <div className="mx-auto w-full max-w-7 rounded-t bg-accent opacity-25" style={{ height: '1%' }} />}
-            <div className="mt-1 truncate text-[9px] text-muted">
+            {v === 0 && <div className="mx-auto w-full max-w-7 rounded-t bg-card2" style={{ height: '1%' }} />}
+            <div className="mt-1 truncate font-mono text-[9px] text-muted">
               {new Date(`${d.day}T00:00:00`).toLocaleDateString([], { weekday: 'narrow' })}
             </div>
           </div>

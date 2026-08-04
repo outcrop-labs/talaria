@@ -3,6 +3,7 @@ import { useContextMenu } from '@/components/ui/context-menu'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { GeneratingBars } from '@/components/ui/generating'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Combobox } from '@/components/ui/combobox'
@@ -16,7 +17,10 @@ import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { confirm } from '@/components/ui/confirm'
+import { Chip } from '@/components/ui/chip'
+import { popPanel, popRow } from '@/components/chat/chat-chrome'
 import { cn } from '@/lib/cn'
+import { publicIconDomain } from '@/lib/icon-domain'
 import { relativeTime } from '@/lib/fleet'
 import { useAgents } from '@/lib/agents'
 import { useUsers } from '@/lib/users'
@@ -86,7 +90,7 @@ function McpPage() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto max-w-5xl space-y-6">
         <div className="flex items-center gap-2">
-          <h1 className="mercury-text text-2xl font-semibold">MCP</h1>
+          <h1 className="font-sans text-2xl font-semibold tracking-tight text-fg">MCP</h1>
           <InfoTip text="Model Context Protocol servers, managed org-wide. Register once; choose which agents carry each server and which people may use it — down to individual tools. Agents reach servers only through Talaria's gateway, so the limits here are enforced, not advisory." />
           <span className="flex-1" />
           <Button size="sm" variant="ghost" onClick={() => setAdding('custom')}>
@@ -176,9 +180,12 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
     const u = users.find((x) => x.id === id)
     return u?.name ?? u?.email ?? id.slice(0, 8)
   }
+  // A "domain" only exists for real web URLs — pseudo-schemes like
+  // talaria-workbench://core carry a routing token, not a hostname.
   const domain = (() => {
     try {
-      return new URL(s.url).hostname
+      const u = new URL(s.url)
+      return u.protocol === 'http:' || u.protocol === 'https:' ? u.hostname : null
     } catch {
       return null
     }
@@ -214,13 +221,13 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
 
   // The one status the header needs: connection first, then lifecycle.
   const status = !s.enabled
-    ? { label: 'disabled', cls: 'border-line-subtle text-muted' }
+    ? { label: 'disabled', cls: 'border-line text-muted' }
     : s.oauthEnabled && s.authMode === 'org' && !s.orgConnected
       ? null // the Connect button IS the status
       : s.oauthEnabled && s.authMode === 'per-user'
-        ? { label: 'per-user auth', cls: 'border-line-subtle text-muted' }
+        ? { label: 'per-user auth', cls: 'border-line text-muted' }
         : s.oauthEnabled && s.orgConnected
-          ? { label: '✓ connected', cls: 'border-[color:var(--theme-success)]/40 text-[color:var(--theme-success)]' }
+          ? { label: '✓ connected', cls: 'border-success/40 text-success' }
           : null
 
   return (
@@ -232,26 +239,30 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
           <div className="flex items-baseline gap-2">
             <span className="truncate text-sm font-semibold text-fg">{s.label}</span>
             {s.builtin ? (
-              <span
-                className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted"
+              <Chip
+                className="shrink-0"
                 title="Talaria's own toolkit — every agent carries it. Govern who may use which tools below; identity and lifecycle are managed by the platform."
               >
                 built-in
-              </span>
+              </Chip>
             ) : s.appSlug ? (
-              <span
-                className="shrink-0 rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted"
+              <Chip
+                className="shrink-0"
                 title={`Published by the "${s.appSlug}" app — tools dispatch inside this deployment. Govern access below; lifecycle follows the app (Manage → Apps).`}
               >
                 app
-              </span>
+              </Chip>
             ) : (
-              domain && <span className="truncate text-[11px] text-muted">{domain}</span>
+              domain && <span className="truncate font-mono text-[11px] text-muted">{domain}</span>
             )}
           </div>
           {s.description && <div className="truncate font-sans text-xs text-muted">{s.description}</div>}
         </div>
-        {status && <span className={cn('shrink-0 rounded-full border px-2 py-0.5 text-[11px]', status.cls)}>{status.label}</span>}
+        {status && (
+          <span className={cn('shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em]', status.cls)}>
+            {status.label}
+          </span>
+        )}
         {s.oauthEnabled && s.authMode === 'org' && !s.orgConnected && s.enabled && (s.oauthMeta?.dcr || s.oauthMeta?.clientSet) && (
           <Button
             size="sm"
@@ -282,36 +293,36 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
             setRefreshing(true)
             void patch({ refreshTools: true }).finally(() => setRefreshing(false))
           }}
-          className="flex items-center gap-1.5 rounded-full border border-line-subtle px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-line hover:text-fg"
+          className="flex items-center gap-1.5 rounded border border-line px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg"
           title="Ask the server for its tool catalog"
         >
-          <RefreshCw size={11} className={cn(refreshing && 'animate-spin')} />
+          {refreshing ? <GeneratingBars bars={3} variant="scan" /> : <RefreshCw size={11} />}
           {s.tools.length ? `${s.tools.length} tools` : 'Discover tools'}
-          {s.toolsRefreshedAt && <span className="text-muted/70">· {relativeTime(s.toolsRefreshedAt)}</span>}
+          {s.toolsRefreshedAt && <span className="normal-case text-ink-dim">· {relativeTime(s.toolsRefreshedAt)}</span>}
         </button>
         {s.tools.slice(0, 6).map((t) => (
-          <span key={t.name} title={t.description} className="rounded-full border border-line-subtle px-2 py-0.5 text-[11px] text-muted">
+          <span key={t.name} title={t.description} className="rounded border border-line-subtle px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-muted">
             {t.name}
           </span>
         ))}
         {s.tools.length > 6 && (
-          <span className="text-[11px] text-muted/70" title={s.tools.slice(6).map((t) => t.name).join(', ')}>
+          <span className="font-mono text-[10px] tracking-[0.05em] text-ink-dim" title={s.tools.slice(6).map((t) => t.name).join(', ')}>
             +{s.tools.length - 6} more
           </span>
         )}
       </div>
 
       {/* ── Access: two bounded groups — agents, then people ── */}
-      <div className="mt-4 border-t border-line-subtle pt-3">
+      <div className="mt-4 border-t border-line pt-3">
         <div className="mb-2 flex items-center gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">Access</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Access</span>
           <InfoTip text="Which agents carry this server, and which people may exercise it through agents acting for them. Tool cells narrow a row to a subset; empty = every tool. The gateway enforces all of it." />
         </div>
 
         {/* Agents */}
         <div>
           <div className="flex items-center gap-3 pb-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted/80">Agents</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agents</span>
             {s.builtin ? (
               <span className="text-xs text-muted">every agent — rows below narrow individual agents</span>
             ) : (
@@ -368,9 +379,9 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
         </div>
 
         {/* People */}
-        <div className="mt-3 border-t border-line-subtle/70 pt-2.5">
+        <div className="mt-3 border-t border-line-subtle pt-2.5">
           <div className="flex items-center gap-2 pb-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted/80">People</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">People</span>
             <InfoTip text="No rules = everyone with an assigned agent may use it. A rule narrows one person to specific tools, or denies them outright." />
             <span className="flex-1" />
             <AddPickerButton
@@ -418,11 +429,7 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
         </div>
       </div>
 
-      {error && (
-        <div className="mt-2 text-xs" style={{ color: 'var(--theme-danger)' }}>
-          {error}
-        </div>
-      )}
+      {error && <div className="mt-2 text-xs text-danger">{error}</div>}
       {menu}
     </Panel>
   )
@@ -475,13 +482,13 @@ function AddPickerButton({
         }}
         className={cn(
           'grid h-6 w-6 place-items-center rounded-md transition-colors',
-          open ? 'bg-card text-accent' : 'text-muted hover:bg-card hover:text-accent',
+          open ? 'bg-raised text-accent' : 'text-muted hover:bg-hover hover:text-accent',
         )}
       >
         <Plus size={14} />
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-line bg-card p-1.5 shadow-lg">
+        <div className={cn(popPanel, 'absolute right-0 top-full z-30 mt-1 w-64 p-1.5')}>
           <Input autoFocus size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder={placeholder} className="mb-1" />
           <div className="max-h-48 overflow-y-auto">
             {results.length === 0 && <div className="px-2 py-1.5 text-xs text-muted">No matches</div>}
@@ -493,10 +500,10 @@ function AddPickerButton({
                   setOpen(false)
                   onPick(o.value)
                 }}
-                className="flex w-full items-baseline gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-sidebar"
+                className={cn(popRow, 'items-baseline')}
               >
-                <span className="min-w-0 flex-1 truncate text-sm text-fg">{o.label}</span>
-                {o.sub && <span className="shrink-0 truncate text-[11px] text-muted">{o.sub}</span>}
+                <span className="min-w-0 flex-1 truncate font-sans text-sm text-fg">{o.label}</span>
+                {o.sub && <span className="shrink-0 truncate font-mono text-[11px] text-muted">{o.sub}</span>}
               </button>
             ))}
           </div>
@@ -521,18 +528,18 @@ function AccessRow({
   removeTitle: string
 }) {
   return (
-    <div className="group flex items-center gap-3 rounded-lg px-1.5 py-1 transition-colors hover:bg-card/50">
+    <div className="group flex items-center gap-3 rounded-md px-1.5 py-1 transition-colors hover:bg-hover">
       <span className="w-44 shrink-0 truncate">
-        <span className={cn('text-sm', dim ? 'text-muted' : 'text-fg')}>{name}</span>
+        <span className={cn('font-sans text-sm', dim ? 'text-muted' : 'text-fg')}>{name}</span>
       </span>
-      <span className="min-w-0 flex-1">{tools ?? <span className="text-xs text-muted/60">all tools</span>}</span>
+      <span className="min-w-0 flex-1">{tools ?? <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">all tools</span>}</span>
       {/* Fixed-width control cluster so every row's tool box ends flush. */}
       <span className="flex w-8 shrink-0 items-center justify-end">
         <button
           type="button"
           onClick={onRemove}
           title={removeTitle}
-          className="text-muted opacity-0 transition-opacity hover:text-[color:var(--theme-danger)] group-hover:opacity-100"
+          className="text-muted opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
         >
           <Trash2 size={13} />
         </button>
@@ -567,11 +574,15 @@ interface LibraryServerRow {
  *  is the floor. */
 function ServerMark({ title, domain, icon, size = 32 }: { title: string; domain?: string | null; icon?: string | null; size?: number }) {
   const [failed, setFailed] = useState(false)
-  const src = icon ?? (domain ? `/api/mcp/icon?domain=${encodeURIComponent(domain)}` : null)
+  // Internal hosts have no favicon — don't ask the proxy (it can only 404);
+  // the monogram tile paints immediately instead.
+  const proxied = publicIconDomain(domain)
+  const src = icon ?? (proxied ? `/api/mcp/icon?domain=${encodeURIComponent(proxied)}` : null)
+  // Publisher marks sit in retoned raised tiles (spec: retone containers only).
   if (!src || failed) {
     return (
       <span
-        className="grid shrink-0 place-items-center rounded-lg bg-card font-semibold text-muted"
+        className="grid shrink-0 place-items-center rounded-md border border-line-subtle bg-raised font-mono font-semibold text-muted"
         style={{ width: size, height: size, fontSize: size * 0.45 }}
       >
         {(title[0] ?? '?').toUpperCase()}
@@ -586,20 +597,21 @@ function ServerMark({ title, domain, icon, size = 32 }: { title: string; domain?
       height={size}
       loading="lazy"
       onError={() => setFailed(true)}
-      className="shrink-0 rounded-lg bg-card object-contain"
+      className="shrink-0 rounded-md bg-raised object-contain"
       style={{ width: size, height: size }}
     />
   )
 }
 
+// Outline chips in the mono chrome voice — gold reserved for the official tier.
 const TIER_BADGE: Record<LibraryServerRow['tier'], { label: string; cls: string; hint: string }> = {
   'first-party': {
     label: 'official',
-    cls: 'bg-accent/10 text-accent',
+    cls: 'border-accent/50 text-accent',
     hint: 'Published by the company itself, hosted on its own verified domain',
   },
-  verified: { label: 'verified', cls: 'bg-card text-muted', hint: 'Domain-verified publisher, hosted elsewhere' },
-  community: { label: 'community', cls: 'bg-card text-muted/70', hint: 'Community-built (io.github namespace)' },
+  verified: { label: 'verified', cls: 'border-line text-muted', hint: 'Domain-verified publisher, hosted elsewhere' },
+  community: { label: 'community', cls: 'border-line-subtle text-ink-dim', hint: 'Community-built (io.github namespace)' },
 }
 
 /** The marketplace: browse the official MCP registry like a store — featured
@@ -679,28 +691,24 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
             placeholder="Search the official MCP registry — GitHub, Linear, Notion, Stripe, Vercel…"
             className="max-w-xl"
           />
-          {isFetching && <RefreshCw size={14} className="animate-spin text-muted" />}
+          {isFetching && <GeneratingBars bars={3} variant="scan" className="text-muted" />}
           <span className="flex-1" />
           <button type="button" onClick={onCustom} className="text-xs text-accent hover:underline">
             Custom / self-hosted server →
           </button>
         </div>
         {!q.trim() && (
-          <div className="flex items-center gap-1.5 text-xs text-muted">
-            <span className="font-semibold uppercase tracking-wide">Featured</span>
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Featured</span>
             <InfoTip text="Companies publishing their own MCP server on their own verified domain — the official integrations. Search reaches the whole registry, community servers included." />
           </div>
         )}
-        {error && (
-          <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>
-            {error}
-          </div>
-        )}
+        {error && <div className="text-sm text-danger">{error}</div>}
         <div className="min-h-0 flex-1 overflow-y-auto">
           {!results && (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {Array.from({ length: 9 }, (_, i) => (
-                <div key={i} className="rounded-2xl border border-line-subtle p-4">
+                <div key={i} className="rounded-lg border border-line-subtle p-4">
                   <Skeleton className="h-3.5 w-32 rounded-full" delay={i * 0.08} />
                   <Skeleton className="mt-2 h-2.5 w-24 rounded-full" delay={i * 0.08 + 0.06} />
                   <Skeleton className="mt-3 h-2.5 w-full rounded-full" delay={i * 0.08 + 0.12} />
@@ -726,15 +734,15 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
                 return (
                   <div
                     key={l.registryName}
-                    className="group relative flex flex-col rounded-2xl border border-line-subtle bg-card/30 p-4 transition-all hover:border-line hover:bg-card/60"
+                    className="group relative flex flex-col rounded-lg border border-line-subtle p-4 transition-colors hover:border-line hover:bg-hover"
                   >
                     <div className="flex items-center gap-3">
                       <ServerMark title={l.title} domain={l.domain} icon={l.icon} size={34} />
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-semibold text-fg">{l.title}</div>
+                        <div className="truncate font-sans text-sm font-semibold text-fg">{l.title}</div>
                         <div className="flex items-center gap-1.5">
-                          {l.domain && <span className="truncate text-[11px] text-muted">{l.domain}</span>}
-                          <span title={badge.hint} className={cn('shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium', badge.cls)}>
+                          {l.domain && <span className="truncate font-mono text-[11px] text-muted">{l.domain}</span>}
+                          <span title={badge.hint} className={cn('shrink-0 rounded border px-1.5 font-mono text-[10px] uppercase tracking-[0.05em]', badge.cls)}>
                             {badge.label}
                           </span>
                         </div>
@@ -747,14 +755,14 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
                     <div className="absolute right-3 top-3">
                       {addedState === 'setup' ? (
                         <span
-                          className="rounded-full bg-[color:var(--theme-warning)]/10 px-2 py-1 text-[10px] font-medium text-[color:var(--theme-warning)]"
+                          className="rounded border border-warning/40 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-warning"
                           title="Added — this provider needs a one-time OAuth app setup on the MCP page before agents can connect"
                         >
                           needs setup
                         </span>
                       ) : installed ? (
                         <span
-                          className="grid h-7 w-7 place-items-center rounded-full bg-[color:var(--theme-success)]/10 text-[color:var(--theme-success)]"
+                          className="grid h-7 w-7 place-items-center rounded-full bg-success/10 text-success"
                           title="In your org registry"
                         >
                           <Check size={14} />
@@ -768,11 +776,11 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
                           className={cn(
                             'grid h-7 w-7 place-items-center rounded-full border transition-all',
                             busy
-                              ? 'border-line bg-card text-muted opacity-100'
-                              : 'border-line bg-card text-muted opacity-0 hover:border-accent hover:text-accent group-hover:opacity-100',
+                              ? 'border-line bg-raised text-muted opacity-100'
+                              : 'border-line bg-raised text-muted opacity-0 hover:border-accent hover:text-accent group-hover:opacity-100',
                           )}
                         >
-                          {busy ? <RefreshCw size={13} className="animate-spin" /> : <Plus size={14} />}
+                          {busy ? <GeneratingBars bars={3} variant="weave" step={0.15} /> : <Plus size={14} />}
                         </button>
                       )}
                     </div>
@@ -827,8 +835,8 @@ function InstallDialog({
         <div className="flex items-center gap-3">
           <ServerMark title={l.title} domain={l.domain} icon={l.icon} size={36} />
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-fg">Connect {l.title}</div>
-            {l.domain && <div className="text-[11px] text-muted">{l.domain}</div>}
+            <div className="font-sans text-sm font-semibold text-fg">Connect {l.title}</div>
+            {l.domain && <div className="font-mono text-[11px] text-muted">{l.domain}</div>}
           </div>
         </div>
         <p className="mt-2 font-sans text-xs text-muted">This server declares credentials. Choose how your org authenticates:</p>
@@ -847,7 +855,7 @@ function InstallDialog({
           <div className="mt-3 space-y-3">
             {l.requiredHeaders.map((h) => (
               <div key={h.name}>
-                <label className="mb-1 flex items-baseline gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+                <label className="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
                   {h.name}
                   {h.isRequired && <span className="text-accent">*</span>}
                 </label>
@@ -880,7 +888,7 @@ function InstallDialog({
             Nobody gets access until they connect their own account in Settings → Connections. Their assistant then acts as them on this server.
           </p>
         )}
-        <div className="mt-4 flex justify-end gap-2 border-t border-line-subtle pt-3">
+        <div className="mt-4 flex justify-end gap-2 border-t border-line pt-3">
           <Button size="sm" variant="ghost" onClick={onCancel}>
             Cancel
           </Button>
@@ -922,7 +930,7 @@ function OauthAppSetup({ serverId, domain, docs, onSaved }: { serverId: string; 
   }
 
   return (
-    <div className="mt-3 rounded-xl border border-accent/40 bg-accent/5 p-3">
+    <div className="mt-3 rounded-lg border border-accent/40 bg-accent/5 p-3">
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -949,27 +957,23 @@ function OauthAppSetup({ serverId, domain, docs, onSaved }: { serverId: string; 
       {openForm && (
         <div className="mt-3 space-y-3">
           <div>
-            <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Callback URL (register this with the provider)</label>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Callback URL (register this with the provider)</label>
             <div className="flex items-center gap-2">
-              <code className="min-w-0 flex-1 truncate rounded-lg bg-card px-2 py-1.5 text-xs text-fg">{callback}</code>
+              <code className="min-w-0 flex-1 truncate rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-xs text-fg">{callback}</code>
               <CopyButton value={callback} label="Copy" className="shrink-0 text-xs" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Client ID</label>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client ID</label>
               <Input value={clientId} onChange={(e) => setClientId(e.target.value)} autoComplete="off" />
             </div>
             <div>
-              <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Client secret</label>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client secret</label>
               <Input type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} autoComplete="off" />
             </div>
           </div>
-          {error && (
-            <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
-              {error}
-            </div>
-          )}
+          {error && <div className="text-xs text-danger">{error}</div>}
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="ghost" onClick={() => setOpenForm(false)}>
               Cancel
@@ -1045,10 +1049,10 @@ function AddServerModal({ onClose }: { onClose: () => void }) {
     <Modal open onClose={onClose} title="Custom MCP server">
       <div className="space-y-4">
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Name</label>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
           <Input autoFocus value={label} onChange={(e) => setLabelAndSlug(e.target.value)} onKeyDown={onEnter} placeholder="GitHub" />
           {name && (
-            <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted">
+            <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] text-muted">
               agents will know it as
               <input
                 value={name}
@@ -1056,25 +1060,25 @@ function AddServerModal({ onClose }: { onClose: () => void }) {
                   setSlugEdited(true)
                   setName(slugify(e.target.value))
                 }}
-                className="rounded bg-card px-1.5 py-0.5 font-medium text-fg outline-none"
+                className="rounded bg-raised px-1.5 py-0.5 font-mono font-medium text-fg outline-none"
                 size={Math.max(name.length, 4)}
               />
             </div>
           )}
         </div>
         <div>
-          <label className="mb-1 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+          <label className="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             Server URL
             <InfoTip text="The MCP endpoint (streamable HTTP). Agents never see this address — they go through Talaria's gateway, which enforces the access rules you set here." />
           </label>
           <Input value={url} onChange={(e) => setUrl(e.target.value)} onKeyDown={onEnter} placeholder="https://mcp.example.com/mcp" />
         </div>
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Description</label>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Description</label>
           <Input value={description} onChange={(e) => setDescription(e.target.value)} onKeyDown={onEnter} placeholder="What agents get from it (shown in pickers)" />
         </div>
         <div>
-          <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Authentication</label>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Authentication</label>
           <Combobox
             options={[
               { value: 'org', label: 'Org account', sub: 'one shared credential for every agent' },
@@ -1088,11 +1092,11 @@ function AddServerModal({ onClose }: { onClose: () => void }) {
         {authMode === 'org' && (
           <div className="grid grid-cols-[10rem_1fr] gap-2">
             <div>
-              <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Auth header</label>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Auth header</label>
               <Input value={headerKey} onChange={(e) => setHeaderKey(e.target.value)} onKeyDown={onEnter} placeholder="Authorization" />
             </div>
             <div>
-              <label className="mb-1 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted">
+              <label className="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
                 Value
                 <InfoTip text="Stored on the server row and spoken only by the gateway — never rendered into an agent config, never echoed back to this UI." />
               </label>
@@ -1101,18 +1105,14 @@ function AddServerModal({ onClose }: { onClose: () => void }) {
           </div>
         )}
         <details>
-          <summary className="cursor-pointer text-[11px] uppercase tracking-wide text-muted">Advanced</summary>
+          <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim transition-colors hover:text-muted">Advanced</summary>
           <div className="mt-2">
-            <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted">Timeout (seconds)</label>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Timeout (seconds)</label>
             <Input value={timeoutSecs} onChange={(e) => setTimeoutSecs(e.target.value.replace(/[^0-9]/g, ''))} placeholder="120" className="w-32" />
           </div>
         </details>
-        {error && (
-          <div className="text-sm" style={{ color: 'var(--theme-danger)' }}>
-            {error}
-          </div>
-        )}
-        <div className="flex justify-end gap-2 border-t border-line-subtle pt-3">
+        {error && <div className="text-sm text-danger">{error}</div>}
+        <div className="flex justify-end gap-2 border-t border-line pt-3">
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>

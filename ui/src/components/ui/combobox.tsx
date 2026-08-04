@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/cn'
+import { popRow, popRowSelected } from '@/components/chat/chat-chrome'
 import { controlSizes, type ControlSize } from './control'
 
 export interface ComboOption {
@@ -160,7 +161,9 @@ export function Combobox({
         onClick={() => setOpen((o) => !o)}
         className={cn(
           controlSizes[size],
-          'flex w-full items-center gap-2 rounded-xl border border-line bg-[var(--theme-input)] px-2.5 font-sans text-sm outline-none transition-colors hover:border-[var(--theme-accent-border)] disabled:opacity-50',
+          // Spec §8 input pattern: raised tile, hairline, radius 6, gold focus.
+          'flex w-full items-center gap-2 rounded-md border border-line bg-[var(--theme-input)] px-2.5 font-sans text-sm outline-none transition-colors hover:border-line-strong disabled:opacity-50',
+          'focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent-soft',
         )}
       >
         <span className="min-w-0 flex-1 text-left">{triggerLabel ?? defaultTriggerLabel()}</span>
@@ -177,28 +180,30 @@ export function Combobox({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
               transition={{ duration: 0.14 }}
-              className="mercury-panel fixed z-[60] overflow-hidden rounded-xl"
+              // Spec §7 popover pattern: panel bg, hairline, radius 10,
+              // search field on top, hover card2, selected = dashed gold.
+              className="fixed z-[60] rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]"
               style={{ top: pos.top, bottom: pos.bottom, left: pos.left, width: pos.width }}
             >
             {(searchable || allowCreate) && (
-              <input
-                autoFocus
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                onKeyDown={onSearchKeyDown}
-                placeholder={allowCreate ? 'Search or create' : 'Search'}
-                className="w-full border-b border-line-subtle bg-transparent px-3 py-2 text-sm text-fg outline-none placeholder:text-muted"
-              />
+              <div className="mb-1 flex items-center gap-1.5 rounded-md border border-line px-2">
+                <input
+                  autoFocus
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  onKeyDown={onSearchKeyDown}
+                  placeholder={allowCreate ? 'Search or create' : 'Search'}
+                  className="h-7 w-full min-w-0 bg-transparent font-mono text-[11px] tracking-[0.05em] text-fg outline-none placeholder:text-muted"
+                />
+              </div>
             )}
-            <ul className="max-h-56 overflow-y-auto p-1">
-              {filtered.length === 0 && !canCreate && <li className="px-2 py-2 text-xs text-muted">No matches</li>}
+            <ul className="max-h-56 overflow-y-auto">
+              {filtered.length === 0 && !canCreate && (
+                <li className="px-2 py-2 font-mono text-[11px] text-muted">No matches</li>
+              )}
               {canCreate && (
                 <li>
-                  <button
-                    type="button"
-                    onClick={create}
-                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-fg transition-colors hover:bg-card2"
-                  >
+                  <button type="button" onClick={create} className={cn(popRow, 'text-fg')}>
                     <span className="text-accent">＋</span> Create “{creatable}”
                   </button>
                 </li>
@@ -208,15 +213,14 @@ export function Combobox({
                   <button
                     type="button"
                     onClick={() => toggle(o.value)}
-                    className={cn(
-                      'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left font-sans text-sm transition-colors hover:bg-card2',
-                      selectedSet.has(o.value) && 'bg-card2',
-                    )}
+                    className={cn(popRow, selectedSet.has(o.value) && popRowSelected)}
                   >
                     {o.icon}
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-fg">{o.label}</span>
-                      {o.sub && <span className="block truncate text-xs text-muted">{o.sub}</span>}
+                      {o.sub && (
+                        <span className="block truncate font-mono text-[10px] tracking-[0.05em] text-muted">{o.sub}</span>
+                      )}
                     </span>
                     {selectedSet.has(o.value) && <span className="text-accent">✓</span>}
                   </button>

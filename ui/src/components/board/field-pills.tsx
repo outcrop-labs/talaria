@@ -32,7 +32,11 @@ export type TicketPatch = {
   tags?: string[]
 }
 
-/** The label palette — Mercury-toned, keyed by the stored color name. */
+/** The label palette, keyed by the stored color name. Semantic hues ride the
+ *  theme tokens (they follow light/dark); orange rides chart-2. The remaining
+ *  hues are DATA colors (user-picked label identities, like chart series)
+ *  with no token equivalent — kept literal by design. Blue stays literal:
+ *  chart-1 (#68B6C8) would collide with the adjacent cyan/teal entries. */
 export const LABEL_CSS: Record<LabelColor, string> = {
   slate: 'var(--theme-muted)',
   bronze: 'var(--theme-accent)',
@@ -40,10 +44,10 @@ export const LABEL_CSS: Record<LabelColor, string> = {
   amber: 'var(--theme-warning)',
   red: 'var(--theme-danger)',
   blue: '#6b9bd1',
+  orange: 'var(--theme-chart-2)',
   purple: '#a78bda',
   teal: '#5fb8ad',
   pink: '#d189a8',
-  orange: '#d4884f',
   lime: '#a2c05b',
   cyan: '#5fb6d4',
   indigo: '#7a86d9',
@@ -55,12 +59,13 @@ export const LABEL_CSS: Record<LabelColor, string> = {
 export const labelColor = (name: string, labels: BoardLabel[]): string =>
   LABEL_CSS[labels.find((l) => l.name === name)?.color ?? 'slate']
 
-/** The one tinted label chip — used on cards, rows, facets, and settings. */
+/** The one tinted label chip — used on cards, rows, facets, and settings.
+ *  Mono chip voice (spec §8). */
 export function LabelChip({ name, labels, className }: { name: string; labels: BoardLabel[]; className?: string }) {
   const c = labelColor(name, labels)
   return (
     <span
-      className={cn('max-w-28 truncate rounded-full border px-1.5 py-0.5 text-[10px]', className)}
+      className={cn('max-w-28 truncate rounded-full border px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-[0.05em]', className)}
       style={{
         color: c,
         borderColor: `color-mix(in srgb, ${c} 45%, transparent)`,
@@ -123,8 +128,8 @@ export function StatusPill({ t, ctx, className }: { t: Task; ctx: PillCtx; class
   const dot = sts.length ? statusColorOf(t.status, sts) : STATUS_COLOR[t.status]
   if (!ctx.canEdit)
     return (
-      <span className={cn('inline-flex items-center gap-1.5 text-[11px] text-muted', className)}>
-        <span className="h-2 w-2 rounded-full" style={{ background: dot }} />
+      <span className={cn('inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>
+        <span className="h-1.5 w-1.5 rounded-full" style={{ background: dot }} />
         {label}
       </span>
     )
@@ -142,7 +147,7 @@ export function StatusPill({ t, ctx, className }: { t: Task; ctx: PillCtx; class
       )}
       items={options.map((o) => ({
         label: o.label,
-        icon: <span className="h-2 w-2 rounded-full" style={{ background: o.color }} />,
+        icon: <span className="h-1.5 w-1.5 rounded-full" style={{ background: o.color }} />,
         checked: t.status === o.key,
         onSelect: () => ctx.onPatch({ status: o.key as Task['status'] }),
       }))}
@@ -154,7 +159,7 @@ export function PriorityPill({ t, ctx, className }: { t: Task; ctx: PillCtx; cla
   const flag = <Flag size={11} style={{ color: PRIORITY_COLOR[t.priority] }} />
   if (!ctx.canEdit)
     return (
-      <span className={cn('inline-flex items-center gap-1.5 text-[11px] text-muted', className)}>
+      <span className={cn('inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>
         {flag}
         {t.priority}
       </span>
@@ -184,7 +189,7 @@ export function DuePill({ t, ctx, className, ghost, persistent }: { t: Task; ctx
   if (!ctx.canEdit) {
     if (!t.dueDate) return null
     return (
-      <span className={cn('text-[11px]', late ? 'font-medium text-[color:var(--theme-danger)]' : 'text-muted', className)}>
+      <span className={cn('font-mono text-[10px] uppercase tracking-[0.05em]', late ? 'font-medium text-danger' : 'text-muted', className)}>
         {label}
       </span>
     )
@@ -201,7 +206,7 @@ export function DuePill({ t, ctx, className, ghost, persistent }: { t: Task; ctx
           empty={!t.dueDate}
           title="Set due date"
           className={cn(
-            late && 'font-medium !text-[color:var(--theme-danger)]',
+            late && 'font-medium !text-danger',
             // Ghost: an unset property stays invisible until the card is
             // hovered (or its picker is open) — quiet cards, one-click set.
             ghost && !persistent && !t.dueDate && !open && 'opacity-0 transition-opacity group-hover:opacity-100',
@@ -238,7 +243,7 @@ export function EstimatePill({ t, ctx, className, ghost, persistent }: { t: Task
   const label = t.estimatedHours != null ? `${t.estimatedHours}h` : 'Estimate'
   if (!ctx.canEdit) {
     if (t.estimatedHours == null) return null
-    return <span className={cn('text-[11px] text-muted', className)}>{label}</span>
+    return <span className={cn('font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>{label}</span>
   }
   return (
     <DropdownMenu
@@ -303,7 +308,7 @@ export function AssigneesPill({ t, ctx, className, ghost, persistent }: { t: Tas
   )
   if (!ctx.canEdit) {
     if (infos.length === 0) return null
-    return <span className={cn('inline-flex items-center text-[11px] text-muted', className)}>{avatars}</span>
+    return <span className={cn('inline-flex items-center font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>{avatars}</span>
   }
   const toggle = (key: string) =>
     ctx.onPatch({ assignees: t.assignees.includes(key) ? t.assignees.filter((a) => a !== key) : [...t.assignees, key] })
@@ -390,7 +395,7 @@ export function LabelsPill({ t, ctx, className, ghost, persistent }: { t: Task; 
       items={() =>
         labels.map((l) => ({
           label: l.name,
-          icon: <span className="h-2 w-2 rounded-full" style={{ background: LABEL_CSS[l.color] }} />,
+          icon: <span className="h-1.5 w-1.5 rounded-full" style={{ background: LABEL_CSS[l.color] }} />,
           checked: t.tags.includes(l.name),
           keepOpen: true,
           onSelect: () => toggle(l.name),
@@ -437,7 +442,7 @@ export function ColorPill({
   if (disabled) {
     if (!value) return null
     return (
-      <span className={cn('inline-flex items-center gap-1.5 text-[11px] text-muted', className)}>
+      <span className={cn('inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted', className)}>
         <span className="h-2.5 w-2.5 rounded-full" style={{ background: LABEL_CSS[value as keyof typeof LABEL_CSS] }} />
         {value}
       </span>
@@ -484,7 +489,7 @@ export function ColorPill({
                 onChange(null)
                 close()
               }}
-              className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-sidebar hover:text-[color:var(--theme-danger)]"
+              className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-hover hover:text-danger"
             >
               Clear color
             </button>

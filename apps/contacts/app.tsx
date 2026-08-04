@@ -17,7 +17,10 @@ import {
   Select,
   Modal,
   Chip,
+  DangerLink,
   EmptyState,
+  Panel,
+  SectionHeader,
   SkeletonRows,
   confirm,
   alert,
@@ -59,7 +62,7 @@ function ContactsWork() {
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto w-full max-w-3xl">
         <div className="mb-6 flex items-center gap-3">
-          <h1 className="mercury-text flex-1 text-lg font-semibold">Contacts</h1>
+          <h1 className="flex-1 font-sans text-lg font-semibold text-fg">Contacts</h1>
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" size="sm" className="w-48" />
           <Button size="sm" onClick={() => setEditing('new')}>
             New contact
@@ -81,12 +84,12 @@ function ContactsWork() {
         ) : contacts.length === 0 ? (
           <EmptyState icon="☏" title={q || stageFilter ? 'No matches' : 'No contacts yet'} hint={q || stageFilter ? undefined : 'Add your first contact to start the pipeline'} />
         ) : (
-          <ul className="mercury-panel divide-y divide-line-subtle rounded-2xl">
+          <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line bg-panel">
             {contacts.map((c) => (
               <li
                 key={c.id}
                 onClick={() => setEditing(c)}
-                className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors first:rounded-t-2xl last:rounded-b-2xl hover:bg-card"
+                className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors duration-120 hover:bg-hover"
               >
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-fg">{c.data.name}</div>
@@ -165,9 +168,11 @@ function ContactModal({ doc, stages, onClose, onSaved }: { doc: ContactDoc | nul
         <Textarea value={form.notes ?? ''} onChange={set('notes')} placeholder="Notes" rows={4} />
         <div className="flex items-center justify-between pt-1">
           {doc ? (
-            <Button variant="ghost" disabled={busy} onClick={() => void remove()} className="text-red-500">
+            // Destructive trigger: quiet mono link → safety orange, paired with
+            // the confirm() step — never an orange fill (spec §8).
+            <DangerLink disabled={busy} onClick={() => void remove()}>
               Delete
-            </Button>
+            </DangerLink>
           ) : (
             <span />
           )}
@@ -205,25 +210,32 @@ function ContactsManage() {
   return (
     <div className="h-full overflow-y-auto p-8">
       <div className="mx-auto w-full max-w-2xl space-y-6">
-        <h1 className="mercury-text text-lg font-semibold">Contacts data</h1>
-        <div className="mercury-panel rounded-2xl p-6">
-          <div className="mb-3 text-sm font-medium text-fg">{stats?.total ?? 0} contacts</div>
-          <div className="flex flex-wrap gap-2">
+        <h1 className="font-sans text-lg font-semibold text-fg">Contacts data</h1>
+        {/* §8 stat block: big sans numeral + 10px mono uppercase label. */}
+        <Panel>
+          <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Contacts</div>
+          <div className="mt-1.5 font-sans text-2xl font-semibold text-fg">{stats?.total ?? 0}</div>
+          <div className="mt-3 flex flex-wrap gap-2">
             {Object.entries(stats?.byStage ?? {}).map(([stage, n]) => (
               <Chip key={stage} className="capitalize">
                 {stage}: {n}
               </Chip>
             ))}
           </div>
-        </div>
+        </Panel>
         {me?.role === 'admin' && (
-          <div className="mercury-panel rounded-2xl border-[color:var(--theme-danger)]/30 p-6">
-            <div className="mb-1 text-sm font-medium text-fg">Danger zone</div>
+          // §8 danger zone: orange hairline panel, orange mono header, right
+          // meta, muted body — destructive button stays an orange outline.
+          <Panel className="border-danger/40">
+            <div className="mb-3 flex items-baseline justify-between gap-2">
+              <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-danger">Danger zone</span>
+              <span className="font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">Irreversible</span>
+            </div>
             <p className="mb-3 text-xs text-muted">Remove everything this app has stored.</p>
             <Button variant="danger" size="sm" onClick={() => void wipe()}>
               Wipe all data
             </Button>
-          </div>
+          </Panel>
         )}
       </div>
     </div>
@@ -251,8 +263,8 @@ function ContactsSettings() {
   }
 
   return (
-    <section className="mercury-panel rounded-2xl p-6">
-      <div className="mb-1 text-sm font-medium text-fg">Pipeline stages</div>
+    <Panel as="section">
+      <SectionHeader title="Pipeline stages" className="mb-1" />
       <p className="mb-3 text-xs text-muted">Comma-separated, in order. Shared by everyone using Contacts.</p>
       <div className="flex gap-2">
         <Input value={value} onChange={(e) => setDraft(e.target.value)} className="flex-1" />
@@ -260,7 +272,7 @@ function ContactsSettings() {
           Save
         </Button>
       </div>
-    </section>
+    </Panel>
   )
 }
 

@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { EmptyState } from '@/components/ui/empty-state'
 import { GeneratingDots } from '@/components/ui/generating'
 import { Panel } from '@/components/ui/panel'
+import { SectionHeader } from '@/components/ui/section-header'
 import { StatCard } from '@/components/ui/stat-card'
 import { formatTokens } from '@/lib/cost'
 import { relativeTime } from '@/lib/fleet'
@@ -65,7 +66,9 @@ function LiveSection({ live }: { live: InferenceLive }) {
           value={
             generatingTotal ? (
               <span className="flex items-center gap-2">
-                {generatingTotal} <GeneratingDots />
+                {/* Live monitor, not an inline action — MONITOR BREATHE on
+                    the ambient budget (spec §9). */}
+                {generatingTotal} <GeneratingDots variant="breathe" />
               </span>
             ) : (
               '0'
@@ -87,15 +90,15 @@ function LiveSection({ live }: { live: InferenceLive }) {
       </div>
       {live.lastHour.length > 0 && (
         <Panel>
-          <div className="mb-4 text-sm font-semibold text-fg">Active this hour</div>
-          <div className="divide-y divide-line-subtle">
+          <SectionHeader title="Active this hour" action={String(live.lastHour.length).padStart(2, '0')} />
+          <div className="divide-y divide-line">
             {live.lastHour.map((a) => (
-              <div key={a.agentModel} className="flex items-center gap-3 py-3 text-sm">
-                <span className="min-w-0 flex-1 truncate text-fg">{a.agentModel}</span>
-                {genByAgent.has(a.agentModel) && <GeneratingDots />}
-                <span className="shrink-0 text-muted">{a.generations} gen</span>
-                <span className="shrink-0 text-muted">{formatTokens(a.tokens)} tokens</span>
-                <span className="w-16 shrink-0 text-right text-xs text-muted">{relativeTime(a.lastAt)}</span>
+              <div key={a.agentModel} className="flex items-center gap-3 py-3 text-sm transition-colors hover:bg-hover">
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{a.agentModel}</span>
+                {genByAgent.has(a.agentModel) && <GeneratingDots variant="breathe" />}
+                <span className="shrink-0 font-mono text-[11px] text-muted">{a.generations} gen</span>
+                <span className="shrink-0 font-mono text-[11px] text-muted">{formatTokens(a.tokens)} tokens</span>
+                <span className="w-16 shrink-0 text-right font-mono text-[11px] text-muted">{relativeTime(a.lastAt)}</span>
               </div>
             ))}
           </div>
@@ -118,7 +121,7 @@ export function ComputePanel() {
       <div className="space-y-8">
         <div className="flex items-center gap-3">
           {session?.role === 'admin' && (
-            <Link to="/models" className="ml-auto text-sm text-accent hover:underline">
+            <Link to="/models" className="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent">
               Configure on Models →
             </Link>
           )}
@@ -134,7 +137,7 @@ export function ComputePanel() {
           </div>
         )}
 
-        <div className="mercury-text text-lg font-semibold">Self-hosted compute</div>
+        <SectionHeader className="mb-0" title="Self-hosted compute" />
 
         {isLoading ? (
           <SkeletonCard />
@@ -156,22 +159,22 @@ export function ComputePanel() {
               <Panel key={b.id}>
                 <div className="mb-4 flex items-center gap-3">
                   <span
-                    className="h-2 w-2 shrink-0 rounded-full"
+                    className="h-[7px] w-[7px] shrink-0 rounded-full"
                     style={{ background: b.health.ok ? 'var(--theme-success)' : 'var(--theme-danger)' }}
                   />
-                  <span className="text-sm font-semibold text-fg">{b.name}</span>
-                  <span className="min-w-0 truncate text-xs text-muted">{b.baseUrl}</span>
-                  <span className="ml-auto shrink-0 text-xs text-muted">
+                  <span className="font-sans text-sm font-semibold text-fg">{b.name}</span>
+                  <span className="min-w-0 truncate font-mono text-[11px] text-muted">{b.baseUrl}</span>
+                  <span className={`ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] ${b.health.ok ? 'text-muted' : 'text-danger'}`}>
                     {b.health.ok ? `up · ${b.health.latencyMs}ms` : 'unreachable'}
                   </span>
                 </div>
                 {b.health.ok ? (
                   <div className="space-y-2.5">
                     <div>
-                      <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">Serving now</div>
+                      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Serving now</div>
                       <div className="flex flex-wrap gap-1.5">
                         {(b.health.servingNow.length ? b.health.servingNow : ['(none reported)']).map((m) => (
-                          <span key={m} className="rounded-full border border-line-subtle px-2.5 py-0.5 text-xs text-fg">
+                          <span key={m} className="rounded border border-line px-2.5 py-0.5 font-mono text-[11px] text-fg">
                             {m}
                           </span>
                         ))}
@@ -179,19 +182,19 @@ export function ComputePanel() {
                     </div>
                   </div>
                 ) : (
-                  <div className="text-xs text-muted">{b.health.note}</div>
+                  <div className="font-sans text-xs text-muted">{b.health.note}</div>
                 )}
               </Panel>
             ))}
 
             {(data?.usage.perModel.length ?? 0) > 0 && (
               <Panel>
-                <div className="mb-4 text-sm font-semibold text-fg">Served self-hosted · 30 days</div>
-                <div className="divide-y divide-line-subtle">
+                <SectionHeader title="Served self-hosted · 30 days" action={String(data!.usage.perModel.length).padStart(2, '0')} />
+                <div className="divide-y divide-line">
                   {data!.usage.perModel.map((m) => (
-                    <div key={m.llmModel ?? '?'} className="flex items-center gap-3 py-3 text-sm">
-                      <span className="min-w-0 flex-1 truncate text-fg">{m.llmModel ?? 'unattributed'}</span>
-                      <span className="shrink-0 text-muted">{formatTokens(m.tokens)} tokens</span>
+                    <div key={m.llmModel ?? '?'} className="flex items-center gap-3 py-3 text-sm transition-colors hover:bg-hover">
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{m.llmModel ?? 'unattributed'}</span>
+                      <span className="shrink-0 font-mono text-[11px] text-muted">{formatTokens(m.tokens)} tokens</span>
                     </div>
                   ))}
                 </div>

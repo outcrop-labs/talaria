@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { MessageSquareText, Pencil, SmilePlus, Trash2, X } from 'lucide-react'
-import { Avatar } from '@/components/ui/avatar'
+import { MessageAvatar } from '@/components/chat/chat-chrome'
 import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { Markdown } from '@/components/ui/markdown'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
+import { GeneratingDots } from '@/components/ui/generating'
 import { Skeleton } from '@/components/ui/skeleton'
 import { confirm } from '@/components/ui/confirm'
 import { cn } from '@/lib/cn'
@@ -143,7 +144,7 @@ export function ChannelView({
             <div aria-hidden className="space-y-5">
               {Array.from({ length: 5 }, (_, i) => (
                 <div key={i} className="flex gap-2.5">
-                  <Skeleton className="mt-0.5 h-7 w-7 shrink-0 rounded-full" delay={i * 0.12} />
+                  <Skeleton className="mt-0.5 h-6 w-6 shrink-0 rounded" delay={i * 0.12} />
                   <div className="min-w-0 flex-1 space-y-2 pt-1">
                     <Skeleton className="h-2.5 w-24 rounded-full" delay={i * 0.12} />
                     <div style={{ width: ['82%', '64%', '90%', '71%', '58%'][i] }}>
@@ -300,20 +301,22 @@ function MessageRow({
   }
 
   return (
+    // Flattened message row (spec §10): avatar square + name + 10px mono
+    // timestamp, 14px sans body — no bubble.
     <div className="group relative flex gap-2.5" onContextMenu={onContextMenu} onMouseLeave={() => setPicking(false)}>
-      <Avatar name={name} className="mt-0.5 shrink-0" />
+      <MessageAvatar name={name} className="mt-0.5" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="text-sm font-semibold text-fg">{name}</span>
+          <span className="font-sans text-[13px] font-medium text-fg">{name}</span>
           {m.authorType === 'agent' && (
-            <span className="rounded border border-line-subtle px-1 text-[10px] uppercase tracking-wide text-muted">
+            <span className="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
               agent
             </span>
           )}
-          <span className="text-xs text-muted">{time}</span>
-          {m.editedAt && <span className="text-[10px] text-muted/80">(edited)</span>}
+          <span className="font-mono text-[10px] tracking-[0.05em] text-muted">{time}</span>
+          {m.editedAt && <span className="font-mono text-[10px] text-ink-dim">(edited)</span>}
         </div>
-        <div className="text-sm">
+        <div className="font-sans text-sm">
           {editing ? (
             <div className="mt-1">
               <Textarea
@@ -332,18 +335,17 @@ function MessageRow({
                 }}
                 className="max-h-40"
               />
-              <div className="mt-1 text-[11px] text-muted">enter to save · esc to cancel</div>
+              <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">enter to save · esc to cancel</div>
             </div>
           ) : m.content ? (
             <Markdown>{m.authorType === 'agent' ? resolveAgentMedia(m.content, m.author) : m.content}</Markdown>
           ) : live ? (
-            <span className="inline-flex gap-1 py-1">
-              <Dot /> <Dot delay={0.15} /> <Dot delay={0.3} />
-            </span>
+            // Awaiting the agent's first token — SIGNAL WEAVE burst (spec §9).
+            <GeneratingDots className="py-1" />
           ) : null}
           {m.attachments && m.attachments.length > 0 && <MessageAttachments items={m.attachments} />}
           {!live && <GuardCaveat findings={m.guard} />}
-          {m.content && live && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-accent align-middle" />}
+          {m.content && live && <span className="gd-pulse ml-0.5 inline-block h-4 w-1.5 bg-accent align-middle" />}
           {m.status === 'error' && (
             <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
               · interrupted
@@ -363,12 +365,14 @@ function MessageRow({
                   title={r.actors.map((a, i) => actorLabel(ctx, a, r.actorTypes[i] ?? 'user')).join(', ')}
                   onClick={() => react(r.emoji)}
                   className={cn(
-                    'flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs transition-colors',
-                    mine ? 'border-accent bg-accent/10 text-fg' : 'border-line-subtle bg-card/50 text-muted hover:border-line hover:text-fg',
+                    'flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors',
+                    mine
+                      ? 'border-accent bg-accent-soft text-fg'
+                      : 'border-line bg-raised text-muted hover:bg-hover hover:text-fg',
                   )}
                 >
                   <span>{r.emoji}</span>
-                  <span className="text-[11px]">{r.actors.length}</span>
+                  <span className="font-mono text-[10px] tracking-[0.05em]">{r.actors.length}</span>
                 </button>
               )
             })}
@@ -380,11 +384,11 @@ function MessageRow({
           <button
             type="button"
             onClick={onOpenThread}
-            className="mt-1.5 flex items-center gap-1.5 rounded-lg border border-line-subtle bg-card/50 px-2 py-1 text-xs text-accent transition-colors hover:border-accent"
+            className="mt-1.5 flex items-center gap-1.5 rounded-md border border-line bg-raised px-2 py-1 text-xs text-accent transition-colors hover:border-accent"
           >
             <MessageSquareText size={12} />
             {m.thread.count} {m.thread.count === 1 ? 'reply' : 'replies'}
-            <span className="text-muted">· {relativeTime(m.thread.lastAt)}</span>
+            <span className="font-mono text-[10px] tracking-[0.05em] text-muted">· {relativeTime(m.thread.lastAt)}</span>
           </button>
         )}
       </div>
@@ -395,7 +399,7 @@ function MessageRow({
         <div
           ref={toolbarRef}
           className={cn(
-            'absolute -top-2 right-0 items-center gap-0.5 rounded-lg border border-line bg-card p-0.5 shadow-sm',
+            'absolute -top-2 right-0 items-center gap-0.5 rounded-md border border-line bg-raised p-0.5 shadow-[var(--theme-shadow-1)]',
             picking ? 'flex' : 'hidden group-hover:flex',
           )}
         >
@@ -405,7 +409,7 @@ function MessageRow({
                 key={e}
                 type="button"
                 onClick={() => react(e)}
-                className="grid h-7 w-7 place-items-center rounded-md text-base transition-colors hover:bg-sidebar"
+                className="grid h-7 w-7 place-items-center rounded-md text-base transition-colors hover:bg-hover"
               >
                 {e}
               </button>
@@ -475,7 +479,7 @@ function HoverAction({
       title={title}
       onClick={onClick}
       className={cn(
-        'grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-sidebar',
+        'grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover',
         danger ? 'hover:text-[color:var(--theme-danger)]' : 'hover:text-fg',
       )}
     >
@@ -518,14 +522,15 @@ function ThreadPanel({
   }
 
   return (
-    <div className="flex w-[380px] shrink-0 flex-col border-l border-line-subtle bg-surface/50">
-      <div className="flex items-center gap-2 border-b border-line-subtle px-4 py-2.5">
+    // Thread side panel — a proper panel surface (spec §8) beside the feed.
+    <div className="flex w-[380px] shrink-0 flex-col border-l border-line bg-panel">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
         <MessageSquareText size={14} className="text-muted" />
-        <span className="text-sm font-semibold text-fg">Thread</span>
+        <span className="font-sans text-sm font-semibold text-fg">Thread</span>
         <button
           type="button"
           onClick={onClose}
-          className="ml-auto grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-card hover:text-fg"
+          className="ml-auto grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
           title="Close thread"
         >
           <X size={14} />
@@ -536,7 +541,7 @@ function ThreadPanel({
           <div aria-hidden className="space-y-4">
             {Array.from({ length: 3 }, (_, i) => (
               <div key={i} className="flex gap-2.5">
-                <Skeleton className="mt-0.5 h-7 w-7 shrink-0 rounded-full" delay={i * 0.12} />
+                <Skeleton className="mt-0.5 h-6 w-6 shrink-0 rounded" delay={i * 0.12} />
                 <div className="min-w-0 flex-1 space-y-2 pt-1">
                   <Skeleton className="h-2.5 w-20 rounded-full" delay={i * 0.12} />
                   <Skeleton className="h-2.5 w-4/5 rounded-full" delay={i * 0.12 + 0.06} />
@@ -549,7 +554,7 @@ function ThreadPanel({
             <div key={m.id}>
               <MessageRow message={m} ctx={ctx} inThread />
               {i === 0 && messages.length > 1 && (
-                <div className="mt-3 border-t border-line-subtle pt-1 text-[11px] text-muted">
+                <div className="mt-3 border-t border-line pt-1 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">
                   {messages.length - 1} {messages.length - 1 === 1 ? 'reply' : 'replies'}
                 </div>
               )}
@@ -599,8 +604,13 @@ function Composer({
 
   return (
     <div className="relative px-6 pb-6">
+      {/* The composer panel (spec §7): #141312 body, strong 1px border,
+          radius 8, 8px padding/gap, matte float shadow. */}
       <div
-        className={cn('mercury-panel rounded-2xl p-2 transition-colors', dragging && 'border-accent bg-accent/5')}
+        className={cn(
+          'flex flex-col gap-2 rounded-lg border border-line-strong bg-panel p-2 shadow-[var(--theme-shadow-2)] transition-colors',
+          dragging && 'border-accent bg-accent-soft',
+        )}
         onDragOver={(e) => {
           if (e.dataTransfer.types.includes('Files')) {
             e.preventDefault()
@@ -613,11 +623,14 @@ function Composer({
         <PendingAttachments items={attachments} onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))} />
         <ChatComposer
           ref={editorRef}
-          placeholder={placeholder ?? `Message #${channelName}. @mention an agent to bring it in`}
+          // No single selected agent in a channel — the generic ask, with the
+          // @mention affordance kept discoverable.
+          placeholder={placeholder ?? `What would you like #${channelName} to work on? @mention an agent to bring it in`}
           mentionables={mentionables}
           onSubmit={submit}
           onFiles={uploadAll}
           onEmptyChange={setEmpty}
+          canSend={!empty || attachments.length > 0}
           leftControls={
             <>
               <AttachButton onAttach={(a) => setAttachments((prev) => [...prev, a])} />
@@ -629,8 +642,4 @@ function Composer({
       </div>
     </div>
   )
-}
-
-function Dot({ delay = 0 }: { delay?: number }) {
-  return <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted" style={{ animationDelay: `${delay}s` }} />
 }

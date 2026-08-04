@@ -143,7 +143,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 12 }}
           transition={{ duration: 0.16 }}
-          className="mercury-panel relative z-10 flex h-[85vh] w-full max-w-4xl overflow-hidden rounded-2xl"
+          className="relative z-10 flex h-[85vh] w-full max-w-4xl overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]"
         >
           {!t ? (
             <div className="flex h-full w-full gap-6 p-6">
@@ -160,11 +160,11 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
               {/* Content */}
               <div className="flex min-w-0 flex-1 flex-col">
                 <div className="flex items-center gap-2 border-b border-line-subtle px-5 py-2.5">
-                  {t.ticketRef && <span className="font-[var(--font-mono)] text-xs text-muted">{t.ticketRef}</span>}
+                  {t.ticketRef && <span className="font-mono text-xs tracking-[0.05em] text-muted">{t.ticketRef}</span>}
                   <span className="text-xs text-muted">·</span>
-                  <span className="text-xs text-muted">opened by {t.createdBy}</span>
+                  <span className="font-mono text-[11px] text-muted">opened by {t.createdBy}</span>
                   {t.archivedAt && (
-                    <span className="rounded-md border border-line-subtle bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">
+                    <span className="rounded-md border border-line bg-raised px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
                       Archived
                     </span>
                   )}
@@ -184,7 +184,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     onChange={(e) => setTitle(e.target.value)}
                     onBlur={() => title.trim() && title !== t.title && save({ title: title.trim() })}
                     onKeyDown={inlineEditKeys(() => setTitle(t.title))}
-                    className="border-0 bg-transparent px-0 text-lg font-semibold focus:border-0"
+                    className="border-0 bg-transparent px-0 font-sans text-lg font-semibold focus:border-0"
                   />
 
                   {/* QA judge verdict (advisory) — most recent first */}
@@ -192,7 +192,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
 
                   {/* Approval gate */}
                   {t.status === 'quality_review' && canEdit && (
-                    <div className="flex items-center gap-2 rounded-lg border border-[color:var(--theme-accent-border)] bg-accent-soft p-2 text-sm">
+                    <div className="flex items-center gap-2 rounded-lg border border-[color:var(--theme-accent-border)] bg-accent-soft p-2 font-sans text-sm">
                       <span className="flex-1 text-fg">Ready for review. Approve to complete.</span>
                       <Button size="sm" onClick={async () => { await reviewTask(taskId, 'approved'); refresh() }}>Approve</Button>
                       <Button variant="outline" size="sm" onClick={async () => { await reviewTask(taskId, 'rejected'); refresh() }}>Request changes</Button>
@@ -237,8 +237,8 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                         key={tb}
                         onClick={() => setTab(tb)}
                         className={cn(
-                          'rounded-md px-3 py-1 text-xs font-medium transition-colors',
-                          tab === tb ? 'bg-card text-fg' : 'text-muted hover:text-fg',
+                          'rounded-md px-3 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.05em] transition-colors',
+                          tab === tb ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
                         )}
                       >
                         {tb === 'comments' ? `Comments (${data!.comments.length})` : 'Activity'}
@@ -250,15 +250,15 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     <>
                       <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-3">
                         {data!.comments.map((c) => (
-                          <li key={c.id} className="rounded-lg border border-line-subtle bg-card p-2">
+                          <li key={c.id} className="rounded-lg border border-line bg-card p-2">
                             <div className="mb-0.5 flex items-center justify-between text-xs">
-                              <span className="text-accent">{c.author}</span>
-                              <span className="text-muted">{relativeTime(c.createdAt)}</span>
+                              <span className="font-mono text-[11px] tracking-[0.05em] text-accent">{c.author}</span>
+                              <span className="font-mono text-[10px] tracking-[0.05em] text-muted">{relativeTime(c.createdAt)}</span>
                             </div>
-                            <div className="text-sm text-fg"><Markdown>{c.content}</Markdown></div>
+                            <div className="font-sans text-sm text-fg"><Markdown>{c.content}</Markdown></div>
                           </li>
                         ))}
-                        {data!.comments.length === 0 && <li className="text-xs text-muted">No comments yet.</li>}
+                        {data!.comments.length === 0 && <li className="font-sans text-xs text-muted">No comments yet.</li>}
                       </ul>
                       <RichEditor
                         ref={commentRef}
@@ -282,12 +282,12 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto px-5 py-3">
                       {data!.activity.map((a) => (
                         <li key={a.id} className="flex items-center gap-2 text-xs text-muted">
-                          <span className="text-accent">{a.actor}</span>
-                          <span className="min-w-0 flex-1 truncate">{a.description}</span>
-                          <span className="shrink-0">{relativeTime(a.createdAt)}</span>
+                          <span className="font-mono text-[11px] tracking-[0.05em] text-accent">{a.actor}</span>
+                          <span className="min-w-0 flex-1 truncate font-sans">{a.description}</span>
+                          <span className="shrink-0 font-mono text-[10px] tracking-[0.05em]">{relativeTime(a.createdAt)}</span>
                         </li>
                       ))}
-                      {data!.activity.length === 0 && <li className="text-xs text-muted">No activity yet.</li>}
+                      {data!.activity.length === 0 && <li className="font-sans text-xs text-muted">No activity yet.</li>}
                     </ul>
                   )}
                 </div>
@@ -420,7 +420,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                           const p = boardTasks.find((bt) => bt.id === t.parentId)
                           return p ? (
                             <>
-                              {p.ticketRef && <span className="font-[var(--font-mono)]">{p.ticketRef} </span>}
+                              {p.ticketRef && <span className="font-mono">{p.ticketRef} </span>}
                               {p.title}
                             </>
                           ) : (
@@ -454,7 +454,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                               onClick={() => openTask(st.id)}
                               className={cn('min-w-0 flex-1 truncate text-left transition-colors hover:text-fg', st.status === 'done' ? 'text-muted line-through' : 'text-muted')}
                             >
-                              {st.ticketRef && <span className="font-[var(--font-mono)]">{st.ticketRef} </span>}
+                              {st.ticketRef && <span className="font-mono">{st.ticketRef} </span>}
                               {st.title}
                             </button>
                           </div>
@@ -476,11 +476,11 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     {data!.blockedBy.map((d) => (
                       <div key={d.id} className="flex items-center gap-1 text-xs">
                         <span className="min-w-0 flex-1 truncate text-muted">
-                          {d.ticketRef && <span className="font-[var(--font-mono)]">{d.ticketRef} </span>}{d.title}
+                          {d.ticketRef && <span className="font-mono">{d.ticketRef} </span>}{d.title}
                         </span>
                         {canEdit && (
                           <button onClick={async () => { await removeDependency(taskId, d.id); refresh() }}
-                            className="shrink-0 text-muted hover:text-[color:var(--theme-danger)]">✕</button>
+                            className="shrink-0 text-muted transition-colors hover:text-danger">✕</button>
                         )}
                       </div>
                     ))}
@@ -503,7 +503,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     <div className="space-y-1">
                       {data!.blocks.map((d) => (
                         <div key={d.id} className="truncate text-xs text-muted">
-                          {d.ticketRef && <span className="font-[var(--font-mono)]">{d.ticketRef} </span>}{d.title}
+                          {d.ticketRef && <span className="font-mono">{d.ticketRef} </span>}{d.title}
                         </div>
                       ))}
                     </div>
@@ -530,7 +530,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                   </div>
                 </Prop>
 
-                <div className="space-y-1 border-t border-line-subtle pt-3 text-[11px] text-muted">
+                <div className="space-y-1 border-t border-line-subtle pt-3 font-mono text-[10px] tracking-[0.05em] text-muted">
                   <div>Created {relativeTime(t.createdAt)}</div>
                   <div>Updated {relativeTime(t.updatedAt)}</div>
                   {t.completedAt && <div>Completed {relativeTime(t.completedAt)}</div>}
@@ -539,16 +539,18 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
 
                 {canEdit && (
                   <div className="flex items-center gap-2 p-3 pt-0">
+                    {/* Secondary: raised tile + hairline + readout mono (spec §8). */}
                     <button
                       onClick={async () => { await archiveTask(taskId, !t.archivedAt); refresh(); onClose() }}
-                      className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-line px-2 py-1.5 text-xs text-muted transition-colors hover:bg-card hover:text-fg"
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-line bg-raised px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-fg transition-colors hover:bg-hover"
                     >
                       {t.archivedAt ? <ArchiveRestore size={14} /> : <Archive size={14} />}
                       {t.archivedAt ? 'Restore' : 'Archive'}
                     </button>
+                    {/* Destructive: ORANGE OUTLINE — never an orange fill (spec §8). */}
                     <button
                       onClick={async () => { await deleteTask(taskId); refresh(); onClose() }}
-                      className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-[color:var(--theme-danger)]/40 px-2 py-1.5 text-xs text-[color:var(--theme-danger)] transition-colors hover:bg-[color:var(--theme-danger)]/10"
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-danger px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-danger transition-colors hover:bg-danger/10"
                     >
                       <Trash2 size={14} />
                       Delete
@@ -604,8 +606,8 @@ function DescriptionSection({
             key={m}
             onClick={() => setMode(m)}
             className={cn(
-              'rounded px-2 py-0.5 text-[11px] capitalize transition-colors',
-              mode === m ? 'bg-card text-fg' : 'text-muted hover:text-fg',
+              'rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+              mode === m ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
             )}
           >
             {m}
@@ -618,11 +620,11 @@ function DescriptionSection({
     mode === 'edit' && canEdit ? (
       <RichEditor ref={editorRef} key={`${keyPrefix}-${rev}`} value={draft} editable mentions={mentions} onSave={save} placeholder="Add detail" minHeight={minHeight} />
     ) : draft ? (
-      <div className={cn('rounded-xl border border-line-subtle bg-card px-4 py-3 text-sm leading-relaxed', readMax && `${readMax} overflow-y-auto`)}>
+      <div className={cn('rounded-lg border border-line bg-card px-4 py-3 font-sans text-sm leading-relaxed', readMax && `${readMax} overflow-y-auto`)}>
         <Markdown>{draft}</Markdown>
       </div>
     ) : (
-      <div className="rounded-xl border border-dashed border-line-subtle px-4 py-6 text-center text-xs text-muted">
+      <div className="rounded-lg border border-dashed border-line px-4 py-6 text-center font-sans text-xs text-muted">
         No description{canEdit ? '. Switch to Edit to add one.' : '.'}
       </div>
     )
@@ -630,14 +632,14 @@ function DescriptionSection({
   return (
     <div>
       <div className="mb-2 flex items-center gap-2">
-        <div className="text-xs font-semibold uppercase tracking-wide text-muted">Description</div>
+        <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Description</div>
         <div className="ml-auto flex items-center gap-1">
           <ModeToggle />
           <button
             onClick={() => setReading(true)}
             title="Expand"
             aria-label="Expand description"
-            className="grid h-6 w-6 place-items-center rounded text-muted transition-colors hover:bg-card hover:text-fg"
+            className="grid h-6 w-6 place-items-center rounded text-muted transition-colors hover:bg-hover hover:text-fg"
           >
             <Maximize2 size={13} />
           </button>
@@ -651,7 +653,7 @@ function DescriptionSection({
       <AnimatePresence>
         {reading && (
           <motion.div
-            className="mercury-panel absolute inset-0 z-30 flex flex-col overflow-hidden rounded-2xl"
+            className="absolute inset-0 z-30 flex flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]"
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
@@ -660,11 +662,11 @@ function DescriptionSection({
             <div className="flex items-center gap-3 border-b border-line-subtle px-5 py-3">
               <button
                 onClick={() => setReading(false)}
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-sm text-muted transition-colors hover:bg-card hover:text-fg"
+                className="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg"
               >
-                <ChevronLeft size={16} /> Back
+                <ChevronLeft size={14} /> Back
               </button>
-              <div className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-fg">{title}</div>
+              <div className="min-w-0 flex-1 truncate text-center font-sans text-sm font-semibold text-fg">{title}</div>
               <div className="flex w-[4.5rem] justify-end">
                 <ModeToggle />
               </div>
@@ -676,11 +678,11 @@ function DescriptionSection({
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
                 {draft ? (
-                  <div className="mx-auto max-w-2xl text-sm leading-relaxed">
+                  <div className="mx-auto max-w-2xl font-sans text-sm leading-relaxed">
                     <Markdown>{draft}</Markdown>
                   </div>
                 ) : (
-                  <div className="text-sm text-muted">No description yet.</div>
+                  <div className="font-sans text-sm text-muted">No description yet.</div>
                 )}
               </div>
             )}
@@ -714,7 +716,7 @@ function AttachmentsSection({ task, canEdit, onSaved }: { task: Task; canEdit: b
       {items.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2">
           {items.map((a) => (
-            <span key={a.id} className="inline-flex items-center gap-2 rounded-lg border border-line-subtle bg-card/50 px-2.5 py-1.5 text-xs">
+            <span key={a.id} className="inline-flex items-center gap-2 rounded-md border border-line bg-raised/50 px-2.5 py-1.5 font-sans text-xs">
               {a.refType ? (
                 <Link
                   to={a.refType === 'kb-doc' ? '/knowledge' : '/artifacts'}
@@ -731,14 +733,14 @@ function AttachmentsSection({ task, canEdit, onSaved }: { task: Task; canEdit: b
                     <FileText size={14} className="shrink-0 text-muted" />
                   )}
                   <span className="truncate">{a.filename}</span>
-                  {a.size > 0 && <span className="text-muted">{humanSize(a.size)}</span>}
+                  {a.size > 0 && <span className="font-mono text-[10px] tracking-[0.05em] text-muted">{humanSize(a.size)}</span>}
                 </a>
               )}
               {canEdit && (
                 <button
                   type="button"
                   onClick={() => save(items.filter((x) => x.id !== a.id))}
-                  className="text-muted hover:text-[color:var(--theme-danger)]"
+                  className="text-muted transition-colors hover:text-danger"
                   title="Remove attachment"
                 >
                   <X size={13} />
@@ -756,7 +758,7 @@ function AttachmentsSection({ task, canEdit, onSaved }: { task: Task; canEdit: b
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">{label}</div>
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</div>
       {children}
     </div>
   )
@@ -777,7 +779,7 @@ function SubtaskAdd({ onAdd }: { onAdd: (title: string) => Promise<void> | void 
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="w-full rounded-md px-1 py-0.5 text-left text-xs text-muted transition-colors hover:text-accent"
+        className="w-full rounded-md px-1 py-0.5 text-left font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg"
       >
         + Add sub-task
       </button>
@@ -799,16 +801,16 @@ function SubtaskAdd({ onAdd }: { onAdd: (title: string) => Promise<void> | void 
 function Prop({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-muted">{label}</div>
+      <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</div>
       {children}
     </div>
   )
 }
 function ResultBlock({ title, danger, children }: { title: string; danger?: boolean; children: React.ReactNode }) {
   return (
-    <div className="mb-2 rounded-lg border border-line-subtle bg-card p-2">
-      <div className="mb-0.5 text-[11px] uppercase tracking-wide" style={danger ? { color: 'var(--theme-danger)' } : undefined}>{title}</div>
-      <div className="whitespace-pre-wrap text-sm text-fg">{children}</div>
+    <div className={cn('mb-2 rounded-lg border bg-card p-2', danger ? 'border-danger/40' : 'border-line')}>
+      <div className={cn('mb-0.5 font-mono text-[10px] uppercase tracking-[0.08em]', danger ? 'text-danger' : 'text-ink-dim')}>{title}</div>
+      <div className="whitespace-pre-wrap font-sans text-sm text-fg">{children}</div>
     </div>
   )
 }
@@ -822,16 +824,16 @@ function JudgeVerdict({ review }: { review: JudgeReview }) {
         ? { color: 'var(--theme-warning)', label: 'Revise' }
         : { color: 'var(--theme-danger)', label: 'Escalate' }
   return (
-    <div className="mb-2 rounded-lg border border-line-subtle bg-card p-2.5 text-sm">
+    <div className="mb-2 rounded-lg border border-line bg-card p-2.5 text-sm">
       <div className="mb-1 flex items-center gap-2">
-        <span className="text-[11px] uppercase tracking-wide text-muted">QA judge</span>
-        <span className="rounded px-1.5 py-0.5 text-[11px] font-semibold" style={{ color: tone.color, border: `1px solid ${tone.color}` }}>{tone.label}</span>
-        {review.model && <span className="text-[11px] text-muted">{review.model}</span>}
-        <span className="ml-auto text-[11px] text-muted">advisory</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">QA judge</span>
+        <span className="rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.05em]" style={{ color: tone.color, border: `1px solid ${tone.color}` }}>{tone.label}</span>
+        {review.model && <span className="font-mono text-[10px] tracking-[0.05em] text-muted">{review.model}</span>}
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted">advisory</span>
       </div>
-      {review.summary && <div className="text-fg">{review.summary}</div>}
+      {review.summary && <div className="font-sans text-fg">{review.summary}</div>}
       {review.issues.length > 0 && (
-        <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[13px] text-muted">
+        <ul className="mt-1.5 list-disc space-y-0.5 pl-4 font-sans text-[13px] text-muted">
           {review.issues.map((i, n) => <li key={n}>{i}</li>)}
         </ul>
       )}
@@ -944,7 +946,7 @@ function TicketMuseBar({
   }
 
   const chip = (k: string, v: unknown) => (
-    <span key={k} className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] text-fg">
+    <span key={k} className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-fg">
       {FIELD_LABEL[k] ?? k} → {v === null ? 'clear' : Array.isArray(v) ? v.join(', ') : String(v).slice(0, 40)}
     </span>
   )
@@ -952,15 +954,15 @@ function TicketMuseBar({
   return (
     <div className="shrink-0 space-y-2 border-t border-line-subtle px-5 py-2.5">
       {fieldPatch && (
-        <div className="space-y-2 rounded-xl border border-accent/30 bg-card/40 p-3">
+        <div className="space-y-2 rounded-lg border border-accent/30 bg-card/40 p-3">
           <div className="flex flex-wrap items-center gap-1.5">
             {Object.entries(fieldPatch)
               .filter(([k]) => k !== 'description')
               .map(([k, v]) => chip(k, v))}
           </div>
           {fieldPatch.description !== undefined && (
-            <div className="max-h-40 overflow-y-auto rounded-lg border border-line-subtle bg-card px-3 py-2">
-              <Markdown className="text-sm">{fieldPatch.description}</Markdown>
+            <div className="max-h-40 overflow-y-auto rounded-lg border border-line bg-card px-3 py-2">
+              <Markdown className="font-sans text-sm">{fieldPatch.description}</Markdown>
             </div>
           )}
           <div className="flex justify-end gap-2">
@@ -974,10 +976,10 @@ function TicketMuseBar({
         </div>
       )}
       {passage !== null && (
-        <div className="space-y-2 rounded-xl border border-accent/30 bg-card/40 p-3">
-          <div className="text-[10px] uppercase tracking-wide text-muted">Replacement for the selection</div>
+        <div className="space-y-2 rounded-lg border border-accent/30 bg-card/40 p-3">
+          <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Replacement for the selection</div>
           <div className="max-h-40 overflow-y-auto">
-            <Markdown className="text-sm">{passage}</Markdown>
+            <Markdown className="font-sans text-sm">{passage}</Markdown>
           </div>
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="outline" onClick={() => setPassage(null)}>
@@ -989,13 +991,9 @@ function TicketMuseBar({
           </div>
         </div>
       )}
-      {error && (
-        <div className="text-xs" style={{ color: 'var(--theme-danger)' }}>
-          {error}
-        </div>
-      )}
+      {error && <div className="font-sans text-xs text-danger">{error}</div>}
       <div className="flex items-center gap-2">
-        <Sparkles size={14} className={cn('shrink-0 text-accent', generating && 'animate-pulse')} />
+        <Sparkles size={14} className={cn('shrink-0 text-accent', generating && 'gd-pulse')} />
         <Input
           size="sm"
           value={instruction}
@@ -1054,12 +1052,12 @@ function WorkbenchJobsStrip({ taskId, canEdit }: { taskId: string; canEdit: bool
         <div
           key={j.id}
           className={cn(
-            'rounded-xl border px-4 py-2.5 text-sm',
-            j.status === 'awaiting_approval' ? 'border-[color:var(--theme-warning)]/40 bg-[color:var(--theme-warning)]/5' : 'border-line-subtle bg-card/40',
+            'rounded-lg border px-4 py-2.5 text-sm',
+            j.status === 'awaiting_approval' ? 'border-warning/40 bg-warning/5' : 'border-line bg-card/40',
           )}
         >
           <div className="flex items-center gap-2">
-            <span className="text-fg">
+            <span className="font-sans text-fg">
               {j.status === 'awaiting_approval' && `${j.agentModel} plans ${j.effort}-effort work on ${j.repo} — approve to build`}
               {j.status === 'started' && `${j.agentModel} is building on ${j.repo} @ ${j.branch}`}
               {j.status === 'pr_open' && `${j.agentModel} opened a PR from ${j.branch}`}
@@ -1077,7 +1075,7 @@ function WorkbenchJobsStrip({ taskId, canEdit }: { taskId: string; canEdit: bool
               )}
               {j.testingBranch && (j.status === 'started' || j.status === 'pr_open') && canEdit && (
                 j.mergedTestingAt ? (
-                  <span className="text-xs text-muted">on {j.testingBranch}</span>
+                  <span className="font-mono text-[11px] tracking-[0.05em] text-muted">on {j.testingBranch}</span>
                 ) : (
                   <Button size="sm" variant="outline" onClick={() => void act(j.id, 'merge_testing')}>
                     Merge to {j.testingBranch}
@@ -1091,7 +1089,7 @@ function WorkbenchJobsStrip({ taskId, canEdit }: { taskId: string; canEdit: bool
               )}
             </span>
           </div>
-          {j.status === 'awaiting_approval' && j.plan && <p className="mt-1.5 line-clamp-4 whitespace-pre-wrap text-xs text-muted">{j.plan}</p>}
+          {j.status === 'awaiting_approval' && j.plan && <p className="mt-1.5 line-clamp-4 whitespace-pre-wrap font-sans text-xs text-muted">{j.plan}</p>}
         </div>
       ))}
     </div>

@@ -221,13 +221,13 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
           {/* ── Header: months + day grid + zoom ── */}
           <div className="sticky top-0 z-10 flex border-b border-line bg-surface/95 backdrop-blur">
             <div style={{ width: labelW }} className="flex shrink-0 items-center gap-0.5 border-r border-line-subtle px-2">
-              <button onClick={() => zoom(-1)} title="Zoom out" className="grid h-5 w-5 place-items-center rounded text-muted transition-colors hover:bg-card hover:text-fg">
+              <button onClick={() => zoom(-1)} title="Zoom out" className="grid h-5 w-5 place-items-center rounded text-muted transition-colors hover:bg-hover hover:text-fg">
                 <Minus size={12} />
               </button>
-              <button onClick={() => zoom(1)} title="Zoom in" className="grid h-5 w-5 place-items-center rounded text-muted transition-colors hover:bg-card hover:text-fg">
+              <button onClick={() => zoom(1)} title="Zoom in" className="grid h-5 w-5 place-items-center rounded text-muted transition-colors hover:bg-hover hover:text-fg">
                 <Plus size={12} />
               </button>
-              <span className="ml-1 text-[10px] uppercase tracking-wide text-muted">Zoom</span>
+              <span className="ml-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Zoom</span>
             </div>
             <div className="relative">
               <div className="flex">
@@ -235,7 +235,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                   <div
                     key={m.from}
                     style={{ width: m.daysIn * dayW }}
-                    className="overflow-hidden border-r border-line-subtle px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted"
+                    className="overflow-hidden border-r border-line-subtle px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-muted"
                   >
                     {m.label}
                   </div>
@@ -249,7 +249,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                     <div
                       key={i}
                       style={{ width: dayW }}
-                      className={cn('overflow-hidden py-0.5 text-center text-[9px]', wk ? 'bg-sidebar/70 text-muted/60' : 'text-muted', d.getTime() === today && 'font-bold text-accent')}
+                      className={cn('overflow-hidden py-0.5 text-center font-mono text-[9px]', wk ? 'bg-panel/70 text-muted/60' : 'text-muted', d.getTime() === today && 'font-bold text-accent')}
                     >
                       {dayW >= 14 ? d.getDate() : dayW >= 9 && d.getDate() % 2 === 1 ? d.getDate() : ''}
                     </div>
@@ -266,17 +266,17 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                 const d = new Date(rangeStart + i * DAY)
                 const wk = d.getDay() === 0 || d.getDay() === 6
                 return wk ? (
-                  <div key={i} className="absolute inset-y-0 bg-sidebar/50" style={{ left: i * dayW, width: dayW }} />
+                  <div key={i} className="absolute inset-y-0 bg-panel/50" style={{ left: i * dayW, width: dayW }} />
                 ) : null
               })}
               <div className="absolute inset-y-0 w-px bg-accent" style={{ left: x(today) + dayW / 2 }} title="Today" />
               {dropDay !== null && (
-                <div className="absolute inset-y-0 rounded-sm bg-accent/15 ring-1 ring-[color:var(--theme-accent)]" style={{ left: x(dropDay), width: dayW * 3 }} />
+                <div className="absolute inset-y-0 rounded-sm bg-accent/15 ring-1 ring-accent" style={{ left: x(dropDay), width: dayW * 3 }} />
               )}
             </div>
 
             {spans.length === 0 && (
-              <div className="px-6 py-10 text-sm text-muted">
+              <div className="px-6 py-10 font-sans text-sm text-muted">
                 Nothing scheduled yet — set start/due dates, or drag a ticket up from the list below and drop it on a day.
               </div>
             )}
@@ -286,13 +286,13 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
               const e = p?.e ?? r.end
               const late = isOverdueTask(r.task, boardStatuses)
               return (
-                <div key={r.task.id} className="group flex h-12 items-center border-b border-line-subtle/60 hover:bg-card/40">
+                <div key={r.task.id} className="group flex h-12 items-center border-b border-line-subtle/60 transition-colors hover:bg-hover/40">
                   <button
                     onClick={() => onOpen(r.task.id)}
                     style={{ width: labelW }}
                     className={cn('flex h-full shrink-0 items-center gap-1.5 truncate border-r border-line-subtle px-2 text-left text-xs transition-colors hover:text-fg', r.child ? 'pl-6 text-muted' : 'text-fg')}
                   >
-                    {r.task.ticketRef && <span className="shrink-0 font-[var(--font-mono)] text-[10px] text-muted">{r.task.ticketRef}</span>}
+                    {r.task.ticketRef && <span className="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{r.task.ticketRef}</span>}
                     <span className="truncate font-sans">{r.task.title}</span>
                   </button>
                   <div className="relative h-full flex-1">
@@ -311,7 +311,7 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                         onOpen(r.task.id)
                       }}
                       title={`${r.task.title} — drag to reschedule`}
-                      className={cn('absolute top-2 flex h-8 touch-none select-none items-center gap-1 rounded-md border px-2.5 text-[11px] text-fg', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer', late && 'ring-1 ring-[color:var(--theme-danger)]')}
+                      className={cn('absolute top-2 flex h-8 touch-none select-none items-center gap-1 rounded-md border px-2.5 font-sans text-[11px] text-fg', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer', late && 'ring-1 ring-danger')}
                       style={(() => {
                         // Ticket color wins; status tint is the fallback.
                         const c = r.task.color ? LABEL_CSS[r.task.color] : statusColorOf(r.task.status, boardStatuses)
@@ -359,8 +359,8 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
       {unscheduled.length > 0 && (
         <div className="max-h-48 shrink-0 overflow-y-auto border-t border-line">
           <div className="sticky top-0 flex items-center gap-2 bg-surface/95 px-4 pb-1 pt-3 backdrop-blur">
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted">Unscheduled ({unscheduled.length})</span>
-            {canEdit && <span className="text-[10px] text-muted">drag a row onto a day above to schedule it</span>}
+            <span className="font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-ink-dim">Unscheduled ({unscheduled.length})</span>
+            {canEdit && <span className="font-sans text-[10px] text-muted">drag a row onto a day above to schedule it</span>}
           </div>
           <ul className="divide-y divide-line-subtle/60 px-2 pb-2">
             {unscheduled.map((t) => (
@@ -372,12 +372,12 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
                   e.dataTransfer.effectAllowed = 'move'
                 }}
                 onClick={() => onOpen(t.id)}
-                className={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-card', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer')}
+                className={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-hover', canEdit ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer')}
               >
-                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.color ? LABEL_CSS[t.color] : statusColorOf(t.status, boardStatuses) }} />
-                {t.ticketRef && <span className="shrink-0 font-[var(--font-mono)] text-[10px] text-muted">{t.ticketRef}</span>}
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: t.color ? LABEL_CSS[t.color] : statusColorOf(t.status, boardStatuses) }} />
+                {t.ticketRef && <span className="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{t.ticketRef}</span>}
                 <span className="min-w-0 flex-1 truncate font-sans text-fg">{t.title}</span>
-                {t.estimatedHours != null && <span className="shrink-0 text-[10px] text-muted">{t.estimatedHours}h</span>}
+                {t.estimatedHours != null && <span className="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{t.estimatedHours}h</span>}
               </li>
             ))}
           </ul>

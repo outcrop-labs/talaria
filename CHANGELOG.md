@@ -19,6 +19,13 @@ All notable changes to Talaria. Milestone labels refer to [`PLAN.md`](./PLAN.md)
   throttle). Live result: unpriced cloud tokens 13.5M → 0.
 
 ### Added
+- **Gentle Dew turns Talaria into a focused operator workspace.** A unified
+  near-black visual system now carries the full authenticated product, while
+  Inbox becomes a risk-ranked decision queue with source evidence, guarded
+  actions, persistent history, and an adjustable Scout panel that follows the
+  operator across work surfaces. The Paper-matched composer keeps attachments,
+  agent and model selection, response modes, MCP access, skills, help, and
+  dictation in one conversation flow without weakening existing approvals.
 - **Platform hardening: one API dialect, a modular UI kit, a complete SDK.**
   A two-sided audit (all 162 API routes; the whole component tree) worked
   through to zero: a guard module (`requireUser`/`requireAdmin`/
