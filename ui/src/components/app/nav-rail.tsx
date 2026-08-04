@@ -91,7 +91,21 @@ export function NavRail({ user }: { user: SessionUser }) {
   const isInbox = pathname === '/' || pathname === '/inbox'
   const inboxQueue = useInboxFocus({ enabled: isInbox })
   const inboxSummary = useInboxFocusSummary({ enabled: !isInbox })
-  const unread = isInbox ? (inboxQueue.data?.counts.total ?? 0) : (inboxSummary.data?.count ?? 0)
+  // `null` = the count could NOT be read, which is a different fact from zero
+  // and must not render as one. The rail is where a person checks whether
+  // anything is waiting without opening anything; a silent 0 over a failed
+  // read is this app's oldest bug shape, on the one surface that gates every
+  // human decision. `!` with a title is the honest badge — see the Inbox
+  // surface itself (components/inbox/focus-inbox.tsx) for the same rule.
+  const inboxRead = isInbox ? inboxQueue : inboxSummary
+  const unread: number | null = inboxRead.isError && inboxRead.data === undefined
+    ? null
+    : isInbox
+      ? (inboxQueue.data?.counts.total ?? 0)
+      : (inboxSummary.data?.count ?? 0)
+  const unreadLabel = unread === null ? '!' : String(unread)
+  const unreadTitle = unread === null ? 'Could not load what is waiting for you — open the Inbox' : undefined
+  const showUnread = unread === null || unread > 0
   // Enabled apps slot into the sections as if they shipped with the platform:
   // work surfaces under Work, manage surfaces under Manage (grant-gated like
   // any core Manage view via deniedViews).
@@ -152,9 +166,15 @@ export function NavRail({ user }: { user: SessionUser }) {
                     )}
                   >
                     <NavIcon icon={item.icon} />
-                    {item.to === '/' && unread > 0 && (
-                      <span className="absolute right-0.5 top-0 font-mono text-[10px] leading-3 tracking-[0.05em] text-muted">
-                        {unread}
+                    {item.to === '/' && showUnread && (
+                      <span
+                        title={unreadTitle}
+                        className={cn(
+                          'absolute right-0.5 top-0 font-mono text-[10px] leading-3 tracking-[0.05em]',
+                          unread === null ? 'text-[color:var(--theme-danger)]' : 'text-muted',
+                        )}
+                      >
+                        {unreadLabel}
                       </span>
                     )}
                   </Link>
@@ -235,9 +255,19 @@ export function NavRail({ user }: { user: SessionUser }) {
                       <NavIcon icon={item.icon} />
                     </span>
                     <span className="flex-1 truncate">{item.label}</span>
-                    {item.to === '/' && unread > 0 && (
+                    {item.to === '/' && showUnread && (
                       // Spec §5: nav counts are muted (#8E877E) — not accent.
-                      <span className="font-mono text-[10px] leading-3 tracking-[0.05em] text-muted">{unread}</span>
+                      // The unreadable case is the one exception: it is not a
+                      // count, and a muted "!" reads as decoration.
+                      <span
+                        title={unreadTitle}
+                        className={cn(
+                          'font-mono text-[10px] leading-3 tracking-[0.05em]',
+                          unread === null ? 'text-[color:var(--theme-danger)]' : 'text-muted',
+                        )}
+                      >
+                        {unreadLabel}
+                      </span>
                     )}
                   </Link>
                   {item.to === '/boards' && pathname.startsWith('/boards') && (

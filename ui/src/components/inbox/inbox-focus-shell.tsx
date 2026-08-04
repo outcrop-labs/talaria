@@ -36,6 +36,10 @@ interface InboxFocusWorkspaceValue {
   data: FocusQueue | undefined
   isLoading: boolean
   isError: boolean
+  /** The rejection itself, not just the fact of one. A queue that failed to
+   *  load has to be able to say WHY on the surface — "could not load" with the
+   *  server's reason withheld is the same dead end as no message at all. */
+  error: unknown
   refetch: () => Promise<unknown>
   orderedItems: FocusItem[]
   active: FocusItem | null
@@ -58,7 +62,7 @@ export function useInboxFocusWorkspace(): InboxFocusWorkspaceValue {
 
 export function InboxFocusShell({ children, attachActiveDecision }: { children: ReactNode; attachActiveDecision: boolean }) {
   const queryClient = useQueryClient()
-  const { data, isLoading, isError, refetch } = useInboxFocus()
+  const { data, isLoading, isError, error, refetch } = useInboxFocus()
   const [skippedKeys, setSkippedKeys] = useState<string[]>([])
   const [snoozeMs, setSnoozeMs] = useState<number>(INBOX_SNOOZE_OPTIONS[0].value)
   const [busyAction, setBusyAction] = useState<string | null>(null)
@@ -315,6 +319,7 @@ export function InboxFocusShell({ children, attachActiveDecision }: { children: 
     data,
     isLoading,
     isError,
+    error,
     refetch,
     orderedItems,
     active,
@@ -325,7 +330,7 @@ export function InboxFocusShell({ children, attachActiveDecision }: { children: 
     performAction,
     snooze,
     skip,
-  }), [active, busyAction, data, isError, isLoading, orderedItems, performAction, recommendedAction, refetch, skip, snooze, snoozeMs])
+  }), [active, busyAction, data, error, isError, isLoading, orderedItems, performAction, recommendedAction, refetch, skip, snooze, snoozeMs])
 
   return (
     <InboxFocusWorkspaceContext.Provider value={contextValue}>
