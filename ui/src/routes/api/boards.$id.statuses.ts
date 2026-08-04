@@ -3,7 +3,21 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
-import { agentStartConflict, createStatus, deleteStatus, listStatuses, reorderStatuses, updateStatus } from '@/server/statuses'
+import {
+  agentStartConflict,
+  createStatus,
+  deleteStatus,
+  listStatuses,
+  reorderStatuses,
+  statusDiagnostics,
+  updateStatus,
+} from '@/server/statuses'
+
+/** The audit name for a board edit that MOVES TICKETS (deleting a populated
+ *  column, or recategorising a populated sign-off column). Both take an actor
+ *  because both land on each ticket's activity log, and they must agree on how
+ *  the person is named. */
+const actorOfUser = (user: { email: string | null; name: string | null }) => user.email ?? user.name ?? 'user'
 
 // Board statuses (custom workflow columns). GET → the ordered list incl. the
 // system Blocked column (any member). POST create, PUT update/reorder, DELETE
@@ -50,7 +64,14 @@ export const Route = createFileRoute('/api/boards/$id/statuses')({
         const user = await requireUser(request)
         if (user instanceof Response) return user
         if (!(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        return json({ statuses: await listStatuses(params.id) })
+        // `diagnostics` rides along with the columns because it is a statement
+        // ABOUT this column set, and the two must never be read from different
+        // moments — a warning that names a column the list no longer has is
+        // worse than no warning. Served to every member (the reader who cannot
+        // fix it can at least tell the owner why the board is stuck), and read
+        // by the statuses tab, which renders it above the list.
+        const [statuses, diagnostics] = await Promise.all([listStatuses(params.id), statusDiagnostics(params.id)])
+        return json({ statuses, diagnostics })
       },
       POST: async ({ request, params }) => {
         const user = await requireUser(request)
@@ -98,7 +119,10 @@ export const Route = createFileRoute('/api/boards/$id/statuses')({
         }
         try {
           if ('order' in body) await reorderStatuses(params.id, body.order)
-          else await updateStatus(params.id, body.statusKey, body)
+          // The actor: recategorising a populated review/done column moves its
+          // tickets into a surviving column of the same category, one updateTask
+          // each, and the person who reshaped the column owns those moves.
+          else await updateStatus(params.id, body.statusKey, body, actorOfUser(user))
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })
@@ -114,7 +138,7 @@ export const Route = createFileRoute('/api/boards/$id/statuses')({
           // The actor is threaded through because the reassignment lands on each
           // ticket's activity log — deleting a column moves work, and the person
           // who did it owns that move.
-          await deleteStatus(params.id, body.statusKey, body.reassignTo, user.email ?? user.name ?? 'user')
+          await deleteStatus(params.id, body.statusKey, body.reassignTo, actorOfUser(user))
           return json({ ok: true })
         } catch (e) {
           return json({ error: (e as Error).message }, { status: 400 })

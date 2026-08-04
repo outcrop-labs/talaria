@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { GripVertical, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
@@ -12,7 +12,8 @@ import { Select } from '@/components/ui/select'
 import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
-import { QueryError } from '@/components/ui/query-state'
+import { QueryError, listQuery } from '@/components/ui/query-state'
+import { getList } from '@/lib/fetch-json'
 import { UserPicker } from '@/components/app/user-picker'
 import { cn } from '@/lib/cn'
 import { useAgents } from '@/lib/agents'
@@ -591,6 +592,54 @@ function LabelsTab({ board }: { board: Board }) {
   )
 }
 
+/** A board-shape problem the server found, in its own words. Mirrors
+ *  `StatusDiagnostic` in @/server/statuses — the sentences are composed THERE,
+ *  from the same resolved fields the task engine refuses on, so this file never
+ *  has to work out what makes a board broken. */
+interface StatusDiagnostic {
+  level: 'error' | 'warning'
+  text: string
+}
+
+/** The board's workflow, checked against what the engine can actually resolve.
+ *
+ *  WHY THIS EXISTS. Phase 0 made the resolvers refuse instead of guess: on a
+ *  board whose only review column is also an agent-start queue, `reviewKey` is
+ *  null and every agent hand-off throws a diagnostic naming the switch to flip.
+ *  That diagnostic reaches the AGENT and the server log — not the board owner,
+ *  who is the one person who can flip it, and who until now saw a perfectly
+ *  tidy column list. `review + agentStart` rows predate the rule that refuses
+ *  them and there is no migration, so a board can sit in that state for good.
+ *  This panel is where those boards say so, to the person holding the checkbox. */
+function WorkflowDiagnostics({ boardId }: { boardId: string }) {
+  const query = useQuery({
+    queryKey: ['board-status-diagnostics', boardId],
+    queryFn: () => getList<StatusDiagnostic>(`/api/boards/${boardId}/statuses`, 'diagnostics'),
+  })
+  const list = listQuery(query, { title: 'Could not check this board’s workflow', variant: 'inline' })
+  if (list.failed) return <>{list.notice}</>
+  if (!list.rows.length) return list.stale ? <>{list.notice}</> : null
+  return (
+    <div className="space-y-2">
+      {list.notice}
+      {list.rows.map((d, i) => (
+        <div
+          key={i}
+          className={cn(
+            'rounded-lg border p-2.5 font-sans text-xs',
+            d.level === 'error' ? 'border-danger/40 text-danger' : 'border-line text-muted',
+          )}
+        >
+          <div className="mb-0.5 font-mono text-[10px] uppercase tracking-[0.08em]">
+            {d.level === 'error' ? 'Agents are stuck on this board' : 'Probably not what you meant'}
+          </div>
+          <div className={d.level === 'error' ? 'text-fg' : undefined}>{d.text}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ── Statuses: the board's workflow columns. Order = column order; category
 //    carries the semantics; agentStart = "agents may pick up work here".
 //    Blocked is system — pinned, not editable. ─────────────────────────────
@@ -606,6 +655,9 @@ function StatusesTab({ board }: { board: Board }) {
   const [err, setErr] = useState<string | null>(null)
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['board-statuses', board.id] })
+    void qc.invalidateQueries({ queryKey: ['board-status-diagnostics', board.id] })
+    // Recategorising a populated review or done column MOVES its tickets into a
+    // surviving column of the same category, so the board itself changed.
     void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
   }
   const editable = statuses.filter((st) => !st.system)
@@ -639,7 +691,23 @@ function StatusesTab({ board }: { board: Board }) {
         review is where agent work lands for sign-off, done completes. <strong>Agent start</strong> marks the columns
         where assignment counts as approval — agents only pick up work sitting there. Blocked is always present.
       </p>
-      {err && <div className="font-sans text-xs text-danger">{err}</div>}
+      {/* The one rule that is not visible from the controls: a review column is
+          the agent hand-off target, so it is required only while agents are
+          allowed here. Saying it beside the Category control is what stops the
+          refusal on the last review column reading as an arbitrary rule — and
+          tells the owner of a human-only board that the sign-off step is
+          theirs to drop. */}
+      <p className="font-sans text-xs text-muted">
+        Every board needs an intake column and a done column. A <strong>review</strong> column is required only while
+        agents are allowed on this board (Agents tab): an agent may not sign off its own work, so it hands finished
+        tickets there for a person. A board that runs no agents can go straight from active to done.
+      </p>
+      <WorkflowDiagnostics boardId={board.id} />
+      {/* Every refusal from the statuses route lands here: the server sends
+          `{ error }`, lib/statuses rejects with that sentence, and `run` shows
+          it verbatim. They are written as instructions ("clear agent start on
+          this column"), so quoting them beats paraphrasing. */}
+      {err && <div className="rounded-lg border border-danger/40 p-2.5 font-sans text-xs text-fg">{err}</div>}
       {statusesQuery.isError && (
         <QueryError
           variant={statusesQuery.data === undefined ? 'compact' : 'inline'}
@@ -726,7 +794,23 @@ function StatusesTab({ board }: { board: Board }) {
                   value={st.category}
                   disabled={!canEdit}
                   title="Workflow category"
-                  onChange={(e) => run(() => updateBoardStatus(board.id, st.key, { category: e.target.value }))}
+                  // A sign-off column (review / done) may not also be an
+                  // agent-start pickup queue, so on a column carrying the flag
+                  // this control alone is a write the server can only refuse.
+                  // It sends BOTH halves: the operator picked "review", and a
+                  // review column is by definition not one agents pick up from
+                  // — there is exactly one legal outcome and no guess in it.
+                  // The checkbox beside this select shows the result.
+                  onChange={(e) =>
+                    run(() =>
+                      updateBoardStatus(board.id, st.key, {
+                        category: e.target.value,
+                        ...(st.agentStart && (e.target.value === 'review' || e.target.value === 'done')
+                          ? { agentStart: false }
+                          : {}),
+                      }),
+                    )
+                  }
                   className="w-28 shrink-0"
                 >
                   <option value="open">intake</option>

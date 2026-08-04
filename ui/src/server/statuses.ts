@@ -125,8 +125,9 @@ export interface StatusMeta {
    *  approval. Same rule as reviewKey, and for the same reason: `agentStart[0]
    *  ?? open` INVENTED one. `agent_start` on a done-category column was
    *  accepted (createStatus/updateStatus refuse it now, legacy rows survive),
-   *  and REQUIRED_CATEGORIES protects open/review/done but NOT `active`, so a
-   *  board can legally reach zero active columns — between them, "assigned"
+   *  and REQUIRED_CATEGORIES protects open and done always and review on
+   *  agent-permitting boards, but `active` NEVER, so a board can legally reach
+   *  zero active columns — between them, "assigned"
    *  resolved to a DONE column and creating or promoting a ticket closed it.
    *  So: a real agent-start column that is not terminal (done or off-board) and
    *  not the reviewer's sign-off queue, or null. Callers refuse or stay put. */
@@ -207,6 +208,108 @@ export async function statusMeta(boardId: string): Promise<StatusMeta> {
   }
 }
 
+/** A board-shape problem, in one sentence, addressed to the person who can fix
+ *  it. `error` = something the board cannot do at all; `warning` = something it
+ *  will do, silently, that is probably not what was meant. */
+export interface StatusDiagnostic {
+  level: 'error' | 'warning'
+  text: string
+}
+
+/** WHAT THE BOARD OWNER CANNOT OTHERWISE SEE.
+ *
+ *  Phase 0 made every resolver refuse rather than guess — `reviewKey` is null on
+ *  a board whose only review column is also an agent-start queue, and the
+ *  hand-off then throws with a diagnostic that names the switch to flip. That
+ *  diagnostic goes to the AGENT (as the error on its own write) and to
+ *  `console.warn`. Neither is the board owner. So a board carrying a legacy
+ *  `review + agentStart` row — legal before the cross-validation, still on disk,
+ *  no migration — refuses every hand-off on it, forever, while the statuses tab
+ *  shows a tidy list of columns and says nothing. The person who can fix it in
+ *  two clicks is the one person not told.
+ *
+ *  This is that telling. It is DERIVED, not re-derived: every judgment below
+ *  reads `statusMeta`'s resolved fields (`reviewKey`, `pickupKeys`, `defaultKey`)
+ *  rather than re-asking the question from the column list, so a board is called
+ *  broken here exactly when the engine will actually refuse. The route serves it
+ *  beside the columns; the statuses tab renders it above them. */
+export async function statusDiagnostics(boardId: string): Promise<StatusDiagnostic[]> {
+  const list = await listStatuses(boardId)
+  const meta = await statusMeta(boardId)
+  const out: StatusDiagnostic[] = []
+  const name = (key: string) => `“${list.find((s) => s.key === key)?.label ?? key}”`
+  const cols = (keys: string[]) => keys.map(name).join(', ')
+
+  // Data that predates the cross-validation, and the ONE thing an owner has to
+  // do about it. `agentStartConflict` is the same rule the writes use, so this
+  // panel calls a row illegal exactly when a write of it would be refused. The
+  // two categories break DIFFERENT things, and a diagnostic that names the
+  // wrong consequence sends the reader looking in the wrong place.
+  const legacy = list.filter((s) => s.category !== 'blocked' && agentStartConflict(s.category as StatusCategory, s.agentStart))
+  for (const s of legacy) {
+    const consequence =
+      s.category === 'review'
+        ? 'so it is not a column an agent can hand work off to, and hand-offs that would land here are refused'
+        : 'so moving a ticket into it fires a fresh dispatch on the work a person just closed'
+    out.push({
+      level: 'error',
+      text: `“${s.label}” is a ${s.category} column and also flagged “agent start” — ${consequence}. That pairing is refused on new edits but survives from before the rule and there is no migration for it, so it stays until someone clears the box. Clear “agent start” on it.`,
+    })
+  }
+  // THE AGENT-WORKFLOW DIAGNOSTICS ONLY APPLY TO BOARDS THAT RUN AGENTS. The
+  // three below all describe something AGENTS cannot do here, and the panel
+  // renders an error as "Agents are stuck on this board" — true and useful on a
+  // board that permits agents, and a permanent complaint about a workflow the
+  // owner deliberately chose on one that does not. Same predicate as the
+  // last-review-column rule (AGENT_REQUIRED_CATEGORIES), so the tab is silent
+  // about exactly the boards that rule now lets exist, and speaks up the moment
+  // someone opens one to agents. Everything outside this block — malformed
+  // rows, a missing intake column, off-board keys — is wrong for every board and
+  // stays unconditional.
+  if (await boardPermitsAgents(boardId)) {
+    if (meta.reviewKeys.length === 0) {
+      out.push({
+        level: 'error',
+        text: 'This board has no review column, so an agent that finishes a ticket has nowhere to hand it — it cannot close the ticket itself, and the hand-off is refused. Add a column with the category “review”, or turn agents off for this board.',
+      })
+    } else if (meta.reviewKey === null) {
+      // Only the review columns the line above has not already accounted for —
+      // otherwise a board with one legacy row says the same thing twice.
+      const unexplained = meta.reviewKeys.filter((k) => !legacy.some((s) => s.key === k))
+      if (unexplained.length) {
+        out.push({
+          level: 'error',
+          text: `${cols(unexplained)} cannot receive a hand-off: a review column that is itself terminal (its key means “off the board”) is not somewhere work can be signed off from. No agent can hand work off on this board until one review column can hold it.`,
+        })
+      }
+    }
+    if (meta.pickupKeys.length === 0) {
+      out.push({
+        level: 'warning',
+        text: 'No column is a usable agent-start queue, so agents will never pick work up on this board. Tick “agent start” on the intake or active column where assigning a ticket should count as approval to begin.',
+      })
+    }
+  }
+  if (meta.defaultKey === null) {
+    out.push({
+      level: 'error',
+      text: 'This board has no intake column, so new tickets have nowhere to land and creating one fails. Add a column with the category “intake”.',
+    })
+  }
+  // A column whose SLUG collides with an off-board key is terminal everywhere in
+  // Talaria, whatever category the owner chose — so it silently drops out of
+  // every destination the engine can resolve. Renaming does not move a key;
+  // only a new column does.
+  const offBoard = list.filter((s) => s.category !== 'blocked' && s.category !== 'done' && OFF_BOARD_STATUSES.includes(s.key))
+  if (offBoard.length) {
+    out.push({
+      level: 'warning',
+      text: `${cols(offBoard.map((s) => s.key))} ${offBoard.length === 1 ? 'has the key' : 'have the keys'} ${offBoard.map((s) => `“${s.key}”`).join(', ')}, which ${offBoard.length === 1 ? 'means' : 'mean'} “off the board” everywhere in Talaria — tickets there are closed to agents and nothing routes work into ${offBoard.length === 1 ? 'it' : 'them'}, whatever category ${offBoard.length === 1 ? 'it has' : 'they have'}. A column’s key is fixed at creation, so replace ${offBoard.length === 1 ? 'it' : 'them'} with a differently-named column.`,
+    })
+  }
+  return out
+}
+
 /** SQL fragment: `t.status` is in the given CATEGORY on the ticket's own
  *  board, with the legacy fallback for never-customized boards. Interpolate
  *  only with a literal category + fallback list (no user input). */
@@ -251,6 +354,47 @@ const slug = (label: string) =>
  *  uses for each. */
 const REQUIRED_CATEGORIES: Record<string, string> = { open: 'intake', review: 'review', done: 'terminal' }
 
+/** …and the one of them that is required BY THE AGENTS, not by the workflow.
+ *
+ *  WHY REVIEW IS CONDITIONAL AND THE OTHER TWO ARE NOT. Intake and terminal are
+ *  needed by every board, whoever works it: with no open column `defaultKey` is
+ *  null and CREATING A TICKET FAILS (there is nowhere for it to land), and with
+ *  no done column there is nowhere for a person to close one — `doneKeys` falls
+ *  back to a phantom 'done' key that is not a column, so the board can be
+ *  worked but never finished. Both break a board with no agents anywhere near
+ *  it. Review does not: a review column is the AGENT HAND-OFF TARGET, the place
+ *  an agent puts work it may not close itself. Todo / Doing / Done with no
+ *  sign-off step is an ordinary, correct board for a team not running agents on
+ *  it, and refusing to let them build one was a rule enforcing an agent
+ *  workflow on boards that have no agents.
+ *
+ *  SO THE RULE FOLLOWS THE DEPENDENCY: absolute for a board that permits
+ *  agents, absent for one that does not. It is safe to make conditional
+ *  precisely because of what the engine does when the column is missing — it
+ *  REFUSES. `handoffTarget` throws a sentence naming the fix rather than
+ *  picking a destination, so the worst case of a board that later opens itself
+ *  to agents is an agent that cannot finish, loudly, with `statusDiagnostics`
+ *  telling the owner why in board settings. There is no path here to a
+ *  hand-off laundered into a done column — that would be a wrong loosening, and
+ *  this is not one. */
+const AGENT_REQUIRED_CATEGORIES = new Set(['review'])
+
+/** The refusal, for a board that DOES permit agents. It has to explain both
+ *  halves — why agents need the column, and that turning agents off is the
+ *  other way to get what the owner asked for. */
+export const REVIEW_REQUIRED_FOR_AGENTS =
+  'this is the board’s last review column, and agents are allowed to work this board. An agent may never sign off its own work, so it hands a finished ticket to a review column for a person — with none, every hand-off is refused and an agent here can start work it can never finish. Keep one review column, or turn agents off for this board (board settings → agents), after which a review column is no longer required.'
+
+/** Does this board admit agents at all — the board's own policy, allow-all or
+ *  an explicit allow-list. Dynamic import because server/boards.ts imports THIS
+ *  module (`statusMeta`), so a static one would close the cycle — the same
+ *  reason `deleteStatus` imports `./tasks` dynamically. */
+async function boardPermitsAgents(boardId: string): Promise<boolean> {
+  const { getBoardAgentConfig } = await import('./boards')
+  const cfg = await getBoardAgentConfig(boardId)
+  return cfg.allowAll || cfg.models.length > 0
+}
+
 /** Refuse an operation that would leave this board with no column of `category`
  *  (the row being deleted, or recategorised away, is `exceptId`). */
 async function assertNotLastOfCategory(boardId: string, exceptId: string, category: string): Promise<void> {
@@ -260,40 +404,141 @@ async function assertNotLastOfCategory(boardId: string, exceptId: string, catego
   const others = await sql`
     select 1 from board_statuses where board_id = ${boardId} and category = ${category} and id <> ${exceptId} limit 1
   `
-  if (!others.length) throw new Error(`the workflow needs at least one ${noun} status — this is the board's last one`)
+  if (others.length) return
+  if (AGENT_REQUIRED_CATEGORIES.has(category)) {
+    if (!(await boardPermitsAgents(boardId))) return
+    throw new Error(REVIEW_REQUIRED_FOR_AGENTS)
+  }
+  throw new Error(`the workflow needs at least one ${noun} status — this is the board's last one`)
 }
 
 /** Categories whose columns are HUMAN GATES: work parked there is waiting for,
- *  or already has, a person's sign-off. The word each refusal uses. */
+ *  or already has, a person's sign-off. The word each message uses. */
 const SIGNOFF_CATEGORIES: Record<string, string> = { review: 'waiting for sign-off', done: 'a person signed off on' }
 
-/** Refuse recategorising a sign-off column that still HOLDS TICKETS.
+/** Recategorising a sign-off column that still HOLDS TICKETS: move them first.
  *
- *  The review+agentStart pair is checked against the EFFECTIVE post-patch
- *  column, which is correct per write — and precisely why it could be split
- *  across two: `PUT {quality_review, category:'active'}` then
- *  `PUT {quality_review, agentStart:true}` both pass, and the tickets sitting
- *  in that column awaiting a person's sign-off are silently released — re-served
+ *  THE HAZARD IS THE UNRECORDED RELEASE, NOT THE RECATEGORISATION. The
+ *  review+agentStart pair is checked against the EFFECTIVE post-patch column,
+ *  which is correct per write — and precisely why it could be split across two:
+ *  `PUT {quality_review, category:'active'}` then
+ *  `PUT {quality_review, agentStart:true}` both pass, and the tickets sitting in
+ *  that column awaiting a person's sign-off were silently released — re-served
  *  by assignedWork, freely movable by the agent (the review-exit rule reads the
  *  CATEGORY, which no longer says review), with no activity line anywhere saying
- *  they left review. The column's flags are board config; the tickets in it are
- *  not, and moving them is a decision a person makes ticket by ticket. So the
- *  flip is refused while anyone is parked there — empty the column first (drag
- *  the tickets, or delete the column with `reassignTo`, which moves them
- *  explicitly). */
-async function assertSignoffColumnEmpty(boardId: string, key: string, from: string, to: string): Promise<void> {
+ *  they left review.
+ *
+ *  This used to REFUSE outright, and its refusal recommended "delete this column
+ *  and reassign them" — a path that does strictly more work than the one being
+ *  refused, and does it safely, because `deleteStatus` moves each ticket through
+ *  `updateTask` (activity row, completed_at, watchers, dispatch). So the refused
+ *  path now does the same thing: the held tickets move, one `updateTask` each,
+ *  as the person who reshaped the column, into a SURVIVING COLUMN OF THE SAME
+ *  CATEGORY — so a ticket awaiting sign-off is still awaiting sign-off
+ *  afterwards, and every move is on its record. The reshape then applies.
+ *
+ *  `assertNotLastOfCategory` runs FIRST, so on a board that permits agents a
+ *  review sibling always exists — but it is no longer the only shape here (see
+ *  AGENT_REQUIRED_CATEGORIES), and `done` was never protected against reaching
+ *  its last column with tickets in it either. So all three counts are handled:
+ *  with exactly one sibling there is nothing to choose; with several the
+ *  destination is a real decision and this REFUSES, naming them — picking "the
+ *  first one" would be the invented destination this file exists to stop; with
+ *  NONE there is no column of the same kind to move to at all, and the owner has
+ *  to place the tickets themselves.
+ *
+ *  ARCHIVED TICKETS ARE DRAINED TOO, and the filter that skipped them was a
+ *  hole. A ticket archived while it sat in a review column is still a ticket
+ *  awaiting sign-off — archival hides it, it does not resolve it. Left behind,
+ *  it stays at a key whose column has since become `active`, and the moment
+ *  anyone restores it the review-exit rule no longer applies (that rule reads
+ *  the CATEGORY): the agent can move it freely, which is exactly the silent
+ *  release this function exists to prevent, just deferred until someone
+ *  un-archives. `deleteStatus` has always moved archived tickets — the two
+ *  operations are the same loss and now agree.
+ *
+ *  NOT A TRANSACTION, DELIBERATELY. Wrapping the loop in `sql.begin` would buy
+ *  nothing and claim a lot: `updateTask` takes its own connection from the pool,
+ *  so its writes would not enrol in the outer transaction at all, and half of
+ *  what it does per ticket ESCAPES the database entirely — a realtime publish, a
+ *  notification fan-out, a push, a work-session dispatch. A rollback cannot
+ *  unsend those. Rolling back by hand (moving the moved ones back) is strictly
+ *  more of the same risk plus a second round of activity rows saying the
+ *  opposite. So the shape is the other one the brief allows: PARTIAL PROGRESS IS
+ *  MADE SAFE, AND REPORTED.
+ *    · SAFE — the destination is a surviving column OF THE SAME CATEGORY, so a
+ *      ticket that has moved is in the same workflow position it was in: still
+ *      awaiting sign-off, still frozen to agents by the review-exit rule. A
+ *      half-drained column is a legal board, not a broken one.
+ *    · ORDERED — the drain runs BEFORE the category is written, so a failure
+ *      leaves the column with its original category. The half that moved is
+ *      protected by the category it moved WITHIN; the half that did not is
+ *      protected by the category the column still has. Neither half is released.
+ *    · RESUMABLE — the moved tickets are out of this column, so re-issuing the
+ *      same request picks up exactly where the failure stopped.
+ *    · REPORTED — the caller no longer gets a bare 400 carrying updateTask's
+ *      error. It gets how many moved, where, that the column was NOT changed,
+ *      and that a retry continues. That was the actual missing piece: the board
+ *      state was already fine, the record of it was not. */
+async function drainSignoffColumn(
+  boardId: string,
+  key: string,
+  label: string,
+  rowId: string,
+  from: string,
+  to: string,
+  actor: string,
+): Promise<void> {
   if (from === to) return
   const what = SIGNOFF_CATEGORIES[from]
   if (!what) return
   const sql = await db()
-  const [row] = (await sql`
-    select count(*)::int as n from tasks where board_id = ${boardId} and status = ${key} and archived_at is null
-  `) as unknown as Array<{ n: number }>
-  const n = row?.n ?? 0
+  const held = (await sql`
+    select id from tasks where board_id = ${boardId} and status = ${key} order by created_at asc
+  `) as unknown as Array<{ id: string }>
+  const n = held.length
   if (!n) return
-  throw new Error(
-    `"${key}" still holds ${n} ticket${n === 1 ? '' : 's'} ${what} — recategorising it to ${to} would release ${n === 1 ? 'it' : 'them'} back to the agents with nothing on the record saying they left ${from}. Move ${n === 1 ? 'that ticket' : 'those tickets'} to another ${from} column first (or delete this column and reassign them).`,
-  )
+  const one = n === 1
+  const tickets = `${n} ticket${one ? '' : 's'}`
+  const siblings = (await sql`
+    select key, label from board_statuses
+    where board_id = ${boardId} and category = ${from} and id <> ${rowId}
+    order by position, created_at
+  `) as unknown as Array<{ key: string; label: string }>
+  if (siblings.length === 0) {
+    throw new Error(
+      `"${label}" still holds ${tickets} ${what}, and it is this board's only ${from} column — there is nowhere of the same kind to move ${one ? 'it' : 'them'}, so changing the category here would release ${one ? 'it' : 'them'} with nothing on the record. Move ${one ? 'that ticket' : 'those tickets'} where you want ${one ? 'it' : 'them'} first, then change the category.`,
+    )
+  }
+  if (siblings.length > 1) {
+    const cols = siblings.map((s) => `"${s.label}"`).join(', ')
+    throw new Error(
+      `"${label}" still holds ${tickets} ${what}, and this board has ${siblings.length} other ${from} columns (${cols}) — which one ${one ? 'it belongs' : 'they belong'} in is your call, not ours. Move ${one ? 'that ticket' : 'those tickets'} first, then change the category.`,
+    )
+  }
+  const dest = siblings[0]!
+  // Dynamic import: server/tasks.ts imports this module (see deleteStatus).
+  const { updateTask } = await import('./tasks')
+  // BEFORE the category changes, for the same reason deleteStatus moves before
+  // it drops the row: `updateTask` reads the board's columns as they are.
+  let moved = 0
+  for (const t of held) {
+    try {
+      await updateTask(
+        t.id,
+        { status: dest.key as TaskStatus, statusNote: `the "${label}" column was recategorised as "${to}"` },
+        { kind: 'human', id: actor },
+      )
+    } catch (e) {
+      const sofar = moved
+        ? `${moved} of ${tickets} had already moved to "${dest.label}", where ${moved === 1 ? 'it is' : 'they are'} still ${what}`
+        : `no ticket moved`
+      throw new Error(
+        `"${label}" was not recategorised: moving its tickets into "${dest.label}" stopped on one of them — ${(e as Error).message}. ${sofar}, and "${label}" still has its ${from} category, so nothing was released. Make the same change again once that is fixed: the tickets already moved are out of this column, so it carries on from where it stopped.`,
+      )
+    }
+    moved++
+  }
 }
 
 /** `review` and `agentStart` are opposite ends of the same handover: a review
@@ -303,7 +548,7 @@ async function assertSignoffColumnEmpty(boardId: string, key: string, from: stri
  *  EFFECTIVE post-patch column before it gets here; this is the invariant
  *  itself, so any future caller inherits it too. */
 export const REVIEW_AGENT_START_CONFLICT =
-  'a review column is where a person signs work off — it cannot also be an agent-start column agents pick work up from'
+  'a review column is where a person signs work off — it cannot also be an agent-start column agents pick work up from. Clear "agent start" on this column in the same change to make it a review column.'
 
 /** The sibling rule, and it was missing: `agent_start` on a DONE column turns
  *  CLOSING a ticket into a dispatch. One legal
@@ -313,7 +558,7 @@ export const REVIEW_AGENT_START_CONFLICT =
  *  TICKET. Terminal and pickup are opposite ends of the same handover, exactly
  *  like review and pickup. */
 export const DONE_AGENT_START_CONFLICT =
-  'a done column is where work is closed — it cannot also be an agent-start column agents pick work up from, or closing a ticket would dispatch fresh work on it'
+  'a done column is where work is closed — it cannot also be an agent-start column agents pick work up from, or closing a ticket would dispatch fresh work on it. Clear "agent start" on this column in the same change to make it a done column.'
 
 /** The one rule, stated once, over the EFFECTIVE post-patch column: an
  *  agent-start pickup queue is neither a human gate. Returns the refusal, or
@@ -335,6 +580,15 @@ export async function createStatus(
   const sql = await db()
   let key = slug(input.label)
   if (key === 'blocked') key = 'blocked_2' // the system column owns the name
+  // Same treatment, and it was missing: an owner may perfectly reasonably want a
+  // column called "Cancelled", and the slug of that is the key that means
+  // TERMINAL EVERYWHERE. `terminal()` then answers true for it whatever category
+  // the owner chose, so the column drops out of `placeable` and out of every
+  // destination a resolver can hand a ticket to — a column that silently cannot
+  // receive work, on a board that looks fine. The label the owner typed is kept;
+  // only the internal key moves out of the way, exactly as for `blocked`.
+  // (Existing rows keep their key — `statusDiagnostics` reports those.)
+  if (OFF_BOARD_STATUSES.includes(key)) key = `${key}_2`
   const clash = await sql`select 1 from board_statuses where board_id = ${boardId} and key = ${key}`
   if (clash.length) key = `${key}_${Math.random().toString(36).slice(2, 6)}`
   const rows = (await sql`
@@ -350,53 +604,114 @@ export async function createStatus(
 
 /** Key-addressed: boards that never customized serve VIRTUAL defaults with
  *  no row ids, so the stable handle is the status KEY — materialize() turns
- *  the virtual set into rows on first touch, then the key resolves. */
+ *  the virtual set into rows on first touch, then the key resolves.
+ *
+ *  `actor` is required for the same reason `deleteStatus` requires one:
+ *  recategorising a populated sign-off column MOVES TICKETS, and a ticket move
+ *  belongs to the person who caused it. Optional would mean a caller could
+ *  forget, and the moves would land on the record unattributed. */
 export async function updateStatus(
   boardId: string,
   key: string,
   patch: { label?: string; color?: string; category?: StatusCategory; agentStart?: boolean; position?: number },
+  actor: string,
 ): Promise<void> {
   if (key === 'blocked') throw new Error('Blocked is a system status')
   await materialize(boardId)
   const sql = await db()
   const [cur] = (await sql`
-    select id, category, agent_start as "agentStart" from board_statuses where key = ${key} and board_id = ${boardId}
-  `) as unknown as Array<{ id: string; category: string; agentStart: boolean }>
+    select id, label, category, agent_start as "agentStart" from board_statuses where key = ${key} and board_id = ${boardId}
+  `) as unknown as Array<{ id: string; label: string; category: string; agentStart: boolean }>
   // A key that names nothing used to no-op and report success — a silent
   // failure, and one that hides a typo'd guard rather than surfacing it.
   if (!cur) throw new Error(`"${key}" is not a status on this board`)
+  // The effective post-patch column, so neither flag can arrive alone and slip
+  // the pair past the check. FIRST, before anything below writes: the drain
+  // moves tickets, and a write that is going to be refused must not move any.
+  // `PUT {review column, category:'done', agentStart:true}` is exactly that
+  // write — legal-looking until the pair is checked, and its drain would have
+  // emptied the column on the way to a 400.
+  const conflict = agentStartConflict((patch.category ?? cur.category) as StatusCategory, patch.agentStart ?? cur.agentStart)
+  if (conflict) throw new Error(conflict)
   // Recategorising is the same loss as deleting: symmetric with deleteStatus.
   if (patch.category !== undefined && patch.category !== cur.category) {
     await assertNotLastOfCategory(boardId, cur.id, cur.category)
-    // …and it is the same release as moving every ticket out by hand.
-    await assertSignoffColumnEmpty(boardId, key, cur.category, patch.category)
+    // …and it is the same ticket move as emptying the column by hand, so it is
+    // made, not refused — through updateTask, exactly as deleteStatus does.
+    await drainSignoffColumn(boardId, key, cur.label, cur.id, cur.category, patch.category, actor)
   }
-  // The effective post-patch column, so neither flag can arrive alone and slip
-  // the pair past the check.
-  const conflict = agentStartConflict((patch.category ?? cur.category) as StatusCategory, patch.agentStart ?? cur.agentStart)
-  if (conflict) throw new Error(conflict)
-  if (patch.label !== undefined) await sql`update board_statuses set label = ${patch.label.trim()} where key = ${key} and board_id = ${boardId}`
-  if (patch.color !== undefined) await sql`update board_statuses set color = ${patch.color} where key = ${key} and board_id = ${boardId}`
-  if (patch.category !== undefined) await sql`update board_statuses set category = ${patch.category} where key = ${key} and board_id = ${boardId}`
-  if (patch.agentStart !== undefined) await sql`update board_statuses set agent_start = ${patch.agentStart} where key = ${key} and board_id = ${boardId}`
-  if (patch.position !== undefined) await sql`update board_statuses set position = ${patch.position} where key = ${key} and board_id = ${boardId}`
+  // ONE statement, not five. `category` and `agent_start` are read TOGETHER by
+  // `agentStartConflict`, so five separate writes meant a failure between them
+  // could leave the pair the checked patch was validated against split across
+  // the column — a review column still flagged agent-start, refused on every
+  // edit but sitting there. Addressed by id: the row was resolved above.
+  const set: Record<string, unknown> = {}
+  if (patch.label !== undefined) set.label = patch.label.trim()
+  if (patch.color !== undefined) set.color = patch.color
+  if (patch.category !== undefined) set.category = patch.category
+  if (patch.agentStart !== undefined) set.agent_start = patch.agentStart
+  if (patch.position !== undefined) set.position = patch.position
+  if (Object.keys(set).length) await sql`update board_statuses set ${sql(set)} where id = ${cur.id}`
   publishBoard(boardId, { type: 'board' })
 }
 
-/** Replace the whole order (array of status KEYS in the new order). */
+/** Replace the whole order (array of status KEYS in the new order).
+ *
+ *  THE ORDER IS A PERMUTATION, AND IT USED NOT TO BE CHECKED. `position = the
+ *  array index` was written for whatever keys arrived, so an order that named a
+ *  key the board does not have, or left one of its columns out, was accepted
+ *  with a 200 and quietly produced an order nobody asked for:
+ *  `{order:['inbox','ghost','done']}` had 'ghost' consume index 1 (matching no
+ *  row), 'done' take index 2 — colliding with `in_progress`, still at 2 — and
+ *  the board's real order then fell to `listStatuses`'s `created_at` tiebreak.
+ *  Silent, and on the one operation whose whole job is to say where columns go.
+ *
+ *  So the set is validated as a permutation of this board's columns and the
+ *  refusal names every part of the mismatch at once, rather than failing on the
+ *  first and making the caller discover the rest one request at a time. The
+ *  system Blocked column is not a row and is never listed here — `listStatuses`
+ *  places it — so naming it is an unknown key like any other, which is exactly
+ *  what the sentence says.
+ *
+ *  The writes ARE a transaction, unlike the drain: this touches nothing but
+ *  `board_statuses.position` — no activity rows, no notifications, no dispatch —
+ *  so there is nothing outside the database to leave half-done, and an
+ *  interrupted reorder is the one failure that genuinely can be undone. */
 export async function reorderStatuses(boardId: string, keys: string[]): Promise<void> {
   await materialize(boardId)
   const sql = await db()
-  for (let i = 0; i < keys.length; i++) {
-    await sql`update board_statuses set position = ${i} where key = ${keys[i]!} and board_id = ${boardId}`
+  const rows = (await sql`select key from board_statuses where board_id = ${boardId}`) as unknown as Array<{ key: string }>
+  const have = new Set(rows.map((r) => r.key))
+  const seen = new Set<string>()
+  const unknown: string[] = []
+  const twice: string[] = []
+  for (const k of keys) {
+    if (!have.has(k)) unknown.push(k)
+    else if (seen.has(k)) twice.push(k)
+    seen.add(k)
   }
+  const missing = [...have].filter((k) => !seen.has(k))
+  if (unknown.length || twice.length || missing.length) {
+    const q = (ks: string[]) => [...new Set(ks)].map((k) => `“${k}”`).join(', ')
+    const parts: string[] = []
+    if (unknown.length) parts.push(`${q(unknown)} ${unknown.length === 1 ? 'is not a column' : 'are not columns'} on this board`)
+    if (twice.length) parts.push(`${q(twice)} ${twice.length === 1 ? 'is listed' : 'are listed'} more than once`)
+    if (missing.length) parts.push(`${q(missing)} ${missing.length === 1 ? 'is' : 'are'} missing from the order`)
+    throw new Error(`a new column order has to list every column on this board exactly once — ${parts.join('; ')}. Nothing was reordered.`)
+  }
+  await sql.begin(async (tx) => {
+    for (let i = 0; i < keys.length; i++) {
+      await tx`update board_statuses set position = ${i} where key = ${keys[i]!} and board_id = ${boardId}`
+    }
+  })
   publishBoard(boardId, { type: 'board' })
 }
 
 /** Delete a status; its tickets move to `reassignTo` (a status key). The last
- *  intake, the last review catch and the last terminal column are protected —
- *  the workflow needs all three, and statusMeta resolves each of them to a real
- *  key. Same rule as updateStatus (see REQUIRED_CATEGORIES).
+ *  intake and the last terminal column are protected on every board, and the
+ *  last review catch on every board that permits agents — statusMeta resolves
+ *  each of those to a real key for whoever needs it. Same rule as updateStatus
+ *  (see REQUIRED_CATEGORIES / AGENT_REQUIRED_CATEGORIES).
  *
  *  THE REASSIGNMENT IS AN ORDINARY STATUS MOVE, and `actor` is why this takes
  *  one. `assertSignoffColumnEmpty` REFUSES to recategorise a review column that
@@ -424,7 +739,13 @@ export async function deleteStatus(boardId: string, key: string, reassignTo: str
     label: string
     category: string
   }>
-  if (!victim) return
+  // Same as updateStatus, and it was the asymmetric half: a key that names
+  // nothing used to return 200 {ok:true} here, so DELETE of a typo'd or already-
+  // deleted column reported that a column had been removed and its tickets
+  // reassigned when neither had happened. Phase 0 called that shape "a silent
+  // no-op" when it fixed it on updateStatus; the two are the same operation from
+  // opposite ends and now say the same sentence.
+  if (!victim) throw new Error(`"${key}" is not a status on this board`)
   await assertNotLastOfCategory(boardId, victim.id, victim.category)
   const meta = await statusMeta(boardId)
   if (!meta.keys.includes(reassignTo) || reassignTo === victim.key) throw new Error('pick a surviving status for its tickets')
