@@ -132,6 +132,28 @@ const LIVE_ONLY = `Only a LIVE ticket accepts it — one that is ${OFF_THE_TABLE
 const COMMENT_INSTEAD =
   'Use comment instead — but only on a CLOSED ticket: comments are your channel on work you can no longer edit, and archival (of the ticket or its board) closes that channel too.'
 
+/** SCOPE ARGUMENTS ARE NOT OBSTACLES, and no description may teach an agent to
+ *  drop one to get past a refusal.
+ *
+ *  `report_gap`'s description used to close by telling a refused agent to send
+ *  the report again with its taskId taken out, promising the gap would still
+ *  reach the team; its `taskId` field said the same thing in fewer words. Both
+ *  were true and both were an
+ *  instruction to WIDEN the agent's own disclosure: the taskId is what binds a
+ *  gap's free text — which routinely names the ticket, the customer or the file
+ *  — to the admins who can see that board. Dropped, it went to every admin in
+ *  the workspace. The tool description is read BEFORE any call, so this text is
+ *  the FIRST thing that has to stop saying it; the 403 body is only the
+ *  fallback.
+ *
+ *  The API no longer obeys the trick either (a refusal is remembered and a
+ *  following unbounded report is not read as an org-wide claim), but an agent
+ *  that follows this advice now simply gets a quieter report than the honest
+ *  one — so the advice is worse than useless, and it is stated here once for
+ *  every tool with a scope argument to interpolate. */
+const KEEP_THE_SCOPE =
+  'Do NOT re-send with this omitted to get past a refusal: naming it is what keeps your words in front of the people who work on it, and dropping it does not widen who is told — it narrows what they are told.'
+
 /** For the `comment` tool itself: the ONE place the three conditions come apart. */
 const COMMENT_EXEMPTION = `Comment is the one write that survives sign-off: a CLOSED ticket (done / failed / cancelled) still takes comments when every other agent write 403s. It is NOT a way around archival — an ARCHIVED ticket, or one on an ARCHIVED BOARD, refuses comments too, because archiving withdraws the work from the people watching it.`
 
@@ -146,20 +168,62 @@ function refusalProseGap(description: string): string | null {
   return !archival ? 'names "closed" and nothing about archival' : 'names archival but not an ARCHIVED BOARD'
 }
 
+/** …and the second thing a description can get wrong, which is worse than drift
+ *  because it is not a wasted turn but a DISCLOSURE: text that teaches an agent
+ *  to drop a scope argument to get past a refusal.
+ *
+ *  Deleting the sentence from `report_gap` fixed the sentence. It did not stop
+ *  the NEXT tool with a scope argument from writing its own version, and the one
+ *  that just shipped had it in TWO places (the tool description and the field's)
+ *  which one grep found and the round before that missed. Prose is not
+ *  typechecked; the process that serves it is the only thing that reads every
+ *  description there is, including the ones that do not exist yet.
+ *
+ *  KEEP_THE_SCOPE is stripped before matching. The sanctioned prohibition
+ *  necessarily quotes the thing it forbids, so a check that does not remove it
+ *  first reports the fix as the bug — which is exactly what the first draft of
+ *  this did. */
+const TEACHES_SCOPE_DROP: Array<[RegExp, string]> = [
+  [/re-?send\s+(?:it\s+)?without/i, 'tells an agent to re-send without an argument'],
+  [/send\s+(?:it\s+|the\s+\w+\s+)?again\s+without/i, 'tells an agent to send again without an argument'],
+  [/still\s+reach(?:es)?\s+(?:the\s+)?(?:studio|team|admins?)/i, 'promises the report still arrives once the scope is dropped'],
+  [/without\s+taskid/i, 'names dropping taskId as a way forward'],
+  [
+    /(?:omit|drop|remove|leave\s+(?:it|them)\s+out)[^.]{0,60}\b(?:to\s+get\s+past|if\s+(?:it|this|that)\s+(?:403|refus)|after\s+a\s+403)/i,
+    'offers omitting the argument as a response to a refusal',
+  ],
+]
+
+function scopeProseGap(description: string): string | null {
+  const text = description.split(KEEP_THE_SCOPE).join(' ')
+  for (const [rx, why] of TEACHES_SCOPE_DROP) if (rx.test(text)) return why
+  return null
+}
+
 /** Shouted once per process, never fatal: a drifting sentence is a bad reason
  *  to take the fleet's toolkit down, and an operator who sees this line can fix
  *  it in one edit. Promoting it to a hard failure belongs in CI
  *  (scripts/check-invariants.mjs), which can afford to be fatal. */
 let proseAudited = false
-function auditRefusalProse(gaps: Array<[string, string]>): void {
+function auditRefusalProse(gaps: Array<[string, string]>, scope: Array<[string, string]>): void {
   if (proseAudited) return
   proseAudited = true
-  if (!gaps.length) return
-  console.error(
-    `talaria-mcp: tool descriptions drifted from the API's refusal rule — ${gaps
-      .map(([name, why]) => `${name} (${why})`)
-      .join('; ')}. A ticket refuses agent writes when it is ${OFF_THE_TABLE}; a description naming only "closed" spends an agent a turn on a 403. Interpolate LIVE_ONLY / COMMENT_EXEMPTION in mcp/src/index.ts instead of writing the sentence again.`,
-  )
+  if (gaps.length) {
+    console.error(
+      `talaria-mcp: tool descriptions drifted from the API's refusal rule — ${gaps
+        .map(([name, why]) => `${name} (${why})`)
+        .join('; ')}. A ticket refuses agent writes when it is ${OFF_THE_TABLE}; a description naming only "closed" spends an agent a turn on a 403. Interpolate LIVE_ONLY / COMMENT_EXEMPTION in mcp/src/index.ts instead of writing the sentence again.`,
+    )
+  }
+  if (scope.length) {
+    console.error(
+      `talaria-mcp: tool text TEACHES AN AGENT TO WIDEN ITS OWN DISCLOSURE — ${scope
+        .map(([name, why]) => `${name} (${why})`)
+        .join(
+          '; ',
+        )}. A scope argument is what binds an agent's free text to the people who can see the work it quotes; dropped, that text goes to every admin in the workspace. Say KEEP_THE_SCOPE instead — interpolate it, do not write a version of it.`,
+    )
+  }
 }
 
 // One server instance per identity: stdio builds it once for the env agent;
@@ -173,10 +237,24 @@ function buildServer(agent: string, key: string): McpServer {
   // below, so the check covers tools that do not exist yet — the only ones that
   // can still get this wrong. Registration is otherwise untouched.
   const gaps: Array<[string, string]> = []
+  const scope: Array<[string, string]> = []
   const register = server.registerTool.bind(server) as typeof server.registerTool
   ;(server as { registerTool: typeof server.registerTool }).registerTool = ((name: string, config: unknown, cb: unknown) => {
-    const why = refusalProseGap(String((config as { description?: string } | null)?.description ?? ''))
+    const cfg = config as { description?: string; inputSchema?: Record<string, { description?: string }> } | null
+    const why = refusalProseGap(String(cfg?.description ?? ''))
     if (why) gaps.push([name, why])
+    // The FIELD descriptions too, and that is not belt-and-braces: the advice
+    // this round removed lived in the tool description AND in `taskId`'s own
+    // `.describe(...)`, said in fewer words. An audit that reads only the tool
+    // description clears a tool that still tells the agent how, on the very
+    // argument it is telling it to drop.
+    for (const [field, text] of [
+      ['<tool description>', cfg?.description ?? ''] as const,
+      ...Object.entries(cfg?.inputSchema ?? {}).map(([f, s]) => [f, s?.description ?? ''] as const),
+    ]) {
+      const bad = scopeProseGap(String(text))
+      if (bad) scope.push([`${name}.${field}`, bad])
+    }
     return (register as unknown as (...a: unknown[]) => unknown)(name, config, cb)
   }) as unknown as typeof server.registerTool
 
@@ -387,12 +465,15 @@ server.registerTool(
   'report_gap',
   {
     description:
-      `Report a capability gap — use ONLY when you genuinely cannot do assigned work properly: a tool or access you're missing, or an org-specific process you'd be guessing at. NOT for small tasks you can simply do with your own judgment, and never twice for the same kind of work (repeats are deduplicated; the team is already aware). The team sees gaps ranked by recurrence and can build a workflow/skill to cover them. taskId is optional and gated: it writes a line onto that ticket, so a board you are not allowed on — or a ticket that is ${OFF_THE_TABLE} — refuses the whole call with 403. Re-send without taskId and the gap still reaches the team.`,
+      `Report a capability gap — use ONLY when you genuinely cannot do assigned work properly: a tool or access you're missing, or an org-specific process you'd be guessing at. NOT for small tasks you can simply do with your own judgment, and never twice for the same kind of work (repeats are deduplicated; the team is already aware). The team sees gaps ranked by recurrence and can build a workflow/skill to cover them. taskId is optional and gated: it writes a line onto that ticket, so a board you are not allowed on — or a ticket that is ${OFF_THE_TABLE} — refuses the whole call with 403. ${KEEP_THE_SCOPE} Omit it only when the gap is genuinely workspace-wide and about no ticket at all ("I cannot send email at all").`,
     inputSchema: {
       kind: z.string().min(2).max(80).describe('Short slug naming the kind of work, e.g. "invoice-reconciliation"'),
       missing: z.string().min(5).max(300).describe("One line: what you can't do properly and why"),
       needs: z.string().max(5000).optional().describe('What a flow would need to cover: steps, tools, access, decisions'),
-      taskId: z.string().optional().describe(`The ticket that surfaced the gap — omit it if that ticket is ${OFF_THE_TABLE}; the gap still lands`),
+      taskId: z
+        .string()
+        .optional()
+        .describe(`The ticket that surfaced the gap. ${KEEP_THE_SCOPE} Leave it out only for a gap about no ticket at all.`),
     },
   },
   async (body) => ok(await api('POST', '/api/agent/gap', body)),
@@ -727,11 +808,15 @@ server.registerTool(
   'report_problem',
   {
     description:
-      "Something on YOUR side is broken (a tool errors, a connection refuses, credentials missing) and a teammate is affected. This alerts the workspace admin and files a Helpdesk ticket with the technical details. Use it INSTEAD of explaining endpoints/ports/errors to non-technical people — then relay the returned plain-language reassurance and offer what you can still do.",
+      `Something on YOUR side is broken (a tool errors, a connection refuses, credentials missing) and a teammate is affected. This alerts the workspace admins and files a Helpdesk ticket with the technical details. Use it INSTEAD of explaining endpoints/ports/errors to non-technical people — then relay the returned plain-language reassurance and offer what you can still do. taskId is optional and gated the same way report_gap's is: a board you are not allowed on — or a ticket that is ${OFF_THE_TABLE} — refuses the whole call with 403. ${KEEP_THE_SCOPE} Omit it only when nothing you were working on is involved.`,
     inputSchema: {
       summary: z.string().min(5).max(300).describe('One plain sentence: what is broken, from the user\'s point of view'),
       details: z.string().max(20_000).optional().describe('The full technical details for the admin (errors, endpoints, what you tried)'),
       context: z.string().max(500).optional().describe('What you were trying to do for whom'),
+      taskId: z
+        .string()
+        .optional()
+        .describe(`The ticket you were working when it broke. ${KEEP_THE_SCOPE}`),
     },
   },
   async (args) => ok(await api('POST', '/api/agent/problem', args)),
@@ -861,7 +946,7 @@ server.registerTool(
   async ({ boardId, add, remove }) => ok(await api('PUT', `/api/boards/${encodeURIComponent(boardId)}/agents`, { add, remove })),
 )
 
-  auditRefusalProse(gaps)
+  auditRefusalProse(gaps, scope)
   return server
 }
 

@@ -5,6 +5,7 @@
 //   personal action (a personal assistant, bound to its owner) → the OWNER approves
 //   org action (a general agent, on the shared org account)     → an ADMIN approves
 
+import { announceApproval } from '../approvals'
 import { db } from '../db/pg'
 import { createEventWithToken, type CreateEventInput } from './calendar'
 import { getAccessToken } from './connections'
@@ -44,6 +45,20 @@ export async function queueAction(input: {
     values (${input.kind}, ${input.summary}, ${JSON.stringify(input.payload)}, ${input.agentModel}, ${input.ownerUserId}, ${input.isOrg ?? false})
     returning ${sql.unsafe(COLS)}
   `
+  // The row IS an approval the instant it lands, and the agent that drafted it
+  // is stopped in front of it. Until this call existed the first a human heard
+  // was the approval sweep's next tick — up to five minutes of an agent waiting
+  // on a decision that takes four seconds, and before the sweep existed, the
+  // next morning's digest.
+  //
+  // Not awaited: this function is servicing an agent's request and must not
+  // wait on notification writes to four admins, nor fail because one of them
+  // failed. Idempotent against the sweep — both mark `approval_announce_state`
+  // by key, and the mark is merged in the database rather than written over the
+  // blob, so this is latency removed and never a second notification.
+  void announceApproval(`google_action:${row!.id}`).catch((e: unknown) =>
+    console.error(`[google] queued action ${row!.id} could not be announced — the approval sweep will pick it up:`, e),
+  )
   return row!
 }
 

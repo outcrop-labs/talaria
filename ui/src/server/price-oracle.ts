@@ -4,6 +4,7 @@
 // in llm_endpoints.auto_prices — separate from user overrides (model_prices),
 // which always win. Local endpoints are skipped ($0 by definition).
 import { db } from './db/pg'
+import { registerJob } from './scheduler'
 
 interface OrModel {
   id: string
@@ -34,7 +35,7 @@ function idCandidates(model: string): string[] {
 
 let lastRefresh = 0
 let lastAttempt = 0 // failure backoff: don't hammer an unreachable catalog
-let refreshing: Promise<void> | null = null
+let inFlight: Promise<{ priced: number; endpoints: number }> | null = null
 const MIN_INTERVAL_MS = 6 * 60 * 60 * 1000 // 6h between successful refreshes
 const RETRY_INTERVAL_MS = 10 * 60 * 1000 // 10min between attempts after a failure
 
@@ -137,17 +138,51 @@ export async function refreshAutoPrices(): Promise<{ priced: number; endpoints: 
   return { priced, endpoints: endpoints.length }
 }
 
+/** Single-flight around `refreshAutoPrices`. The scheduled job, the
+ *  opportunistic kick and the usage nudge all go through here, so the catalog
+ *  is never fetched twice at once. It REJECTS when the refresh failed — the
+ *  scheduler logs that; the two fire-and-forget callers below keep swallowing
+ *  on purpose, because for them the next pass is the retry. */
+function refreshOnce(): Promise<{ priced: number; endpoints: number }> {
+  if (inFlight) return inFlight
+  const run = refreshAutoPrices()
+  inFlight = run
+  void run.then(
+    () => {
+      if (inFlight === run) inFlight = null
+    },
+    () => {
+      if (inFlight === run) inFlight = null
+    },
+  )
+  return run
+}
+
+// Scheduled, not kicked. The 6h cadence used to live in `maybeRefreshAutoPrices`
+// and only advanced when someone loaded /models — an instance nobody
+// administered priced its usage against a catalog that never updated. The
+// interval is unchanged; the scheduler owns it now. The two opportunistic
+// callers below stay: they catch a brand-new model or alias between ticks.
+registerJob({
+  name: 'price-refresh',
+  everyMs: MIN_INTERVAL_MS,
+  // Earliest of the three jobs, and the only one that writes nothing a person
+  // sees — safe to run soon after boot so a fresh deploy prices correctly.
+  firstRunDelayMs: 60_000,
+  maxRunMs: 5 * 60_000,
+  run: async () => {
+    const { priced, endpoints } = await refreshOnce()
+    return `${priced} model price(s) across ${endpoints} cloud endpoint(s)`
+  },
+})
+
 /** Fire-and-forget refresh: at most every 6h after a success, and no retry
  *  storm when offline (10min backoff between failed attempts). Call from hot
  *  read paths. */
 export function maybeRefreshAutoPrices(): void {
   const now = Date.now()
-  if (refreshing || now - lastRefresh < MIN_INTERVAL_MS || now - lastAttempt < RETRY_INTERVAL_MS) return
-  refreshing = refreshAutoPrices()
-    .catch(() => {}) // offline/unreachable → prices stay as they were
-    .finally(() => {
-      refreshing = null
-    }) as unknown as Promise<void>
+  if (inFlight || now - lastRefresh < MIN_INTERVAL_MS || now - lastAttempt < RETRY_INTERVAL_MS) return
+  void refreshOnce().catch(() => {}) // offline/unreachable → prices stay as they were
 }
 
 /** Usage just landed on a cloud model with NO price: refresh sooner than the
@@ -156,10 +191,6 @@ export function maybeRefreshAutoPrices(): void {
 const NUDGE_INTERVAL_MS = 15 * 60 * 1000
 export function nudgeAutoPrices(): void {
   const now = Date.now()
-  if (refreshing || now - lastRefresh < NUDGE_INTERVAL_MS || now - lastAttempt < RETRY_INTERVAL_MS) return
-  refreshing = refreshAutoPrices()
-    .catch(() => {})
-    .finally(() => {
-      refreshing = null
-    }) as unknown as Promise<void>
+  if (inFlight || now - lastRefresh < NUDGE_INTERVAL_MS || now - lastAttempt < RETRY_INTERVAL_MS) return
+  void refreshOnce().catch(() => {})
 }

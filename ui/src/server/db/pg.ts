@@ -10,11 +10,18 @@ import { initSecretbox } from '../secretbox'
 type Sql = ReturnType<typeof postgres>
 const g = globalThis as unknown as { __talariaSql?: Sql; __talariaMigrated?: Promise<void> }
 
+function databaseUrl(): string {
+  const url = process.env.DATABASE_URL
+  if (!url) throw new Error('DATABASE_URL is not set')
+  return url
+}
+
+/** The APPLICATION pool. Every request handler and every scheduled job runs on
+ *  this one. `idle_timeout` lets the driver reap connections a quiet instance
+ *  is not using — see runMigrations for why nothing may `reserve()` it. */
 export function getSql(): Sql {
   if (!g.__talariaSql) {
-    const url = process.env.DATABASE_URL
-    if (!url) throw new Error('DATABASE_URL is not set')
-    g.__talariaSql = postgres(url, { max: 10, idle_timeout: 20, onnotice: () => {} })
+    g.__talariaSql = postgres(databaseUrl(), { max: 10, idle_timeout: 20, onnotice: () => {} })
   }
   return g.__talariaSql
 }
@@ -1263,6 +1270,11 @@ const MIGRATIONS: string[] = [
      on conversations(user_id) where kind = 'inbox' and archived = false`,
   `create index if not exists inbox_decisions_conversation_timeline_idx
      on inbox_decisions(conversation_id, created_at desc, id desc) where conversation_id is not null`,
+  // Per-user notification routing: {"<class>":"in_app"|"email"|"both"}, keyed by
+  // the classes in lib/notifications.ts. `{}` means "never touched it" — the
+  // defaults live in code (NOTIFY_CLASSES.fallback), not in this column, so
+  // tuning them later reaches every user who hasn't formed an opinion.
+  `alter table users add column if not exists notify_prefs jsonb not null default '{}'::jsonb`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
@@ -1283,15 +1295,66 @@ function checksum(stmt: string): string {
   return createHash('sha256').update(stmt.replace(/\s+/g, ' ').trim()).digest('hex')
 }
 
-async function runMigrations(sql: Sql): Promise<void> {
-  // Advisory locks are session-scoped, so the lock holds a reserved connection
-  // of its own while the statements below run on the pool. Everything —
-  // including creating the bookkeeping table — happens inside it.
-  const lock = await sql.reserve()
+// The migration run gets a POOL OF ITS OWN, and it is not an optimisation.
+//
+// Advisory locks are session-scoped, so the migration run needs one connection
+// it can hold for the whole pass. The obvious way to get one — `sql.reserve()`
+// on the application pool — is a process-killing trap, and this is the shape of
+// it (postgres.js 3.4, src/index.js):
+//
+//   reserve() registers its pending request TWICE. It pushes `{reserve}` onto
+//   the pool's shared `queries` list AND, if a connection is currently closed,
+//   hands the same object to `connect()`. Only one of those two paths ever
+//   settles the promise: `onopen()` resolves it by shifting it back off
+//   `queries` (connection.js deliberately does NOT execute a `reserve` request
+//   handed to it as `initial` — see `initial && !initial.reserve && execute`).
+//   So if anything drains `queries` in between, the request is dispatched to a
+//   second connection, and when both connections open they each find `queries`
+//   empty and quietly return. Nothing rejects. Nothing times out. `reserve()`
+//   never settles, for the life of the process.
+//
+//   The thing that drains `queries` is `onclose()`: `queries.length &&
+//   connect(c, queries.shift())`. A connection reaching `onclose` at that
+//   moment is not exotic — it is what `idle_timeout` (and `max_lifetime`, which
+//   postgres.js enables BY DEFAULT at a random 30-60 minutes) does to every
+//   idle pooled connection, on a timer.
+//
+// Which made this the M1 cold-boot wedge, deterministically rather than as a
+// rare race. On an instance serving ZERO requests the ordering is fixed:
+// server-entry's boot probe runs `getSql()\`select 1\`` (healthz, which
+// deliberately does not migrate), leaving one connection idle with a 20s
+// `idle_timeout` armed; the probe returning is also what arms every job's
+// first-run timer; and the first job due — `notification-mail`, at
+// firstRunDelayMs 20_000 — was therefore the process's first `db()` call, i.e.
+// the first `reserve()`, landing in the same millisecond as the reap of the
+// connection the probe left behind. Then `ensureMigrated()` caches that
+// never-settling promise on globalThis, so EVERY later `db()` — every route,
+// every other job — awaits it forever. Not a mail outage: a dead process that
+// still answers static files and 200s on /api/healthz.
+//
+// The fix is not to move the 20s. Two timers that no longer collide are one
+// dependency bump from colliding again, and `max_lifetime` would have found the
+// same window hours later with no constant to blame. The fix is that the
+// application pool is never `reserve()`d at all:
+//
+//   · `max: 1` — the pool IS the one session, so `pg_advisory_lock` and the
+//     statements it guards run on the same connection without reserving.
+//   · `idle_timeout: 0`, `max_lifetime: 0` — nothing reaps a connection under
+//     this pool, so `onclose` never races anything. It lives for one run.
+//   · ended in `finally` — the session (and with it the advisory lock) goes
+//     away even if a statement throws.
+//
+// Cost: one extra connection, once, for as long as migrating takes.
+function migrationSql(): Sql {
+  return postgres(databaseUrl(), { max: 1, idle_timeout: 0, max_lifetime: 0, onnotice: () => {} })
+}
+
+async function runMigrations(): Promise<void> {
+  const sql = migrationSql()
   try {
-    await lock`select pg_advisory_lock(${MIGRATION_LOCK})`
-    await lock.unsafe(SCHEMA_MIGRATIONS)
-    const rows = (await lock`select id, checksum from schema_migrations`) as unknown as Array<{ id: number; checksum: string }>
+    await sql`select pg_advisory_lock(${MIGRATION_LOCK})`
+    await sql.unsafe(SCHEMA_MIGRATIONS)
+    const rows = (await sql`select id, checksum from schema_migrations`) as unknown as Array<{ id: number; checksum: string }>
     const applied = new Map(rows.map((r) => [r.id, r.checksum]))
     for (const [i, stmt] of MIGRATIONS.entries()) {
       const sum = checksum(stmt)
@@ -1316,8 +1379,10 @@ async function runMigrations(sql: Sql): Promise<void> {
     // Load/create the data key so seal()/open() are synchronous thereafter.
     await initSecretbox(sql)
   } finally {
-    await lock`select pg_advisory_unlock(${MIGRATION_LOCK})`.catch(() => {})
-    lock.release()
+    // Ending the pool ends the session, which releases the advisory lock; the
+    // explicit unlock is so a slow close does not hold up another instance.
+    await sql`select pg_advisory_unlock(${MIGRATION_LOCK})`.catch(() => {})
+    await sql.end({ timeout: 5 }).catch(() => {})
   }
 }
 
@@ -1325,7 +1390,7 @@ function ensureMigrated(): Promise<void> {
   if (!g.__talariaMigrated) {
     // Drop the cached promise if the run fails, so the next db() retries: a
     // cached rejection poisons every later call for the life of the process.
-    const run: Promise<void> = runMigrations(getSql()).catch((e) => {
+    const run: Promise<void> = runMigrations().catch((e) => {
       if (g.__talariaMigrated === run) g.__talariaMigrated = undefined
       throw e
     })

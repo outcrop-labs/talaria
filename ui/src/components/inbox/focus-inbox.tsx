@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { INBOX_SNOOZE_OPTIONS, useInboxFocusWorkspace } from '@/components/inbox/inbox-focus-shell'
 import { Button, buttonClasses } from '@/components/ui/button'
+import { QueryError } from '@/components/ui/query-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
@@ -55,8 +56,8 @@ export function FocusInbox({ mail, agenda }: { mail: ReactNode; agenda: ReactNod
   const [drawer, setDrawer] = useState<'mail' | 'agenda' | null>(null)
   const {
     data,
-    isLoading,
     isError,
+    error,
     refetch,
     orderedItems,
     active,
@@ -91,21 +92,59 @@ export function FocusInbox({ mail, agenda }: { mail: ReactNode; agenda: ReactNod
     return () => document.removeEventListener('keydown', onKey)
   }, [active, busyAction, performAction, recommendedAction, snooze])
 
+  // THE FAILURE MODES THIS SPLIT EXISTS FOR.
+  //
+  // This is the HITL surface: everything blocked on a person arrives here. The
+  // one thing it must never do is render "nothing needs you" over a read it
+  // could not make — the exact bug `WorkbenchJobsStrip` had on the ticket,
+  // where a 500 erased the approval gate and the ticket looked idle while an
+  // agent sat stopped behind it.
+  //
+  // `isError` alone was half the answer, and it was wrong in BOTH directions:
+  //
+  //   · A failed BACKGROUND refetch (react-query keeps `data` and flips
+  //     `isError`) replaced a live queue of real decisions with a full-page
+  //     "Queue offline". Actionable items — an approval an agent is waiting on
+  //     — were thrown away because a later poll blipped. Stale beats blank, as
+  //     long as it says it is stale.
+  //   · The header read `data?.counts.total ?? 0` regardless, so a failure that
+  //     DID take the page still printed a confident "Inbox · 0 / 00 / 00" at
+  //     the top. A person who glances at that number and walks away has been
+  //     told the queue is empty by the surface that could not read it.
+  const failed = isError && data === undefined
+  const stale = isError && data !== undefined
   return (
     <>
       <div className="h-full min-h-0 min-w-0 overflow-y-auto px-4 pb-8 pt-8 sm:px-8 sm:pt-12">
         <main className="mx-auto w-full max-w-[760px]">
           <FocusHeader
-            count={data?.counts.total ?? 0}
+            count={failed ? null : (data?.counts.total ?? 0)}
             current={active ? 1 : 0}
             onOpenMail={() => setDrawer('mail')}
             onOpenAgenda={() => setDrawer('agenda')}
           />
 
-          {isLoading ? (
+          {stale && (
+            <QueryError
+              variant="inline"
+              className="mt-4 rounded-lg border border-[color:var(--theme-danger)]/40 bg-[color:var(--theme-danger)]/5 px-4 py-2.5"
+              error={error}
+              title="This queue may be out of date — the last refresh failed"
+              onRetry={() => void refetch()}
+            />
+          )}
+
+          {failed ? (
+            <FocusOffline error={error} onRetry={() => void refetch()} />
+          ) : data === undefined ? (
+            // `isLoading` is react-query's "first fetch IN FLIGHT", and it is
+            // false in the states between — a disabled query, a retry backoff,
+            // a mount before the fetch starts. Every one of those has no data
+            // and no error, and branching on `isLoading` alone dropped them
+            // through to `InboxZero`: "no decisions are waiting", asserted by a
+            // surface that had not asked yet. The skeleton is the honest
+            // placeholder for "we do not know", so it owns ALL of them.
             <FocusLoading />
-          ) : isError ? (
-            <FocusOffline onRetry={() => void refetch()} />
           ) : active ? (
             <>
               <FocusCard
@@ -122,6 +161,9 @@ export function FocusInbox({ mail, agenda }: { mail: ReactNode; agenda: ReactNod
               <QueuePreview items={orderedItems.slice(1, 5)} remaining={Math.max(0, orderedItems.length - 1)} />
             </>
           ) : (
+            // Only reachable with data in hand, so "inbox zero" is something the
+            // server actually said — never a stand-in for a read that failed or
+            // a read that has not happened.
             <InboxZero />
           )}
         </main>
@@ -136,25 +178,29 @@ export function FocusInbox({ mail, agenda }: { mail: ReactNode; agenda: ReactNod
   )
 }
 
+/** `count: null` means the queue could not be read. It renders as an em dash,
+ *  never as 0 — a zero here is a claim, and this is the surface that must not
+ *  make that claim on a failed read. */
 function FocusHeader({
   count,
   current,
   onOpenMail,
   onOpenAgenda,
 }: {
-  count: number
+  count: number | null
   current: number
   onOpenMail: () => void
   onOpenAgenda: () => void
 }) {
+  const unknown = count === null
   return (
     <header className="flex flex-wrap items-center gap-2 border-b border-line pb-4 sm:gap-3">
       <div className="flex min-w-0 flex-1 items-baseline gap-2">
         <h1 className="font-sans text-lg font-medium tracking-tight text-fg">Inbox</h1>
-        <span className="font-mono text-[11px] tabular-nums tracking-[0.06em] text-muted">· {count}</span>
+        <span className="font-mono text-[11px] tabular-nums tracking-[0.06em] text-muted">· {unknown ? '—' : count}</span>
       </div>
       <span className="hidden font-mono text-[10px] tabular-nums tracking-[0.08em] text-ink-dim sm:block">
-        {String(current).padStart(2, '0')} / {String(count).padStart(2, '0')}
+        {unknown ? '—— / ——' : `${String(current).padStart(2, '0')} / ${String(count).padStart(2, '0')}`}
       </span>
       <button type="button" onClick={onOpenMail} className="flex h-8 items-center gap-1.5 rounded-md border border-line px-2.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted hover:bg-hover hover:text-fg" aria-label="Open Mail drawer">
         <Mail size={12} /> Mail
@@ -313,13 +359,26 @@ function FocusLoading() {
   )
 }
 
-function FocusOffline({ onRetry }: { onRetry: () => void }) {
+function FocusOffline({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   return (
     <section className="grid min-h-[430px] place-items-center text-center">
-      <div>
+      <div className="max-w-md">
         <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-danger">Queue offline</div>
-        <h2 className="mt-2 font-sans text-2xl font-light text-fg">The source-first queue could not load.</h2>
-        <p className="mx-auto mt-2 max-w-md font-sans text-sm text-muted">No action was taken. Retry when the local service is available.</p>
+        <h2 className="mt-2 font-sans text-2xl font-light text-fg">The decision queue could not load.</h2>
+        {/* The server's own reason, not a shrug. Same component the rest of the
+            app reports a failed read with, so this page cannot drift into its
+            own private vocabulary for "it broke". */}
+        <QueryError
+          className="mt-3"
+          variant="inline"
+          error={error}
+          title="Nothing was read, so nothing here is a count."
+          onRetry={onRetry}
+        />
+        <p className="mx-auto mt-3 font-sans text-sm text-muted">
+          This is not an empty inbox. Approvals, blocked agents and tickets waiting on you may be queued behind this —
+          they stay queued, and nothing was actioned.
+        </p>
         <Button className="mt-5" size="sm" variant="outline" onClick={onRetry}>Retry</Button>
       </div>
     </section>

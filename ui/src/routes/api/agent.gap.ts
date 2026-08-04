@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { requireAgent } from '@/server/agent-auth'
 import { boardAllowsAgent } from '@/server/boards'
-import { reportGap } from '@/server/gaps'
+import { rememberTicketRefusal, reportGap } from '@/server/gaps'
 import { agentTicketRefusal, getTask, logActivity } from '@/server/tasks'
 
 const Body = z.object({
@@ -32,29 +32,58 @@ export const Route = createFileRoute('/api/agent/gap')({
         // org-wide and binds a Studio gap to a board it cannot see. Unknown and
         // not-allowed refuse identically — a distinct 404 would be a ticket
         // enumeration oracle.
+        // NEVER tell a refused agent to drop `taskId` and retry. `boardId` is
+        // what narrows the gap's free text to the admins who can see that board
+        // (`{ by: 'admin', onBoard }`), and that text routinely names the
+        // ticket, the customer or the file. "Re-send without taskId" was
+        // therefore an instruction to widen its own disclosure — a refusal that
+        // reads as a workaround.
+        //
+        // AND SAYING NOTHING IS NOT ENOUGH. The sentence was removed from this
+        // body and from the MCP tool description an agent reads before it ever
+        // calls — and the retry still worked, because the refusal left no trace
+        // and the next unbounded report defaulted to every admin. So each
+        // refusal below is REMEMBERED against the caller, and `reportGap` reads
+        // that memo when a report arrives with no ticket on it. See "WHAT AN
+        // AGENT'S OWN WORDS MAY BE DISCLOSED AS" in server/gaps.ts for the
+        // authority each case resolves to; an agent that names no ticket and was
+        // refused nothing is making a genuinely org-wide claim ("I cannot send
+        // email at all") and is unaffected.
         const task = parsed.data.taskId ? await getTask(parsed.data.taskId) : null
         if (parsed.data.taskId) {
+          // Unknown and not-allowed refuse identically — a distinct 404 would be
+          // a ticket enumeration oracle.
           const refuse = json(
             {
               error: 'forbidden',
-              message: `taskId "${parsed.data.taskId}" is not a ticket you may write to — re-send the gap without taskId, or ask for access to its board.`,
+              message: `taskId "${parsed.data.taskId}" is not a ticket you may write to. Ask for access to its board, then report the gap against the ticket.`,
             },
             { status: 403 },
           )
-          if (!task) return refuse
+          // Remembered with NO board in both of these: the agent named a ticket
+          // that does not exist, or one on a board it may not work. Binding its
+          // next report to a board it cannot see would let it choose which
+          // board's admins read its text, so it gets no board and its retry
+          // reaches every admin as a fact and none of them as words.
+          if (!task) {
+            await rememberTicketRefusal(agent, null)
+            return refuse
+          }
           // The CALLER, not its model: board policy's elevated bypass is only
           // for an identity that was proven, never merely asserted.
-          if (!(await boardAllowsAgent(task.boardId, caller))) return refuse
+          if (!(await boardAllowsAgent(task.boardId, caller))) {
+            await rememberTicketRefusal(agent, null)
+            return refuse
+          }
           // A person has taken this ticket off the table (signed off, archived,
-          // or its board archived) — the gap is still worth recording, just not
-          // ON that ticket. The SAME predicate `agentSafePatch` asks: this route
-          // writes an activity line and never reaches `updateTask`.
+          // or its board archived). The SAME predicate `agentSafePatch` asks:
+          // this route writes an activity line and never reaches `updateTask`.
+          // The agent IS allowed on this board, so this is the one refusal whose
+          // board we can safely bind a retry to.
           const shut = await agentTicketRefusal(task, caller, 'write')
           if (shut) {
-            return json(
-              { error: 'forbidden', message: `${shut}. Re-send this gap without taskId and it will still reach the Studio.` },
-              { status: 403 },
-            )
+            await rememberTicketRefusal(agent, task.boardId)
+            return json({ error: 'forbidden', message: shut }, { status: 403 })
           }
         }
         const gap = await reportGap({

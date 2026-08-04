@@ -295,6 +295,41 @@ async function ticketStillOurs(subject: AgentSubject, taskId: string): Promise<b
   return boardAllowsAgent(task.boardId, subject)
 }
 
+/** THE ONLY way this file tells anybody an approval was raised. Not one of the
+ *  three ticket doors at the top of the file — a door onto somebody's inbox —
+ *  but it is one for exactly the same reason.
+ *
+ *  Two verbs here park work on a human: `start_job` gates a heavy plan
+ *  (`workbench_plan`), and `request_repo` files a repository request
+ *  (`repo_request`). Both are declared in `server/approvals.ts` with the
+ *  AUTHORITY their decision route enforces, and that declaration is what decides
+ *  who may be told and how much of it.
+ *
+ *  `request_repo` used to announce itself: `select id from users where role =
+ *  'admin'`, then a notification per admin carrying the org, the repo name and
+ *  120 characters of the agent's `why` — free text typed while working one
+ *  board's ticket. The census had already been bounded to
+ *  `{ by: 'admin', onBoard }`, so the same row resolved to the admins who can
+ *  see that board while the verb, in the same request, mailed the words to every
+ *  admin in the workspace. Bounding the census could not close that, because the
+ *  hand-rolled copy is the one that always fires first.
+ *
+ *  So there is one expression of "an approval was raised" in this file. It is
+ *  fire-and-forget (the caller is servicing an agent's tool call), idempotent
+ *  against the approval sweep (both mark the same key, merged in the database),
+ *  and it never decides an audience — a third gated verb gets the disclosure
+ *  rules right by calling this and cannot get them wrong by not calling it.
+ *  Dynamic import for the same reason as its neighbours: nothing in this file's
+ *  top-level graph should have to pull in the notification stack. */
+function announceRaised(key: string): void {
+  void (async () => {
+    const { announceApproval } = await import('./approvals')
+    await announceApproval(key)
+  })().catch((e: unknown) =>
+    console.error(`[workbench] ${key} was raised but could not be announced — the approval sweep will pick it up:`, e),
+  )
+}
+
 type ToolResult = { ok: true; value: unknown } | { ok: false; error: string }
 
 async function callTool(subject: AgentSubject, name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -388,6 +423,11 @@ async function callTool(subject: AgentSubject, name: string, args: Record<string
         returning ${sql.unsafe(JOB_ROW)}
       `) as unknown as WorkbenchJob[]
       const job = rows[0]!
+      // `gated` means this agent has just stopped and will not move again until
+      // a person approves the plan from the ticket. That is an approval the
+      // instant the row lands, so it is announced now rather than found by the
+      // approval sweep up to five minutes later.
+      if (gated) announceRaised(`workbench_plan:${job.id}`)
       if (taskId && plan.trim()) {
         // Through `addComment`, not `insert into task_comments`. This was the
         // last raw ticket write left in this file, and it was the same shape as
@@ -520,24 +560,16 @@ async function callTool(subject: AgentSubject, name: string, args: Record<string
         select 1 from workbench_repo_requests where agent_id = ${agent.id} and org = ${org} and name = ${repoName} and status = 'pending' limit 1
       `
       if (dup.length) return { ok: false, error: 'you already have a pending request for this repo — a human will decide' }
-      await sql`
+      const filed = (await sql`
         insert into workbench_repo_requests (agent_id, agent_model, org, name, description, why, task_id)
         values (${agent.id}, ${agent.model}, ${org}, ${repoName}, ${String(args.description ?? '').slice(0, 300)}, ${String(args.why ?? '').slice(0, 1000)}, ${taskId})
-      `
+        returning id
+      `) as unknown as Array<{ id: string }>
       await logTicket(taskId, { agent: subject }, `requested a new repo: ${org}/${repoName} — awaiting human approval`)
-      // Admins hear about it once, through the inbox — not per retry.
-      void (async () => {
-        const { addNotification } = await import('./notifications')
-        const admins = (await sql`select id from users where role = 'admin'`) as unknown as Array<{ id: string }>
-        for (const a of admins) {
-          await addNotification(a.id, {
-            kind: 'workbench-repo-request',
-            title: `${agent.displayName} requests a new repo`,
-            body: `${org}/${repoName} — ${String(args.why ?? '').slice(0, 120)}`,
-            href: '/admin?tab=org',
-          }).catch(() => {})
-        }
-      })().catch(() => {})
+      // Humans hear about it once, through the one announcer — which asks the
+      // resolver who may read the agent's `why` and who may only be told that a
+      // request is waiting. See `announceRaised`.
+      announceRaised(`repo_request:${filed[0]!.id}`)
       return { ok: true, value: { status: 'pending', note: 'Request filed — a human decides. Continue other work; the repo appears in list_repos if approved.' } }
     }
 

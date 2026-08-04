@@ -8,7 +8,7 @@ import { taskUsage, type TaskUsage } from './usage'
 import { listJudgeReviews, type JudgeReview } from './judge'
 import { ensureLabels } from './labels'
 import { OFF_BOARD_STATUSES, statusMeta, type StatusMeta } from './statuses'
-import { boardAllowsAgent, boardFacts, boardInfo, type BoardFacts } from './boards'
+import { boardAllowsAgent, boardFacts, boardInfo, boardRole, type BoardFacts } from './boards'
 import { subjectModel, type AgentSubject } from './agent-auth'
 import { pgNum } from '@/lib/task-const'
 import type { Effort, Priority, QualityReview, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
@@ -61,14 +61,33 @@ async function notifyTaskUsers(
   }
 }
 
-/** Resolve watcher strings (emails) to user ids for notification fan-out. */
-async function watcherUserIds(taskId: string): Promise<string[]> {
-  const sql = await db()
-  const watchers = await listWatchers(taskId)
-  const emails = watchers.filter((w) => w.includes('@')).map((w) => w.toLowerCase())
-  if (emails.length === 0) return []
-  const rows = (await sql`select id from users where lower(email) = any(${emails})`) as unknown as Array<{ id: string }>
-  return rows.map((r) => r.id)
+/** Everyone who may be TOLD about an event on this ticket: the people watching
+ *  it and the humans assigned to it, each confirmed against the board AS IT
+ *  STANDS NOW.
+ *
+ *  ASKED AT FAN-OUT TIME, NOT TRUSTED FROM THE WRITE, and that is the whole
+ *  point of it being one function. Both halves are validated when they are
+ *  written — `invalidAssignee` on the two ticket write routes, `addWatcher`
+ *  below — and neither check survives the day after:
+ *
+ *    · `unshareBoard` deletes a `board_members` row and touches NOTHING else.
+ *      `tasks.assignees` keeps the `user:<uuid>`, `task_watchers` keeps the
+ *      row, and every later status move mails both of them a ticket they now
+ *      get a 403 from.
+ *    · A watcher was never validated at all (see the Watchers section), so the
+ *      stored string could name anyone with an account.
+ *
+ *  `maybeDispatchTicket` already works this way for the AGENT audience: it
+ *  re-asks `agentTicketRefusal` per agent rather than trusting the assignment
+ *  that put the agent there. This is the same rule for the human audience —
+ *  membership is read at the moment of the send, by the one function both
+ *  ticket fan-outs call, so a second fan-out cannot be added that skips it. */
+async function ticketAudience(taskId: string, boardId: string, assignees: string[]): Promise<string[]> {
+  const audience = (await resolveWatchers(taskId, boardId)).map((w) => w.userId)
+  for (const userId of humanAssigneeIds(assignees)) {
+    if (await boardRole(userId, boardId)) audience.push(userId)
+  }
+  return audience
 }
 
 /** Sub-task guard: one level deep, same board, no self/cycle. Throws with a
@@ -571,9 +590,10 @@ export async function updateTask(id: string, patch: TaskPatch, who: TaskActor): 
   if (next.status !== cur.status) {
     const why = patch.statusNote ?? (patch.status === undefined ? 'promoted by assignment' : null)
     await logActivity(id, who.id, 'status', `moved to ${next.status}${why ? ` (${why})` : ''}`)
-    // Watchers + assigned humans hear about status moves (never the actor).
-    const audience = [...(await watcherUserIds(id)), ...humanAssigneeIds(assignees)]
-    void notifyTaskUsers(audience, who.id, {
+    // Watchers + assigned humans hear about status moves (never the actor), and
+    // `ticketAudience` re-reads board membership for both halves at this
+    // moment — see its comment for why the write-time checks are not enough.
+    void notifyTaskUsers(await ticketAudience(id, cur.boardId, assignees), who.id, {
       kind: 'task-status',
       title: `${cur.ticketRef ?? cur.title}: ${next.status.replace('_', ' ')}`,
       body: cur.title,
@@ -687,18 +707,113 @@ export async function addComment(taskId: string, author: string, content: string
 }
 
 // ── Watchers ─────────────────────────────────────────────────────────────────
+// A WATCHER IS AN AUDIENCE, and it was the one audience on a ticket that
+// nothing in the product ever declared. `task_watchers.watcher` was free text:
+// `POST /api/tasks/:id/watchers` took `z.string().min(1).max(200)` and inserted
+// it, and the fan-out resolved anything containing '@' to a user id by email.
+// Nobody asked whether that person could see the board. A user who was a member
+// of NO board got `ALPH-1: in progress | <title> | /boards/<id>/<id>` in her
+// inbox AND as SMTP bytes, followed by a 403 from the link she was sent, and
+// could not unsubscribe herself because DELETE carried the same membership
+// guard she was failing.
+//
+// The contrast is what makes it a defect rather than a design choice: a ticket
+// ASSIGNEE is checked against board membership by `invalidAssignee` on both
+// write routes. A watcher is the same fan-out with the check missing.
+//
+// So: ONE resolution of "who is watching this ticket", below, and every reader
+// goes through it — `listWatchers` (the UI, the API response) and
+// `ticketAudience` (the notifications). There is no path that reads
+// `task_watchers` without asking it.
+//
+// WHAT HAPPENS TO A STORED WATCHER WHO NO LONGER QUALIFIES — the rows written
+// before this check existed, and anyone whose board access is later revoked:
+// the row is KEPT and the person is absent from both answers. Not shown in the
+// ticket's watcher list, not notified, not mailed. The alternative shapes were
+// both worse. Dropping them at send time while `listWatchers` still returned
+// them is a lie in the UI — the panel names someone who is being told nothing —
+// and that is the bug this replaces, one layer down. Deleting the row on read
+// destroys a subscription on a read path, and makes a TEMPORARY removal from a
+// board (or an accidental one) permanently unsubscribe someone with no record
+// that it happened. Kept-but-dormant means restoring board access restores what
+// they asked for, and `removeWatcher` is still the way to end it for good.
+/** Stored watcher strings → the accounts they name. Email match, case- and
+ *  whitespace-insensitive; a string that is not an email, or that names nobody
+ *  with an account here, is simply absent from the map. */
+async function watcherAccounts(watchers: string[]): Promise<Map<string, { id: string; email: string }>> {
+  const emails = [...new Set(watchers.filter((w) => w.includes('@')).map((w) => w.trim().toLowerCase()))]
+  const out = new Map<string, { id: string; email: string }>()
+  if (emails.length === 0) return out
+  const sql = await db()
+  const rows = (await sql`select id, email from users where lower(email) = any(${emails})`) as unknown as Array<{
+    id: string
+    email: string
+  }>
+  const byEmail = new Map(rows.map((r) => [r.email.trim().toLowerCase(), { id: r.id, email: r.email }]))
+  for (const w of watchers) {
+    const account = byEmail.get(w.trim().toLowerCase())
+    if (account) out.set(w, account)
+  }
+  return out
+}
+
+/** The watchers of a ticket who can still SEE the ticket, in stored order.
+ *
+ *  Membership is asked through `boardRole` one watcher at a time rather than
+ *  joined in SQL on purpose: `boardRole` is the definition of "may this person
+ *  see this board" and it already covers the two ways of holding one (a
+ *  board_members row, or a team that owns the board). A join here would be a
+ *  third hand-written copy of that rule, which is the shape this codebase keeps
+ *  paying for. Tickets carry a handful of watchers; this is not a hot path. */
+async function resolveWatchers(taskId: string, boardId: string | null): Promise<Array<{ watcher: string; userId: string }>> {
+  const sql = await db()
+  const rows = (await sql`
+    select watcher from task_watchers where task_id = ${taskId} order by created_at asc
+  `) as unknown as Array<{ watcher: string }>
+  if (rows.length === 0) return []
+  const board = boardId ?? (await taskBoardId(taskId))
+  if (!board) return []
+  const accounts = await watcherAccounts(rows.map((r) => r.watcher))
+  const out: Array<{ watcher: string; userId: string }> = []
+  for (const { watcher } of rows) {
+    const account = accounts.get(watcher)
+    if (!account) continue
+    if (!(await boardRole(account.id, board))) continue
+    out.push({ watcher, userId: account.id })
+  }
+  return out
+}
+
+/** The ticket's watchers as the product should show them: exactly the people
+ *  who will be notified. */
 export async function listWatchers(taskId: string): Promise<string[]> {
-  const sql = await db()
-  const rows = await sql`select watcher from task_watchers where task_id = ${taskId} order by created_at asc`
-  return (rows as unknown as Array<{ watcher: string }>).map((r) => r.watcher)
+  return (await resolveWatchers(taskId, null)).map((w) => w.watcher)
 }
-export async function addWatcher(taskId: string, watcher: string): Promise<void> {
+
+/** Follow a ticket. Refuses anyone who cannot already see it — the same
+ *  question `invalidAssignee` asks of an assignee, with the same answer shape,
+ *  so the reason reaches the caller instead of a bare 403.
+ *
+ *  Stores the account's OWN email rather than the string that was typed, so
+ *  case variants cannot become two rows for one person and the stored value is
+ *  always something `watcherAccounts` can resolve. */
+export async function addWatcher(taskId: string, watcher: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const boardId = await taskBoardId(taskId)
+  if (!boardId) return { ok: false, error: 'no such ticket' }
+  const account = (await watcherAccounts([watcher])).get(watcher)
+  if (!account) return { ok: false, error: 'a watcher is a person with an account here — pass the email address they sign in with' }
+  if (!(await boardRole(account.id, boardId))) return { ok: false, error: 'watchers must be members of this board' }
   const sql = await db()
-  await sql`insert into task_watchers (task_id, watcher) values (${taskId}, ${watcher}) on conflict do nothing`
+  await sql`insert into task_watchers (task_id, watcher) values (${taskId}, ${account.email}) on conflict do nothing`
+  return { ok: true }
 }
+
+/** Unfollow. Case-insensitive on purpose: this is the escape hatch a person
+ *  reaches for when mail is arriving about a board they cannot open, and it
+ *  must not turn on whether their address was stored the way they typed it. */
 export async function removeWatcher(taskId: string, watcher: string): Promise<void> {
   const sql = await db()
-  await sql`delete from task_watchers where task_id = ${taskId} and watcher = ${watcher}`
+  await sql`delete from task_watchers where task_id = ${taskId} and lower(watcher) = ${watcher.trim().toLowerCase()}`
 }
 
 // ── Quality reviews (approval gate) ──────────────────────────────────────────
@@ -773,8 +888,8 @@ export async function completeQualityReview(
       if (fresh) await (await import('./work-dispatch')).maybeDispatchTicket(fresh)
     })().catch(() => {})
   }
-  const audience = [...(await watcherUserIds(taskId)), ...humanAssigneeIds(current.assignees)]
-  void notifyTaskUsers(audience, reviewer, {
+  // Same audience question as the status move above, same one answer.
+  void notifyTaskUsers(await ticketAudience(taskId, current.boardId, current.assignees), reviewer, {
     kind: 'task-status',
     title: `${current.ticketRef ?? current.title}: ${nextStatus.replace('_', ' ')}`,
     body: current.title,

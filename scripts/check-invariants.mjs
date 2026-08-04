@@ -66,6 +66,36 @@ const EXTS = ['.ts', '.tsx', '.mts', '.js', '.mjs']
 
 // ── Rules ────────────────────────────────────────────────────────────────────
 
+/** "Everyone who is an admin", however it is spelled at a call site: the
+ *  resolver's own function, or a local already holding its result.
+ *
+ *  The word boundary belongs to the IDENTIFIER alternatives only. Hung on the
+ *  end of the whole group it silently un-matched every `adminUserIds()` form —
+ *  `)` is not a word character, so `\b` there demands a transition that never
+ *  arrives — which is to say the rule passed on the exact line it was written
+ *  to catch. Found by the injection test, not by reading it. */
+const ADMIN_LIST = String.raw`(?:await\s+)?(?:[\w$]+\s*\.\s*)?(?:adminUserIds\s*\(\s*\)|(?:admins|adminIds|adminUsers|allAdmins)\b)`
+
+/** A hand-rolled audience: some named people, falling back to every admin.
+ *
+ *  Both orders, because both were written:
+ *    owners.length ? owners : await adminUserIds()      judge.ts, verbatim
+ *    !owners.length ? admins : owners                   the same thing, inverted
+ *  and the `> 0` / `!== 0` / `=== 0` spellings, and a spread in either branch. */
+// An optional `[ ...` before the identifier and `]` after it, because the
+// spelling you actually get when a caller is BUILDING the audience rather than
+// picking one is `owners.length ? [...owners] : [...admins]` — and the first
+// version of this regex put `(?:\.\.\.)?` immediately before the identifier, so
+// the `[` slipped past it. Same class of miss as the trailing `\b` above:
+// written for the line already in the tree, blind to the next one.
+const OPEN = String.raw`(?:\[\s*)?(?:\.\.\.)?\s*`
+const CLOSE = String.raw`\s*\]?`
+const HAND_ROLLED_AUDIENCE = new RegExp(
+  String.raw`\b([A-Za-z_$][\w$]*)\s*\.\s*length\s*(?:>\s*0\s*|!==?\s*0\s*)?\?\s*${OPEN}\1${CLOSE}\s*:\s*${OPEN}${ADMIN_LIST}` +
+    String.raw`|!?\s*\b([A-Za-z_$][\w$]*)\s*\.\s*length\s*(?:===?\s*0\s*)?\?\s*${OPEN}${ADMIN_LIST}${CLOSE}\s*:\s*${OPEN}\2\b`,
+  'g',
+)
+
 /** Forbidden outright, except in the files that legitimately define the thing. */
 const RULES = [
   {
@@ -120,6 +150,78 @@ const RULES = [
       '"request changes". On a board whose first active column is labelled "Cancelled" — legal,',
       'and `agentStartConflict` does not refuse it — all three sent the ticket to a TERMINAL',
       'status, and the first one told the AGENT to do it.',
+    ],
+  },
+  {
+    id: 'second-mail-gate-definition',
+    pattern:
+      /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+sendGatedMail\b|(?:^|\n)\s*(?:export\s+)?(?:const|let|var)\s+sendGatedMail\s*[:=]/g,
+    allow: ['ui/src/server/notifications.ts'],
+    // Also asserted to exist exactly once — see the post-check below.
+    what: 'a second definition of `sendGatedMail`',
+    fix: [
+      "Import it: `import { sendGatedMail } from '@/server/notifications'` (or `./notifications`).",
+      'It answers ONE question — "is this deployment allowed to mail anybody at all?" — and it is',
+      'the only place that asks it before a send. The reason it is a function and not a flag you',
+      'check yourself is the bug it was extracted from: `addNotification` consulted the switch and',
+      '`runDigest` did not, so an admin who turned email OFF still had a daily digest mailed to',
+      'every user in the workspace. The control was named, audited, and inert.',
+      'A second definition, or a second hand-written `if (delivery.emailEnabled)`, is that bug',
+      'again with a different subject.',
+    ],
+  },
+  {
+    id: 'hand-rolled-audience',
+    pattern: HAND_ROLLED_AUDIENCE,
+    // No `allow`. There is no file in which this expression is the right answer,
+    // including the one that owns the resolver.
+    what: 'an audience worked out by hand, falling back to every admin',
+    fix: [
+      "Ask the resolver: `import { audienceFor } from '@/server/approvals'` (or",
+      "`const { audienceFor } = await import('./approvals')` where the cycle demands it), then",
+      '`const who = await audienceFor(<authority>)` and address `who.content`.',
+      '',
+      'THE AUTHORITY IS THE POINT. `{ by: "board", boardId }` for anything a board decides,',
+      '`{ by: "user", userIds }` for one person\'s own business, `{ by: "admin" }` for org-scoped',
+      'things, `{ by: "admin", onBoard }` for admin work whose TEXT quotes one board, and',
+      '`{ by: "nobody" }` when no route in the product can act on it. Declaring which one is the',
+      'question this expression skips.',
+      '',
+      'THIS EXACT LINE SHIPPED. `judge.ts` resolved a QA escalation audience with',
+      '`owners.length ? owners : await adminUserIds()` and it was wrong in BOTH directions at',
+      'once. On an unassigned ticket it sent the ticket TITLE and the judge\'s issue list to every',
+      'org admin — including admins with no membership of that board, the disclosure the approval',
+      'escalation had just closed, through a different door. And because the fallback went to the',
+      'admins instead of the BOARD, the board\'s own editors — the only people who can approve the',
+      'ticket, ask for changes or close it — were never told at all. Its doc comment claimed it',
+      'was "the same rule" as the approvals path and named a function that does not exist.',
+      '',
+      '"Nobody is named, so tell the admins" is almost never the rule. The people who can ACT are.',
+      'When genuinely nobody can act, that is `who.fact` — the admins, told THAT something is',
+      'stuck and not what it says, so they can fix the access rather than read the content.',
+    ],
+  },
+  {
+    id: 'second-audience-resolver-definition',
+    pattern:
+      /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+audienceFor\b|(?:^|\n)\s*(?:export\s+)?(?:const|let|var)\s+audienceFor\s*[:=]/g,
+    allow: ['ui/src/server/approvals.ts'],
+    // Also asserted to exist EXACTLY once — see the post-check below. That
+    // companion is not optional: when `closedToAgents` was renamed, its
+    // duplicate rule kept passing on a tree that no longer contained it.
+    exactlyOnce: true,
+    what: 'a second definition of `audienceFor`',
+    fix: [
+      "Import it: `import { audienceFor } from '@/server/approvals'`.",
+      'It answers ONE question — "who may be told about this thing, and how much of it?" — and it',
+      'answers the whole of it: the ids, AND the split between the people who may be told what the',
+      'thing IS (`content`) and the people who may only be told THAT it exists so they can unblock',
+      'it (`fact`). A second definition answers half and picks its own audience for the rest,',
+      'which is the shape of every disclosure bug in this file\'s history.',
+      '',
+      'Three copies of this question existed before it was one: `approvalAudience` here,',
+      '`owners.length ? owners : adminUserIds()` in judge.ts, and a raw',
+      "`select id from users where role = 'admin'` in gaps.ts. Two of the three leaked.",
     ],
   },
   {
@@ -250,6 +352,96 @@ const CENSUS = [
       // ── Known divergence, owned by a later round (see `fix` above) ──────────
       'ui/src/server/uploads.ts': 1, // canAccessUpload — no archival clause
       'ui/src/server/retrieval/index.ts': 1, // activityScope — no archival clause
+    },
+  },
+  {
+    id: 'raw-transport-send',
+    // A direct call to the mail transport. Legal in four places and nowhere
+    // else — anything that mails a person because of a NOTIFICATION or a DIGEST
+    // must go through `sendGatedMail`, which is where the instance master
+    // switch is asked.
+    pattern: /\bsendEmail\s*\(/g,
+    what: 'a direct call to the mail transport, bypassing the instance master switch',
+    fix: [
+      "Send through the gate: `import { sendGatedMail } from '@/server/notifications'`. It asks the",
+      'instance-wide email switch FRESH on every mail, attaches `List-Unsubscribe`, and tells you',
+      'whether the send was refused (`blocked`) rather than failed — the two are different and the',
+      'breaker, the digest retry and /observability all care which one happened.',
+      '',
+      'THIS RULE EXISTS BECAUSE THE SWITCH WAS ALREADY BYPASSED ONCE. `addNotification` consulted',
+      '`getNotifyDelivery` and the daily digest did not, so an admin who switched email OFF still',
+      'had a digest mailed to every user in the workspace, every morning, from a control that is',
+      'named "email delivery" and writes an audit row when you flip it. Nothing failed; the second',
+      'sender simply never asked. A second `if (emailEnabled)` next to the send would have been the',
+      'same bug waiting for a third sender, which is why the answer is one function and this check.',
+      '',
+      'The four sites below are the complete list of code allowed to touch the transport:',
+      '  server/email.ts        the definition',
+      '  server/notifications.ts  `sendGatedMail` — the gate itself, and the ONLY gated path',
+      '  server/invites.ts      an invitation a human just typed an address into. Not a',
+      '                         notification and not governed by the notification switch: it is a',
+      '                         direct reply to an admin action, and gating it would silently break',
+      '                         invites on every instance that has not turned notification mail on',
+      '                         (which is all of them — it defaults to off).',
+      '  routes/api/admin.email.ts  the admin\'s own test send, which is how you verify a provider',
+      '                         BEFORE turning delivery on. Gating it would make the switch',
+      '                         untestable until after it was flipped.',
+      'A fifth is a bypass. If you believe you need one, say so in the PR.',
+    ],
+    sites: {
+      'ui/src/server/email.ts': 1,
+      'ui/src/server/notifications.ts': 1,
+      'ui/src/server/invites.ts': 1,
+      'ui/src/routes/api/admin.email.ts': 1,
+    },
+  },
+  {
+    id: 'admin-list-outside-the-resolver',
+    // Both spellings of "fetch every admin": the resolver's own function, and
+    // the raw query it wraps. gaps.ts used the second one to fan an agent's
+    // free text to the whole admin list, so matching only the first would have
+    // watched one door.
+    // `role in ('admin')` is the same query with different punctuation, and was
+    // the spelling this rule did not watch. Comparison operator OR an `in` list.
+    pattern:
+      /\badminUserIds\s*\(|(?:\bwhere|\band)\s+(?:[\w$]+\s*\.\s*)?role\s*(?:=\s*'admin'|in\s*\([^)]*'admin'[^)]*\))/g,
+    what: 'the admin list, fetched outside the one audience resolver',
+    fix: [
+      "Ask `audienceFor(<authority>)` in server/approvals.ts and address `who.content` — or",
+      '`who.fact` when nobody can act and the admins are being asked to FIX that rather than to',
+      'read what is stuck. The admin list is an answer to "who may be told"; fetching it yourself',
+      'is deciding that question at the call site, which is where every leak so far was written.',
+      '',
+      'BEING AN ADMIN IS NOT A READ GRANT. It is a set of powers over the workspace, and none of',
+      'them is "may be shown a board you were never added to". An admin cannot open the board, the',
+      'ticket or the plan; sending them the title of one is disclosure with no action attached to',
+      'it. `{ by: "admin", onBoard }` exists for the middle case — admin work whose TEXT quotes one',
+      'board — and gives the content to the admins on that board and the FACT to the rest.',
+      '',
+      'THE FACT IS PART OF THE ANSWER, NOT A SECOND QUESTION. `audienceFor` returns `content` AND',
+      '`fact` from one resolution, and a caller that addresses one of them by asking the resolver',
+      'and the other by fetching the admin list has two answers to one question. That is what the',
+      'SLA stall report did — `adminUserIds()` for approvals whose own authority had something',
+      'narrower to say — and it is why `content: []` could mean "announced to nobody" in one file',
+      'and "reported to every admin" in another, about the same row.',
+      '',
+      'The sites below are the complete list of code allowed to reach for it:',
+      '  server/approvals.ts  the definition, and the resolver that consumes it — including the',
+      '                       FACT half, which is why nothing downstream needs the list any more.',
+      '  server/users.ts      NOT an audience: "which elevated delegations belong to an admin".',
+      'Anything else on this census is debt, and the note printed on every run names it.',
+    ],
+    sites: {
+      'ui/src/server/approvals.ts': 3, // adminUserIds() itself (call + query) and the resolver's use
+      'ui/src/server/users.ts': 1, // `and u.role = 'admin'` — a delegation question, not an audience
+      // ── Known debt, owned by a later round ──────────────────────────────────
+      // EMPTY, and both departures are the same fix rather than two:
+      //   agent.problem.ts    takes an authorised `taskId`, asks `agentTextAuthority` for the
+      //                       authority and `audienceFor` for the people.
+      //   workbench-mcp.ts    `request_repo` no longer announces itself at all. It calls
+      //                       `announceApproval('repo_request:<id>')`, the same announcer the
+      //                       census's own authority feeds, so the row has ONE announcement path.
+      //   digest.ts           the stall report addresses `census.audience.get(key).fact`.
     },
   },
   {
@@ -505,6 +697,8 @@ for (const rule of RULES) {
 for (const [ruleId, name] of [
   ['second-agentTicketRefusal-definition', 'agentTicketRefusal'],
   ['hand-rolled-active-column-lookup', "the active-column lookup (`s.category === 'active'`)"],
+  ['second-mail-gate-definition', 'sendGatedMail'],
+  ['second-audience-resolver-definition', 'audienceFor'],
 ]) {
   const rule = RULES.find((r) => r.id === ruleId)
   const home = rule.allow[0]
@@ -518,6 +712,23 @@ for (const [ruleId, name] of [
         'duplicate check keeps pointing at its home. If it was deleted, every call site that',
         'imported it is about to hand-roll it again — which is the entire history this file',
         'exists to stop.',
+      ],
+      found: [],
+    })
+  }
+  // EXACTLY once, for the rules that ask for it. `allow` exempts the home file
+  // from the duplicate rule entirely, so a second definition INSIDE that file is
+  // the one copy neither half of this check would otherwise see — and for a
+  // resolver whose whole value is that there is one of it, two in one file is
+  // the same bug as two in two files.
+  if (rule.exactlyOnce && n > 1) {
+    failures.push({
+      id: `${ruleId}-defined-twice-at-home`,
+      what: `${name} is defined ${n} times in ${home}; there must be exactly one`,
+      fix: [
+        'Delete all but one. The point of this function is that there is a single answer to its',
+        'question — a second definition in its own file is not an exception to that, it is the',
+        'duplication with a shorter import path.',
       ],
       found: [],
     })
@@ -563,6 +774,29 @@ for (const rule of CENSUS) {
         'An agent can still fetch attachments from, and retrieve content out of, a board it cannot ' +
         'otherwise see. On the census in scripts/check-invariants.mjs; owned by a later round.',
     )
+  }
+  // Any admin-list site that is not one of the two DECLARED ones is a file still
+  // addressing the admins as an audience, and a clean run must say so — or "all
+  // clean" reads as "and nothing fans content to every admin any more".
+  //
+  // DERIVED FROM THE CENSUS, never written out by hand, because the hand-written
+  // version is what this round had to correct: it named two files and asserted
+  // they were "org-level by nature, so neither is the board leak that was just
+  // closed", which stopped being true the moment `repo_request` was bounded to a
+  // board — and it kept printing, on every clean run, the opposite of the code.
+  // A note that cannot outlive its subject is the only kind worth printing: this
+  // one disappears when the census does, and it cannot describe a file that is
+  // no longer on it.
+  if (rule.id === 'admin-list-outside-the-resolver') {
+    const DECLARED = new Set(['ui/src/server/approvals.ts', 'ui/src/server/users.ts'])
+    const owing = Object.keys(rule.sites).filter((p) => !DECLARED.has(p))
+    if (owing.length) {
+      notes.push(
+        `${owing.join(', ')} still reach for the admin list instead of asking \`audienceFor\` — an ` +
+          'audience decided at the call site, for a subject whose authority is declared elsewhere. On ' +
+          'the census in scripts/check-invariants.mjs; owned by a later round.',
+      )
+    }
   }
   // Anything on the census beyond the two real definitions is debt, not policy.
   const debt = Object.entries(rule.sites).filter(([p]) => !OFF_BOARD_SOURCES.includes(p))
