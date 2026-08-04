@@ -27,6 +27,7 @@ import {
 import { addNotification } from './notifications'
 import { describeAgent, proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
+import { registerJob } from './scheduler'
 import { estimateTokens, recordUsage } from './usage'
 
 export interface OutreachConfig {
@@ -135,16 +136,20 @@ export async function agentMessageUser(agentModel: string, to: string, message: 
 
 // ── the sweep ────────────────────────────────────────────────────────────────
 
-const SWEEP_TICK_MS = 5 * 60_000 // how often the kick even considers running
-let lastTickAt = 0
+const SWEEP_TICK_MS = 5 * 60_000 // how often a sweep is attempted
 
-/** Throttled fire-and-forget kick — call it from a hot request handler. */
-export function maybeOutreachSweep(): void {
-  const now = Date.now()
-  if (now - lastTickAt < SWEEP_TICK_MS) return
-  lastTickAt = now
-  void sweepOutreach().catch(() => {})
-}
+// THE DEPLOY-DAY BOUND. "Due" is computed from outreach_events, so an agent
+// that has never been swept is due — and until now the sweep only ran when
+// traffic happened to kick it. The first instance to run this on a real
+// schedule therefore finds EVERY proactive agent due at once, and each due
+// agent gets a check-in turn that may DM a human. Capping the pass turns that
+// wall into a queue: at most this many agents per pass, one pass per 5
+// minutes, so a fleet of thirty proactive agents drains over ~50 minutes
+// instead of messaging everyone in one burst. Agents keep their place — the
+// query orders by slug and the uncapped remainder is simply still due next
+// pass. (The master switch is off by default, so this only bites deployments
+// that have deliberately turned outreach on.)
+const SWEEP_MAX_AGENTS = 3
 
 interface SweepAgent {
   model: string
@@ -152,12 +157,12 @@ interface SweepAgent {
   ownerUserId: string | null
 }
 
-/** One check-in turn per due agent. "Due" = proactive + enabled + no sweep
- *  event within the configured interval. Serial on purpose — one agent turn
- *  at a time keeps the load invisible. */
-export async function sweepOutreach(): Promise<void> {
+/** One check-in turn per due agent, at most SWEEP_MAX_AGENTS per pass. "Due" =
+ *  proactive + enabled + no sweep event within the configured interval. Serial
+ *  on purpose — one agent turn at a time keeps the load invisible. */
+export async function sweepOutreach(): Promise<{ turns: number; failed: number; deferred: number }> {
   const cfg = await getOutreachConfig()
-  if (!cfg.enabled) return
+  if (!cfg.enabled) return { turns: 0, failed: 0, deferred: 0 }
   const sql = await db()
   const due = (await sql`
     select d.model, d.display_name as "displayName", d.owner_user_id as "ownerUserId"
@@ -169,13 +174,25 @@ export async function sweepOutreach(): Promise<void> {
           and e.created_at > now() - (${cfg.intervalMinutes} || ' minutes')::interval
       )
     order by d.slug
+    limit ${SWEEP_MAX_AGENTS + 1}
   `) as unknown as SweepAgent[]
+  // One extra row is fetched purely to report the backlog honestly.
+  const deferred = Math.max(0, due.length - SWEEP_MAX_AGENTS)
 
-  for (const agent of due) {
+  let turns = 0
+  let failed = 0
+  for (const agent of due.slice(0, SWEEP_MAX_AGENTS)) {
     // Claim the slot BEFORE the turn — a crash mid-turn must not mean a
-    // retry storm on the next kick.
+    // retry storm on the next pass.
     await logEvent(agent.model, 'sweep', { note: '(started)' })
-    const note = await checkInTurn(agent).catch((e: Error) => `error: ${e.message}`)
+    const note = await checkInTurn(agent).catch((e: Error) => {
+      // The note lands in outreach_events for the admin view, but an agent
+      // whose check-in fails every pass should also be visible in the log.
+      failed++
+      console.error(`[outreach] check-in turn for ${agent.model} failed:`, e.message)
+      return `error: ${e.message}`
+    })
+    turns++
     await sql`
       update outreach_events set note = ${(note ?? '(no reply)').slice(0, 500)}
       where id = (
@@ -185,7 +202,30 @@ export async function sweepOutreach(): Promise<void> {
       )
     `
   }
+  return { turns, failed, deferred }
 }
+
+// Scheduled, not kicked. This used to be `maybeOutreachSweep()` fired from GET
+// /api/channels behind a module-level 5-minute timestamp — so on an instance
+// nobody was reading comms on, proactive agents were never proactive.
+registerJob({
+  name: 'outreach-sweep',
+  everyMs: SWEEP_TICK_MS, // unchanged: the same 5 minutes the kick throttled to
+  // Long enough that a deploy (and a crash loop) never reaches the point of
+  // messaging a human, and that the fleet's agents are registered first.
+  firstRunDelayMs: 5 * 60_000,
+  // SWEEP_MAX_AGENTS agent turns through the gateway, serially.
+  maxRunMs: 10 * 60_000,
+  run: async () => {
+    const { turns, failed, deferred } = await sweepOutreach()
+    if (!turns) return null
+    return (
+      `${turns} check-in turn(s)` +
+      (failed ? `, ${failed} failed` : '') +
+      (deferred ? `, ${deferred}+ agent(s) still due (capped at ${SWEEP_MAX_AGENTS}/pass)` : '')
+    )
+  },
+})
 
 const NOTHING = 'NOTHING_TO_SURFACE'
 

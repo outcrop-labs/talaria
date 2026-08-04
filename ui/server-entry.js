@@ -321,6 +321,118 @@ process.on('unhandledRejection', (reason) => {
   console.error('[talaria-ui] UNHANDLED REJECTION (process kept alive, this is a bug):', detail)
 })
 
-createServer(requestHandler).listen(port, host, () => {
+// ── Background jobs ──────────────────────────────────────────────────────────
+//
+// Comms decay, the outreach sweep and the price refresh used to be fired from
+// inside GET /api/channels, each behind a module-level timestamp. An instance
+// serving no requests therefore ran none of them — ever. They are jobs on
+// `src/server/scheduler.ts` now, and this is where the schedule starts.
+//
+// This file is plain JavaScript running the BUILT bundle, so it cannot import
+// the TypeScript module, and the bundle's chunk filenames are content-hashed.
+// The handshake instead: the scheduler publishes itself on a well-known global
+// symbol when its module loads, and one throwaway in-process request warms the
+// app's server graph (routeTree imports every route, which is what pulls the
+// job modules — and therefore the scheduler — in). Then we start it explicitly,
+// before listen(), so the schedule is running the moment traffic can arrive.
+//
+// /api/healthz is the warm-up target on purpose: it is public, cheap, and its
+// body is a real readiness answer, so the boot log says whether Postgres and
+// Redis were reachable at the moment the jobs were armed.
+const SCHEDULER_HANDLE = Symbol.for('talaria.scheduler')
+
+// The probe is awaited BEFORE listen(), so anything it can wait on forever is
+// something that can stop this process ever answering a request — including
+// /api/healthz itself, which is what an orchestrator would use to notice. The
+// handler bounds its own Postgres and Redis pings, but the probe is also what
+// LOADS the route graph, and a module that stalls on import (or a driver that
+// accepts a socket and then says nothing) is not covered by that.
+//
+// So: a deadline, and past it we carry on. Boot is not allowed to depend on a
+// database being up. Everything downstream already degrades honestly — the jobs
+// report their own failures, healthz answers 503 — but only if we get as far as
+// listening.
+const BOOT_PROBE_TIMEOUT_MS = 20_000
+
+async function startBackgroundJobs() {
+  const started = Date.now()
+  try {
+    let bell
+    const deadline = new Promise((resolve) => {
+      bell = setTimeout(() => resolve(null), BOOT_PROBE_TIMEOUT_MS)
+    })
+    const probe = await Promise.race([
+      server
+        .fetch(new Request('http://127.0.0.1/api/healthz', { method: 'GET' }))
+        .then(async (r) => `${r.status} ${(await r.text()).slice(0, 200)}`),
+      deadline,
+    ]).finally(() => clearTimeout(bell))
+    if (probe === null) {
+      console.error(
+        `[talaria-ui] boot probe /api/healthz did not answer within ${BOOT_PROBE_TIMEOUT_MS}ms —` +
+          ' continuing to listen() anyway. Postgres or Redis is probably unreachable; /api/healthz will say which.',
+      )
+    } else {
+      console.log(`[talaria-ui] boot probe /api/healthz → ${probe} (${Date.now() - started}ms)`)
+    }
+  } catch (err) {
+    // A failed probe is not fatal: the graph may still have loaded, and the
+    // scheduler's own jobs each report their own failures.
+    console.error('[talaria-ui] boot probe failed (starting the scheduler anyway):', err)
+  }
+
+  const scheduler = globalThis[SCHEDULER_HANDLE]
+  if (!scheduler) {
+    // Loud, because the symptom otherwise is silence: no comms decay, no
+    // outreach, no price refresh, and nothing in the log that says so.
+    console.error(
+      '[talaria-ui] NO SCHEDULER: src/server/scheduler.ts never loaded, so NO background job will run' +
+        ' on this instance. Something stopped the job modules being reachable from the route graph.',
+    )
+    return null
+  }
+  // The names it actually armed, in this process's log, at boot: the cheapest
+  // possible answer to "is this instance running the jobs?" on a box serving no
+  // traffic, where there is nothing else to look at.
+  const armed = scheduler.start()
+  console.log(`[talaria-ui] scheduler armed ${armed.length} job(s): ${armed.join(', ') || 'none'}`)
+  return scheduler
+}
+
+const scheduler = await startBackgroundJobs()
+
+const httpServer = createServer(requestHandler)
+
+// A redeploy sends SIGTERM. Stop arming new job runs immediately — a job that
+// ARCHIVES conversations or MESSAGES people should not be started half a second
+// before the process is killed — then stop accepting connections and let
+// in-flight work finish.
+let shuttingDown = false
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`[talaria-ui] ${signal} — shutting down`)
+    // An open keep-alive or SSE connection can hold close() indefinitely, and a
+    // supervisor that has already sent SIGTERM will SIGKILL us shortly anyway.
+    // Exit on our own terms instead, so the log says what happened.
+    const forced = setTimeout(() => {
+      console.warn('[talaria-ui] shutdown grace expired with connections still open — exiting')
+      process.exit(0)
+    }, 15_000)
+    forced.unref()
+    const closed = new Promise((resolve) => {
+      httpServer.close((err) => {
+        if (err) console.error('[talaria-ui] http close error:', err)
+        resolve()
+      })
+    })
+    Promise.all([scheduler ? scheduler.stop() : Promise.resolve(), closed])
+      .catch((err) => console.error('[talaria-ui] shutdown error:', err))
+      .finally(() => process.exit(0))
+  })
+}
+
+httpServer.listen(port, host, () => {
   console.log(`[talaria-ui] listening on http://${host}:${port}`)
 })

@@ -1,7 +1,16 @@
 // Derived system alerts — computed from live state on every read, no tables.
 // Sources: managed-container reality (docker), gateway reachability, the token
-// ledger's blind spots (unpriced cloud usage, estimated counts), and stuck
-// tickets on boards the requesting user can access.
+// ledger's blind spots (unpriced cloud usage, estimated counts), the background
+// scheduler (failing jobs, and whether it is running at all), the notification
+// outbox (depth, age, breaker, what has been lost), and stuck tickets on boards
+// the requesting user can access.
+//
+// THE RULE THIS FILE IS FOR: anything whose failure mode is SILENCE has to be
+// asked here, because nothing else asks it. A dead container is obvious the
+// moment you use the product; a paused mail queue, a job that stopped running
+// and a scheduler that never started are all indistinguishable from a quiet
+// week. Every one of those has a live number somewhere in the process — the
+// work is bringing it to a person, not computing it.
 import { db } from './db/pg'
 import { listAgents } from './gateway'
 import { containerStatus } from './fleet-docker'
@@ -10,6 +19,8 @@ import { fleetBrainHealth } from './brain-health'
 import { ragHealth } from './retrieval/backfill'
 import { retrievalUpgradeStatus } from './retrieval/migrate'
 import { MCP_PORT } from './mcp-service'
+import { notificationMailStats } from './notifications'
+import { schedulerStatus, unhealthyJobs } from './scheduler'
 
 export type AlertSeverity = 'critical' | 'warning' | 'info'
 
@@ -27,6 +38,12 @@ const fmt = (n: number) => n.toLocaleString('en-US')
 // seconds (docker exec + four network probes).
 const alertsCache = new Map<string, { at: number; value: Alert[] }>()
 const ALERTS_TTL_MS = 15_000
+
+/** How long a mail may sit in the outbox before the queue is "stuck" rather
+ *  than "busy". The drain runs every 30 seconds and gives itself a 25-second
+ *  budget, so ten drains' worth of waiting is not a backlog moving slowly — it
+ *  is a backlog not moving. */
+const OUTBOX_STALE_MS = 5 * 60_000
 
 export async function computeAlerts(userId: string): Promise<Alert[]> {
   const hit = alertsCache.get(userId)
@@ -166,6 +183,149 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
         })
       }
     }
+  }
+
+  // ── Background jobs ─────────────────────────────────────────────────────────
+  //
+  // The digest, the approval SLA, comms decay, the notification mail drain. A
+  // scheduled job is the one part of the product you cannot discover is broken
+  // by using it: its failure mode is silence, and silence is what a quiet week
+  // looks like too. The scheduler has always kept this in `status()`; this is
+  // what reads it. Synchronous and in-process, so it costs nothing and is not
+  // in the Promise.all above.
+  for (const job of unhealthyJobs()) {
+    alerts.push({
+      severity: job.severity,
+      title: `Background job "${job.name}" is not running cleanly`,
+      detail: `${job.detail} Reported by the instance that served this request.`,
+      href: '/observability',
+    })
+  }
+
+  // ── Is the scheduler running AT ALL? ────────────────────────────────────────
+  //
+  // `unhealthyJobs()` is structurally blind to this and cannot be fixed there:
+  // it iterates the SAME registry, so an empty one produces an empty list, and
+  // its lateness checks are gated on the scheduler having started. Both of its
+  // blind spots look identical from /observability — a clean board — and both
+  // mean every job in this file's list above (the digest, the approval SLA,
+  // comms decay, the mail drain) is not running. That is the failure this whole
+  // file exists to make impossible to miss, so it is asked directly, of
+  // `schedulerStatus()`, which until now nothing outside the scheduler read.
+  const jobs = schedulerStatus()
+  const unarmed = jobs.filter((j) => !j.firstRunDueAt)
+  const inProduction = process.env.NODE_ENV === 'production'
+  if (!jobs.length) {
+    alerts.push({
+      severity: 'critical',
+      title: 'No background jobs are registered on this instance',
+      detail:
+        'The scheduler has an empty registry, so the daily digest, the approval SLA, comms decay and the' +
+        ' notification mail drain are all not running — and none of them will report a failure, because none of' +
+        ' them exists. Their modules were never imported by this build.',
+      href: '/observability',
+    })
+  } else if (unarmed.length && unarmed.length < jobs.length) {
+    // SOME armed and some not. That is not a configuration choice — the
+    // scheduler arms everything in the registry in one pass — it is a job whose
+    // module was imported AFTER `startScheduler()` ran, typically because a
+    // route lazily imported it on first request. Nothing will ever time it, and
+    // it is the one shape `unhealthyJobs()` cannot report either: its lateness
+    // checks all need a `firstRunDueAt` to be late against.
+    alerts.push({
+      severity: 'critical',
+      title: `Background job${unarmed.length === 1 ? '' : 's'} registered too late to be armed`,
+      detail:
+        `${unarmed.map((j) => `"${j.name}"`).join(', ')} registered after the scheduler started, so ${
+          unarmed.length === 1 ? 'it is' : 'they are'
+        } timed by nothing and will never run. A job's module has to be in the runtime graph before startScheduler() — imported from the server entry, not lazily from a route.`,
+      href: '/observability',
+    })
+  } else if (unarmed.length === jobs.length) {
+    // Registered but never armed: `startScheduler()` was not called, or it
+    // returned early. Expected on a developer's machine (`vite dev` does not
+    // run server-entry.js, deliberately), so it is only an emergency where a
+    // build is actually serving people.
+    alerts.push({
+      severity: inProduction ? 'critical' : 'info',
+      title: inProduction ? 'Background jobs are not running on this instance' : 'Background jobs are not armed (dev)',
+      detail:
+        `${jobs.length} job(s) are registered and not one of them has been armed, so nothing is timing them:` +
+        ' no digest, no approval escalation, no comms decay, no notification mail.' +
+        (inProduction
+          ? ' Either TALARIA_SCHEDULER=off, or server-entry.js could not find the scheduler handle at boot — the' +
+            ' startup log says which.'
+          : ' Normal under `vite dev`, which does not run server-entry.js on purpose.'),
+      href: '/observability',
+    })
+  }
+
+  // ── The notification outbox ────────────────────────────────────────────────
+  //
+  // The mail queue is in memory, it is bounded, and it has a breaker — and a
+  // breaker is exactly what makes a stuck queue INVISIBLE: the drain
+  // short-circuits, so the job neither sends nor fails, and both the log and
+  // every counter that reads "what happened this pass" go quiet while N mails sit
+  // there going nowhere. The queue's own numbers are the only thing that can say
+  // so, and `notificationMailStats()` had no readers at all. Now it has this one.
+  const mail = notificationMailStats()
+  const minutes = (ms: number) => Math.max(1, Math.round(ms / 60_000))
+  if (mail.pausedForMs > 0) {
+    alerts.push({
+      severity: 'critical',
+      title: 'Notification email is paused after repeated failures',
+      // The failure count that opens the breaker is notifications.ts's to
+      // state, not this file's — a second copy of the number here is how the
+      // two drift and the alert starts describing a rule that changed.
+      detail:
+        `Enough sends failed in a row that the outbox breaker opened, so nothing is being attempted for another` +
+        ` ${minutes(mail.pausedForMs)} minute(s). ` +
+        (mail.queued === 0
+          ? 'Nothing is queued this second, but nothing queued before it closes will be attempted either.'
+          : `${mail.queued} mail(s) are queued${
+              mail.oldestQueuedMs === null ? '' : `, the oldest waiting ${minutes(mail.oldestQueuedMs)} minute(s)`
+            }. Every one of them is still in its recipient’s in-app inbox — only the email is late.`) +
+        ' Check the mail provider (Admin → Org → Email).',
+      href: '/observability',
+    })
+  } else if (mail.queued > 0 && (mail.oldestQueuedMs ?? 0) > OUTBOX_STALE_MS) {
+    // Not paused and still not moving. The drain runs every 30 seconds, so mail
+    // this old is a transport that is slow rather than dead — which produces no
+    // error anywhere and is the other half of the same silence.
+    alerts.push({
+      severity: 'warning',
+      title: 'Notification email is backing up',
+      detail:
+        `${mail.queued} of a possible ${mail.capacity} mail(s) are queued and the oldest has been waiting` +
+        ` ${minutes(mail.oldestQueuedMs ?? 0)} minute(s), on a drain that runs every 30 seconds. The transport is not` +
+        ' keeping up. Every one of them is still in its recipient’s in-app inbox.',
+      href: '/observability',
+    })
+  } else if (mail.queued >= mail.capacity / 2) {
+    alerts.push({
+      severity: 'warning',
+      title: 'Notification email queue is filling up',
+      detail:
+        `${mail.queued} of a possible ${mail.capacity} mail(s) are queued. Past ${mail.capacity} new mail is refused` +
+        ' at the door — the notification still lands in the app, the email does not.',
+      href: '/observability',
+    })
+  }
+  if (mail.dropped > 0 || mail.abandoned > 0) {
+    // Since boot, and cumulative on purpose: these are mails that will never be
+    // sent, and "it recovered" does not un-lose them.
+    const lost = [
+      mail.dropped > 0 && `${fmt(mail.dropped)} refused at the door because the queue was full`,
+      mail.abandoned > 0 && `${fmt(mail.abandoned)} given up on after repeated send failures`,
+    ]
+      .filter(Boolean)
+      .join(', ')
+    alerts.push({
+      severity: 'warning',
+      title: 'Notification emails have been lost since boot',
+      detail: `${lost}. Each one is still unread in its recipient’s in-app inbox — the email was lost, the notification was not.`,
+      href: '/observability',
+    })
   }
 
   // ── Ledger blind spots ──────────────────────────────────────────────────────

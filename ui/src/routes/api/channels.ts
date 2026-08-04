@@ -5,11 +5,9 @@ import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
 import { agentCaller } from '@/server/agent-auth'
 import { createChannel, listChannels, listChannelsForAgent } from '@/server/channels'
-import { maybeSweepIdleChats } from '@/server/comms-decay'
 import { maybeSweepTitles } from '@/server/titler'
 import { ensureMcpService } from '@/server/mcp-service'
 import { maybeRagSweep } from '@/server/retrieval/backfill'
-import { maybeOutreachSweep } from '@/server/outreach'
 
 // GET /api/channels → the user's channels/relays/DMs. POST { name, topic?,
 // kind? } → create a channel (default) or a Relay (kind 'group').
@@ -29,11 +27,16 @@ export const Route = createFileRoute('/api/channels')({
         }
         const user = await getSessionUser(request)
         if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        maybeSweepIdleChats() // distill-then-archive idle agent DMs (throttled, detached)
+        // Comms decay and the outreach sweep used to be kicked from here. They
+        // are jobs on `server/scheduler.ts` now — timed by the process, not by
+        // whether anyone happened to open comms. The three below are still
+        // request-kicked and should follow (each lives in a file this change
+        // does not own): `maybeSweepTitles` and `maybeRagSweep` have the same
+        // "an idle instance never does it" bug, and `ensureMcpService` is a
+        // supervisor, which is a scheduler job in everything but name.
         maybeSweepTitles() // retroactive + ongoing naming (hourly, detached)
         ensureMcpService() // keep the fleet's toolkit MCP endpoint alive (probe-guarded)
         maybeRagSweep() // incremental catch-up indexing (15-minute throttle)
-        maybeOutreachSweep() // proactive agent check-ins (opt-in, throttled, detached)
         return json({ channels: await listChannels(user.id) })
       },
       POST: async ({ request }) => {
