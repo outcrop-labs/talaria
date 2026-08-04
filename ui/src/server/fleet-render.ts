@@ -15,10 +15,11 @@
 //     DNS name; depends_on/build/ports dropped (deps run in the old project,
 //     the bridge reaches agents over the network, host ports retire)
 import { createHash } from 'node:crypto'
-import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
+import { ensureAgentApiKey, legacyMigrationStatus, legacyMigrationWarning } from './agent-auth'
 import { resolveWorkbench, type WorkbenchProfile } from './workbench'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
@@ -40,8 +41,12 @@ export const FLEET_ENV = () => join(FLEET_DIR(), '.env')
  *  Talaria-owned (extracted once at cutover from the legacy stack). */
 const CHASSIS_FILE = () => process.env.TALARIA_CHASSIS_FILE ?? join(FLEET_DIR(), 'chassis.yml')
 
-/** fleet/.env must carry TALARIA_AGENT_KEY so compose can interpolate it into
- *  each agent's env (the toolkit MCP header reads it there). Append-once. */
+/** fleet/.env must carry TALARIA_AGENT_KEY (the app's own hop to the toolkit
+ *  service) plus one TALARIA_AGENT_KEY_<SLUG> per agent, so compose can
+ *  interpolate each agent's OWN credential into its env. Shared keys append
+ *  once; per-agent keys are rewritten from the DB every render (see
+ *  ensureAgentEnvKeys). The file is 0600 in a 0700 dir — it is plaintext
+ *  credentials for the entire fleet. */
 // Repo-shipped fleet skills (scripts/skills/*) seed into the fleet's shared
 // skills root on render. Pristine copies (byte-identical to what was seeded,
 // tracked in .seeds.json) follow canonical updates; a copy the admin edited
@@ -114,9 +119,23 @@ async function seedSharedSkills(): Promise<void> {
   if (dirty) await writeFile(manifestPath, JSON.stringify(manifest, null, 2))
 }
 
+/** fleet/.env holds every agent's PLAINTEXT credential, so it is written and
+ *  kept at 0600 inside a 0700 dir — same rule as agent-secrets' secrets.env.
+ *  Anything else means any local account (or any workbench agent with a shell)
+ *  can impersonate the whole fleet, and re-rendering wouldn't fix it. */
+async function writeFleetEnv(envPath: string, content: string): Promise<void> {
+  await writeFile(envPath, content, { mode: 0o600 })
+  await chmod(envPath, 0o600).catch(() => {}) // existing file keeps its old mode otherwise
+  await chmod(dirname(envPath), 0o700).catch(() => {})
+}
+
 async function ensureFleetEnvKey(): Promise<void> {
   const envPath = FLEET_ENV()
   let current = await readFile(envPath, 'utf8').catch(() => '')
+  // Even with nothing to append, an existing world-readable file must be locked
+  // down — installs that rendered before this change are the ones at risk.
+  await chmod(envPath, 0o600).catch(() => {})
+  await chmod(dirname(envPath), 0o700).catch(() => {})
   const append: string[] = []
   const need = (name: string, value: string | undefined) => {
     if (value && !new RegExp(`^${name}=`, 'm').test(current)) append.push(`${name}=${value}`)
@@ -137,7 +156,42 @@ async function ensureFleetEnvKey(): Promise<void> {
     /* registry unavailable — agent key provisioning above still holds */
   }
   if (!append.length) return
-  await writeFile(envPath, `${current.replace(/\n?$/, '\n')}${append.join('\n')}\n`)
+  await writeFleetEnv(envPath, `${current.replace(/\n?$/, '\n')}${append.join('\n')}\n`)
+}
+
+/** Compose-interpolation name for an agent's own credential. */
+export const AGENT_KEY_VAR = (slug: string) => `TALARIA_AGENT_KEY_${slug.toUpperCase()}`
+
+/** Materialize every managed agent's credential into the fleet .env, minting
+ *  on first render (agent-auth owns the secret; the DB is the source of
+ *  truth, so a line lost here comes back identical rather than rotating a
+ *  running container out of its own identity). Same shape as HERMES_KEY_<SLUG>,
+ *  the other per-agent secret compose interpolates.
+ *
+ *  The DB wins over whatever the file says: a line is REWRITTEN, never skipped
+ *  because it exists. Skipping on presence silently bricks an agent whose slug
+ *  was reused after a delete (stale line, no agent_keys row → the container
+ *  presents a dead secret and gets an undiagnosable 401), and the same happens
+ *  after a DB restore against a preserved .env. */
+async function ensureAgentEnvKeys(targets: RenderTarget[]): Promise<void> {
+  const envPath = FLEET_ENV()
+  const current = await readFile(envPath, 'utf8').catch(() => '')
+  let next = current
+  const append: string[] = []
+  for (const { def } of targets) {
+    const name = AGENT_KEY_VAR(def.slug)
+    const line = `${name}=${await ensureAgentApiKey(def.id)}`
+    const existing = new RegExp(`^${name}=.*$`, 'm')
+    if (existing.test(next)) next = next.replace(existing, () => line) // fn form: a secret is never a $-pattern
+    else append.push(line)
+  }
+  if (append.length) next = `${next.replace(/\n?$/, '\n')}# per-agent credentials — Talaria-owned\n${append.join('\n')}\n`
+  if (next === current) {
+    await chmod(envPath, 0o600).catch(() => {})
+    await chmod(dirname(envPath), 0o700).catch(() => {})
+    return
+  }
+  await writeFleetEnv(envPath, next)
 }
 
 /** The EXTERNAL docker network the whole fleet joins (compose never creates
@@ -295,10 +349,22 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
   const coachOn = (await getGuardConfig()).coach
 
   // Agents' configs point at the toolkit MCP — make sure it's actually up,
-  // and that the compose env can interpolate the fleet key into the header.
+  // and that the compose env can interpolate each agent's key into the header.
   ensureMcpService()
   await ensureFleetEnvKey()
+  await ensureAgentEnvKeys(targets)
   await seedSharedSkills()
+
+  // Credential-migration visibility. A render is the operator's moment: say who
+  // is still authenticating with the org-wide key, because that — not a guess —
+  // is what decides when TALARIA_AGENT_KEY_LEGACY=off stops being an outage.
+  const legacy = await legacyMigrationStatus().catch(() => null)
+  const legacyWarning = legacy ? legacyMigrationWarning(legacy) : null
+  if (legacy && legacyWarning) {
+    result.warnings.push(legacyWarning)
+    if (legacy.windowOpen) console.warn(`[fleet] ${legacyWarning}`)
+    else console.error(`[fleet] ${legacyWarning}`)
+  }
 
   // Every agent's LLM specs are rewritten to route through Talaria's gateway —
   // model names the gateway doesn't serve fall back to the default (warned once).
@@ -425,8 +491,10 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     const env = { ...((svc.environment ?? {}) as Record<string, unknown>), ...(extras?.environment ?? {}) }
     env.API_SERVER_KEY = `\${HERMES_KEY_${def.slug.toUpperCase()}}`
     env.API_SERVER_MODEL_NAME = def.model
-    // The toolkit MCP header interpolates this from the container env.
-    env.TALARIA_AGENT_KEY = '${TALARIA_AGENT_KEY}'
+    // The agent's OWN credential, under the same env name every rendered
+    // header/config already interpolates — so identity travels with the key
+    // and the shared org key never enters an agent container again.
+    env.TALARIA_AGENT_KEY = `\${${AGENT_KEY_VAR(def.slug)}}`
     // Work pickup: agents poll for assigned tickets on this cadence. The
     // chassis default was 0 (OFF) — which silently disabled ticket pickup
     // fleet-wide. 45s default, host env still overrides.

@@ -9,6 +9,7 @@ import { Gantt } from '@/components/board/gantt'
 import { BoardSettingsModal } from '@/components/board/board-settings-modal'
 import { FilterBar, filtersActive, type BoardFilters } from '@/components/board/filter-bar'
 import { EmptyState } from '@/components/ui/empty-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { Input } from '@/components/ui/input'
 import { FieldPill } from '@/components/ui/field-pill'
 import { Chip } from '@/components/ui/chip'
@@ -103,17 +104,27 @@ function BoardPage() {
   const navigate = useNavigate()
   const search = Route.useSearch()
   const { data: me } = useSession()
-  const { data: boards = [], isLoading } = useBoards()
-  const { data: archivedBoards = [] } = useArchivedBoards()
+  const boardsQuery = useBoards()
+  const { data: boards = [], isLoading } = boardsQuery
+  const archivedQuery = useArchivedBoards()
+  const { data: archivedBoards = [], isLoading: archivedLoading } = archivedQuery
   const board = boards.find((b) => b.id === boardId) ?? archivedBoards.find((b) => b.id === boardId)
 
   const showArchived = search.archived ?? false
-  const { data: allTasks = [], isLoading: tasksLoading } = useBoardTasks(board ? boardId : null, showArchived)
+  const tasksQuery = useBoardTasks(board ? boardId : null, showArchived)
+  const { data: allTasks = [], isLoading: tasksLoading } = tasksQuery
   const { data: fleet, isLoading: fleetLoading } = useAgents()
   const { data: boardCfg, isLoading: cfgLoading } = useBoardAgents(board ? boardId : null)
-  const { data: members = [] } = useBoardMembers(board ? boardId : null)
-  const { data: registryLabels = [] } = useBoardLabels(board ? boardId : null)
-  const { data: boardStatuses = [] } = useBoardStatuses(board ? boardId : null)
+  // Four supporting reads. Defaulted to `[]` each one furnished the toolbar
+  // with a confident absence: no teammates to filter by, no labels on this
+  // board, no columns (so the board silently drew the built-in ones), and no
+  // saved views. All four discarded their query on the line that made it.
+  const membersList = listQuery(useBoardMembers(board ? boardId : null), { title: 'Could not load who’s on this board', variant: 'inline' })
+  const labelsList = listQuery(useBoardLabels(board ? boardId : null), { title: 'Could not load labels', variant: 'inline' })
+  const statusesList = listQuery(useBoardStatuses(board ? boardId : null), { title: 'Could not load this board’s columns', variant: 'inline' })
+  const members = membersList.rows
+  const registryLabels = labelsList.rows
+  const boardStatuses = statusesList.rows
   // Only agents allowed on this board are assignable/filterable here.
   const boardAgents = boardCfg?.allowAll
     ? fleet?.agents ?? []
@@ -141,7 +152,8 @@ function BoardPage() {
       return !v
     })
   }
-  const { data: savedViews = [] } = useBoardViews(board ? boardId : null)
+  const viewsList = listQuery(useBoardViews(board ? boardId : null), { title: 'Could not load your saved views', variant: 'inline' })
+  const savedViews = viewsList.rows
   const { openMenu, menu: viewTabMenu } = useContextMenu()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const view = search.view ?? 'board'
@@ -257,7 +269,13 @@ function BoardPage() {
   // must not paint with empty columns while its tasks are still in flight.
   // `!showArchived` keeps the gate to the cold-load path — flipping the archived
   // toggle refetches under the toolbar, not under a full-page skeleton.
-  if (isLoading || (board && !showArchived && tasksLoading))
+  //
+  // The ARCHIVED list is part of the same gate. The two lists race, and a board
+  // that lives only in the archived one would otherwise flash "Board not found
+  // — It may have been deleted" for as long as that request takes: the exact
+  // false-deletion sentence this whole path exists to prevent. Neither list has
+  // spoken until both have.
+  if (isLoading || archivedLoading || (board && !showArchived && tasksLoading))
     return (
       <div className="grid h-full grid-cols-2 gap-3 overflow-hidden p-6 sm:grid-cols-4">
         {[0, 1, 2, 3].map((c) => (
@@ -269,6 +287,32 @@ function BoardPage() {
           </div>
         ))}
       </div>
+    )
+  // ORDER MATTERS. "Board not found — it may have been deleted" is the sentence
+  // that convinced an owner his company's boards were gone; it may only be
+  // reached when the board list genuinely LOADED and this board wasn't in it.
+  // A failed list, or failed tasks, says so instead and offers a retry.
+  // The archived list matters too: this board may be an archived one, and a
+  // failed archived read would otherwise land on the same false "not found".
+  const boardListQuery = boardsQuery.isError ? boardsQuery : archivedQuery
+  if (!board && boardListQuery.isError && boardListQuery.data === undefined)
+    return (
+      <QueryError
+        error={boardListQuery.error}
+        title="Could not load this board"
+        onRetry={() => {
+          void boardsQuery.refetch()
+          void archivedQuery.refetch()
+        }}
+      />
+    )
+  if (board && tasksQuery.isError && tasksQuery.data === undefined)
+    return (
+      <QueryError
+        error={tasksQuery.error}
+        title={`Could not load ${board.name}`}
+        onRetry={() => void tasksQuery.refetch()}
+      />
     )
   if (!board) return <EmptyState icon="⧉" title="Board not found" hint="It may have been deleted, or you don’t have access." />
 
@@ -316,6 +360,7 @@ function BoardPage() {
             <CalendarRange size={15} />
           </button>
         </div>
+        {viewsList.notice}
         {savedViews.length > 0 && <div className="h-5 w-px bg-line-subtle" />}
         {savedViews.map((sv) => {
           // The tab wears its view type: board grid, list, or gantt.
@@ -363,6 +408,15 @@ function BoardPage() {
           <Skeleton className="h-9 w-64" />
         ) : (
           <FilterBar value={filters} onChange={setFilters} members={members} agents={boardAgents} labels={boardLabels} statuses={boardStatuses} meId={me?.id} />
+        )}
+        {/* A filter bar with a facet missing looks like a board that has no
+            such thing. These say which read is the one that is missing. */}
+        {(membersList.notice || labelsList.notice || statusesList.notice) && (
+          <div className="flex flex-wrap items-center gap-3">
+            {membersList.notice}
+            {labelsList.notice}
+            {statusesList.notice}
+          </div>
         )}
         <span className="ml-auto flex items-center gap-1.5">
           {view === 'list' && (

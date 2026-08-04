@@ -1,8 +1,20 @@
 # Talaria - handoff for the next agent
 
-_Last updated: 2026-07-09. Scope: Talaria as the fleet's harness + product UI. This file is a fast
-on-ramp; the authoritative docs are [`docs/TODO.md`](./docs/TODO.md),
-[`ROADMAP.md`](./ROADMAP.md), [`CHANGELOG.md`](./CHANGELOG.md), and [`ui/README.md`](./ui/README.md)._
+_Pointers updated 2026-07-31; the phase log below is current to 2026-07-09. Scope: Talaria as the
+fleet's harness + product UI. This file is a fast on-ramp, not the source of truth: [`README.md`](./README.md)
+is canonical for what the product is and what's shipped, [`ROADMAP.md`](./ROADMAP.md) for status
+detail, [`docs/TODO.md`](./docs/TODO.md) for the living backlog, and
+[`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) +
+[`docs/UI-CONVENTIONS.md`](./docs/UI-CONVENTIONS.md) for how code here is written. Before changing
+anything, read the current work order: [`docs/AUDIT-2026-07-30.md`](./docs/AUDIT-2026-07-30.md)
+(engineering quality, P0s first), [`docs/PRODUCT-GAPS-2026-07-31.md`](./docs/PRODUCT-GAPS-2026-07-31.md)
+(what the product is missing), and [`docs/PRODUCT-PLAN-2026-07-31.md`](./docs/PRODUCT-PLAN-2026-07-31.md)
+(the sequence for closing it)._
+
+> ⚠️ **The phase-by-phase sections below are a historical record, not current status.** They explain how
+> each subsystem came to be; plenty has shipped since (the Plan view is multiplayer now, and Knowledge,
+> Research, retrieval, the app platform, MCP governance, and the Workbench all landed after this log
+> stopped). Where this file disagrees with README/ROADMAP, they win — and the source wins over all three.
 
 ## What Talaria is
 
@@ -53,21 +65,41 @@ Full project-management suite, all live in `ui/`:
 - **List view** - configurable, drag-reorderable, click-to-sort columns (persisted per
   board in `localStorage`).
 - **Multiplayer** - Redis pub/sub → SSE (`/api/boards/:id/events`).
-- **Agent guardrails** - agents can create/triage but **cannot** self-assign
-  (`assigned` → 403) or self-complete (`done` → `quality_review`), and can't change
-  assignees.
+- **Agent guardrails** - agents can create/triage but **cannot** self-assign or
+  self-complete, and can't change assignees. The whole rule is `agentSafePatch` in
+  `server/tasks.ts`, applied by `updateTask` to every agent patch: entering an
+  agent-start column is assignment (403 wherever the ticket came from, including when
+  the terminal-move redirect picked the column); a terminal move lands in the board's
+  own review column, and is refused rather than guessed at when the board has none;
+  archived tickets, archived boards, closed tickets, tickets sitting in review or
+  blocked, and tickets stranded in a status the board no longer has all refuse. The
+  archival + closed-status part of that is one exported predicate, `closedToAgents`, and
+  everything that has to ask it imports it rather than restating it: the four writes that
+  attach to a ticket without going through `updateTask` (usage, dependencies, gap reports,
+  workbench verbs) and **both dispatch sides** (`maybeDispatchTicket`, and `assignedWork`
+  behind the heartbeat — which used to hand agents archived/closed work every write route
+  then refused). See [docs/API-CONVENTIONS.md](./docs/API-CONVENTIONS.md) before adding a
+  route that writes to a ticket.
 - **Agent MCP (`talaria-mcp`)** - MCP server in [`mcp/`](./mcp) (TS, built with
   `npm run build`; stdio for one agent, or fleet **streamable-HTTP** mode via
-  `MCP_HTTP_PORT` — per-request identity by `x-agent-name`, self-hosted by the app
+  `MCP_HTTP_PORT` — pass-through auth, each request bound to the calling agent's own
+  credential, self-hosted by the app
   via `server/mcp-service.ts` and injected into every rendered config). Exposes only
   the safe tools — tickets, documents/artifacts, channels, KB, search, Google
   confirm-sends, and board governance for personal assistants (see
   [`mcp/src/index.ts`](./mcp/src/index.ts) for the full set); no assign/complete
-  tools. Backed by agent-key HTTP paths: `TALARIA_AGENT_KEY` + an `x-agent-name`
-  header, board agent policy enforced everywhere (elevated assistants pass), activity
-  attributed to the named agent. Create lands in `inbox`, always unassigned. Unnamed
-  key callers (legacy plugin heartbeat/report) keep their old access on
-  `PUT /api/tasks/:id`.
+  tools. Backed by agent-key HTTP paths: each agent presents its OWN `tak_` credential
+  (`TALARIA_AGENT_KEY_<SLUG>` in `fleet/.env`), and `server/agent-auth.ts` resolves
+  identity from the credential — `x-agent-name` is only a cross-check, and a name that
+  contradicts the credential is refused. Board agent policy enforced everywhere
+  (elevated assistants pass), activity attributed to the resolved agent. Create lands
+  in `inbox`, always unassigned. Containers built before per-agent keys still hold the
+  org-wide `TALARIA_AGENT_KEY`: those callers resolve `legacy: true` (identity asserted,
+  not proven) and — **on this surface** — must still send `x-agent-name`: `agentCaller`
+  resolves with `requireName: true`, so an unnamed legacy caller gets a 400 and no
+  identity. (The fleet plane opts out; see **Auth** below.) Anything that grants
+  privilege refuses a legacy caller outright. Close the window
+  with `TALARIA_AGENT_KEY_LEGACY=off` once the fleet has been re-rendered and rolled.
   See [`mcp/README.md`](./mcp/README.md) for client config.
 - **Chat (1:1)** - the home surface: agent picker over the fleet manifest's
   `/v1/models`, durable server-owned conversations in Postgres, streamed replies
@@ -460,7 +492,35 @@ remaining guard thread is feedback-into-agent-memory.)
 - **Default admin login:** generated by `scripts/setup.sh` (`admin@talaria.local` +
   a random password, printed once at setup). The `AUTH_USERS` entry whose email is in
   `AUTH_ADMIN_EMAILS` becomes admin.
-- Agent auth: `TALARIA_AGENT_KEY` (x-api-key / Bearer) for register/heartbeat/report.
+- Agent auth: each agent presents its own `tak_` credential (x-api-key / Bearer), minted
+  per `agent_defs` row and stamped into its container as `TALARIA_AGENT_KEY` by the fleet
+  renderer. `server/agent-auth.ts` resolves identity from the credential. Two entry points
+  sit on one private `resolve()`, and the **only** difference is what happens to a legacy
+  caller that sends no `x-agent-name` — so quote the right one:
+  - **`agentCaller` / `requireAgent`** — every ordinary agent route and the whole toolkit
+    surface behind it. `resolve(request, { requireName: true })`: a legacy caller with no
+    `x-agent-name` has no identity at all and is **refused with a 400** (`x-agent-name
+    required`). Everything keyed off per-agent identity — board policy, MCP allowlists,
+    retrieval principals, metering — sits behind this one.
+  - **`fleetCaller`** — the fleet plane only (`agents/$id/heartbeat`), whose subject is the
+    `:id` in the URL rather than the caller. `resolve(request, { requireName: false })`: an
+    unnamed legacy caller resolves to `{ model: null }` instead of 400ing, because the
+    pre-per-key plugin never sent the header and the subject is the URL anyway. That caller
+    is unnameable and still allowed through; it ends with the shared key. A caller we CAN
+    name must match the subject, and the handler does that **before it writes**: it reads
+    the agent's name out of `fleet_agents`, 403s on `caller.model !== name`, and only then
+    calls `heartbeatAgent()`. (Resolving the subject *through* the heartbeat write meant
+    agent A stamped agent B's `last_seen` and was refused only afterwards — an honest 403
+    with the side effect already landed, enough to forge another agent's presence.)
+    Heartbeat returns work items with ticket titles and descriptions, so agent A must not
+    read agent B's queue.
+
+  `agents/register` is a third shape again: `checkFleetKey` (any fleet credential — an agent
+  registers before it has one of its own), which answers "does this belong to the fleet" and
+  nothing else, so it is only correct because that response carries no per-agent data. The
+  org-wide `TALARIA_AGENT_KEY` is accepted as a legacy fallback while
+  `TALARIA_AGENT_KEY_LEGACY` is on — see
+  [docs/AGENT-KEY-MIGRATION.md](./docs/AGENT-KEY-MIGRATION.md) for the deploy runbook.
 
 ## Networking
 

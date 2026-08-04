@@ -44,7 +44,7 @@ export const FieldPill = forwardRef<
           : persistent
             ? 'border-line-subtle bg-raised/40 text-muted hover:border-line hover:bg-hover hover:text-fg'
             : 'border-transparent text-muted hover:border-line hover:bg-hover hover:text-fg',
-        // Unset placeholder: dimmest ink, same voice (no italics in Gentle Dew).
+        // Unset placeholder: dimmest ink, same voice (no italics in Mercury).
         !active && empty && 'text-ink-dim',
         className,
       )}

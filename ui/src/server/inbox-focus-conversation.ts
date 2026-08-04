@@ -215,7 +215,7 @@ export async function* runInboxConversationCommand(
   const userMessageId = await insertUserMessage(conversationId, userSeq, input.instruction, messageAttachments, user.id, userMetadata as unknown as Record<string, unknown>)
   const assistantMetadata: InboxMessageMetadata = {
     focus,
-    actor: { type: 'assistant', id: assistant.model, label: assistant.name ?? 'Scout' },
+    actor: { type: 'assistant', id: assistant.model, label: assistant.name ?? 'your assistant' },
     delegateModel: input.delegateModel ?? null,
     responseModel,
     mode,
@@ -229,7 +229,7 @@ export async function* runInboxConversationCommand(
   }
   yield {
     type: 'status',
-    label: mode === 'plan' ? 'Planning with Scout' : mode === 'fast' ? 'Answering quickly' : focus ? 'Reviewing the active decision' : 'Thinking with Scout',
+    label: mode === 'plan' ? 'Planning with your assistant' : mode === 'fast' ? 'Answering quickly' : focus ? 'Reviewing the active decision' : 'Thinking with your assistant',
   }
 
   try {
@@ -266,10 +266,10 @@ export async function* runInboxConversationCommand(
       })
       content = responseModel
         ? await requestGatewayText(responseModel, [{ role: 'user', content: prompt }], `user:${user.email ?? user.id}`, input.signal)
-          ?? 'Scout is temporarily unavailable. No tools or mutations were attempted.'
+          ?? 'Your assistant is temporarily unavailable. No tools or mutations were attempted.'
         : assistant.configured && assistant.model
         ? await requestText(assistant.model, [{ role: 'user', content: prompt }], 20_000, input.signal)
-          ?? 'Scout is temporarily unavailable. No tools or mutations were attempted.'
+          ?? 'Your assistant is temporarily unavailable. No tools or mutations were attempted.'
         : 'Your personal assistant is not configured yet. You can still use the safe actions in the Focus Queue.'
     }
 
@@ -290,7 +290,7 @@ export async function* runInboxConversationCommand(
     })
     yield { type: 'done', conversationId, entry: assistantEntry, ...(result ? { result } : {}) }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Scout could not finish that response.'
+    const message = error instanceof Error ? error.message : 'Your assistant could not finish that response.'
     await updateAssistant(assistantMessageId, { content: '', reasoning: '', tools: [], status: 'error' }).catch(() => {})
     yield { type: 'error', message }
   }

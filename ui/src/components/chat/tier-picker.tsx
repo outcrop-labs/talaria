@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { cn } from '@/lib/cn'
 import { MeterBars, PopSearch, chipPrimary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
 
-// The composer's model chip (Gentle dew spec §7): a 36px mono chip — ✳ glyph,
+// The composer's model chip (Mercury spec §7): a 36px mono chip — ✳ glyph,
 // tier name, and a 3×12 meter showing where the pick sits on the agent's tier
 // ladder — that opens the §7 popover (search row with ⌘K hint, panel bg, mono
 // section header, hover fill, dashed-gold selected row). Beats the raw

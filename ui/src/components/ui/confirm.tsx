@@ -26,7 +26,7 @@ interface DialogSpec {
   confirmLabel?: string
   cancelLabel?: string
   /** Style the confirm action as destructive — orange outline, never orange
-   *  fill (Gentle dew spec §8 DANGER ZONE). */
+   *  fill (Mercury spec §8 DANGER ZONE). */
   danger?: boolean
   /** prompt only. */
   placeholder?: string

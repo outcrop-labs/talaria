@@ -7,6 +7,7 @@ import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Panel } from '@/components/ui/panel'
 import { Skeleton } from '@/components/ui/skeleton'
+import { QueryError } from '@/components/ui/query-state'
 import { useProviders } from '@/lib/session'
 
 const ERROR_COPY: Record<string, string> = {
@@ -18,8 +19,11 @@ const ERROR_COPY: Record<string, string> = {
 }
 
 export function LoginScreen({ error }: { error?: string }) {
-  const { data, isLoading } = useProviders()
+  const providersQuery = useProviders()
+  const { data, isLoading } = providersQuery
   const providers = data?.providers ?? []
+  // Only a real 200 can claim auth is unconfigured. A failed provider read used
+  // to render that warning, sending people to fix a config that was fine.
   const configured = data?.configured ?? true
 
   const hasGoogle = providers.some((p) => p.id === 'google')
@@ -71,6 +75,13 @@ export function LoginScreen({ error }: { error?: string }) {
               <Skeleton className="h-11 w-full" delay={0.24} />
               <Skeleton className="h-11 w-full" delay={0.36} />
             </div>
+          ) : providersQuery.isError ? (
+            <QueryError
+              variant="compact"
+              error={providersQuery.error}
+              title="Could not load sign-in options"
+              onRetry={() => void providersQuery.refetch()}
+            />
           ) : providers.length === 0 ? (
             <div className="py-4 text-center text-sm text-muted">No sign-in providers are enabled.</div>
           ) : (

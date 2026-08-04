@@ -7,7 +7,9 @@ import { confirm } from '@/components/ui/confirm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { QueryError } from '@/components/ui/query-state'
 import { Skeleton } from '@/components/ui/skeleton'
+import { getJson } from '@/lib/fetch-json'
 
 interface TargetConfig {
   endpoint: string
@@ -36,11 +38,7 @@ interface StorageAdmin {
 const useStorageAdmin = () =>
   useQuery({
     queryKey: ['storage-admin'],
-    queryFn: async (): Promise<StorageAdmin> => {
-      const r = await fetch('/api/admin/storage')
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<StorageAdmin> => getJson<StorageAdmin>('/api/admin/storage'),
     refetchInterval: (q) => (q.state.data?.migrate?.running || q.state.data?.sync?.running ? 3_000 : false),
   })
 
@@ -87,7 +85,8 @@ function TargetFields({ t, secret, onChange, onSecret }: { t: TargetConfig; secr
 // that mirrors every blob to a second provider.
 export function StoragePanel() {
   const qc = useQueryClient()
-  const { data } = useStorageAdmin()
+  const query = useStorageAdmin()
+  const { data } = query
   const [form, setForm] = useState<StorageAdmin['config'] | null>(null)
   const [secret, setSecret] = useState('')
   const [replicaSecret, setReplicaSecret] = useState('')
@@ -97,6 +96,15 @@ export function StoragePanel() {
   useEffect(() => {
     if (data && !form) setForm(data.config)
   }, [data, form])
+  // A failed read used to leave `data` undefined for ever, so this panel
+  // shimmered its skeleton at a request that had already died — a loading
+  // state that never ends is just a slower blank screen.
+  if (!data && query.isError)
+    return (
+      <Panel>
+        <QueryError error={query.error} title="Could not load storage settings" onRetry={() => void query.refetch()} />
+      </Panel>
+    )
   if (!data || !form)
     // Panel-shaped skeleton (title, stat strip, config grid, button row) so
     // the Storage tab never renders blank and then materializes.

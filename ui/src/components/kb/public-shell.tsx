@@ -31,3 +31,33 @@ export function PublicNotFound() {
     </PublicShell>
   )
 }
+
+/** The OTHER failure. All three public routes used to `.catch(() => error)` and
+ *  render `PublicNotFound` for every status, so a 500 on a share link told a
+ *  visitor — someone outside the org, who cannot check — that the page does not
+ *  exist. That is the one message a working link must never produce: the sender
+ *  gets told their link is broken and reshares or rebuilds the document.
+ *  A 404 is still "Not found". Everything else says come back, and offers a
+ *  retry, because everything else is temporary. */
+export function PublicUnavailable({ onRetry, detail }: { onRetry?: () => void; detail?: string }) {
+  return (
+    <PublicShell>
+      <div className="py-16 text-center">
+        <div className="mb-2 text-2xl font-semibold text-fg">This page isn’t loading right now</div>
+        <p className="text-sm text-muted">
+          The link is fine — the server didn’t answer. Try again in a moment.
+        </p>
+        {detail && <p className="mt-2 text-xs text-muted">{detail}</p>}
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-5 rounded-lg border border-line px-4 py-2 text-sm text-fg transition-colors hover:border-[var(--theme-accent-border)]"
+          >
+            Try again
+          </button>
+        )}
+      </div>
+    </PublicShell>
+  )
+}

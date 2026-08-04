@@ -1,5 +1,6 @@
 // Research client: runs list + detail, mode catalog, start/delete.
 import { useQuery } from '@tanstack/react-query'
+import { getJson, getList } from '@/lib/fetch-json'
 
 export type ResearchMode = 'recon' | 'brief' | 'expedition'
 export type ResearchStatus = 'queued' | 'running' | 'done' | 'error'
@@ -37,11 +38,7 @@ export const MODE_META: Record<ResearchMode, { label: string; tagline: string; e
 export function useResearchRuns() {
   return useQuery({
     queryKey: ['research-runs'],
-    queryFn: async (): Promise<ResearchRun[]> => {
-      const r = await fetch('/api/research', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { runs: ResearchRun[] }).runs
-    },
+    queryFn: (): Promise<ResearchRun[]> => getList<ResearchRun>('/api/research', 'runs'),
     // Live while anything is in flight.
     refetchInterval: (q) => (q.state.data?.some((r) => r.status === 'queued' || r.status === 'running') ? 3_000 : false),
   })
@@ -51,11 +48,8 @@ export function useResearchRun(id: string | null) {
   return useQuery({
     queryKey: ['research-run', id],
     enabled: !!id,
-    queryFn: async (): Promise<{ run: ResearchRun; sources: ResearchSource[] }> => {
-      const r = await fetch(`/api/research/${id}`, { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<{ run: ResearchRun; sources: ResearchSource[] }> =>
+      getJson<{ run: ResearchRun; sources: ResearchSource[] }>(`/api/research/${id}`),
     refetchInterval: (q) => {
       const s = q.state.data?.run.status
       return s === 'queued' || s === 'running' ? 2_500 : false

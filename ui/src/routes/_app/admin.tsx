@@ -29,6 +29,8 @@ import { useSavedFlash } from '@/components/ui/save-button'
 import { focusGold } from '@/components/chat/chat-chrome'
 import { CopyButton } from '@/components/ui/copy-link-button'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
+import { listQuery, QueryError } from '@/components/ui/query-state'
+import { getJson, getList } from '@/lib/fetch-json'
 import { cn } from '@/lib/cn'
 
 
@@ -69,12 +71,10 @@ interface AdminUser {
 
 function useAdminUsers() {
   return useQuery({
+    // An admin console that renders an EMPTY People list because /api/admin/users
+    // 500'd is telling an owner their org has no members. Non-2xx throws.
     queryKey: ['admin-users'],
-    queryFn: async (): Promise<AdminUser[] | null> => {
-      const r = await fetch('/api/admin/users', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return ((await r.json()) as { users: AdminUser[] }).users
-    },
+    queryFn: (): Promise<AdminUser[]> => getList<AdminUser>('/api/admin/users', 'users'),
   })
 }
 
@@ -93,12 +93,31 @@ interface PermsData {
 
 function useAdminPermissions() {
   return useQuery({
+    // Every permission chip on this page is gated on `perms` being truthy, so a
+    // failed read used to make the whole permissions model DISAPPEAR — an admin
+    // reads that as "nothing is restricted here". Non-2xx throws.
     queryKey: ['admin-permissions'],
-    queryFn: async (): Promise<PermsData | null> => {
-      const r = await fetch('/api/admin/permissions', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return r.json()
-    },
+    queryFn: (): Promise<PermsData> => getJson<PermsData>('/api/admin/permissions'),
+  })
+}
+
+/** The one shape of `/api/admin/settings`, declared ONCE.
+ *
+ *  Three components read this endpoint under the single `['admin-settings']`
+ *  cache key (two here, `MemberAccessPanel` in models.tsx) and each used to
+ *  declare its own narrower return type over that one entry — TypeScript
+ *  happily believed three different contracts for the same cached object, so
+ *  the day one of them started fetching something else nothing would have
+ *  complained. One type, one hook. */
+interface AdminSettings {
+  auditRetentionDays: number
+  org: { name: string; about: string }
+  memberModels: string[]
+}
+function useAdminSettings() {
+  return useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: (): Promise<AdminSettings> => getJson<AdminSettings>('/api/admin/settings'),
   })
 }
 
@@ -106,14 +125,22 @@ function useAdminPermissions() {
 function AdminPage() {
   const qc = useQueryClient()
   const { data: me } = useSession()
-  const { data: users, isPending: usersPending } = useAdminUsers()
-  const { data: perms } = useAdminPermissions()
+  const usersQuery = useAdminUsers()
+  const { data: users, isPending: usersPending } = usersQuery
+  const permsQuery = useAdminPermissions()
+  const { data: perms } = permsQuery
   const { data: fleet } = useAgents()
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
   // Enabled apps join the per-person view checklist as EXPLICIT grants —
   // every app view (work and manage) defaults denied for members; an admin
   // adds each one per person, same storage as core Manage views.
-  const { data: enabledApps = [] } = useEnabledApps()
+  // This one is not cosmetic. `allowedManageViews` is written back WHOLESALE
+  // from `manageViews` below, so with the app list defaulted to `[]` a failed
+  // /api/apps meant that toggling any unrelated view silently REVOKED every
+  // app manage grant the person had — a permissions write derived from a read
+  // that never happened.
+  const appsList = listQuery(useEnabledApps(), { title: 'Could not load installed apps', variant: 'inline' })
+  const enabledApps = appsList.rows
   const appViews = [
     ...enabledApps.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work! })),
     ...enabledApps.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage! })),
@@ -177,7 +204,20 @@ function AdminPage() {
           </>
         )}
         {tab === 'people' && <InvitesPanel />}
-        {tab === 'people' && perms && <MemberDefaultsPanel perms={perms} />}
+        {tab === 'people' &&
+          (perms ? (
+            <MemberDefaultsPanel perms={perms} />
+          ) : permsQuery.isError ? (
+            // Silence here reads as "no permission model configured". Say so.
+            <Panel>
+              <QueryError
+                variant="compact"
+                error={permsQuery.error}
+                title="Could not load member permissions"
+                onRetry={() => void permsQuery.refetch()}
+              />
+            </Panel>
+          ) : null)}
         {tab === 'people' && (
         <Panel>
           <SectionHeader
@@ -207,9 +247,19 @@ function AdminPage() {
                 </div>
               ))}
             </div>
+          ) : !users ? (
+            // The most dangerous empty render on the whole surface: an admin
+            // seeing no rows concludes the org is empty (or that a person they
+            // just off-boarded is gone) when the read simply failed.
+            <QueryError
+              variant="compact"
+              error={usersQuery.error}
+              title="Could not load your people"
+              onRetry={() => void usersQuery.refetch()}
+            />
           ) : (
           <ul className="divide-y divide-line-subtle">
-            {(users ?? []).map((u) => {
+            {users.map((u) => {
               // One ALLOW list spanning both worlds: work views default in
               // (denials stored), Manage views default out (allows stored).
               const allowedViews = [
@@ -274,10 +324,14 @@ function AdminPage() {
                           }
                           multiple
                           size="sm"
+                          // Editing writes the whole allow-list back. While the
+                          // app views are missing, that write would drop them.
+                          disabled={appsList.failed}
                           placeholder="Work views"
                           className="min-w-0 flex-1"
                         />
                       </div>
+                      {appsList.notice && <div className="pl-10">{appsList.notice}</div>}
                       {perms && <UserPermChips userId={u.id} perms={perms} />}
                     </>
                   )}
@@ -414,14 +468,17 @@ function MemberDefaultsPanel({ perms }: { perms: PermsData }) {
  *  then used as the canonical base URL (stable OAuth callbacks, links). */
 function InstanceDomainPanel() {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
+  // `null` is a real answer here — no hosting domain configured yet, and the
+  // form below invites you to set one. A FAILED read used to produce the same
+  // null, so a blip showed a configured instance its "set a domain" form and a
+  // Save would have rewritten live OAuth callbacks. Now only the server's own
+  // `instance: null` gets there; a non-2xx becomes an error.
+  const query = useQuery({
     queryKey: ['instance-domain'],
-    queryFn: async (): Promise<{ domain: string; verified: boolean; verifiedAt: string | null } | null> => {
-      const r = await fetch('/api/admin/instance', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return ((await r.json()) as { instance: { domain: string; verified: boolean; verifiedAt: string | null } | null }).instance
-    },
+    queryFn: async (): Promise<{ domain: string; verified: boolean; verifiedAt: string | null } | null> =>
+      (await getJson<{ instance: { domain: string; verified: boolean; verifiedAt: string | null } | null }>('/api/admin/instance')).instance,
   })
+  const { data, isPending } = query
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -451,6 +508,13 @@ function InstanceDomainPanel() {
       />
       {isPending ? (
         <SkeletonRows rows={1} />
+      ) : data === undefined ? (
+        <QueryError
+          variant="inline"
+          error={query.error}
+          title="Could not load the instance domain"
+          onRetry={() => void query.refetch()}
+        />
       ) : data ? (
         <div className="flex items-center gap-2">
           <span className="font-mono text-[13px] text-fg">{data.domain}</span>
@@ -514,14 +578,11 @@ function EmailPanel() {
     smtp: { host: string; port: number; secure: boolean; user: string; passSet: boolean }
     resend: { apiKeySet: boolean }
   }
-  const { data, isPending } = useQuery({
+  const query = useQuery({
     queryKey: ['email-config'],
-    queryFn: async (): Promise<EmailCfg | null> => {
-      const r = await fetch('/api/admin/email', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return ((await r.json()) as { config: EmailCfg }).config
-    },
+    queryFn: async (): Promise<EmailCfg> => (await getJson<{ config: EmailCfg }>('/api/admin/email')).config,
   })
+  const { data, isPending } = query
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -545,11 +606,25 @@ function EmailPanel() {
     await qc.invalidateQueries({ queryKey: ['email-config'] })
   }
 
-  if (isPending || !data) {
+  if (isPending) {
     return (
       <Panel className="mt-4">
         <Skeleton className="mb-3 h-4 w-24 rounded-full" />
         <SkeletonRows rows={2} />
+      </Panel>
+    )
+  }
+  // `isPending || !data` used to send a FAILED read back to the skeleton, so a
+  // broken /api/admin/email shimmered for ever with nothing to click.
+  if (!data) {
+    return (
+      <Panel className="mt-4">
+        <QueryError
+          variant="compact"
+          error={query.error}
+          title="Could not load your email settings"
+          onRetry={() => void query.refetch()}
+        />
       </Panel>
     )
   }
@@ -659,14 +734,14 @@ function InvitesPanel() {
     acceptedAt: string | null
     revokedAt: string | null
   }
-  const { data, isPending } = useQuery({
+  // "No invites yet." is a claim about who has been let in. A failed read must
+  // not make it — an admin would re-invite people who already hold live links,
+  // or believe a revoked invite is gone when it is still open.
+  const query = useQuery({
     queryKey: ['invites'],
-    queryFn: async (): Promise<InviteRow[]> => {
-      const r = await fetch('/api/admin/invites', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { invites: InviteRow[] }).invites
-    },
+    queryFn: (): Promise<InviteRow[]> => getList<InviteRow>('/api/admin/invites', 'invites'),
   })
+  const { data, isPending } = query
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -720,11 +795,13 @@ function InvitesPanel() {
       {error && <div className="mb-2 text-xs text-danger">{error}</div>}
       {isPending ? (
         <SkeletonRows rows={2} />
-      ) : (data ?? []).length === 0 ? (
+      ) : !data ? (
+        <QueryError variant="inline" error={query.error} title="Could not load invites" onRetry={() => void query.refetch()} />
+      ) : data.length === 0 ? (
         <EmptyState variant="inline" title="No invites yet." className="font-sans" />
       ) : (
         <ul className="divide-y divide-line-subtle">
-          {(data ?? []).map((i) => {
+          {data.map((i) => {
             const st = state(i)
             return (
               <li key={i.id} className="-mx-2 flex items-center gap-3 rounded-md px-2 py-2 text-sm transition-colors hover:bg-hover">
@@ -779,14 +856,14 @@ interface OrgDomainRow {
  *  in through Google with an email on it joins as a member — no invites. */
 function SignupDomainsPanel() {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
+  // An empty list here says "nobody can self-join". Only the server may say
+  // that: a failed read used to hide a VERIFIED domain, and the panel then
+  // invited the admin to add one that already exists.
+  const query = useQuery({
     queryKey: ['org-domains'],
-    queryFn: async (): Promise<OrgDomainRow[]> => {
-      const r = await fetch('/api/admin/domains', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { domains: OrgDomainRow[] }).domains
-    },
+    queryFn: (): Promise<OrgDomainRow[]> => getList<OrgDomainRow>('/api/admin/domains', 'domains'),
   })
+  const { data, isPending } = query
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [verifying, setVerifying] = useState<string | null>(null)
@@ -831,9 +908,16 @@ function SignupDomainsPanel() {
       />
       {isPending ? (
         <SkeletonRows rows={2} />
+      ) : !data ? (
+        <QueryError
+          variant="inline"
+          error={query.error}
+          title="Could not load your sign-up domains"
+          onRetry={() => void query.refetch()}
+        />
       ) : (
         <div className="space-y-2">
-          {(data ?? []).length === 0 && (
+          {data.length === 0 && (
             <EmptyState
               variant="inline"
               title="No email domains yet"
@@ -841,7 +925,9 @@ function SignupDomainsPanel() {
               className="font-sans"
             />
           )}
-          {(data ?? []).map((d) => (
+          {/* No `?? []` fallback: `!data` already forked to the error above, so
+              reaching here means the read landed. */}
+          {data.map((d) => (
             <div key={d.id} className="space-y-1.5 rounded-md border border-line p-2.5">
               <div className="flex items-center gap-2">
                 <span className="font-mono text-[13px] text-fg">{d.domain}</span>
@@ -919,14 +1005,8 @@ function SignupDomainsPanel() {
 // no agent introduces itself as belonging to the underlying platform.
 function OrgPanel() {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
-    queryKey: ['admin-settings'],
-    queryFn: async (): Promise<{ auditRetentionDays: number; org: { name: string; about: string } }> => {
-      const r = await fetch('/api/admin/settings')
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
-  })
+  const query = useAdminSettings()
+  const { data, isPending } = query
   const [name, setName] = useState<string | null>(null)
   const [about, setAbout] = useState<string | null>(null)
   const { saved, flash } = useSavedFlash()
@@ -967,6 +1047,16 @@ function OrgPanel() {
             <Skeleton className="h-14 w-full" delay={0.12} />
           </div>
         </div>
+      ) : !data ? (
+        // A failed read used to render the identity form BLANK. Typing one word
+        // into it made it dirty, and Save then wrote an empty business name and
+        // description over the real ones — and rolled the whole fleet onto them.
+        <QueryError
+          variant="compact"
+          error={query.error}
+          title="Could not load your organization"
+          onRetry={() => void query.refetch()}
+        />
       ) : (
       <div className="space-y-3">
         <div>
@@ -998,14 +1088,8 @@ function OrgPanel() {
 
 function SettingsPanel() {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
-    queryKey: ['admin-settings'],
-    queryFn: async (): Promise<{ auditRetentionDays: number }> => {
-      const r = await fetch('/api/admin/settings')
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
-  })
+  const query = useAdminSettings()
+  const { data, isPending } = query
   const [days, setDays] = useState('')
   const value = days !== '' ? days : String(data?.auditRetentionDays ?? '')
   const save = async () => {
@@ -1032,6 +1116,15 @@ function SettingsPanel() {
           <Skeleton className="h-8 w-24 shrink-0" />
           <Skeleton className="h-7 w-16 shrink-0" delay={0.12} />
         </div>
+      ) : !data ? (
+        // An empty retention box reads as "0 = keep forever". Saving from there
+        // would silently change the org's audit policy.
+        <QueryError
+          variant="compact"
+          error={query.error}
+          title="Could not load your settings"
+          onRetry={() => void query.refetch()}
+        />
       ) : (
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
@@ -1060,20 +1153,18 @@ function SettingsPanel() {
 // quality_review, a judge model reviews the agent's work and posts a verdict.
 function EncryptionPanel() {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
+  type EncryptionData = {
+    keyVersion: number | null
+    rotatedAt: string | null
+    secretCount: number
+    rootSource: string
+    algorithm: string
+  }
+  const query = useQuery({
     queryKey: ['admin-encryption'],
-    queryFn: async (): Promise<{
-      keyVersion: number | null
-      rotatedAt: string | null
-      secretCount: number
-      rootSource: string
-      algorithm: string
-    }> => {
-      const r = await fetch('/api/admin/encryption')
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<EncryptionData> => getJson<EncryptionData>('/api/admin/encryption'),
   })
+  const { data, isPending } = query
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [newRoot, setNewRoot] = useState('')
@@ -1112,26 +1203,35 @@ function EncryptionPanel() {
             <Skeleton key={i} className="h-3 w-24 rounded-full" delay={i * 0.12} />
           ))}
         </div>
+      ) : !data ? (
+        // "Secrets protected: —" over a failed read looks like a fact about the
+        // key store rather than a fact about the request.
+        <QueryError
+          variant="inline"
+          error={query.error}
+          title="Could not load encryption status"
+          onRetry={() => void query.refetch()}
+        />
       ) : (
-      <div className="flex flex-wrap items-end gap-x-8 gap-y-2">
-        <span>
-          <span className="block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key version</span>
-          <span className="font-sans text-2xl font-semibold text-fg">v{data?.keyVersion ?? '—'}</span>
-        </span>
-        <span>
-          <span className="block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Secrets protected</span>
-          <span className="font-sans text-2xl font-semibold text-fg">{data?.secretCount ?? '—'}</span>
-        </span>
-        <span>
-          <span className="block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Root of trust</span>
-          <span className="font-sans text-2xl font-semibold text-fg">{data?.rootSource ?? '—'}</span>
-        </span>
-        {data?.rotatedAt && (
-          <span className="pb-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
-            rotated {new Date(data.rotatedAt).toLocaleString()}
+        <div className="flex flex-wrap items-end gap-x-8 gap-y-2">
+          <span>
+            <span className="block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key version</span>
+            <span className="font-sans text-2xl font-semibold text-fg">v{data.keyVersion ?? '—'}</span>
           </span>
-        )}
-      </div>
+          <span>
+            <span className="block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Secrets protected</span>
+            <span className="font-sans text-2xl font-semibold text-fg">{data.secretCount}</span>
+          </span>
+          <span>
+            <span className="block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Root of trust</span>
+            <span className="font-sans text-2xl font-semibold text-fg">{data.rootSource}</span>
+          </span>
+          {data.rotatedAt && (
+            <span className="pb-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
+              rotated {new Date(data.rotatedAt).toLocaleString()}
+            </span>
+          )}
+        </div>
       )}
       {/* §8 DANGER ZONE: orange hairline panel, mono label + IRREVERSIBLE
           meta, muted body, orange-outline action — never an orange fill. */}
@@ -1179,14 +1279,12 @@ function EncryptionPanel() {
 
 function JudgePanel() {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
+  type JudgeData = { config: { enabled: boolean; model: string | null; mode?: 'advisory' | 'enforcing' }; models: string[] }
+  const query = useQuery({
     queryKey: ['judge-config'],
-    queryFn: async (): Promise<{ config: { enabled: boolean; model: string | null; mode?: 'advisory' | 'enforcing' }; models: string[] }> => {
-      const r = await fetch('/api/admin/judge')
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<JudgeData> => getJson<JudgeData>('/api/admin/judge'),
   })
+  const { data, isPending } = query
   const { saved, flash } = useSavedFlash()
   const enabled = data?.config.enabled ?? false
   const model = data?.config.model ?? ''
@@ -1216,6 +1314,15 @@ function JudgePanel() {
           <Skeleton className="h-3 w-52 rounded-full" delay={0.12} />
           <Skeleton className="h-8 w-64" delay={0.24} />
         </div>
+      ) : !data ? (
+        // The controls seed from the response, so a failed read renders the
+        // judge as OFF — and the first click would then save it off for real.
+        <QueryError
+          variant="compact"
+          error={query.error}
+          title="Could not load the judge configuration"
+          onRetry={() => void query.refetch()}
+        />
       ) : (
       <div className="flex flex-wrap items-center gap-3">
         <Checkbox
@@ -1259,15 +1366,12 @@ interface GuardData {
 // mode records findings out-of-band; annotate/strict act on them.
 function GuardrailsPanel() {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
+  const query = useQuery({
     queryKey: ['guardrails'],
-    queryFn: async (): Promise<GuardData> => {
-      const r = await fetch('/api/admin/guardrails')
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<GuardData> => getJson<GuardData>('/api/admin/guardrails'),
     refetchInterval: 30_000,
   })
+  const { data, isPending } = query
   const cfg = data?.config
   const save = async (patch: Partial<GuardData['config']>) => {
     if (!cfg) return
@@ -1305,6 +1409,16 @@ function GuardrailsPanel() {
             <SkeletonRows rows={3} />
           </div>
         </>
+      ) : !data ? (
+        // "0 findings" and mode=observe are both defaults this component
+        // invents when `data` is missing — over a failed read that reads as a
+        // guard that is quietly running and finding nothing.
+        <QueryError
+          variant="compact"
+          error={query.error}
+          title="Could not load the guardrail configuration"
+          onRetry={() => void query.refetch()}
+        />
       ) : (
       <>
       <div className="flex flex-wrap items-center gap-4">
@@ -1385,15 +1499,12 @@ interface OutreachData {
 // things through their own governed tools, plus agent-initiated DM caps.
 function OutreachPanel() {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
+  const query = useQuery({
     queryKey: ['admin-outreach'],
-    queryFn: async (): Promise<OutreachData> => {
-      const r = await fetch('/api/admin/outreach')
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<OutreachData> => getJson<OutreachData>('/api/admin/outreach'),
     refetchInterval: 30_000,
   })
+  const { data, isPending } = query
   const cfg = data?.config
   const agents = data?.agents ?? []
   const save = async (patch: Partial<OutreachData['config']>, proactiveAgents?: string[]) => {
@@ -1435,6 +1546,15 @@ function OutreachPanel() {
             <SkeletonRows rows={3} />
           </div>
         </>
+      ) : !data ? (
+        // Same shape as the guard panel: an unchecked toggle and an empty agent
+        // list are this component's defaults, not the org's actual policy.
+        <QueryError
+          variant="compact"
+          error={query.error}
+          title="Could not load outreach settings"
+          onRetry={() => void query.refetch()}
+        />
       ) : (
       <>
       <div className="flex flex-wrap items-center gap-4">
@@ -1520,14 +1640,11 @@ interface OrgGoogle {
 // The shared org Google account general fleet agents act as for Drive/Docs.
 function OrgGooglePanel() {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
+  const query = useQuery({
     queryKey: ['org-google'],
-    queryFn: async (): Promise<OrgGoogle> => {
-      const r = await fetch('/api/integrations/google/org')
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<OrgGoogle> => getJson<OrgGoogle>('/api/integrations/google/org'),
   })
+  const { data, isPending } = query
   const [flash, setFlash] = useState<string | null>(null)
   useEffect(() => {
     const p = new URLSearchParams(window.location.search).get('googleOrg')
@@ -1572,7 +1689,17 @@ function OrgGooglePanel() {
           </div>
           <Skeleton className="h-7 w-24 shrink-0" delay={0.24} />
         </div>
-      ) : data && !data.available ? (
+      ) : !data ? (
+        // Without this branch a failed status read fell through to the row
+        // below, which renders "Not connected" and a Connect button — and
+        // reconnecting a connection that is already live re-consents the org.
+        <QueryError
+          variant="compact"
+          error={query.error}
+          title="Could not load the org Google account"
+          onRetry={() => void query.refetch()}
+        />
+      ) : !data.available ? (
         <div className="text-xs text-muted">Google integration isn’t configured on this server.</div>
       ) : (
         <div className="flex items-center gap-3 rounded-md border border-line p-4">
@@ -1666,14 +1793,11 @@ function GithubPanel() {
     patSet: boolean
     repoCreationOrgs?: string[]
   }
-  const { data: status, isPending } = useQuery({
+  const statusQuery = useQuery({
     queryKey: ['github-status'],
-    queryFn: async (): Promise<GhStatus | null> => {
-      const r = await fetch('/api/workbench/github', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return ((await r.json()) as { status: GhStatus }).status
-    },
+    queryFn: async (): Promise<GhStatus> => (await getJson<{ status: GhStatus }>('/api/workbench/github')).status,
   })
+  const { data: status, isPending } = statusQuery
   const [mode, setMode] = useState<'app' | 'pat' | ''>('')
   const [pat, setPat] = useState('')
   const [appId, setAppId] = useState('')
@@ -1703,21 +1827,39 @@ function GithubPanel() {
     await qc.invalidateQueries({ queryKey: ['github-status'] })
   }
 
-  const { data: installations = [] } = useQuery({
+  // An empty install list makes the panel say "install the app on GitHub first"
+  // — advice that is wrong, and acted on, if the list simply failed to load.
+  const installsQuery = useQuery({
     queryKey: ['github-installations'],
     enabled: status?.mode === 'app' && !!status.app.keySet,
-    queryFn: async (): Promise<Array<{ id: number; account: string }>> => {
-      const r = await fetch('/api/workbench/github?installations=1', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { installations: Array<{ id: number; account: string }> }).installations
-    },
+    queryFn: (): Promise<Array<{ id: number; account: string }>> =>
+      getList<{ id: number; account: string }>('/api/workbench/github?installations=1', 'installations'),
   })
+  const installations = installsQuery.data ?? []
+  // A failed BACKGROUND refetch keeps the chips it already has — only a failure
+  // with nothing behind it turns the row into an error.
+  const installsFailed = installsQuery.isError && installsQuery.data === undefined
 
   if (isPending) {
     return (
       <Panel className="mt-4">
         <Skeleton className="mb-3 h-4 w-24 rounded-full" />
         <SkeletonRows rows={2} />
+      </Panel>
+    )
+  }
+  // "Not connected — pick a method" below is a verdict on the stored GitHub
+  // credentials. A failed read never delivered one, and following that advice
+  // means re-pasting an App key that was already there.
+  if (!status) {
+    return (
+      <Panel className="mt-4">
+        <QueryError
+          variant="compact"
+          error={statusQuery.error}
+          title="Could not load the GitHub connection"
+          onRetry={() => void statusQuery.refetch()}
+        />
       </Panel>
     )
   }
@@ -1816,7 +1958,17 @@ function GithubPanel() {
                       </button>
                     )
                   })}
-                  {status?.app.keySet && installations.length === 0 && <span className="text-xs text-muted">install the app on GitHub first — the guide's step 3</span>}
+                  {status?.app.keySet && installsFailed && (
+                    <QueryError
+                      variant="inline"
+                      error={installsQuery.error}
+                      title="Could not list installations"
+                      onRetry={() => void installsQuery.refetch()}
+                    />
+                  )}
+                  {status?.app.keySet && !installsFailed && installations.length === 0 && (
+                    <span className="text-xs text-muted">install the app on GitHub first — the guide's step 3</span>
+                  )}
                   {!status?.app.keySet && <span className="text-xs text-muted">save the App ID + key first</span>}
                   {(status?.app.installationIds?.length ?? 0) > 1 && <span className="text-xs text-muted">repos pool across all selected orgs</span>}
                 </div>
@@ -1989,15 +2141,16 @@ function RepoCreationSection({
     why: string
     createdAt: string
   }
-  const { data: requests = [] } = useQuery({
+  // This is the humans-ratify queue. An empty render means "nothing waiting on
+  // you" — a failed poll must never say that, or an agent's repo request sits
+  // unseen for ever.
+  const requestsQuery = useQuery({
     queryKey: ['repo-requests'],
-    queryFn: async (): Promise<RepoReq[]> => {
-      const r = await fetch('/api/workbench/repo-requests', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { requests: RepoReq[] }).requests
-    },
+    queryFn: (): Promise<RepoReq[]> => getList<RepoReq>('/api/workbench/repo-requests', 'requests'),
     refetchInterval: 60_000,
   })
+  const requests = requestsQuery.data ?? []
+  const requestsFailed = requestsQuery.isError && requestsQuery.data === undefined
   const [decideError, setDecideError] = useState<string | null>(null)
   const decide = async (id: string, action: 'approve' | 'reject') => {
     setDecideError(null)
@@ -2031,6 +2184,14 @@ function RepoCreationSection({
         />
         <span className="text-xs text-muted">needs the App's org Administration permission to create</span>
       </div>
+      {requestsFailed && (
+        <QueryError
+          variant="inline"
+          error={requestsQuery.error}
+          title="Could not load pending repo requests"
+          onRetry={() => void requestsQuery.refetch()}
+        />
+      )}
       {requests.map((r) => (
         <div key={r.id} className="flex items-center gap-2 rounded-md border border-warning/30 px-3 py-2 text-sm">
           <span className="min-w-0 flex-1 truncate">
@@ -2054,14 +2215,11 @@ function RepoFlowSection() {
     flows: Array<{ repo: string; baseBranch: string | null; testingBranch: string | null }>
     repos: string[]
   }
-  const { data } = useQuery({
+  const query = useQuery({
     queryKey: ['workbench-flow'],
-    queryFn: async (): Promise<FlowData | null> => {
-      const r = await fetch('/api/workbench/flow', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return (await r.json()) as FlowData
-    },
+    queryFn: (): Promise<FlowData> => getJson<FlowData>('/api/workbench/flow'),
   })
+  const { data } = query
   const { saved, flash } = useSavedFlash()
 
   const save = async (repo: string, patch: { baseBranch?: string | null; testingBranch?: string | null }) => {
@@ -2079,7 +2237,20 @@ function RepoFlowSection() {
     flash()
     await qc.invalidateQueries({ queryKey: ['workbench-flow'] })
   }
-  if (!data) return null
+  // A failed read used to REMOVE the whole section, so per-repo base and
+  // testing branches looked unconfigured — and re-entering them would have
+  // overwritten the real flow.
+  if (!data)
+    return !query.isError ? null : (
+      <div className="border-t border-line-subtle pt-3">
+        <QueryError
+          variant="inline"
+          error={query.error}
+          title="Could not load repository flow"
+          onRetry={() => void query.refetch()}
+        />
+      </div>
+    )
   // Every reachable repo is a row; configs for repos the connection lost
   // access to still show (flagged) so they can be understood and cleared.
   const rows = [...new Set([...data.repos, ...data.flows.map((f) => f.repo)])].sort()

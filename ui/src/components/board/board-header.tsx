@@ -3,13 +3,21 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Settings2, Archive } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { Skeleton } from '@/components/ui/skeleton'
+import { QueryError } from '@/components/ui/query-state'
 import { renameBoard, useBoardMembers, type Board } from '@/lib/boards'
 
 // Board page header: editable name, stacked member avatars, and a single settings
 // gear (everything else lives in the board settings modal).
 export function BoardHeader({ board, onSettings }: { board: Board; onSettings: () => void }) {
   const qc = useQueryClient()
-  const { data: members = [], isLoading: membersLoading } = useBoardMembers(board.id)
+  // `{ data: members = [] }` turned a 500 on /api/boards/:id/members into an
+  // empty avatar stack — byte-identical to a board only you can see. Who has
+  // access is a security-shaped claim; it may only be made from a read that
+  // actually returned.
+  const membersQuery = useBoardMembers(board.id)
+  const members = membersQuery.data ?? []
+  const membersLoading = membersQuery.isLoading
+  const membersFailed = membersQuery.isError && membersQuery.data === undefined
   const canEdit = board.role === 'owner' || board.role === 'editor'
   const [name, setName] = useState(board.name)
   const [editing, setEditing] = useState(false)
@@ -47,6 +55,16 @@ export function BoardHeader({ board, onSettings }: { board: Board; onSettings: (
         >
           {board.name}
         </button>
+      )}
+
+      {membersFailed && (
+        <QueryError
+          variant="inline"
+          className="shrink-0 text-right"
+          title="Members unavailable"
+          error={membersQuery.error}
+          onRetry={() => void membersQuery.refetch()}
+        />
       )}
 
       <div className="flex -space-x-2">

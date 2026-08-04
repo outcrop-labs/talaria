@@ -13,6 +13,7 @@ import { alert, confirm, prompt } from '@/components/ui/confirm'
 import { ChatView } from '@/components/chat/chat-view'
 import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { CountPill, Rail, RailRow, RailSurface } from '@/components/app/surface'
+import { QueryError } from '@/components/ui/query-state'
 import { ChannelView } from '@/components/chat/channel-view'
 import { SessionRowBody } from '@/components/chat/conversation-sidebar'
 import { ChannelSettingsModal } from '@/components/chat/channel-settings'
@@ -62,11 +63,19 @@ type Sel = { t: 'channel'; id: string } | { t: 'agent'; model: string; conversat
 function CommsPage() {
   const qc = useQueryClient()
   const { data: session } = useSession()
-  const { data: fleetData, isLoading: fleetLoading } = useAgents()
+  // Every rail section below keeps its whole query, not just `data` — a
+  // destructured `= []` throws the rejection away and the section then renders
+  // its friendly "you have none yet" line over a 500. Four separate reads feed
+  // this rail, so each owns its own failure marker (see `RailFailure`).
+  const fleetQuery = useAgents()
+  const { data: fleetData, isLoading: fleetLoading } = fleetQuery
   const fleet = fleetData?.agents ?? []
-  const { data: channels = [], isLoading } = useChannels()
-  const { data: users = [], isLoading: usersLoading } = useUsers()
-  const { data: conversations = [], isLoading: conversationsLoading } = useConversations('chat')
+  const channelsQuery = useChannels()
+  const { data: channels = [], isLoading } = channelsQuery
+  const usersQuery = useUsers()
+  const { data: users = [], isLoading: usersLoading } = usersQuery
+  const conversationsQuery = useConversations('chat')
+  const { data: conversations = [], isLoading: conversationsLoading } = conversationsQuery
 
   // The URL IS the selection: ?c=<channel> or ?a=<agent>&x=<thread>. Every
   // pick navigates (push), so back/forward walks your reading order and any
@@ -239,7 +248,18 @@ function CommsPage() {
               </span>
             </RailRow>
           ))}
-          {rooms.length === 0 && (isLoading ? <SkeletonRows rows={4} className="px-2 py-1.5" /> : <Hint>Ambient, persistent talk.</Hint>)}
+          {rooms.length === 0 &&
+            (isLoading ? (
+              <SkeletonRows rows={4} className="px-2 py-1.5" />
+            ) : channelsQuery.isError && channelsQuery.data === undefined ? (
+              <RailFailure
+                error={channelsQuery.error}
+                title="Could not load channels"
+                onRetry={() => void channelsQuery.refetch()}
+              />
+            ) : (
+              <Hint>Ambient, persistent talk.</Hint>
+            ))}
         </Section>
 
         <Section
@@ -260,6 +280,12 @@ function CommsPage() {
           {relays.length === 0 &&
             (isLoading ? (
               <SkeletonRows rows={3} className="px-2 py-1.5" />
+            ) : channelsQuery.isError && channelsQuery.data === undefined ? (
+              <RailFailure
+                error={channelsQuery.error}
+                title="Could not load relays"
+                onRetry={() => void channelsQuery.refetch()}
+              />
             ) : (
               <Hint>Gather people + agents around a purpose; conclude when done.</Hint>
             ))}
@@ -288,7 +314,19 @@ function CommsPage() {
             )
           })}
           {people.length === 0 &&
-            (usersLoading ? <SkeletonRows rows={4} avatar className="px-2 py-1.5" /> : <Hint>Just you so far.</Hint>)}
+            (usersLoading ? (
+              <SkeletonRows rows={4} avatar className="px-2 py-1.5" />
+            ) : usersQuery.isError && usersQuery.data === undefined ? (
+              // "Just you so far." over a failed directory read is how a
+              // 20-person org gets told it is one person.
+              <RailFailure
+                error={usersQuery.error}
+                title="Could not load teammates"
+                onRetry={() => void usersQuery.refetch()}
+              />
+            ) : (
+              <Hint>Just you so far.</Hint>
+            ))}
         </Section>
 
         <Section label="Agents" meta={fleet.length > 0 ? String(fleet.length).padStart(2, '0') : undefined}>
@@ -377,7 +415,28 @@ function CommsPage() {
             )
           })}
           {fleet.length === 0 &&
-            (fleetLoading ? <SkeletonRows rows={3} avatar className="px-2 py-1.5" /> : <Hint>No agents yet. Hire on /agents.</Hint>)}
+            (fleetLoading ? (
+              <SkeletonRows rows={3} avatar className="px-2 py-1.5" />
+            ) : fleetQuery.isError && fleetData === undefined ? (
+              <RailFailure
+                error={fleetQuery.error}
+                title="Could not load your agents"
+                onRetry={() => void fleetQuery.refetch()}
+              />
+            ) : (
+              <Hint>No agents yet. Hire on /agents.</Hint>
+            ))}
+          {/* Threads nest under the agent rows above, so a failed conversation
+              read makes every agent look like it has never been talked to.
+              The rows stay (good fleet data is not thrown away) — the marker
+              says the threads are missing rather than absent. */}
+          {conversationsQuery.isError && conversationsQuery.data === undefined && (
+            <RailFailure
+              error={conversationsQuery.error}
+              title="Could not load your threads"
+              onRetry={() => void conversationsQuery.refetch()}
+            />
+          )}
         </Section>
       </Rail>
 
@@ -623,6 +682,16 @@ function Section({
 
 const Hint = ({ children }: { children: React.ReactNode }) => (
   <li className="px-2 py-1 text-[11px] leading-relaxed text-muted">{children}</li>
+)
+
+// A rail section whose read FAILED. It sits exactly where the list would have
+// been, so a broken section can never be mistaken for an empty one — "No agents
+// yet. Hire on /agents." over a 500 tells an owner to re-hire a fleet that is
+// still there. `<li>` because Section renders its children inside a `<ul>`.
+const RailFailure = ({ error, title, onRetry }: { error: unknown; title: string; onRetry: () => void }) => (
+  <li className="px-2 py-1.5">
+    <QueryError variant="inline" error={error} title={title} onRetry={onRetry} />
+  </li>
 )
 
 // A neat little header multiselect: a pill ("3 people ▾") opening a checklist

@@ -3,6 +3,8 @@ import { useQueries } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { FolderKanban, ListTodo, Search, X } from 'lucide-react'
 import { useBoards, type Board } from '@/lib/boards'
+import { getList } from '@/lib/fetch-json'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import type { Task } from '@/lib/task-const'
 import { cn } from '@/lib/cn'
 
@@ -14,26 +16,46 @@ const DONE_STATUSES = new Set(['done', 'completed', 'cancelled'])
 
 const isDone = (task: Task) => task.completedAt !== null || DONE_STATUSES.has(task.status)
 
-async function fetchBoardTasks(board: Board): Promise<IndexedTask[]> {
-  const response = await fetch(`/api/boards/${board.id}/tasks`, { credentials: 'same-origin' })
-  if (!response.ok) return []
-  const data = (await response.json()) as { tasks?: Task[] }
-  return (data.tasks ?? []).map((task) => ({ ...task, boardName: board.name }))
-}
-
 export function SidebarWorkOverview() {
   const [query, setQuery] = useState('')
-  const { data: boards = [], isLoading: boardsLoading } = useBoards()
+  // The rows AND the sentence that says they are missing. This sidebar states
+  // counts ("2/7 projects"); a board read that 500s must never arrive here as
+  // an empty list, or the rail confidently reports that the org has no work.
+  const boardsQuery = useBoards()
+  const boardList = listQuery(boardsQuery, {
+    title: 'Could not load your projects',
+    staleTitle: 'These projects may be out of date',
+    variant: 'inline',
+  })
+  const boards = boardList.rows
+  // Same key and same reader as `useBoardTasks` on purpose: two queryFns under
+  // one key hand each other's consumers the other's row shape. The board name
+  // is joined below, out of the cached payload, so what lands in the cache is
+  // exactly what the board views expect.
   const taskQueries = useQueries({
     queries: boards.map((board) => ({
       queryKey: ['board-tasks', board.id, false],
-      queryFn: () => fetchBoardTasks(board),
+      queryFn: (): Promise<Task[]> => getList<Task>(`/api/boards/${board.id}/tasks`, 'tasks'),
       staleTime: 30_000,
     })),
   })
 
-  const tasks = useMemo(() => taskQueries.flatMap((result) => result.data ?? []), [taskQueries])
-  const loading = boardsLoading || taskQueries.some((result) => result.isLoading)
+  const tasks = useMemo<IndexedTask[]>(
+    () =>
+      taskQueries.flatMap((result, index) =>
+        (result.data ?? []).map((task) => ({ ...task, boardName: boards[index]?.name ?? '' })),
+      ),
+    [taskQueries, boards],
+  )
+  const tasksPending = taskQueries.some((result) => result.isPending && result.fetchStatus !== 'idle')
+  const tasksFailed = taskQueries.filter((result) => result.isError && result.data === undefined)
+  // Nothing came back at all: the counts below would be zeros invented by an
+  // outage, so they are withheld rather than stated.
+  const tasksUnknown = taskQueries.length > 0 && tasksFailed.length === taskQueries.length
+  const retryTasks = () => {
+    for (const result of taskQueries) if (result.isError) void result.refetch()
+  }
+  const loading = boardList.pending || tasksPending
   const activeProjects = boards.filter((board) => tasks.some((task) => task.boardId === board.id && !isDone(task))).length
   const completedTasks = tasks.filter(isDone).length
   const normalizedQuery = query.trim().toLowerCase()
@@ -81,37 +103,68 @@ export function SidebarWorkOverview() {
         )}
       </div>
 
-      {normalizedQuery ? (
-        <SearchResults
-          query={query}
-          projects={projectMatches}
-          tasks={taskMatches}
-          loading={loading}
-          onOpen={() => setQuery('')}
-        />
+      {boardList.failed ? (
+        // The read broke and there is nothing to show. The notice replaces the
+        // rows — an empty list beside an error reads as "and also there are
+        // none", which is the lie twice.
+        <div className="mt-3 px-2">{boardList.notice}</div>
       ) : (
-        <div className="mt-3 space-y-0.5">
-          <SummaryRow
-            to="projects"
-            icon={<FolderKanban size={16} strokeWidth={1.5} />}
-            label="Projects"
-            value={activeProjects}
-            total={boards.length}
-            segments={3}
-            loading={loading}
-            hint={`${activeProjects} active of ${boards.length} visible projects`}
-          />
-          <SummaryRow
-            to="tasks"
-            icon={<ListTodo size={16} strokeWidth={1.5} />}
-            label="Tasks"
-            value={completedTasks}
-            total={tasks.length}
-            segments={10}
-            loading={loading}
-            hint={`${completedTasks} completed of ${tasks.length} visible tasks`}
-          />
-        </div>
+        <>
+          {boardList.notice && <div className="mt-3 px-2">{boardList.notice}</div>}
+          {tasksFailed.length > 0 && (
+            <QueryError
+              error={tasksFailed[0]?.error}
+              title={tasksUnknown ? 'Could not load your tasks' : 'Some task counts are missing'}
+              variant="inline"
+              onRetry={retryTasks}
+              className="mt-3 px-2"
+            />
+          )}
+          {normalizedQuery ? (
+            <SearchResults
+              query={query}
+              projects={projectMatches}
+              tasks={taskMatches}
+              loading={loading}
+              onOpen={() => setQuery('')}
+            />
+          ) : (
+            <div className="mt-3 space-y-0.5">
+              <SummaryRow
+                to="projects"
+                icon={<FolderKanban size={16} strokeWidth={1.5} />}
+                label="Projects"
+                value={activeProjects}
+                total={boards.length}
+                segments={3}
+                loading={loading}
+                // "Active" is derived from the tasks on each board, so with the
+                // task reads down the numerator is unknown, not zero.
+                unknown={tasksUnknown}
+                hint={
+                  tasksUnknown
+                    ? `${boards.length} visible projects; how many are active is unknown while tasks fail to load`
+                    : `${activeProjects} active of ${boards.length} visible projects`
+                }
+              />
+              <SummaryRow
+                to="tasks"
+                icon={<ListTodo size={16} strokeWidth={1.5} />}
+                label="Tasks"
+                value={completedTasks}
+                total={tasks.length}
+                segments={10}
+                loading={loading}
+                unknown={tasksUnknown}
+                hint={
+                  tasksUnknown
+                    ? 'Task counts are unavailable — the task read failed'
+                    : `${completedTasks} completed of ${tasks.length} visible tasks`
+                }
+              />
+            </div>
+          )}
+        </>
       )}
     </section>
   )
@@ -125,6 +178,7 @@ function SummaryRow({
   total,
   segments,
   loading,
+  unknown = false,
   hint,
 }: {
   to: 'projects' | 'tasks'
@@ -134,15 +188,17 @@ function SummaryRow({
   total: number
   segments: number
   loading: boolean
+  /** The read failed: state nothing rather than a number the outage produced. */
+  unknown?: boolean
   hint: string
 }) {
   const content = (
     <>
       <span className="grid h-4 w-4 shrink-0 place-items-center text-muted">{icon}</span>
       <span className="min-w-0 flex-1 truncate font-sans text-[13px] text-fg">{label}</span>
-      <SegmentMeter value={value} total={total} segments={segments} />
+      <SegmentMeter value={unknown ? 0 : value} total={unknown ? 0 : total} segments={segments} />
       <span className="w-[34px] shrink-0 text-right font-mono text-[10px] tracking-[0.02em] text-muted">
-        {loading ? '—' : `${value}/${total}`}
+        {loading || unknown ? '—' : `${value}/${total}`}
       </span>
     </>
   )

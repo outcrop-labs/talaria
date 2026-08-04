@@ -11,7 +11,9 @@ import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
+import { QueryState } from '@/components/ui/query-state'
 import { Skeleton } from '@/components/ui/skeleton'
+import { getList } from '@/lib/fetch-json'
 import { relativeTime } from '@/lib/fleet'
 import { parseCronDraft, streamMuse } from '@/lib/muse'
 import { cn } from '@/lib/cn'
@@ -437,14 +439,12 @@ function CronForm({
 export function CronsPanel({ agentId }: { agentId: string }) {
   const qc = useQueryClient()
   const key = ['agent-crons', agentId]
-  const { data, isLoading, error } = useQuery({
+  // Already rejected on non-2xx and already had an error branch; routed through
+  // `getList` so the "200 but no `jobs` wrapper" case reads the same as it does
+  // everywhere else.
+  const query = useQuery({
     queryKey: key,
-    queryFn: async (): Promise<CronJob[]> => {
-      const r = await fetch(`/api/fleet/agents/${agentId}/crons`, { credentials: 'same-origin' })
-      const j = (await r.json().catch(() => null)) as { jobs?: CronJob[]; error?: string } | null
-      if (!r.ok || !j?.jobs) throw new Error(j?.error ?? 'could not load schedules')
-      return j.jobs
-    },
+    queryFn: (): Promise<CronJob[]> => getList<CronJob>(`/api/fleet/agents/${agentId}/crons`, 'jobs'),
   })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -522,19 +522,21 @@ export function CronsPanel({ agentId }: { agentId: string }) {
         <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Schedules</span>
         <InfoTip text="Recurring jobs the agent runs on its own native scheduler — they keep firing even when Talaria is down." />
       </div>
-      {isLoading ? (
-        <CronListSkeleton />
-      ) : error ? (
-        <EmptyState icon="◌" title="Schedules unavailable" hint={(error as Error).message} />
-      ) : (data ?? []).length === 0 ? (
-        <EmptyState icon={<CalendarClock size={22} />} title="Nothing scheduled" hint="Give it a recurring job below." />
-      ) : (
-        <ul className="divide-y divide-line rounded-lg border border-line">
-          {data!.map((j) => (
-            <CronRow key={j.id} job={j} busy={busy} onAction={(a) => void act(j.id, a)} onEdit={(patch) => edit(j.id, patch)} />
-          ))}
-        </ul>
-      )}
+      <QueryState
+        query={query}
+        errorTitle="Schedules unavailable"
+        errorVariant="compact"
+        skeleton={<CronListSkeleton />}
+        empty={<EmptyState icon={<CalendarClock size={22} />} title="Nothing scheduled" hint="Give it a recurring job below." />}
+      >
+        {(jobs) => (
+          <ul className="divide-y divide-line rounded-lg border border-line">
+            {jobs.map((j) => (
+              <CronRow key={j.id} job={j} busy={busy} onAction={(a) => void act(j.id, a)} onEdit={(patch) => edit(j.id, patch)} />
+            ))}
+          </ul>
+        )}
+      </QueryState>
       <CronForm onCreate={create} busy={busy} />
       {err && <p className="text-xs text-danger">{err}</p>}
     </div>
@@ -552,14 +554,11 @@ interface FleetCronAgent {
 /** Fleet-wide schedules (admin): every agent's jobs + create-across-agents. */
 export function FleetCronsModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery({
+  const query = useQuery({
     queryKey: ['fleet-crons'],
-    queryFn: async (): Promise<FleetCronAgent[]> => {
-      const r = await fetch('/api/fleet/crons', { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('could not load fleet schedules')
-      return ((await r.json()) as { agents: FleetCronAgent[] }).agents
-    },
+    queryFn: (): Promise<FleetCronAgent[]> => getList<FleetCronAgent>('/api/fleet/crons', 'agents'),
   })
+  const { data, isLoading } = query
   const agents = data ?? []
   const [selected, setSelected] = useState<Set<string> | null>(null) // null = all
   const [busy, setBusy] = useState(false)
@@ -636,23 +635,28 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
       }
     >
       <div className="space-y-5">
-        {isLoading ? (
-          <CronListSkeleton />
-        ) : withJobs.length === 0 ? (
-          <EmptyState icon={<CalendarClock size={22} />} title="Nothing scheduled anywhere" hint="Create the first job below." />
-        ) : (
-          <ul className="divide-y divide-line rounded-lg border border-line">
-            {withJobs.map(({ agent, job }) => (
-              <CronRow
-                key={`${agent.id}-${job.id}`}
-                job={job}
-                agentLabel={agent.displayName}
-                onAction={(a) => void act(agent.id, job.id, a)}
-                onEdit={(patch) => edit(agent.id, job.id, patch)}
-              />
-            ))}
-          </ul>
-        )}
+        <QueryState
+          query={query}
+          errorTitle="Could not load fleet schedules"
+          errorVariant="compact"
+          skeleton={<CronListSkeleton />}
+          isEmpty={() => withJobs.length === 0}
+          empty={<EmptyState icon={<CalendarClock size={22} />} title="Nothing scheduled anywhere" hint="Create the first job below." />}
+        >
+          {() => (
+            <ul className="divide-y divide-line rounded-lg border border-line">
+              {withJobs.map(({ agent, job }) => (
+                <CronRow
+                  key={`${agent.id}-${job.id}`}
+                  job={job}
+                  agentLabel={agent.displayName}
+                  onAction={(a) => void act(agent.id, job.id, a)}
+                  onEdit={(patch) => edit(agent.id, job.id, patch)}
+                />
+              ))}
+            </ul>
+          )}
+        </QueryState>
         {agents.some((a) => a.error) && (
           <p className="text-xs text-warning">
             Unreachable: {agents.filter((a) => a.error).map((a) => a.displayName).join(', ')}. Are they running?
@@ -661,10 +665,10 @@ export function FleetCronsModal({ onClose }: { onClose: () => void }) {
 
         <div>
           <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">New job across agents</div>
-          {/* While agents load, `chosen` would be an empty set — a job created
-              now would target NOBODY. Hold the create button and show the
-              chip row's shape until the roster resolves. */}
-          <CronForm onCreate={create} busy={busy} disabled={isLoading}>
+          {/* While the roster is unknown — still loading OR failed — `chosen`
+              would be an empty set and a job created now would target NOBODY.
+              `isLoading` alone went false on a failure and re-armed the button. */}
+          <CronForm onCreate={create} busy={busy} disabled={data === undefined}>
             <div className="flex flex-wrap gap-1.5">
               {isLoading &&
                 Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-6 w-20 rounded" delay={i * 0.12} />)}

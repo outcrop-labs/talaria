@@ -2,23 +2,50 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, listMembers } from '@/server/boards'
-import { addComment, getTask, listComments } from '@/server/tasks'
+import { addComment, agentTicketRefusal, getTask, listComments, type AgentWriteTarget } from '@/server/tasks'
 import { notifyMentions } from '@/server/mentions'
 import { indexTicketComment } from '@/server/retrieval/sources'
 
-/** Board access for either a session user or a board-allowed named agent. */
-async function commentAuthor(request: Request, boardId: string): Promise<string | Response> {
-  if (checkAgentKey(request)) {
-    const name = agentName(request)
-    // Unnamed agent-key callers keep the legacy generic author.
-    if (!name) return 'agent'
-    if (!(await boardAllowsAgent(boardId, name))) return json({ error: 'forbidden' }, { status: 403 })
-    return name
+/** Who may READ this ticket's comments: a board member, or an agent the board's
+ *  policy allows. Reading changes nothing, so it is the BOARD question only —
+ *  an agent that can see the board can read the thread on a ticket that is
+ *  closed or archived. */
+async function commentReader(request: Request, boardId: string): Promise<string | Response> {
+  const caller = await agentCaller(request)
+  if (caller instanceof Response) return caller
+  if (caller) {
+    // The CALLER, not its model: the elevated-assistant bypass inside board
+    // policy is org-wide reach, and a legacy caller only asserted its name.
+    if (!(await boardAllowsAgent(boardId, caller))) return json({ error: 'forbidden' }, { status: 403 })
+    return caller.model
   }
   const user = await getSessionUser(request)
   if (!user || !(await boardRole(user.id, boardId))) return json({ error: 'forbidden' }, { status: 403 })
+  return user.email ?? user.name ?? 'user'
+}
+
+/** Who may POST a comment. Posting is an ACT on the ticket, so an agent goes
+ *  through the one agent-authority predicate with intent 'comment' — board
+ *  policy plus archival, and deliberately NOT the closed-status clause, because
+ *  commenting is the agent's channel on work it can no longer edit.
+ *
+ *  This gate used to be `boardAllowsAgent` alone, which meant an archived BOARD
+ *  refused agent comments (board policy reads `archived_at`) while an archived
+ *  TICKET accepted them — one act of a person meaning two different things, one
+ *  level apart. `agentTicketRefusal` is where that is now decided once; see the
+ *  reasoning on `AgentIntent`. */
+async function commentAuthor(request: Request, task: AgentWriteTarget): Promise<string | Response> {
+  const caller = await agentCaller(request)
+  if (caller instanceof Response) return caller
+  if (caller) {
+    const shut = await agentTicketRefusal(task, caller, 'comment')
+    if (shut) return json({ error: shut }, { status: 403 })
+    return caller.model
+  }
+  const user = await getSessionUser(request)
+  if (!user || !(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
   return user.email ?? user.name ?? 'user'
 }
 
@@ -30,14 +57,14 @@ export const Route = createFileRoute('/api/tasks/$id/comments')({
       GET: async ({ request, params }) => {
         const task = await getTask(params.id)
         if (!task) return json({ error: 'not found' }, { status: 404 })
-        const who = await commentAuthor(request, task.boardId)
+        const who = await commentReader(request, task.boardId)
         if (who instanceof Response) return who
         return json({ comments: await listComments(params.id) })
       },
       POST: async ({ request, params }) => {
         const task = await getTask(params.id)
         if (!task) return json({ error: 'not found' }, { status: 404 })
-        const author = await commentAuthor(request, task.boardId)
+        const author = await commentAuthor(request, task)
         if (author instanceof Response) return author
 
         const parsed = z

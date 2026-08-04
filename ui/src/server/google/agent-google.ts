@@ -6,6 +6,7 @@
 // agent_defs.model is unique and is exactly what an agent presents over MCP as
 // x-agent-name, so a single lookup binds the caller to a Google connection.
 
+import { subjectModel, subjectProven, type AgentSubject } from '../agent-auth'
 import { db } from '../db/pg'
 import { getAccessToken } from './connections'
 import { getOrgAccessToken } from './org-connection'
@@ -20,8 +21,19 @@ export interface AgentGoogle {
 /** A Google access token for the calling agent, or null when the relevant
  *  connection isn't set up (owner hasn't connected / org account not configured).
  *  A personal assistant NEVER falls back to the org account — it acts strictly as
- *  its owner, so it can't silently write into the shared Drive. */
-export async function resolveAgentGoogle(agentModel: string, nowMs: number): Promise<AgentGoogle | null> {
+ *  its owner, so it can't silently write into the shared Drive.
+ *
+ *  Takes the CALLER, not a bare name: handing out an OAuth token is the single
+ *  largest grant on the agent surface (the owner's mailbox, the org Drive), so
+ *  the proof check lives HERE rather than only in each route's `refuseLegacy`.
+ *  The routes still guard — that reply names the container to roll — but a new
+ *  caller that forgets to gets null instead of the org's token. */
+export async function resolveAgentGoogle(agent: AgentSubject, nowMs: number): Promise<AgentGoogle | null> {
+  // A legacy shared-key caller only ASSERTS which agent it is: it proved fleet
+  // membership, not identity, so it never reaches a human's or the org's Google
+  // account.
+  if (!subjectProven(agent)) return null
+  const agentModel = subjectModel(agent)
   const sql = await db()
   const [def] = await sql<{ ownerUserId: string | null }[]>`
     select owner_user_id as "ownerUserId" from agent_defs where model = ${agentModel} limit 1

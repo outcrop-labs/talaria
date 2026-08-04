@@ -1,5 +1,6 @@
 // Models tab client: provider presets + endpoint CRUD.
 import { useQuery } from '@tanstack/react-query'
+import { getJson, getList } from '@/lib/fetch-json'
 import type { LlmEndpoint } from '@/lib/fleet-defs'
 
 /** Every common US model provider, preconfigured: base URLs and provider
@@ -151,11 +152,10 @@ export function useAvailableModels(endpointId: string) {
   return useQuery({
     queryKey: ['available-models', endpointId],
     staleTime: 60_000,
-    queryFn: async (): Promise<{ models: string[]; note?: string }> => {
-      const r = await fetch(`/api/fleet/endpoints/${endpointId}/available`, { credentials: 'same-origin' })
-      if (!r.ok) return { models: [] }
-      return r.json()
-    },
+    // An empty catalog WITH a `note` (missing key, provider down) is a 200 the
+    // picker explains. A non-2xx has no note and must not read as "no models".
+    queryFn: (): Promise<{ models: string[]; note?: string }> =>
+      getJson<{ models: string[]; note?: string }>(`/api/fleet/endpoints/${endpointId}/available`),
   })
 }
 
@@ -163,11 +163,7 @@ export function useEndpoints(enabled = true) {
   return useQuery({
     queryKey: ['fleet-endpoints'],
     enabled,
-    queryFn: async (): Promise<LlmEndpoint[]> => {
-      const r = await fetch('/api/fleet/endpoints', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { endpoints: LlmEndpoint[] }).endpoints
-    },
+    queryFn: (): Promise<LlmEndpoint[]> => getList<LlmEndpoint>('/api/fleet/endpoints', 'endpoints'),
   })
 }
 

@@ -8,6 +8,9 @@ import { inlineEditKeys } from '@/components/ui/control'
 import { Maximize2, ChevronLeft, Archive, ArchiveRestore, Trash2 } from 'lucide-react'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
 import { CloseButton } from '@/components/ui/close-button'
+import { EmptyState } from '@/components/ui/empty-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
+import { getList } from '@/lib/fetch-json'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { Select } from '@/components/ui/select'
 import { Combobox } from '@/components/ui/combobox'
@@ -38,7 +41,7 @@ import {
 import { useNavigate } from '@tanstack/react-router'
 import { userAssignee } from '@/lib/assignees'
 import { userMentionInsert, type Mentionable } from '@/components/chat/mentions'
-import { ColorPill } from '@/components/board/field-pills'
+import { ColorPill, dateInputValue, dueIsoFromDateInput, startIsoFromDateInput } from '@/components/board/field-pills'
 import {
   EFFORTS,
   EFFORT_LABEL,
@@ -66,7 +69,13 @@ const MOVE: TaskStatus[] = [...TASK_STATUSES, 'failed', 'cancelled']
 // Linear/Plane-style ticket: content (left) + properties rail (right).
 export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: Board; onClose: () => void }) {
   const qc = useQueryClient()
-  const { data } = useTask(taskId)
+  // Three answers, three faces. `data === undefined` is still in flight,
+  // `data === null` is the 404 getJsonOr404 hands back (deleted, or never
+  // yours), and isError is a real failure. Collapsing all three into the
+  // skeleton left a modal of shimmering placeholders on screen for ever, with
+  // no words on it at all, for a ticket that simply no longer exists.
+  const taskQuery = useTask(taskId)
+  const { data } = taskQuery
   const { data: fleet } = useAgents()
   const { data: user } = useSession()
   const { data: boardCfg } = useBoardAgents(board.id)
@@ -76,12 +85,22 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
   const canEdit = board.role === 'owner' || board.role === 'editor'
   const me = user?.email ?? user?.name ?? ''
   // Board tickets for the dependency picker (exclude self + already-linked).
-  const { data: boardTasks = [] } = useBoardTasks(board.id)
+  // Four `{ data: x = [] }` defaults used to live here, and each one furnished a
+  // control with a confident wrong answer: no dependencies to link, no
+  // teammates to assign, no labels on this board, and a Status menu quietly
+  // showing the hard-coded fallback instead of this board's own columns. None
+  // of the four could reach its error — the query object was thrown away on the
+  // same line it was created. `listQuery` hands back the rows AND the sentence.
+  const tasksList = listQuery(useBoardTasks(board.id), { title: 'Could not load this board’s tickets', variant: 'inline' })
+  const boardTasks = tasksList.rows
   // @mention board members in comments + description — the people the server
   // notifies (tasks comment/description paths). Tokens mirror the server's.
-  const { data: boardMembers = [] } = useBoardMembers(board.id)
-  const { data: boardLabels = [] } = useBoardLabels(board.id)
-  const { data: boardStatuses = [] } = useBoardStatuses(board.id)
+  const membersList = listQuery(useBoardMembers(board.id), { title: 'Could not load who’s on this board', variant: 'inline' })
+  const boardMembers = membersList.rows
+  const labelsList = listQuery(useBoardLabels(board.id), { title: 'Could not load this board’s labels', variant: 'inline' })
+  const boardLabels = labelsList.rows
+  const statusesList = listQuery(useBoardStatuses(board.id), { title: 'Could not load this board’s columns', variant: 'inline' })
+  const boardStatuses = statusesList.rows
   const mentionables = boardMembers
     .map((m) => ({ insert: userMentionInsert(m), label: m.name ?? m.email ?? m.userId, sub: m.email ?? undefined }))
     .filter((m) => m.insert)
@@ -145,7 +164,26 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
           transition={{ duration: 0.16 }}
           className="relative z-10 flex h-[85vh] w-full max-w-4xl overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]"
         >
-          {!t ? (
+          {taskQuery.isError && data === undefined ? (
+            <div className="grid h-full w-full place-items-center p-6">
+              <CloseButton onClick={onClose} className="absolute right-3 top-3" />
+              <QueryError error={taskQuery.error} title="Could not load this ticket" onRetry={() => void taskQuery.refetch()} />
+            </div>
+          ) : data === null ? (
+            <div className="grid h-full w-full place-items-center p-6">
+              <CloseButton onClick={onClose} className="absolute right-3 top-3" />
+              <EmptyState
+                icon="⧉"
+                title="This ticket no longer exists"
+                hint="It was deleted, or you no longer have access to it."
+                action={
+                  <Button variant="outline" size="sm" onClick={onClose}>
+                    Back to the board
+                  </Button>
+                }
+              />
+            </div>
+          ) : !t ? (
             <div className="flex h-full w-full gap-6 p-6">
               <div className="min-w-0 flex-1 space-y-4">
                 <Skeleton className="h-5 w-2/3 rounded-full" />
@@ -321,6 +359,9 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                       </option>
                     ))}
                   </Select>
+                  {/* Without this the menu silently degrades to the built-in
+                      statuses and looks like the board simply has those. */}
+                  {statusesList.notice}
                 </Prop>
                 <Prop label="Priority">
                   <Select value={t.priority} disabled={!canEdit} onChange={(e) => save({ priority: e.target.value as Priority })} size="sm" className="w-full">
@@ -340,6 +381,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     size="sm"
                     placeholder="Unassigned"
                   />
+                  {membersList.notice}
                 </Prop>
                 <div className="grid grid-cols-2 gap-2">
                   <Prop label="Effort">
@@ -393,14 +435,28 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                   </Prop>
                 )}
                 <div className="grid grid-cols-2 gap-2">
+                  {/* Dates go through the shared local-day helpers: a picked
+                      date is an instant at 09:00/17:00 LOCAL, same as the due
+                      pill, the quick-picks and the Gantt. Writing
+                      `new Date(value)` here stored UTC midnight instead, so the
+                      same field meant a different instant depending on which
+                      surface you edited it from. */}
                   <Prop label="Start date">
-                    <Input type="date" value={t.startDate ? t.startDate.slice(0, 10) : ''} disabled={!canEdit}
-                      onChange={(e) => save({ startDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
+                    <Input type="date" value={dateInputValue(t.startDate)} disabled={!canEdit}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        const iso = v ? startIsoFromDateInput(v) : null
+                        if (!v || iso) void save({ startDate: iso })
+                      }}
                       size="sm" className="w-full" />
                   </Prop>
                   <Prop label="Due date">
-                    <Input type="date" value={t.dueDate ? t.dueDate.slice(0, 10) : ''} disabled={!canEdit}
-                      onChange={(e) => save({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
+                    <Input type="date" value={dateInputValue(t.dueDate)} disabled={!canEdit}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        const iso = v ? dueIsoFromDateInput(v) : null
+                        if (!v || iso) void save({ dueDate: iso })
+                      }}
                       size="sm" className="w-full" />
                   </Prop>
                 </div>
@@ -496,6 +552,10 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                         placeholder="Add dependency"
                       />
                     )}
+                    {/* The picker is fed by the board's ticket list. When that
+                        read fails it offers nothing, which reads as "this board
+                        has no other tickets" — say what actually happened. */}
+                    {tasksList.notice}
                   </div>
                 </Prop>
                 {data!.blocks.length > 0 && (
@@ -517,6 +577,7 @@ export function TaskDetail({ taskId, board, onClose }: { taskId: string; board: 
                     disabled={!canEdit}
                     size="sm"
                   />
+                  {labelsList.notice}
                 </Prop>
                 <Prop label={`Watchers (${data!.watchers.length})`}>
                   <div className="space-y-1">
@@ -1023,18 +1084,23 @@ interface WbJob {
 }
 
 /** Workbench jobs on this ticket — the plan-approval gate and PR links live
- *  here, next to the work they govern. Hidden when there are none. */
+ *  here, next to the work they govern. Hidden when there are genuinely none;
+ *  LOUD when the read fails (see below). */
 function WorkbenchJobsStrip({ taskId, canEdit }: { taskId: string; canEdit: boolean }) {
   const qc = useQueryClient()
-  const { data: jobs = [] } = useQuery({
+  const jobsQuery = useQuery({
     queryKey: ['workbench-jobs', taskId],
-    queryFn: async (): Promise<WbJob[]> => {
-      const r = await fetch(`/api/workbench/jobs?taskId=${taskId}`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { jobs: WbJob[] }).jobs
-    },
+    // This strip is the human-approval gate. `if (!r.ok) return []` fed an
+    // empty list into `if (!live.length) return null`, so a 500 on this GET
+    // erased the gate from the ticket entirely — no error, no skeleton, not
+    // one pixel — and the ticket read exactly like one with no agent on it
+    // while an agent sat stopped, waiting on a person who could not see it.
+    // Non-2xx throws now, and the error branch below renders in its place: an
+    // approval nobody can see is strictly worse than an error message.
+    queryFn: (): Promise<WbJob[]> => getList<WbJob>(`/api/workbench/jobs?taskId=${encodeURIComponent(taskId)}`, 'jobs'),
     refetchInterval: 30_000,
   })
+  const jobs = jobsQuery.data
   const act = async (jobId: string, action: 'approve' | 'reject' | 'merge_testing') => {
     await fetch('/api/workbench/jobs', {
       method: 'PUT',
@@ -1044,6 +1110,24 @@ function WorkbenchJobsStrip({ taskId, canEdit }: { taskId: string; canEdit: bool
     })
     await qc.invalidateQueries({ queryKey: ['workbench-jobs', taskId] })
   }
+  // A failed background refetch keeps the last good strip on screen — stale
+  // approval buttons beat a vanished gate. Only a failure with nothing to fall
+  // back on takes the strip's place, and it says what the reader is missing.
+  if (jobsQuery.isError && jobs === undefined)
+    return (
+      <div className="mb-3 rounded-xl border border-[color:var(--theme-danger)]/40 bg-[color:var(--theme-danger)]/5 px-4 py-2.5">
+        <QueryError
+          variant="inline"
+          error={jobsQuery.error}
+          title="Could not load this ticket's workbench jobs"
+          onRetry={() => void jobsQuery.refetch()}
+        />
+        <p className="mt-1 text-xs text-muted">
+          If an agent is waiting on a plan approval here, it stays blocked until this loads — don't read the ticket as idle.
+        </p>
+      </div>
+    )
+  if (jobs === undefined) return null
   const live = jobs.filter((j) => j.status !== 'abandoned')
   if (!live.length) return null
   return (

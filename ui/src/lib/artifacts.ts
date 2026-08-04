@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { getJsonOr404, getList } from '@/lib/fetch-json'
 import type { EditPolicy, KbEditor, Visibility } from '@/lib/kb'
 
 export type ArtifactKind = 'doc' | 'sheet' | 'microsite' | 'file'
@@ -40,22 +41,17 @@ export interface ArtifactFolder {
 export const useArtifacts = () =>
   useQuery({
     queryKey: ['artifacts'],
-    queryFn: async (): Promise<Artifact[]> => {
-      const r = await fetch('/api/artifacts')
-      if (!r.ok) return []
-      return ((await r.json()) as { artifacts: Artifact[] }).artifacts
-    },
+    queryFn: (): Promise<Artifact[]> => getList<Artifact>('/api/artifacts', 'artifacts'),
   })
 
 export const useArtifact = (id: string | null) =>
   useQuery({
     queryKey: ['artifact', id],
     enabled: !!id,
-    queryFn: async (): Promise<Artifact | null> => {
-      const r = await fetch(`/api/artifacts/${id}`)
-      if (!r.ok) return null
-      return ((await r.json()) as { artifact: Artifact }).artifact
-    },
+    // 404 = deleted or not shared with you: a real "not found" the surface
+    // tells the truth about. 403/500 must not masquerade as that.
+    queryFn: async (): Promise<Artifact | null> =>
+      (await getJsonOr404<{ artifact: Artifact }>(`/api/artifacts/${id}`))?.artifact ?? null,
   })
 
 export const createArtifact = (input: { kind?: ArtifactKind; title?: string }) =>
@@ -70,11 +66,7 @@ export const saveArtifact = (
 export const useFolders = () =>
   useQuery({
     queryKey: ['artifact-folders'],
-    queryFn: async (): Promise<ArtifactFolder[]> => {
-      const r = await fetch('/api/artifact-folders')
-      if (!r.ok) return []
-      return ((await r.json()) as { folders: ArtifactFolder[] }).folders
-    },
+    queryFn: (): Promise<ArtifactFolder[]> => getList<ArtifactFolder>('/api/artifact-folders', 'folders'),
   })
 
 export const createFolder = (name: string, parentId?: string | null) =>
@@ -101,11 +93,8 @@ export const useTargetArtifacts = (targetType: string, targetId: string | null) 
   useQuery({
     queryKey: ['artifacts-for', targetType, targetId],
     enabled: !!targetId,
-    queryFn: async (): Promise<Artifact[]> => {
-      const r = await fetch(`/api/artifacts/for?targetType=${targetType}&targetId=${targetId}`)
-      if (!r.ok) return []
-      return ((await r.json()) as { artifacts: Artifact[] }).artifacts
-    },
+    queryFn: (): Promise<Artifact[]> =>
+      getList<Artifact>(`/api/artifacts/for?targetType=${targetType}&targetId=${targetId}`, 'artifacts'),
   })
 
 export const attachArtifact = (id: string, targetType: string, targetId: string) =>

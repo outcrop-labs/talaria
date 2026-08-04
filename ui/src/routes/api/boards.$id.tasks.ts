@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { boardAllowsAgent, boardRole, canEdit, invalidAssignee, listMembers } from '@/server/boards'
 import { createTask, listBoardTasks, EFFORTS, PRIORITIES } from '@/server/tasks'
 import { TICKET_COLORS } from '@/lib/task-const'
@@ -18,13 +18,15 @@ async function taskActor(
   boardId: string,
   requireEdit: boolean,
 ): Promise<{ actor: string; agent: boolean } | Response> {
-  if (checkAgentKey(request)) {
-    const agent = agentName(request)
-    if (!agent) return json({ error: 'x-agent-name required' }, { status: 400 })
-    if (!(await boardAllowsAgent(boardId, agent))) {
-      return json({ error: `agent "${agent}" is not allowed on this board` }, { status: 403 })
+  const caller = await agentCaller(request)
+  if (caller instanceof Response) return caller
+  if (caller) {
+    // Pass the CALLER, not its model: board policy's elevated-assistant bypass
+    // is org-wide reach, and only a caller that PROVED its identity gets it.
+    if (!(await boardAllowsAgent(boardId, caller))) {
+      return json({ error: `agent "${caller.model}" is not allowed on this board` }, { status: 403 })
     }
-    return { actor: agent, agent: true }
+    return { actor: caller.model, agent: true }
   }
   const user = await getSessionUser(request)
   if (!user) return json({ error: 'unauthorized' }, { status: 401 })
@@ -67,6 +69,15 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
         if (who.agent && parsed.data.assignees?.length) {
           return json({ error: 'agents cannot assign tickets' }, { status: 403 })
         }
+        // The same human-planning fields updateTask strips from an agent PATCH
+        // (estimate, sub-task structure) are not an agent's to set at CREATION
+        // either — otherwise a hand-rolled POST walks around the update gate and
+        // an agent estimates its own work or re-parents the plan. Dropped rather
+        // than refused, so the ticket still lands: same end state as creating it
+        // and then being unable to patch these in.
+        const planning = who.agent
+          ? { estimatedHours: null, parentId: null }
+          : { estimatedHours: parsed.data.estimatedHours ?? null, parentId: parsed.data.parentId ?? null }
         // Mixed assignees: `user:<uuid>` must be a board member; bare strings
         // are agents and must pass the board's agent policy.
         const bad = await invalidAssignee(params.id, parsed.data.assignees ?? [])
@@ -94,8 +105,8 @@ export const Route = createFileRoute('/api/boards/$id/tasks')({
             dueDate: parsed.data.dueDate ?? null,
             startDate: parsed.data.startDate ?? null,
             color: parsed.data.color ?? null,
-            estimatedHours: parsed.data.estimatedHours ?? null,
-            parentId: parsed.data.parentId ?? null,
+            estimatedHours: planning.estimatedHours,
+            parentId: planning.parentId,
             tags: parsed.data.tags,
             createdBy: who.actor,
           })

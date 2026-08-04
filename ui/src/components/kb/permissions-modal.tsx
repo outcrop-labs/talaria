@@ -6,9 +6,10 @@ import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/ui/avatar'
 import { Combobox } from '@/components/ui/combobox'
 import { SkeletonRows } from '@/components/ui/skeleton'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { useUsers } from '@/lib/users'
 import { useAgents } from '@/lib/agents'
-import { fetchEditors, type EditPolicy, type GrantRole, type KbEditor, type Visibility } from '@/lib/kb'
+import { useEditors, type EditPolicy, type GrantRole, type KbEditor, type Visibility } from '@/lib/kb'
 import { cn } from '@/lib/cn'
 
 // Google-Drive-style sharing: a list of people + agents each with a Viewer/
@@ -55,13 +56,35 @@ export function PermissionsModal({
   folderName?: string
   onSave: (patch: { visibility: Visibility; editPolicy: EditPolicy; editors: KbEditor[]; permsInherited?: boolean }) => Promise<void>
 }) {
-  const { data: users = [], isLoading: usersLoading } = useUsers()
+  // The grants query below was fixed in an earlier round; the DIRECTORY that
+  // resolves those grants to names was not. `{ data: users = [] }` meant a 500
+  // on /api/users rendered a live grant as the bare principal id — "u2" sitting
+  // in an access list, with nothing anywhere saying the directory read failed
+  // and no way to retry it. The picker beside it silently lost every person too.
+  const usersList = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
+  const users = usersList.rows
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   // Until both principal lists resolve, grants would render as raw ids and the
   // add picker would be empty — hold the list's shape instead.
-  const principalsLoading = usersLoading || agentsLoading
+  const principalsLoading = usersList.pending || agentsLoading
   const [vis, setVis] = useState<Visibility>(visibility)
-  const [grants, setGrants] = useState<KbEditor[]>([])
+  // `save()` PUTs the grant list back WHOLESALE, so this list is never allowed
+  // to hold a value nobody read off the server. It is derived, not copied: the
+  // server's answer is the base and `edits` is an overlay that only exists once
+  // the user actually changes something. `known` is the whole invariant — while
+  // it is false there is no current list, so there is nothing safe to write.
+  //
+  // The old shape seeded `useState([])` from a fetch that returned `[]` on
+  // failure, which made "the read broke" and "nobody is shared with" the same
+  // value; Save then wrote the failure over real grants. Destroyed data, in a
+  // browser, not in theory.
+  const editors = useEditors(kind, id, open)
+  const [edits, setEdits] = useState<KbEditor[] | null>(null)
+  const grants = edits ?? editors.data ?? []
+  // `isError` matters as much as `data`: a modal reopened onto a FAILED refetch
+  // still holds the last read's list, and letting Save write that while the
+  // surface says "could not load" is the same lie one degree quieter.
+  const known = editors.data !== undefined && !editors.isError
   const [inh, setInh] = useState(inherited)
   // General audience role for org/public: editors → edit_policy 'org'.
   const [orgRole, setOrgRole] = useState<GrantRole>(editPolicy === 'org' ? 'editor' : 'viewer')
@@ -74,7 +97,9 @@ export function PermissionsModal({
     setOrgRole(editPolicy === 'org' ? 'editor' : 'viewer')
     setInh(inherited)
     setCopied(false)
-    void fetchEditors(kind, id).then(setGrants)
+    // Drop any overlay: whatever the reopened modal shows must come from a
+    // fresh read, never from what the last one was holding.
+    setEdits(null)
   }, [open, kind, id, visibility, editPolicy, inherited])
 
   const showInheritBanner = inheritable && inh
@@ -96,18 +121,32 @@ export function PermissionsModal({
     ]
   }, [users, fleet, grants])
 
+  // Every mutation goes through here so none of them can start from a list the
+  // server never sent: editing is refused outright until `known`.
+  const editGrants = (fn: (g: KbEditor[]) => KbEditor[]) => {
+    if (!known) return
+    setEdits(fn(grants))
+  }
   const addGrant = (val: string) => {
     const [type, pid] = [val.slice(0, val.indexOf(':')), val.slice(val.indexOf(':') + 1)]
     if (type !== 'user' && type !== 'agent') return
-    setGrants((g) => [...g, { principalType: type, principalId: pid, role: 'viewer' }])
+    editGrants((g) => [...g, { principalType: type, principalId: pid, role: 'viewer' }])
   }
-  const setRole = (i: number, role: GrantRole) => setGrants((g) => g.map((x, j) => (j === i ? { ...x, role } : x)))
-  const remove = (i: number) => setGrants((g) => g.filter((_, j) => j !== i))
+  const setRole = (i: number, role: GrantRole) => editGrants((g) => g.map((x, j) => (j === i ? { ...x, role } : x)))
+  const remove = (i: number) => editGrants((g) => g.filter((_, j) => j !== i))
+
+  // Resetting to the folder's access writes `editors: []` on purpose, so it
+  // does not need to know the current list. Every other save does.
+  const inheritReset = inheritable && inh
+  const canSave = canManage && (inheritReset || known)
 
   const save = async () => {
+    // The disabled button is the affordance; this is the invariant. Saving
+    // while the current list is unknown is IMPOSSIBLE, not discouraged.
+    if (!canSave) return
     setSaving(true)
     try {
-      if (inheritable && inh) {
+      if (inheritReset) {
         // Still inheriting — just make sure it's marked inherited (reset case).
         await onSave({ visibility: vis, editPolicy: 'owner', editors: [], permsInherited: true })
       } else {
@@ -139,7 +178,12 @@ export function PermissionsModal({
             {canManage ? 'Cancel' : 'Close'}
           </Button>
           {canManage && (
-            <Button size="sm" onClick={() => void save()} disabled={saving}>
+            <Button
+              size="sm"
+              onClick={() => void save()}
+              disabled={saving || !canSave}
+              title={canSave ? undefined : 'Waiting for the current access list — saving now could overwrite it.'}
+            >
               {saving ? 'Saving' : 'Save'}
             </Button>
           )}
@@ -173,13 +217,32 @@ export function PermissionsModal({
               onChange={(v) => v[0] && addGrant(v[0])}
               placeholder="Add a person or agent"
               size="sm"
+              disabled={!known}
               className="mb-2"
             />
           )}
-          {principalsLoading ? (
+          {/* Three answers, three renderings. The failed read used to render as
+              the third one — an empty roster over live grants. */}
+          {editors.isError ? (
+            <div className="px-1 py-2">
+              <QueryError
+                variant="inline"
+                title="Could not load who this is shared with"
+                error={editors.error}
+                onRetry={() => void editors.refetch()}
+              />
+              <p className="mt-2 text-[11px] text-muted">
+                Sharing can’t be saved until this loads — saving now would write an empty list over the real one.
+              </p>
+            </div>
+          ) : principalsLoading || !known ? (
             <SkeletonRows rows={3} avatar className="px-1 py-2" />
           ) : (
           <div className="space-y-1">
+            {/* The grants below are real; it is their NAMES that are missing.
+                Without this line an id in an access list reads as the grant
+                itself being junk. */}
+            {usersList.notice}
             {/* Owner row (implicit editor) */}
             <div className="flex items-center gap-2.5 rounded-lg px-1 py-1.5">
               <Avatar name={label} className="h-7 w-7 shrink-0 text-[10px]" />

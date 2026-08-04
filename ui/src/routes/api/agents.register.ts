@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { checkAgentKey } from '@/server/agent-auth'
+import { checkFleetKey } from '@/server/agent-auth'
 import { registerAgent } from '@/server/agents-registry'
 
 const Body = z.object({
@@ -17,7 +17,9 @@ export const Route = createFileRoute('/api/agents/register')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        if (!checkAgentKey(request)) return json({ error: 'unauthorized' }, { status: 401 })
+        // Fleet-plane: the registration body names the subject, and an agent
+        // registers BEFORE it has a credential of its own.
+        if (!(await checkFleetKey(request))) return json({ error: 'unauthorized' }, { status: 401 })
         const parsed = Body.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         const agent = await registerAgent(parsed.data)

@@ -3,6 +3,8 @@ import { SkeletonRows } from '@/components/ui/skeleton'
 import { useQuery } from '@tanstack/react-query'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
+import { QueryState } from '@/components/ui/query-state'
+import { getList } from '@/lib/fetch-json'
 
 
 type Severity = 'critical' | 'warning' | 'info'
@@ -23,11 +25,7 @@ const SEV: Record<Severity, { label: string; color: string; icon: string }> = {
 function useAlerts() {
   return useQuery({
     queryKey: ['alerts'],
-    queryFn: async (): Promise<Alert[]> => {
-      const r = await fetch('/api/alerts')
-      if (!r.ok) throw new Error('failed to load alerts')
-      return ((await r.json()) as { alerts: Alert[] }).alerts
-    },
+    queryFn: (): Promise<Alert[]> => getList<Alert>('/api/alerts', 'alerts'),
     refetchInterval: 60_000,
   })
 }
@@ -35,22 +33,28 @@ function useAlerts() {
 // Derived health signals — computed live from container state, the gateway,
 // the token ledger, and stuck tickets. Nothing to configure, nothing stored.
 export function AlertsPanel() {
-  const { data: alerts = [], isLoading } = useAlerts()
+  const query = useAlerts()
   const navigate = useNavigate()
 
   return (
     <div>
       <div className="space-y-8">
-
-        {isLoading ? (
-          <SkeletonRows rows={4} avatar />
-        ) : alerts.length === 0 ? (
-          <EmptyState
-            icon="△"
-            title="All clear"
-            hint="Agents running, gateway answering, ledger priced, no stuck work."
-          />
-        ) : (
+        {/* "All clear" is the single most dangerous thing this app can say
+            wrongly — it is the sentence an operator uses to decide NOT to look.
+            It may only render off a 200. */}
+        <QueryState
+          query={query}
+          errorTitle="Could not check for alerts"
+          skeleton={<SkeletonRows rows={4} avatar />}
+          empty={
+            <EmptyState
+              icon="△"
+              title="All clear"
+              hint="Agents running, gateway answering, ledger priced, no stuck work."
+            />
+          }
+        >
+          {(alerts) => (
           <Panel className="p-0">
             <div className="divide-y divide-line">
               {alerts.map((a, i) => (
@@ -79,7 +83,8 @@ export function AlertsPanel() {
               ))}
             </div>
           </Panel>
-        )}
+          )}
+        </QueryState>
       </div>
     </div>
   )

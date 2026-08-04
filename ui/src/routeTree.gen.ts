@@ -32,6 +32,7 @@ import { Route as ApiJoinRouteImport } from './routes/api/join'
 import { Route as ApiInferenceRouteImport } from './routes/api/inference'
 import { Route as ApiHomeRouteImport } from './routes/api/home'
 import { Route as ApiHistoryRouteImport } from './routes/api/history'
+import { Route as ApiHealthzRouteImport } from './routes/api/healthz'
 import { Route as ApiGapsRouteImport } from './routes/api/gaps'
 import { Route as ApiFleetRouteImport } from './routes/api/fleet'
 import { Route as ApiDmsRouteImport } from './routes/api/dms'
@@ -335,6 +336,11 @@ const ApiHomeRoute = ApiHomeRouteImport.update({
 const ApiHistoryRoute = ApiHistoryRouteImport.update({
   id: '/api/history',
   path: '/api/history',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiHealthzRoute = ApiHealthzRouteImport.update({
+  id: '/api/healthz',
+  path: '/api/healthz',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiGapsRoute = ApiGapsRouteImport.update({
@@ -1349,6 +1355,7 @@ export interface FileRoutesByFullPath {
   '/api/dms': typeof ApiDmsRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/gaps': typeof ApiGapsRouteWithChildren
+  '/api/healthz': typeof ApiHealthzRoute
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
@@ -1562,6 +1569,7 @@ export interface FileRoutesByTo {
   '/api/dms': typeof ApiDmsRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/gaps': typeof ApiGapsRouteWithChildren
+  '/api/healthz': typeof ApiHealthzRoute
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
@@ -1778,6 +1786,7 @@ export interface FileRoutesById {
   '/api/dms': typeof ApiDmsRoute
   '/api/fleet': typeof ApiFleetRouteWithChildren
   '/api/gaps': typeof ApiGapsRouteWithChildren
+  '/api/healthz': typeof ApiHealthzRoute
   '/api/history': typeof ApiHistoryRoute
   '/api/home': typeof ApiHomeRoute
   '/api/inference': typeof ApiInferenceRoute
@@ -1995,6 +2004,7 @@ export interface FileRouteTypes {
     | '/api/dms'
     | '/api/fleet'
     | '/api/gaps'
+    | '/api/healthz'
     | '/api/history'
     | '/api/home'
     | '/api/inference'
@@ -2208,6 +2218,7 @@ export interface FileRouteTypes {
     | '/api/dms'
     | '/api/fleet'
     | '/api/gaps'
+    | '/api/healthz'
     | '/api/history'
     | '/api/home'
     | '/api/inference'
@@ -2423,6 +2434,7 @@ export interface FileRouteTypes {
     | '/api/dms'
     | '/api/fleet'
     | '/api/gaps'
+    | '/api/healthz'
     | '/api/history'
     | '/api/home'
     | '/api/inference'
@@ -2621,6 +2633,7 @@ export interface RootRouteChildren {
   ApiDmsRoute: typeof ApiDmsRoute
   ApiFleetRoute: typeof ApiFleetRouteWithChildren
   ApiGapsRoute: typeof ApiGapsRouteWithChildren
+  ApiHealthzRoute: typeof ApiHealthzRoute
   ApiHistoryRoute: typeof ApiHistoryRoute
   ApiHomeRoute: typeof ApiHomeRoute
   ApiInferenceRoute: typeof ApiInferenceRoute
@@ -2850,6 +2863,13 @@ declare module '@tanstack/react-router' {
       path: '/api/history'
       fullPath: '/api/history'
       preLoaderRoute: typeof ApiHistoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/healthz': {
+      id: '/api/healthz'
+      path: '/api/healthz'
+      fullPath: '/api/healthz'
+      preLoaderRoute: typeof ApiHealthzRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/gaps': {
@@ -4916,6 +4936,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiDmsRoute: ApiDmsRoute,
   ApiFleetRoute: ApiFleetRouteWithChildren,
   ApiGapsRoute: ApiGapsRouteWithChildren,
+  ApiHealthzRoute: ApiHealthzRoute,
   ApiHistoryRoute: ApiHistoryRoute,
   ApiHomeRoute: ApiHomeRoute,
   ApiInferenceRoute: ApiInferenceRoute,

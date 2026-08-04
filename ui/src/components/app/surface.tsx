@@ -121,7 +121,7 @@ export function RailRow({
   )
 }
 
-/** Count readout (unread, pending) — one look everywhere. Gentle dew keeps
+/** Count readout (unread, pending) — one look everywhere. Mercury keeps
  *  counts in the mono chrome voice (spec §5); gold = attention, not a fill. */
 export function CountPill({ count, className }: { count?: number; className?: string }) {
   if (!count) return null

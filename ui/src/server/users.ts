@@ -8,7 +8,7 @@
 // manage member allow-lists (UI later).
 
 import { db } from './db/pg'
-import { agentName, checkAgentKey } from './agent-auth'
+import { agentCaller, subjectModel, subjectProven, type AgentSubject } from './agent-auth'
 import { getSessionUser } from './auth/session'
 
 export type Role = 'admin' | 'member'
@@ -83,9 +83,16 @@ export interface ActingUser {
  *  assistant manages your boards for you). General agents resolve to null
  *  here; governance actions stay human(-proxied). */
 export async function actingUser(request: Request): Promise<ActingUser | null> {
-  if (checkAgentKey(request)) {
-    const model = agentName(request)
-    if (!model) return null
+  const agent = await agentCaller(request)
+  if (agent instanceof Response) return null
+  if (agent) {
+    // Proxying a human — and inheriting their admin role — is the one thing a
+    // self-declared name must never buy. Belt and braces: agent-auth already
+    // refuses a legacy caller that CLAIMS a personal-assistant name (with a
+    // message naming the container to roll), so this is unreachable today and
+    // stays as the guarantee for anything that loosens the door.
+    if (agent.legacy) return null
+    const model = agent.model
     const sql = await db()
     const rows = (await sql`
       select u.id, u.role, u.email, u.name, d.elevated from agent_defs d
@@ -111,8 +118,14 @@ export async function actingUser(request: Request): Promise<ActingUser | null> {
 
 /** True only for a personal assistant an admin explicitly promoted AND whose
  *  owner is currently an admin. Gates org-wide agent access (all boards, all
- *  non-DM channels, implicit editor on non-private KB/artifacts). */
-export async function isElevatedAssistant(model: string): Promise<boolean> {
+ *  non-DM channels, implicit editor on non-private KB/artifacts).
+ *
+ *  Takes the CALLER, not a bare name: elevation is the largest grant an agent
+ *  identity carries, so it is never handed to an identity that was merely
+ *  asserted (legacy shared-key caller). */
+export async function isElevatedAssistant(subject: AgentSubject): Promise<boolean> {
+  if (!subjectProven(subject)) return false
+  const model = subjectModel(subject)
   const sql = await db()
   const rows = await sql`
     select 1 from agent_defs d join users u on u.id = d.owner_user_id
@@ -238,7 +251,22 @@ export function canUseAgent(access: 'all' | string[], model: string): boolean {
   return access === 'all' || access.includes(model)
 }
 
-/** model → owner_user_id for every PERSONAL assistant (owner_user_id set). */
+/** The human an AGENT CALLER may act for — its owner when it is a personal
+ *  assistant, null otherwise. Owner-proxying (their boards, their KB, their
+ *  Google account) is escalation, so a legacy caller gets null: identified,
+ *  but not proven to BE that assistant.
+ *
+ *  Use this — not `personalAssistantOwners().get(model)` — on any surface that
+ *  has a resolved caller. The map lookup takes a bare string, which throws the
+ *  `legacy` flag away silently; this takes the caller and consults it. The map
+ *  is for LISTINGS (many models, no caller): channel-replies, mcp-registry. */
+export async function assistantOwnerFor(subject: AgentSubject): Promise<string | null> {
+  if (!subjectProven(subject)) return null
+  return (await personalAssistantOwners()).get(subjectModel(subject)) ?? null
+}
+
+/** model → owner_user_id for every PERSONAL assistant (owner_user_id set).
+ *  Listing helper — for a per-CALLER decision use `assistantOwnerFor`. */
 export async function personalAssistantOwners(): Promise<Map<string, string>> {
   const sql = await db()
   const rows = (await sql`

@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Modal } from '@/components/ui/modal'
 import { Chip } from '@/components/ui/chip'
+import { listQuery } from '@/components/ui/query-state'
 import { Radio } from '@/components/ui/checkbox'
 import { GeneratingDots } from '@/components/ui/generating'
 import { Markdown } from '@/components/ui/markdown'
@@ -79,7 +80,10 @@ export function StudioGuide({
   onCreated: (workflowId: string | null, skillRef: string) => void
 }) {
   const qc = useQueryClient()
-  const { data: boards = [] } = useBoards()
+  // "No boards yet." over a 500 — in a wizard whose next step asks you to pick
+  // which of them this workflow matches.
+  const boardsList = listQuery(useBoards(), { title: 'Could not load your boards', variant: 'inline' })
+  const boards = boardsList.rows
   const [step, setStep] = useState(0)
 
   // Step 1 — the work
@@ -265,8 +269,11 @@ export function StudioGuide({
                       {b.name}
                     </Chip>
                   ))}
-                  {boards.length === 0 && <span className="text-xs text-muted">No boards yet.</span>}
+                  {boards.length === 0 && !boardsList.failed && !boardsList.pending && (
+                    <span className="text-xs text-muted">No boards yet.</span>
+                  )}
                 </div>
+                {boardsList.notice}
               </div>
               <div className="space-y-1.5">
                 <span className="text-xs font-medium text-fg">With these labels</span>

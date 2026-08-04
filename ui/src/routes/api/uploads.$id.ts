@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { getSessionUser } from '@/server/auth/session'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { canAccessUpload, getUpload } from '@/server/uploads'
 
 // GET → serve an attachment's bytes: signed-in users, or fleet agents (agent
@@ -14,9 +14,10 @@ export const Route = createFileRoute('/api/uploads/$id')({
         // Bytes only for viewers who can reach this upload through something
         // they can already read — never by id alone.
         let allowed = false
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const name = caller.model
           allowed = await canAccessUpload(params.id, { agent: name })
         } else {
           const user = await getSessionUser(request)

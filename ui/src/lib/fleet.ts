@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { getJson } from '@/lib/fetch-json'
 
 export type AgentStatus = 'offline' | 'idle' | 'busy' | 'error'
 
@@ -23,11 +24,7 @@ export interface FleetOverview {
 export function useFleet() {
   return useQuery({
     queryKey: ['fleet'],
-    queryFn: async (): Promise<FleetOverview | null> => {
-      const r = await fetch('/api/fleet', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return r.json()
-    },
+    queryFn: (): Promise<FleetOverview> => getJson<FleetOverview>('/api/fleet'),
     refetchInterval: 15_000,
   })
 }

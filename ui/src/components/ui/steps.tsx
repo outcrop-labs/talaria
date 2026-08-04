@@ -2,7 +2,7 @@ import { Check } from 'lucide-react'
 import { cn } from '@/lib/cn'
 
 // The one step indicator for wizard-style flows: numbered dots joined by
-// hairlines, check-marked once passed. Gentle dew: passed = gold fill with
+// hairlines, check-marked once passed. Mercury: passed = gold fill with
 // dark ground glyph, current = gold outline, labels mono uppercase chrome.
 // Keep flows to 2–4 steps.
 export function Steps({ steps, current }: { steps: readonly string[]; current: number }) {

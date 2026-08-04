@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { agentMayAccessChannel, channelRole, getChannelMessage, toggleReaction } from '@/server/channels'
 
 // POST { emoji } → toggle your reaction on a message. Agents react too, under
@@ -17,9 +17,12 @@ export const Route = createFileRoute('/api/channels/$id/messages/$msgId/reaction
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
         if (!(await getChannelMessage(params.id, params.msgId))) return json({ error: 'not found' }, { status: 404 })
 
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name || !(await agentMayAccessChannel(params.id, name))) return json({ error: 'forbidden' }, { status: 403 })
+        const agent = await agentCaller(request)
+        if (agent instanceof Response) return agent
+        if (agent) {
+          const name = agent.model
+          // The CALLER, not `name`: elevation buys org-wide channel reach.
+          if (!(await agentMayAccessChannel(params.id, agent))) return json({ error: 'forbidden' }, { status: 403 })
           await toggleReaction(params.id, params.msgId, parsed.data.emoji, name, 'agent')
           return json({ ok: true })
         }

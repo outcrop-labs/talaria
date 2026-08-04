@@ -23,7 +23,7 @@ export const Route = createFileRoute('/api/inbox/focus/state')({
         const body = await parseBody(request, Body)
         if (body instanceof Response) return body
         const release = acquireInboxFocusLock(user.id)
-        if (!release) return json({ error: 'Scout is already handling another Inbox action.' }, { status: 409 })
+        if (!release) return json({ error: 'Your assistant is already handling another Inbox action.' }, { status: 409 })
         try {
           const updated = await updateFocusState(user, body)
           if (!updated) return json({ error: 'That focus item is no longer available.' }, { status: 409 })

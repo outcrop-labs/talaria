@@ -15,7 +15,7 @@ import { CloseButton } from './close-button'
 // backdrop-filter), which would otherwise center the modal inside a card rather
 // than the viewport. The portal escapes any such containing block.
 //
-// Gentle dew (spec §8): panel surface + hairline + radius ~12 + matte shadow;
+// Mercury (spec §8): panel surface + hairline + radius ~12 + matte shadow;
 // string titles render as mono uppercase labels (the panel-header voice).
 export function Modal({
   open,

@@ -6,7 +6,9 @@ import { confirm } from '@/components/ui/confirm'
 import { Input } from '@/components/ui/input'
 import { submitOnEnter } from '@/components/ui/control'
 import { EmptyState } from '@/components/ui/empty-state'
+import { QueryState } from '@/components/ui/query-state'
 import { Skeleton } from '@/components/ui/skeleton'
+import { getList } from '@/lib/fetch-json'
 import { relativeTime } from '@/lib/fleet'
 
 interface SecretMeta {
@@ -21,13 +23,12 @@ interface SecretMeta {
 export function SecretsTab({ agentId }: { agentId: string }) {
   const qc = useQueryClient()
   const key = ['agent-secrets', agentId]
-  const { data: secrets = [], isLoading } = useQuery({
+  // GET is 200 `{ secrets }` or 403 — there is no 404 here, so EVERY non-2xx is
+  // a failure. It used to answer `[]`, which rendered "No secrets": an operator
+  // reading that would go add the token that is already there.
+  const query = useQuery({
     queryKey: key,
-    queryFn: async (): Promise<SecretMeta[]> => {
-      const r = await fetch(`/api/fleet/agents/${agentId}/secrets`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { secrets: SecretMeta[] }).secrets
-    },
+    queryFn: (): Promise<SecretMeta[]> => getList<SecretMeta>(`/api/fleet/agents/${agentId}/secrets`, 'secrets'),
   })
   const [name, setName] = useState('')
   const [value, setValue] = useState('')
@@ -67,39 +68,45 @@ export function SecretsTab({ agentId }: { agentId: string }) {
         Environment variables just for this agent: a vendor token, a service key. Encrypted at rest, write-only here,
         and injected into the container when it starts from Talaria (Start recreates it with the latest values).
       </p>
-      {isLoading ? (
-        <ul aria-hidden className="divide-y divide-line rounded-lg border border-line">
-          {[0, 1].map((i) => (
-            <li key={i} className="flex items-center gap-3 px-3.5 py-3.5">
-              <Skeleton className="h-3 w-32 rounded-full" delay={i * 0.12} />
-              <Skeleton className="h-2.5 w-14 rounded-full" delay={i * 0.12 + 0.12} />
-              <Skeleton className="ml-auto h-2.5 w-24 rounded-full" delay={i * 0.12 + 0.24} />
-            </li>
-          ))}
-        </ul>
-      ) : secrets.length === 0 ? (
-        <EmptyState icon={<KeyRound size={22} />} title="No secrets" hint="Everything it needs comes from the shared platform env." />
-      ) : (
-        <ul className="divide-y divide-line rounded-lg border border-line">
-          {secrets.map((s) => (
-            <li key={s.name} className="flex items-center gap-3 px-3.5 py-2.5 transition-colors hover:bg-hover">
-              <code className="font-mono text-sm text-fg">{s.name}</code>
-              <span className="font-mono text-xs text-muted">••••••••</span>
-              <span className="ml-auto shrink-0 font-mono text-[11px] text-muted">
-                {s.updatedBy ?? 'unknown'} · {relativeTime(s.updatedAt)}
-              </span>
-              <button
-                type="button"
-                title="Remove"
-                onClick={() => void remove(s.name)}
-                className="shrink-0 text-muted transition-colors hover:text-danger"
-              >
-                <Trash2 size={14} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <QueryState
+        query={query}
+        errorTitle="Could not load this agent's secrets"
+        errorVariant="compact"
+        skeleton={
+          <ul aria-hidden className="divide-y divide-line rounded-lg border border-line">
+            {[0, 1].map((i) => (
+              <li key={i} className="flex items-center gap-3 px-3.5 py-3.5">
+                <Skeleton className="h-3 w-32 rounded-full" delay={i * 0.12} />
+                <Skeleton className="h-2.5 w-14 rounded-full" delay={i * 0.12 + 0.12} />
+                <Skeleton className="ml-auto h-2.5 w-24 rounded-full" delay={i * 0.12 + 0.24} />
+              </li>
+            ))}
+          </ul>
+        }
+        empty={<EmptyState icon={<KeyRound size={22} />} title="No secrets" hint="Everything it needs comes from the shared platform env." />}
+      >
+        {(secrets) => (
+          <ul className="divide-y divide-line rounded-lg border border-line">
+            {secrets.map((s) => (
+              <li key={s.name} className="flex items-center gap-3 px-3.5 py-2.5 transition-colors hover:bg-hover">
+                <code className="font-mono text-sm text-fg">{s.name}</code>
+                <span className="font-mono text-xs text-muted">••••••••</span>
+                <span className="ml-auto shrink-0 font-mono text-[11px] text-muted">
+                  {s.updatedBy ?? 'unknown'} · {relativeTime(s.updatedAt)}
+                </span>
+                <button
+                  type="button"
+                  title="Remove"
+                  onClick={() => void remove(s.name)}
+                  className="shrink-0 text-muted transition-colors hover:text-danger"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </QueryState>
       <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
         <Input
           value={name}

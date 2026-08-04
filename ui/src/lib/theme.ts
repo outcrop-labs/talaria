@@ -13,13 +13,13 @@ export const THEMES: Array<{
   {
     id: 'mercury',
     label: 'Mercury',
-    description: 'Near-black instrument surfaces with a warm gold signal (Gentle dew, default)',
+    description: 'Near-black instrument surfaces with a warm gold signal (default)',
     icon: '☿',
   },
   {
     id: 'mercury-light',
     label: 'Mercury Light',
-    description: 'Warm paper-white surfaces with a deep gold accent (Gentle dew daylight)',
+    description: 'Warm paper-white surfaces with a deep gold accent (daylight)',
     icon: '☾',
   },
 ]

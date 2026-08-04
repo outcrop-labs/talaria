@@ -4,10 +4,10 @@
 // (or supplied, e.g. Muse-designed). A fresh gateway key is allocated into the
 // fleet .env (which the renderer + manifest read).
 import { randomBytes } from 'node:crypto'
-import { appendFile, readFile } from 'node:fs/promises'
+import { appendFile, chmod, readFile } from 'node:fs/promises'
 import { db } from './db/pg'
 import { addVersionIfChanged, applyConfigEdits, listEndpoints, listVersions, upsertAgentDef, type AgentConfig, type AgentDef } from './agent-defs'
-import { FLEET_ENV } from './fleet-render'
+import { AGENT_KEY_VAR, FLEET_ENV } from './fleet-render'
 
 const SLUG_RE = /^[a-z][a-z0-9]{1,30}$/
 const DEPT_RE = /^[a-z][a-z0-9-]{1,40}$/
@@ -47,6 +47,10 @@ export async function ensureAgentKey(slug: string): Promise<boolean> {
   if (new RegExp(`^${name}=`, 'm').test(content)) return false
   const key = randomBytes(32).toString('hex')
   await appendFile(envPath, `\n# added by Talaria (agent create)\n${name}=${key}\n`)
+  // The file is fleet-wide plaintext credentials — never leave it readable to
+  // every local account (fleet-render writes it 0600; appending must not undo
+  // that, and an install created before that rule gets fixed here).
+  await chmod(envPath, 0o600).catch(() => {})
   return true
 }
 
@@ -145,19 +149,29 @@ export async function deleteAgentForever(defId: string): Promise<{ removedVolume
   await sql`delete from rag_collection_access where principal_type = 'agent' and principal_id = ${model}`
   await sql`delete from fleet_agents where name = ${model}`
 
-  // Rendered dir + fleet key line (best-effort cleanup).
+  // Rendered dir + every per-slug secret line (best-effort cleanup). BOTH
+  // credentials go: the Hermes key AND the agent's own TALARIA_AGENT_KEY_<SLUG>.
+  // Leaving the latter behind would keep a deleted agent's plaintext credential
+  // on disk forever, and — because the agent_keys row cascaded away with the def
+  // — recreating the slug would inherit a dead secret (the container 401s with
+  // no diagnostic). The renderer now rewrites rather than skips, so this is
+  // belt and braces; the lingering plaintext is the reason it matters.
   await rm(join(FLEET_DIR(), 'agents', def.slug), { recursive: true, force: true }).catch(() => {})
   try {
     const envPath = FLEET_ENV()
     const content = await readFile(envPath, 'utf8')
-    const keyLine = new RegExp(`^(# added by Talaria \\(agent create\\)\\n)?HERMES_KEY_${def.slug.toUpperCase()}=.*\\n?`, 'm')
-    const next = content.replace(keyLine, '')
+    const SLUG = def.slug.toUpperCase()
+    const next = [
+      new RegExp(`^(# added by Talaria \\(agent create\\)\\n)?HERMES_KEY_${SLUG}=.*\\n?`, 'm'),
+      new RegExp(`^${AGENT_KEY_VAR(def.slug)}=.*\\n?`, 'm'),
+    ].reduce((text, line) => text.replace(line, ''), content)
     if (next !== content) {
       const { writeFile } = await import('node:fs/promises')
-      await writeFile(envPath, next)
+      await writeFile(envPath, next, { mode: 0o600 })
+      await chmod(envPath, 0o600).catch(() => {})
     }
   } catch {
-    /* keep going — a stale key line is harmless */
+    /* keep going — the DB is authoritative; the next render re-materializes */
   }
 
   // State volume: only for created agents (imported volumes are external legacy).

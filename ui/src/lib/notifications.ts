@@ -1,5 +1,6 @@
 // The user's notification inbox — polled; refetches piggyback on route changes.
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getJson } from '@/lib/fetch-json'
 
 export interface Notification {
   id: string
@@ -14,11 +15,8 @@ export interface Notification {
 export function useNotifications() {
   return useQuery({
     queryKey: ['notifications'],
-    queryFn: async (): Promise<{ notifications: Notification[]; unread: number }> => {
-      const r = await fetch('/api/notifications', { credentials: 'same-origin' })
-      if (!r.ok) return { notifications: [], unread: 0 }
-      return r.json()
-    },
+    queryFn: (): Promise<{ notifications: Notification[]; unread: number }> =>
+      getJson<{ notifications: Notification[]; unread: number }>('/api/notifications'),
     refetchInterval: 30_000,
   })
 }

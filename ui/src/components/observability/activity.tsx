@@ -6,6 +6,8 @@ import { Avatar } from '@/components/ui/avatar'
 import { Chip } from '@/components/ui/chip'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
+import { QueryError } from '@/components/ui/query-state'
+import { getList } from '@/lib/fetch-json'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
 
@@ -35,12 +37,8 @@ const WARN_TYPES = new Set(['gap', 'blocked'])
 function useActivity(kinds: Kind[]) {
   return useQuery({
     queryKey: ['activity', kinds.join(',')],
-    queryFn: async (): Promise<ActivityEvent[]> => {
-      const qs = kinds.length ? `?kinds=${kinds.join(',')}` : ''
-      const r = await fetch(`/api/activity${qs}`)
-      if (!r.ok) throw new Error('failed to load activity')
-      return ((await r.json()) as { events: ActivityEvent[] }).events
-    },
+    queryFn: (): Promise<ActivityEvent[]> =>
+      getList<ActivityEvent>(`/api/activity${kinds.length ? `?kinds=${kinds.join(',')}` : ''}`, 'events'),
     refetchInterval: 30_000,
   })
 }
@@ -53,7 +51,11 @@ export function AuditPanel() {
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
   const [kinds, setKinds] = useState<Kind[]>([])
-  const { data: events = [], isLoading } = useActivity(kinds)
+  const query = useActivity(kinds)
+  const events = query.data ?? []
+  // Stale-but-real beats blank: only a failure with nothing to fall back on
+  // takes the feed over. "Nothing yet" may only come from a 200.
+  const failed = query.isError && query.data === undefined
   const navigate = useNavigate()
 
   const available = (Object.keys(KIND_META) as Kind[]).filter((k) => k !== 'audit' || isAdmin)
@@ -87,7 +89,9 @@ export function AuditPanel() {
         </div>
       </div>
 
-      {isLoading ? (
+      {failed ? (
+        <QueryError error={query.error} title="Could not load activity" onRetry={() => void query.refetch()} />
+      ) : query.isLoading ? (
         <SkeletonRows rows={8} avatar />
       ) : events.length === 0 ? (
         <EmptyState

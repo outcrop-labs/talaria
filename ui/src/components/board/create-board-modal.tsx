@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
 import { Skeleton } from '@/components/ui/skeleton'
+import { listQuery } from '@/components/ui/query-state'
 import { UserPicker } from '@/components/app/user-picker'
 import { useAgents } from '@/lib/agents'
 import { useTeams } from '@/lib/teams'
@@ -21,7 +22,9 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
   const qc = useQueryClient()
   const navigate = useNavigate()
   const { data: fleet, isLoading: fleetLoading } = useAgents()
-  const { data: teams = [], isLoading: teamsLoading } = useTeams()
+  // A failed /api/teams used to leave the owner picker holding "Personal" only
+  // — which is a real, wrong answer ("you're on no teams"), not a blank.
+  const { rows: teams, notice: teamsNotice, pending: teamsLoading } = listQuery(useTeams(), { title: 'Could not load your teams', variant: 'inline' })
   const agentOptions = (fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role }))
 
   const [name, setName] = useState('')
@@ -95,6 +98,7 @@ export function CreateBoardModal({ open, onClose }: { open: boolean; onClose: ()
               ))}
             </Select>
           )}
+          {teamsNotice}
         </Field>
 
         <Field label="Agents">

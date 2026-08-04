@@ -2,8 +2,9 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { Markdown } from '@/components/ui/markdown'
 import { Skeleton } from '@/components/ui/skeleton'
+import { errorMessage, getJson, HttpError } from '@/lib/fetch-json'
 import { relativeTime } from '@/lib/fleet'
-import { PublicShell, PublicNotFound } from '@/components/kb/public-shell'
+import { PublicShell, PublicNotFound, PublicUnavailable } from '@/components/kb/public-shell'
 
 export const Route = createFileRoute('/kb/$slug')({
   component: PublicDocPage,
@@ -18,15 +19,29 @@ interface PublicDoc {
 // A publicly shared KB doc — no auth. Only docs set to "public" resolve.
 function PublicDocPage() {
   const { slug } = Route.useParams()
-  const [state, setState] = useState<{ doc?: PublicDoc; error?: boolean }>({})
+  // `r.ok ? … : reject('not found')` made EVERY status "not found", including
+  // the ones that mean the server is having a bad minute. A visitor with a
+  // perfectly good share link was told the page does not exist.
+  const [state, setState] = useState<{ doc?: PublicDoc; missing?: boolean; error?: unknown }>({})
+  const [reload, setReload] = useState(0)
   useEffect(() => {
-    fetch(`/api/kb/public/${slug}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('not found'))))
-      .then((d: { doc: PublicDoc }) => setState({ doc: d.doc }))
-      .catch(() => setState({ error: true }))
-  }, [slug])
+    let live = true
+    setState({})
+    getJson<{ doc: PublicDoc }>(`/api/kb/public/${slug}`)
+      .then((d) => live && setState({ doc: d.doc }))
+      .catch((e: unknown) => {
+        if (!live) return
+        // 404 is the only status that means "there is no such page".
+        setState(e instanceof HttpError && e.status === 404 ? { missing: true } : { error: e })
+      })
+    return () => {
+      live = false
+    }
+  }, [slug, reload])
 
-  if (state.error) return <PublicNotFound />
+  if (state.missing) return <PublicNotFound />
+  if (state.error)
+    return <PublicUnavailable detail={errorMessage(state.error)} onRetry={() => setReload((n) => n + 1)} />
   if (!state.doc) {
     // First paint for link recipients — hold the document's shape.
     return (

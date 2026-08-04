@@ -7,8 +7,10 @@ import { Button, buttonClasses } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Combobox } from '@/components/ui/combobox'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { Panel } from '@/components/ui/panel'
 import { cn } from '@/lib/cn'
+import { getJson, getList } from '@/lib/fetch-json'
 import { useDeniedViews, useSession } from '@/lib/session'
 import { relativeTime } from '@/lib/fleet'
 import { savePreferredModel, useModels, usePreferredModel } from '@/lib/muse'
@@ -55,7 +57,10 @@ function SettingsPage() {
   const setTab = (t: SettingsTab) => void nav({ search: t === 'profile' ? {} : { tab: t } })
   // Enabled apps with a settings surface get their own tab, labeled by the
   // app — only for people granted the app (apps are explicit-grant).
-  const { data: enabledApps = [] } = useEnabledApps()
+  // A failed /api/apps used to remove app settings TABS with no trace — the
+  // settings for an app you have simply were not there.
+  const appsList = listQuery(useEnabledApps(), { title: 'Could not load app settings tabs', variant: 'inline' })
+  const enabledApps = appsList.rows
   const deniedForApps = useDeniedViews()
   const appTabs = enabledApps
     .filter((a) => a.surfaces.settings && !deniedForApps.includes(`/x/${a.slug}`))
@@ -91,6 +96,7 @@ function SettingsPage() {
       <div className="mx-auto w-full max-w-2xl">
         <h1 className="mb-4 text-2xl font-semibold tracking-tight text-fg">Settings</h1>
         <Tabs items={[...SETTINGS_TABS, ...appTabs]} value={tab} onChange={setTab} className="mb-6" />
+        {appsList.notice && <div className="-mt-4 mb-6">{appsList.notice}</div>}
         {tab === 'profile' && (
         <Panel as="section">
           <div className="mb-4 flex items-center gap-3">
@@ -231,14 +237,14 @@ interface McpConnection {
 
 function McpConnectionsSection() {
   const qc = useQueryClient()
-  const { data, isPending } = useQuery({
+  // The section hides itself when the org runs no per-user servers. That is a
+  // statement about the org, so only a REAL empty list may make it — a failed
+  // read would otherwise quietly remove a connected account from view.
+  const query = useQuery({
     queryKey: ['me-mcp'],
-    queryFn: async (): Promise<McpConnection[]> => {
-      const r = await fetch('/api/me/mcp', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { servers: McpConnection[] }).servers
-    },
+    queryFn: (): Promise<McpConnection[]> => getList<McpConnection>('/api/me/mcp', 'servers'),
   })
+  const { data, isPending } = query
   const [connecting, setConnecting] = useState<string | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
 
@@ -265,7 +271,7 @@ function McpConnectionsSection() {
     await qc.invalidateQueries({ queryKey: ['me-mcp'] })
   }
 
-  if (!isPending && (data ?? []).length === 0) return null
+  if (!isPending && data?.length === 0) return null
   return (
     <Panel as="section" className="mt-4">
       <SectionHeader
@@ -274,6 +280,8 @@ function McpConnectionsSection() {
       />
       {isPending ? (
         <SkeletonRows rows={2} />
+      ) : !data ? (
+        <QueryError variant="inline" error={query.error} title="Could not load your tool accounts" onRetry={() => void query.refetch()} />
       ) : (
         <ul className="divide-y divide-line-subtle">
           {(data ?? []).map((s) => (
@@ -350,14 +358,11 @@ function McpConnectionsSection() {
 
 function IntegrationsSection() {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery({
+  const query = useQuery({
     queryKey: ['integration-google'],
-    queryFn: async (): Promise<GoogleStatus> => {
-      const r = await fetch('/api/integrations/google')
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<GoogleStatus> => getJson<GoogleStatus>('/api/integrations/google'),
   })
+  const { data, isLoading } = query
   // Surface the callback outcome (?google=connected|denied|) once, then clean the URL.
   const [flash, setFlash] = useState<string | null>(null)
   useEffect(() => {
@@ -403,7 +408,16 @@ function IntegrationsSection() {
           </div>
           <Skeleton className="h-9 w-24 rounded-lg" delay={0.12} />
         </div>
-      ) : data && !data.available ? (
+      ) : !data ? (
+        // Same reason as the skeleton above: "Not connected" is a claim about
+        // the account, and a failed status read can't make it.
+        <QueryError
+          variant="compact"
+          error={query.error}
+          title="Could not load your connected accounts"
+          onRetry={() => void query.refetch()}
+        />
+      ) : !data.available ? (
         <div className="text-xs text-muted">Google integration isn’t configured on this server yet.</div>
       ) : (
         <div className="flex items-center gap-3 rounded-md border border-line p-4">
@@ -455,14 +469,11 @@ interface ApiKey {
 // model stack. The secret shows exactly once at mint time.
 function ApiKeysSection() {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery({
+  const query = useQuery({
     queryKey: ['api-keys'],
-    queryFn: async (): Promise<{ keys: ApiKey[]; canMint: boolean }> => {
-      const r = await fetch('/api/keys')
-      if (!r.ok) throw new Error('failed to load keys')
-      return r.json()
-    },
+    queryFn: (): Promise<{ keys: ApiKey[]; canMint: boolean }> => getJson<{ keys: ApiKey[]; canMint: boolean }>('/api/keys'),
   })
+  const { data, isLoading } = query
   const [name, setName] = useState('')
   const [minted, setMinted] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -507,6 +518,11 @@ function ApiKeysSection() {
             <Skeleton className="h-9 w-24" delay={0.12} />
           </div>
         </div>
+      ) : !data ? (
+        // The skeleton comment above holds after load too: "API keys are not
+        // enabled for your account" is a permission verdict, and a failed
+        // /api/keys never delivered one.
+        <QueryError variant="compact" error={query.error} title="Could not load your API keys" onRetry={() => void query.refetch()} />
       ) : (
         <>
           {keys.length > 0 && (

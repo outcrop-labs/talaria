@@ -2,8 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { personalAssistantOwners } from '@/server/users'
+import { agentCaller } from '@/server/agent-auth'
+import { assistantOwnerFor } from '@/server/users'
 import { agentCategoryFolder, createArtifact, guarded, listArtifacts, namedRootFolder, saveArtifact } from '@/server/artifacts'
 import { describeAgent } from '@/server/gateway'
 import { canRead, grantedItemIds, grantedItemIdsForAgent, setEditors } from '@/server/kb-perms'
@@ -25,9 +25,10 @@ export const Route = createFileRoute('/api/artifacts')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const name = caller.model
           const granted = await grantedItemIdsForAgent('artifact', name)
           // Agents see org/public artifacts + ones they've been granted.
           const artifacts = (await listArtifacts()).filter((a) => a.visibility !== 'private' || granted.has(a.id))
@@ -44,14 +45,17 @@ export const Route = createFileRoute('/api/artifacts')({
         const body = await parseBody(request, Body)
         if (body instanceof Response) return body
 
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const name = caller.model
           // WHO the agent works for decides reach: a PERSONAL assistant's
           // output belongs to its owner and stays private to them (they can
           // share it; the assistant cannot make it org-wide). A general org
           // agent's output is for the workspace — org-visible, ownerless.
-          const paOwner = (await personalAssistantOwners()).get(name) ?? null
+          // Ask with the CALLER: attaching output to a human's account is
+          // owner-proxying, so it needs a proven identity, not an asserted one.
+          const paOwner = await assistantOwnerFor(caller)
           const folderId = body.folder ? await namedRootFolder(body.folder, name) : null
           const artifact = await createArtifact({
             kind: body.kind,

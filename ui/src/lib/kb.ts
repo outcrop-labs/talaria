@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { getJsonOr404, getList } from '@/lib/fetch-json'
 
 export type Visibility = 'private' | 'org' | 'public'
 export type EditPolicy = 'owner' | 'org' | 'restricted'
@@ -26,11 +27,9 @@ export const useSpace = (id: string | null) =>
   useQuery({
     queryKey: ['kb-space', id],
     enabled: !!id,
-    queryFn: async (): Promise<KbSpace | null> => {
-      const r = await fetch(`/api/kb/spaces/${id}`)
-      if (!r.ok) return null
-      return ((await r.json()) as { space: KbSpace }).space
-    },
+    // 404 = the space is gone or was never yours: a real "not found".
+    queryFn: async (): Promise<KbSpace | null> =>
+      (await getJsonOr404<{ space: KbSpace }>(`/api/kb/spaces/${id}`))?.space ?? null,
   })
 export interface KbDocMeta {
   id: string
@@ -64,33 +63,23 @@ export interface KbDoc extends KbDocMeta {
 export const useSpaces = () =>
   useQuery({
     queryKey: ['kb-spaces'],
-    queryFn: async (): Promise<KbSpace[]> => {
-      const r = await fetch('/api/kb/spaces')
-      if (!r.ok) return []
-      return ((await r.json()) as { spaces: KbSpace[] }).spaces
-    },
+    queryFn: (): Promise<KbSpace[]> => getList<KbSpace>('/api/kb/spaces', 'spaces'),
   })
 
 export const useDocs = (spaceId: string | null) =>
   useQuery({
     queryKey: ['kb-docs', spaceId],
     enabled: !!spaceId,
-    queryFn: async (): Promise<KbDocMeta[]> => {
-      const r = await fetch(`/api/kb/spaces/${spaceId}/docs`)
-      if (!r.ok) return []
-      return ((await r.json()) as { docs: KbDocMeta[] }).docs
-    },
+    queryFn: (): Promise<KbDocMeta[]> => getList<KbDocMeta>(`/api/kb/spaces/${spaceId}/docs`, 'docs'),
   })
 
 export const useDoc = (id: string | null) =>
   useQuery({
     queryKey: ['kb-doc', id],
     enabled: !!id,
-    queryFn: async (): Promise<KbDoc | null> => {
-      const r = await fetch(`/api/kb/docs/${id}`)
-      if (!r.ok) return null
-      return ((await r.json()) as { doc: KbDoc }).doc
-    },
+    // 404 = the doc is gone or was never yours: a real "not found".
+    queryFn: async (): Promise<KbDoc | null> =>
+      (await getJsonOr404<{ doc: KbDoc }>(`/api/kb/docs/${id}`))?.doc ?? null,
   })
 
 export const createSpace = (name: string) =>
@@ -101,13 +90,29 @@ export const updateSpace = (
   patch: Partial<Pick<KbSpace, 'name' | 'description' | 'icon' | 'body' | 'visibility' | 'editPolicy'>> & { editors?: KbEditor[] },
 ) => fetch(`/api/kb/spaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
-/** Fetch the current editor grants for a doc / folder / artifact (from its GET
- *  route, which returns `editors`). */
-export const fetchEditors = async (kind: 'docs' | 'spaces' | 'artifacts', id: string): Promise<KbEditor[]> => {
-  const r = await fetch(kind === 'artifacts' ? `/api/artifacts/${id}` : `/api/kb/${kind}/${id}`)
-  if (!r.ok) return []
-  return ((await r.json()) as { editors?: KbEditor[] }).editors ?? []
-}
+/** The editor grants on a doc / folder / artifact, read from its GET route.
+ *
+ *  THROWS on any non-2xx, and this one has to more than most: the Share modal
+ *  seeds an EDITABLE list from this call and `save()` PUTs that list back
+ *  wholesale. A swallowed failure here does not merely misreport — it hands
+ *  Save an empty list to write over every real grant, destroying them. Reading
+ *  it through `useEditors` gives the modal a real error state to render and a
+ *  `data === undefined` it can gate Save on.
+ *
+ *  A 200 whose `editors` key is missing is a broken contract, not "nobody at
+ *  all" — `getList` rejects that too, for the same reason. */
+export const fetchEditors = (kind: 'docs' | 'spaces' | 'artifacts', id: string): Promise<KbEditor[]> =>
+  getList<KbEditor>(kind === 'artifacts' ? `/api/artifacts/${id}` : `/api/kb/${kind}/${id}`, 'editors')
+
+/** The Share modal's read of the current grants. Enabled only while the modal
+ *  is open, so reopening re-reads rather than trusting a stale copy. The query
+ *  key lives here next to the fetcher — one place owns this read. */
+export const useEditors = (kind: 'docs' | 'spaces' | 'artifacts', id: string, enabled: boolean) =>
+  useQuery({
+    queryKey: ['kb-editors', kind, id],
+    enabled: enabled && !!id,
+    queryFn: () => fetchEditors(kind, id),
+  })
 
 export const deleteSpace = (id: string) => fetch(`/api/kb/spaces/${id}`, { method: 'DELETE' })
 
@@ -124,9 +129,7 @@ export const useBrains = () =>
   useQuery({
     queryKey: ['rag-collections-public'],
     queryFn: async (): Promise<Array<{ id: string; name: string; kind: string }>> => {
-      const r = await fetch('/api/rag/collections')
-      if (!r.ok) return []
-      const all = ((await r.json()) as { collections: Array<{ id: string; name: string; kind: string }> }).collections
+      const all = await getList<{ id: string; name: string; kind: string }>('/api/rag/collections', 'collections')
       return all.filter((c) => c.kind === 'custom')
     },
   })
@@ -147,8 +150,29 @@ export interface KbSearchHit {
   /** Spaces are documents too (their overview) — hits open the space itself. */
   kind: 'doc' | 'space'
 }
-export const searchKb = (q: string) =>
-  fetch(`/api/kb/search?q=${encodeURIComponent(q)}`).then((r) => (r.ok ? r.json() : { hits: [] })).then((d) => (d as { hits: KbSearchHit[] }).hits)
+/** KB search, honestly: a failed search REJECTS, so "nothing matched" and "the
+ *  search broke" are different answers. This is the only function in the app
+ *  that talks to /api/kb/search — reach for it, do not re-derive it. */
+export const searchKbHits = (q: string): Promise<KbSearchHit[]> =>
+  getList<KbSearchHit>(`/api/kb/search?q=${encodeURIComponent(q)}`, 'hits')
+
+/** @deprecated Swallows failures as an empty result — use `searchKbHits` and
+ *  render the rejection.
+ *
+ *  THE LAST SWALLOW, deliberately left in exactly ONE line rather than four:
+ *  every remaining `.then()` search call site funnels through here, so closing
+ *  it is a single edit once those sites can show a failure. They cannot yet —
+ *  all three drop the promise on the floor (`void search(q).then(setState)`),
+ *  so rejecting today buys an unhandled rejection and STALE results, which is
+ *  a worse lie than an empty one, not a better one. The three sites that must
+ *  grow a `.catch` and an error branch before this shim is deleted:
+ *
+ *    routes/_app/knowledge.tsx:422   KbSearch — `void searchKb(t).then(...)`
+ *    routes/_app/knowledge.tsx:111   docSearch — feeds rich-editor's DocLinkPopover
+ *    components/chat/attachments.tsx:112  RefPicker — try/finally, no catch
+ *
+ *  (rich-editor.tsx:437 drops it too, so `docSearch` cannot simply reject.) */
+export const searchKb = (q: string): Promise<KbSearchHit[]> => searchKbHits(q).catch(() => [])
 
 export interface KbBacklink {
   id: string
@@ -160,9 +184,5 @@ export const useBacklinks = (docId: string | null) =>
   useQuery({
     queryKey: ['kb-backlinks', docId],
     enabled: !!docId,
-    queryFn: async (): Promise<KbBacklink[]> => {
-      const r = await fetch(`/api/kb/docs/${docId}/backlinks`)
-      if (!r.ok) return []
-      return ((await r.json()) as { backlinks: KbBacklink[] }).backlinks
-    },
+    queryFn: (): Promise<KbBacklink[]> => getList<KbBacklink>(`/api/kb/docs/${docId}/backlinks`, 'backlinks'),
   })

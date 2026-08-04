@@ -3,7 +3,7 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { deleteDoc, effectiveDocPerms, getDoc, saveDoc, setDocRouting, setOfficial } from '@/server/kb'
 import { generateDocOkf, queueDocOkf } from '@/server/kb-okf'
 import { canEditAgent, canEditHuman, canRead, canReadAgent, setEditors, canGovern } from '@/server/kb-perms'
@@ -37,9 +37,10 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
         if (!doc) return json({ error: 'not found' }, { status: 404 })
         const { perms, grants } = await effectiveDocPerms(doc)
         // Agents (over MCP) read by effective audience: org/public, or a grant.
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
-          if (!name || !canReadAgent(perms, name, grants)) return json({ error: 'forbidden' }, { status: 403 })
+        const reader = await agentCaller(request)
+        if (reader instanceof Response) return reader
+        if (reader) {
+          if (!canReadAgent(perms, reader.model, grants)) return json({ error: 'forbidden' }, { status: 403 })
           return json({ doc: { ...doc, visibility: perms.visibility, editPolicy: perms.editPolicy }, editors: grants })
         }
         const gate = await requireUser(request)
@@ -59,16 +60,17 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
 
         let actor: string
         let owner = false
-        if (checkAgentKey(request)) {
-          const name = agentName(request)
+        const agent = await agentCaller(request)
+        if (agent instanceof Response) return agent
+        if (agent) {
+          const name = agent.model
           // Its own authored doc, an editor grant — or an admin-elevated
           // assistant on any non-private doc. Without the authorship rule an
           // agent gets 403 on the doc it JUST created (create_kb_doc grants
           // nothing) and works around it by creating duplicates.
           const mayEdit =
-            !!name &&
-            (doc.createdBy === name || canEditAgent(name, grants) || (perms.visibility !== 'private' && (await isElevatedAssistant(name))))
-          if (!name || !mayEdit) return json({ error: 'forbidden' }, { status: 403 })
+            doc.createdBy === name || canEditAgent(name, grants) || (perms.visibility !== 'private' && (await isElevatedAssistant(agent)))
+          if (!mayEdit) return json({ error: 'forbidden' }, { status: 403 })
           actor = name
           body.visibility = undefined
           body.editPolicy = undefined
@@ -93,7 +95,7 @@ export const Route = createFileRoute('/api/kb/docs/$id')({
             return json({ error: 'only the owner can change brain routing' }, { status: 403 })
           }
         }
-        if (checkAgentKey(request)) body.ragRouting = undefined
+        if (agent) body.ragRouting = undefined
 
         if (owner) {
           if (body.permsInherited === true) {

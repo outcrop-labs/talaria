@@ -5,7 +5,10 @@ import { Maximize2, Minimize2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { GeneratingOverlay } from '@/components/ui/generating'
 import { RichEditor, type RichEditorHandle } from '@/components/ui/rich-editor'
+import { EmptyState } from '@/components/ui/empty-state'
+import { QueryError } from '@/components/ui/query-state'
 import { Skeleton } from '@/components/ui/skeleton'
+import { getJson } from '@/lib/fetch-json'
 import { saveArtifact, useArtifact } from '@/lib/artifacts'
 import { cn } from '@/lib/cn'
 
@@ -41,30 +44,51 @@ export function PlanDocSkeleton() {
 // bound. Editable on the fly, autosaved, referenceable anywhere in the app.
 export function PlanDoc({ planId, syncSignal = 0 }: { planId: string; planTitle?: string | null; syncSignal?: number }) {
   const [docId, setDocId] = useState<string | null>(null)
+  // `r.ok ? r.json() : null` folded every failure into the same `null` the
+  // pre-fetch state uses, and the render below turns `null` into a skeleton —
+  // so a 500 on this lookup shimmered a document outline for ever, silently.
+  const [error, setError] = useState<unknown>(null)
+  const [reload, setReload] = useState(0)
 
   useEffect(() => {
     setDocId(null)
+    setError(null)
     let cancelled = false
-    void fetch(`/api/plan/${planId}/doc`, { credentials: 'same-origin' })
-      .then((r) => (r.ok ? (r.json() as Promise<{ artifact: { id: string } }>) : null))
+    void getJson<{ artifact: { id: string } }>(`/api/plan/${planId}/doc`)
       .then((j) => {
-        if (!cancelled && j) setDocId(j.artifact.id)
+        if (!cancelled) setDocId(j.artifact.id)
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(e)
       })
     return () => {
       cancelled = true
     }
-  }, [planId])
+  }, [planId, reload])
 
   return (
     <div className="flex min-w-0 flex-col border-l border-line-subtle">
-      {docId ? <DocEditor id={docId} planId={planId} syncSignal={syncSignal} /> : <PlanDocSkeleton />}
+      {error ? (
+        <QueryError
+          className="p-6"
+          variant="compact"
+          title="Could not open this plan’s document"
+          error={error}
+          onRetry={() => setReload((n) => n + 1)}
+        />
+      ) : docId ? (
+        <DocEditor id={docId} planId={planId} syncSignal={syncSignal} />
+      ) : (
+        <PlanDocSkeleton />
+      )}
     </div>
   )
 }
 
 function DocEditor({ id, planId, syncSignal = 0 }: { id: string; planId: string; syncSignal?: number }) {
   const qc = useQueryClient()
-  const { data: artifact } = useArtifact(id)
+  const artifactQuery = useArtifact(id)
+  const artifact = artifactQuery.data
   const editorRef = useRef<RichEditorHandle>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncErr, setSyncErr] = useState<string | null>(null)
@@ -117,6 +141,27 @@ function DocEditor({ id, planId, syncSignal = 0 }: { id: string; planId: string;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncSignal])
 
+  // Three answers again: undefined = loading, null = a real 404 (the document
+  // was deleted out from under the plan), isError = the read failed.
+  if (artifactQuery.isError && artifact === undefined)
+    return (
+      <QueryError
+        className="p-6"
+        variant="compact"
+        title="Could not load this plan’s document"
+        error={artifactQuery.error}
+        onRetry={() => void artifactQuery.refetch()}
+      />
+    )
+  if (artifact === null)
+    return (
+      <EmptyState
+        variant="compact"
+        icon="⧉"
+        title="This plan’s document is gone"
+        hint="It may have been deleted, or it is no longer shared with you."
+      />
+    )
   if (!artifact) return <PlanDocSkeleton />
 
   return (

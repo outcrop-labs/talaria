@@ -197,7 +197,7 @@ function FocusCard({
         <span className={priorityClass(item.priority)}>{item.priority}</span><span>·</span>
         <span>{item.statusLabel}</span><span>·</span>
         <span>{relativeTime(item.createdAt)}</span>
-        {item.briefStatus === 'pending' && <span className="ml-auto text-ink-dim">Scout is refining</span>}
+        {item.briefStatus === 'pending' && <span className="ml-auto text-ink-dim">Refining</span>}
       </div>
       <h2 id="focus-question" className="max-w-[720px] font-sans text-[32px] font-light leading-[1.15] tracking-[-0.025em] text-fg sm:text-[40px] sm:leading-[48px]">
         {item.question}
@@ -295,7 +295,7 @@ function InboxZero() {
       <div>
         <span className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full border border-success/50 text-success"><Inbox size={20} /></span>
         <h2 className="font-sans text-[32px] font-light tracking-[-0.02em] text-fg">Inbox zero</h2>
-        <p className="mt-2 font-sans text-sm text-muted">No decisions are waiting. Scout is still available below.</p>
+        <p className="mt-2 font-sans text-sm text-muted">No decisions are waiting. Your assistant is still available below.</p>
       </div>
     </section>
   )

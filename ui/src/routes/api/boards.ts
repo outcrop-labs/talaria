@@ -3,10 +3,10 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { agentCaller } from '@/server/agent-auth'
 import { createBoard, listAllBoards, listBoards, listBoardsForAgent } from '@/server/boards'
 import { teamRole } from '@/server/teams'
-import { isElevatedAssistant, personalAssistantOwners } from '@/server/users'
+import { assistantOwnerFor, isElevatedAssistant } from '@/server/users'
 
 // GET /api/boards → boards the user owns or that are shared with them.
 // Agent-key + x-agent-name → boards whose policy allows that agent; a personal
@@ -17,16 +17,19 @@ export const Route = createFileRoute('/api/boards')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        if (checkAgentKey(request)) {
-          const agent = agentName(request)
-          if (!agent) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await agentCaller(request)
+        if (caller instanceof Response) return caller
+        if (caller) {
+          const agent = caller.model
           const policyBoards = await listBoardsForAgent(agent)
-          const ownerId = (await personalAssistantOwners()).get(agent)
+          // Owner-proxying and org-wide reach key off the CALLER: a legacy
+          // shared-key caller only ever gets the boards its policy allows.
+          const ownerId = await assistantOwnerFor(caller)
           if (!ownerId) return json({ boards: policyBoards })
           const ownerBoards = await listBoards(ownerId)
           const seen = new Set(ownerBoards.map((b) => b.id))
           // Elevated assistants see every live board org-wide (as editor).
-          const rest = (await isElevatedAssistant(agent))
+          const rest = (await isElevatedAssistant(caller))
             ? (await listAllBoards()).map((b) => ({ ...b, role: 'editor' as const }))
             : policyBoards
           return json({ boards: [...ownerBoards, ...rest.filter((b) => !seen.has(b.id))] })

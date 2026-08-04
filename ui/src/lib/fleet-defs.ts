@@ -1,5 +1,6 @@
 // Harness registry client (admin): agent definitions + LLM endpoints.
 import { useQuery } from '@tanstack/react-query'
+import { getJson, getList } from '@/lib/fetch-json'
 
 export interface ModelTarget {
   endpoint: string
@@ -89,11 +90,8 @@ export function useFleetDefs(enabled: boolean) {
   return useQuery({
     queryKey: ['fleet-defs'],
     enabled,
-    queryFn: async (): Promise<{ defs: AgentDef[]; endpoints: LlmEndpoint[]; brains?: AgentBrainHealth[] } | null> => {
-      const r = await fetch('/api/fleet/defs', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return r.json()
-    },
+    queryFn: (): Promise<{ defs: AgentDef[]; endpoints: LlmEndpoint[]; brains?: AgentBrainHealth[] }> =>
+      getJson<{ defs: AgentDef[]; endpoints: LlmEndpoint[]; brains?: AgentBrainHealth[] }>('/api/fleet/defs'),
   })
 }
 
@@ -129,11 +127,9 @@ export function useFleetContainers(enabled: boolean) {
     queryKey: ['fleet-containers'],
     enabled,
     refetchInterval: 10_000,
-    queryFn: async (): Promise<AgentContainers[]> => {
-      const r = await fetch('/api/fleet/containers', { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { containers: AgentContainers[] }).containers
-    },
+    // "No containers" and "could not ask Docker" look identical on the roster
+    // otherwise — every agent silently reads as stopped.
+    queryFn: (): Promise<AgentContainers[]> => getList<AgentContainers>('/api/fleet/containers', 'containers'),
   })
 }
 

@@ -2,8 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
-import { canUseAgentModel, personalAssistantOwners } from '@/server/users'
+import { agentCaller } from '@/server/agent-auth'
+import { assistantOwnerFor, canUseAgentModel } from '@/server/users'
 import { isMediaError, readAgentImage } from '@/server/agent-media'
 import { agentCategoryFolder, createArtifact, createFolder, listFolders, saveArtifact } from '@/server/artifacts'
 import { describeAgent } from '@/server/gateway'
@@ -30,15 +30,18 @@ export const Route = createFileRoute('/api/agent-media/$model/save')({
         let actor: string
         let ownerUserId: string | null = null
         let agentActor = false
-        if (checkAgentKey(request)) {
+        const agent = await agentCaller(request)
+        if (agent instanceof Response) return agent
+        if (agent) {
           agentActor = true
-          const name = agentName(request)
-          if (!name || name !== params.model) {
+          if (agent.model !== params.model) {
             return json({ error: 'agents can only save from their own workspace' }, { status: 403 })
           }
-          actor = name
+          actor = agent.model
           // A personal assistant saves media FOR ITS OWNER — owned + private.
-          ownerUserId = (await personalAssistantOwners()).get(name) ?? null
+          // Asked with the CALLER: writing into a human's account needs a
+          // proven identity, not an asserted one.
+          ownerUserId = await assistantOwnerFor(agent)
         } else {
           const user = await getSessionUser(request)
           if (!user) return json({ error: 'unauthorized' }, { status: 401 })

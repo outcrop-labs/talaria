@@ -1,5 +1,6 @@
 // Token-ledger client. Dollar cost lands once per-LLM pricing attribution exists.
 import { useQuery } from '@tanstack/react-query'
+import { getJson } from '@/lib/fetch-json'
 
 export interface CostTotals {
   prompt: number
@@ -26,11 +27,7 @@ export interface CostOverview {
 export function useCost() {
   return useQuery({
     queryKey: ['cost'],
-    queryFn: async (): Promise<CostOverview | null> => {
-      const r = await fetch('/api/cost', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return r.json()
-    },
+    queryFn: (): Promise<CostOverview> => getJson<CostOverview>('/api/cost'),
     refetchInterval: 60_000,
   })
 }

@@ -46,21 +46,36 @@ export interface ResolvedRoute {
   upstreamModel: string
 }
 
-/** Resolve a requested model id to an endpoint + upstream model. */
-export async function resolveRoute(model: string): Promise<ResolvedRoute | null> {
+export interface ModelRouting {
+  /** Every endpoint this model id can land on — one for a pin, the whole
+   *  round-robin pool for a bare name, empty when nothing serves it. */
+  endpoints: LlmEndpoint[]
+  /** The model id the upstream expects (a pin drops the endpoint prefix). */
+  upstreamModel: string
+}
+
+/** Where a model id CAN go, without picking (and without advancing the
+ *  round-robin cursor) — the ledger asks this after the fact, so it must not
+ *  perturb live routing. */
+export async function routingFor(model: string): Promise<ModelRouting> {
   const eps = await listEndpoints()
   // Endpoint-qualified: "<endpoint>/<rest>" (rest may itself contain "/").
   const slash = model.indexOf('/')
   if (slash > 0) {
     const ep = eps.find((e) => e.name === model.slice(0, slash))
     const rest = model.slice(slash + 1)
-    if (ep && ep.models.includes(rest)) return { endpoint: ep, upstreamModel: rest }
+    if (ep && ep.models.includes(rest)) return { endpoints: [ep], upstreamModel: rest }
   }
-  const serving = eps.filter((e) => e.models.includes(model))
-  if (serving.length === 0) return null
-  const i = (rr.get(model) ?? 0) % serving.length
+  return { endpoints: eps.filter((e) => e.models.includes(model)), upstreamModel: model }
+}
+
+/** Resolve a requested model id to an endpoint + upstream model. */
+export async function resolveRoute(model: string): Promise<ResolvedRoute | null> {
+  const { endpoints, upstreamModel } = await routingFor(model)
+  if (endpoints.length === 0) return null
+  const i = (rr.get(model) ?? 0) % endpoints.length
   rr.set(model, i + 1)
-  return { endpoint: serving[i]!, upstreamModel: model }
+  return { endpoint: endpoints[i]!, upstreamModel }
 }
 
 const deepMerge = (base: Record<string, unknown>, extra: Record<string, unknown>): Record<string, unknown> => {

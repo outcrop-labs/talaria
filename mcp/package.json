@@ -9,7 +9,9 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "//prepare": "dist/ is gitignored but IS what runs (the app spawns dist/index.js). npm runs `prepare` after `npm install`/`npm ci` here, so installing this package can never leave you without a dist — the last line of defence behind scripts/setup.sh, scripts/dev.sh and CI.",
+    "prepare": "tsc"
   },
   "engines": { "node": ">=20" },
   "dependencies": {

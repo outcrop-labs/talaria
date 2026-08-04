@@ -14,9 +14,10 @@ import { userAssignee } from '@/lib/assignees'
 import { CopyLinkButton } from '@/components/ui/copy-link-button'
 import { useContextMenu, DropdownMenu } from '@/components/ui/context-menu'
 import { Skeleton } from '@/components/ui/skeleton'
+import { QueryError } from '@/components/ui/query-state'
 import { popHeader, popPanel } from '@/components/chat/chat-chrome'
 import { cn } from '@/lib/cn'
-import { EFFORT_LABEL, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
+import { EFFORT_LABEL, OFF_BOARD_STATUSES, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, pgNum, pgNumOr, taskTimeSpent, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
 import { relativeTime } from '@/lib/fleet'
 
 type ColumnKey = 'ticket' | 'title' | 'status' | 'priority' | 'effort' | 'estimate' | 'assignees' | 'due' | 'time' | 'labels' | 'updated' | 'created'
@@ -144,8 +145,18 @@ export function BoardList({
   const { openMenu, menu } = useContextMenu()
   const { data: fleet, isLoading: agentsLoading } = useAgents()
   const { data: me } = useSession()
-  const { data: boardLabels = [] } = useBoardLabels(boardId)
-  const { data: boardStatuses = [] } = useBoardStatuses(boardId)
+  // The kanban's trap in list clothing: `= []` sends grouping and the status
+  // picker down the `TASK_STATUSES` fallback path, so a failed read groups the
+  // board under a workflow it may not use and offers statuses it may not have.
+  const labelsQuery = useBoardLabels(boardId)
+  const statusesQuery = useBoardStatuses(boardId)
+  const boardLabels = labelsQuery.data ?? []
+  const boardStatuses = statusesQuery.data ?? []
+  // Same test, same word, same consequence as kanban.tsx: errored AND nothing
+  // cached to fall back on. A stale set still describes a real workflow; an
+  // absent one does not, and `?? []` is indistinguishable from "this board has
+  // no custom statuses", which is the branch that invents TASK_STATUSES.
+  const statusesFailed = statusesQuery.isError && statusesQuery.data === undefined
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', boardId] })
   const patch = async (taskId: string, p: Parameters<typeof updateTask>[1]) => {
@@ -224,13 +235,13 @@ export function BoardList({
       case 'effort':
         return t.effort ? EFFORT_RANK[t.effort] ?? 0 : -1
       case 'estimate':
-        return t.estimatedHours ?? -1
+        return pgNum(t.estimatedHours) ?? -1 // wire numeric: sorting strings put "10" before "9"
       case 'assignees':
         return assigneeText(t.assignees).toLowerCase()
       case 'due':
         return t.dueDate ? Date.parse(t.dueDate) : Infinity // undated sort last (asc)
       case 'time':
-        return t.timeSpentSeconds
+        return taskTimeSpent(t) // wire bigint: comparing the raw strings put "100" before "99"
       case 'labels':
         return t.tags.join(',').toLowerCase()
       case 'updated':
@@ -256,11 +267,11 @@ export function BoardList({
   // ── Grouping (ClickUp-style sections; a multi-assignee/multi-label ticket
   //    appears in each of its groups) ──────────────────────────────────────
   const groups = useMemo<RowGroup[]>(() => {
-    const sum = (ts: Task[]) => Math.round(ts.reduce((s, t) => s + (t.estimatedHours ?? 0), 0) * 10) / 10
+    const sum = (ts: Task[]) => Math.round(ts.reduce((s, t) => s + pgNumOr(t.estimatedHours, 0), 0) * 10) / 10
     if (groupBy === 'none') return [{ key: 'all', label: '', hours: 0, tasks: sorted }]
     if (groupBy === 'status') {
       const boardKeys = boardStatuses.length ? boardStatuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])
-      const order = [...boardKeys, 'failed', 'cancelled']
+      const order = [...boardKeys, ...OFF_BOARD_STATUSES]
       return order
         .map((st) => ({
           key: st,
@@ -395,7 +406,9 @@ export function BoardList({
       case 'due':
         return <DuePill t={t} ctx={pctx(t)} />
       case 'time':
-        return <span className="font-mono text-xs tracking-[0.05em] text-muted">{fmtTime(t.timeSpentSeconds)}</span>
+        // taskTimeSpent, not t.timeSpentSeconds: the wire value is a bigint
+        // string, and fmtTime's arithmetic on a string produced nonsense.
+        return <span className="font-mono text-xs tracking-[0.05em] text-muted">{fmtTime(taskTimeSpent(t))}</span>
       case 'labels':
         return <LabelsPill t={t} ctx={pctx(t)} />
       case 'updated':
@@ -405,8 +418,52 @@ export function BoardList({
     }
   }
 
+  // Nothing to fall back on: refuse to draw a made-up board. The list looked
+  // like the safer of the two views because the ROWS load independently — but
+  // "grouping falls back to defaults" is the same failure the kanban refuses
+  // outright, wearing a warning banner: `groupBy: 'status'` builds its lanes
+  // from TASK_STATUSES, and a ticket whose status is not in that invented set
+  // is filtered into no group and rendered nowhere. Warning the user that the
+  // board they are looking at is fictional, and then drawing it anyway, is not
+  // a weaker version of refusing — it is the bug with a label on it. (Same
+  // condition, same component, same copy as kanban.tsx on purpose: a reader
+  // comparing the two views should see one rule, not two policies.)
+  if (statusesFailed)
+    return (
+      <div className="grid h-full place-items-center p-4">
+        <QueryError
+          title="Could not load this board’s columns"
+          error={statusesQuery.error}
+          onRetry={() => void statusesQuery.refetch()}
+        />
+      </div>
+    )
+
   return (
     <div className="flex h-full flex-col">
+      {/* The rows below are the tickets, which loaded. Keep them and mark the
+          reference read that failed — grouping headers, status colours and the
+          status picker are all derived from it. Reaching here with
+          `statusesQuery.isError` means a CACHED set is being shown: stale, but
+          real. The no-data case returned above. */}
+      {(statusesQuery.isError || labelsQuery.isError) && (
+        <QueryError
+          variant="inline"
+          className="border-b border-line-subtle px-4 py-2"
+          title={
+            statusesQuery.isError
+              ? 'Statuses may be out of date'
+              : labelsQuery.data === undefined
+                ? 'Could not load labels — the pills below show names without their colours'
+                : 'Labels may be out of date'
+          }
+          error={statusesQuery.isError ? statusesQuery.error : labelsQuery.error}
+          onRetry={() => {
+            if (statusesQuery.isError) void statusesQuery.refetch()
+            if (labelsQuery.isError) void labelsQuery.refetch()
+          }}
+        />
+      )}
       <div className="relative min-h-0 flex-1 overflow-auto p-4">
         {tasks.length === 0 ? (
           <div className="grid h-full place-items-center font-sans text-sm text-muted">No tasks match.</div>

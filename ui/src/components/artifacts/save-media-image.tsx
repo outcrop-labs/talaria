@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { listQuery } from '@/components/ui/query-state'
 import { useFolders } from '@/lib/artifacts'
 
 // An agent-produced image in chat, with a hover affordance to keep it: "Save
@@ -29,7 +30,14 @@ export function AgentMediaImage({ src, alt }: { src: string; alt: string }) {
 }
 
 function SaveDialog({ src, onClose }: { src: string; onClose: () => void }) {
-  const { data: folders = [], isLoading: foldersLoading } = useFolders()
+  // A failed folder read used to leave "No folder (root)" as the only option,
+  // so the image was filed at the root and the owner had no idea their folders
+  // were simply unreadable at that moment.
+  const {
+    rows: folders,
+    notice: foldersNotice,
+    pending: foldersLoading,
+  } = listQuery(useFolders(), { title: 'Could not load your folders', variant: 'inline' })
   const url = new URL(src, window.location.origin)
   const path = url.searchParams.get('path') ?? ''
   const model = decodeURIComponent(url.pathname.split('/').pop() ?? '')
@@ -95,6 +103,7 @@ function SaveDialog({ src, onClose }: { src: string; onClose: () => void }) {
                 ))}
               </Select>
             )}
+            {foldersNotice}
           </div>
           {error && <div className="text-xs text-danger">{error}</div>}
           <div className="flex justify-end gap-2 border-t border-line-subtle pt-3">

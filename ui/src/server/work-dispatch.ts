@@ -10,7 +10,7 @@ import { proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
 import { estimateTokens, recordUsage } from './usage'
 import { workflowsForTask } from './workflows'
-import { listStatuses, statusMeta } from './statuses'
+import { statusMeta } from './statuses'
 import { listAllSkills, SHARED } from './agent-skills'
 import { db } from './db/pg'
 import type { Task } from '@/lib/task-const'
@@ -38,15 +38,36 @@ const liveSessions = new Set<string>()
 const MAX_SESSION_TURNS = 12
 const TURN_WAIT_MS = 600_000
 
-/** Where the ticket is now — the session's continue/stop signal. */
-async function ticketState(taskId: string, agentModel: string): Promise<{ status: string; assigned: boolean; terminal: boolean } | null> {
-  const { getTask } = await import('./tasks')
+/** Where the ticket is now — the session's continue/stop signal.
+ *
+ *  THIS ASKS THE ONE PREDICATE. It used to compute its own:
+ *  `working = agentStartKeys ∪ {category === 'active'}`, then
+ *  `terminal = !assigned || !working.has(status)` — a fourth spelling of "may
+ *  this agent still work this ticket?", in the one file the consolidation
+ *  rounds treated as a caller rather than as a copy. It omitted BOTH archival
+ *  clauses and the board's agent policy, so a person archiving the ticket,
+ *  archiving its board, or revoking the agent's grant did not stop the live
+ *  session already running: it kept driving turns against work that had been
+ *  withdrawn, and every tool call it made came back 403.
+ *  Now: `agentTicketRefusal` answers authority, `workingKeys` answers "still in
+ *  play", assignment is the one thing left that is genuinely local to a
+ *  session — and `stop` carries the reason so the activity line says WHY the
+ *  session ended instead of just naming a column. */
+async function sessionState(
+  taskId: string,
+  agentModel: string,
+): Promise<{ status: string; stop: string | null } | null> {
+  const { getTask, agentTicketRefusal } = await import('./tasks')
+  const { boardFacts } = await import('./boards')
   const t = await getTask(taskId)
   if (!t) return null
-  const meta = await statusMeta(t.boardId)
-  const working = new Set([...meta.agentStartKeys, ...(await listStatuses(t.boardId)).filter((s) => s.category === 'active').map((s) => s.key)])
-  const assigned = t.assignees.includes(agentModel)
-  return { status: t.status, assigned, terminal: !assigned || !working.has(t.status) }
+  const facts = boardFacts()
+  const refusal = await agentTicketRefusal(t, agentModel, 'write', facts)
+  if (refusal) return { status: t.status, stop: refusal }
+  if (!t.assignees.includes(agentModel)) return { status: t.status, stop: 'no longer assigned to this agent' }
+  const meta = await facts.meta(t.boardId)
+  if (!meta.workingKeys.includes(t.status)) return { status: t.status, stop: `ticket moved to "${t.status}"` }
+  return { status: t.status, stop: null }
 }
 
 /** Drive one ticket with one agent as a SESSION. Fire-and-forget from task
@@ -65,7 +86,7 @@ export async function dispatchTicketWork(task: Task, agentModel: string, boardNa
 async function runWorkSession(task: Task, agentModel: string, boardName?: string): Promise<void> {
   const { logActivity } = await import('./tasks')
   try {
-    const statuses = await listStatuses(task.boardId)
+    const meta = await statusMeta(task.boardId)
     const workflows = await workflowsForTask(task)
     // Workflows name SKILLS — Hermes loads the flow content from the skill
     // mounts it already reads; we never paste flow prose into the prompt.
@@ -99,7 +120,20 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
         (workflows.length ? ` with workflow ${workflows.map((w) => w.name + (w.skills.length ? ` [${w.skills.join(', ')}]` : '')).join(', ')}` : '') +
         (missing.length ? ` — skill ${missing.map((m) => `"${m}"`).join(', ')} not available to this agent` : ''),
     )
-    const activeHint = statuses.find((s) => s.category === 'active')?.key
+    // THE PROMPT HANDS THIS TO THE AGENT VERBATIM, so it is a destination and
+    // must come from `statusMeta`'s `placeable` list like every other one. It
+    // used to be `listStatuses(...).find(s => s.category === 'active')?.key`,
+    // which does not exclude terminal columns: on a board whose first active
+    // column is labelled "Cancelled" (slug `cancelled`, an off-board terminal
+    // key — legal, and `agentStartConflict` does not refuse it) the hint was
+    // "cancelled", so an agent obeying step 2 of its own work-session prompt
+    // sent a TERMINAL move. `activeKey` is picked from `placeable`, and with no
+    // active column at all we fall back to the pickup queue; with neither we say
+    // so rather than invent `in_progress`, a key the board may not have.
+    const activeHint = meta.activeKey ?? meta.assignedKey
+    const step2 = activeHint
+      ? `comment a one-line acknowledgment, and triage_ticket to status "${activeHint}" while you work.`
+      : `comment a one-line acknowledgment. Leave the status where it is — this board has no working column for you to move it to.`
     const prompt =
       `[Assigned work — no human sent this message; a ticket was assigned to you.]\n\n` +
       `Ticket ${task.ticketRef ?? task.id}: "${task.title}"${boardName ? ` (board: ${boardName})` : ''}\n` +
@@ -107,9 +141,10 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
       workflowBlock +
       `\n\nThis is a WORK SESSION, not a single exchange — Talaria keeps this conversation going until the work is done. Work like a developer at a desk: act, read the result, steer, act again.\n` +
       `1. get_ticket ${task.id} for full context (comments, attachments, dependencies).\n` +
-      `2. comment a one-line acknowledgment, and triage_ticket to status "${activeHint ?? 'in_progress'}" while you work.\n` +
+      `2. ${step2}\n` +
       `3. Do the work in as many steps as it takes — iterate with your tools and (if you have one) your workbench harness: run it, read its structured result, respond to it, verify with tests, repeat.\n` +
       `4. report_outcome when genuinely finished — a human signs off from review. If blocked, set status "blocked" and comment why. Either of those ends the session.\n` +
+      `That status move in step 4 is your LAST one on this ticket. Once it is in review, or parked in blocked, only a person moves it again — triage_ticket will refuse you with a 403, and so will add_time once the ticket is closed. Don't retry it; comment instead, which stays open.\n` +
       `\nBe honest about capability: if you genuinely can't do this properly (a tool or access you're missing, an org-specific process you'd be guessing at), don't improvise — report_gap once with what a flow would need, then block. Never report a gap for work you can simply do.\n` +
       `End each reply with a short status line: what you just did and what you'll do next (or DONE / BLOCKED).`
     const sendTurn = async (content: string): Promise<string> => {
@@ -125,6 +160,9 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
         agentModel,
         source: 'chat',
         refId: task.id,
+        // The ticket this session's spend belongs to — without it the turn
+        // lands in the ledger but never in the ticket's cost.
+        taskId: task.id,
         tier: null,
         promptTokens: usage?.promptTokens ?? estimateTokens(content.length),
         completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
@@ -141,9 +179,14 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
     // the turn cap lands. Every continuation carries the live ticket state so
     // the agent never works a stale picture.
     for (let turn = 2; turn <= MAX_SESSION_TURNS; turn++) {
-      const state = await ticketState(task.id, agentModel)
-      if (!state || state.terminal) {
-        await logActivity(task.id, 'talaria', 'dispatch', `work session ended after ${turn - 1} turn${turn > 2 ? 's' : ''} (ticket ${state ? state.status : 'gone'})`).catch(() => {})
+      const state = await sessionState(task.id, agentModel)
+      if (!state || state.stop) {
+        await logActivity(
+          task.id,
+          'talaria',
+          'dispatch',
+          `work session ended after ${turn - 1} turn${turn > 2 ? 's' : ''} — ${state ? state.stop : 'ticket gone'}`,
+        ).catch(() => {})
         return
       }
       if (/\b(DONE|BLOCKED)\b/.test(reply.slice(-200))) {
@@ -167,13 +210,40 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
 }
 
 /** Dispatch to every AGENT assignee when the ticket sits in an agent-start
- *  column. `onlyAgents` narrows to newly-added assignees on updates. */
+ *  column. `onlyAgents` narrows to newly-added assignees on updates.
+ *
+ *  THE PUSH-SIDE CHOKE POINT. Every caller — createTask, both of updateTask's
+ *  branches, and anything added later — arrives here, and this used to check
+ *  ONE thing: is the ticket's column flagged agent-start? Nothing about closed,
+ *  archived, or an archived board. `updateTask` restated a fragment of the rule
+ *  inline in its status branch (`!meta.doneKeys.includes(...)`) and its
+ *  assignees branch inherited nothing at all, so assigning an agent to a CLOSED
+ *  ticket started a live work session on it. And `doneKeys` was never the whole
+ *  rule anyway: a board owner may legally create an `active + agentStart`
+ *  column labelled "Cancelled" (agentStartConflict refuses only review and
+ *  done), whose key is the off-board terminal `cancelled` — in doneKeys' blind
+ *  spot, in the closed predicate's plain sight.
+ *  So the rule is asked HERE, once, from the same `agentTicketRefusal` the patch
+ *  gate, the session loop and the heartbeat use. A caller cannot forget it,
+ *  because a caller never states it.
+ *
+ *  `pickupKeys`, not `agentStartKeys`: the raw flag is the REFUSAL set (entering
+ *  any of those columns is assignment, which an agent may not do for itself),
+ *  while this is a DESTINATION question — is this column somewhere work is
+ *  actually picked up from? A review column carrying `agent_start` is not, and
+ *  dispatching into one starts a session on a ticket the review-exit rule has
+ *  already frozen. And the agent gate is now PER AGENT, because board policy is
+ *  part of the question: an agent still listed as an assignee on a board that
+ *  has since revoked its grant gets no fresh work session. */
 export async function maybeDispatchTicket(task: Task, onlyAgents?: string[]): Promise<void> {
-  const { agentAssignees } = await import('./tasks')
-  const meta = await statusMeta(task.boardId)
-  if (!meta.agentStartKeys.includes(task.status)) return
+  const { agentAssignees, agentTicketRefusal } = await import('./tasks')
+  const { boardFacts } = await import('./boards')
+  const facts = boardFacts()
+  const meta = await facts.meta(task.boardId)
+  if (!meta.pickupKeys.includes(task.status)) return
   const targets = agentAssignees(task.assignees).filter((a) => !onlyAgents || onlyAgents.includes(a))
   for (const agent of targets) {
+    if (await agentTicketRefusal(task, agent, 'write', facts)) continue
     void dispatchTicketWork(task, agent)
   }
 }

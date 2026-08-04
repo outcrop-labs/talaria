@@ -4,8 +4,10 @@ import { useQuery } from '@tanstack/react-query'
 import { EmptyState } from '@/components/ui/empty-state'
 import { GeneratingDots } from '@/components/ui/generating'
 import { Panel } from '@/components/ui/panel'
+import { QueryError } from '@/components/ui/query-state'
 import { SectionHeader } from '@/components/ui/section-header'
 import { StatCard } from '@/components/ui/stat-card'
+import { getJson } from '@/lib/fetch-json'
 import { formatTokens } from '@/lib/cost'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
@@ -35,11 +37,7 @@ interface InferenceData {
 const useInference = () =>
   useQuery({
     queryKey: ['inference'],
-    queryFn: async (): Promise<InferenceData> => {
-      const r = await fetch('/api/inference')
-      if (!r.ok) throw new Error('failed to load')
-      return r.json()
-    },
+    queryFn: (): Promise<InferenceData> => getJson<InferenceData>('/api/inference'),
     // Lean in while something is actually generating or warming.
     refetchInterval: (q) => {
       const live = q.state.data?.live
@@ -112,9 +110,11 @@ function LiveSection({ live }: { live: InferenceLive }) {
 // fleet container temperature — then the self-hosted backends underneath.
 export function ComputePanel() {
   const { data: session } = useSession()
-  const { data, isLoading } = useInference()
+  const query = useInference()
+  const { data, isLoading } = query
   const backends = data?.backends ?? []
   const live = data?.live
+  const failed = query.isError && data === undefined
 
   return (
     <div>
@@ -127,7 +127,11 @@ export function ComputePanel() {
           )}
         </div>
 
-        {live ? (
+        {/* "0 generating / no errors / all healthy" over a dead endpoint is the
+            same lie as an empty list — a failed read gets its own panel. */}
+        {failed ? (
+          <QueryError error={query.error} title="Could not load the inference plane" onRetry={() => void query.refetch()} />
+        ) : live ? (
           <LiveSection live={live} />
         ) : (
           <div className="grid grid-cols-4 gap-4">
@@ -139,7 +143,7 @@ export function ComputePanel() {
 
         <SectionHeader className="mb-0" title="Self-hosted compute" />
 
-        {isLoading ? (
+        {failed ? null : isLoading ? (
           <SkeletonCard />
         ) : backends.length === 0 ? (
           <EmptyState

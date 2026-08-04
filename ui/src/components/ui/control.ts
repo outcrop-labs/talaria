@@ -8,7 +8,7 @@ export const controlSizes: Record<ControlSize, string> = {
   md: 'h-11',
 }
 
-// Gentle dew focus-visible (spec §8): gold — SOLID 2px ring on controls
+// Mercury focus-visible (spec §8): gold — SOLID 2px ring on controls
 // (buttons, icon tiles, segmented cells, inputs). Chips use the dashed
 // variant from `chat-chrome.tsx` (`focusGold`) instead.
 export const focusRing =

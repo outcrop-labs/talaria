@@ -16,10 +16,12 @@ import { Modal } from '@/components/ui/modal'
 import { Panel } from '@/components/ui/panel'
 import { Select } from '@/components/ui/select'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
+import { listQuery, QueryState } from '@/components/ui/query-state'
 import { confirm } from '@/components/ui/confirm'
 import { Chip } from '@/components/ui/chip'
 import { popPanel, popRow } from '@/components/chat/chat-chrome'
 import { cn } from '@/lib/cn'
+import { getJson, getList } from '@/lib/fetch-json'
 import { publicIconDomain } from '@/lib/icon-domain'
 import { relativeTime } from '@/lib/fleet'
 import { useAgents } from '@/lib/agents'
@@ -62,17 +64,15 @@ const connectPopup = (serverId: string, scope: 'org' | 'me') =>
 function useMcpServers() {
   return useQuery({
     queryKey: ['mcp-servers'],
-    queryFn: async (): Promise<McpServerRow[] | null> => {
-      const r = await fetch('/api/mcp/servers', { credentials: 'same-origin' })
-      if (!r.ok) return null
-      return ((await r.json()) as { servers: McpServerRow[] }).servers
-    },
+    // "No MCP servers yet" invites an admin to register one they may already
+    // have. Only a genuine empty registry earns that screen.
+    queryFn: (): Promise<McpServerRow[]> => getList<McpServerRow>('/api/mcp/servers', 'servers'),
   })
 }
 
 function McpPage() {
   const qc = useQueryClient()
-  const { data: servers, isPending } = useMcpServers()
+  const serversQuery = useMcpServers()
   const [adding, setAdding] = useState<null | 'marketplace' | 'custom'>(null)
 
   // The OAuth popup announces completion — refresh connection states live.
@@ -101,21 +101,26 @@ function McpPage() {
           </Button>
         </div>
 
-        {isPending ? (
-          <Panel>
-            <Skeleton className="mb-3 h-4 w-40 rounded-full" />
-            <SkeletonRows rows={3} />
-          </Panel>
-        ) : (servers ?? []).length === 0 ? (
-          <EmptyState
-            icon="⌁"
-            title="No MCP servers yet"
-            hint="Browse the marketplace, or register a custom endpoint your agents should reach."
-            action={<Button size="sm" onClick={() => setAdding('marketplace')}>Browse marketplace</Button>}
-          />
-        ) : (
-          (servers ?? []).map((s) => <ServerCard key={s.id} server={s} />)
-        )}
+        <QueryState
+          query={serversQuery}
+          errorTitle="Could not load the MCP registry"
+          skeleton={
+            <Panel>
+              <Skeleton className="mb-3 h-4 w-40 rounded-full" />
+              <SkeletonRows rows={3} />
+            </Panel>
+          }
+          empty={
+            <EmptyState
+              icon="⌁"
+              title="No MCP servers yet"
+              hint="Browse the marketplace, or register a custom endpoint your agents should reach."
+              action={<Button size="sm" onClick={() => setAdding('marketplace')}>Browse marketplace</Button>}
+            />
+          }
+        >
+          {(servers) => servers.map((s) => <ServerCard key={s.id} server={s} />)}
+        </QueryState>
 
         {adding === 'marketplace' && <MarketplaceModal onClose={() => setAdding(null)} onCustom={() => setAdding('custom')} />}
         {adding === 'custom' && <AddServerModal onClose={() => setAdding(null)} />}
@@ -160,7 +165,12 @@ function resolveScopePick(
 function ServerCard({ server: s }: { server: McpServerRow }) {
   const qc = useQueryClient()
   const { data: fleet } = useAgents()
-  const { data: users = [] } = useUsers()
+  // Access RULES are shown per person by name. Defaulted to `[]` a failed
+  // directory read rendered each existing rule as a truncated raw id and the
+  // "add a person" picker as empty — an access table that looks like it is
+  // about strangers, on a server that grants tool use.
+  const usersList = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
+  const users = usersList.rows
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const { openMenu, menu } = useContextMenu()
@@ -393,6 +403,7 @@ function ServerCard({ server: s }: { server: McpServerRow }) {
               onPick={(id) => void patch({ userAccess: { userId: id, allowed: true, tools: null } })}
             />
           </div>
+          {usersList.notice}
           {s.userAccess.length === 0 ? (
             <EmptyState variant="inline" className="px-1.5 py-1 text-muted/70" title="Everyone with an assigned agent may use it." />
           ) : (
@@ -628,14 +639,10 @@ function MarketplaceModal({ onClose, onCustom }: { onClose: () => void; onCustom
 
   const { data: results, isFetching } = useQuery({
     queryKey: ['mcp-marketplace', q],
-    queryFn: async (): Promise<{ servers: LibraryServerRow[] }> => {
-      const url = q.trim()
-        ? `/api/mcp/library?q=${encodeURIComponent(q.trim())}`
-        : '/api/mcp/library?featured=1'
-      const r = await fetch(url, { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('library unavailable')
-      return r.json()
-    },
+    queryFn: (): Promise<{ servers: LibraryServerRow[] }> =>
+      getJson<{ servers: LibraryServerRow[] }>(
+        q.trim() ? `/api/mcp/library?q=${encodeURIComponent(q.trim())}` : '/api/mcp/library?featured=1',
+      ),
     placeholderData: (prev) => prev,
     staleTime: 60_000,
   })

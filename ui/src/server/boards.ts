@@ -2,6 +2,8 @@
 // the share mechanism (role: owner | editor | viewer).
 import { db } from './db/pg'
 import { isElevatedAssistant } from './users'
+import { statusMeta, type StatusMeta } from './statuses'
+import { subjectModel, type AgentSubject } from './agent-auth'
 
 export type BoardRole = 'owner' | 'editor' | 'viewer'
 
@@ -62,6 +64,72 @@ export async function boardRole(userId: string, boardId: string): Promise<BoardR
 }
 
 export const canEdit = (role: BoardRole | null) => role === 'owner' || role === 'editor'
+
+/** Existence + name + ARCHIVAL STATE, in one place.
+ *
+ *  `archivedAt` is the load-bearing field and the reason this lives here rather
+ *  than in each caller: archival is one fact about a board, and it was being
+ *  read (or forgotten) independently by `boardAllowsAgent`, by the agent-write
+ *  predicate in server/tasks.ts, and by the heartbeat query — which is how an
+ *  agent ended up unable to see an archived board, unable to patch its tickets,
+ *  and yet able to CREATE one on it. `label` is for diagnostics and falls back
+ *  to the id. */
+export async function boardInfo(boardId: string): Promise<{ label: string; archivedAt: string | null; exists: boolean }> {
+  const sql = await db()
+  const rows = (await sql`select name, archived_at as "archivedAt" from boards where id = ${boardId}`) as unknown as Array<{
+    name: string | null
+    archivedAt: string | Date | null
+  }>
+  const row = rows[0]
+  return {
+    label: row?.name ? `"${row.name}"` : boardId,
+    archivedAt: row?.archivedAt ? new Date(row.archivedAt).toISOString() : null,
+    exists: !!row,
+  }
+}
+
+// ── One board pass ───────────────────────────────────────────────────────────
+// Deciding "may this agent act on this ticket?" needs three board-level facts:
+// its existence + archival (`boardInfo`), its agent policy (`getBoardAgentConfig`)
+// and its workflow columns (`statusMeta`). A loop over tickets asks all three
+// per ticket, and the three had drifted apart on exactly that: `statusMeta` was
+// memoised by hand inside `assignedWork` (a local `metaByBoard` map) while
+// `boardInfo` was re-queried for every candidate — an N+1 on the heartbeat, the
+// hottest read in the product.
+//
+// The fix is NOT a fourth hand-rolled map. It is that a caller passes a CACHE,
+// never an answer. The old `closedToAgents(task, meta?)` took a resolved
+// `statusMeta` with a comment saying "it must be the meta for task.boardId" — a
+// rule stated in prose, which is the shape of every bug these rounds have
+// found. A `BoardFacts` cannot be for the wrong board: it is keyed by boardId
+// and resolves on demand.
+export interface BoardFacts {
+  info(boardId: string): Promise<{ label: string; archivedAt: string | null; exists: boolean }>
+  policy(boardId: string): Promise<BoardAgentConfig>
+  meta(boardId: string): Promise<StatusMeta>
+}
+
+/** A fresh, single-pass memo. Create ONE per request/loop and thread it; every
+ *  predicate below takes an optional one and makes its own when given none, so
+ *  a caller that doesn't care is correct by default and a caller in a loop pays
+ *  one query per board instead of one per ticket. Deliberately NOT a global
+ *  cache with a TTL: board archival and agent policy are the very facts these
+ *  predicates exist to enforce, and a stale one is a revoked agent that keeps
+ *  working. A pass lives for one operation, so it can never be stale for the
+ *  decision it was made for. */
+export function boardFacts(): BoardFacts {
+  const memo = <T>(fn: (id: string) => Promise<T>) => {
+    const cache = new Map<string, Promise<T>>()
+    return (id: string): Promise<T> => {
+      const hit = cache.get(id)
+      if (hit) return hit
+      const p = fn(id)
+      cache.set(id, p)
+      return p
+    }
+  }
+  return { info: memo(boardInfo), policy: memo(getBoardAgentConfig), meta: memo(statusMeta) }
+}
 
 /** A short uppercase ticket prefix from the board name (e.g. "Sprint Board" → "SB"). */
 function ticketPrefix(name: string): string {
@@ -187,11 +255,33 @@ export async function setBoardAgentConfig(boardId: string, allowAll: boolean, mo
 
 /** Whether an agent may be assigned on a board. Restrictive by default — a board
  *  allows an agent only if allow-all is on OR the agent is explicitly listed.
- *  An admin-elevated personal assistant passes everywhere (org-wide access). */
-export async function boardAllowsAgent(boardId: string, model: string): Promise<boolean> {
-  const cfg = await getBoardAgentConfig(boardId)
-  if (cfg.allowAll || cfg.models.includes(model)) return true
-  return isElevatedAssistant(model)
+ *  An admin-elevated personal assistant passes everywhere (org-wide access) —
+ *  but only when the CALLER proved it is that assistant: pass the AgentCaller,
+ *  not its model, wherever one is in hand.
+ *
+ *  A bare model string remains accepted for the one shape that has NO caller:
+ *  policy questions about a third party (invalidAssignee below, board config).
+ *  `subjectProven` reads a bare string as proven, so passing `caller.model`
+ *  where `caller` is in hand silently discards the legacy flag — every route
+ *  under this repo's ownership now passes the caller.
+ *
+ *  ARCHIVAL IS THE THIRD END OF THE SAME RULE. `listBoardsForAgent` and
+ *  `listAllBoards` already hide archived boards, and the agent-write predicate
+ *  refuses writes to a ticket on one — but this predicate, the gate every
+ *  agent-facing board route stands behind, ignored `archived_at` entirely. So an
+ *  agent could not SEE an archived board and could not PATCH its tickets, yet
+ *  `POST /api/boards/:id/tasks` handed it a fresh ticket ref on one. An
+ *  archived board is out of service, for every agent, at every door — including
+ *  the elevated assistant, whose bypass is a policy exemption, not a licence to
+ *  work retired boards. (server/tasks.ts `agentTicketRefusal` is the TICKET-level
+ *  question and delegates here for the board half; this is the primitive, and
+ *  the only place board archival + board policy are read together.) */
+export async function boardAllowsAgent(boardId: string, agent: AgentSubject, facts: BoardFacts = boardFacts()): Promise<boolean> {
+  const board = await facts.info(boardId)
+  if (!board.exists || board.archivedAt) return false
+  const cfg = await facts.policy(boardId)
+  if (cfg.allowAll || cfg.models.includes(subjectModel(agent))) return true
+  return isElevatedAssistant(agent)
 }
 
 /** Validate a mixed assignee list: `user:<uuid>` entries must be board

@@ -1,4 +1,4 @@
-// The composer's send + stop affordances (Gentle dew, spec §7). Send is the
+// The composer's send + stop affordances (Mercury, spec §7). Send is the
 // gold 36×36 tile that lives INSIDE the prompt well, top-right; Enter still
 // sends everywhere and the KeyHint chip on the control rail says so. Stop is
 // a 36×36 rail tile that pulses while a reply streams.

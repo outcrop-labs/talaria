@@ -152,7 +152,7 @@ export function InboxFocusShell({ children, attachActiveDecision }: { children: 
       options: { commandDecisionId?: string; replaceBusy?: boolean } = {},
     ) => {
       if (actionId === 'reply' && payload === undefined) {
-        setAssistantMessage('Write the reply below. Scout will show the exact message for confirmation before posting it.')
+        setAssistantMessage('Write the reply below. Your assistant will show the exact message for confirmation before posting it.')
         panelRef.current?.expand()
         panelRef.current?.insertText('Reply: ')
         return
@@ -213,7 +213,7 @@ export function InboxFocusShell({ children, attachActiveDecision }: { children: 
     setAssistantMessage(null)
     setStreaming({
       user: instruction,
-      status: options.mode === 'plan' ? 'Planning with Scout' : options.mode === 'fast' ? 'Answering quickly' : options.focusKey ? 'Reviewing the active decision' : 'Thinking with Scout',
+      status: options.mode === 'plan' ? 'Planning with your assistant' : options.mode === 'fast' ? 'Answering quickly' : options.focusKey ? 'Reviewing the active decision' : 'Thinking with your assistant',
       content: '',
     })
     const controller = new AbortController()
@@ -247,7 +247,7 @@ export function InboxFocusShell({ children, attachActiveDecision }: { children: 
         if (item) await performAction(item, commandResult.actionId, commandResult.payload, { commandDecisionId: commandResult.decisionId, replaceBusy: true })
       }
     } catch (error) {
-      if (!controller.signal.aborted) setFailure(error instanceof Error ? error.message : 'Scout could not process that instruction.')
+      if (!controller.signal.aborted) setFailure(error instanceof Error ? error.message : 'Your assistant could not process that instruction.')
     } finally {
       if (commandAbortRef.current === controller) commandAbortRef.current = null
       setStreaming(null)

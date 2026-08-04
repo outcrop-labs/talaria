@@ -1,11 +1,16 @@
 import { createRouter } from '@tanstack/react-router'
 import { routeTree } from './routeTree.gen'
+import { ErrorFallback } from '@/components/ui/error-boundary'
 
 export const getRouter = () => {
   const router = createRouter({
     routeTree,
     scrollRestoration: true,
     defaultPreloadStaleTime: 0,
+    // Every throw inside a route — render, loader, or a lazy chunk that no
+    // longer exists after a deploy — lands here instead of white-screening the
+    // cockpit. A route may still set its own `errorComponent` to override.
+    defaultErrorComponent: ({ error, reset }) => <ErrorFallback error={error} reset={reset} />,
     defaultNotFoundComponent: () => (
       <div className="grid min-h-screen place-items-center p-6 text-center">
         <div>

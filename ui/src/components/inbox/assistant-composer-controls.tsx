@@ -18,7 +18,7 @@ import { cn } from '@/lib/cn'
 import type { Attachment } from '@/lib/attachments'
 import type { GatewayModel } from '@/lib/muse'
 
-export type ScoutMode = 'normal' | 'fast' | 'plan'
+export type AssistantMode = 'normal' | 'fast' | 'plan'
 
 interface RailItem {
   id: string
@@ -94,7 +94,7 @@ function ModelPicker({
           setOpen((currentOpen) => !currentOpen)
         }}
         className={cn(chipPrimary, 'w-[108px] justify-between disabled:opacity-40')}
-        title="Model for Scout's response"
+        title="Model for the assistant's response"
       >
         <span aria-hidden className="text-accent">✦</span>
         <span className="min-w-0 flex-1 truncate text-left">{loading ? 'Loading' : modelLabel(current, 'Model')}</span>
@@ -131,13 +131,13 @@ function ModelPicker({
   )
 }
 
-const MODE_OPTIONS: Array<{ id: ScoutMode; label: string; detail: string }> = [
+const MODE_OPTIONS: Array<{ id: AssistantMode; label: string; detail: string }> = [
   { id: 'normal', label: 'Normal mode', detail: 'Balanced response with safe action proposals.' },
   { id: 'fast', label: 'Fast mode', detail: 'Prefer the quickest deterministic safe response.' },
   { id: 'plan', label: 'Plan mode', detail: 'Plan and clarify without proposing execution.' },
 ]
 
-function ModePicker({ value, onChange }: { value: ScoutMode; onChange: (mode: ScoutMode) => void }) {
+function ModePicker({ value, onChange }: { value: AssistantMode; onChange: (mode: AssistantMode) => void }) {
   const [open, setOpen] = useState(false)
   const { buttonRef, panelRef, position } = useAnchoredPopover(open, setOpen)
   return (
@@ -147,7 +147,7 @@ function ModePicker({ value, onChange }: { value: ScoutMode; onChange: (mode: Sc
         type="button"
         onClick={() => setOpen((current) => !current)}
         className={cn(chipSecondary, 'w-24 justify-center')}
-        title="Scout response mode"
+        title="Assistant response mode"
       >
         {value} mode
       </button>
@@ -235,7 +235,7 @@ function HelpButton() {
       </button>
       {open && position && typeof document !== 'undefined' && createPortal(
         <div ref={panelRef} className={cn(popPanel, 'fixed z-[70] w-64 p-3')} style={position}>
-          <div className="font-sans text-[13px] font-medium text-fg">Scout composer</div>
+          <div className="font-sans text-[13px] font-medium text-fg">Assistant composer</div>
           <div className="mt-2 space-y-1.5 font-sans text-[11px] leading-4 text-muted">
             <p>Enter sends. Shift + Enter adds a line.</p>
             <p>Attached decisions keep Talaria's action allowlist and confirmation rules.</p>
@@ -317,7 +317,7 @@ function VoiceButton({ onTranscript, disabled }: { onTranscript: (text: string) 
   )
 }
 
-export function ScoutComposerControls({
+export function AssistantComposerControls({
   agents,
   agentValue,
   onAgentChange,
@@ -340,8 +340,8 @@ export function ScoutComposerControls({
   modelValue: string
   onModelChange: (value: string) => void
   modelsLoading: boolean
-  mode: ScoutMode
-  onModeChange: (mode: ScoutMode) => void
+  mode: AssistantMode
+  onModeChange: (mode: AssistantMode) => void
   mcpItems: RailItem[]
   skillItems: RailItem[]
   onAttach: (attachment: Attachment) => void

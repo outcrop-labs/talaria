@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Sparkles, CalendarDays, ChevronDown, ChevronRight, Plus, ExternalLink, Mail, Send } from 'lucide-react'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
@@ -12,6 +12,8 @@ import { Tabs } from '@/components/ui/tabs'
 import { Chip, StatusDot, type DotStatus } from '@/components/ui/chip'
 import { SectionHeader } from '@/components/ui/section-header'
 import { EmptyState } from '@/components/ui/empty-state'
+import { listQuery, QueryError } from '@/components/ui/query-state'
+import { getJson, getList, readJson } from '@/lib/fetch-json'
 import { AssistantWizard } from '@/components/assistant/assistant-wizard'
 import { ActivityRow } from '@/components/app/activity-row'
 import { relativeTime } from '@/lib/fleet'
@@ -78,11 +80,7 @@ interface HomeSummary {
 const useHome = () =>
   useQuery({
     queryKey: ['home'],
-    queryFn: async (): Promise<HomeSummary> => {
-      const r = await fetch('/api/home')
-      if (!r.ok) throw new Error('failed to load')
-      return r.json()
-    },
+    queryFn: (): Promise<HomeSummary> => getJson<HomeSummary>('/api/home'),
     refetchInterval: 30_000,
   })
 
@@ -122,13 +120,21 @@ function HomePage() {
 function ConsoleHomePage({ tab }: { tab: Exclude<HomeTab, 'inbox'> }) {
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
-  const { data, isLoading } = useHome()
-  const { data: channels = [] } = useChannels()
+  const home = useHome()
+  const { data } = home
+  // Feeds the Comms badge count. Defaulted, a failed read renders "no unread" —
+  // the one thing a badge exists to deny. Suppressing the badge is only half the
+  // fix: a missing badge is indistinguishable from a genuine zero, and the lie
+  // is told from EVERY tab, not just Comms, so CommsTab's own notice cannot
+  // cover for it. The marker goes under the tab strip, where it is visible
+  // wherever you are standing.
+  const channelsList = listQuery(useChannels(), { title: 'Unread counts unavailable', variant: 'inline' })
+  const channels = channelsList.rows
   const navigate = Route.useNavigate()
   const setTab = (t: HomeTab) => void navigate({ search: t === 'inbox' ? {} : { tab: t } })
 
   // Console posture: one tab per work area, badge = where attention is needed.
-  const unreadComms = channels.reduce((n, c) => n + (c.unreadCount ?? 0), 0)
+  const unreadComms = channelsList.failed ? 0 : channels.reduce((n, c) => n + (c.unreadCount ?? 0), 0)
   const tabs: { id: HomeTab; label: string; badge?: number }[] = [
     { id: 'inbox', label: 'Inbox', badge: data?.unread || undefined },
     { id: 'boards', label: 'Boards', badge: data?.queues.triage.count || undefined },
@@ -157,13 +163,20 @@ function ConsoleHomePage({ tab }: { tab: Exclude<HomeTab, 'inbox'> }) {
             ),
           }))}
         />
+        {channelsList.notice}
 
-        {tab === 'boards' && <BoardsTab data={data} isLoading={isLoading} />}
+        {/* The inbox tab is the focus queue now (HomePage renders
+            <FocusInbox> before this console ever mounts), which is why the
+            old inbox stack — briefing, notifications, approvals — is gone
+            from here. `home` goes into BoardsTab whole, not pre-unwrapped:
+            the tab needs `isError`/`refetch` to tell an empty queue from a
+            queue it could not read. */}
+        {tab === 'boards' && <BoardsTab home={home} />}
         {tab === 'comms' && <CommsTab />}
         {tab === 'plans' && <PlansTab />}
         {tab === 'research' && <ResearchTab />}
         {tab === 'docs' && <DocsTab />}
-        {tab === 'fleet' && isAdmin && <FleetTab data={data} />}
+        {tab === 'fleet' && isAdmin && <FleetTab home={home} />}
       </div>
     </div>
   )
@@ -181,15 +194,12 @@ interface FeedEvent {
 function ActivityList({ kinds, title = 'Recent activity', collapsible = false }: { kinds: string[]; title?: string; collapsible?: boolean }) {
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState(!collapsible)
-  const { data, isLoading } = useQuery({
+  const query = useQuery({
     queryKey: ['home-activity', kinds.join(',')],
-    queryFn: async (): Promise<FeedEvent[]> => {
-      const r = await fetch(`/api/activity?kinds=${kinds.join(',')}`, { credentials: 'same-origin' })
-      if (!r.ok) return []
-      return ((await r.json()) as { events: FeedEvent[] }).events
-    },
+    queryFn: (): Promise<FeedEvent[]> => getList<FeedEvent>(`/api/activity?kinds=${kinds.join(',')}`, 'events'),
     refetchInterval: 30_000,
   })
+  const { data, isLoading } = query
   return (
     <Panel>
       {collapsible ? (
@@ -208,11 +218,15 @@ function ActivityList({ kinds, title = 'Recent activity', collapsible = false }:
       )}
       {!expanded ? null : isLoading ? (
         <SkeletonRows rows={6} />
-      ) : (data ?? []).length === 0 ? (
+      ) : data === undefined ? (
+        // No data and not loading = the read broke. "Quiet so far." is a claim
+        // about the feed, and a failed feed cannot make it.
+        <QueryError variant="inline" error={query.error} title="Could not load activity" onRetry={() => void query.refetch()} />
+      ) : data.length === 0 ? (
         <EmptyState variant="inline" title="Quiet so far." />
       ) : (
         <ul>
-          {data!.slice(0, 12).map((a, i) => (
+          {data.slice(0, 12).map((a, i) => (
             <ActivityRow key={i} actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigate({ to: a.href })} />
           ))}
         </ul>
@@ -229,11 +243,12 @@ const QUEUE_META: Record<QueueKey, { label: string; hint: string; dot: DotStatus
   blocked: { label: 'Blocked', hint: 'Stalled, needs you to unblock', dot: 'warn' },
 }
 
-function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoading: boolean }) {
+function BoardsTab({ home }: { home: UseQueryResult<HomeSummary> }) {
   const navigate = useNavigate()
   const [queue, setQueue] = useState<QueueKey>('triage')
   const { openMenu, menu } = useContextMenu()
   const meta = QUEUE_META[queue]
+  const { data, isLoading } = home
   const items = data?.queues[queue].items ?? []
   return (
     <div className="space-y-6">
@@ -255,7 +270,10 @@ function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoadi
               {isLoading ? (
                 <Skeleton className="h-3 w-6 rounded-full" />
               ) : (
-                <span className="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{data?.queues[k].count ?? 0}</span>
+                // A failed /api/home must not read as "0 waiting for you".
+                <span className="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">
+                  {data ? data.queues[k].count : '—'}
+                </span>
               )}
             </button>
           ))}
@@ -263,12 +281,23 @@ function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoadi
         <Panel>
           <SectionHeader
             title={meta.label}
-            action={String(data?.queues[queue].count ?? items.length).padStart(2, '0') + ' open'}
+            // Same rule as the counts in the rail: with no payload the header
+            // says nothing rather than "00 open" over a failed read.
+            action={data ? String(data.queues[queue].count).padStart(2, '0') + ' open' : undefined}
             className="mb-1"
           />
           <div className="mb-3 font-sans text-xs text-muted">{meta.hint}</div>
           {isLoading ? (
             <SkeletonRows rows={8} />
+          ) : !data ? (
+            // "All clear." is a statement about the queue. A broken /api/home
+            // has no idea whether it's clear, so it must not say so.
+            <QueryError
+              variant="compact"
+              error={home.error}
+              title="Could not load your queues"
+              onRetry={() => void home.refetch()}
+            />
           ) : items.length === 0 ? (
             <EmptyState variant="compact" title="All clear." />
           ) : (
@@ -312,7 +341,8 @@ function BoardsTab({ data, isLoading }: { data: HomeSummary | undefined; isLoadi
 function CommsTab() {
   const navigate = useNavigate()
   const { openMenu, menu } = useContextMenu()
-  const { data: channels = [], isLoading } = useChannels()
+  // "All caught up." over a 500 — on the landing surface, about messages.
+  const { rows: channels, notice, failed, pending: isLoading } = listQuery(useChannels(), { title: 'Could not load your channels', variant: 'compact' })
   const unread = channels.filter((c) => (c.unreadCount ?? 0) > 0)
   const label = (c: (typeof channels)[number]) =>
     c.kind === 'dm' ? (c.peer?.name ?? c.peer?.email ?? 'DM') : `#${c.name}`
@@ -321,9 +351,10 @@ function CommsTab() {
       <AssistantBriefing scope="comms" />
       <Panel>
         <SectionHeader title="Unread" action={unread.length > 0 ? String(unread.length).padStart(2, '0') : undefined} />
+        {notice}
         {isLoading ? (
           <SkeletonRows rows={4} />
-        ) : unread.length === 0 ? (
+        ) : failed ? null : unread.length === 0 ? (
           <EmptyState variant="inline" title="All caught up." />
         ) : (
           <ul className="divide-y divide-line">
@@ -359,7 +390,9 @@ function CommsTab() {
 function PlansTab() {
   const navigate = useNavigate()
   const { openMenu, menu } = useContextMenu()
-  const { data: plans = [], isLoading } = useConversations('plan')
+  // The original "No boards yet over a 500", verbatim, on Home: a failed read
+  // renders "No plans yet. Start one on /plan." to an owner whose plans exist.
+  const { rows: plans, notice, failed, pending: isLoading } = listQuery(useConversations('plan'), { title: 'Could not load your plans', variant: 'compact' })
   const { data: fleet } = useAgents()
   const agentLabel = (id: string) => fleet?.agents.find((a) => a.id === id)?.label ?? id
   return (
@@ -367,9 +400,12 @@ function PlansTab() {
       <AssistantBriefing scope="plans" />
       <Panel>
         <SectionHeader title="Plans" />
+        {/* `failed` swaps the list for this; a stale list keeps its rows and
+            wears the inline marker. Either way the notice is rendered. */}
+        {notice}
         {isLoading ? (
           <SkeletonRows rows={5} />
-        ) : plans.length === 0 ? (
+        ) : failed ? null : plans.length === 0 ? (
           <EmptyState variant="inline" title="No plans yet. Start one on /plan." />
         ) : (
           <ul className="divide-y divide-line">
@@ -416,15 +452,16 @@ const RUN_DOT: Record<string, DotStatus> = {
 function ResearchTab() {
   const navigate = useNavigate()
   const { openMenu, menu } = useContextMenu()
-  const { data: runs = [], isLoading } = useResearchRuns()
+  const { rows: runs, notice, failed, pending: isLoading } = listQuery(useResearchRuns(), { title: 'Could not load your research', variant: 'compact' })
   return (
     <div className="space-y-6">
       <AssistantBriefing scope="research" />
       <Panel>
         <SectionHeader title="Research" />
+        {notice}
         {isLoading ? (
           <SkeletonRows rows={5} />
-        ) : runs.length === 0 ? (
+        ) : failed ? null : runs.length === 0 ? (
           <EmptyState variant="inline" title="Nothing researched yet." hint="Ask something on /research." />
         ) : (
           <ul className="divide-y divide-line">
@@ -464,15 +501,16 @@ function ResearchTab() {
 function DocsTab() {
   const navigate = useNavigate()
   const { openMenu, menu } = useContextMenu()
-  const { data: artifacts = [], isLoading } = useArtifacts()
+  const { rows: artifacts, notice, failed, pending: isLoading } = listQuery(useArtifacts(), { title: 'Could not load your documents', variant: 'compact' })
   const recent = [...artifacts].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, 12)
   return (
     <div className="space-y-6">
       <Panel>
         <SectionHeader title="Recently updated" />
+        {notice}
         {isLoading ? (
           <SkeletonRows rows={6} />
-        ) : recent.length === 0 ? (
+        ) : failed ? null : recent.length === 0 ? (
           <EmptyState variant="inline" title="No documents yet." />
         ) : (
           <ul className="divide-y divide-line">
@@ -504,7 +542,13 @@ function DocsTab() {
 }
 
 // ── Fleet (admin): status, alerts, spend, and the org pulse ─────────────────
-function FleetTab({ data }: { data: HomeSummary | undefined }) {
+function FleetTab({ home }: { home: UseQueryResult<HomeSummary> }) {
+  const { data } = home
+  // Resolved-with-nothing is impossible here (a 200 always carries the
+  // summary), so an absent payload is either in flight or broken — and those
+  // two must not look alike.
+  if (!data && home.isError)
+    return <QueryError error={home.error} title="Could not load fleet status" onRetry={() => void home.refetch()} />
   if (!data)
     return (
       <div className="grid gap-6 lg:grid-cols-2">
@@ -623,11 +667,7 @@ const BRIEF_ASK: Record<BriefScope, string> = {
 function AssistantBriefing({ scope = 'inbox' }: { scope?: BriefScope }) {
   const { data, isLoading } = useQuery({
     queryKey: ['briefing', scope],
-    queryFn: async (): Promise<BriefingData> => {
-      const r = await fetch(`/api/me/briefing?scope=${scope}`, { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return r.json()
-    },
+    queryFn: (): Promise<BriefingData> => getJson<BriefingData>(`/api/me/briefing?scope=${scope}`),
     refetchInterval: (q) => (q.state.data?.generating ? 2_500 : 60_000),
   })
   const [thread, setThread] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
@@ -820,9 +860,12 @@ const useAgenda = (enabled: boolean) =>
     enabled,
     queryFn: async (): Promise<{ events?: AgendaEvent[]; error?: string }> => {
       const r = await fetch('/api/integrations/google/calendar/events')
-      if (r.status === 409 || r.status === 502) return { error: 'unavailable' } // scope lost / transient
-      if (!r.ok) throw new Error('failed')
-      return r.json()
+      // 409 (not connected) and 502 (Google hiccup) are ANSWERS this panel
+      // knows how to render — it hides. Every other non-2xx is a failure, and
+      // readJson turns it into an HttpError carrying the server's message
+      // instead of a bare "failed".
+      if (r.status === 409 || r.status === 502) return { error: 'unavailable' }
+      return readJson<{ events?: AgendaEvent[] }>(r)
     },
     retry: false,
     refetchInterval: 5 * 60_000,
@@ -985,9 +1028,9 @@ const useGmail = (enabled: boolean) =>
     enabled,
     queryFn: async (): Promise<{ messages?: Mail[]; error?: string }> => {
       const r = await fetch('/api/integrations/google/gmail/messages')
+      // Same contract as Agenda: 409 / 502 mean "nothing to show here".
       if (r.status === 409 || r.status === 502) return { error: 'unavailable' }
-      if (!r.ok) throw new Error('failed')
-      return r.json()
+      return readJson<{ messages?: Mail[] }>(r)
     },
     retry: false,
     refetchInterval: 5 * 60_000,

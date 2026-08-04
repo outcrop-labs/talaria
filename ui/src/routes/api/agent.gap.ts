@@ -1,9 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { requireAgent } from '@/server/agent-auth'
+import { boardAllowsAgent } from '@/server/boards'
 import { reportGap } from '@/server/gaps'
-import { getTask, logActivity } from '@/server/tasks'
+import { agentTicketRefusal, getTask, logActivity } from '@/server/tasks'
 
 const Body = z.object({
   kind: z.string().min(2).max(80),
@@ -19,13 +20,43 @@ export const Route = createFileRoute('/api/agent/gap')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        if (!checkAgentKey(request)) return json({ error: 'unauthorized' }, { status: 401 })
-        const agent = agentName(request)
-        if (!agent) return json({ error: 'x-agent-name required' }, { status: 400 })
+        const caller = await requireAgent(request)
+        if (caller instanceof Response) return caller
+        const agent = caller.model
         const body = await parseJson(request)
         const parsed = Body.safeParse(body)
         if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+        // `taskId` arrives from the agent, so it is AUTHORISED, never taken on
+        // faith: the ticket gets an audit line and the gap row is bound to that
+        // ticket's board. Without this an agent forges activity on any ticket
+        // org-wide and binds a Studio gap to a board it cannot see. Unknown and
+        // not-allowed refuse identically — a distinct 404 would be a ticket
+        // enumeration oracle.
         const task = parsed.data.taskId ? await getTask(parsed.data.taskId) : null
+        if (parsed.data.taskId) {
+          const refuse = json(
+            {
+              error: 'forbidden',
+              message: `taskId "${parsed.data.taskId}" is not a ticket you may write to — re-send the gap without taskId, or ask for access to its board.`,
+            },
+            { status: 403 },
+          )
+          if (!task) return refuse
+          // The CALLER, not its model: board policy's elevated bypass is only
+          // for an identity that was proven, never merely asserted.
+          if (!(await boardAllowsAgent(task.boardId, caller))) return refuse
+          // A person has taken this ticket off the table (signed off, archived,
+          // or its board archived) — the gap is still worth recording, just not
+          // ON that ticket. The SAME predicate `agentSafePatch` asks: this route
+          // writes an activity line and never reaches `updateTask`.
+          const shut = await agentTicketRefusal(task, caller, 'write')
+          if (shut) {
+            return json(
+              { error: 'forbidden', message: `${shut}. Re-send this gap without taskId and it will still reach the Studio.` },
+              { status: 403 },
+            )
+          }
+        }
         const gap = await reportGap({
           agentModel: agent,
           kind: parsed.data.kind,

@@ -7,12 +7,18 @@ import { NAV } from '@/lib/nav'
 import { useEnabledApps, type AppManifest } from '@/lib/apps'
 import type { SessionUser } from '@/lib/session'
 
-// Gentle dew top strip (spec §6): breadcrumb readout, compact search
+// Mercury top strip (spec §6): breadcrumb readout, compact search
 // affordance, and the account chip. The brand lives in the sidebar now —
 // this strip is pure chrome on the ground surface.
 export function TopStrip({ user, onLogout }: { user: SessionUser; onLogout: () => void }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
-  const { data: apps = [] } = useEnabledApps()
+  // Keep the query, default off it. Flattening to `[]` on the line that
+  // created it puts `isError` permanently out of reach, and this breadcrumb
+  // would then be unable to tell "no apps are enabled" from "the app manifest
+  // read failed" — it falls back to the raw slug below, which is honest only
+  // because the failure is still reachable from here.
+  const appsQuery = useEnabledApps()
+  const apps = appsQuery.data ?? []
 
   return (
     // z-40: the strip (and the user-menu flyover inside it) stacks above all

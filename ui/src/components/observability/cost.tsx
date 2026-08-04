@@ -4,6 +4,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { Panel } from '@/components/ui/panel'
 import { SectionHeader } from '@/components/ui/section-header'
 import { StatCard } from '@/components/ui/stat-card'
+import { QueryError } from '@/components/ui/query-state'
 import { relativeTime } from '@/lib/fleet'
 import { agentLabel, formatCost, formatTokens, useCost, type CostOverview, type CostTotals } from '@/lib/cost'
 
@@ -11,7 +12,8 @@ import { agentLabel, formatCost, formatTokens, useCost, type CostOverview, type 
 // The token ledger: every agent generation (1:1 chat + channel replies) lands in
 // usage_events — real gateway-reported counts, or char-based estimates (~).
 export function CostPanel() {
-  const { data, isLoading } = useCost()
+  const costQuery = useCost()
+  const { data, isLoading } = costQuery
   const t = data?.totals
   const perAgent = data?.perAgent ?? []
   const perDay = data?.perDay ?? []
@@ -19,11 +21,37 @@ export function CostPanel() {
   const approx = (t?.estimatedShare ?? 0) > 0.5 ? '~' : ''
   const total = (x?: CostTotals) => (x ? x.prompt + x.completion : 0)
 
+  // `data` is undefined on rejection, and the old guard read
+  // `!data || total(t?.month) === 0` — so a 500 on /api/cost rendered
+  // "No usage recorded yet" over a ledger holding hundreds of usage_events.
+  // That is a claim about SPEND made from a read that failed. Split the three
+  // answers apart: broke, still loading, genuinely zero.
+  const hardFailure = costQuery.isError && data === undefined
+  // A failed BACKGROUND refetch (this query polls every 60s) keeps the last
+  // good ledger on screen — blanking real numbers over a blip is the worse
+  // lie — but it must not pass stale totals off as current.
+  const staleFailure = costQuery.isError && data !== undefined
+
   return (
     <div>
       <div className="space-y-8">
 
-        {isLoading ? (
+        {staleFailure && (
+          <QueryError
+            variant="inline"
+            title="Usage may be out of date"
+            error={costQuery.error}
+            onRetry={() => void costQuery.refetch()}
+          />
+        )}
+
+        {hardFailure ? (
+          <QueryError
+            title="Could not load usage"
+            error={costQuery.error}
+            onRetry={() => void costQuery.refetch()}
+          />
+        ) : isLoading || !data ? (
           <>
             <div className="grid grid-cols-3 gap-4">
               {[0, 1, 2].map((i) => (
@@ -32,7 +60,7 @@ export function CostPanel() {
             </div>
             <SkeletonRows rows={5} className="mt-2" />
           </>
-        ) : !data || total(t?.month) === 0 ? (
+        ) : total(t?.month) === 0 ? (
           <EmptyState
             icon="⌗"
             title="No usage recorded yet"

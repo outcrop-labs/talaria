@@ -26,7 +26,7 @@ export const Route = createFileRoute('/api/inbox/focus/command')({
         const body = await parseBody(request, Body)
         if (body instanceof Response) return body
         const release = acquireInboxFocusLock(user.id)
-        if (!release) return json({ error: 'Scout is already handling another Inbox action.' }, { status: 409 })
+        if (!release) return json({ error: 'Your assistant is already handling another Inbox action.' }, { status: 409 })
         const encoder = new TextEncoder()
         const stream = new ReadableStream<Uint8Array>({
           async start(controller) {
@@ -45,7 +45,7 @@ export const Route = createFileRoute('/api/inbox/focus/command')({
               }
             } catch (error) {
               if (!request.signal.aborted) {
-                const message = error instanceof Error ? error.message : 'Scout could not start that response.'
+                const message = error instanceof Error ? error.message : 'Your assistant could not start that response.'
                 controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ type: 'error', message })}\n\n`))
               }
             } finally {

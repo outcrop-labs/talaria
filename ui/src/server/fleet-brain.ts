@@ -4,11 +4,16 @@
 // the full tool trace), metered in one ledger, and observable in one place.
 //
 // This provisions that wiring into the Talaria-owned fleet .env, out of the box:
-//   • a `fleet-gateway` LLM key (minted once, kept across renders)
-//   • the `gateway_unmetered_keys` setting (fleet usage is metered downstream by
-//     the chat/channel/ticket flows, so the gateway skips it to avoid double-count)
-//   • LLM_BASE_URL → the gateway self URL, LLM_API_KEY → the key, and a default
-//     LLM_MODEL when one isn't pinned.
+//   • a `fleet-gateway` LLM key — the PERSONAS' inner loop (minted once, kept
+//     across renders)
+//   • a `workbench-gateway` LLM key — coding harnesses in the sandbox, a
+//     separate credential on purpose (see the settings below)
+//   • the two gateway key-list settings this file owns (`gateway_unmetered_keys`
+//     and `gateway_agent_loop_keys` — what each one means is spelled out at
+//     ensureGatewayBrain)
+//   • LLM_BASE_URL → the gateway self URL, LLM_API_KEY → the persona key,
+//     LLM_WORKBENCH_API_KEY → the workbench key, and a default LLM_MODEL when
+//     one isn't pinned.
 //
 // It runs on every fleet render (idempotent). Because the .env is Talaria-owned,
 // nobody hand-edits gateway creds — you configure the real upstream model in-app
@@ -23,6 +28,12 @@ import { getSetting, setSetting } from './audit'
 import { FLEET_ENV } from './fleet-render'
 
 const GATEWAY_KEY_NAME = 'fleet-gateway'
+// The workbench's own gateway credential. Harness runs reach the gateway with
+// this key, never the personas' — metering has to treat the two oppositely
+// (see ensureGatewayBrain), and a key is the only thing the gateway can tell
+// its callers apart by. Env name matches workbench-harnesses.ts's GATEWAY_ENV.
+const WORKBENCH_KEY_NAME = 'workbench-gateway'
+const WORKBENCH_KEY_ENV = 'LLM_WORKBENCH_API_KEY'
 // Where the fleet reaches Talaria's gateway. In dev the app runs on the host, so
 // agents reach it via the docker host-gateway (`extra_hosts` in the chassis) on
 // :5273. In a containerized stack, set TALARIA_GATEWAY_SELF_URL to the app's
@@ -49,23 +60,23 @@ function upsertEnvLine(content: string, key: string, value: string): string {
   return `${content.replace(/\n*$/, '')}\n${line}\n`
 }
 
-/** Keep the current key if it's a live `fleet-gateway` key; otherwise mint a
+/** Keep the current key if it's a live key of that name; otherwise mint a
  *  fresh one (revoking any stale rows) under an admin owner. Returns the plaintext
  *  secret to write into the fleet .env, or null if there's no user to own it yet. */
-async function ensureFleetGatewayKey(currentKey: string | null): Promise<{ secret: string; rotated: boolean } | null> {
+async function ensureGatewayKey(name: string, currentKey: string | null): Promise<{ secret: string; rotated: boolean } | null> {
   const sql = await db()
   if (currentKey?.startsWith('tlk_')) {
     const live = await sql`
       select 1 from llm_api_keys
-      where name = ${GATEWAY_KEY_NAME} and revoked_at is null and key_hash = ${sha(currentKey)}`
+      where name = ${name} and revoked_at is null and key_hash = ${sha(currentKey)}`
     if (live.length) return { secret: currentKey, rotated: false }
   }
   const owner = (await sql`
     select id from users order by (role = 'admin') desc, created_at asc limit 1`) as unknown as Array<{ id: string }>
   const ownerId = owner[0]?.id
   if (!ownerId) return null // no users yet — nothing to own the key; try again next render
-  await sql`update llm_api_keys set revoked_at = now() where name = ${GATEWAY_KEY_NAME} and revoked_at is null`
-  const { secret } = await mintKey(ownerId, GATEWAY_KEY_NAME)
+  await sql`update llm_api_keys set revoked_at = now() where name = ${name} and revoked_at is null`
+  const { secret } = await mintKey(ownerId, name)
   return { secret, rotated: true }
 }
 
@@ -93,6 +104,10 @@ export async function gatewayModelSet(): Promise<GatewayModels> {
   return { served, fallback: local?.models[0] ?? null }
 }
 
+// What a rendered agent config points its model specs at: the gateway, on the
+// PERSONA key — the one the gateway leaves unmetered, because the flow that
+// drove the turn writes the row. Sandbox harnesses get the workbench key
+// instead (workbench-harnesses.ts).
 const GATEWAY_BASE_URL = '${LLM_BASE_URL}'
 const GATEWAY_API_KEY = '${LLM_API_KEY}'
 
@@ -157,9 +172,26 @@ export async function ensureGatewayBrain(): Promise<GatewayBrain> {
   await mkdir(dirname(envPath), { recursive: true })
   const content = await readFile(envPath, 'utf8').catch(() => '')
 
-  // The gateway skips metering for this key (usage is counted downstream).
+  // Two settings, two different questions — one list answering both is what
+  // corrupted the ledger, so keep them apart:
+  //
+  //   gateway_unmetered_keys — keys the gateway must NOT write a usage row for,
+  //     because their spend already reaches the ledger from another writer.
+  //     ONLY the personas' key qualifies: a chat/channel/ticket turn writes one
+  //     row from the persona gateway's reported usage for the whole turn, so
+  //     metering the inner-loop calls behind it would count every turn twice.
+  //     `workbench-gateway` is deliberately NOT here — nothing else records a
+  //     harness run, so the gateway is where that spend lands.
+  //
+  //   gateway_agent_loop_keys — keys whose replies must never be rewritten with
+  //     a guard caveat, because the caller is an agent's own tool loop and a
+  //     caveat would contaminate its context. BOTH gateway keys qualify
+  //     (findings still record either way).
   const unmetered = await getSetting<string[]>('gateway_unmetered_keys', [GATEWAY_KEY_NAME])
   if (!unmetered.includes(GATEWAY_KEY_NAME)) await setSetting('gateway_unmetered_keys', [...unmetered, GATEWAY_KEY_NAME])
+  const loopKeys = await getSetting<string[]>('gateway_agent_loop_keys', [GATEWAY_KEY_NAME, WORKBENCH_KEY_NAME])
+  const missing = [GATEWAY_KEY_NAME, WORKBENCH_KEY_NAME].filter((n) => !loopKeys.includes(n))
+  if (missing.length) await setSetting('gateway_agent_loop_keys', [...loopKeys, ...missing])
 
   const cur = readEnvLine(content, 'LLM_BASE_URL')
   if (cur && !isGatewayUrl(cur)) {
@@ -168,7 +200,8 @@ export async function ensureGatewayBrain(): Promise<GatewayBrain> {
   }
 
   const url = selfUrl()
-  const key = await ensureFleetGatewayKey(readEnvLine(content, 'LLM_API_KEY'))
+  const key = await ensureGatewayKey(GATEWAY_KEY_NAME, readEnvLine(content, 'LLM_API_KEY'))
+  const wbKey = await ensureGatewayKey(WORKBENCH_KEY_NAME, readEnvLine(content, WORKBENCH_KEY_ENV))
 
   let next = content
   if (!next.includes('# talaria-managed (gateway brain)')) {
@@ -176,10 +209,13 @@ export async function ensureGatewayBrain(): Promise<GatewayBrain> {
       `${next.replace(/\n*$/, '')}\n\n` +
       `# talaria-managed (gateway brain) — the fleet's default LLM is Talaria's org\n` +
       `# gateway, so every agent call is guarded, metered, and observable. Configure\n` +
-      `# the real upstream model in-app on /models; don't hand-edit these three lines.\n`
+      `# the real upstream model in-app on /models; don't hand-edit these lines.\n` +
+      `# LLM_API_KEY is the personas' loop; LLM_WORKBENCH_API_KEY is the sandbox\n` +
+      `# harnesses' — separate credentials so the ledger can tell them apart.\n`
   }
   next = upsertEnvLine(next, 'LLM_BASE_URL', url)
   if (key) next = upsertEnvLine(next, 'LLM_API_KEY', key.secret)
+  if (wbKey) next = upsertEnvLine(next, WORKBENCH_KEY_ENV, wbKey.secret)
 
   let model = readEnvLine(next, 'LLM_MODEL')
   if (!model) {
@@ -188,5 +224,5 @@ export async function ensureGatewayBrain(): Promise<GatewayBrain> {
   }
 
   if (next !== content) await writeFile(envPath, next)
-  return { url, model: model || null, keyRotated: key?.rotated ?? false, managed: true }
+  return { url, model: model || null, keyRotated: (key?.rotated ?? false) || (wbKey?.rotated ?? false), managed: true }
 }

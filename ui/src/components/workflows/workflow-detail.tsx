@@ -9,6 +9,7 @@ import { Panel } from '@/components/ui/panel'
 import { Chip } from '@/components/ui/chip'
 import { Toggle } from '@/components/ui/checkbox'
 import { InfoTip } from '@/components/ui/info-tip'
+import { listQuery } from '@/components/ui/query-state'
 import { useBoards } from '@/lib/boards'
 import { updateWorkflow, useSkillLibrary, type TaskWorkflow } from '@/lib/workflows'
 
@@ -47,8 +48,14 @@ function TokenInput({ value, onChange, placeholder }: { value: string[]; onChang
 }
 
 export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: TaskWorkflow; onChanged: () => void; onDelete: () => void }) {
-  const { data: boards = [] } = useBoards()
-  const { data: rawSkillOwners = [] } = useSkillLibrary()
+  // Both of these fed "there are none" copy. The skill one was worse than that:
+  // with an empty library every skill this workflow is bound to falls out of
+  // `known` below and gets drawn as "Bound but not in the library" — a warning
+  // chip offering to unbind a skill that is perfectly fine.
+  const boardsList = listQuery(useBoards(), { title: 'Could not load your boards', variant: 'inline' })
+  const libraryList = listQuery(useSkillLibrary(), { title: 'Could not load the skill library', variant: 'inline' })
+  const boards = boardsList.rows
+  const rawSkillOwners = libraryList.rows
   // Platform plumbing skills aren't bindable flow content — hide them here too.
   const skillOwners = rawSkillOwners.map((o) => ({ ...o, skills: o.skills.filter((sk) => !sk.platform) }))
   const [name, setName] = useState(workflow.name)
@@ -114,8 +121,11 @@ export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: Ta
                 </Chip>
               )
             })}
-            {boards.length === 0 && <span className="text-xs text-muted">No boards yet.</span>}
+            {boards.length === 0 && !boardsList.failed && !boardsList.pending && (
+              <span className="text-xs text-muted">No boards yet.</span>
+            )}
           </div>
+          {boardsList.notice}
         </div>
         <div className="space-y-1">
           <span className="text-xs text-muted">Labels</span>
@@ -158,6 +168,9 @@ export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: Ta
             ) : null,
           )}
           {(() => {
+            // Only meaningful when we actually READ the library. Without this
+            // guard a failed read reports every bound skill as an orphan.
+            if (libraryList.failed || libraryList.pending) return null
             const known = new Set(skillOwners.flatMap((o) => o.skills.map((sk) => sk.name)))
             const orphans = workflow.skills.filter((sk) => !known.has(sk))
             return orphans.length ? (
@@ -173,7 +186,8 @@ export function WorkflowDetail({ workflow, onChanged, onDelete }: { workflow: Ta
               </div>
             ) : null
           })()}
-          {skillOwners.every((o) => !o.skills.length) && !workflow.skills.length && (
+          {libraryList.notice}
+          {!libraryList.failed && !libraryList.pending && skillOwners.every((o) => !o.skills.length) && !workflow.skills.length && (
             <span className="text-xs text-muted">No skills in the library yet — create them on an agent's manage view.</span>
           )}
         </div>

@@ -10,6 +10,7 @@ import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { InfoTip } from '@/components/ui/info-tip'
 import { SkeletonRows } from '@/components/ui/skeleton'
+import { QueryError } from '@/components/ui/query-state'
 import { confirm, prompt } from '@/components/ui/confirm'
 import { DropdownMenu } from '@/components/ui/context-menu'
 import { WorkflowDetail } from '@/components/workflows/workflow-detail'
@@ -57,14 +58,36 @@ function StudioPage() {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const qc = useQueryClient()
-  const { data: rawOwners = [], isLoading } = useSkillLibrary()
+  // The skill library IS this page's spine: `owners` drives the rail, the
+  // selection, and the "who am I building for" pane. Dropping its rejection
+  // made a DOWN SKILLS SERVICE render "No agents yet" — a sentence about the
+  // FLEET, from a read that never asked about the fleet.
+  const libraryQuery = useSkillLibrary()
+  const { data: rawOwners = [], isLoading } = libraryQuery
   // PLATFORM skills (talaria-toolkit and friends) are plumbing, not
   // teachable know-how — the Studio doesn't show them at all.
   const owners = rawOwners.map((o) => ({ ...o, skills: o.skills.filter((sk) => !sk.platform) }))
-  const { data: workflows = [] } = useWorkflows()
-  const { data: gaps = [] } = useGaps()
-  const { data: agentsData } = useAgents()
-  const { data: boards = [] } = useBoards()
+  // The four side reads that DECORATE this page. Each was destructured with a
+  // `= []` (or read through `?.`), which is why /api/agents at 500 rendered
+  // byte-identically to a 200 returning nothing: "Routed here" empty means
+  // "no workflows steer work here", a missing Suggestions section means "it
+  // hasn't asked for anything", and neither is true when the fetch broke.
+  // Collected once, listed once — no per-site guard to forget next time.
+  const workflowsQuery = useWorkflows()
+  const gapsQuery = useGaps()
+  const agentsQuery = useAgents()
+  const boardsQuery = useBoards()
+  const workflows = workflowsQuery.data ?? []
+  const gaps = gapsQuery.data ?? []
+  const agentsData = agentsQuery.data
+  const boards = boardsQuery.data ?? []
+  const sideReads: Array<{ key: string; title: string; query: { isError: boolean; error: unknown; refetch: () => unknown } }> = [
+    { key: 'workflows', title: 'Could not load workflows — “Routed here” is incomplete', query: workflowsQuery },
+    { key: 'gaps', title: 'Could not load suggestions — what the agents asked for is missing', query: gapsQuery },
+    { key: 'agents', title: 'Could not load the fleet — agent roles fall back to model ids', query: agentsQuery },
+    { key: 'boards', title: 'Could not load boards — workflow rules name board ids instead', query: boardsQuery },
+  ]
+  const sideFailures = sideReads.filter((r) => r.query.isError)
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
   const [guide, setGuide] = useState<(GuidePrefill & { gapId?: string; owner?: string }) | null>(null)
@@ -136,6 +159,20 @@ function StudioPage() {
           <h1 className="font-sans text-2xl font-semibold tracking-tight text-fg">Studio</h1>
           <InfoTip text="Build your agents, one at a time: what each one knows (skills), what work gets routed to it (workflows), and what it's asked for help with. Pick who you're building for on the left." />
         </div>
+
+        {sideFailures.length > 0 && (
+          <div className="mb-6 space-y-2 rounded-xl border border-line-subtle p-3">
+            {sideFailures.map((r) => (
+              <QueryError
+                key={r.key}
+                variant="inline"
+                title={r.title}
+                error={r.query.error}
+                onRetry={() => void r.query.refetch()}
+              />
+            ))}
+          </div>
+        )}
 
         <div className="grid gap-8 lg:grid-cols-[15rem_minmax(0,1fr)]">
           {/* ── Who you're building for ── */}
@@ -338,6 +375,14 @@ function StudioPage() {
                 )}
               </section>
             </main>
+          ) : libraryQuery.isError && libraryQuery.data === undefined ? (
+            // Nothing to select because the library read FAILED, not because
+            // the fleet is empty. Name the real problem.
+            <QueryError
+              error={libraryQuery.error}
+              title="Could not load the skill library"
+              onRetry={() => void libraryQuery.refetch()}
+            />
           ) : (
             <EmptyState icon="◍" title="No agents yet" hint="The Studio lights up once the fleet has agents." />
           )}

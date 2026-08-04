@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileText, Table, Globe2, Paperclip, Trash2, History, Maximize2, Minimize2, MoreHorizontal, Plus, Star, ChevronRight, Folder, FolderPlus, Upload, ExternalLink, DownloadCloud, Search, type LucideIcon } from 'lucide-react'
 import { Button, buttonClasses } from '@/components/ui/button'
 import { confirm, alert } from '@/components/ui/confirm'
@@ -21,6 +21,8 @@ import { PermissionsModal } from '@/components/kb/permissions-modal'
 import { BrainRoutingSelect } from '@/components/kb/brain-select'
 import { popPanel } from '@/components/chat/chat-chrome'
 import { IconButton } from '@/components/ui/icon-button'
+import { QueryError, QueryState } from '@/components/ui/query-state'
+import { getJson, getList } from '@/lib/fetch-json'
 import { cn } from '@/lib/cn'
 import { relativeTime } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
@@ -49,8 +51,20 @@ type Drag = { kind: 'artifact' | 'folder'; id: string } | null
 
 function ArtifactsPage() {
   const qc = useQueryClient()
-  const { data: artifacts = [], isLoading: artifactsLoading } = useArtifacts()
-  const { data: folders = [], isLoading: foldersLoading } = useFolders()
+  // Two reads build one tree, so both rejections have to survive to the render:
+  // "No artifacts yet." is a claim about the owner's WORK, and a store that is
+  // merely unreachable must never be reported as a store that is empty.
+  const artifactsQuery = useArtifacts()
+  const foldersQuery = useFolders()
+  const { data: artifacts = [], isLoading: artifactsLoading } = artifactsQuery
+  const { data: folders = [], isLoading: foldersLoading } = foldersQuery
+  // Whichever half broke, in the words the reader needs. Null = both answered.
+  const treeFailure =
+    artifactsQuery.isError && artifactsQuery.data === undefined
+      ? { title: 'Could not load your artifacts', error: artifactsQuery.error, retry: () => void artifactsQuery.refetch() }
+      : foldersQuery.isError && foldersQuery.data === undefined
+        ? { title: 'Could not load your folders', error: foldersQuery.error, retry: () => void foldersQuery.refetch() }
+        : null
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const activeId = search.a ?? null
@@ -167,6 +181,8 @@ function ArtifactsPage() {
           {artifactsLoading || foldersLoading ? (
             // Both queries feed the same tree — reveal it once, fully formed.
             <SkeletonRows rows={6} className="px-2 py-3" />
+          ) : treeFailure && folders.length === 0 && artifacts.length === 0 ? (
+            <QueryError variant="compact" error={treeFailure.error} title={treeFailure.title} onRetry={treeFailure.retry} />
           ) : folders.length === 0 && artifacts.length === 0 ? (
             <EmptyState variant="inline" title="No artifacts yet." className="px-2 py-6 text-center" />
           ) : (
@@ -194,6 +210,18 @@ function ArtifactsPage() {
               {rootArtifacts.map((a) => (
                 <ArtifactRow key={a.id} artifact={a} depth={0} activeId={activeId} onSelect={setActiveId} setDrag={setDrag} onContextMenu={(e) => openMenu(e, artifactMenu(a))} />
               ))}
+              {/* One half answered, the other didn't. Keep what loaded and say
+                  the tree is INCOMPLETE — replacing a populated pane over a
+                  partial failure loses more than it explains. */}
+              {treeFailure && (
+                <QueryError
+                  variant="inline"
+                  className="px-2 py-3"
+                  error={treeFailure.error}
+                  title={treeFailure.title}
+                  onRetry={treeFailure.retry}
+                />
+              )}
             </>
           )}
         </div>
@@ -458,7 +486,8 @@ function FolderNode({
 function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }) {
   const qc = useQueryClient()
   const { data: me } = useSession()
-  const { data: artifact } = useArtifact(id)
+  const artifactQuery = useArtifact(id)
+  const artifact = artifactQuery.data
   const editorRef = useRef<RichEditorHandle>(null)
   const [title, setTitle] = useState('')
   const [saving, setSaving] = useState(false)
@@ -544,6 +573,20 @@ function ArtifactEditor({ id, onDeleted }: { id: string; onDeleted: () => void }
   }
   const googleLabel = artifact?.kind === 'sheet' ? 'Export to Google Sheets' : artifact?.kind === 'file' ? 'Export to Google Drive' : 'Export to Google Docs'
 
+  // `if (!artifact)` covered all three answers, so a 500 and a deleted artifact
+  // both left fourteen skeleton nodes shimmering — measured unchanged at +53s
+  // in a browser, with no error, no retry, and no way to tell which it was.
+  // `useArtifact` resolves `null` only for a real 404 and rejects otherwise.
+  if (artifactQuery.isError && artifact === undefined)
+    return (
+      <QueryError
+        error={artifactQuery.error}
+        title="Could not load this document"
+        onRetry={() => void artifactQuery.refetch()}
+      />
+    )
+  if (artifact === null)
+    return <EmptyState icon="⧉" title="Document not found" hint="It may have been deleted, or it is no longer shared with you." />
   // Kind is unknown until the fetch lands, so use the doc-page shape (toolbar
   // + centered prose bars) as the default stand-in for every kind.
   if (!artifact) return <ArtifactPageSkeleton />
@@ -771,37 +814,63 @@ function ArtifactPageSkeleton() {
 
 interface Rev { id: string; createdBy: string | null; createdAt: string; size: number }
 function ArtifactHistory({ id, onRestore }: { id: string; onRestore: (content: string) => Promise<void> }) {
-  const [revs, setRevs] = useState<Rev[]>([])
-  const [loading, setLoading] = useState(true)
-  useEffect(() => {
-    setLoading(true)
-    fetch(`/api/history?kind=artifact&id=${id}`)
-      .then((r) => (r.ok ? r.json() : { revisions: [] }))
-      .then((d) => setRevs((d as { revisions: Rev[] }).revisions))
-      .catch(() => setRevs([]))
-      .finally(() => setLoading(false))
-  }, [id])
+  // "No saved revisions yet." is a claim about this artifact's PAST — the one
+  // sentence that tells an owner their earlier drafts are gone. A 500 used to
+  // render that exact sentence, indistinguishable from a genuinely fresh doc.
+  const history = useQuery({
+    queryKey: ['artifact-history', id],
+    queryFn: () => getList<Rev>(`/api/history?kind=artifact&id=${id}`, 'revisions'),
+  })
+  // Restore used to `return` on a non-2xx: a button that does nothing, forever,
+  // with no way to tell a broken restore from a slow one.
+  const [restoreError, setRestoreError] = useState<unknown>(null)
+  const [restoring, setRestoring] = useState<string | null>(null)
   const restore = async (rev: Rev) => {
-    const r = await fetch(`/api/history?kind=artifact&id=${id}&rev=${rev.id}`)
-    if (!r.ok) return
-    const { content } = (await r.json()) as { content: string }
-    await onRestore(content)
+    setRestoreError(null)
+    setRestoring(rev.id)
+    try {
+      const { content } = await getJson<{ content: string }>(`/api/history?kind=artifact&id=${id}&rev=${rev.id}`)
+      await onRestore(content)
+    } catch (e) {
+      setRestoreError(e)
+    } finally {
+      setRestoring(null)
+    }
   }
   return (
     <div>
       <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">History</div>
-      {loading ? (
-        <SkeletonRows rows={4} className="px-2 py-1" />
-      ) : revs.length === 0 ? (
-        <EmptyState variant="inline" title="No saved revisions yet." />
-      ) : (
-        revs.map((r, i) => (
-          <button key={r.id} type="button" onClick={() => void restore(r)} className="block w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover" title="Restore this version">
-            <div className="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>
-            <div className="font-mono text-[10px] tracking-[0.05em] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>
-          </button>
-        ))
+      {restoreError !== null && (
+        <QueryError variant="inline" className="mb-2 px-2" title="Could not restore that version" error={restoreError} />
       )}
+      {/* The loading/empty/failed fork lives in QueryState so the "No saved
+          revisions yet." sentence can only ever come from a real 200-with-[] —
+          a failed read gets its own error row instead. */}
+      <QueryState
+        query={history}
+        skeleton={<SkeletonRows rows={4} className="px-2 py-1" />}
+        errorTitle="Could not load this artifact’s history"
+        errorVariant="inline"
+        empty={<EmptyState variant="inline" title="No saved revisions yet." />}
+      >
+        {(revs) => (
+          <>
+            {revs.map((r, i) => (
+              <button
+                key={r.id}
+                type="button"
+                disabled={restoring !== null}
+                onClick={() => void restore(r)}
+                className="block w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover disabled:opacity-60"
+                title="Restore this version"
+              >
+                <div className="text-fg">{i === 0 ? 'Latest' : relativeTime(r.createdAt)}</div>
+                <div className="font-mono text-[10px] tracking-[0.05em] text-muted">{r.createdBy ?? 'unknown'} · {r.size} chars</div>
+              </button>
+            ))}
+          </>
+        )}
+      </QueryState>
     </div>
   )
 }

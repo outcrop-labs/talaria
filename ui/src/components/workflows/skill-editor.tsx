@@ -6,6 +6,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { confirm } from '@/components/ui/confirm'
+import { QueryError } from '@/components/ui/query-state'
+import { getJson } from '@/lib/fetch-json'
 import { InternalEditorModal } from '@/components/fleet/internal-editor-modal'
 
 export function StudioSkillEditor({
@@ -22,14 +24,14 @@ export function StudioSkillEditor({
   onClose: () => void
 }) {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  // 404 is NOT forgiven into a null here: the editor is opened from a library
+  // row, so "no such skill" is a real failure worth naming — and the route
+  // sends its reason as `{ error }`, which `readJson` lifts into the message.
+  const query = useQuery({
     queryKey: ['skill', owner, name],
-    queryFn: async () => {
-      const r = await fetch(`/api/skills/${owner}/${name}`, { credentials: 'same-origin' })
-      if (!r.ok) throw new Error('failed')
-      return (await r.json()) as { content: string; files: string[] }
-    },
+    queryFn: (): Promise<{ content: string; files: string[] }> => getJson<{ content: string; files: string[] }>(`/api/skills/${owner}/${name}`),
   })
+  const { data } = query
   const [busy, setBusy] = useState(false)
 
   const save = async (content: string) => {
@@ -57,13 +59,26 @@ export function StudioSkillEditor({
   }
 
   // The editor seeds ONCE from `value` — don't mount it until content is here.
+  // A failed read must never seed it with '': saving from there would replace
+  // the real SKILL.md with an empty file.
   if (!data)
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-        <div className="w-full max-w-3xl space-y-3 rounded-lg border border-line bg-[var(--theme-panel)] p-6">
-          <Skeleton className="h-2.5 w-2/3 rounded-full" />
-          <Skeleton className="h-2.5 w-full rounded-full" delay={0.12} />
-          <Skeleton className="h-2.5 w-3/4 rounded-full" delay={0.24} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={query.isError ? onClose : undefined}>
+        <div className="w-full max-w-3xl space-y-3 rounded-lg border border-line bg-[var(--theme-panel)] p-6" onClick={(e) => e.stopPropagation()}>
+          {query.isError ? (
+            <QueryError
+              variant="compact"
+              error={query.error}
+              title={`Could not open ${name}`}
+              onRetry={() => void query.refetch()}
+            />
+          ) : (
+            <>
+              <Skeleton className="h-2.5 w-2/3 rounded-full" />
+              <Skeleton className="h-2.5 w-full rounded-full" delay={0.12} />
+              <Skeleton className="h-2.5 w-3/4 rounded-full" delay={0.24} />
+            </>
+          )}
         </div>
       </div>
     )

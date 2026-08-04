@@ -12,6 +12,8 @@ import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
+import { QueryError, QueryState } from '@/components/ui/query-state'
+import { errorMessage } from '@/lib/fetch-json'
 import { useFleet } from '@/lib/fleet'
 import { useSession } from '@/lib/session'
 import { cn } from '@/lib/cn'
@@ -75,17 +77,30 @@ function healthOf(d: AgentDef, c: AgentContainers | null): { health: Health; run
   return { health: state?.health === 'unhealthy' ? 'degraded' : 'up', running: true }
 }
 
+// The roster's placeholder — same tile grid the content lands in.
+function RosterSkeleton() {
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      {[0, 1, 2, 3, 4, 5].map((i) => (
+        <SkeletonCard key={i} delay={i * 0.1} />
+      ))}
+    </div>
+  )
+}
+
 function AgentsPage() {
   const { data: session } = useSession()
   const isAdmin = session?.role === 'admin'
-  const { data: fleet, isLoading: fleetLoading } = useFleet()
-  const { data: defsData, isLoading: defsLoading } = useFleetDefs(isAdmin)
-  const { data: containers = [], isLoading: containersLoading } = useFleetContainers(isAdmin)
+  const fleetQuery = useFleet()
+  const defsQuery = useFleetDefs(isAdmin)
+  const containersQuery = useFleetContainers(isAdmin)
+  const { data: containers = [], isLoading: containersLoading } = containersQuery
   const byDept = new Map(containers.map((c) => [c.department, c]))
-  const defs = defsData?.defs ?? []
-  const endpoints = defsData?.endpoints ?? []
-  const brainByAgent = new Map((defsData?.brains ?? []).map((b) => [b.agent, b]))
-  const t = fleet?.totals
+  // The roster itself renders through QueryState below (a 500 must never read as
+  // "no agents"). This copy is only for the create/duplicate modals' template
+  // list, where an empty list is a harmless degradation.
+  const defs = defsQuery.data?.defs ?? []
+  const t = fleetQuery.data?.totals
 
   const [view, setView] = useState<'grid' | 'list'>('grid')
   const [creating, setCreating] = useState(false)
@@ -100,7 +115,12 @@ function AgentsPage() {
           <h1 className="font-sans text-2xl font-semibold tracking-tight text-fg">Agents</h1>
           {t ? (
             <span className="font-mono text-[11px] tracking-[0.05em] text-muted">{t.online}/{t.agents} online · {t.activeToday} active today</span>
-          ) : fleetLoading ? (
+          ) : fleetQuery.isError ? (
+            // Missing totals with no explanation read as "nothing is running".
+            <span className="font-mono text-[11px] tracking-[0.05em] text-danger" title={errorMessage(fleetQuery.error)}>
+              Fleet status unavailable
+            </span>
+          ) : fleetQuery.isLoading ? (
             // Hold the slot so the toolbar doesn't jog when the totals land.
             <Skeleton className="h-3 w-40" />
           ) : null}
@@ -144,41 +164,76 @@ function AgentsPage() {
           </div>
         </div>
 
-        {/* Defs AND containers gate the grid together: tiles built from
-            `containers: null` read every agent as stopped, then flip. */}
-        {defsLoading || containersLoading ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {[0, 1, 2, 3, 4, 5].map((i) => (
-              <SkeletonCard key={i} delay={i * 0.1} />
-            ))}
-          </div>
-        ) : defs.length === 0 ? (
-          <Panel>
-            <EmptyState
-              title="No agents yet"
-              hint="Describe the first one and Muse designs it: identity, soul, and starter skills."
-              action={
-                <Button size="sm" onClick={() => setCreating(true)}>
-                  Design your first agent
-                </Button>
-              }
-            />
-          </Panel>
-        ) : view === 'grid' ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {defs.map((d) => (
-              <AgentTile key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} brain={brainByAgent.get(d.model)} onDuplicate={() => setDuplicateFrom(d)} />
-            ))}
-          </div>
-        ) : (
-          <Panel className="p-0">
-            <ul className="divide-y divide-line">
-              {defs.map((d) => (
-                <AgentListRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} brain={brainByAgent.get(d.model)} onDuplicate={() => setDuplicateFrom(d)} />
-              ))}
-            </ul>
-          </Panel>
-        )}
+        {/* "No agents yet" is a claim about the fleet, and for months a 500 from
+            /api/fleet/defs made this surface state it — the owner reading that
+            his fleet was empty while the box was down. It is now reachable ONLY
+            from a 200 that really carried zero defs; the failure renders as a
+            failure, and a disabled read (no manage access) says that instead. */}
+        <QueryState
+          query={defsQuery}
+          errorTitle="Could not load the agent roster"
+          errorVariant="compact"
+          isEmpty={(d) => d.defs.length === 0}
+          skeleton={<RosterSkeleton />}
+          idle={
+            <Panel>
+              <EmptyState
+                title="Roster not available to you"
+                hint="Agent definitions are served to accounts that manage the fleet — ask an admin for access."
+              />
+            </Panel>
+          }
+          empty={
+            <Panel>
+              <EmptyState
+                title="No agents yet"
+                hint="Describe the first one and Muse designs it: identity, soul, and starter skills."
+                action={
+                  <Button size="sm" onClick={() => setCreating(true)}>
+                    Design your first agent
+                  </Button>
+                }
+              />
+            </Panel>
+          }
+        >
+          {(data) => {
+            const endpoints = data.endpoints
+            const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))
+            // Defs AND containers gate the grid together: tiles built from
+            // `containers: null` read every agent as stopped, then flip.
+            if (containersLoading) return <RosterSkeleton />
+            return (
+              <div className="space-y-3">
+                {/* Docker unreachable ≠ every agent stopped. Without this the
+                    dots all go red and the roster quietly libels the fleet. */}
+                {containersQuery.isError && (
+                  <QueryError
+                    variant="inline"
+                    title={containersQuery.data === undefined ? 'Could not read container status' : 'Container status may be out of date'}
+                    error={containersQuery.error}
+                    onRetry={() => void containersQuery.refetch()}
+                  />
+                )}
+                {view === 'grid' ? (
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {data.defs.map((d) => (
+                      <AgentTile key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} brain={brainByAgent.get(d.model)} onDuplicate={() => setDuplicateFrom(d)} />
+                    ))}
+                  </div>
+                ) : (
+                  <Panel className="p-0">
+                    <ul className="divide-y divide-line">
+                      {data.defs.map((d) => (
+                        <AgentListRow key={d.id} def={d} containers={byDept.get(d.department) ?? null} endpoints={endpoints} brain={brainByAgent.get(d.model)} onDuplicate={() => setDuplicateFrom(d)} />
+                      ))}
+                    </ul>
+                  </Panel>
+                )}
+              </div>
+            )
+          }}
+        </QueryState>
 
         {schedulesOpen && <FleetCronsModal onClose={() => setSchedulesOpen(false)} />}
         {federateOpen && <FederateModal onClose={() => setFederateOpen(false)} />}

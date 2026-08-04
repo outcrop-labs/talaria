@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Minus, Plus } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { QueryError } from '@/components/ui/query-state'
 import { updateTask, type Board } from '@/lib/boards'
 import { LABEL_CSS, isOverdueTask } from '@/components/board/field-pills'
 import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
@@ -44,7 +45,12 @@ interface Span {
 export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; onOpen: (id: string) => void }) {
   const qc = useQueryClient()
   const canEdit = board.role === 'owner' || board.role === 'editor'
-  const { data: boardStatuses = [] } = useBoardStatuses(board.id)
+  // `= []` again: on a failed read every bar falls back to the default status
+  // palette and `isOverdueTask` loses the board's own terminal categories, so
+  // finished work can render as overdue. Colour and lateness are statements
+  // about this board's workflow — don't make them from a read that broke.
+  const statusesQuery = useBoardStatuses(board.id)
+  const boardStatuses = statusesQuery.data ?? []
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
   const [dayW, setDayW] = useState(26)
 
@@ -216,6 +222,21 @@ export function Gantt({ board, tasks, onOpen }: { board: Board; tasks: Task[]; o
 
   return (
     <div className="flex h-full flex-col">
+      {/* The chart itself is the tickets, which loaded — so the timeline stays
+          and the failed workflow read is marked rather than replacing it. */}
+      {statusesQuery.isError && (
+        <QueryError
+          variant="inline"
+          className="border-b border-line-subtle px-4 py-2"
+          title={
+            statusesQuery.data === undefined
+              ? 'Could not load this board’s statuses — bar colours and overdue marks are guesses'
+              : 'Statuses may be out of date'
+          }
+          error={statusesQuery.error}
+          onRetry={() => void statusesQuery.refetch()}
+        />
+      )}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
         <div className="flex min-h-full flex-col" style={{ minWidth: labelW + days * dayW }}>
           {/* ── Header: months + day grid + zoom ── */}

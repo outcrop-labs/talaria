@@ -3,8 +3,9 @@ import { useEffect, useState } from 'react'
 import { buttonClasses } from '@/components/ui/button'
 import { Markdown } from '@/components/ui/markdown'
 import { Skeleton } from '@/components/ui/skeleton'
+import { errorMessage, getJson, HttpError } from '@/lib/fetch-json'
 import { relativeTime } from '@/lib/fleet'
-import { PublicShell, PublicNotFound } from '@/components/kb/public-shell'
+import { PublicShell, PublicNotFound, PublicUnavailable } from '@/components/kb/public-shell'
 
 export const Route = createFileRoute('/a/$slug')({
   component: PublicArtifactPage,
@@ -21,15 +22,29 @@ interface PublicArtifact {
 // A publicly shared artifact — no auth. Only artifacts set to public resolve.
 function PublicArtifactPage() {
   const { slug } = Route.useParams()
-  const [state, setState] = useState<{ a?: PublicArtifact; error?: boolean }>({})
+  // `r.ok ? … : reject('not found')` made EVERY status "not found", including
+  // the ones that mean the server is having a bad minute. A visitor with a
+  // perfectly good share link was told the page does not exist.
+  const [state, setState] = useState<{ a?: PublicArtifact; missing?: boolean; error?: unknown }>({})
+  const [reload, setReload] = useState(0)
   useEffect(() => {
-    fetch(`/api/artifacts/public/${slug}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('not found'))))
-      .then((d: { artifact: PublicArtifact }) => setState({ a: d.artifact }))
-      .catch(() => setState({ error: true }))
-  }, [slug])
+    let live = true
+    setState({})
+    getJson<{ artifact: PublicArtifact }>(`/api/artifacts/public/${slug}`)
+      .then((d) => live && setState({ a: d.artifact }))
+      .catch((e: unknown) => {
+        if (!live) return
+        // 404 is the only status that means "there is no such page".
+        setState(e instanceof HttpError && e.status === 404 ? { missing: true } : { error: e })
+      })
+    return () => {
+      live = false
+    }
+  }, [slug, reload])
 
-  if (state.error) return <PublicNotFound />
+  if (state.missing) return <PublicNotFound />
+  if (state.error)
+    return <PublicUnavailable detail={errorMessage(state.error)} onRetry={() => setReload((n) => n + 1)} />
   if (!state.a) {
     // First paint for link recipients — doc-page shape regardless of kind.
     return (

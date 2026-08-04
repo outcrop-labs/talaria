@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/ui/empty-state'
 import { GeneratingDots } from '@/components/ui/generating'
 import { Skeleton } from '@/components/ui/skeleton'
+import { listQuery, QueryError } from '@/components/ui/query-state'
 import { confirm } from '@/components/ui/confirm'
 import { cn } from '@/lib/cn'
 import { useQueryClient } from '@tanstack/react-query'
@@ -48,13 +49,32 @@ export function ChannelView({
   channelName: string
   fleet: AgentModel[]
 }) {
-  const { data: messages = [], isLoading: messagesLoading } = useChannelMessages(channelId)
+  // The whole query, not `{ data: messages = [] }`. That default turned a
+  // rejected fetch into "this channel has no messages" — `isLoading` is false
+  // during an error, so the skeleton below (whose own comment says "never the
+  // 'Welcome' hero") never ran, and a 500 rendered the hero over four real
+  // messages.
+  const messagesQuery = useChannelMessages(channelId)
+  const messages = messagesQuery.data ?? []
+  const messagesLoading = messagesQuery.isLoading
   // Fetched here (not passed down) so the message pane never waits on the
   // parent header's detail fetch — react-query dedupes the shared key.
-  const { data: detail } = useChannelDetail(channelId)
+  const detailQuery = useChannelDetail(channelId)
+  const detail = detailQuery.data
+  // Same shape, quieter blast radius: a failed detail read empties the agent
+  // and member lists, which the hero below reads back as "add people & agents"
+  // and the composer as "nobody here to @mention".
+  const detailFailed = detailQuery.isError && detail === undefined
   const channelAgents = detail?.agents ?? []
   const members = detail?.members ?? []
-  const { data: users = [] } = useUsers()
+  // The directory only maps an author's email to their display name, and the
+  // fallback below derives the label from the message's OWN author field, so a
+  // failed lookup shows "jon" instead of "Jon Iler" — degraded, not a claim
+  // about anything. It was still written `useUsers().data ?? []`, which throws
+  // the query away on the line that made it: the degradation was reasoned
+  // about, but nothing downstream could ever SAY it was degraded.
+  const usersList = listQuery(useUsers(), { title: 'Names may be showing as email addresses', variant: 'inline' })
+  const users = usersList.rows
   const { data: session } = useSession()
   useChannelEvents(channelId)
   const [error, setError] = useState<string | null>(null)
@@ -138,7 +158,37 @@ export function ChannelView({
       {/* One chat width everywhere: the same content token agent DMs use. */}
       <div className="mx-auto flex h-full min-h-0 w-full max-w-[var(--chat-content-max-width)] flex-1 flex-col">
         <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
-          {messagesLoading ? (
+          {/* Transcripts refresh off the channel's SSE ticks. A failed refresh
+              keeps the messages already on screen — yanking a conversation
+              away over a blip is worse — but says so rather than presenting
+              them as the live feed. */}
+          {messagesQuery.isError && messagesQuery.data !== undefined && (
+            <QueryError
+              variant="inline"
+              title="Messages may be out of date"
+              error={messagesQuery.error}
+              onRetry={() => void messagesQuery.refetch()}
+            />
+          )}
+          {detailFailed && (
+            <QueryError
+              variant="inline"
+              title="Could not load this channel's people & agents"
+              error={detailQuery.error}
+              onRetry={() => void detailQuery.refetch()}
+            />
+          )}
+          {/* Deliberately quiet: without the directory each message still names
+              its own author, so this degrades a display name rather than
+              inventing an absence. It says so anyway. */}
+          {usersList.failed && usersList.notice}
+          {messagesQuery.isError && messagesQuery.data === undefined ? (
+            <QueryError
+              title="Could not load messages"
+              error={messagesQuery.error}
+              onRetry={() => void messagesQuery.refetch()}
+            />
+          ) : messagesLoading ? (
             // Transcript-shaped shimmer while the history loads — never the
             // "Welcome" hero, which reads as an empty channel it isn't.
             <div aria-hidden className="space-y-5">
@@ -164,7 +214,12 @@ export function ChannelView({
               hint={
                 channelAgents.length
                   ? `Say something. @mention ${channelAgents.map(labelFor).join(', ')} to bring the agents in.`
-                  : 'Say something, or add people & agents.'
+                  : detailFailed
+                    ? // The channel really is empty, but who is IN it came from
+                      // a read that failed — "add people & agents" would be a
+                      // claim about a roster nobody managed to fetch.
+                      'Say something.'
+                    : 'Say something, or add people & agents.'
               }
             />
           ) : (
@@ -503,7 +558,12 @@ function ThreadPanel({
   mentionables: Mentionable[]
   onClose: () => void
 }) {
-  const { data: messages = [], isLoading } = useThreadMessages(channelId, rootId)
+  // Same trap one level down: `= []` on a rejected thread read rendered an
+  // EMPTY thread panel — no root, no replies, no error — beside a rollup that
+  // had just said "3 replies".
+  const threadQuery = useThreadMessages(channelId, rootId)
+  const messages = threadQuery.data ?? []
+  const isLoading = threadQuery.isLoading
   const scrollRef = useRef<HTMLDivElement>(null)
   const prevCount = useRef(0)
 
@@ -537,7 +597,22 @@ function ThreadPanel({
         </button>
       </div>
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-        {isLoading ? (
+        {threadQuery.isError && threadQuery.data !== undefined && (
+          <QueryError
+            variant="inline"
+            title="Thread may be out of date"
+            error={threadQuery.error}
+            onRetry={() => void threadQuery.refetch()}
+          />
+        )}
+        {threadQuery.isError && threadQuery.data === undefined ? (
+          <QueryError
+            variant="compact"
+            title="Could not load this thread"
+            error={threadQuery.error}
+            onRetry={() => void threadQuery.refetch()}
+          />
+        ) : isLoading ? (
           <div aria-hidden className="space-y-4">
             {Array.from({ length: 3 }, (_, i) => (
               <div key={i} className="flex gap-2.5">

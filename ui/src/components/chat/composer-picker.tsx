@@ -3,7 +3,7 @@
 // composer needs decided at send time (model tier, research depth, acting
 // agent) instead of parking wide controls in rails or headers.
 //
-// Gentle dew (spec §7): a secondary 36px mono chip (hairline border, muted →
+// Mercury (spec §7): a secondary 36px mono chip (hairline border, muted →
 // readout on hover) over the §7 popover pattern — search row with ⌘K hint,
 // panel bg, mono section header, right-aligned mono meta, hover fill,
 // dashed-gold selected row.

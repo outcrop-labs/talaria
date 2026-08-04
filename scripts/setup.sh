@@ -58,7 +58,10 @@ AUTH_GOOGLE_ENABLED=0
 AUTH_GOOGLE_CLIENT_ID=
 AUTH_GOOGLE_CLIENT_SECRET=
 
-# Agents authenticate to Talaria's APIs with this key + x-agent-name header
+# Agents authenticate to Talaria's APIs with their OWN tak_ credential, minted per
+# agent and written to fleet/.env by the fleet renderer. This org-wide key is the
+# app's own hop to the toolkit service, and a legacy fallback for containers built
+# before per-agent keys (set TALARIA_AGENT_KEY_LEGACY=off to close that window).
 TALARIA_AGENT_KEY=$(rand 32)
 
 # Built-in object storage (the talaria-minio-dev container). dev.sh exports
@@ -106,6 +109,17 @@ say "App dependencies"
 if [ -d ui/node_modules ]; then skip "ui/node_modules"; else
   (cd ui && npm install --no-fund --no-audit) && ok "npm install"
 fi
+
+# mcp/ is a SEPARATE package that compiles to mcp/dist/index.js — the fleet's
+# Talaria toolkit, spawned by the app (ui/src/server/mcp-service.ts). dist is
+# gitignored, so a fresh clone has no toolkit at all until this runs; dev.sh
+# rebuilds it whenever mcp/src moves. Not optional: without it every agent's
+# tool calls fail and the only trace is one stderr line from mcp-service.
+say "Fleet toolkit (mcp/)"
+if [ -d mcp/node_modules ]; then skip "mcp/node_modules"; else
+  (cd mcp && npm install --no-fund --no-audit) && ok "npm install (mcp)"
+fi
+(cd mcp && npm run build) && ok "mcp/dist built" || die "mcp/ failed to build — the fleet toolkit will not start; fix mcp/src and re-run"
 
 say "Git convenience"
 # `git wt <name>` → an isolated dev worktree (own DB seeded from main). Using this

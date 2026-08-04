@@ -1,11 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { agentName, checkAgentKey } from '@/server/agent-auth'
+import { presentedCredential, requireAgent } from '@/server/agent-auth'
 import { effectiveMcpFor, parseMcpResponse } from '@/server/mcp-registry'
 
 // The MCP gateway — the registry's ENFORCEMENT point. Agents never see an
-// upstream URL or credential: their configs point here, the fleet key + agent
-// name identify the caller, and the gateway
+// upstream URL or credential: their configs point here, the agent's own
+// credential identifies the caller (agent-auth), and the gateway
 //   · forwards JSON-RPC to the upstream (org headers, or the acting user's
 //     connected-account headers on per-user servers)
 //   · FILTERS tools/list down to the allowed set
@@ -15,10 +15,16 @@ export const Route = createFileRoute('/api/mcp/gw/$server')({
   server: {
     handlers: {
       POST: async ({ request, params }) => {
-        if (!checkAgentKey(request)) return json({ error: 'unauthorized' }, { status: 401 })
-        const name = agentName(request)
-        if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
-        const eff = await effectiveMcpFor(name, params.server)
+        const caller = await requireAgent(request)
+        if (caller instanceof Response) return caller
+        // Pass the CALLER, never `caller.model`. `subjectModel`/`subjectProven`
+        // read a bare string as PROVEN, so downgrading to the name here throws
+        // away `legacy` — and this route is where that matters most: it resolves
+        // the acting owner and can put that human's OAuth bearer token into
+        // `upstreamHeaders`. `name` below is only ever used where a header or an
+        // unthreaded callee genuinely needs the string.
+        const name = caller.model
+        const eff = await effectiveMcpFor(caller, params.server)
         if (!eff) return json({ error: 'no access to this MCP server' }, { status: 403 })
 
         const bodyText = await request.text()
@@ -51,7 +57,7 @@ export const Route = createFileRoute('/api/mcp/gw/$server')({
         // identity — grants resolved by the same gateway rules as any server.
         if (eff.server.url.startsWith('talaria-workbench://')) {
           const { dispatchWorkbenchMcp } = await import('@/server/workbench-mcp')
-          const r = await dispatchWorkbenchMcp(rpc ?? {}, name, eff.tools)
+          const r = await dispatchWorkbenchMcp(rpc ?? {}, caller, eff.tools)
           return r.body === null ? new Response(null, { status: r.status }) : json(r.body, { status: r.status })
         }
 
@@ -70,9 +76,10 @@ export const Route = createFileRoute('/api/mcp/gw/$server')({
             accept: request.headers.get('accept') ?? 'application/json, text/event-stream',
             ...(request.headers.get('mcp-session-id') ? { 'mcp-session-id': request.headers.get('mcp-session-id')! } : {}),
             ...eff.upstreamHeaders,
-            // The builtin toolkit keeps per-agent identity: the caller's name
-            // travels through, authenticated by the fleet key.
-            ...(eff.server.builtin ? { 'X-Agent-Name': name, 'X-Api-Key': process.env.TALARIA_AGENT_KEY ?? '' } : {}),
+            // The builtin toolkit calls back into this API as the same agent,
+            // so its OWN credential rides through — substituting a server-held
+            // key here would make that hop the forgeable one.
+            ...(eff.server.builtin ? { 'X-Agent-Name': name, 'X-Api-Key': presentedCredential(request) ?? '' } : {}),
           },
           body: bodyText,
           signal: AbortSignal.timeout((eff.server.timeoutSecs ?? 120) * 1000),
@@ -119,10 +126,11 @@ export const Route = createFileRoute('/api/mcp/gw/$server')({
       },
       // Streamable-HTTP GET (server → client notification stream): plain relay.
       GET: async ({ request, params }) => {
-        if (!checkAgentKey(request)) return json({ error: 'unauthorized' }, { status: 401 })
-        const name = agentName(request)
-        if (!name) return json({ error: 'x-agent-name required' }, { status: 400 })
-        const eff = await effectiveMcpFor(name, params.server)
+        const caller = await requireAgent(request)
+        if (caller instanceof Response) return caller
+        const name = caller.model
+        // Same rule as POST: the caller carries the proof, the string does not.
+        const eff = await effectiveMcpFor(caller, params.server)
         if (!eff) return json({ error: 'no access to this MCP server' }, { status: 403 })
         // App servers have no notification stream — decline politely.
         if (eff.server.appSlug) return new Response(null, { status: 405 })
@@ -132,7 +140,7 @@ export const Route = createFileRoute('/api/mcp/gw/$server')({
             accept: request.headers.get('accept') ?? 'text/event-stream',
             ...(request.headers.get('mcp-session-id') ? { 'mcp-session-id': request.headers.get('mcp-session-id')! } : {}),
             ...eff.upstreamHeaders,
-            ...(eff.server.builtin ? { 'X-Agent-Name': name, 'X-Api-Key': process.env.TALARIA_AGENT_KEY ?? '' } : {}),
+            ...(eff.server.builtin ? { 'X-Agent-Name': name, 'X-Api-Key': presentedCredential(request) ?? '' } : {}),
           },
         }).catch((e: Error) => e)
         if (upstream instanceof Error) return json({ error: `upstream unreachable: ${upstream.message}` }, { status: 502 })

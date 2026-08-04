@@ -11,7 +11,7 @@ export const Route = createFileRoute('/api/inbox/focus/conversation')({
         if (user instanceof Response) return user
         const cursor = new URL(request.url).searchParams.get('cursor')
         const release = acquireInboxFocusLock(user.id)
-        if (!release) return json({ error: 'Scout is updating the Inbox conversation.' }, { status: 409 })
+        if (!release) return json({ error: 'Your assistant is updating the Inbox conversation.' }, { status: 409 })
         try {
           return json(await getInboxConversation(user, cursor))
         } finally {

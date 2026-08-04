@@ -1,6 +1,6 @@
 import { cn } from '@/lib/cn'
 
-// Generation-in-progress — Gentle dew motion grammar (spec §9). Loaders are
+// Generation-in-progress — Mercury motion grammar (spec §9). Loaders are
 // rows of small rounded bars (3×12px, like the chip meters) on the gd-*
 // motifs: weave (submitting burst), scan (agent stage / tool activity),
 // breathe (ambient background monitor), helix (reasoning / generating loop),

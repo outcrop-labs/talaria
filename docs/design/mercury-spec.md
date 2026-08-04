@@ -1,8 +1,14 @@
-# Gentle Dew — Talaria UI Design Specification
+# Mercury — Talaria UI Design Specification
 
-Source of truth: Paper file **"Gentle dew"** — https://app.paper.design/file/01KYWTP9AFQ3NJD8M8FC2GKZBY/1-0
-Extracted 2026-07-31 from the live file (45 artboards) via computed styles + JSX export —
-values below are **exact** unless marked (approx). Artboard IDs noted for re-verification.
+**This document is the source of truth.** Values below are **exact** unless marked
+(approx), and the implementation is expected to match them rather than any external file.
+
+_Provenance: originally extracted 2026-07-31 (45 artboards, via computed styles + JSX
+export) from a Paper exploration titled "Gentle dew". That file lives in a personal
+account, so it is credited here as the design's origin and is deliberately NOT the
+reference — a house design system cannot depend on a third-party document one person
+can revoke. Artboard IDs are kept inline only as breadcrumbs for anyone who still has
+access._
 
 **Canonical (follow exactly):** color foundations, type, spacing, Icon Rail, Sidebar, LOGO,
 Composer/Default, hover states, motion grammar.
@@ -172,7 +178,7 @@ The signature component. Applies to chat, channels/comms, and any prompt surface
   (~16px, stroke ground `#090A09`). Disabled: raised tile + muted glyph.
 
 ### Control rail (bottom row, 40px zone; chips 36px tall)
-Left→right: `+` attach (36×36, border `#302D29`, mono `+`); agent chip `SCOUT` (border
+Left→right: `+` attach (36×36, border `#302D29`, mono `+`); agent chip (border
 **`#4A4640`**, text 10px mono `#E7E2DB`, + meter: five 3×12 bars, gap ~2, lit bars
 `#C8B46C`, unlit raised-tone); model chip `✳ FABLE 5` (same anatomy, 10px glyph icon);
 mode chip `NORMAL MODE` (border `#302D29`, muted text); `● MCP 3` (7px gold dot + mono);

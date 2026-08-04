@@ -1,7 +1,9 @@
 // Postgres — durable state (users, roles, per-agent access, conversations,
-// messages). postgres.js (no native build). Migrations run once, lazily, on
-// first query. Cached on globalThis so HMR doesn't open a new pool each reload.
+// messages). postgres.js (no native build). Migrations run lazily on the first
+// query, once per statement ever (see schema_migrations below), under an
+// advisory lock. Cached on globalThis so HMR doesn't open a new pool each reload.
 
+import { createHash } from 'node:crypto'
 import postgres from 'postgres'
 import { initSecretbox } from '../secretbox'
 
@@ -18,6 +20,11 @@ export function getSql(): Sql {
 }
 
 // One statement per entry (postgres.js extended protocol is one-statement).
+// APPEND-ONLY: a statement's index is its identity in schema_migrations, so new
+// migrations go at the END — never inserted next to related ones. Editing or
+// inserting mid-array trips the checksum check and the app refuses to boot.
+// Each entry runs exactly once per database; DML here is a one-shot backfill,
+// not a rule that re-asserts itself on every start.
 const MIGRATIONS: string[] = [
   `create table if not exists users (
      id uuid primary key default gen_random_uuid(),
@@ -58,8 +65,6 @@ const MIGRATIONS: string[] = [
      unique (conversation_id, seq)
    )`,
   `create index if not exists messages_conv_idx on messages(conversation_id, seq)`,
-  `create index if not exists messages_conversation_timeline_idx
-     on messages(conversation_id, created_at desc, id desc)`,
   // Fleet agent registry — Talaria's own "brain" (ripped from mission-control's
   // agents table). Agents register + heartbeat to Talaria, not MC.
   `create table if not exists fleet_agents (
@@ -334,6 +339,20 @@ const MIGRATIONS: string[] = [
      unique (channel_id, seq)
    )`,
   `create index if not exists channel_messages_idx on channel_messages(channel_id, seq)`,
+  // Threads hang off a root message (a reply carries the root's id); edited_at
+  // marks a message the author revised in place.
+  `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
+  `alter table channel_messages add column if not exists edited_at timestamptz`,
+  `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
+  // Emoji reactions; actor is the user's email or the agent model.
+  `create table if not exists channel_message_reactions (
+    message_id uuid not null references channel_messages(id) on delete cascade,
+    emoji text not null,
+    actor text not null,
+    actor_type text not null default 'user',
+    created_at timestamptz not null default now(),
+    primary key (message_id, emoji, actor)
+  )`,
   // Notifications — user-facing inbox (mentions today; more kinds later).
   `create table if not exists notifications (
      id uuid primary key default gen_random_uuid(),
@@ -391,6 +410,9 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now(),
      updated_at timestamptz not null default now()
    )`,
+  // agent_defs is the registry of record: drop 1:1 chat grants for models that
+  // are no longer defined.
+  `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
   // Local-vs-cloud attribution on the token ledger: which upstream model class
   // served the generation (from the agent's main endpoint at generation time).
   `alter table usage_events add column if not exists endpoint_class text`,
@@ -464,6 +486,10 @@ const MIGRATIONS: string[] = [
    )`,
   // Who may mint keys (admins always may; this grants others).
   `alter table users add column if not exists can_mint_keys boolean not null default false`,
+  // Carry the flag into the permission catalog, which superseded it.
+  `insert into user_permissions (user_id, perm, allowed)
+     select id, 'models.mint-keys', true from users where can_mint_keys
+     on conflict (user_id, perm) do nothing`,
   // Extra request-body defaults deep-merged into every outbound call to this
   // endpoint (e.g. OpenRouter's provider allowlist / data_collection deny).
   `alter table llm_endpoints add column if not exists request_defaults jsonb not null default '{}'`,
@@ -591,6 +617,26 @@ const MIGRATIONS: string[] = [
      updated_at timestamptz not null default now()
    )`,
   `create index if not exists kb_docs_space_idx on kb_docs(space_id, parent_id, sort)`,
+  // A space's OKF concept doc — the machine-readable summary of the space,
+  // kept as a normal (hidden) doc so the Librarian edits it like any other.
+  `alter table kb_spaces add column if not exists okf_doc_id uuid references kb_docs(id) on delete set null`,
+  // Hidden agent-facing OKF body on a doc. Only a space's OKF doc is truly
+  // 'agent' kind; everything else that predates the split is human.
+  `alter table kb_docs add column if not exists okf text`,
+  `update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null)`,
+  // Inline comments on a doc — threaded, optionally anchored to a quote.
+  `create table if not exists kb_comments (
+    id uuid primary key default gen_random_uuid(),
+    doc_id uuid not null references kb_docs(id) on delete cascade,
+    parent_id uuid references kb_comments(id) on delete cascade,
+    author_user_id uuid references users(id) on delete set null,
+    author text not null,
+    quote text,
+    content text not null,
+    resolved boolean not null default false,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists kb_comments_doc_idx on kb_comments(doc_id, created_at)`,
   // Outline-parity: per-doc emoji icon, and a full-text search index over
   // title + body so the knowledgebase is searchable at scale.
   `alter table kb_docs add column if not exists icon text`,
@@ -801,7 +847,7 @@ const MIGRATIONS: string[] = [
   // Stable host port per agent, so the app (on the host) reaches each agent's
   // persona gateway directly — no separate bridge/multiplexer container.
   `alter table agent_defs add column if not exists gateway_port int`,
-  // Conversation kind — chat, plan, or the private singleton Inbox stream.
+  // Conversation kind — 'chat' (default) or 'plan' (the planning surface).
   `alter table conversations add column if not exists kind text not null default 'chat'`,
   // Ticket/plan templates — an org-wide library of markdown skeletons + prompt
   // guidance. Tickets and plan docs stay markdown; the skeleton IS the schema.
@@ -861,9 +907,6 @@ const MIGRATIONS: string[] = [
    )`,
   // Who wrote a user turn — multiplayer plans need voices told apart.
   `alter table messages add column if not exists author_user_id uuid references users(id) on delete set null`,
-  // Server-owned message metadata carries Inbox focus context and attribution.
-  // It is never included in generic model history or exposed through Comms.
-  `alter table messages add column if not exists metadata jsonb not null default '{}'`,
   // Research runs: cited research pipelines (Recon / Brief / Expedition). The
   // report itself is a doc artifact; sources carry the [n] citation registry.
   `create table if not exists research_runs (
@@ -883,6 +926,9 @@ const MIGRATIONS: string[] = [
      completed_at timestamptz
    )`,
   `create index if not exists research_runs_created_idx on research_runs(created_at desc)`,
+  // A generated short title for the run; the UI shows the raw question until
+  // it lands.
+  `alter table research_runs add column if not exists title text`,
   `create table if not exists research_sources (
      id uuid primary key default gen_random_uuid(),
      run_id uuid not null references research_runs(id) on delete cascade,
@@ -1150,9 +1196,29 @@ const MIGRATIONS: string[] = [
      generated_at timestamptz not null default now(),
      primary key (user_id, scope)
    )`,
-  // Focus Queue: per-user display state and assistant brief cache. Source rows
-  // stay authoritative; this table only records snooze/view state and a brief
-  // keyed to the source fingerprint that produced it.
+  // Per-agent credentials: the secret an agent presents to prove WHO it is
+  // (agent-auth), replacing the org-wide key + self-declared x-agent-name.
+  // sha256 for lookup (auth never decrypts); a sealed copy so a wiped
+  // fleet/.env can be re-materialized without rotating every container.
+  `create table if not exists agent_keys (
+     agent_id uuid primary key references agent_defs(id) on delete cascade,
+     key_hash text not null unique,
+     key_enc text not null,
+     created_at timestamptz not null default now(),
+     last_used_at timestamptz
+   )`,
+
+  // ── Merged from origin/main #202 (Mercury workspace + focus queue) ──
+  // APPENDED, not merged in place. Their branch fixed the same fresh-install P0
+  // by moving the forward-referencing statements to the TAIL; ours moved each
+  // after its dependency and added index-keyed checksums. Adopting their order
+  // would shift every index and make the checksum guard refuse to boot on any
+  // database that already ran ours. Their ordering fix is therefore dropped as
+  // redundant, and only their genuinely NEW statements land here — at the end,
+  // which is the append-only rule this runner enforces.
+  `create index if not exists messages_conversation_timeline_idx
+     on messages(conversation_id, created_at desc, id desc)`,
+  `alter table messages add column if not exists metadata jsonb not null default '{}'`,
   `create table if not exists inbox_focus_state (
      user_id uuid not null references users(id) on delete cascade,
      source_type text not null,
@@ -1167,9 +1233,6 @@ const MIGRATIONS: string[] = [
    )`,
   `create index if not exists inbox_focus_state_snooze_idx
      on inbox_focus_state(user_id, snoozed_until)`,
-  // Focus Queue decisions deliberately retain only durable inputs and outcomes,
-  // never partial agent streams or conversational scratch. A hashed,
-  // short-lived token gates identity-bearing external actions.
   `create table if not exists inbox_decisions (
      id uuid primary key default gen_random_uuid(),
      user_id uuid not null references users(id) on delete cascade,
@@ -1200,59 +1263,73 @@ const MIGRATIONS: string[] = [
      on conversations(user_id) where kind = 'inbox' and archived = false`,
   `create index if not exists inbox_decisions_conversation_timeline_idx
      on inbox_decisions(conversation_id, created_at desc, id desc) where conversation_id is not null`,
-  // Late patches — these reference tables created above, so they must stay at
-  // the tail of the list or a FRESH database fails its very first migration
-  // ("relation ... does not exist"; existing DBs never noticed).
-  `create table if not exists kb_comments (
-    id uuid primary key default gen_random_uuid(),
-    doc_id uuid not null references kb_docs(id) on delete cascade,
-    parent_id uuid references kb_comments(id) on delete cascade,
-    author_user_id uuid references users(id) on delete set null,
-    author text not null,
-    quote text,
-    content text not null,
-    resolved boolean not null default false,
-    created_at timestamptz not null default now()
-  )`,
-  `create index if not exists kb_comments_doc_idx on kb_comments(doc_id, created_at)`,
-  `create table if not exists channel_message_reactions (
-    message_id uuid not null references channel_messages(id) on delete cascade,
-    emoji text not null,
-    actor text not null,
-    actor_type text not null default 'user',
-    created_at timestamptz not null default now(),
-    primary key (message_id, emoji, actor)
-  )`,
-  `insert into user_permissions (user_id, perm, allowed)
-     select id, 'models.mint-keys', true from users where can_mint_keys
-     on conflict (user_id, perm) do nothing`,
-  `alter table research_runs add column if not exists title text`,
-  `alter table channel_messages add column if not exists thread_root_id uuid references channel_messages(id) on delete cascade`,
-  `alter table channel_messages add column if not exists edited_at timestamptz`,
-  `create index if not exists channel_messages_thread_idx on channel_messages(thread_root_id) where thread_root_id is not null`,
-  `delete from user_agent_access where not exists (select 1 from agent_defs d where d.model = agent_model)`,
-  `alter table kb_docs add column if not exists okf text`,
-  // kb.ts SPACE_COLS selects okf_doc_id unconditionally, so fresh installs
-  // need the column too (nullable; legacy DBs already have it).
-  `alter table kb_spaces add column if not exists okf_doc_id uuid references kb_docs(id) on delete set null`,
-  // One-time data fix for legacy DBs only: kb_spaces.okf_doc_id predates this
-  // migration list and doesn't exist on fresh installs — guard on the column.
-  `do $$ begin
-     if exists (select 1 from information_schema.columns
-                where table_schema = 'public' and table_name = 'kb_spaces' and column_name = 'okf_doc_id') then
-       update kb_docs set kind='human' where kind='agent' and id not in (select okf_doc_id from kb_spaces where okf_doc_id is not null);
-     end if;
-   end $$`,
 ]
+
+// One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
+// is what makes the append-only rule enforceable rather than aspirational.
+const SCHEMA_MIGRATIONS = `create table if not exists schema_migrations (
+   id integer primary key,
+   checksum text not null,
+   applied_at timestamptz not null default now()
+ )`
+
+// Fixed advisory-lock key: two instances booting at once queue instead of
+// racing. `create table if not exists` is not atomic against a concurrent
+// create, and initSecretbox's select-then-insert would double-insert v1.
+const MIGRATION_LOCK = 8_314_207
+
+// Whitespace-insensitive, so reindenting a statement is not a schema change.
+function checksum(stmt: string): string {
+  return createHash('sha256').update(stmt.replace(/\s+/g, ' ').trim()).digest('hex')
+}
+
+async function runMigrations(sql: Sql): Promise<void> {
+  // Advisory locks are session-scoped, so the lock holds a reserved connection
+  // of its own while the statements below run on the pool. Everything —
+  // including creating the bookkeeping table — happens inside it.
+  const lock = await sql.reserve()
+  try {
+    await lock`select pg_advisory_lock(${MIGRATION_LOCK})`
+    await lock.unsafe(SCHEMA_MIGRATIONS)
+    const rows = (await lock`select id, checksum from schema_migrations`) as unknown as Array<{ id: number; checksum: string }>
+    const applied = new Map(rows.map((r) => [r.id, r.checksum]))
+    for (const [i, stmt] of MIGRATIONS.entries()) {
+      const sum = checksum(stmt)
+      const prev = applied.get(i)
+      if (prev === sum) continue
+      // A statement that changed under an id we already applied means the array
+      // was edited in place or something was inserted mid-array — every index
+      // after it now describes a different statement than the one this database
+      // ran. Refuse to boot rather than apply the rest against a schema the
+      // array no longer describes.
+      if (prev)
+        throw new Error(
+          `[pg] migration ${i} changed after it was applied — MIGRATIONS is append-only: add new statements at the END of the array`,
+        )
+      // Its own transaction: a failure part-way leaves every earlier statement
+      // applied AND recorded, so the next boot resumes here instead of replaying.
+      await sql.begin(async (tx) => {
+        await tx.unsafe(stmt)
+        await tx`insert into schema_migrations (id, checksum) values (${i}, ${sum})`
+      })
+    }
+    // Load/create the data key so seal()/open() are synchronous thereafter.
+    await initSecretbox(sql)
+  } finally {
+    await lock`select pg_advisory_unlock(${MIGRATION_LOCK})`.catch(() => {})
+    lock.release()
+  }
+}
 
 function ensureMigrated(): Promise<void> {
   if (!g.__talariaMigrated) {
-    const sql = getSql()
-    g.__talariaMigrated = (async () => {
-      for (const stmt of MIGRATIONS) await sql.unsafe(stmt)
-      // Load/create the data key so seal()/open() are synchronous thereafter.
-      await initSecretbox(sql)
-    })()
+    // Drop the cached promise if the run fails, so the next db() retries: a
+    // cached rejection poisons every later call for the life of the process.
+    const run: Promise<void> = runMigrations(getSql()).catch((e) => {
+      if (g.__talariaMigrated === run) g.__talariaMigrated = undefined
+      throw e
+    })
+    g.__talariaMigrated = run
   }
   return g.__talariaMigrated
 }
