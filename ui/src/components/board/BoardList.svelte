@@ -23,6 +23,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { cn } from '@/lib/cn'
+  import { warmRoute } from '@/lib/warm-route'
   import { fade, listStagger, QUICK } from '@/lib/motion'
   import { EFFORT_LABEL, OFF_BOARD_STATUSES, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, pgNum, pgNumOr, taskTimeSpent, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
   import { relativeTime } from '@/lib/fleet'
@@ -493,7 +494,7 @@
                       dragOverGroup = null
                     }}
                     onclick={() => onOpen(t.id)}
-                    onpointerenter={() => prefetchTask(qc, t.id)}
+                    use:warmRoute={{ path: '/boards/:boardId/:taskId', warm: () => prefetchTask(qc, t.id) }}
                     oncontextmenu={(e) => rowMenu(e, t)}
                     class={cn('group cursor-pointer transition-colors hover:bg-hover', sel.has(t.id) && 'bg-raised/70', dragRow === t.id && 'opacity-40')}
                   >

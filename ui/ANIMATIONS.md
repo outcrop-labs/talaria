@@ -78,6 +78,11 @@ rounds.
 - Don't double-animate: Modal's children, staggered containers' grandchildren.
 - A resize the user watches must glide (`AutoHeight`); a resize behind a
   view-transition or a full swap must not double-animate.
+- Any element that opens an INLINE route (a child route mounting inside the
+  current view — ticket modal et al) carries `use:warmRoute` (`@/lib/warm-route`)
+  with the route path + a data prefetch: a cold chunk's first evaluation
+  blocks the main thread through the overlay's entrance window, so the first
+  open renders with its animation already elapsed.
 
 ## Definition of done per file
 

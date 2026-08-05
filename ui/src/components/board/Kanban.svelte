@@ -9,6 +9,7 @@
   import { COL_ACCENT, fmtHours } from './kanban'
   import { cn } from '@/lib/cn'
   import { fade, flip, LIST, listStagger, QUICK } from '@/lib/motion'
+  import { warmRoute } from '@/lib/warm-route'
   import { useAgents } from '@/lib/agents'
   import { archiveTask, createTask, prefetchTask, updateTask, useBoardLabels, type Board, type BoardMember } from '@/lib/boards.svelte'
   import { OFF_BOARD_STATUSES, STATUS_LABEL, TASK_STATUSES, pgNumOr, type Task, type TaskStatus } from '@/lib/task-const'
@@ -186,13 +187,11 @@
                    columns — it only transforms cards whose position changed,
                    as compositor transforms. A cross-column move fades out of
                    one column and into the other (flip can't span lists). -->
-              <!-- Hover warms the ticket cache so the detail modal opens with
-                   content already in place instead of skeleton-then-pop. -->
               <div
                 animate:flip={LIST}
                 in:fade={{ duration: 150 }}
                 out:fade={QUICK}
-                onpointerenter={() => prefetchTask(qc, t.id)}
+                use:warmRoute={{ path: '/boards/:boardId/:taskId', warm: () => prefetchTask(qc, t.id) }}
               >
                 <KanbanCard
                   task={t}
