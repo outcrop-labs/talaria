@@ -1,0 +1,92 @@
+// Client view of the secrets inventory. The shapes mirror server/secret-health.ts
+// exactly — including the absence of any field that could hold a plaintext
+// secret, which is the point: there is nowhere for one to arrive.
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getJson } from '@/lib/fetch-json'
+
+export type SecretState = 'ok' | 'unreadable' | 'missing' | 'env'
+export type SecretGroup = 'models' | 'integrations' | 'agents' | 'platform'
+
+export interface SecretRow {
+  id: string
+  group: SecretGroup
+  label: string
+  unlocks: string
+  surface: string
+  href?: string
+  state: SecretState
+  scope: 'instance' | 'user' | 'agent'
+  owner?: string
+  setAt?: string | null
+  lastUsedAt?: string | null
+  expiresAt?: string | null
+  clearable: boolean
+}
+
+export interface RootHealth {
+  via: 'env' | 'file' | 'fallback' | 'absent'
+  name: string
+  state: 'ok' | 'fallback' | 'absent' | 'unreadable'
+  failure: string | null
+  activeVersion: number | null
+  loadedVersions: number[]
+  storedVersions: number
+}
+
+export interface SecretHealth {
+  root: RootHealth
+  rows: SecretRow[]
+  counts: { ok: number; unreadable: number; missing: number; env: number }
+}
+
+export const SECRETS_KEY = ['admin-secrets'] as const
+
+/** `enabled` so the admin-only banner can mount for everyone and simply not
+ *  ask — a member hitting this endpoint gets a 403, and a 403 in the console
+ *  on every page load is noise that trains people to ignore the console. */
+export const useSecretHealth = (enabled = true) =>
+  useQuery({
+    queryKey: SECRETS_KEY,
+    queryFn: (): Promise<SecretHealth> => getJson<SecretHealth>('/api/admin/secrets'),
+    enabled,
+  })
+
+export const GROUP_LABELS: Record<SecretGroup, string> = {
+  models: 'Models',
+  integrations: 'Integrations',
+  agents: 'Agents',
+  platform: 'Platform',
+}
+
+/** What each state means, in the operator's words. Used by the row and by the
+ *  banner, so the two can never describe the same state differently. */
+export const STATE_COPY: Record<SecretState, { label: string; hint: string }> = {
+  ok: { label: 'Readable', hint: 'Sealed and readable with this instance’s current key.' },
+  unreadable: {
+    label: 'Unreadable',
+    hint: 'Sealed with a key this instance no longer has. Restore the original root secret to recover it, or clear it and enter the value again.',
+  },
+  missing: { label: 'Not set', hint: 'Nothing is configured here.' },
+  env: {
+    label: 'From environment',
+    hint: 'Read from an environment variable rather than stored here. Change it where the process is configured.',
+  },
+}
+
+/** One place that clears, so the invalidation cannot be forgotten at a call
+ *  site — a stale inventory after a clear reads as "the clear did nothing". */
+export function useClearSecret() {
+  const qc = useQueryClient()
+  return async (body: { id: string } | { unreadable: true }): Promise<{ error?: string; cleared?: string[]; failed?: string[]; changed?: boolean }> => {
+    const r = await fetch('/api/admin/secrets', {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const j = (await r.json().catch(() => ({}))) as { error?: string; cleared?: string[]; failed?: string[]; changed?: boolean }
+    await qc.invalidateQueries({ queryKey: SECRETS_KEY })
+    if (!r.ok) return { error: j.error ?? `clear failed (${r.status})` }
+    return j
+  }
+}

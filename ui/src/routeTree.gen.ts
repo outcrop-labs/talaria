@@ -122,6 +122,7 @@ import { Route as ApiAgentMediaModelRouteImport } from './routes/api/agent-media
 import { Route as ApiAdminUsersRouteImport } from './routes/api/admin.users'
 import { Route as ApiAdminStorageRouteImport } from './routes/api/admin.storage'
 import { Route as ApiAdminSettingsRouteImport } from './routes/api/admin.settings'
+import { Route as ApiAdminSecretsRouteImport } from './routes/api/admin.secrets'
 import { Route as ApiAdminRagRouteImport } from './routes/api/admin.rag'
 import { Route as ApiAdminPlatformAgentsRouteImport } from './routes/api/admin.platform-agents'
 import { Route as ApiAdminPermissionsRouteImport } from './routes/api/admin.permissions'
@@ -790,6 +791,11 @@ const ApiAdminSettingsRoute = ApiAdminSettingsRouteImport.update({
   path: '/api/admin/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAdminSecretsRoute = ApiAdminSecretsRouteImport.update({
+  id: '/api/admin/secrets',
+  path: '/api/admin/secrets',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAdminRagRoute = ApiAdminRagRouteImport.update({
   id: '/api/admin/rag',
   path: '/api/admin/rag',
@@ -1389,6 +1395,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/permissions': typeof ApiAdminPermissionsRoute
   '/api/admin/platform-agents': typeof ApiAdminPlatformAgentsRoute
   '/api/admin/rag': typeof ApiAdminRagRoute
+  '/api/admin/secrets': typeof ApiAdminSecretsRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/storage': typeof ApiAdminStorageRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
@@ -1604,6 +1611,7 @@ export interface FileRoutesByTo {
   '/api/admin/permissions': typeof ApiAdminPermissionsRoute
   '/api/admin/platform-agents': typeof ApiAdminPlatformAgentsRoute
   '/api/admin/rag': typeof ApiAdminRagRoute
+  '/api/admin/secrets': typeof ApiAdminSecretsRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/storage': typeof ApiAdminStorageRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
@@ -1821,6 +1829,7 @@ export interface FileRoutesById {
   '/api/admin/permissions': typeof ApiAdminPermissionsRoute
   '/api/admin/platform-agents': typeof ApiAdminPlatformAgentsRoute
   '/api/admin/rag': typeof ApiAdminRagRoute
+  '/api/admin/secrets': typeof ApiAdminSecretsRoute
   '/api/admin/settings': typeof ApiAdminSettingsRoute
   '/api/admin/storage': typeof ApiAdminStorageRoute
   '/api/admin/users': typeof ApiAdminUsersRoute
@@ -2038,6 +2047,7 @@ export interface FileRouteTypes {
     | '/api/admin/permissions'
     | '/api/admin/platform-agents'
     | '/api/admin/rag'
+    | '/api/admin/secrets'
     | '/api/admin/settings'
     | '/api/admin/storage'
     | '/api/admin/users'
@@ -2253,6 +2263,7 @@ export interface FileRouteTypes {
     | '/api/admin/permissions'
     | '/api/admin/platform-agents'
     | '/api/admin/rag'
+    | '/api/admin/secrets'
     | '/api/admin/settings'
     | '/api/admin/storage'
     | '/api/admin/users'
@@ -2469,6 +2480,7 @@ export interface FileRouteTypes {
     | '/api/admin/permissions'
     | '/api/admin/platform-agents'
     | '/api/admin/rag'
+    | '/api/admin/secrets'
     | '/api/admin/settings'
     | '/api/admin/storage'
     | '/api/admin/users'
@@ -2666,6 +2678,7 @@ export interface RootRouteChildren {
   ApiAdminPermissionsRoute: typeof ApiAdminPermissionsRoute
   ApiAdminPlatformAgentsRoute: typeof ApiAdminPlatformAgentsRoute
   ApiAdminRagRoute: typeof ApiAdminRagRoute
+  ApiAdminSecretsRoute: typeof ApiAdminSecretsRoute
   ApiAdminSettingsRoute: typeof ApiAdminSettingsRoute
   ApiAdminStorageRoute: typeof ApiAdminStorageRoute
   ApiAdminUsersRoute: typeof ApiAdminUsersRoute
@@ -3493,6 +3506,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/settings'
       fullPath: '/api/admin/settings'
       preLoaderRoute: typeof ApiAdminSettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin/secrets': {
+      id: '/api/admin/secrets'
+      path: '/api/admin/secrets'
+      fullPath: '/api/admin/secrets'
+      preLoaderRoute: typeof ApiAdminSecretsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/admin/rag': {
@@ -4969,6 +4989,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminPermissionsRoute: ApiAdminPermissionsRoute,
   ApiAdminPlatformAgentsRoute: ApiAdminPlatformAgentsRoute,
   ApiAdminRagRoute: ApiAdminRagRoute,
+  ApiAdminSecretsRoute: ApiAdminSecretsRoute,
   ApiAdminSettingsRoute: ApiAdminSettingsRoute,
   ApiAdminStorageRoute: ApiAdminStorageRoute,
   ApiAdminUsersRoute: ApiAdminUsersRoute,

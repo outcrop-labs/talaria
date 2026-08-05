@@ -211,6 +211,48 @@ export function open(token: string): string {
   throw new Error('secretbox: unrecognized token')
 }
 
+// ── Introspection (used by secret-health.ts) ──────────────────────────────────
+/** Can this process read this specific token? Cheap where the token says so.
+ *
+ *  A `v2:<ver>:…` token names its own DEK version, so the answer is a Map
+ *  lookup — no crypto, safe to call once per row of an inventory. v1 (KEK-direct)
+ *  and legacy unversioned v2 name no key, so the only honest answer is to try;
+ *  both predate versioning and are rare. */
+export function tokenReadable(token: string | null | undefined): boolean {
+  if (!token) return false
+  const p = token.split(':')
+  if (p[0] === 'v2' && p.length === 5) return g.__sbDeks!.has(Number(p[1]))
+  try {
+    open(token)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Why there is no usable key, if there isn't one — the diagnosis `active()`
+ *  throws. Returns null when the secretbox is healthy. */
+export function secretboxFailure(): string | null {
+  return g.__sbFailure ?? null
+}
+
+/** Where the root secret is coming from. `fallback` is the dangerous one: the
+ *  database is sealed with AUTH_SECRET, whose own documentation calls it safe
+ *  to rotate. `absent` means neither is set and nothing can be sealed at all. */
+export function rootSource(): { via: 'env' | 'file' | 'fallback' | 'absent'; name: string } {
+  if (process.env.TALARIA_SECRET_KEY) return { via: 'env', name: 'TALARIA_SECRET_KEY' }
+  if (process.env.TALARIA_SECRET_KEY_FILE) return { via: 'file', name: process.env.TALARIA_SECRET_KEY_FILE }
+  if (process.env.AUTH_SECRET) return { via: 'fallback', name: 'AUTH_SECRET' }
+  return { via: 'absent', name: '' }
+}
+
+/** The active DEK version, or null when there isn't one. Unlike
+ *  `currentKeyVersion()` this never throws — it is a status read, and a status
+ *  read that throws on an unhealthy instance is useless exactly when needed. */
+export function activeKeyVersion(): number | null {
+  return g.__sbActive ?? null
+}
+
 // ── Rotation support (used by secret-rotation.ts) ─────────────────────────────
 export function currentKeyVersion(): number {
   return active().version

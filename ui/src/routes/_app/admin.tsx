@@ -22,6 +22,7 @@ import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
 import { useEnabledApps } from '@/lib/apps'
 import { RetrievalPanel } from '@/components/admin/retrieval-panel'
 import { StoragePanel } from '@/components/admin/storage-panel'
+import { SecretsPanel } from '@/components/admin/secrets-panel'
 import { Tabs } from '@/components/ui/tabs'
 import { Checkbox } from '@/components/ui/checkbox'
 import { SectionHeader } from '@/components/ui/section-header'
@@ -34,13 +35,17 @@ import { getJson, getList } from '@/lib/fetch-json'
 import { cn } from '@/lib/cn'
 
 
-type AdminTab = 'org' | 'people' | 'agents' | 'retrieval' | 'storage' | 'security'
+type AdminTab = 'org' | 'people' | 'agents' | 'retrieval' | 'storage' | 'secrets' | 'security'
 const ADMIN_TABS: { id: AdminTab; label: string }[] = [
   { id: 'org', label: 'Organization' },
   { id: 'people', label: 'People' },
   { id: 'agents', label: 'Agents' },
   { id: 'retrieval', label: 'Retrieval' },
   { id: 'storage', label: 'Storage' },
+  // Its own tab rather than a section under Security: an operator whose
+  // secrets are unreadable is not thinking about security policy, and this is
+  // the page they get linked to from the banner.
+  { id: 'secrets', label: 'Secrets' },
   { id: 'security', label: 'Security' },
 ]
 
@@ -197,6 +202,7 @@ function AdminPage() {
         )}
         {tab === 'retrieval' && <RetrievalPanel />}
         {tab === 'storage' && <StoragePanel />}
+        {tab === 'secrets' && <SecretsPanel />}
         {tab === 'security' && (
           <>
             <EncryptionPanel />
