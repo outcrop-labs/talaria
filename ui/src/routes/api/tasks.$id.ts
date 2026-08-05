@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { TICKET_COLORS } from '@/lib/task-const'
 import { statusMeta } from '@/server/statuses'
@@ -46,119 +46,115 @@ const Patch = z.object({
   refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
 })
 
-export const Route = createFileRoute('/api/tasks/$id')({
-  server: {
-    handlers: {
-      GET: async ({ request, params }) => {
-        const full = await getTaskFull(params.id)
-        if (!full) return json({ error: 'not found' }, { status: 404 })
-        const caller = await agentCaller(request)
-        if (caller instanceof Response) return caller
-        if (caller) {
-          // The CALLER, not its model — board policy's elevated bypass is only
-          // for an identity that was proven, never merely asserted.
-          if (!(await boardAllowsAgent(full.task.boardId, caller))) return json({ error: 'forbidden' }, { status: 403 })
-          const { workflowsForTask } = await import('@/server/workflows')
-          return json({ ...full, workflows: await workflowsForTask(full.task) })
-        }
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        if (!(await boardRole(user.id, full.task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
-        return json(full)
-      },
-      PUT: async ({ request, params }) => {
-        const task = await getTask(params.id)
-        if (!task) return json({ error: 'not found' }, { status: 404 })
+export const Route = defineApi('/api/tasks/$id', {
+  GET: async ({ request, params }) => {
+    const full = await getTaskFull(params.id)
+    if (!full) return json({ error: 'not found' }, { status: 404 })
+    const caller = await agentCaller(request)
+    if (caller instanceof Response) return caller
+    if (caller) {
+      // The CALLER, not its model — board policy's elevated bypass is only
+      // for an identity that was proven, never merely asserted.
+      if (!(await boardAllowsAgent(full.task.boardId, caller))) return json({ error: 'forbidden' }, { status: 403 })
+      const { workflowsForTask } = await import('@/server/workflows')
+      return json({ ...full, workflows: await workflowsForTask(full.task) })
+    }
+    const user = await getSessionUser(request)
+    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    if (!(await boardRole(user.id, full.task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
+    return json(full)
+  },
+  PUT: async ({ request, params }) => {
+    const task = await getTask(params.id)
+    if (!task) return json({ error: 'not found' }, { status: 404 })
 
-        const agent = await agentCaller(request)
-        if (agent instanceof Response) return agent
-        let actor: TaskActor
-        let sessionUser: Awaited<ReturnType<typeof getSessionUser>> = null
-        if (agent) {
-          // Identity comes from the credential, so board policy is
-          // unconditional — there is no longer an unnamed caller to wave
-          // through (the old `if (name)` made this whole gate opt-out). Pass the
-          // caller so the elevated-assistant bypass sees `legacy`.
-          if (!(await boardAllowsAgent(task.boardId, agent))) {
-            return json({ error: `agent "${agent.model}" is not allowed on this board` }, { status: 403 })
-          }
-          actor = { kind: 'agent', id: agent.model }
-        } else {
-          const user = await getSessionUser(request)
-          if (!user || !canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
-          actor = { kind: 'human', id: user.email ?? user.name ?? 'user' }
-          sessionUser = user
-        }
+    const agent = await agentCaller(request)
+    if (agent instanceof Response) return agent
+    let actor: TaskActor
+    let sessionUser: Awaited<ReturnType<typeof getSessionUser>> = null
+    if (agent) {
+      // Identity comes from the credential, so board policy is
+      // unconditional — there is no longer an unnamed caller to wave
+      // through (the old `if (name)` made this whole gate opt-out). Pass the
+      // caller so the elevated-assistant bypass sees `legacy`.
+      if (!(await boardAllowsAgent(task.boardId, agent))) {
+        return json({ error: `agent "${agent.model}" is not allowed on this board` }, { status: 403 })
+      }
+      actor = { kind: 'agent', id: agent.model }
+    } else {
+      const user = await getSessionUser(request)
+      if (!user || !canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
+      actor = { kind: 'human', id: user.email ?? user.name ?? 'user' }
+      sessionUser = user
+    }
 
-        const parsed = Patch.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        // Human-in-the-loop guardrails (assignment, sign-off, archival) belong
-        // to the ACTOR, not this route: updateTask enforces them for every
-        // caller, so nothing agent-specific happens here.
-        //
-        // Mixed assignees: humans as `user:<uuid>` (board members), agents by
-        // model id (board agent policy).
-        const bad = await invalidAssignee(task.boardId, parsed.data.assignees ?? [])
-        if (bad) return json({ error: bad }, { status: 400 })
-        const { attachmentIds, refs, ...patch } = parsed.data
-        if (attachmentIds !== undefined || refs !== undefined) {
-          // Resolve to canonical chips server-side (never trust client metadata).
-          // Refs are ACL-checked against the attacher, so agent callers (no
-          // session) can attach uploads but not knowledge/artifact refs.
-          const uploads = await resolveAttachments(attachmentIds ?? [])
-          const chips = sessionUser ? await resolveRefs(sessionUser, refs ?? []) : []
-          ;(patch as TaskPatch).attachments = [...uploads, ...chips]
-        }
-        let updated
-        try {
-          updated = await updateTask(params.id, patch as TaskPatch, actor)
-        } catch (e) {
-          if (e instanceof HumanApprovalRequired) return json({ error: e.message }, { status: 403 })
-          return json({ error: (e as Error).message }, { status: 400 })
-        }
-        // Keep the activity brain fresh when the ticket's text changed.
-        if (updated && (parsed.data.title !== undefined || parsed.data.description !== undefined)) {
-          void indexTicket(updated).catch(() => {})
-        }
-        // A description that gains an @mention notifies board members — same
-        // contract as comments. Only on actual change, never on other patches.
-        if (updated && parsed.data.description !== undefined && parsed.data.description !== task.description) {
-          void (async () => {
-            const members = await listMembers(task.boardId)
-            await notifyMentions(
-              members,
-              sessionUser?.id ?? '',
-              sessionUser ? (sessionUser.name ?? actor.id) : describeAgent(actor.id).label,
-              parsed.data.description ?? '',
-              updated.ticketRef ?? 'a ticket',
-              `/boards/${task.boardId}/${task.id}`,
-            )
-          })().catch(() => {})
-        }
-        // Reliability gate: when work lands in ANY review-category column, run
-        // the QA judge (advisory) in the background so the human reviewer gets
-        // a verdict. Custom review columns count — category is the contract.
-        if (updated && updated.status !== task.status) {
-          const meta2 = await statusMeta(task.boardId)
-          if (meta2.reviewKeys.includes(updated.status) && !meta2.reviewKeys.includes(task.status)) {
-            void runJudgeForTask(params.id).catch(() => {})
-          }
-        }
-        return json({ task: updated })
-      },
-      DELETE: async ({ request, params }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const task = await getTask(params.id)
-        if (!task) return json({ error: 'not found' }, { status: 404 })
-        if (!canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
-        // Drop the ticket + its comments from the activity brain before deleting.
-        const comments = await listComments(params.id).catch(() => [])
-        await deleteTask(params.id)
-        void unindexActivity('ticket', params.id).catch(() => {})
-        for (const c of comments) void unindexActivity('comment', c.id).catch(() => {})
-        return json({ ok: true })
-      },
-    },
+    const parsed = Patch.safeParse(await request.json().catch(() => null))
+    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    // Human-in-the-loop guardrails (assignment, sign-off, archival) belong
+    // to the ACTOR, not this route: updateTask enforces them for every
+    // caller, so nothing agent-specific happens here.
+    //
+    // Mixed assignees: humans as `user:<uuid>` (board members), agents by
+    // model id (board agent policy).
+    const bad = await invalidAssignee(task.boardId, parsed.data.assignees ?? [])
+    if (bad) return json({ error: bad }, { status: 400 })
+    const { attachmentIds, refs, ...patch } = parsed.data
+    if (attachmentIds !== undefined || refs !== undefined) {
+      // Resolve to canonical chips server-side (never trust client metadata).
+      // Refs are ACL-checked against the attacher, so agent callers (no
+      // session) can attach uploads but not knowledge/artifact refs.
+      const uploads = await resolveAttachments(attachmentIds ?? [])
+      const chips = sessionUser ? await resolveRefs(sessionUser, refs ?? []) : []
+      ;(patch as TaskPatch).attachments = [...uploads, ...chips]
+    }
+    let updated
+    try {
+      updated = await updateTask(params.id, patch as TaskPatch, actor)
+    } catch (e) {
+      if (e instanceof HumanApprovalRequired) return json({ error: e.message }, { status: 403 })
+      return json({ error: (e as Error).message }, { status: 400 })
+    }
+    // Keep the activity brain fresh when the ticket's text changed.
+    if (updated && (parsed.data.title !== undefined || parsed.data.description !== undefined)) {
+      void indexTicket(updated).catch(() => {})
+    }
+    // A description that gains an @mention notifies board members — same
+    // contract as comments. Only on actual change, never on other patches.
+    if (updated && parsed.data.description !== undefined && parsed.data.description !== task.description) {
+      void (async () => {
+        const members = await listMembers(task.boardId)
+        await notifyMentions(
+          members,
+          sessionUser?.id ?? '',
+          sessionUser ? (sessionUser.name ?? actor.id) : describeAgent(actor.id).label,
+          parsed.data.description ?? '',
+          updated.ticketRef ?? 'a ticket',
+          `/boards/${task.boardId}/${task.id}`,
+        )
+      })().catch(() => {})
+    }
+    // Reliability gate: when work lands in ANY review-category column, run
+    // the QA judge (advisory) in the background so the human reviewer gets
+    // a verdict. Custom review columns count — category is the contract.
+    if (updated && updated.status !== task.status) {
+      const meta2 = await statusMeta(task.boardId)
+      if (meta2.reviewKeys.includes(updated.status) && !meta2.reviewKeys.includes(task.status)) {
+        void runJudgeForTask(params.id).catch(() => {})
+      }
+    }
+    return json({ task: updated })
+  },
+  DELETE: async ({ request, params }) => {
+    const user = await getSessionUser(request)
+    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const task = await getTask(params.id)
+    if (!task) return json({ error: 'not found' }, { status: 404 })
+    if (!canEdit(await boardRole(user.id, task.boardId))) return json({ error: 'forbidden' }, { status: 403 })
+    // Drop the ticket + its comments from the activity brain before deleting.
+    const comments = await listComments(params.id).catch(() => [])
+    await deleteTask(params.id)
+    void unindexActivity('ticket', params.id).catch(() => {})
+    for (const c of comments) void unindexActivity('comment', c.id).catch(() => {})
+    return json({ ok: true })
   },
 })

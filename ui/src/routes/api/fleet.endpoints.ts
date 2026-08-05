@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { createEndpoint, listEndpoints } from '@/server/agent-defs'
@@ -29,32 +29,28 @@ const Body = z.object({
 })
 
 // The model-backend registry (Models tab). GET → all endpoints. POST → add one.
-export const Route = createFileRoute('/api/fleet/endpoints')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await requireAdmin(request)
-        if (user instanceof Response) return user
-        maybeRefreshAutoPrices() // background; persisted rates show on the next load
-        void migrateEnvKeysToCipher().catch(() => {}) // one-time: seal any config-only keys into the DB
-        return json({ endpoints: await listEndpoints() })
-      },
-      POST: async ({ request }) => {
-        const user = await requireAdmin(request)
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        try {
-          const id = await createEndpoint({ ...body, baseUrl: body.baseUrl ?? null, apiKeyEnv: body.apiKeyEnv ?? null, apiKey: body.apiKey ?? null })
-          void logAudit({ actor: actorOf(user), action: 'endpoint.create', targetType: 'endpoint', targetLabel: body.name, after: { provider: body.provider, class: body.class } })
-          // Price the new provider's models in the background — never block an
-          // interactive save on a fetch to openrouter.ai (15s worst case offline).
-          void refreshAutoPrices().catch(() => {})
-          return json({ ok: true, id })
-        } catch (e) {
-          return json({ error: (e as Error).message.includes('duplicate') ? 'an endpoint with that name exists' : (e as Error).message }, { status: 400 })
-        }
-      },
-    },
+export const Route = defineApi('/api/fleet/endpoints', {
+  GET: async ({ request }) => {
+    const user = await requireAdmin(request)
+    if (user instanceof Response) return user
+    maybeRefreshAutoPrices() // background; persisted rates show on the next load
+    void migrateEnvKeysToCipher().catch(() => {}) // one-time: seal any config-only keys into the DB
+    return json({ endpoints: await listEndpoints() })
+  },
+  POST: async ({ request }) => {
+    const user = await requireAdmin(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    try {
+      const id = await createEndpoint({ ...body, baseUrl: body.baseUrl ?? null, apiKeyEnv: body.apiKeyEnv ?? null, apiKey: body.apiKey ?? null })
+      void logAudit({ actor: actorOf(user), action: 'endpoint.create', targetType: 'endpoint', targetLabel: body.name, after: { provider: body.provider, class: body.class } })
+      // Price the new provider's models in the background — never block an
+      // interactive save on a fetch to openrouter.ai (15s worst case offline).
+      void refreshAutoPrices().catch(() => {})
+      return json({ ok: true, id })
+    } catch (e) {
+      return json({ error: (e as Error).message.includes('duplicate') ? 'an endpoint with that name exists' : (e as Error).message }, { status: 400 })
+    }
   },
 })

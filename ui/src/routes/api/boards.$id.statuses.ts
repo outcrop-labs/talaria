@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
@@ -57,93 +57,89 @@ async function humanGateConflict(
   return agentStartConflict(category as z.infer<typeof Category>, agentStart)
 }
 
-export const Route = createFileRoute('/api/boards/$id/statuses')({
-  server: {
-    handlers: {
-      GET: async ({ request, params }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        if (!(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        // `diagnostics` rides along with the columns because it is a statement
-        // ABOUT this column set, and the two must never be read from different
-        // moments — a warning that names a column the list no longer has is
-        // worse than no warning. Served to every member (the reader who cannot
-        // fix it can at least tell the owner why the board is stuck), and read
-        // by the statuses tab, which renders it above the list.
-        const [statuses, diagnostics] = await Promise.all([listStatuses(params.id), statusDiagnostics(params.id)])
-        return json({ statuses, diagnostics })
-      },
-      POST: async ({ request, params }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        const body = await parseBody(
-          request,
-          z.object({
-            label: z.string().min(1).max(40),
-            color: z.string().max(20).optional(),
-            category: Category.optional(),
-            agentStart: z.boolean().optional(),
-          }),
-        )
-        if (body instanceof Response) return body
-        const conflict = await humanGateConflict(params.id, null, body)
-        if (conflict) return json({ error: conflict }, { status: 400 })
-        try {
-          return json({ status: await createStatus(params.id, body) })
-        } catch (e) {
-          return json({ error: (e as Error).message }, { status: 400 })
-        }
-      },
-      PUT: async ({ request, params }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        const body = await parseBody(
-          request,
-          z.union([
-            z.object({
-              statusKey: z.string().min(1).max(40),
-              label: z.string().min(1).max(40).optional(),
-              color: z.string().max(20).optional(),
-              category: Category.optional(),
-              agentStart: z.boolean().optional(),
-            }),
-            z.object({ order: z.array(z.string().min(1).max(40)).min(1).max(50) }),
-          ]),
-        )
-        if (body instanceof Response) return body
-        if (!('order' in body)) {
-          const conflict = await humanGateConflict(params.id, body.statusKey, body)
-          if (conflict) return json({ error: conflict }, { status: 400 })
-        }
-        try {
-          if ('order' in body) await reorderStatuses(params.id, body.order)
-          // The actor: recategorising a populated review/done column moves its
-          // tickets into a surviving column of the same category, one updateTask
-          // each, and the person who reshaped the column owns those moves.
-          else await updateStatus(params.id, body.statusKey, body, actorOfUser(user))
-          return json({ ok: true })
-        } catch (e) {
-          return json({ error: (e as Error).message }, { status: 400 })
-        }
-      },
-      DELETE: async ({ request, params }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        const body = await parseBody(request, z.object({ statusKey: z.string().min(1).max(40), reassignTo: z.string().max(40) }))
-        if (body instanceof Response) return body
-        try {
-          // The actor is threaded through because the reassignment lands on each
-          // ticket's activity log — deleting a column moves work, and the person
-          // who did it owns that move.
-          await deleteStatus(params.id, body.statusKey, body.reassignTo, actorOfUser(user))
-          return json({ ok: true })
-        } catch (e) {
-          return json({ error: (e as Error).message }, { status: 400 })
-        }
-      },
-    },
+export const Route = defineApi('/api/boards/$id/statuses', {
+  GET: async ({ request, params }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    if (!(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
+    // `diagnostics` rides along with the columns because it is a statement
+    // ABOUT this column set, and the two must never be read from different
+    // moments — a warning that names a column the list no longer has is
+    // worse than no warning. Served to every member (the reader who cannot
+    // fix it can at least tell the owner why the board is stuck), and read
+    // by the statuses tab, which renders it above the list.
+    const [statuses, diagnostics] = await Promise.all([listStatuses(params.id), statusDiagnostics(params.id)])
+    return json({ statuses, diagnostics })
+  },
+  POST: async ({ request, params }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
+    const body = await parseBody(
+      request,
+      z.object({
+        label: z.string().min(1).max(40),
+        color: z.string().max(20).optional(),
+        category: Category.optional(),
+        agentStart: z.boolean().optional(),
+      }),
+    )
+    if (body instanceof Response) return body
+    const conflict = await humanGateConflict(params.id, null, body)
+    if (conflict) return json({ error: conflict }, { status: 400 })
+    try {
+      return json({ status: await createStatus(params.id, body) })
+    } catch (e) {
+      return json({ error: (e as Error).message }, { status: 400 })
+    }
+  },
+  PUT: async ({ request, params }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
+    const body = await parseBody(
+      request,
+      z.union([
+        z.object({
+          statusKey: z.string().min(1).max(40),
+          label: z.string().min(1).max(40).optional(),
+          color: z.string().max(20).optional(),
+          category: Category.optional(),
+          agentStart: z.boolean().optional(),
+        }),
+        z.object({ order: z.array(z.string().min(1).max(40)).min(1).max(50) }),
+      ]),
+    )
+    if (body instanceof Response) return body
+    if (!('order' in body)) {
+      const conflict = await humanGateConflict(params.id, body.statusKey, body)
+      if (conflict) return json({ error: conflict }, { status: 400 })
+    }
+    try {
+      if ('order' in body) await reorderStatuses(params.id, body.order)
+      // The actor: recategorising a populated review/done column moves its
+      // tickets into a surviving column of the same category, one updateTask
+      // each, and the person who reshaped the column owns those moves.
+      else await updateStatus(params.id, body.statusKey, body, actorOfUser(user))
+      return json({ ok: true })
+    } catch (e) {
+      return json({ error: (e as Error).message }, { status: 400 })
+    }
+  },
+  DELETE: async ({ request, params }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    if (!canEdit(await boardRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
+    const body = await parseBody(request, z.object({ statusKey: z.string().min(1).max(40), reassignTo: z.string().max(40) }))
+    if (body instanceof Response) return body
+    try {
+      // The actor is threaded through because the reassignment lands on each
+      // ticket's activity log — deleting a column moves work, and the person
+      // who did it owns that move.
+      await deleteStatus(params.id, body.statusKey, body.reassignTo, actorOfUser(user))
+      return json({ ok: true })
+    } catch (e) {
+      return json({ error: (e as Error).message }, { status: 400 })
+    }
   },
 })

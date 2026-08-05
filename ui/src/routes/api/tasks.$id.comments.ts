@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentCaller } from '@/server/agent-auth'
@@ -51,56 +51,52 @@ async function commentAuthor(request: Request, task: AgentWriteTarget): Promise<
 
 // GET → a task's comments (board member or board-allowed agent).
 // POST → add a comment (member or agent).
-export const Route = createFileRoute('/api/tasks/$id/comments')({
-  server: {
-    handlers: {
-      GET: async ({ request, params }) => {
-        const task = await getTask(params.id)
-        if (!task) return json({ error: 'not found' }, { status: 404 })
-        const who = await commentReader(request, task.boardId)
-        if (who instanceof Response) return who
-        return json({ comments: await listComments(params.id) })
-      },
-      POST: async ({ request, params }) => {
-        const task = await getTask(params.id)
-        if (!task) return json({ error: 'not found' }, { status: 404 })
-        const author = await commentAuthor(request, task)
-        if (author instanceof Response) return author
+export const Route = defineApi('/api/tasks/$id/comments', {
+  GET: async ({ request, params }) => {
+    const task = await getTask(params.id)
+    if (!task) return json({ error: 'not found' }, { status: 404 })
+    const who = await commentReader(request, task.boardId)
+    if (who instanceof Response) return who
+    return json({ comments: await listComments(params.id) })
+  },
+  POST: async ({ request, params }) => {
+    const task = await getTask(params.id)
+    if (!task) return json({ error: 'not found' }, { status: 404 })
+    const author = await commentAuthor(request, task)
+    if (author instanceof Response) return author
 
-        const parsed = z
-          .object({ content: z.string().min(1).max(20_000), parentId: z.string().uuid().optional() })
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        const comment = await addComment(params.id, author, parsed.data.content, parsed.data.parentId)
+    const parsed = z
+      .object({ content: z.string().min(1).max(20_000), parentId: z.string().uuid().optional() })
+      .safeParse(await request.json().catch(() => null))
+    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    const comment = await addComment(params.id, author, parsed.data.content, parsed.data.parentId)
 
-        // Index into the ambient activity brain (board-scoped).
-        void indexTicketComment({
-          id: comment.id,
-          taskId: params.id,
-          boardId: task.boardId,
-          ticketRef: task.ticketRef,
-          author,
-          content: parsed.data.content,
-        }).catch(() => {})
+    // Index into the ambient activity brain (board-scoped).
+    void indexTicketComment({
+      id: comment.id,
+      taskId: params.id,
+      boardId: task.boardId,
+      ticketRef: task.ticketRef,
+      author,
+      content: parsed.data.content,
+    }).catch(() => {})
 
-        // @mention any board member — they get an inbox notification linking to
-        // the ticket. Detached; the POST returns immediately.
-        const sender = await getSessionUser(request)
-        void listMembers(task.boardId)
-          .then((members) =>
-            notifyMentions(
-              members,
-              sender?.id ?? '',
-              sender?.name ?? author,
-              parsed.data.content,
-              task.ticketRef ?? 'a ticket',
-              `/boards/${task.boardId}/${params.id}`,
-            ),
-          )
-          .catch(() => {})
+    // @mention any board member — they get an inbox notification linking to
+    // the ticket. Detached; the POST returns immediately.
+    const sender = await getSessionUser(request)
+    void listMembers(task.boardId)
+      .then((members) =>
+        notifyMentions(
+          members,
+          sender?.id ?? '',
+          sender?.name ?? author,
+          parsed.data.content,
+          task.ticketRef ?? 'a ticket',
+          `/boards/${task.boardId}/${params.id}`,
+        ),
+      )
+      .catch(() => {})
 
-        return json({ comment })
-      },
-    },
+    return json({ comment })
   },
 })

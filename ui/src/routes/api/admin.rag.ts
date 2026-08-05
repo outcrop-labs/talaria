@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { backfillAll, backfillStatus, ragHealth } from '@/server/retrieval/backfill'
@@ -43,63 +43,59 @@ const Post = z.union([
 // providers/config + KB-space brain bindings. PUT → reranker config and/or a
 // space↔brain binding. POST → kick a full backfill (detached), or
 // { models, key? } → live model catalog for the picker.
-export const Route = createFileRoute('/api/admin/rag')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const gate = await requireAdmin(request)
-        if (gate instanceof Response) return gate
-        const sql = await db()
-        const spaces = (await sql`
-          select id, name, rag_collection_id as "collectionId" from kb_spaces order by name asc
-        `) as unknown as Array<{ id: string; name: string; collectionId: string | null }>
-        return json({
-          health: await ragHealth(),
-          backfill: await backfillStatus(),
-          upgrade: await retrievalUpgradeStatus().catch(() => null),
-          reindex: await reindexStatus(),
-          rerank: { providers: RERANK_PROVIDERS, config: await rerankConfigPublic() },
-          spaces,
-        })
-      },
-      PUT: async ({ request }) => {
-        const user = await requireAdmin(request)
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Put)
-        if (body instanceof Response) return body
-        const actor = actorOf(user)
-        if (body.reranker) {
-          const cfg = await setRerankConfig({
-            ...body.reranker,
-            provider: body.reranker.provider as RerankProviderId | undefined,
-          })
-          void logAudit({ actor, action: 'rag.reranker', targetType: 'rag', targetId: 'reranker', after: { provider: cfg.provider, model: cfg.model } })
-        }
-        if (body.spaceBrain) {
-          const sql = await db()
-          await sql`update kb_spaces set rag_collection_id = ${body.spaceBrain.collectionId} where id = ${body.spaceBrain.spaceId}`
-          // Existing docs move to their new home right away.
-          void resyncSpaceDocs(body.spaceBrain.spaceId).catch(() => {})
-          void logAudit({ actor, action: 'rag.space_brain', targetType: 'kb-space', targetId: body.spaceBrain.spaceId, after: { collectionId: body.spaceBrain.collectionId } })
-        }
-        return json({ rerank: { config: await rerankConfigPublic() } })
-      },
-      POST: async ({ request }) => {
-        const user = await requireAdmin(request)
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Post)
-        if (body instanceof Response) return body
-        if ('models' in body) {
-          return json({ models: await rerankModels(body.models as RerankProviderId, body.key ?? null) })
-        }
-        // 'reindex' rebuilds collections in the current model's shape then
-        // refills; 'backfill' refills in place. Both detach.
-        const action = body.action
-        if (action === 'reindex') void reindexAll().catch(() => {})
-        else void backfillAll().catch(() => {})
-        void logAudit({ actor: actorOf(user), action: `rag.${action}`, targetType: 'rag', targetId: action })
-        return json({ started: true, action })
-      },
-    },
+export const Route = defineApi('/api/admin/rag', {
+  GET: async ({ request }) => {
+    const gate = await requireAdmin(request)
+    if (gate instanceof Response) return gate
+    const sql = await db()
+    const spaces = (await sql`
+      select id, name, rag_collection_id as "collectionId" from kb_spaces order by name asc
+    `) as unknown as Array<{ id: string; name: string; collectionId: string | null }>
+    return json({
+      health: await ragHealth(),
+      backfill: await backfillStatus(),
+      upgrade: await retrievalUpgradeStatus().catch(() => null),
+      reindex: await reindexStatus(),
+      rerank: { providers: RERANK_PROVIDERS, config: await rerankConfigPublic() },
+      spaces,
+    })
+  },
+  PUT: async ({ request }) => {
+    const user = await requireAdmin(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Put)
+    if (body instanceof Response) return body
+    const actor = actorOf(user)
+    if (body.reranker) {
+      const cfg = await setRerankConfig({
+        ...body.reranker,
+        provider: body.reranker.provider as RerankProviderId | undefined,
+      })
+      void logAudit({ actor, action: 'rag.reranker', targetType: 'rag', targetId: 'reranker', after: { provider: cfg.provider, model: cfg.model } })
+    }
+    if (body.spaceBrain) {
+      const sql = await db()
+      await sql`update kb_spaces set rag_collection_id = ${body.spaceBrain.collectionId} where id = ${body.spaceBrain.spaceId}`
+      // Existing docs move to their new home right away.
+      void resyncSpaceDocs(body.spaceBrain.spaceId).catch(() => {})
+      void logAudit({ actor, action: 'rag.space_brain', targetType: 'kb-space', targetId: body.spaceBrain.spaceId, after: { collectionId: body.spaceBrain.collectionId } })
+    }
+    return json({ rerank: { config: await rerankConfigPublic() } })
+  },
+  POST: async ({ request }) => {
+    const user = await requireAdmin(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Post)
+    if (body instanceof Response) return body
+    if ('models' in body) {
+      return json({ models: await rerankModels(body.models as RerankProviderId, body.key ?? null) })
+    }
+    // 'reindex' rebuilds collections in the current model's shape then
+    // refills; 'backfill' refills in place. Both detach.
+    const action = body.action
+    if (action === 'reindex') void reindexAll().catch(() => {})
+    else void backfillAll().catch(() => {})
+    void logAudit({ actor: actorOf(user), action: `rag.${action}`, targetType: 'rag', targetId: action })
+    return json({ started: true, action })
   },
 })

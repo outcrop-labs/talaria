@@ -45,7 +45,7 @@
 // probe needs: agent-credential auth, cheap, GET, 401/403 on a bad credential.
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { json } from '@tanstack/react-start'
+import { json } from '@/server/http'
 import { db } from './db/pg'
 import { open, seal } from './secretbox'
 

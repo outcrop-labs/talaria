@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { getSql } from '@/server/db/pg'
 import { getRedis } from '@/server/db/redis'
 
@@ -51,33 +51,29 @@ async function timed(name: string, ping: () => Promise<unknown>): Promise<Check>
   }
 }
 
-export const Route = createFileRoute('/api/healthz')({
-  server: {
-    handlers: {
-      GET: async () => {
-        // getSql(), not db(): a health check must never run schema migrations
-        // or wait on the migration advisory lock. Just a round trip.
-        const [postgres, redis] = await Promise.all([
-          timed('postgres', async () => {
-            await getSql()`select 1`
-          }),
-          timed('redis', () => getRedis().ping()),
-        ])
+export const Route = defineApi('/api/healthz', {
+  GET: async () => {
+    // getSql(), not db(): a health check must never run schema migrations
+    // or wait on the migration advisory lock. Just a round trip.
+    const [postgres, redis] = await Promise.all([
+      timed('postgres', async () => {
+        await getSql()`select 1`
+      }),
+      timed('redis', () => getRedis().ping()),
+    ])
 
-        const ok = postgres.ok && redis.ok
-        return json(
-          {
-            status: ok ? 'ok' : 'degraded',
-            uptimeSeconds: Math.round(process.uptime()),
-            checks: { postgres, redis },
-          },
-          {
-            // 503 so a probe fails on its own, without parsing the body.
-            status: ok ? 200 : 503,
-            headers: { 'Cache-Control': 'no-store' },
-          },
-        )
+    const ok = postgres.ok && redis.ok
+    return json(
+      {
+        status: ok ? 'ok' : 'degraded',
+        uptimeSeconds: Math.round(process.uptime()),
+        checks: { postgres, redis },
       },
-    },
+      {
+        // 503 so a probe fails on its own, without parsing the body.
+        status: ok ? 200 : 503,
+        headers: { 'Cache-Control': 'no-store' },
+      },
+    )
   },
 })

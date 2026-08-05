@@ -34,12 +34,6 @@ vi.mock('@/server/db/pg', () => ({
     return []
   },
 }))
-// json() is TanStack Start's Response helper; the route-gate assertions only
-// care about status + body, so the real thing's server bundle stays out of it.
-vi.mock('@tanstack/react-start', () => ({
-  json: (data: unknown, init?: ResponseInit) =>
-    new Response(JSON.stringify(data), { ...init, headers: { 'content-type': 'application/json' } }),
-}))
 
 const { PERMISSIONS, getOrgDefaultPerms, hasPerm, requirePerm, setOrgDefaultPerm, userPermissions } = await import(
   '@/server/permissions'

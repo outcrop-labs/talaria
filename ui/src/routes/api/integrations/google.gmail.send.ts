@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { sendMessage } from '@/server/google/gmail'
@@ -14,20 +14,16 @@ const Body = z.object({
 })
 
 // POST /api/integrations/google/gmail/send → send a plain-text email as the user.
-export const Route = createFileRoute('/api/integrations/google/gmail/send')({
-  server: {
-    handlers: {
-      POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        try {
-          return json({ sent: await sendMessage(user.id, Date.now(), parsed.data) })
-        } catch (err) {
-          return googleFail(err as Error, 'Gmail')
-        }
-      },
-    },
+export const Route = defineApi('/api/integrations/google/gmail/send', {
+  POST: async ({ request }) => {
+    const user = await getSessionUser(request)
+    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const parsed = Body.safeParse(await request.json().catch(() => null))
+    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    try {
+      return json({ sent: await sendMessage(user.id, Date.now(), parsed.data) })
+    } catch (err) {
+      return googleFail(err as Error, 'Gmail')
+    }
   },
 })

@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { accessibleConversation } from '@/server/conversations'
@@ -17,34 +17,30 @@ const Body = z.object({
 
 // POST → draft ticket proposals from a plan conversation. Owner only; nothing is
 // created here — the human reviews and creates via the boards API (PlanModal).
-export const Route = createFileRoute('/api/plan/$id/draft')({
-  server: {
-    handlers: {
-      POST: async ({ request, params }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        const agentModel = (await accessibleConversation(user.id, params.id))?.agentModel ?? null
-        if (!agentModel) return json({ error: 'plan not found' }, { status: 404 })
-        if (!(await canUseAgentModel(user.id, user.role, agentModel))) {
-          return json({ error: 'you do not have access to that agent' }, { status: 403 })
-        }
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        const routed =
-          (body.tier ? await routedModelFor(agentModel, body.tier).catch(() => null) : null) ?? agentModel
-        try {
-          const { proposals, raw } = await planFromConversation(params.id, agentModel, routed, {
-            boardId: body.boardId,
-            templateId: body.templateId,
-          })
-          if (proposals.length === 0) {
-            return json({ proposals: [], note: raw ? 'the agent did not return parseable tickets' : 'nothing to plan yet' })
-          }
-          return json({ proposals })
-        } catch (e) {
-          return json({ error: (e as Error).message }, { status: 502 })
-        }
-      },
-    },
+export const Route = defineApi('/api/plan/$id/draft', {
+  POST: async ({ request, params }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const agentModel = (await accessibleConversation(user.id, params.id))?.agentModel ?? null
+    if (!agentModel) return json({ error: 'plan not found' }, { status: 404 })
+    if (!(await canUseAgentModel(user.id, user.role, agentModel))) {
+      return json({ error: 'you do not have access to that agent' }, { status: 403 })
+    }
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    const routed =
+      (body.tier ? await routedModelFor(agentModel, body.tier).catch(() => null) : null) ?? agentModel
+    try {
+      const { proposals, raw } = await planFromConversation(params.id, agentModel, routed, {
+        boardId: body.boardId,
+        templateId: body.templateId,
+      })
+      if (proposals.length === 0) {
+        return json({ proposals: [], note: raw ? 'the agent did not return parseable tickets' : 'nothing to plan yet' })
+      }
+      return json({ proposals })
+    } catch (e) {
+      return json({ error: (e as Error).message }, { status: 502 })
+    }
   },
 })

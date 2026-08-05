@@ -1,4 +1,4 @@
-import { json } from '@tanstack/react-start'
+import { json } from '@/server/http'
 
 // Map a Google service error onto a consistent API response. `surface` names the
 // product (Drive, Calendar, Gmail) for the reconnect/unavailable messages.

@@ -10,7 +10,7 @@ export const controlSizes: Record<ControlSize, string> = {
 
 // Mercury focus-visible (spec §8): gold — SOLID 2px ring on controls
 // (buttons, icon tiles, segmented cells, inputs). Chips use the dashed
-// variant from `chat-chrome.tsx` (`focusGold`) instead.
+// variant from `chat-chrome` (`focusGold`) instead.
 export const focusRing =
   'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
 
@@ -20,7 +20,7 @@ export const focusRing =
 /** Field-with-a-button: Enter presses the button. */
 export const submitOnEnter =
   (fn: () => void) =>
-  (e: React.KeyboardEvent): void => {
+  (e: KeyboardEvent): void => {
     if (e.key !== 'Enter') return
     e.preventDefault()
     fn()
@@ -33,8 +33,8 @@ export const submitOnEnter =
  *  nothing changed to save. */
 export const inlineEditKeys =
   (cancel: () => void) =>
-  (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>): void => {
-    if (e.key === 'Enter') e.currentTarget.blur()
+  (e: KeyboardEvent): void => {
+    if (e.key === 'Enter') (e.currentTarget as HTMLInputElement | HTMLTextAreaElement).blur()
     else if (e.key === 'Escape') {
       e.stopPropagation()
       cancel()

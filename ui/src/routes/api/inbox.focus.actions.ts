@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { runFocusAction } from '@/server/inbox-focus'
@@ -16,25 +16,21 @@ const Body = z.object({
   undoDecisionId: z.string().uuid().optional(),
 })
 
-export const Route = createFileRoute('/api/inbox/focus/actions')({
-  server: {
-    handlers: {
-      POST: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        const release = acquireInboxFocusLock(user.id)
-        if (!release) return json({ status: 'failed', message: 'Your assistant is already handling another Inbox action.' }, { status: 409 })
-        let result
-        try {
-          result = await attachTimelineToActionResult(user, await runFocusAction(user, body))
-        } finally {
-          release()
-        }
-        const status = result.status === 'stale' ? 409 : result.status === 'failed' ? 422 : 200
-        return json(result, { status })
-      },
-    },
+export const Route = defineApi('/api/inbox/focus/actions', {
+  POST: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    const release = acquireInboxFocusLock(user.id)
+    if (!release) return json({ status: 'failed', message: 'Your assistant is already handling another Inbox action.' }, { status: 409 })
+    let result
+    try {
+      result = await attachTimelineToActionResult(user, await runFocusAction(user, body))
+    } finally {
+      release()
+    }
+    const status = result.status === 'stale' ? 409 : result.status === 'failed' ? 422 : 200
+    return json(result, { status })
   },
 })

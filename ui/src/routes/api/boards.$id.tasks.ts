@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentCaller } from '@/server/agent-auth'
@@ -37,100 +37,96 @@ async function taskActor(
 
 // GET → the board's tasks (any member, or a board-allowed agent).
 // POST → create a card (owner/editor, or a board-allowed agent → inbox).
-export const Route = createFileRoute('/api/boards/$id/tasks')({
-  server: {
-    handlers: {
-      GET: async ({ request, params }) => {
-        const who = await taskActor(request, params.id, false)
-        if (who instanceof Response) return who
-        const includeArchived = !who.agent && new URL(request.url).searchParams.get('archived') === '1'
-        return json({ tasks: await listBoardTasks(params.id, includeArchived) })
-      },
-      POST: async ({ request, params }) => {
-        const who = await taskActor(request, params.id, true)
-        if (who instanceof Response) return who
-        const parsed = z
-          .object({
-            title: z.string().min(1).max(300),
-            description: z.string().max(20_000).optional(),
-            priority: z.enum(PRIORITIES).optional(),
-            effort: z.enum(EFFORTS).nullish(),
-            assignees: z.array(z.string().max(200)).max(20).optional(),
-            dueDate: z.string().datetime().nullish(),
-            startDate: z.string().datetime().nullish(),
-            color: z.enum(TICKET_COLORS).nullish(),
-            estimatedHours: z.number().min(0).max(999).nullish(),
-            parentId: z.string().uuid().nullish(),
-            tags: z.array(z.string().max(40)).max(20).optional(),
-          })
-          .safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        // Guardrail: agents create into inbox only — assignment stays a human call.
-        if (who.agent && parsed.data.assignees?.length) {
-          return json({ error: 'agents cannot assign tickets' }, { status: 403 })
-        }
-        // The same human-planning fields updateTask strips from an agent PATCH
-        // (estimate, sub-task structure) are not an agent's to set at CREATION
-        // either — otherwise a hand-rolled POST walks around the update gate and
-        // an agent estimates its own work or re-parents the plan. Dropped rather
-        // than refused, so the ticket still lands: same end state as creating it
-        // and then being unable to patch these in.
-        const planning = who.agent
-          ? { estimatedHours: null, parentId: null }
-          : { estimatedHours: parsed.data.estimatedHours ?? null, parentId: parsed.data.parentId ?? null }
-        // Mixed assignees: `user:<uuid>` must be a board member; bare strings
-        // are agents and must pass the board's agent policy.
-        const bad = await invalidAssignee(params.id, parsed.data.assignees ?? [])
-        if (bad) return json({ error: bad }, { status: 400 })
-        // Templatize bare tickets: an empty description is seeded from the
-        // resolved ticket template (creating agent's binding → board default),
-        // so every creation surface — quick-add, agent tools — gets the format.
-        let description = parsed.data.description
-        if (!description?.trim()) {
-          const template = await resolveTemplate('ticket', {
-            agentModel: who.agent ? who.actor : null,
-            boardId: params.id,
-          })
-          if (template?.body.trim()) description = template.body
-        }
-        let task
-        try {
-          task = await createTask({
-            boardId: params.id,
-            title: parsed.data.title,
-            description,
-            priority: parsed.data.priority,
-            effort: parsed.data.effort ?? null,
-            assignees: parsed.data.assignees ?? [],
-            dueDate: parsed.data.dueDate ?? null,
-            startDate: parsed.data.startDate ?? null,
-            color: parsed.data.color ?? null,
-            estimatedHours: planning.estimatedHours,
-            parentId: planning.parentId,
-            tags: parsed.data.tags,
-            createdBy: who.actor,
-          })
-        } catch (e) {
-          return json({ error: (e as Error).message }, { status: 400 })
-        }
-        // Index into the ambient activity brain (board-scoped; retrieval on demand).
-        void indexTicket(task).catch(() => {})
-        // A description born with an @mention notifies board members — same
-        // contract as editing one in (tasks.$id PUT). Template seeds carry no
-        // mentions, so only author-written descriptions can fire this.
-        if (parsed.data.description?.includes('@')) {
-          const sessionUser = who.agent ? null : await getSessionUser(request)
-          void notifyMentions(
-            await listMembers(params.id),
-            sessionUser?.id ?? '',
-            who.agent ? describeAgent(who.actor).label : (sessionUser?.name ?? who.actor),
-            parsed.data.description,
-            task.ticketRef ?? 'a ticket',
-            `/boards/${params.id}/${task.id}`,
-          ).catch(() => {})
-        }
-        return json({ task })
-      },
-    },
+export const Route = defineApi('/api/boards/$id/tasks', {
+  GET: async ({ request, params }) => {
+    const who = await taskActor(request, params.id, false)
+    if (who instanceof Response) return who
+    const includeArchived = !who.agent && new URL(request.url).searchParams.get('archived') === '1'
+    return json({ tasks: await listBoardTasks(params.id, includeArchived) })
+  },
+  POST: async ({ request, params }) => {
+    const who = await taskActor(request, params.id, true)
+    if (who instanceof Response) return who
+    const parsed = z
+      .object({
+        title: z.string().min(1).max(300),
+        description: z.string().max(20_000).optional(),
+        priority: z.enum(PRIORITIES).optional(),
+        effort: z.enum(EFFORTS).nullish(),
+        assignees: z.array(z.string().max(200)).max(20).optional(),
+        dueDate: z.string().datetime().nullish(),
+        startDate: z.string().datetime().nullish(),
+        color: z.enum(TICKET_COLORS).nullish(),
+        estimatedHours: z.number().min(0).max(999).nullish(),
+        parentId: z.string().uuid().nullish(),
+        tags: z.array(z.string().max(40)).max(20).optional(),
+      })
+      .safeParse(await request.json().catch(() => null))
+    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    // Guardrail: agents create into inbox only — assignment stays a human call.
+    if (who.agent && parsed.data.assignees?.length) {
+      return json({ error: 'agents cannot assign tickets' }, { status: 403 })
+    }
+    // The same human-planning fields updateTask strips from an agent PATCH
+    // (estimate, sub-task structure) are not an agent's to set at CREATION
+    // either — otherwise a hand-rolled POST walks around the update gate and
+    // an agent estimates its own work or re-parents the plan. Dropped rather
+    // than refused, so the ticket still lands: same end state as creating it
+    // and then being unable to patch these in.
+    const planning = who.agent
+      ? { estimatedHours: null, parentId: null }
+      : { estimatedHours: parsed.data.estimatedHours ?? null, parentId: parsed.data.parentId ?? null }
+    // Mixed assignees: `user:<uuid>` must be a board member; bare strings
+    // are agents and must pass the board's agent policy.
+    const bad = await invalidAssignee(params.id, parsed.data.assignees ?? [])
+    if (bad) return json({ error: bad }, { status: 400 })
+    // Templatize bare tickets: an empty description is seeded from the
+    // resolved ticket template (creating agent's binding → board default),
+    // so every creation surface — quick-add, agent tools — gets the format.
+    let description = parsed.data.description
+    if (!description?.trim()) {
+      const template = await resolveTemplate('ticket', {
+        agentModel: who.agent ? who.actor : null,
+        boardId: params.id,
+      })
+      if (template?.body.trim()) description = template.body
+    }
+    let task
+    try {
+      task = await createTask({
+        boardId: params.id,
+        title: parsed.data.title,
+        description,
+        priority: parsed.data.priority,
+        effort: parsed.data.effort ?? null,
+        assignees: parsed.data.assignees ?? [],
+        dueDate: parsed.data.dueDate ?? null,
+        startDate: parsed.data.startDate ?? null,
+        color: parsed.data.color ?? null,
+        estimatedHours: planning.estimatedHours,
+        parentId: planning.parentId,
+        tags: parsed.data.tags,
+        createdBy: who.actor,
+      })
+    } catch (e) {
+      return json({ error: (e as Error).message }, { status: 400 })
+    }
+    // Index into the ambient activity brain (board-scoped; retrieval on demand).
+    void indexTicket(task).catch(() => {})
+    // A description born with an @mention notifies board members — same
+    // contract as editing one in (tasks.$id PUT). Template seeds carry no
+    // mentions, so only author-written descriptions can fire this.
+    if (parsed.data.description?.includes('@')) {
+      const sessionUser = who.agent ? null : await getSessionUser(request)
+      void notifyMentions(
+        await listMembers(params.id),
+        sessionUser?.id ?? '',
+        who.agent ? describeAgent(who.actor).label : (sessionUser?.name ?? who.actor),
+        parsed.data.description,
+        task.ticketRef ?? 'a ticket',
+        `/boards/${params.id}/${task.id}`,
+      ).catch(() => {})
+    }
+    return json({ task })
   },
 })

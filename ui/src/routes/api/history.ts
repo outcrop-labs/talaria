@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { stringify as stringifyYaml } from 'yaml'
 import { requireUser } from '@/server/api-guard'
 import { getRevision, listHistory, type InternalKind } from '@/server/internal-history'
@@ -70,61 +70,57 @@ type VersionKind = (typeof VERSION_KINDS)[number]
 const versionContent = (kind: VersionKind, v: { soul: string; config: unknown }): string =>
   kind === 'soul' ? v.soul : kind === 'config' ? stringifyYaml(v.config ?? {}) : (personalityOf(v.soul) ?? '')
 
-export const Route = createFileRoute('/api/history')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        const q = new URL(request.url).searchParams
-        const kind = q.get('kind') as InternalKind | VersionKind | null
-        const rev = q.get('rev')
+export const Route = defineApi('/api/history', {
+  GET: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const q = new URL(request.url).searchParams
+    const kind = q.get('kind') as InternalKind | VersionKind | null
+    const rev = q.get('rev')
 
-        if (VERSION_KINDS.includes(kind as VersionKind)) {
-          const id = q.get('id')
-          if (!id) return json({ error: 'missing id' }, { status: 400 })
-          if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: id })))
-            return json({ error: 'forbidden' }, { status: 403 })
-          const versions = await listVersions(id)
-          if (rev) {
-            const v = versions.find((x) => x.id === rev)
-            if (!v) return json({ error: 'not found' }, { status: 404 })
-            return json({ content: versionContent(kind as VersionKind, v) })
-          }
-          return json({
-            revisions: versions.slice(0, 50).map((v) => ({
-              id: v.id,
-              createdBy: v.createdBy,
-              createdAt: v.createdAt,
-              size: versionContent(kind as VersionKind, v).length,
-              note: v.note,
-              version: v.version,
-            })),
-          })
-        }
+    if (VERSION_KINDS.includes(kind as VersionKind)) {
+      const id = q.get('id')
+      if (!id) return json({ error: 'missing id' }, { status: 400 })
+      if (user.role !== 'admin' && !(await ownsAgent(user.id, { defId: id })))
+        return json({ error: 'forbidden' }, { status: 403 })
+      const versions = await listVersions(id)
+      if (rev) {
+        const v = versions.find((x) => x.id === rev)
+        if (!v) return json({ error: 'not found' }, { status: 404 })
+        return json({ content: versionContent(kind as VersionKind, v) })
+      }
+      return json({
+        revisions: versions.slice(0, 50).map((v) => ({
+          id: v.id,
+          createdBy: v.createdBy,
+          createdAt: v.createdAt,
+          size: versionContent(kind as VersionKind, v).length,
+          note: v.note,
+          version: v.version,
+        })),
+      })
+    }
 
-        if (!SNAPSHOT_KINDS.includes(kind as InternalKind)) return json({ error: 'bad kind' }, { status: 400 })
-        // skill keys on "<owner>/<name>"; the rest key on an id.
-        const ownerKey =
-          kind === 'skill'
-            ? q.get('owner') && q.get('name')
-              ? `${q.get('owner')}/${q.get('name')}`
-              : null
-            : q.get('id')
-        if (!ownerKey) return json({ error: 'missing owner' }, { status: 400 })
+    if (!SNAPSHOT_KINDS.includes(kind as InternalKind)) return json({ error: 'bad kind' }, { status: 400 })
+    // skill keys on "<owner>/<name>"; the rest key on an id.
+    const ownerKey =
+      kind === 'skill'
+        ? q.get('owner') && q.get('name')
+          ? `${q.get('owner')}/${q.get('name')}`
+          : null
+        : q.get('id')
+    if (!ownerKey) return json({ error: 'missing owner' }, { status: 400 })
 
-        // History serves FULL content — it must honor the same read model as
-        // the live item, or it's a bypass of the entire permission system.
-        const allowed = await canReadSnapshotHistory(kind as InternalKind, ownerKey, user)
-        if (!allowed) return json({ error: 'forbidden' }, { status: 403 })
+    // History serves FULL content — it must honor the same read model as
+    // the live item, or it's a bypass of the entire permission system.
+    const allowed = await canReadSnapshotHistory(kind as InternalKind, ownerKey, user)
+    if (!allowed) return json({ error: 'forbidden' }, { status: 403 })
 
-        if (rev) {
-          const content = await getRevision(kind as InternalKind, ownerKey, rev)
-          if (content === null) return json({ error: 'not found' }, { status: 404 })
-          return json({ content })
-        }
-        return json({ revisions: await listHistory(kind as InternalKind, ownerKey) })
-      },
-    },
+    if (rev) {
+      const content = await getRevision(kind as InternalKind, ownerKey, rev)
+      if (content === null) return json({ error: 'not found' }, { status: 404 })
+      return json({ content })
+    }
+    return json({ revisions: await listHistory(kind as InternalKind, ownerKey) })
   },
 })

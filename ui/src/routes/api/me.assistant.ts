@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { HANDLE_RE, createPersonalAgent, personalAgentFor, updatePersonalAgent } from '@/server/personal-agent'
@@ -34,38 +34,34 @@ const friendly = (msg: string) => (/already exists/.test(msg) ? 'that handle is 
 // personalized (idempotent: returns the existing one, re-enabling if retired).
 // PATCH → owner-scoped rename / personality edit. Any signed-in user; every
 // operation is keyed on agent_defs.owner_user_id, never on a client-sent id.
-export const Route = createFileRoute('/api/me/assistant')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        return json({ assistant: await personalAgentFor(user.id) })
-      },
-      POST: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        const body = await parseBody(request, CreateBody)
-        if (body instanceof Response) return body
-        try {
-          const assistant = await createPersonalAgent({ id: user.id, email: user.email, name: user.name }, body)
-          return json({ assistant })
-        } catch (e) {
-          return json({ error: friendly((e as Error).message) }, { status: 400 })
-        }
-      },
-      PATCH: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        const body = await parseBody(request, PatchBody)
-        if (body instanceof Response) return body
-        try {
-          const assistant = await updatePersonalAgent({ id: user.id, email: user.email, name: user.name }, body)
-          return json({ assistant })
-        } catch (e) {
-          return json({ error: friendly((e as Error).message) }, { status: 400 })
-        }
-      },
-    },
+export const Route = defineApi('/api/me/assistant', {
+  GET: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    return json({ assistant: await personalAgentFor(user.id) })
+  },
+  POST: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, CreateBody)
+    if (body instanceof Response) return body
+    try {
+      const assistant = await createPersonalAgent({ id: user.id, email: user.email, name: user.name }, body)
+      return json({ assistant })
+    } catch (e) {
+      return json({ error: friendly((e as Error).message) }, { status: 400 })
+    }
+  },
+  PATCH: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, PatchBody)
+    if (body instanceof Response) return body
+    try {
+      const assistant = await updatePersonalAgent({ id: user.id, email: user.email, name: user.name }, body)
+      return json({ assistant })
+    } catch (e) {
+      return json({ error: friendly((e as Error).message) }, { status: 400 })
+    }
   },
 })

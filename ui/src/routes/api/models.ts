@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { requireUser } from '@/server/api-guard'
 import { gatewayModelsFor } from '@/server/model-access'
 import { maybeRewriteBlurbs, modelInfo } from '@/server/model-info'
@@ -10,21 +10,17 @@ import { museModelFor } from '@/server/muse'
 // members see only what the admin allowlist permits; admins see everything.
 // Each model carries a pretty label + a "what it's good at" blurb when the
 // public catalog knows it. Also says which model the caller's muse would use.
-export const Route = createFileRoute('/api/models')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        maybeRewriteBlurbs() // new registered models get their org-voice blurb (throttled, detached)
-        const models = await Promise.all(
-          (await gatewayModelsFor(user.role)).map(async (m) => {
-            const info = await modelInfo(m.qualified ? m.id.slice(m.id.indexOf('/') + 1) : m.id)
-            return info ? { ...m, label: info.label, blurb: info.blurb } : m
-          }),
-        )
-        return json({ models, effective: await museModelFor(user.id) })
-      },
-    },
+export const Route = defineApi('/api/models', {
+  GET: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    maybeRewriteBlurbs() // new registered models get their org-voice blurb (throttled, detached)
+    const models = await Promise.all(
+      (await gatewayModelsFor(user.role)).map(async (m) => {
+        const info = await modelInfo(m.qualified ? m.id.slice(m.id.indexOf('/') + 1) : m.id)
+        return info ? { ...m, label: info.label, blurb: info.blurb } : m
+      }),
+    )
+    return json({ models, effective: await museModelFor(user.id) })
   },
 })

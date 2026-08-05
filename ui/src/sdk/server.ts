@@ -5,7 +5,7 @@
 // (session cookie), checks the app is enabled and the user may reach it,
 // then hands over with a context: the signed-in user, the sub-path, and a
 // per-app document store (namespaced Postgres, no migrations needed).
-import { json } from '@tanstack/react-start'
+import { json } from '@/server/http'
 import type { SessionUser } from '@/server/auth/session'
 import type { AppStore } from '@/server/app-store'
 

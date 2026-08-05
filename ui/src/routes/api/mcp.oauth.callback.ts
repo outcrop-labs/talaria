@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { defineApi } from '@/server/api-route'
 import { handleOauthCallback } from '@/server/mcp-oauth'
 import { renderFleet } from '@/server/fleet-render'
 import { rollAgentsForServer, rollAgentForUser } from '@/server/mcp-apply'
@@ -19,34 +19,30 @@ setTimeout(()=>{ if (window.opener) window.close(); else location.href='/mcp' },
 
 // The OAuth redirect target. No session requirement — identity was bound to
 // the state row when the flow started; the state is single-use and expiring.
-export const Route = createFileRoute('/api/mcp/oauth/callback')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const url = new URL(request.url)
-        const err = url.searchParams.get('error')
-        if (err) return page('Connection failed', `The provider said: ${url.searchParams.get('error_description') ?? err}`)
-        const state = url.searchParams.get('state')
-        const code = url.searchParams.get('code')
-        if (!state || !code) return page('Connection failed', 'Missing code or state.')
-        try {
-          const { subject, serverId } = await handleOauthCallback(state, code)
-          void logAudit({
-            actor: subject === 'org' ? 'org' : subject,
-            action: 'mcp.oauth_connect',
-            targetType: 'mcp-server',
-            targetId: serverId,
-          })
-          void renderFleet().catch(() => {}) // connected servers appear in configs
-          // Running agents wire MCP at start — roll the affected ones so the
-          // connection is usable without anyone bouncing containers.
-          if (subject === 'org') void rollAgentsForServer(serverId).catch(() => {})
-          else void rollAgentForUser(subject).catch(() => {})
-          return page('Connected', 'Connected — your agents are picking it up now (a graceful restart runs behind the scenes).')
-        } catch (e) {
-          return page('Connection failed', (e as Error).message)
-        }
-      },
-    },
+export const Route = defineApi('/api/mcp/oauth/callback', {
+  GET: async ({ request }) => {
+    const url = new URL(request.url)
+    const err = url.searchParams.get('error')
+    if (err) return page('Connection failed', `The provider said: ${url.searchParams.get('error_description') ?? err}`)
+    const state = url.searchParams.get('state')
+    const code = url.searchParams.get('code')
+    if (!state || !code) return page('Connection failed', 'Missing code or state.')
+    try {
+      const { subject, serverId } = await handleOauthCallback(state, code)
+      void logAudit({
+        actor: subject === 'org' ? 'org' : subject,
+        action: 'mcp.oauth_connect',
+        targetType: 'mcp-server',
+        targetId: serverId,
+      })
+      void renderFleet().catch(() => {}) // connected servers appear in configs
+      // Running agents wire MCP at start — roll the affected ones so the
+      // connection is usable without anyone bouncing containers.
+      if (subject === 'org') void rollAgentsForServer(serverId).catch(() => {})
+      else void rollAgentForUser(subject).catch(() => {})
+      return page('Connected', 'Connected — your agents are picking it up now (a graceful restart runs behind the scenes).')
+    } catch (e) {
+      return page('Connection failed', (e as Error).message)
+    }
   },
 })
