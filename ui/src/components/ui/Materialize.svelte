@@ -40,15 +40,19 @@
   } = $props()
 </script>
 
-<div class="grid">
+<!-- min-w-0 on the wrapper AND the branch cells: grid items default to
+     min-width:auto, which forbids shrinking below content width — inside a
+     sized rail that meant rows laid out at full text width and the ancestor
+     clipped them, so `truncate` down in the items never engaged. -->
+<div class="grid min-w-0">
   {#if loading}
-    <div class={cn('col-start-1 row-start-1', className)} out:fade={{ duration: 220 }} use:listStagger>
+    <div class={cn('col-start-1 row-start-1 min-w-0', className)} out:fade={{ duration: 220 }} use:listStagger>
       {#each Array(count) as _, i (i)}
         {@render skeleton(i)}
       {/each}
     </div>
   {:else}
-    <div class={cn('col-start-1 row-start-1', className)} in:fade={{ duration: 200 }} use:listStagger>
+    <div class={cn('col-start-1 row-start-1 min-w-0', className)} in:fade={{ duration: 200 }} use:listStagger>
       {@render children()}
     </div>
   {/if}
