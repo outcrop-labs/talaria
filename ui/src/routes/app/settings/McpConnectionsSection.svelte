@@ -7,6 +7,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { getList } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
 
   /** Per-user MCP connected accounts: servers the org registered in per-user
    *  auth mode. Connect yours (a token header, sealed at rest) and your
@@ -100,7 +101,7 @@
               {/if}
             </div>
             {#if connecting === s.id}
-              <div class="space-y-2 pl-1">
+              <div transition:slide={{ duration: 150 }} class="space-y-2 pl-1">
                 <!-- Publisher-declared credentials drive the form; a server
                      without declarations falls back to one auth header. -->
                 {#each s.requiredHeaders.length ? s.requiredHeaders : [{ name: 'Authorization', description: null, isSecret: true, placeholder: 'Bearer …' }] as h (h.name)}

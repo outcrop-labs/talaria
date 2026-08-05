@@ -19,6 +19,7 @@
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { cn } from '@/lib/cn'
+  import { fade, fly, QUICK } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { deleteArtifact, saveArtifact, uploadFile, useArtifact } from '@/lib/artifacts'
@@ -148,13 +149,17 @@
      in a browser, with no error, no retry, and no way to tell which it was.
      `useArtifact` resolves `null` only for a real 404 and rejects otherwise. -->
 {#if artifactQuery.isError && artifact === undefined}
-  <QueryError
-    error={artifactQuery.error}
-    title="Could not load this document"
-    onRetry={() => void artifactQuery.refetch()}
-  />
+  <div in:fade={{ duration: 150 }}>
+    <QueryError
+      error={artifactQuery.error}
+      title="Could not load this document"
+      onRetry={() => void artifactQuery.refetch()}
+    />
+  </div>
 {:else if artifact === null}
-  <EmptyState icon="⧉" title="Document not found" hint="It may have been deleted, or it is no longer shared with you." />
+  <div in:fade={{ duration: 150 }}>
+    <EmptyState icon="⧉" title="Document not found" hint="It may have been deleted, or it is no longer shared with you." />
+  </div>
 {:else if !artifact}
   <!-- Kind is unknown until the fetch lands, so use the doc-page shape (toolbar
        + centered prose bars) as the default stand-in for every kind. -->
@@ -315,7 +320,7 @@
         </div>
       {/if}
       {#if showHistory}
-        <div class="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+        <div in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
           <ArtifactHistory
             {id}
             onRestore={async (content) => {

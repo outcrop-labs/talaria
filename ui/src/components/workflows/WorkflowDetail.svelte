@@ -11,6 +11,7 @@
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
+  import { slide } from '@/lib/motion'
   import { useBoards } from '@/lib/boards.svelte'
   import { updateWorkflow, useSkillLibrary, type TaskWorkflow } from '@/lib/workflows'
   import TokenInput from './TokenInput.svelte'
@@ -98,7 +99,7 @@
           <span class="text-xs text-muted">No boards yet.</span>
         {/if}
       </div>
-      {#if boardsList.notice}<QueryError {...boardsList.notice} />{/if}
+      {#if boardsList.notice}<div transition:slide={{ duration: 150 }}><QueryError {...boardsList.notice} /></div>{/if}
     </div>
     <div class="space-y-1">
       <span class="text-xs text-muted">Labels</span>
@@ -137,7 +138,7 @@
         {/if}
       {/each}
       {#if orphans.length}
-        <div class="space-y-1">
+        <div transition:slide={{ duration: 150 }} class="space-y-1">
           <span class="text-xs text-warning">Bound but not in the library</span>
           <div class="flex flex-wrap gap-1">
             {#each orphans as sk (sk)}
@@ -148,7 +149,7 @@
           </div>
         </div>
       {/if}
-      {#if libraryList.notice}<QueryError {...libraryList.notice} />{/if}
+      {#if libraryList.notice}<div transition:slide={{ duration: 150 }}><QueryError {...libraryList.notice} /></div>{/if}
       {#if !libraryList.failed && !libraryList.pending && skillOwners.every((o) => !o.skills.length) && !workflow.skills.length}
         <span class="text-xs text-muted">No skills in the library yet — create them on an agent's manage view.</span>
       {/if}

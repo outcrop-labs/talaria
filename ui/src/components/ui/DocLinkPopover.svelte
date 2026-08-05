@@ -1,5 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
+  import { fade, scale, POP, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import Input from './Input.svelte'
   import type { DocSearchFn } from './rich-editor'
@@ -45,7 +46,12 @@
   })
 </script>
 
-<div bind:this={ref} class={cn('absolute left-0 top-full z-30 mt-1 w-72', popPanel)}>
+<div
+  bind:this={ref}
+  in:scale={{ ...POP, start: 0.97 }}
+  out:fade={QUICK}
+  class={cn('absolute left-0 top-full z-30 mt-1 w-72 origin-top-left', popPanel)}
+>
   <!-- svelte-ignore a11y_autofocus -->
   <Input autofocus size="sm" bind:value={q} placeholder="Search documents" class="mb-1.5" />
   <div class="max-h-64 overflow-y-auto">

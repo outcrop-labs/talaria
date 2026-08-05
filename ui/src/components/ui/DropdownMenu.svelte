@@ -106,7 +106,13 @@
       role="menu"
       style={pos}
       onclick={(e) => e.stopPropagation()}
-      class={cn(popPanel, 'min-w-44 max-w-72')}
+      class={cn(
+        popPanel,
+        'min-w-44 max-w-72',
+        up
+          ? align === 'right' ? 'origin-bottom-right' : 'origin-bottom-left'
+          : align === 'right' ? 'origin-top-right' : 'origin-top-left',
+      )}
       in:scale={POP}
       out:fade={QUICK}
     >

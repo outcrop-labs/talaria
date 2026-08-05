@@ -11,6 +11,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { navigate } from '@/router'
+  import { fade, slide } from '@/lib/motion'
   import {
     createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, updateSpace, useDocs, useSpaces,
     type KbDocMeta, type KbSpace,
@@ -152,7 +153,7 @@
       <KbSearch onOpen={openDoc} />
     </div>
     {#if creatingSpace}
-      <div class="border-b border-line-subtle px-3 py-2">
+      <div transition:slide={{ duration: 150 }} class="border-b border-line-subtle px-3 py-2">
         <Input
           autofocus
           size="sm"
@@ -174,15 +175,19 @@
       {:else if spacesQuery.isError && spacesQuery.data === undefined}
         <!-- Unreachable is not deleted. Without this branch an outage reads
              as somebody having wiped the whole knowledgebase. -->
-        <QueryError
-          variant="compact"
-          error={spacesQuery.error}
-          title="Could not load your spaces"
-          onRetry={() => void spacesQuery.refetch()}
-        />
+        <div in:fade={{ duration: 150 }}>
+          <QueryError
+            variant="compact"
+            error={spacesQuery.error}
+            title="Could not load your spaces"
+            onRetry={() => void spacesQuery.refetch()}
+          />
+        </div>
       {:else if spaces.length === 0}
         <!-- A 200 with no spaces is still a real answer — keep saying so. -->
-        <EmptyState variant="inline" title="No spaces yet." class="px-2 py-6 text-center" />
+        <div in:fade={{ duration: 150 }}>
+          <EmptyState variant="inline" title="No spaces yet." class="px-2 py-6 text-center" />
+        </div>
       {:else}
         {#each spaces as s (s.id)}
           <div class="mb-2">

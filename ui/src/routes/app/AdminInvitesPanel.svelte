@@ -11,6 +11,7 @@
   import NoEmailBump from '@/components/setup/NoEmailBump.svelte'
   import { cn } from '@/lib/cn'
   import { getList } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
 
   /** Invites: the third door in. Create + send, watch state, revoke. */
@@ -87,7 +88,7 @@
     </Button>
     {#if notice}<span class="min-w-0 truncate text-xs text-muted">{notice}</span>{/if}
   </div>
-  {#if error}<div class="mb-2 text-xs text-danger">{error}</div>{/if}
+  {#if error}<div transition:slide={{ duration: 150 }} class="mb-2 text-xs text-danger">{error}</div>{/if}
   {#if query.isPending}
     <SkeletonRows rows={2} />
   {:else if !data}

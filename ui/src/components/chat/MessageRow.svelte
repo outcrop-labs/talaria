@@ -9,6 +9,7 @@
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
+  import { fade, QUICK } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { resolveAgentMedia } from '@/lib/agent-media'
   import { deleteChannelMessage, editChannelMessage, toggleMessageReaction, type ChannelMessage } from '@/lib/channels.svelte'
@@ -70,7 +71,13 @@
 <!-- Flattened message row (spec §10): avatar square + name + 10px mono
     timestamp, 14px sans body — no bubble. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="group relative flex gap-2.5" oncontextmenu={onContextMenu} onmouseleave={() => (picking = false)}>
+<div
+  in:fade={{ duration: 150 }}
+  out:fade={QUICK}
+  class="group relative flex gap-2.5"
+  oncontextmenu={onContextMenu}
+  onmouseleave={() => (picking = false)}
+>
   <MessageAvatar {name} class="mt-0.5" />
   <div class="min-w-0 flex-1">
     <div class="flex items-baseline gap-2">
@@ -110,7 +117,10 @@
         <GeneratingDots class="py-1" />
       {/if}
       {#if m.attachments && m.attachments.length > 0}<MessageAttachments items={m.attachments} />{/if}
-      {#if !live}<GuardCaveat findings={m.guard} />{/if}
+      <!-- Mounted unconditionally (findings nulled while live) so the caveat's
+          slide fires on the live→settled flip; behind an `{#if !live}` the
+          local transition would be suppressed by the ancestor block toggling. -->
+      <GuardCaveat findings={live ? null : m.guard} />
       {#if m.content && live}<span class="gd-pulse ml-0.5 inline-block h-4 w-1.5 bg-accent align-middle"></span>{/if}
       {#if m.status === 'error'}
         <div class="text-xs" style:color="var(--theme-danger)">
@@ -121,10 +131,12 @@
 
     <!-- Reaction chips: click toggles yours; hover names the reactors. -->
     {#if (m.reactions?.length ?? 0) > 0}
-      <div class="mt-1.5 flex flex-wrap items-center gap-1">
+      <div in:fade={{ duration: 150 }} out:fade={QUICK} class="mt-1.5 flex flex-wrap items-center gap-1">
         {#each m.reactions ?? [] as r (r.emoji)}
           {@const mine = r.actors.some((a, i) => r.actorTypes[i] === 'user' && a === ctx.me)}
           <button
+            in:fade={{ duration: 150 }}
+            out:fade={QUICK}
             type="button"
             title={r.actors.map((a, i) => actorLabel(ctx, a, r.actorTypes[i] ?? 'user')).join(', ')}
             onclick={() => react(r.emoji)}

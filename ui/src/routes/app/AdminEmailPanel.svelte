@@ -10,6 +10,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { getJson } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
 
   /** Transactional email: bring your own SMTP (Google Workspace etc.) or
    *  connect Resend. More providers as requested. */
@@ -166,7 +167,7 @@
           {#if notice}<span class="text-xs text-success">{notice}</span>{/if}
         </div>
       {/if}
-      {#if error}<div class="text-xs text-danger">{error}</div>{/if}
+      {#if error}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</div>{/if}
     </div>
   </Panel>
 {/if}

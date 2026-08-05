@@ -8,6 +8,7 @@
   import KanbanCard from './KanbanCard.svelte'
   import { COL_ACCENT, fmtHours } from './kanban'
   import { cn } from '@/lib/cn'
+  import { fade, flip, LIST, QUICK } from '@/lib/motion'
   import { useAgents } from '@/lib/agents'
   import { archiveTask, createTask, updateTask, useBoardLabels, type Board, type BoardMember } from '@/lib/boards.svelte'
   import { OFF_BOARD_STATUSES, STATUS_LABEL, TASK_STATUSES, pgNumOr, type Task, type TaskStatus } from '@/lib/task-const'
@@ -181,22 +182,28 @@
           </div>
           <div class="flex-1 space-y-2 overflow-y-auto px-2 pb-2">
             {#each colTasks as t (t.id)}
-              <KanbanCard
-                task={t}
-                pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, statuses: boardStatuses, boardId: board.id }}
-                subtasks={childrenOf.get(t.id) ?? []}
-                parentRef={parentRef(t)}
-                draggable={canEdit}
-                dim={dragging === t.id}
-                onDragStart={(e) => {
-                  e.dataTransfer?.setData('text/task', t.id)
-                  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
-                  dragging = t.id
-                }}
-                onDragEnd={() => (dragging = null)}
-                onOpen={() => onOpen(t.id)}
-                onContextMenu={(e) => cardMenu(e, t)}
-              />
+              <!-- flip makes reorders and drops glide; cheap even in big
+                   columns — it only transforms cards whose position changed,
+                   as compositor transforms. A cross-column move fades out of
+                   one column and into the other (flip can't span lists). -->
+              <div animate:flip={LIST} in:fade={{ duration: 150 }} out:fade={QUICK}>
+                <KanbanCard
+                  task={t}
+                  pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, statuses: boardStatuses, boardId: board.id }}
+                  subtasks={childrenOf.get(t.id) ?? []}
+                  parentRef={parentRef(t)}
+                  draggable={canEdit}
+                  dim={dragging === t.id}
+                  onDragStart={(e) => {
+                    e.dataTransfer?.setData('text/task', t.id)
+                    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+                    dragging = t.id
+                  }}
+                  onDragEnd={() => (dragging = null)}
+                  onOpen={() => onOpen(t.id)}
+                  onContextMenu={(e) => cardMenu(e, t)}
+                />
+              </div>
             {/each}
             {#if canEdit}
               <KanbanAddCard onAdd={(title) => addTo(col.key as TaskStatus, title)} />

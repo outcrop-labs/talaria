@@ -10,6 +10,7 @@
   // dashed-gold selected row.
   import type { LucideIcon as IconType } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
+  import { fade, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
   import PopSearch from '@/components/chat/PopSearch.svelte'
   import { chipSecondary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
@@ -84,6 +85,7 @@
   <div
     use:portal
     bind:this={panelRef}
+    out:fade={QUICK}
     class={cn(popPanel, 'fixed z-[60] min-w-56 overflow-hidden')}
     style:left="{pos.left}px"
     style:bottom="{pos.bottom}px"

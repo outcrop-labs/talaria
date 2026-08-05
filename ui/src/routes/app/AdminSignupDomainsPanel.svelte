@@ -11,6 +11,7 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { getList } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
 
   interface OrgDomainRow {
     id: string
@@ -155,7 +156,7 @@
         </Button>
       </div>
       {#if error}
-        <div class="text-xs text-danger">
+        <div transition:slide={{ duration: 150 }} class="text-xs text-danger">
           {error}
         </div>
       {/if}

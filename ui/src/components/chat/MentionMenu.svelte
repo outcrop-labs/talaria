@@ -1,5 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
+  import { fade, QUICK } from '@/lib/motion'
   import Avatar from '@/components/ui/Avatar.svelte'
   import { popPanel, popRow } from '@/components/chat/chat-chrome'
   import type { MentionState } from './mentions.svelte'
@@ -18,7 +19,7 @@
   } = $props()
 </script>
 
-<div class={cn(popPanel, 'z-10 w-64 overflow-hidden', className)}>
+<div out:fade={QUICK} class={cn(popPanel, 'z-10 w-64 overflow-hidden', className)}>
   {#each mention.options as a, i (`${a.insert}-${a.sub ?? ''}`)}
     <button
       type="button"

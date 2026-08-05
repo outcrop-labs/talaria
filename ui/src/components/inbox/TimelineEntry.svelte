@@ -5,6 +5,7 @@
   import { buttonClasses } from '@/components/ui/button'
   import Markdown from '@/components/ui/Markdown.svelte'
   import { cn } from '@/lib/cn'
+  import { fade, QUICK } from '@/lib/motion'
   import type { InboxTimelineEntry } from '@/lib/inbox-focus.svelte'
 
   type ActivityEntry = Extract<InboxTimelineEntry, { kind: 'activity' }>
@@ -77,12 +78,18 @@
     {/if}
     <div class="mt-3 flex flex-wrap items-center gap-2">
       {#if !readOnly && entry.activity === 'confirmation' && entry.confirmationToken}
-        <Button size="sm" onclick={() => onConfirm(entry)}>Confirm exact action</Button>
-        <Button size="sm" variant="ghost" onclick={() => onCancel(entry)}>Cancel</Button>
+        <!-- fade, not slide: these live in a horizontal flex row, so a height
+             slide has no gap to announce — grammar's row fade fits better. -->
+        <div in:fade={{ duration: 150 }} out:fade={QUICK} class="flex flex-wrap items-center gap-2">
+          <Button size="sm" onclick={() => onConfirm(entry)}>Confirm exact action</Button>
+          <Button size="sm" variant="ghost" onclick={() => onCancel(entry)}>Cancel</Button>
+        </div>
       {/if}
       {#if !readOnly && entry.activity === 'failure' && entry.actionId}<Button size="sm" variant="outline" onclick={() => onRetry(entry)}>Retry</Button>{/if}
       {#if !readOnly && entry.activity === 'completion' && entry.undoExpiresAt}
-        <Button size="sm" variant="ghost" onclick={() => onUndo(entry)}><RotateCcw size={12} /> Undo</Button>
+        <div in:fade={{ duration: 150 }} out:fade={QUICK}>
+          <Button size="sm" variant="ghost" onclick={() => onUndo(entry)}><RotateCcw size={12} /> Undo</Button>
+        </div>
       {:else if entry.activity === 'completion'}
         <a href={entry.focus.sourceHref} class={buttonClasses({ variant: 'ghost', size: 'sm' })}><ExternalLink size={12} /> View result</a>
       {/if}

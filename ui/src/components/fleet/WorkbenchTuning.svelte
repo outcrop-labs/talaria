@@ -5,6 +5,7 @@
   import Select from '@/components/ui/Select.svelte'
   import { getList } from '@/lib/fetch-json'
   import type { AgentDef, patchAgentMeta } from '@/lib/fleet-defs'
+  import { slide } from '@/lib/motion'
   import { useModels } from '@/lib/muse.svelte'
   import { EFFORTS, type WorkbenchProfileLite } from './workbench'
 
@@ -50,12 +51,14 @@
     <InfoTip text="The coding tool this agent's workbench jobs run. Auto uses the profile's first harness. The effort models below are handed to it in its own syntax." />
   </div>
   {#if registryFailed}
-    <QueryError
-      variant="inline"
-      error={registryQuery.error}
-      title="Harness names unavailable — showing raw slugs"
-      onRetry={() => void registryQuery.refetch()}
-    />
+    <div transition:slide={{ duration: 150 }}>
+      <QueryError
+        variant="inline"
+        error={registryQuery.error}
+        title="Harness names unavailable — showing raw slugs"
+        onRetry={() => void registryQuery.refetch()}
+      />
+    </div>
   {/if}
   <div class="flex flex-wrap items-center gap-2">
     <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Effort</span>

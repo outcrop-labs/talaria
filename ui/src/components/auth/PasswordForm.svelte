@@ -2,6 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import { slide } from '@/lib/motion'
 
   const qc = useQueryClient()
   let username = $state('')
@@ -47,7 +48,7 @@
     autocomplete="current-password"
     bind:value={password}
   />
-  {#if err}<div class="font-sans text-sm text-danger">{err}</div>{/if}
+  {#if err}<div transition:slide={{ duration: 150 }} class="font-sans text-sm text-danger">{err}</div>{/if}
   <Button type="submit" disabled={busy || !username || !password}>
     {busy ? 'Signing in' : 'Sign in'}
   </Button>

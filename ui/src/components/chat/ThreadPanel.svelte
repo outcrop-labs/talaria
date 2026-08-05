@@ -4,6 +4,7 @@
   import ChannelComposer from './ChannelComposer.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import { fade, fly, QUICK } from '@/lib/motion'
   import { sendChannelMessage, useThreadMessages } from '@/lib/channels.svelte'
   import { splitAttachments, type Attachment } from '@/lib/attachments'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
@@ -50,7 +51,7 @@
 </script>
 
 <!-- Thread side panel — a proper panel surface (spec §8) beside the feed. -->
-<div class="flex w-[380px] shrink-0 flex-col border-l border-line bg-panel">
+<div in:fly={{ x: 12, duration: 180 }} out:fade={QUICK} class="flex w-[380px] shrink-0 flex-col border-l border-line bg-panel">
   <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
     <MessageSquareText size={14} class="text-muted" />
     <span class="font-sans text-sm font-semibold text-fg">Thread</span>
@@ -92,16 +93,21 @@
         {/each}
       </div>
     {:else}
-      {#each messages as m, i (m.id)}
-        <div>
-          <MessageRow message={m} {ctx} inThread />
-          {#if i === 0 && messages.length > 1}
-            <div class="mt-3 border-t border-line pt-1 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">
-              {messages.length - 1} {messages.length - 1 === 1 ? 'reply' : 'replies'}
-            </div>
-          {/if}
-        </div>
-      {/each}
+      <!-- Keyed on the root so a warm-cache thread switch (no skeleton pass)
+          rebuilds the list instead of cross-fading two threads (see
+          ChannelView's message list). -->
+      {#key rootId}
+        {#each messages as m, i (m.id)}
+          <div>
+            <MessageRow message={m} {ctx} inThread />
+            {#if i === 0 && messages.length > 1}
+              <div class="mt-3 border-t border-line pt-1 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">
+                {messages.length - 1} {messages.length - 1 === 1 ? 'reply' : 'replies'}
+              </div>
+            {/if}
+          </div>
+        {/each}
+      {/key}
     {/if}
   </div>
   <ChannelComposer channelName="thread" placeholder="Reply in thread. @mention an agent to bring it in" {mentionables} onSend={send} />

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { slide } from '@/lib/motion'
   import type { GuardFinding } from './guard-caveat'
 
   // The confab guard's caveat on a flagged agent reply (annotate/strict modes).
@@ -10,7 +11,7 @@
 {#if findings?.length}
   <!-- Attention panel (spec §8): gold hairline + mono uppercase label; body
        stays readable sans on the readout tone. -->
-  <div class="mt-2 space-y-1 rounded-md border px-2.5 py-2 text-xs" style="border-color: var(--theme-warning)">
+  <div transition:slide={{ duration: 150 }} class="mt-2 space-y-1 rounded-md border px-2.5 py-2 text-xs" style="border-color: var(--theme-warning)">
     <div class="font-mono text-[10px] uppercase tracking-[0.08em]" style="color: var(--theme-warning)">
       Unverified · confab guard flagged this reply
     </div>

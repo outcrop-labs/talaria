@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Link2, Copy, Check } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
+  import { fade } from '@/lib/motion'
   import { focusRing } from './control'
 
   // The one copy-to-clipboard affordance: icon (or icon+label) that flashes a
@@ -47,7 +48,8 @@
   )}
 >
   {#if copied}
-    <Check size={13} />
+    <!-- The check fades in (the confirm moment); the revert swap stays instant. -->
+    <span in:fade={{ duration: 150 }} class="flex items-center"><Check size={13} /></span>
   {:else if path}
     <Link2 size={13} />
   {:else}

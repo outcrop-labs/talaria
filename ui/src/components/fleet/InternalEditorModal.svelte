@@ -13,7 +13,7 @@
   import { getList } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { streamMuse, type MuseKind } from '@/lib/muse.svelte'
-  import { fly } from '@/lib/motion'
+  import { fade, fly, slide, QUICK } from '@/lib/motion'
   import { cn } from '@/lib/cn'
   import DiffView from './DiffView.svelte'
   import { diffLines, type DiffLine } from './line-diff'
@@ -295,7 +295,7 @@
         {/if}
       </div>
       {#if showHistory && history}
-        <div class="w-64 shrink-0 overflow-y-auto rounded-lg border border-line p-1">
+        <div in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="w-64 shrink-0 overflow-y-auto rounded-lg border border-line p-1">
           <div class="px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">History</div>
           <QueryState query={historyQuery} errorTitle="Could not load history" errorVariant="inline">
             {#snippet skeleton()}<SkeletonRows rows={4} class="px-2 py-2" />{/snippet}
@@ -343,7 +343,7 @@
       {/if}
     </div>
     {#if museOpen && muse && editable}
-      <div class="flex items-end gap-2.5">
+      <div transition:slide={{ duration: 150 }} class="flex items-end gap-2.5">
         <Sparkles size={14} class="mb-3 shrink-0 text-accent" />
         <Textarea
           autoGrow
@@ -366,7 +366,7 @@
         </Button>
       </div>
     {/if}
-    {#if museError}<p class="text-xs text-danger">{museError}</p>{/if}
+    {#if museError}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{museError}</p>{/if}
     <div class="flex items-center gap-2 border-t border-line pt-3">
       {#if muse && editable}
         <Button
@@ -403,6 +403,7 @@
          fly with x travel and opacity pinned replicates the pure slide. -->
     <div
       in:fly={{ x: '100%', duration: 180, opacity: 1 }}
+      out:fade={QUICK}
       class="absolute inset-0 z-30 flex flex-col bg-[var(--theme-panel)]"
     >
       <div class="flex shrink-0 items-center gap-2 border-b border-line px-6 py-3.5">

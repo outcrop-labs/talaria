@@ -98,7 +98,7 @@
     use:portal
     role="menu"
     style="position: fixed; left: {st.x}px; top: {st.y}px; z-index: 80"
-    class={cn(popPanel, 'min-w-44')}
+    class={cn(popPanel, 'min-w-44 origin-top-left')}
     oncontextmenu={(e) => e.preventDefault()}
     in:scale={POP}
     out:fade={QUICK}
@@ -153,7 +153,7 @@
             {/if}
           </button>
           {#if hasKids && openSub === i}
-            <div class={cn(popPanel, 'absolute left-full top-0 z-10 -ml-0.5 min-w-40')} in:scale={POP} out:fade={QUICK}>
+            <div class={cn(popPanel, 'absolute left-full top-0 z-10 -ml-0.5 min-w-40 origin-top-left')} in:scale={POP} out:fade={QUICK}>
               {#each item.children ?? [] as kid, k (kid === 'sep' ? `ks${k}` : `${kid.label}${k}`)}
                 {#if kid === 'sep'}
                   <div class="mx-2 my-1 border-t border-line"></div>

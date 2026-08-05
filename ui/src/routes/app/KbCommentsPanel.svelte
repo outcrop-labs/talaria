@@ -5,6 +5,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { cn } from '@/lib/cn'
+  import { fade, fly, slide, QUICK } from '@/lib/motion'
   import KbCommentBody from './KbCommentBody.svelte'
   import type { KbComment } from './knowledge.svelte'
 
@@ -89,7 +90,12 @@
 </script>
 
 {#snippet thread(root: KbComment)}
-  <div data-kb-thread={root.id} class={cn('space-y-2 rounded-lg border border-line-subtle p-2.5', root.resolved && 'opacity-60')}>
+  <div
+    in:fade={{ duration: 150 }}
+    out:fade={QUICK}
+    data-kb-thread={root.id}
+    class={cn('space-y-2 rounded-lg border border-line-subtle p-2.5', root.resolved && 'opacity-60')}
+  >
     <!-- Quoted passage — same warning-gold tint as the in-doc comment mark. -->
     {#if root.quote}
       <div class="border-l-2 border-warning/50 pl-2 font-sans text-[11px] italic text-muted line-clamp-2">“{root.quote}”</div>
@@ -143,7 +149,7 @@
   </div>
 {/snippet}
 
-<aside class="flex w-80 shrink-0 flex-col border-l border-line-subtle">
+<aside in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="flex w-80 shrink-0 flex-col border-l border-line-subtle">
   <!-- §8 section header row: mono uppercase dim + right-aligned mono meta. -->
   <div class="flex items-center gap-2 border-b border-line-subtle px-3 py-2">
     <MessageSquareText size={13} class="text-muted" />
@@ -173,7 +179,7 @@
   </div>
   <div class="border-t border-line-subtle p-3">
     {#if pendingQuote}
-      <div class="mb-1.5 flex items-start gap-1.5 border-l-2 border-warning/50 pl-2 font-sans text-[11px] italic text-muted">
+      <div transition:slide={{ duration: 150 }} class="mb-1.5 flex items-start gap-1.5 border-l-2 border-warning/50 pl-2 font-sans text-[11px] italic text-muted">
         <span class="min-w-0 flex-1 line-clamp-2">“{pendingQuote}”</span>
         <CloseButton onClick={onQuoteConsumed} size={11} class="shrink-0 p-0 hover:bg-transparent" />
       </div>

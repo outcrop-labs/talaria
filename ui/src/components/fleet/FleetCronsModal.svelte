@@ -9,6 +9,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { getList } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
   import { type CronJob } from './agent-crons'
   import CronForm from './CronForm.svelte'
   import CronListSkeleton from './CronListSkeleton.svelte'
@@ -122,7 +123,7 @@
       {/snippet}
     </QueryState>
     {#if agents.some((a) => a.error)}
-      <p class="text-xs text-warning">
+      <p transition:slide={{ duration: 150 }} class="text-xs text-warning">
         Unreachable: {agents.filter((a) => a.error).map((a) => a.displayName).join(', ')}. Are they running?
       </p>
     {/if}
@@ -147,7 +148,7 @@
           {/each}
         </div>
       </CronForm>
-      {#if summary}<p class="mt-2 text-xs text-muted">{summary}</p>{/if}
+      {#if summary}<p transition:slide={{ duration: 150 }} class="mt-2 text-xs text-muted">{summary}</p>{/if}
     </div>
   </div>
 </Modal>

@@ -10,6 +10,7 @@
   import { submitOnEnter } from '@/components/ui/control'
   import { getJson } from '@/lib/fetch-json'
   import type { AgentDef } from '@/lib/fleet-defs'
+  import { fade } from '@/lib/motion'
   import InternalEditorModal from './InternalEditorModal.svelte'
 
   let { def, isAdmin }: { def: AgentDef; isAdmin: boolean } = $props()
@@ -95,7 +96,9 @@
         <Markdown children={query.data.content} />
       </div>
     {:else}
-      <EmptyState icon="❖" title="No memory yet" hint="The agent hasn't written anything down." />
+      <div in:fade={{ duration: 150 }}>
+        <EmptyState icon="❖" title="No memory yet" hint="The agent hasn't written anything down." />
+      </div>
     {/if}
     {#if editing}
       <InternalEditorModal

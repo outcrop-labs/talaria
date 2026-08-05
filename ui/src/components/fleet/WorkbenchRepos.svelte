@@ -4,6 +4,7 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { getJson } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
   import { p } from '@/router'
 
   // Explicit per-agent repo grants — the workbench touches ONLY these.
@@ -55,7 +56,7 @@
           </Chip>
         {/each}
       </div>
-      {#if d.granted.length === 0}<p class="text-xs text-muted">Nothing granted yet — the workbench can't touch any repo.</p>{/if}
+      {#if d.granted.length === 0}<p transition:slide={{ duration: 150 }} class="text-xs text-muted">Nothing granted yet — the workbench can't touch any repo.</p>{/if}
     </div>
   {/snippet}
 </QueryState>

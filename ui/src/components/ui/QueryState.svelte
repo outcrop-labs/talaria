@@ -1,6 +1,7 @@
 <script lang="ts" generics="T">
   import type { Snippet } from 'svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import { fade } from '@/lib/motion'
   import QueryError from './QueryError.svelte'
   import { isEmptyValue, type QueryLike } from './query-state'
 
@@ -47,7 +48,10 @@
 <!-- A failed BACKGROUND refetch keeps showing the last good data — stale beats
      blank. Only a failure with nothing to fall back on takes over the surface. -->
 {#if query.isError && query.data === undefined}
-  <QueryError error={query.error} title={errorTitle} variant={errorVariant} onRetry={() => void query.refetch()} />
+  <!-- h-full keeps the height chain intact for the 'full' variant's centering. -->
+  <div class="h-full" in:fade={{ duration: 150 }}>
+    <QueryError error={query.error} title={errorTitle} variant={errorVariant} onRetry={() => void query.refetch()} />
+  </div>
 {:else if query.data === undefined && query.isPending && query.fetchStatus === 'idle'}
   <!-- Pending + idle = switched off. An enabled query is already 'fetching' on
        its very first render, so this branch can only be the disabled case. The
@@ -62,7 +66,9 @@
 {:else if query.data === undefined}
   {@render skeleton()}
 {:else if empty !== undefined && isEmpty(query.data)}
-  {@render empty()}
+  <div class="h-full" in:fade={{ duration: 150 }}>
+    {@render empty()}
+  </div>
 {:else}
   {@render children(query.data)}
 {/if}

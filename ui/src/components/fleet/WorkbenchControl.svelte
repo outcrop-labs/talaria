@@ -6,6 +6,7 @@
   import Select from '@/components/ui/Select.svelte'
   import { getList } from '@/lib/fetch-json'
   import { patchAgentMeta, type AgentDef } from '@/lib/fleet-defs'
+  import { slide } from '@/lib/motion'
   import { type WorkbenchProfileLite } from './workbench'
   import WorkbenchRepos from './WorkbenchRepos.svelte'
   import WorkbenchTuning from './WorkbenchTuning.svelte'
@@ -93,16 +94,20 @@
   <!-- "Nothing fits" and "we could not ask" are different answers. Only the
        first one means an admin should go build a profile. -->
   {#if mode !== 'off' && profilesFailed}
-    <QueryError
-      variant="inline"
-      class="mt-1.5"
-      error={profilesQuery.error}
-      title="Could not load workbench profiles"
-      onRetry={() => void profilesQuery.refetch()}
-    />
+    <div transition:slide={{ duration: 150 }}>
+      <QueryError
+        variant="inline"
+        class="mt-1.5"
+        error={profilesQuery.error}
+        title="Could not load workbench profiles"
+        onRetry={() => void profilesQuery.refetch()}
+      />
+    </div>
   {/if}
   {#if isAdmin && mode !== 'off' && resolved}
-    <WorkbenchTuning {def} profile={resolved} {save} />
-    <WorkbenchRepos agentId={def.id} />
+    <div transition:slide={{ duration: 150 }}>
+      <WorkbenchTuning {def} profile={resolved} {save} />
+      <WorkbenchRepos agentId={def.id} />
+    </div>
   {/if}
 </div>

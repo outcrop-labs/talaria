@@ -16,7 +16,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import GoogleButton from './GoogleButton.svelte'
   import PasswordForm from './PasswordForm.svelte'
-  import { fly } from '@/lib/motion'
+  import { fly, slide } from '@/lib/motion'
   import { useProviders } from '@/lib/session'
 
   let { error }: { error?: string } = $props()
@@ -36,7 +36,7 @@
     <ThemeToggle />
   </div>
 
-  <div in:fly={{ y: 16, duration: 500 }} class="w-full max-w-sm">
+  <div in:fly={{ y: 8, duration: 180 }} class="w-full max-w-sm">
     <Panel class="p-8">
       <div class="mb-6 flex flex-col items-center gap-2 text-center">
         <Brand showTag class="flex-col" />
@@ -46,7 +46,7 @@
 
       {#if error && ERROR_COPY[error]}
         <!-- Failure speaks safety-orange as an outline, never a fill (spec §8). -->
-        <div class="mb-4 rounded-md border border-danger/40 px-3 py-2 text-center font-sans text-sm text-danger">
+        <div transition:slide={{ duration: 150 }} class="mb-4 rounded-md border border-danger/40 px-3 py-2 text-center font-sans text-sm text-danger">
           {ERROR_COPY[error]}
         </div>
       {/if}

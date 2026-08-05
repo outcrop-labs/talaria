@@ -33,6 +33,7 @@
   import { addEndpoint, patchEndpoint } from '@/lib/models'
   import { getJson } from '@/lib/fetch-json'
   import { cn } from '@/lib/cn'
+  import { slide } from '@/lib/motion'
   import { p } from '@/router'
 
   // Shown on the surfaces that cannot work without a model. Admins get the
@@ -97,7 +98,7 @@
 <!-- A resolved empty catalog is the gap. Pending is not, and neither is a
      failed read — /api/models answering 500 must not read as "no models". -->
 {#if !models.isPending && !models.isError && (models.data?.models.length ?? 0) === 0}
-  <div class={cn('rounded-md border border-line bg-raised/40 p-4', className)}>
+  <div transition:slide={{ duration: 150 }} class={cn('rounded-md border border-line bg-raised/40 p-4', className)}>
     <p class="mb-1 text-sm text-fg">No model is configured yet.</p>
     <p class="mb-3 text-xs leading-relaxed text-muted">
       {isAdmin

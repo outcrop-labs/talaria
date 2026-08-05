@@ -6,6 +6,7 @@
   import Combobox from '@/components/ui/Combobox.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
+  import { fade, slide } from '@/lib/motion'
   import UserPicker from '@/components/app/UserPicker.svelte'
   import {
     addChannelAgent,
@@ -85,7 +86,9 @@
       <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">People</div>
       <ul class="space-y-1">
         {#each detail.members as m (m.userId)}
-          <li class="flex items-center gap-2 text-sm">
+          <!-- Fires only for live add/remove while the modal is open — the
+              Modal's own transition covers the initial roster (local default). -->
+          <li in:fade={{ duration: 150 }} out:slide={{ duration: 150 }} class="flex items-center gap-2 text-sm">
             <Avatar name={m.name ?? m.email} class="h-6 w-6 text-xs" />
             <span class="min-w-0 flex-1 truncate">
               {m.name ?? m.email}
@@ -120,7 +123,7 @@
     </section>
 
     {#if error}
-      <div class="text-sm" style="color: var(--theme-danger)">
+      <div transition:slide={{ duration: 150 }} class="text-sm" style="color: var(--theme-danger)">
         {error}
       </div>
     {/if}

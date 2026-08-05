@@ -4,6 +4,7 @@
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { getList } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
 
   /** Agent repo creation: which orgs allow it, and the pending request queue
    *  (agents propose, THIS is where humans ratify — approval creates the repo
@@ -88,5 +89,5 @@
       <Button size="sm" variant="ghost" onclick={() => void decide(r.id, 'reject')}>Reject</Button>
     </div>
   {/each}
-  {#if decideError}<div class="text-xs text-danger">{decideError}</div>{/if}
+  {#if decideError}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{decideError}</div>{/if}
 </div>

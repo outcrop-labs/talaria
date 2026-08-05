@@ -6,6 +6,7 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { getList } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
   import { type CronJob } from './agent-crons'
   import CronForm from './CronForm.svelte'
   import CronListSkeleton from './CronListSkeleton.svelte'
@@ -113,5 +114,5 @@
     {/snippet}
   </QueryState>
   <CronForm onCreate={create} {busy} />
-  {#if err}<p class="text-xs text-danger">{err}</p>{/if}
+  {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
 </div>

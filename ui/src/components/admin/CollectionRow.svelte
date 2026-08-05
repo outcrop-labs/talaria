@@ -5,6 +5,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import { slide } from '@/lib/motion'
   import { useAgents } from '@/lib/agents'
   import { useUsers } from '@/lib/users'
   import { useTeams } from '@/lib/teams'
@@ -97,7 +98,7 @@
         </div>
       {/if}
       {#if !bindingsAll && !pickersPending}
-        <div class="flex flex-col gap-2 sm:flex-row">
+        <div transition:slide={{ duration: 150 }} class="flex flex-col gap-2 sm:flex-row">
           <Combobox
             options={teams.map((t) => ({ value: t.id, label: t.name }))}
             selected={boundTeams}
@@ -128,7 +129,7 @@
         </div>
       {/if}
       {#if !bindingsAll && (teamsList.notice || usersList.notice)}
-        <div class="space-y-1">
+        <div transition:slide={{ duration: 150 }} class="space-y-1">
           {#if teamsList.notice}<QueryError {...teamsList.notice} />{/if}
           {#if usersList.notice}<QueryError {...usersList.notice} />{/if}
         </div>

@@ -3,6 +3,7 @@
   import CopyButton from '@/components/ui/CopyButton.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import { slide } from '@/lib/motion'
   import { OAUTH_APP_PORTALS, patchServer } from './mcp'
 
   /** Credentials form for providers without dynamic client registration: shows
@@ -59,7 +60,7 @@
     {/if}
   </div>
   {#if openForm}
-    <div class="mt-3 space-y-3">
+    <div transition:slide={{ duration: 150 }} class="mt-3 space-y-3">
       <div>
         <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Callback URL (register this with the provider)</label>
         <div class="flex items-center gap-2">
@@ -77,7 +78,7 @@
           <Input type="password" bind:value={clientSecret} autocomplete="off" />
         </div>
       </div>
-      {#if error}<div class="text-xs text-danger">{error}</div>{/if}
+      {#if error}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</div>{/if}
       <div class="flex justify-end gap-2">
         <Button size="sm" variant="ghost" onclick={() => (openForm = false)}>
           Cancel

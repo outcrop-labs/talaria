@@ -8,6 +8,7 @@
   import Select from '@/components/ui/Select.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import { fade, slide } from '@/lib/motion'
   import TargetFields from './TargetFields.svelte'
   import { fmtBytes, useStorageAdmin, type StorageAdmin } from './storage'
 
@@ -178,7 +179,7 @@
         everything already stored — disk, built-in, or external — into the replica bucket.
       </p>
       {#if cfg.replica.enabled}
-        <div class="mt-2 grid gap-2 sm:grid-cols-2">
+        <div transition:slide={{ duration: 150 }} class="mt-2 grid gap-2 sm:grid-cols-2">
           <TargetFields t={cfg.replica} secret={replicaSecret} onChange={setReplica} onSecret={(v) => (replicaSecret = v)} />
           <div class="flex items-center gap-2 sm:col-span-2">
             <Button size="sm" variant="outline" onclick={() => void act('test-replica')} disabled={busy || !cfg.replica.hasSecret}>
@@ -201,7 +202,9 @@
           Test connection
         </Button>
       {/if}
-      {#if note}<span class={`text-xs ${note.ok ? 'text-muted' : 'text-danger'}`}>{note.text}</span>{/if}
+      <!-- Inline (non-block) status word — slide can't animate an inline box's
+           height, so this one notice fades instead. -->
+      {#if note}<span transition:fade={{ duration: 150 }} class={`text-xs ${note.ok ? 'text-muted' : 'text-danger'}`}>{note.text}</span>{/if}
     </div>
   {/if}
 </Panel>

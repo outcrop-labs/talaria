@@ -36,7 +36,7 @@
     </span>
   </button>
   {#if open}
-    <div transition:slide={{ duration: 180 }}>
+    <div transition:slide={{ duration: 150 }}>
       <div class="border-t border-line px-3 py-2">{@render children()}</div>
     </div>
   {/if}

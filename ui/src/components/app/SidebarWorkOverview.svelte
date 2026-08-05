@@ -17,6 +17,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { cn } from '@/lib/cn'
+  import { fade, slide } from '@/lib/motion'
   import { getList } from '@/lib/fetch-json'
   import { useBoards, type Board } from '@/lib/boards.svelte'
   import { p } from '@/router'
@@ -126,13 +127,15 @@
   {#if loading}
     <div class="px-2 pt-3 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">Searching…</div>
   {:else if projects.length === 0 && taskRows.length === 0}
-    <div class="px-2 pt-3 font-sans text-[11px] leading-4 text-muted">
+    <div in:fade={{ duration: 150 }} class="px-2 pt-3 font-sans text-[11px] leading-4 text-muted">
       No projects or tasks match “{query.trim()}”.
     </div>
   {:else}
     <div class="mt-2 max-h-52 space-y-0.5 overflow-y-auto">
       {#each projects as board (board.id)}
         <a
+          in:fade={{ duration: 150 }}
+          out:slide={{ duration: 120 }}
           href={p('/boards/:boardId', { params: { boardId: board.id } })}
           onclick={() => (query = '')}
           class="flex min-h-8 items-center gap-2 rounded-md px-2 py-1 text-muted transition-colors hover:bg-hover hover:text-fg"
@@ -144,6 +147,8 @@
       {/each}
       {#each taskRows as task (task.id)}
         <a
+          in:fade={{ duration: 150 }}
+          out:slide={{ duration: 120 }}
           href={p('/boards/:boardId/:taskId', { params: { boardId: task.boardId, taskId: task.id } })}
           onclick={() => (query = '')}
           class="flex min-h-8 items-start gap-2 rounded-md px-2 py-1.5 text-muted transition-colors hover:bg-hover hover:text-fg"

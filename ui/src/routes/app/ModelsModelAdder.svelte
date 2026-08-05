@@ -3,6 +3,7 @@
   import Input from '@/components/ui/Input.svelte'
   import { popPanel, popRow } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
+  import { fade, scale, POP, QUICK } from '@/lib/motion'
 
   // Add a model to a provider: browse/search its live catalog (in the provider's
   // own order — OpenRouter lists newest first), or type any id (multi-model
@@ -34,7 +35,11 @@
     </Button>
   </div>
   {#if open && suggestions.length > 0}
-    <div class={cn(popPanel, 'absolute z-10 mt-1 max-h-52 w-full overflow-y-auto')}>
+    <div
+      in:scale={{ ...POP, start: 0.97 }}
+      out:fade={QUICK}
+      class={cn(popPanel, 'absolute z-10 mt-1 max-h-52 w-full origin-top overflow-y-auto')}
+    >
       {#each suggestions as m (m)}
         <button
           type="button"

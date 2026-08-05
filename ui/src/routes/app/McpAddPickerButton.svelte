@@ -3,6 +3,7 @@
   import Input from '@/components/ui/Input.svelte'
   import { popPanel, popRow } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
+  import { fade, scale, POP, QUICK } from '@/lib/motion'
 
   /** A "+" that opens a search popover anchored to itself — pick to commit.
    *  The attach-menu pattern: outside click or Esc dismisses. */
@@ -60,7 +61,11 @@
     <Plus size={14} />
   </button>
   {#if open}
-    <div class={cn(popPanel, 'absolute right-0 top-full z-30 mt-1 w-64 p-1.5')}>
+    <div
+      in:scale={{ ...POP, start: 0.97 }}
+      out:fade={QUICK}
+      class={cn(popPanel, 'absolute right-0 top-full z-30 mt-1 w-64 origin-top-right p-1.5')}
+    >
       <Input autofocus size="sm" bind:value={q} {placeholder} class="mb-1" />
       <div class="max-h-48 overflow-y-auto">
         {#if results.length === 0}<div class="px-2 py-1.5 text-xs text-muted">No matches</div>{/if}

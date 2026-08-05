@@ -10,6 +10,7 @@
   import { cn } from '@/lib/cn'
   import { getJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
 
   interface GoogleStatus {
     available: boolean
@@ -114,7 +115,7 @@
   {/if}
 
   {#if flash}
-    <div class={cn('mt-3 text-xs', flash === 'connected' ? 'text-success' : 'text-danger')}>
+    <div transition:slide={{ duration: 150 }} class={cn('mt-3 text-xs', flash === 'connected' ? 'text-success' : 'text-danger')}>
       {flashText[flash] ?? flash}
     </div>
   {/if}

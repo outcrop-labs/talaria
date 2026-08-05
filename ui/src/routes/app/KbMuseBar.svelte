@@ -4,6 +4,7 @@
   import CloseButton from '@/components/ui/CloseButton.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
+  import { slide } from '@/lib/motion'
   import { streamMuse } from '@/lib/muse.svelte'
 
   /** Muse as the knowledge worker — ALWAYS present under the doc (read and
@@ -113,7 +114,7 @@
       </div>
     </div>
   {/if}
-  {#if error}<div class="text-xs text-danger">{error}</div>{/if}
+  {#if error}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</div>{/if}
   <div class="flex items-end gap-2">
     <Sparkles size={14} class="mb-2.5 shrink-0 text-accent" />
     <Textarea

@@ -2,7 +2,7 @@
   import { SlidersHorizontal, GripVertical } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, flip, scale, LIST, POP, QUICK } from '@/lib/motion'
   import { popHeader, popPanel } from '@/components/chat/chat-chrome'
   import { LIST_COLUMNS, type ColumnKey } from './board-list'
 
@@ -82,6 +82,7 @@
         {@const c = LIST_COLUMNS.find((x) => x.key === key)!}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
+          animate:flip={LIST}
           draggable="true"
           ondragstart={() => (dragKey = c.key)}
           ondragend={() => {

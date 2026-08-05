@@ -7,6 +7,7 @@
   import { submitOnEnter } from '@/components/ui/control'
   import Steps from '@/components/ui/Steps.svelte'
   import { reconcileFleet } from '@/lib/fleet-defs'
+  import { fade, slide, QUICK } from '@/lib/motion'
   import { cn } from '@/lib/cn'
 
   interface FederateResult {
@@ -73,7 +74,7 @@
     <Steps steps={STEPS} current={step} />
 
     {#if step === 0}
-      <div class="space-y-4">
+      <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-4">
         <p class="text-sm leading-relaxed text-muted">
           Point at a Hermes-format directory on the server (<code class="text-fg">agents.yaml</code> roster,
           each agent's <code class="text-fg">SOUL.md</code> + <code class="text-fg">config.yaml</code>).
@@ -92,12 +93,12 @@
             autofocus
           />
         </div>
-        {#if err}<p class="text-xs text-danger">{err}</p>{/if}
+        {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
       </div>
     {/if}
 
     {#if step === 1 && result}
-      <div class="space-y-3">
+      <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-3">
         <div class="text-sm text-fg">
           {fresh.length} federated · {result.agents.length - fresh.length} already here
         </div>
@@ -121,7 +122,7 @@
       </div>
     {/if}
 
-    {#if step === 2}<p class="text-sm text-fg">{started}</p>{/if}
+    {#if step === 2}<p in:fade={{ duration: 150, delay: 80 }} class="text-sm text-fg">{started}</p>{/if}
   </div>
 
   {#snippet footer()}

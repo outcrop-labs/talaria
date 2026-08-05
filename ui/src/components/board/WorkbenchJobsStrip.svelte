@@ -4,6 +4,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { getList } from '@/lib/fetch-json'
   import { cn } from '@/lib/cn'
+  import { slide } from '@/lib/motion'
 
   interface WbJob {
     id: string
@@ -53,7 +54,7 @@
      approval buttons beat a vanished gate. Only a failure with nothing to fall
      back on takes the strip's place, and it says what the reader is missing. -->
 {#if jobsQuery.isError && jobs === undefined}
-  <div class="mb-3 rounded-xl border border-[color:var(--theme-danger)]/40 bg-[color:var(--theme-danger)]/5 px-4 py-2.5">
+  <div transition:slide={{ duration: 150 }} class="mb-3 rounded-xl border border-[color:var(--theme-danger)]/40 bg-[color:var(--theme-danger)]/5 px-4 py-2.5">
     <QueryError
       variant="inline"
       error={jobsQuery.error}
@@ -65,7 +66,7 @@
     </p>
   </div>
 {:else if jobs !== undefined && live.length}
-  <div class="mb-3 space-y-2">
+  <div transition:slide={{ duration: 150 }} class="mb-3 space-y-2">
     {#each live as j (j.id)}
       <div
         class={cn(

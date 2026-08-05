@@ -6,6 +6,7 @@
   import Disclosure from '@/components/ui/Disclosure.svelte'
   import GeneratingDots from '@/components/ui/GeneratingDots.svelte'
   import GeneratingHelix from '@/components/ui/GeneratingHelix.svelte'
+  import { fade } from '@/lib/motion'
   import { resolveAgentMedia } from '@/lib/agent-media'
   import type { DisplayMessage } from './chat-view'
 
@@ -31,7 +32,7 @@
   const empty = $derived(!message.content && !hasReasoning && !hasTools)
 </script>
 
-<div class="flex gap-2.5" oncontextmenu={onContextMenu}>
+<div in:fade={{ duration: 150 }} class="flex gap-2.5" oncontextmenu={onContextMenu}>
   <MessageAvatar name={agentLabel} class="mt-0.5" />
   <div class="min-w-0 flex-1 space-y-2">
     <div class="flex items-baseline gap-2">
@@ -75,7 +76,10 @@
         <Markdown children={resolveAgentMedia(message.content, agentModel)} />
       </div>
     {/if}
-    {#if !live}<GuardCaveat findings={message.guard} />{/if}
+    <!-- Mounted unconditionally (findings nulled while live) so the caveat's
+        slide fires on the live→settled flip; behind an `{#if !live}` the
+        local transition would be suppressed by the ancestor block toggling. -->
+    <GuardCaveat findings={live ? null : message.guard} />
 
     <!-- Spec §9 state mapping: submitting (awaiting the first token) rides
         the fast gold SIGNAL WEAVE; once reasoning/tools stream but prose

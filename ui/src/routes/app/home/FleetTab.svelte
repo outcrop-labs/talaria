@@ -6,6 +6,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
+  import { fade } from '@/lib/motion'
   import ActivityList from './ActivityList.svelte'
   import FleetPulse from './FleetPulse.svelte'
   import type { HomeQuery } from './home'
@@ -19,7 +20,9 @@
 </script>
 
 {#if !home.data && home.isError}
-  <QueryError error={home.error} title="Could not load fleet status" onRetry={() => void home.refetch()} />
+  <div in:fade={{ duration: 150 }}>
+    <QueryError error={home.error} title="Could not load fleet status" onRetry={() => void home.refetch()} />
+  </div>
 {:else if !home.data}
   <div class="grid gap-6 lg:grid-cols-2">
     <div class="space-y-4">

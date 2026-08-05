@@ -11,6 +11,7 @@
   import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { popPanel } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
+  import { fade, scale, POP, QUICK } from '@/lib/motion'
   import { createArtifact, createFolder, deleteArtifact, saveArtifact, updateFolder, useArtifacts, useFolders, type Artifact, type ArtifactFolder, type ArtifactKind } from '@/lib/artifacts'
   import ArtifactEditor from './ArtifactEditor.svelte'
   import ArtifactFolderNode from './ArtifactFolderNode.svelte'
@@ -142,7 +143,14 @@
         </IconButton>
       </div>
       {#if newOpen}
-        <div class={cn(popPanel, 'absolute right-3 top-full z-30 mt-1 w-44')} onmouseleave={() => (newOpen = false)} role="menu" tabindex="-1">
+        <div
+          in:scale={{ ...POP, start: 0.97 }}
+          out:fade={QUICK}
+          class={cn(popPanel, 'absolute right-3 top-full z-30 mt-1 w-44 origin-top-right')}
+          onmouseleave={() => (newOpen = false)}
+          role="menu"
+          tabindex="-1"
+        >
           {#each NEW_KINDS as { kind, label, icon: Icon } (kind)}
             <button type="button" onclick={() => void create(kind)} class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-hover">
               <Icon size={13} /> {label}
@@ -165,9 +173,13 @@
         <!-- Both queries feed the same tree — reveal it once, fully formed. -->
         <SkeletonRows rows={6} class="px-2 py-3" />
       {:else if treeFailure && folders.length === 0 && artifacts.length === 0}
-        <QueryError variant="compact" error={treeFailure.error} title={treeFailure.title} onRetry={treeFailure.retry} />
+        <div in:fade={{ duration: 150 }}>
+          <QueryError variant="compact" error={treeFailure.error} title={treeFailure.title} onRetry={treeFailure.retry} />
+        </div>
       {:else if folders.length === 0 && artifacts.length === 0}
-        <EmptyState variant="inline" title="No artifacts yet." class="px-2 py-6 text-center" />
+        <div in:fade={{ duration: 150 }}>
+          <EmptyState variant="inline" title="No artifacts yet." class="px-2 py-6 text-center" />
+        </div>
       {:else}
         {#each rootFolders as f (f.id)}
           <ArtifactFolderNode

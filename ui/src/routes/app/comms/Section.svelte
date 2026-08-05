@@ -3,6 +3,7 @@
   import { Plus } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
+  import { slide } from '@/lib/motion'
   import Input from '@/components/ui/Input.svelte'
 
   // Sidebar section: the create affordance is a small "+" IN the heading (Slack-
@@ -54,7 +55,7 @@
     {/if}
   </div>
   {#if creating}
-    <div class="mb-1 px-1">
+    <div transition:slide={{ duration: 150 }} class="mb-1 px-1">
       <!-- svelte-ignore a11y_autofocus -->
       <Input
         autofocus

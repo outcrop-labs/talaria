@@ -14,6 +14,7 @@
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { HANDLE_RE, updateAssistant, useAssistant } from '@/lib/assistant'
+  import { slide } from '@/lib/motion'
   import { p } from '@/router'
 
   // §8 field label: 10px mono uppercase 0.08em ink-dim.
@@ -181,7 +182,7 @@
           />
         </div>
         {#if handle !== '' && !HANDLE_RE.test(handle)}
-          <p class="mt-1 text-xs text-danger">2–30 lowercase letters/numbers, starting with a letter.</p>
+          <p transition:slide={{ duration: 150 }} class="mt-1 text-xs text-danger">2–30 lowercase letters/numbers, starting with a letter.</p>
         {/if}
       </div>
     </div>
@@ -262,8 +263,8 @@
       </Button>
       <span class="text-xs text-muted">Changes apply right away. Your assistant restarts with them.</span>
     </div>
-    {#if saved}<div class="mt-2 text-xs text-success">Saved</div>{/if}
-    {#if error}<div class="mt-2 text-xs text-danger">{error}</div>{/if}
+    {#if saved}<div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-success">Saved</div>{/if}
+    {#if error}<div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">{error}</div>{/if}
     <div class="mt-6 border-t border-line pt-5">
       <AssistantPanels {assistant} />
     </div>

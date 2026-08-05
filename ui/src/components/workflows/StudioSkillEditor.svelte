@@ -8,6 +8,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { getJson } from '@/lib/fetch-json'
+  import { fade, QUICK } from '@/lib/motion'
   import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
 
   let {
@@ -64,7 +65,7 @@
      the real SKILL.md with an empty file. -->
 {#if !query.data}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onclick={query.isError ? onClose : undefined}>
+  <div out:fade={QUICK} class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onclick={query.isError ? onClose : undefined}>
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="w-full max-w-3xl space-y-3 rounded-lg border border-line bg-[var(--theme-panel)] p-6" onclick={(e) => e.stopPropagation()}>
       {#if query.isError}

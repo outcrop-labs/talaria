@@ -34,6 +34,7 @@
   import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
+  import { fade, slide, QUICK } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { HANDLE_RE, createAssistant, suggestHandle, type Assistant } from '@/lib/assistant'
   import { navigate } from '@/router'
@@ -131,7 +132,7 @@
     {#if !created}<Steps steps={STEPS} current={step} />{/if}
 
     {#if created}
-      <div class="space-y-2 py-2 text-center">
+      <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-2 py-2 text-center">
         <span class="mx-auto grid h-11 w-11 place-items-center rounded-lg bg-accent-soft text-accent">
           <Sparkles size={20} />
         </span>
@@ -142,7 +143,7 @@
         </p>
       </div>
     {:else if step === 0}
-      <div class="space-y-4">
+      <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-4">
         <p class="text-sm text-muted">
           Your assistant is a real agent that's just yours: its own memory, skills, and tools. Start by naming it.
         </p>
@@ -172,7 +173,7 @@
         </div>
       </div>
     {:else if step === 1}
-      <div class="space-y-3">
+      <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-3">
         <p class="text-sm text-muted">
           How should {name.trim() || 'it'} come across? Pick a starting point or write your own. You can refine it
           any time.
@@ -208,7 +209,7 @@
         </div>
       </div>
     {:else}
-      <div class="space-y-3">
+      <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-3">
         <p class="text-sm text-muted">Ready to go. Creating it starts a private workspace. This can take a minute.</p>
         <dl class="space-y-2 rounded-lg border border-line bg-panel p-3 text-sm">
           <div class="flex items-baseline gap-2">
@@ -226,7 +227,7 @@
             </dd>
           </div>
         </dl>
-        {#if error}<p class="text-xs text-danger">{error}</p>{/if}
+        {#if error}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</p>{/if}
       </div>
     {/if}
   </div>

@@ -21,6 +21,7 @@
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
   import { cn } from '@/lib/cn'
+  import { fade, fly, QUICK } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { deleteDoc, saveDoc, useBacklinks, useDoc, type KbDocMeta } from '@/lib/kb'
@@ -192,13 +193,17 @@
 <!-- Same three answers, same collapse: twelve skeleton bars that never resolve,
      for a 500 and for a document that genuinely no longer exists. -->
 {#if docQuery.isError && doc === undefined}
-  <QueryError
-    error={docQuery.error}
-    title="Could not load this document"
-    onRetry={() => void docQuery.refetch()}
-  />
+  <div in:fade={{ duration: 150 }}>
+    <QueryError
+      error={docQuery.error}
+      title="Could not load this document"
+      onRetry={() => void docQuery.refetch()}
+    />
+  </div>
 {:else if doc === null}
-  <EmptyState icon="⧉" title="Document not found" hint="It may have been deleted, or you don’t have access." />
+  <div in:fade={{ duration: 150 }}>
+    <EmptyState icon="⧉" title="Document not found" hint="It may have been deleted, or you don’t have access." />
+  </div>
 {:else if !doc}
   <KbDocPageSkeleton breadcrumb bars={12} />
 {:else}
@@ -634,7 +639,7 @@
         />
       {/if}
       {#if showHistory}
-        <div class="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+        <div in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
           <KbHistoryRail
             id={docId}
             onRestore={async (content) => {

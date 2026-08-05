@@ -5,6 +5,7 @@
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
+  import { slide } from '@/lib/motion'
   import { patchServer, slugify } from './mcp'
 
   let { onClose }: { onClose: () => void } = $props()
@@ -129,7 +130,7 @@
         <Input value={timeoutSecs} oninput={(e) => (timeoutSecs = e.currentTarget.value.replace(/[^0-9]/g, ''))} placeholder="120" class="w-32" />
       </div>
     </details>
-    {#if error}<div class="text-sm text-danger">{error}</div>{/if}
+    {#if error}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{error}</div>{/if}
     <div class="flex justify-end gap-2 border-t border-line pt-3">
       <Button variant="ghost" size="sm" onclick={onClose}>
         Cancel

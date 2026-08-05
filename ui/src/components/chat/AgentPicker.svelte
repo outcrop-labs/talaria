@@ -1,6 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
-  import { fly } from '@/lib/motion'
+  import { fade, QUICK } from '@/lib/motion'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import PopSearch from '@/components/chat/PopSearch.svelte'
@@ -75,7 +75,9 @@
   </button>
 
   {#if open}
-    <div transition:fly={{ y: -6, duration: 150 }} class={cn(popPanel, 'absolute left-0 z-20 mt-2', fullWidth ? 'w-full' : 'w-64')}>
+    <!-- Entrance comes from popPanel's gd-enter (the §9 popover motif) — the
+        old fly on top of it double-animated. Exit gains the grammar fade. -->
+    <div out:fade={QUICK} class={cn(popPanel, 'absolute left-0 z-20 mt-2', fullWidth ? 'w-full' : 'w-64')}>
       <!-- §7 popover pattern: search field on top (mono placeholder, ⌘K hint). -->
       <PopSearch value={q} onChange={(v) => (q = v)} placeholder="Search agents" />
       <ul class="max-h-72 overflow-auto">

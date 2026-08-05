@@ -2,6 +2,7 @@
   import { LogOut, SunMoon } from '@lucide/svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
+  import { fade, scale, POP, QUICK } from '@/lib/motion'
   import type { SessionUser } from '@/lib/session'
 
   // The strip's only control: status dot + account email, with everything
@@ -35,7 +36,14 @@
     </span>
   </button>
   {#if open}
-    <div class="gd-enter absolute right-0 top-full z-30 mt-2 w-64 rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]">
+    <!-- Was the gd-enter CSS motif from the migration: entrance only, no exit,
+         outside the @/lib/motion reduced-motion wrapper — swapped for the
+         popover grammar. -->
+    <div
+      in:scale={{ ...POP, start: 0.97 }}
+      out:fade={QUICK}
+      class="absolute right-0 top-full z-30 mt-2 w-64 origin-top-right rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]"
+    >
       <div class="flex items-center gap-2.5 border-b border-line px-3 py-2.5">
         <Avatar src={user.picture} name={user.name ?? user.email} class="h-8 w-8 shrink-0" />
         <div class="min-w-0">

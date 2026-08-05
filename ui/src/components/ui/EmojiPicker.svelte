@@ -53,7 +53,7 @@
 <script lang="ts">
   import Input from '@/components/ui/Input.svelte'
   import { cn } from '@/lib/cn'
-  import { scale, POP } from '@/lib/motion'
+  import { fade, scale, POP, QUICK } from '@/lib/motion'
   import { popHeader, popPanel } from '@/components/chat/chat-chrome'
 
   let {
@@ -109,10 +109,11 @@
 <div
   bind:this={el}
   in:scale={POP}
+  out:fade={QUICK}
   class={cn(
     popPanel,
     'absolute top-full z-30 mt-1 w-72 p-2',
-    align === 'right' ? 'right-0' : 'left-0',
+    align === 'right' ? 'right-0 origin-top-right' : 'left-0 origin-top-left',
   )}
 >
   <Input autofocus size="sm" bind:value={q} placeholder="Search emoji" class="mb-2" />

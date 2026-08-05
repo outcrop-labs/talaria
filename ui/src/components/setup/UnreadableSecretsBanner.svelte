@@ -8,6 +8,7 @@
 
 <script lang="ts">
   import { p } from '@/router'
+  import { slide } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { useSecretHealth } from '@/lib/secrets'
 
@@ -41,7 +42,7 @@
 </script>
 
 {#if data && (broken || data.counts.unreadable > 0) && dismissed !== situation}
-  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-danger/40 bg-danger/5 px-4 py-2">
+  <div transition:slide={{ duration: 150 }} class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-danger/40 bg-danger/5 px-4 py-2">
     <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-danger">
       {data.root.state === 'absent' ? 'No encryption root' : 'Secrets unreadable'}
     </span>

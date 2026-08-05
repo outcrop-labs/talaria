@@ -10,6 +10,7 @@
   import ActivityRow from '@/components/app/ActivityRow.svelte'
   import { getList } from '@/lib/fetch-json'
   import { cn } from '@/lib/cn'
+  import { slide } from '@/lib/motion'
   import type { FeedEvent } from './home'
 
   // Shared: an area-scoped slice of the workspace activity feed.
@@ -42,21 +43,23 @@
   {:else}
     <SectionHeader {title} />
   {/if}
-  {#if !expanded}
-    <!-- collapsed: nothing -->
-  {:else if query.isLoading}
-    <SkeletonRows rows={6} />
-  {:else if query.data === undefined}
-    <!-- No data and not loading = the read broke. "Quiet so far." is a claim
-         about the feed, and a failed feed cannot make it. -->
-    <QueryError variant="inline" error={query.error} title="Could not load activity" onRetry={() => void query.refetch()} />
-  {:else if query.data.length === 0}
-    <EmptyState variant="inline" title="Quiet so far." />
-  {:else}
-    <ul>
-      {#each query.data.slice(0, 12) as a, i (i)}
-        <ActivityRow actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigateHref(a.href)} />
-      {/each}
-    </ul>
+  {#if expanded}
+    <div transition:slide={{ duration: 150 }}>
+      {#if query.isLoading}
+        <SkeletonRows rows={6} />
+      {:else if query.data === undefined}
+        <!-- No data and not loading = the read broke. "Quiet so far." is a claim
+             about the feed, and a failed feed cannot make it. -->
+        <QueryError variant="inline" error={query.error} title="Could not load activity" onRetry={() => void query.refetch()} />
+      {:else if query.data.length === 0}
+        <EmptyState variant="inline" title="Quiet so far." />
+      {:else}
+        <ul>
+          {#each query.data.slice(0, 12) as a, i (i)}
+            <ActivityRow actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigateHref(a.href)} />
+          {/each}
+        </ul>
+      {/if}
+    </div>
   {/if}
 </Panel>

@@ -6,6 +6,7 @@
   import UserPicker from '@/components/app/UserPicker.svelte'
   import { alert } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
+  import { fade } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { sharePlan, unsharePlan, usePlanMembers } from '@/lib/conversations.svelte'
 
@@ -57,19 +58,23 @@
     </div>
     {#if isOwner}
       {#if adding}
-        <UserPicker
-          size="sm"
-          class="w-48"
-          placeholder="Share with"
-          exclude={members.map((m) => m.userId)}
-          onPick={(u) => {
-            adding = false
-            if (!u.email) return
-            void sharePlan(planId, u.email)
-              .then(refresh)
-              .catch((e) => void alert({ title: 'Could not share', message: (e as Error).message }))
-          }}
-        />
+        <!-- Fade, not slide: an in-place swap in a horizontal row — a height
+             slide would jiggle the header. -->
+        <div in:fade={{ duration: 150 }}>
+          <UserPicker
+            size="sm"
+            class="w-48"
+            placeholder="Share with"
+            exclude={members.map((m) => m.userId)}
+            onPick={(u) => {
+              adding = false
+              if (!u.email) return
+              void sharePlan(planId, u.email)
+                .then(refresh)
+                .catch((e) => void alert({ title: 'Could not share', message: (e as Error).message }))
+            }}
+          />
+        </div>
       {:else}
         <button
           type="button"

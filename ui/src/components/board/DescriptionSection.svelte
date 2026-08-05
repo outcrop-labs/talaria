@@ -98,11 +98,14 @@
 
   <!-- Expanded view — slides in over the whole ticket modal (no stacked modal).
        The modal panel is `relative`, so inset-0 covers it edge to edge.
-       (framer's ease [0.4,0,0.2,1] → the fly wrapper's default cubicOut.) -->
+       (framer's ease [0.4,0,0.2,1] → the fly wrapper's default cubicOut.)
+       Deviation from the panel grammar's 8–16px travel: this is a full-cover
+       sheet, so it keeps its ported full-width slide; duration clamped from
+       220ms to the contract's 200ms ceiling. -->
   {#if reading}
     <div
       class="absolute inset-0 z-30 flex flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]"
-      transition:fly={{ x: '100%', duration: 220 }}
+      transition:fly={{ x: '100%', duration: 200 }}
     >
       <div class="flex items-center gap-3 border-b border-line-subtle px-5 py-3">
         <button

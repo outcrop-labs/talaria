@@ -18,6 +18,7 @@
   import { useAgents } from '@/lib/agents'
   import { useSession } from '@/lib/session'
   import { relativeTime } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
   import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
   import { useEnabledApps } from '@/lib/apps'
   import AdminEmailPanel from './AdminEmailPanel.svelte'
@@ -141,7 +142,7 @@
             info="Roles, per-person agent access, and which views each member can reach. Empty = all (open by default); pick any to restrict. Admins always have full access."
           />
           {#if error}
-            <div class="mb-2 text-xs text-danger">
+            <div transition:slide={{ duration: 150 }} class="mb-2 text-xs text-danger">
               {error}
             </div>
           {/if}

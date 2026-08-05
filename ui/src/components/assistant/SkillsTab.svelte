@@ -25,6 +25,7 @@ Describe when your assistant should use this skill and how.
   import SkillEditor from './SkillEditor.svelte'
   import { getList } from '@/lib/fetch-json'
   import { type Assistant } from '@/lib/assistant'
+  import { fade, slide, QUICK } from '@/lib/motion'
 
   let { assistant }: { assistant: Assistant } = $props()
 
@@ -102,7 +103,7 @@ Describe when your assistant should use this skill and how.
     {#snippet children(skills)}
       <ul class="divide-y divide-line rounded-lg border border-line">
         {#each skills as s (s.name)}
-          <li>
+          <li in:fade={{ duration: 150 }} out:fade={QUICK}>
             <button
               type="button"
               onclick={() => (open = s.name)}
@@ -132,7 +133,7 @@ Describe when your assistant should use this skill and how.
       <Plus size={14} /> Add
     </Button>
   </div>
-  {#if error}<p class="text-xs text-danger">{error}</p>{/if}
+  {#if error}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</p>{/if}
   {#if open !== null}
     <SkillEditor {assistant} name={open} onClose={() => (open = null)} onChanged={() => void refresh()} />
   {/if}

@@ -41,6 +41,10 @@ export type InputProps = ComponentProps<typeof Input>
 export type TextareaProps = ComponentProps<typeof Textarea>
 export type SelectProps = ComponentProps<typeof Select>
 export { buttonClasses } from '@/components/ui/button'
+// Motion grammar (ANIMATIONS.md): apps animate with the same reduced-motion-
+// aware wrappers and presets as the host, via the SDK — never a relative
+// reach into ui/src.
+export { fade, fly, scale, slide, flip, QUICK, POP, PANEL, LIST } from '@/lib/motion'
 export { default as IconButton } from '@/components/ui/IconButton.svelte'
 export { default as Combobox } from '@/components/ui/Combobox.svelte'
 export { type ComboOption } from '@/components/ui/combobox'

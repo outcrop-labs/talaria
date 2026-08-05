@@ -6,6 +6,7 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { getJson, getList } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
 
   interface Rev {
     id: string
@@ -44,7 +45,9 @@
 <div>
   <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">History</div>
   {#if restoreError !== null}
-    <QueryError variant="inline" class="mb-2 px-2" title="Could not restore that version" error={restoreError} />
+    <div transition:slide={{ duration: 150 }}>
+      <QueryError variant="inline" class="mb-2 px-2" title="Could not restore that version" error={restoreError} />
+    </div>
   {/if}
   <!-- The loading/empty/failed fork lives in QueryState so the "No saved
        revisions yet." sentence can only ever come from a real 200-with-[] —

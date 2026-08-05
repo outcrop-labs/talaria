@@ -6,7 +6,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { cn } from '@/lib/cn'
-  import { fly, PANEL } from '@/lib/motion'
+  import { fade, fly, PANEL, QUICK } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useMarkNotificationsRead, useNotifications, type Notification } from '@/lib/notifications'
   import { navigateHref } from '@/router'
@@ -91,9 +91,9 @@
       />
     {/if}
     {#if expanded}
-      <ul in:fly={PANEL} class="max-h-80 space-y-1 overflow-y-auto">
+      <ul in:fly={PANEL} out:fade={QUICK} class="max-h-80 space-y-1 overflow-y-auto">
         {#each items as n (n.id)}
-          <li>
+          <li in:fade={{ duration: 150 }} out:fade={QUICK}>
             <button
               type="button"
               onclick={() => open(n)}

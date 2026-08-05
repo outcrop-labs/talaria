@@ -7,6 +7,7 @@
 // Usage is identical to svelte/transition:
 //   <div transition:fade>            import { fade } from '@/lib/motion'
 //   <div in:fly={{ y: 8 }}>          import { fly } from '@/lib/motion'
+import { flip as svFlip, type FlipParams, type AnimationConfig } from 'svelte/animate'
 import {
   fade as svFade,
   fly as svFly,
@@ -45,11 +46,20 @@ export function slide(node: Element, params?: SlideParams): TransitionConfig {
   return reducedMotion() ? degrade(node, params) : svSlide(node, params)
 }
 
+/** Keyed-list reorder animation (`animate:flip`), reduced-motion-aware like
+ *  the transitions above. Under reduced motion items jump — position change
+ *  is information, and a fade can't carry it, so instant is the honest form. */
+export function flip(node: HTMLElement, positions: { from: DOMRect; to: DOMRect }, params?: FlipParams): AnimationConfig {
+  return reducedMotion() ? { duration: 0 } : svFlip(node, positions, params)
+}
+
 // House defaults, so surfaces feel like one system rather than 141 opinions:
 //   modals/popovers  in:scale={POP}  out:fade={QUICK}
 //   panels/drawers   fly with a small travel (8–16px), 150–200ms
 //   list/row reveal  slide (height) or fade, ≤150ms
+//   reorder/move     animate:flip={LIST} on the keyed {#each} items
 //   banners          slide
 export const QUICK: FadeParams = { duration: 120 }
 export const POP: ScaleParams = { duration: 160, start: 0.96 }
 export const PANEL: FlyParams = { duration: 180, y: 8 }
+export const LIST: FlipParams = { duration: 150 }

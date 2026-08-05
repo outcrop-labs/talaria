@@ -14,6 +14,7 @@
   import UserTurn from './UserTurn.svelte'
   import AssistantTurn from './AssistantTurn.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import { slide } from '@/lib/motion'
   import { queueChatMessage, streamChat } from '@/lib/chat'
   import { mergeTool } from '@/lib/sse-parse'
   import { loadConversation } from '@/lib/conversations.svelte'
@@ -328,7 +329,9 @@
         {/if}
       {/each}
     {/if}
-    {#if error}<div class="text-center text-sm" style:color="var(--theme-danger)">{error}</div>{/if}
+    {#if error}
+      <div transition:slide={{ duration: 150 }} class="text-center text-sm" style:color="var(--theme-danger)">{error}</div>
+    {/if}
   </div>
 
   <div class="relative px-6 pb-6">

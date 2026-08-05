@@ -19,6 +19,7 @@
   import Markdown from '@/components/ui/Markdown.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
+  import { fade, fly, slide, PANEL, QUICK } from '@/lib/motion'
   import { getJson } from '@/lib/fetch-json'
   import { useAgents } from '@/lib/agents'
   import { splitAttachments, uploadFile, type Attachment } from '@/lib/attachments'
@@ -479,14 +480,16 @@
       {:else}
         <div class="space-y-5">
           {#each entries as entry (entry.id)}
-            <TimelineEntry
-              {entry}
-              readOnly={!focusMode}
-              {onConfirm}
-              {onCancel}
-              {onRetry}
-              {onUndo}
-            />
+            <div in:fade={{ duration: 150 }} out:fade={QUICK}>
+              <TimelineEntry
+                {entry}
+                readOnly={!focusMode}
+                {onConfirm}
+                {onCancel}
+                {onRetry}
+                {onUndo}
+              />
+            </div>
           {/each}
           {#if streaming}
             <div class="ml-auto max-w-[86%] rounded-xl rounded-br-sm border border-line bg-raised px-3 py-2.5 font-sans text-[13px] leading-5 text-fg">
@@ -504,10 +507,10 @@
     </div>
 
     <div class="shrink-0 border-t border-line bg-sidebar/95 p-2 backdrop-blur">
-      {#if notice}<div role="status" class="mb-2 rounded-md border border-line bg-panel px-3 py-2 font-sans text-[11px] leading-4 text-muted">{notice}</div>{/if}
-      {#if attachmentError}<div role="alert" class="mb-2 rounded-md border border-danger/45 bg-panel px-3 py-2 font-sans text-[11px] leading-4 text-danger">{attachmentError}</div>{/if}
+      {#if notice}<div role="status" transition:slide={{ duration: 150 }} class="mb-2 rounded-md border border-line bg-panel px-3 py-2 font-sans text-[11px] leading-4 text-muted">{notice}</div>{/if}
+      {#if attachmentError}<div role="alert" transition:slide={{ duration: 150 }} class="mb-2 rounded-md border border-danger/45 bg-panel px-3 py-2 font-sans text-[11px] leading-4 text-danger">{attachmentError}</div>{/if}
       {#if active}
-        <div class="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2">
+        <div in:fly={PANEL} out:fade={QUICK} class="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2">
           <Paperclip size={12} class={attached ? 'text-accent' : 'text-ink-dim'} />
           <button type="button" onclick={toggleActiveDecisionAttachment} class="min-w-0 flex-1 truncate text-left font-sans text-[11px] text-muted">
             {attached ? active.question : 'Decision detached — general conversation'}

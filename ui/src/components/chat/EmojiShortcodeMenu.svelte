@@ -1,5 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
+  import { fade, QUICK } from '@/lib/motion'
   import { popPanel, popRow } from '@/components/chat/chat-chrome'
   import type { EmojiShortcodeState } from './emoji.svelte'
 
@@ -18,7 +19,7 @@
   } = $props()
 </script>
 
-<div class={cn(popPanel, 'z-10 w-56 overflow-hidden', className)}>
+<div out:fade={QUICK} class={cn(popPanel, 'z-10 w-56 overflow-hidden', className)}>
   {#each state.options as e, i (e.ch)}
     <button
       type="button"

@@ -12,6 +12,7 @@
   import { statusColorOf, statusLabelOf, type BoardStatus } from '@/lib/statuses'
   import FacetPill from './FacetPill.svelte'
   import { DUE_LABEL, EMPTY_FILTERS, filtersActive, type BoardFilters } from './filter-bar'
+  import { fade, QUICK } from '@/lib/motion'
 
   let {
     value,
@@ -123,15 +124,19 @@
     {#snippet icon()}<Flag size={12} />{/snippet}
   </FacetPill>
   {#if labels.length > 0}
-    <FacetPill label="Label" count={value.labels.length} items={labelItems}>
-      {#snippet icon()}<Tag size={12} />{/snippet}
-    </FacetPill>
+    <span class="inline-flex" in:fade={{ duration: 150 }} out:fade={QUICK}>
+      <FacetPill label="Label" count={value.labels.length} items={labelItems}>
+        {#snippet icon()}<Tag size={12} />{/snippet}
+      </FacetPill>
+    </span>
   {/if}
   <FacetPill label={value.due ? DUE_LABEL[value.due] : 'Due'} count={value.due ? 1 : 0} items={dueItems}>
     {#snippet icon()}<CalendarDays size={12} />{/snippet}
   </FacetPill>
   {#if filtersActive(value)}
     <button
+      in:fade={{ duration: 150 }}
+      out:fade={QUICK}
       onclick={() => onChange(EMPTY_FILTERS)}
       title="Clear all filters"
       class="flex h-9 items-center gap-1 rounded-md px-2 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-danger"

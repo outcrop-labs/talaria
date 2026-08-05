@@ -6,6 +6,7 @@
   import { useSession } from '@/lib/session'
   import { useSecretHealth } from '@/lib/secrets'
   import { cn } from '@/lib/cn'
+  import { slide } from '@/lib/motion'
 
   // Invites are sent by email. Without a transport an admin can create one and
   // watch it go nowhere, which looks like a bug in invites.
@@ -20,7 +21,7 @@
 </script>
 
 {#if data && email?.state !== 'ok'}
-  <p class={cn('text-xs text-warning', className)}>
+  <p transition:slide={{ duration: 150 }} class={cn('text-xs text-warning', className)}>
     {email?.state === 'unreadable'
       ? 'The stored email credential cannot be read, so invites will not be delivered — you can still copy an invite link and send it yourself. Replace it under Organization.'
       : 'No email transport is configured, so invites cannot be delivered — you can still copy an invite link and send it yourself. Set one up under Organization.'}

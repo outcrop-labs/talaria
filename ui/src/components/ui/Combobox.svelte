@@ -154,7 +154,10 @@
       bind:this={panelRef}
       in:scale={POP}
       out:fade={QUICK}
-      class="fixed z-[60] rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]"
+      class={cn(
+        'fixed z-[60] rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]',
+        pos.bottom !== undefined ? 'origin-bottom' : 'origin-top',
+      )}
       style:top={pos.top !== undefined ? `${pos.top}px` : undefined}
       style:bottom={pos.bottom !== undefined ? `${pos.bottom}px` : undefined}
       style:left={`${pos.left}px`}

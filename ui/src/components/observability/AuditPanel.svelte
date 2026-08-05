@@ -9,6 +9,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { getList } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
+  import { fade, QUICK } from '@/lib/motion'
   import { useSession } from '@/lib/session'
 
   type Kind = 'ticket' | 'channel' | 'fleet' | 'audit'
@@ -88,14 +89,19 @@
   {:else if query.isLoading}
     <SkeletonRows rows={8} avatar />
   {:else if events.length === 0}
-    <EmptyState
-      icon="☰"
-      title="Nothing yet"
-      hint="Ticket updates, channel messages, agent config changes — and for admins, governance actions — land here."
-    />
+    <div in:fade={{ duration: 150 }}>
+      <EmptyState
+        icon="☰"
+        title="Nothing yet"
+        hint="Ticket updates, channel messages, agent config changes — and for admins, governance actions — land here."
+      />
+    </div>
   {:else}
     {#each active.filter((k) => byKind.get(k)?.length) as k (k)}
-      <section>
+      <!-- Fires when a source filter chip toggles a section in/out — not on the
+           initial content render (local default) and not on poll updates that
+           keep the section present. -->
+      <section in:fade={{ duration: 150 }} out:fade={QUICK}>
         <!-- §8 section header: mono dim label + right-aligned mono count. -->
         <div class="mb-2 flex min-h-6 items-center gap-2">
           <span class="text-ink-dim">{KIND_META[k].icon}</span>

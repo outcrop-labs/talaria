@@ -12,6 +12,7 @@
   import { focusGold } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
   import { getJson, getList } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
   import AdminGithubGuideModal from './AdminGithubGuideModal.svelte'
   import AdminRepoCreationSection from './AdminRepoCreationSection.svelte'
   import AdminRepoFlowSection from './AdminRepoFlowSection.svelte'
@@ -209,7 +210,7 @@
             </Button>
           </div>
         {/if}
-        {#if error}<div class="text-xs text-danger">{error}</div>{/if}
+        {#if error}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</div>{/if}
       </div>
 
       {#if status?.configured}

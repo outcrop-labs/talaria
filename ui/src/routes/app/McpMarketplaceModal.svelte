@@ -9,6 +9,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
   import { getJson } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
   import McpInstallDialog from './McpInstallDialog.svelte'
   import McpServerMark from './McpServerMark.svelte'
   import { TIER_BADGE, patchServer, slugify, useMcpServers, type LibraryServerRow } from './mcp'
@@ -98,7 +99,7 @@
         <InfoTip text="Companies publishing their own MCP server on their own verified domain — the official integrations. Search reaches the whole registry, community servers included." />
       </div>
     {/if}
-    {#if error}<div class="text-sm text-danger">{error}</div>{/if}
+    {#if error}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{error}</div>{/if}
     <div class="min-h-0 flex-1 overflow-y-auto">
       {#if !results}
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

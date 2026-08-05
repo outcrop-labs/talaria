@@ -16,6 +16,7 @@
   import { inlineEditKeys } from '@/components/ui/control'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { updateSpace, useSpace } from '@/lib/kb'
+  import { fade, fly, QUICK } from '@/lib/motion'
   import KbDocPageSkeleton from './KbDocPageSkeleton.svelte'
   import KbHistoryRail from './KbHistoryRail.svelte'
   import KbMuseBar from './KbMuseBar.svelte'
@@ -75,13 +76,17 @@
      rejects on failure and resolves to `null` for a real 404 — the two ARE
      distinguishable here, this branch simply never looked. -->
 {#if spaceQuery.isError && space === undefined}
-  <QueryError
-    error={spaceQuery.error}
-    title="Could not load this folder"
-    onRetry={() => void spaceQuery.refetch()}
-  />
+  <div in:fade={{ duration: 150 }}>
+    <QueryError
+      error={spaceQuery.error}
+      title="Could not load this folder"
+      onRetry={() => void spaceQuery.refetch()}
+    />
+  </div>
 {:else if space === null}
-  <EmptyState icon="⧉" title="Folder not found" hint="It may have been deleted, or you don’t have access." />
+  <div in:fade={{ duration: 150 }}>
+    <EmptyState icon="⧉" title="Folder not found" hint="It may have been deleted, or you don’t have access." />
+  </div>
 {:else if !space}
   <KbDocPageSkeleton bars={9} />
 {:else}
@@ -272,7 +277,7 @@
         <KbTocPanel {headings} onJump={scrollToHeading} onClose={() => (showToc = false)} emptyText="No headings yet." />
       {/if}
       {#if showHistory}
-        <div class="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+        <div in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
           <KbHistoryRail
             kind="kb-space"
             id={spaceId}

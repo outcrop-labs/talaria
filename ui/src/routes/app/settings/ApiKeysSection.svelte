@@ -10,6 +10,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { getJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
+  import { fade, slide } from '@/lib/motion'
 
   interface ApiKey {
     id: string
@@ -86,7 +87,11 @@
     {#if keys.length > 0}
       <div class="mb-4 divide-y divide-line-subtle">
         {#each keys as k (k.id)}
-          <div class="-mx-2 flex items-center gap-3 rounded-md px-2 py-3 text-sm transition-colors hover:bg-hover">
+          <div
+            in:fade={{ duration: 150 }}
+            out:slide={{ duration: 150 }}
+            class="-mx-2 flex items-center gap-3 rounded-md px-2 py-3 text-sm transition-colors hover:bg-hover"
+          >
             <span class="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
             <code class="shrink-0 font-mono text-[11px] text-muted">{k.prefix}</code>
             <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
@@ -117,13 +122,13 @@
     {/if}
   {/if}
   {#if minted}
-    <div class="mt-3 rounded-md border border-accent/40 bg-raised p-3">
+    <div transition:slide={{ duration: 150 }} class="mt-3 rounded-md border border-accent/40 bg-raised p-3">
       <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning">Copy it now — it won't be shown again</div>
       <code class="break-all font-mono text-xs text-fg">{minted}</code>
     </div>
   {/if}
   {#if err}
-    <div class="mt-2 text-xs text-danger">
+    <div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">
       {err}
     </div>
   {/if}

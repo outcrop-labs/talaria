@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, QUICK } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
 
   // The one activity/audit row: "actor · detail" + relative time, with an
@@ -23,7 +24,7 @@
   } = $props()
 </script>
 
-<li class="border-b border-line last:border-b-0">
+<li in:fade={{ duration: 150 }} out:fade={QUICK} class="border-b border-line last:border-b-0">
   <button
     type="button"
     onclick={onClick}

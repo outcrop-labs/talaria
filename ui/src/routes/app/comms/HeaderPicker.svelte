@@ -1,6 +1,7 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
   import { focusGold, popPanel, popRow } from '@/components/chat/chat-chrome'
+  import { fade, scale, POP, QUICK } from '@/lib/motion'
   import Avatar from '@/components/ui/Avatar.svelte'
 
   // A neat little header multiselect: a pill ("3 people ▾") opening a checklist
@@ -53,7 +54,11 @@
   {#if open}
     <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
     <div class="fixed inset-0 z-10" onclick={() => (open = false)}></div>
-    <div class={cn(popPanel, 'absolute right-0 top-full z-20 mt-1 max-h-64 w-56 overflow-y-auto')}>
+    <div
+      in:scale={{ ...POP, start: 0.97 }}
+      out:fade={QUICK}
+      class={cn(popPanel, 'absolute right-0 top-full z-20 mt-1 max-h-64 w-56 origin-top-right overflow-y-auto')}
+    >
       {#if options.length === 0}<div class="px-2 py-1.5 text-xs text-muted">Nothing to add.</div>{/if}
       {#each options as o (o.value)}
         {@const on = picked.has(o.value)}

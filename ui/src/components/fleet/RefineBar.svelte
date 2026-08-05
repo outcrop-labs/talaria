@@ -2,6 +2,7 @@
   import { Sparkles } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
+  import { slide } from '@/lib/motion'
   import { cn } from '@/lib/cn'
 
   let {
@@ -53,5 +54,5 @@
   {#if busy && preview !== null}
     <pre class="max-h-32 overflow-y-auto whitespace-pre-wrap rounded-md border border-line bg-surface p-2.5 font-mono text-[11px] leading-4 text-muted">{preview || 'Designing'}<span class="gd-pulse text-accent">▍</span></pre>
   {/if}
-  {#if error}<p class="text-xs text-danger">{error}</p>{/if}
+  {#if error}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</p>{/if}
 </div>

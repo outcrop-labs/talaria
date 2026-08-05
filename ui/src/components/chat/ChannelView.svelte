@@ -9,6 +9,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { slide } from '@/lib/motion'
   import {
     markChannelRead,
     sendChannelMessage,
@@ -212,17 +213,23 @@
               : 'Say something, or add people & agents.'}
         />
       {:else}
-        {#each messages as m (m.id)}
-          <MessageRow
-            message={m}
-            {ctx}
-            onOpenThread={() => (threadRoot = m.threadRootId ?? m.id)}
-            onContextMenu={(e) => menu.openMenu(e, rowMenuEntries(m, ctx, () => (threadRoot = m.id)))}
-          />
-        {/each}
+        <!-- Keyed on the channel so a warm-cache channel switch (no skeleton
+            pass) rebuilds the list wholesale instead of cross-fading two
+            transcripts — the rows' local fades then mark only messages that
+            genuinely arrive/leave while you watch. -->
+        {#key channelId}
+          {#each messages as m (m.id)}
+            <MessageRow
+              message={m}
+              {ctx}
+              onOpenThread={() => (threadRoot = m.threadRootId ?? m.id)}
+              onContextMenu={(e) => menu.openMenu(e, rowMenuEntries(m, ctx, () => (threadRoot = m.id)))}
+            />
+          {/each}
+        {/key}
       {/if}
       {#if error}
-        <div class="text-center text-sm" style:color="var(--theme-danger)">
+        <div transition:slide={{ duration: 150 }} class="text-center text-sm" style:color="var(--theme-danger)">
           {error}
         </div>
       {/if}

@@ -7,6 +7,7 @@
   import { parseTicketPatch, streamMuse, type TicketMusePatch } from '@/lib/muse.svelte'
   import type { Task } from '@/lib/task-const'
   import { cn } from '@/lib/cn'
+  import { slide } from '@/lib/motion'
 
   /** Muse on tickets — one bar, two modes. With a description selection (while
    *  editing): rewrite just that passage. Otherwise: natural-language FIELD
@@ -124,7 +125,7 @@
 
 <div class="shrink-0 space-y-2 border-t border-line-subtle px-5 py-2.5">
   {#if fieldPatch}
-    <div class="space-y-2 rounded-lg border border-accent/30 bg-card/40 p-3">
+    <div transition:slide={{ duration: 150 }} class="space-y-2 rounded-lg border border-accent/30 bg-card/40 p-3">
       <div class="flex flex-wrap items-center gap-1.5">
         {#each Object.entries(fieldPatch).filter(([k]) => k !== 'description') as [k, v] (k)}
           {@render chip(k, v)}
@@ -146,7 +147,7 @@
     </div>
   {/if}
   {#if passage !== null}
-    <div class="space-y-2 rounded-lg border border-accent/30 bg-card/40 p-3">
+    <div transition:slide={{ duration: 150 }} class="space-y-2 rounded-lg border border-accent/30 bg-card/40 p-3">
       <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Replacement for the selection</div>
       <div class="max-h-40 overflow-y-auto">
         <Markdown class="font-sans text-sm" children={passage} />
@@ -161,7 +162,7 @@
       </div>
     </div>
   {/if}
-  {#if error}<div class="font-sans text-xs text-danger">{error}</div>{/if}
+  {#if error}<div transition:slide={{ duration: 150 }} class="font-sans text-xs text-danger">{error}</div>{/if}
   <div class="flex items-center gap-2">
     <Sparkles size={14} class={cn('shrink-0 text-accent', generating && 'gd-pulse')} />
     <Input

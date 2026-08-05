@@ -32,6 +32,7 @@
   import GeneratingDots from '@/components/ui/GeneratingDots.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import { cn } from '@/lib/cn'
+  import { fade, slide, QUICK } from '@/lib/motion'
   import { useBoards } from '@/lib/boards.svelte'
   import { streamMuse } from '@/lib/muse.svelte'
   import { createWorkflow, updateWorkflow, type SkillLibraryOwner } from '@/lib/workflows'
@@ -168,7 +169,7 @@
 
 <Modal {open} {onClose} width="max-w-2xl" title={done ? 'Your agents learned something new' : 'Teach your agents'}>
   {#if done}
-    <div class="space-y-4">
+    <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-4">
       <p class="text-sm text-fg">{sentence()}</p>
       <p class="text-sm text-muted">
         {hasRules
@@ -212,7 +213,7 @@
       </div>
 
       {#if step === 0}
-        <div class="space-y-3">
+        <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-3">
           <p class="text-sm text-muted">What kind of work are you teaching? Name it the way your team talks about it.</p>
           <Input
             autofocus
@@ -226,7 +227,7 @@
       {/if}
 
       {#if step === 1}
-        <div class="space-y-4">
+        <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-4">
           <p class="text-sm text-muted">
             How should Talaria recognize this work? Pick anything that applies — tickets matching it will carry your flow when an agent
             picks them up. You can also skip this and just add the know-how to the library.
@@ -246,7 +247,7 @@
                 <span class="text-xs text-muted">No boards yet.</span>
               {/if}
             </div>
-            {#if boardsList.notice}<QueryError {...boardsList.notice} />{/if}
+            {#if boardsList.notice}<div transition:slide={{ duration: 150 }}><QueryError {...boardsList.notice} /></div>{/if}
           </div>
           <div class="space-y-1.5">
             <span class="text-xs font-medium text-fg">With these labels</span>
@@ -261,7 +262,7 @@
       {/if}
 
       {#if step === 2}
-        <div class="space-y-3">
+        <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-3">
           <p class="text-sm text-muted">
             Explain how this work should be done, like you would to a new teammate — what matters, what order, what “done” looks like.
             Muse turns it into a skill your agents follow.
@@ -304,7 +305,7 @@
       {/if}
 
       {#if step === 3}
-        <div class="space-y-4">
+        <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-4">
           <p class="text-sm text-muted">Who should know this?</p>
           <div class="space-y-2">
             {#if editable.some((o) => o.owner === 'shared')}
@@ -318,7 +319,7 @@
             {/if}
           </div>
           <p class="rounded-lg border border-line bg-card/40 px-3 py-2 font-sans text-xs text-muted">{sentence()}</p>
-          {#if error}<p class="text-xs text-danger">{error}</p>{/if}
+          {#if error}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</p>{/if}
         </div>
       {/if}
 

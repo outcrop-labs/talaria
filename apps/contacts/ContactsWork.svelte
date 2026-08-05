@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Button, Chip, EmptyState, Input, SkeletonRows, useAppInvalidate } from '@talaria/sdk'
+  import { fade, QUICK } from '@talaria/sdk'
   import { APP, useContacts, useStages, type ContactDoc } from './contacts'
   import ContactModal from './ContactModal.svelte'
 
@@ -36,15 +37,19 @@
     {#if query.isLoading}
       <SkeletonRows rows={5} />
     {:else if contacts.length === 0}
-      <EmptyState
-        icon="☏"
-        title={q || stageFilter ? 'No matches' : 'No contacts yet'}
-        hint={q || stageFilter ? undefined : 'Add your first contact to start the pipeline'}
-      />
+      <div in:fade={{ duration: 150 }}>
+        <EmptyState
+          icon="☏"
+          title={q || stageFilter ? 'No matches' : 'No contacts yet'}
+          hint={q || stageFilter ? undefined : 'Add your first contact to start the pipeline'}
+        />
+      </div>
     {:else}
       <ul class="divide-y divide-line overflow-hidden rounded-lg border border-line bg-panel">
         {#each contacts as c (c.id)}
           <li
+            in:fade={{ duration: 150 }}
+            out:fade={QUICK}
             onclick={() => (editing = c)}
             class="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors duration-120 hover:bg-hover"
           >

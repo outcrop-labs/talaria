@@ -8,6 +8,7 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { getJson } from '@/lib/fetch-json'
+  import { slide } from '@/lib/motion'
 
   /** The HOSTING domain — where this deployment lives. Verified by a self-
    *  fetch round trip (DNS + routing + TLS must land on this instance), and
@@ -104,7 +105,7 @@
     </div>
   {/if}
   {#if error}
-    <div class="mt-2 text-xs text-danger">
+    <div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">
       {error}
     </div>
   {/if}

@@ -6,6 +6,7 @@
   import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
+  import { slide } from '@/lib/motion'
   import { parseCronDraft, streamMuse } from '@/lib/muse.svelte'
   import { DEFAULT_SCHED, parseSchedule, schedToString, type Sched } from './agent-crons'
   import ScheduleBuilder from './ScheduleBuilder.svelte'
@@ -78,7 +79,7 @@
       {drafting ? 'Drafting' : 'Draft'}
     </Button>
   </div>
-  {#if draftErr}<p class="text-xs text-danger">{draftErr}</p>{/if}
+  {#if draftErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{draftErr}</p>{/if}
   {#if drafting}<Generating label="Designing the job: name, schedule, and the prompt it runs" lines={2} />{/if}
 
   <div class="grid gap-4 sm:grid-cols-2">

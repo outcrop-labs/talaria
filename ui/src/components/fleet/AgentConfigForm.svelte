@@ -6,6 +6,7 @@
   import { submitOnEnter } from '@/components/ui/control'
   import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
   import TargetRow from '@/components/fleet/TargetRow.svelte'
+  import { fade, slide } from '@/lib/motion'
   import { saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
 
   type AliasRow = ModelTarget & { name: string }
@@ -52,16 +53,21 @@
   <section>
     <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Model tiers (aliases)</div>
     <div class="space-y-1.5">
+      <!-- Index-keyed rows: entries fade in; no exit — an outro would fade the
+           LAST index while the remaining rows' contents shift, showing a
+           duplicate. Instant removal is the honest form here. -->
       {#each aliases as a, i (i)}
-        <TargetRow
-          {endpoints}
-          value={a}
-          name={a.name}
-          onName={(name) => (aliases = aliases.map((x, j) => (j === i ? { ...x, name } : x)))}
-          namePlaceholder="alias"
-          onChange={(t) => (aliases = aliases.map((x, j) => (j === i ? { ...x, ...t } : x)))}
-          onRemove={() => (aliases = aliases.filter((_, j) => j !== i))}
-        />
+        <div in:fade={{ duration: 150 }}>
+          <TargetRow
+            {endpoints}
+            value={a}
+            name={a.name}
+            onName={(name) => (aliases = aliases.map((x, j) => (j === i ? { ...x, name } : x)))}
+            namePlaceholder="alias"
+            onChange={(t) => (aliases = aliases.map((x, j) => (j === i ? { ...x, ...t } : x)))}
+            onRemove={() => (aliases = aliases.filter((_, j) => j !== i))}
+          />
+        </div>
       {/each}
       <Button variant="outline" size="sm" onclick={() => (aliases = [...aliases, { name: '', endpoint: endpoints[0]?.name ?? '', model: '' }])}>
         + Add tier
@@ -73,12 +79,14 @@
     <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Fallbacks (when the model above is down)</div>
     <div class="space-y-1.5">
       {#each fallbacks as f, i (i)}
-        <TargetRow
-          {endpoints}
-          value={f}
-          onChange={(t) => (fallbacks = fallbacks.map((x, j) => (j === i ? t : x)))}
-          onRemove={() => (fallbacks = fallbacks.filter((_, j) => j !== i))}
-        />
+        <div in:fade={{ duration: 150 }}>
+          <TargetRow
+            {endpoints}
+            value={f}
+            onChange={(t) => (fallbacks = fallbacks.map((x, j) => (j === i ? t : x)))}
+            onRemove={() => (fallbacks = fallbacks.filter((_, j) => j !== i))}
+          />
+        </div>
       {/each}
       <Button variant="outline" size="sm" onclick={() => (fallbacks = [...fallbacks, { endpoint: endpoints[0]?.name ?? '', model: '' }])}>
         + Add fallback
@@ -127,7 +135,7 @@
     {/if}
   </section>
 
-  {#if err}<div class="text-sm text-danger">{err}</div>{/if}
+  {#if err}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err}</div>{/if}
 
   {#if busy === 'apply'}
     <Generating

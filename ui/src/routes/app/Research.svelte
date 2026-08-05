@@ -20,6 +20,7 @@
   import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import KeyHint from '@/components/ui/KeyHint.svelte'
   import { cn } from '@/lib/cn'
+  import { slide } from '@/lib/motion'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -268,7 +269,7 @@
               <span class="grid h-9 w-9 shrink-0 place-items-center self-end mb-1"><GeneratingDots /></span>
             {/if}
           </div>
-          {#if error}<div class="px-2 pb-1 pt-1 text-xs text-danger">{error}</div>{/if}
+          {#if error}<div transition:slide={{ duration: 150 }} class="px-2 pb-1 pt-1 text-xs text-danger">{error}</div>{/if}
         </div>
       </div>
     </div>

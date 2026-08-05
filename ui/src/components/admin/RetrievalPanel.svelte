@@ -10,6 +10,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
   import { cn } from '@/lib/cn'
+  import { slide } from '@/lib/motion'
   import CollectionRow from './CollectionRow.svelte'
   import HealthDot from './HealthDot.svelte'
   import RerankSection from './RerankSection.svelte'
@@ -56,13 +57,15 @@
        red — "we could not ask" is not "the vector store is down". -->
   {#if ragPending}<Skeleton class="mb-4 h-10 w-full rounded-md" />{/if}
   {#if ragFailed}
-    <QueryError
-      class="mb-4"
-      variant="compact"
-      error={ragQuery.error}
-      title="Could not load retrieval status"
-      onRetry={() => void ragQuery.refetch()}
-    />
+    <div transition:slide={{ duration: 150 }}>
+      <QueryError
+        class="mb-4"
+        variant="compact"
+        error={ragQuery.error}
+        title="Could not load retrieval status"
+        onRetry={() => void ragQuery.refetch()}
+      />
+    </div>
   {/if}
   {#if rag}
     <div class="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-line p-3">
@@ -96,6 +99,7 @@
        a brain predates hybrid keyword search. One button repairs both. -->
   {#if rag?.upgrade?.needsReindex && !rebuilding}
     <div
+      transition:slide={{ duration: 150 }}
       class={cn(
         'mb-4 flex flex-wrap items-center gap-3 rounded-md border p-3',
         rag.upgrade.dimMismatch ? 'border-danger' : 'border-warning',

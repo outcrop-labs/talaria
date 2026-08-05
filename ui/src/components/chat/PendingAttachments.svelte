@@ -1,5 +1,6 @@
 <script lang="ts">
   import { BookOpen, FileText, Gem, X } from '@lucide/svelte'
+  import { fade, slide, QUICK } from '@/lib/motion'
   import { attachmentUrl, isImage, type Attachment } from '@/lib/attachments'
 
   // The pending-attachments strip above the composer's prompt well (with
@@ -8,9 +9,16 @@
 </script>
 
 {#if items.length}
-  <div class="flex flex-wrap gap-2">
+  <!-- The strip slides open/closed (composer height change); individual chips
+      fade only when added to or removed from an already-open strip — local
+      transitions keep first-chip/last-chip from double-animating. -->
+  <div transition:slide={{ duration: 150 }} class="flex flex-wrap gap-2">
     {#each items as a (a.id)}
-      <div class="flex items-center gap-2 rounded-md border border-line bg-raised px-2 py-1 font-sans text-xs">
+      <div
+        in:fade={{ duration: 150 }}
+        out:fade={QUICK}
+        class="flex items-center gap-2 rounded-md border border-line bg-raised px-2 py-1 font-sans text-xs"
+      >
         {#if a.refType}
           <!-- Ref chips: knowledge docs get the book, artifacts the gem. -->
           {#if a.refType === 'kb-doc'}

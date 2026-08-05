@@ -17,6 +17,7 @@
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import { cn } from '@/lib/cn'
   import { relativeTime } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
   import { useAgents } from '@/lib/agents'
   import { useUsers } from '@/lib/users'
   import McpAccessRow from './McpAccessRow.svelte'
@@ -310,6 +311,6 @@
     </div>
   </div>
 
-  {#if error}<div class="mt-2 text-xs text-danger">{error}</div>{/if}
+  {#if error}<div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">{error}</div>{/if}
   <ContextMenu {menu} />
 </Panel>

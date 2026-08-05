@@ -58,7 +58,7 @@
   import type { TicketMusePatch } from '@/lib/muse.svelte'
   import { statusLabelOf, useBoardStatuses } from '@/lib/statuses'
   import { cn } from '@/lib/cn'
-  import { fade, fly, QUICK } from '@/lib/motion'
+  import { fade, fly, slide, QUICK } from '@/lib/motion'
   import DescriptionSection from './DescriptionSection.svelte'
   import AttachmentsSection from './AttachmentsSection.svelte'
   import JudgeVerdict from './JudgeVerdict.svelte'
@@ -256,7 +256,10 @@
 
           <!-- Approval gate -->
           {#if t.status === 'quality_review' && canEdit}
-            <div class="flex items-center gap-2 rounded-lg border border-[color:var(--theme-accent-border)] bg-accent-soft p-2 font-sans text-sm">
+            <div
+              transition:slide={{ duration: 150 }}
+              class="flex items-center gap-2 rounded-lg border border-[color:var(--theme-accent-border)] bg-accent-soft p-2 font-sans text-sm"
+            >
               <span class="flex-1 text-fg">Ready for review. Approve to complete.</span>
               <Button
                 size="sm"
@@ -326,7 +329,7 @@
           {#if tab === 'comments'}
             <ul class="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-3">
               {#each data!.comments as c (c.id)}
-                <li class="rounded-lg border border-line bg-card p-2">
+                <li in:fade={{ duration: 150 }} out:fade={QUICK} class="rounded-lg border border-line bg-card p-2">
                   <div class="mb-0.5 flex items-center justify-between text-xs">
                     <span class="font-mono text-[11px] tracking-[0.05em] text-accent">{c.author}</span>
                     <span class="font-mono text-[10px] tracking-[0.05em] text-muted">{relativeTime(c.createdAt)}</span>
@@ -357,7 +360,7 @@
           {:else}
             <ul class="min-h-0 flex-1 space-y-1 overflow-y-auto px-5 py-3">
               {#each data!.activity as a (a.id)}
-                <li class="flex items-center gap-2 text-xs text-muted">
+                <li in:fade={{ duration: 150 }} out:fade={QUICK} class="flex items-center gap-2 text-xs text-muted">
                   <span class="font-mono text-[11px] tracking-[0.05em] text-accent">{a.actor}</span>
                   <span class="min-w-0 flex-1 truncate font-sans">{a.description}</span>
                   <span class="shrink-0 font-mono text-[10px] tracking-[0.05em]">{relativeTime(a.createdAt)}</span>

@@ -10,6 +10,7 @@
   import Select from '@/components/ui/Select.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { createFleetAgent, type AgentDef } from '@/lib/fleet-defs'
+  import { fade, slide } from '@/lib/motion'
   import { parseAgentDraft, streamMuse, type AgentDraft } from '@/lib/muse.svelte'
   import RefineBar from './RefineBar.svelte'
   import SkillPreviewRow from './SkillPreviewRow.svelte'
@@ -158,7 +159,7 @@
       {#if generating}
         <pre class="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line bg-surface p-3 font-mono text-xs leading-5 text-muted">{genPreview || 'Designing'}<span class="gd-pulse text-accent">▍</span></pre>
       {/if}
-      {#if genErr}<p class="text-xs text-danger">{genErr}</p>{/if}
+      {#if genErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr}</p>{/if}
       <div class="flex items-center gap-3 border-t border-line pt-4">
         <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'review')}>
           Configure manually →
@@ -231,7 +232,7 @@
       </div>
 
       {#if skills.length > 0}
-        <div>
+        <div in:fade={{ duration: 150 }}>
           <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Starter skills</label>
           <ul class="divide-y divide-line rounded-lg border border-line">
             {#each skills as s (s.name)}
@@ -262,7 +263,7 @@
           lines={3}
         />
       {/if}
-      {#if err}<div class="text-sm text-danger">{err}</div>{/if}
+      {#if err}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err}</div>{/if}
       <div class="flex items-center gap-2 border-t border-line pt-4">
         {#if !preselect}
           <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'describe')}>

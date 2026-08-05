@@ -10,6 +10,7 @@
   import { submitOnEnter } from '@/components/ui/control'
   import { getList } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
 
   interface SecretMeta {
     name: string
@@ -129,5 +130,5 @@
     </Button>
   </div>
   {#if name && !nameOk}<p class="text-xs text-muted">UPPER_SNAKE, 2–64 chars, starts with a letter.</p>{/if}
-  {#if err}<p class="text-xs text-danger">{err}</p>{/if}
+  {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
 </div>

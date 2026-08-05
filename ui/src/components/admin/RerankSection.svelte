@@ -5,6 +5,7 @@
   import Select from '@/components/ui/Select.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { submitOnEnter } from '@/components/ui/control'
+  import { slide } from '@/lib/motion'
   import type { RagAdmin } from './retrieval'
 
   // ── Reranker provider (the precision stage after vector recall) ─────────────
@@ -96,7 +97,7 @@
     {/if}
   </div>
   {#if cfg.provider !== 'off'}
-    <div class="mt-1.5 font-mono text-[10px] tracking-[0.05em] text-muted">
+    <div transition:slide={{ duration: 150 }} class="mt-1.5 font-mono text-[10px] tracking-[0.05em] text-muted">
       Active: {cfg.provider}{cfg.model ? ` · ${cfg.model}` : ''}{cfg.hasKey ? ' · key sealed' : ''} · rescoring top {cfg.candidates ?? 30}
     </div>
   {/if}

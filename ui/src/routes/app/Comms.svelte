@@ -20,6 +20,7 @@
   import ChannelSettingsModal from '@/components/chat/ChannelSettingsModal.svelte'
   import PlanModal from '@/components/chat/PlanModal.svelte'
   import { useAgents } from '@/lib/agents'
+  import { slide } from '@/lib/motion'
   import { useSession, useHasPerm } from '@/lib/session'
   import { useUsers } from '@/lib/users'
   import { useConversations } from '@/lib/conversations.svelte'
@@ -436,11 +437,13 @@
            The rows stay (good fleet data is not thrown away) — the marker
            says the threads are missing rather than absent. -->
       {#if conversationsQuery.isError && conversationsQuery.data === undefined}
-        <RailFailure
-          error={conversationsQuery.error}
-          title="Could not load your threads"
-          onRetry={() => void conversationsQuery.refetch()}
-        />
+        <div transition:slide={{ duration: 150 }}>
+          <RailFailure
+            error={conversationsQuery.error}
+            title="Could not load your threads"
+            onRetry={() => void conversationsQuery.refetch()}
+          />
+        </div>
       {/if}
     </Section>
   </Rail>

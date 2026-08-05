@@ -7,6 +7,7 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QuickEvent from './QuickEvent.svelte'
+  import { slide } from '@/lib/motion'
   import { formatWhen, useAgenda, useGoogleStatus } from './home'
 
   // The user's Google Calendar agenda, shown only when they've connected Google.
@@ -57,12 +58,14 @@
     </div>
 
     {#if adding}
-      <QuickEvent
-        onDone={async () => {
-          adding = false
-          await qc.invalidateQueries({ queryKey: ['agenda'] })
-        }}
-      />
+      <div transition:slide={{ duration: 150 }}>
+        <QuickEvent
+          onDone={async () => {
+            adding = false
+            await qc.invalidateQueries({ queryKey: ['agenda'] })
+          }}
+        />
+      </div>
     {/if}
 
     {#if events.length === 0}

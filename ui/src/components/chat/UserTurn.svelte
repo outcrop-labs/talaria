@@ -2,6 +2,7 @@
   import MessageAvatar from './MessageAvatar.svelte'
   import MessageAttachments from '@/components/chat/MessageAttachments.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
+  import { fade } from '@/lib/motion'
   import type { Attachment } from '@/lib/attachments'
 
   // Flattened user turn (spec §10): avatar square + name row, 14px sans body —
@@ -21,7 +22,7 @@
   const name = $derived(author ?? 'You')
 </script>
 
-<div class="flex gap-2.5" oncontextmenu={onContextMenu}>
+<div in:fade={{ duration: 150 }} class="flex gap-2.5" oncontextmenu={onContextMenu}>
   <MessageAvatar {name} class="mt-0.5" />
   <div class="min-w-0 flex-1">
     <div class="flex items-baseline gap-2">

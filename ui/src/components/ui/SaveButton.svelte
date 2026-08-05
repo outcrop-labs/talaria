@@ -4,6 +4,7 @@
   import type { ControlSize } from './control'
   import Button from './Button.svelte'
   import { cn } from '@/lib/cn'
+  import { fade, QUICK } from '@/lib/motion'
   import { useSavedFlash } from './save-button.svelte'
 
   interface Props extends Omit<HTMLButtonAttributes, 'onclick'> {
@@ -34,6 +35,6 @@
   </Button>
   <!-- Confirmation reads as mono telemetry in the success signal (spec §8). -->
   {#if flash.saved}
-    <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-success">Saved</span>
+    <span in:fade={{ duration: 150 }} out:fade={QUICK} class="font-mono text-[10px] uppercase tracking-[0.05em] text-success">Saved</span>
   {/if}
 </span>

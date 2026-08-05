@@ -1,5 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
+  import { scale, POP } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import type { SlashItem } from './slash-commands'
 
@@ -44,9 +45,18 @@
 </script>
 
 {#if items.length === 0}
-  <div class={cn(popPanel, 'w-64 p-3 font-sans text-xs text-muted')}>No blocks match.</div>
+  <!-- No out: transitions here (deviation): the branches share block flow, so an
+       outgoing panel would stack above the incoming one for its whole exit and
+       skew slash-commands.ts's flushSync height measurement for caret placement.
+       Dismissal is popup.remove() in slash-commands.ts — an exit would never
+       be seen there anyway. -->
+  <div in:scale={{ ...POP, start: 0.97 }} class={cn(popPanel, 'w-64 origin-top-left p-3 font-sans text-xs text-muted')}>No blocks match.</div>
 {:else}
-  <div bind:this={listEl} class={cn(popPanel, 'max-h-72 w-64 overflow-y-auto')}>
+  <div
+    bind:this={listEl}
+    in:scale={{ ...POP, start: 0.97 }}
+    class={cn(popPanel, 'max-h-72 w-64 origin-top-left overflow-y-auto')}
+  >
     {#each items as item, i (item.title)}
       {@const Icon = item.icon}
       <button

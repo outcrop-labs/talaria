@@ -1,5 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
+  import { fade } from '@/lib/motion'
   import Button from './Button.svelte'
   import { isStaleChunkError, messageOf } from './error'
 
@@ -37,7 +38,7 @@
   const detail = $derived(stale ? '' : messageOf(error))
 </script>
 
-<div class={cn(variant === 'full' ? 'grid h-full min-h-[60vh] place-items-center p-6' : 'px-2 py-6', 'text-center', className)}>
+<div in:fade={{ duration: 150 }} class={cn(variant === 'full' ? 'grid h-full min-h-[60vh] place-items-center p-6' : 'px-2 py-6', 'text-center', className)}>
   <div class={cn('max-w-sm', variant === 'compact' && 'mx-auto')}>
     <!-- Not `mercury-text`: the brand gradient is for welcome moments. A
          failure gets the danger token, plainly. -->

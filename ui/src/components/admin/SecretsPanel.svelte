@@ -14,6 +14,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import { slide } from '@/lib/motion'
   import { GROUP_LABELS, useClearSecret, useSecretHealth, type SecretGroup, type SecretRow } from '@/lib/secrets'
   import RootCard from './RootCard.svelte'
   import SecretsRow from './SecretsRow.svelte'
@@ -104,7 +105,7 @@
       <RootCard root={data.root} />
 
       {#if data.counts.unreadable > 0}
-        <div class="rounded-md border border-danger/40 p-4">
+        <div transition:slide={{ duration: 150 }} class="rounded-md border border-danger/40 p-4">
           <div class="mb-2 flex items-center gap-1.5">
             <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-danger">
               {data.counts.unreadable} unreadable
@@ -122,7 +123,7 @@
         </div>
       {/if}
 
-      {#if msg}<p class="text-xs text-muted">{msg}</p>{/if}
+      {#if msg}<p transition:slide={{ duration: 150 }} class="text-xs text-muted">{msg}</p>{/if}
 
       {#each GROUP_ORDER as group (group)}
         {@const rows = data.rows.filter((r) => r.group === group)}

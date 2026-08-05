@@ -1,6 +1,7 @@
 <script lang="ts">
   import Combobox from '@/components/ui/Combobox.svelte'
   import type { ControlSize } from '@/components/ui/control'
+  import { fade, QUICK } from '@/lib/motion'
 
   // Ticket labels as tag chips + the shared combobox: existing board tags surface
   // in the dropdown for reuse; typing creates a new one (Enter or comma commits).
@@ -30,7 +31,11 @@
   {#if value.length > 0}
     <div class="flex flex-wrap gap-1">
       {#each value as t (t)}
-        <span class="flex items-center gap-1 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-muted">
+        <span
+          in:fade={{ duration: 150 }}
+          out:fade={QUICK}
+          class="flex items-center gap-1 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-muted"
+        >
           {t}
           {#if !disabled}
             <button

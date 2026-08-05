@@ -13,6 +13,7 @@
   import FleetCronsModal from '@/components/fleet/FleetCronsModal.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { useFleet } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
   import { useFleetContainers, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { useSession } from '@/lib/session'
   import AgentListRow from './AgentListRow.svelte'
@@ -148,12 +149,14 @@
             <!-- Docker unreachable ≠ every agent stopped. Without this the
                  dots all go red and the roster quietly libels the fleet. -->
             {#if containersQuery.isError}
-              <QueryError
-                variant="inline"
-                title={containersQuery.data === undefined ? 'Could not read container status' : 'Container status may be out of date'}
-                error={containersQuery.error}
-                onRetry={() => void containersQuery.refetch()}
-              />
+              <div transition:slide={{ duration: 150 }}>
+                <QueryError
+                  variant="inline"
+                  title={containersQuery.data === undefined ? 'Could not read container status' : 'Container status may be out of date'}
+                  error={containersQuery.error}
+                  onRetry={() => void containersQuery.refetch()}
+                />
+              </div>
             {/if}
             {#if view === 'grid'}
               <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">

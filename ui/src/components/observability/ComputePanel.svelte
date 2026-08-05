@@ -7,6 +7,7 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatCard from '@/components/ui/StatCard.svelte'
   import { formatTokens } from '@/lib/cost.svelte'
+  import { fade } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { useInference } from './inference'
   import LiveSection from './LiveSection.svelte'
@@ -53,11 +54,13 @@
     {:else if isLoading}
       <SkeletonCard />
     {:else if backends.length === 0}
-      <EmptyState
-        icon="▦"
-        title="No self-hosted backends"
-        hint="Add a self-hosted provider (Ollama, vLLM, a router) on the Models page. LAN and loopback URLs are classed self-hosted automatically."
-      />
+      <div in:fade={{ duration: 150 }}>
+        <EmptyState
+          icon="▦"
+          title="No self-hosted backends"
+          hint="Add a self-hosted provider (Ollama, vLLM, a router) on the Models page. LAN and loopback URLs are classed self-hosted automatically."
+        />
+      </div>
     {:else}
       <div class="grid grid-cols-3 gap-4">
         <StatCard label="Self-hosted tokens · today" value={formatTokens(data?.usage.today ?? 0)} />

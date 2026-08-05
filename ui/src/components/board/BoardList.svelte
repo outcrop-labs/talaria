@@ -479,6 +479,8 @@
                 {#each g.tasks as t (`${g.key}:${t.id}`)}
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                   <tr
+                    in:fade={{ duration: 150 }}
+                    out:fade={QUICK}
                     draggable={groupDroppable}
                     ondragstart={(e) => {
                       e.dataTransfer?.setData('text/task', t.id)

@@ -8,6 +8,7 @@
   import StatCard from '@/components/ui/StatCard.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { relativeTime } from '@/lib/fleet'
+  import { fade, slide } from '@/lib/motion'
   import { agentLabel, formatCost, formatTokens, useCost, type CostTotals } from '@/lib/cost.svelte'
   import SplitPanel from './SplitPanel.svelte'
   import DailyBars from './DailyBars.svelte'
@@ -39,12 +40,14 @@
 <div>
   <div class="space-y-8">
     {#if staleFailure}
-      <QueryError
-        variant="inline"
-        title="Usage may be out of date"
-        error={costQuery.error}
-        onRetry={() => void costQuery.refetch()}
-      />
+      <div transition:slide={{ duration: 150 }}>
+        <QueryError
+          variant="inline"
+          title="Usage may be out of date"
+          error={costQuery.error}
+          onRetry={() => void costQuery.refetch()}
+        />
+      </div>
     {/if}
 
     {#if hardFailure}
@@ -61,11 +64,13 @@
       </div>
       <SkeletonRows rows={5} class="mt-2" />
     {:else if total(t?.month) === 0}
-      <EmptyState
-        icon="⌗"
-        title="No usage recorded yet"
-        hint="Every chat turn and channel reply lands here once agents start talking."
-      />
+      <div in:fade={{ duration: 150 }}>
+        <EmptyState
+          icon="⌗"
+          title="No usage recorded yet"
+          hint="Every chat turn and channel reply lands here once agents start talking."
+        />
+      </div>
     {:else}
       <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <StatCard
@@ -93,7 +98,7 @@
       <!-- Missing pricing is attention (gold), not failure — orange stays
            reserved for real failures (spec §1 semantics). -->
       {#if (t?.unpricedCloudTokens ?? 0) > 0}
-        <p class="text-xs text-warning">
+        <p transition:slide={{ duration: 150 }} class="text-xs text-warning">
           {formatTokens(t!.unpricedCloudTokens)} cloud tokens have no price configured. Set per-model pricing on
           the Models page so spend is complete.
         </p>
