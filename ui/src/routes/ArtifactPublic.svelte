@@ -23,20 +23,20 @@
   // `r.ok ? … : reject('not found')` made EVERY status "not found", including
   // the ones that mean the server is having a bad minute. A visitor with a
   // perfectly good share link was told the page does not exist.
-  let state = $state<{ a?: PublicArtifact; missing?: boolean; error?: unknown }>({})
+  let loadState = $state<{ a?: PublicArtifact; missing?: boolean; error?: unknown }>({})
   let reload = $state(0)
   $effect(() => {
     void reload
     let live = true
-    state = {}
+    loadState = {}
     getJson<{ artifact: PublicArtifact }>(`/api/artifacts/public/${slug}`)
       .then((d) => {
-        if (live) state = { a: d.artifact }
+        if (live) loadState = { a: d.artifact }
       })
       .catch((e: unknown) => {
         if (!live) return
         // 404 is the only status that means "there is no such page".
-        state = e instanceof HttpError && e.status === 404 ? { missing: true } : { error: e }
+        loadState = e instanceof HttpError && e.status === 404 ? { missing: true } : { error: e }
       })
     return () => {
       live = false
@@ -59,11 +59,11 @@
   }
 </script>
 
-{#if state.missing}
+{#if loadState.missing}
   <PublicNotFound />
-{:else if state.error}
-  <PublicUnavailable detail={errorMessage(state.error)} onRetry={() => (reload += 1)} />
-{:else if !state.a}
+{:else if loadState.error}
+  <PublicUnavailable detail={errorMessage(loadState.error)} onRetry={() => (reload += 1)} />
+{:else if !loadState.a}
   <!-- First paint for link recipients — doc-page shape regardless of kind. -->
   <PublicShell>
     <div aria-hidden="true">
@@ -77,21 +77,21 @@
       </div>
     </div>
   </PublicShell>
-{:else if state.a.kind === 'microsite'}
+{:else if loadState.a.kind === 'microsite'}
   <!-- A public microsite is hosted full-bleed in a sandboxed iframe (no app chrome). -->
   <div class="min-h-screen bg-white">
-    <iframe title={state.a.title} srcdoc={state.a.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" class="h-screen w-full border-0"></iframe>
+    <iframe title={loadState.a.title} srcdoc={loadState.a.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" class="h-screen w-full border-0"></iframe>
   </div>
 {:else}
-  <PublicShell meta={`Updated ${relativeTime(state.a.updatedAt)}`}>
+  <PublicShell meta={`Updated ${relativeTime(loadState.a.updatedAt)}`}>
     <h1 class="mb-5 flex items-center gap-2 font-sans text-3xl font-semibold tracking-tight text-fg">
-      <span>{state.a.icon ?? '📄'}</span>
-      {state.a.title}
+      <span>{loadState.a.icon ?? '📄'}</span>
+      {loadState.a.title}
     </h1>
-    {#if state.a.kind === 'doc'}
-      <Markdown class="tiptap" children={state.a.body} />
-    {:else if state.a.kind === 'sheet'}
-      {@const sheet = parseSheet(state.a.body)}
+    {#if loadState.a.kind === 'doc'}
+      <Markdown class="tiptap" children={loadState.a.body} />
+    {:else if loadState.a.kind === 'sheet'}
+      {@const sheet = parseSheet(loadState.a.body)}
       <div class="overflow-x-auto">
         <!-- §8 table voice: mono uppercase chrome header, hairline grid, hover fill. -->
         <table class="border-collapse text-sm">
@@ -113,14 +113,14 @@
           </tbody>
         </table>
       </div>
-    {:else if state.a.kind === 'file'}
+    {:else if loadState.a.kind === 'file'}
       <a
         href={`/api/artifacts/public/${slug}/download`}
         target="_blank"
         rel="noreferrer"
         class={buttonClasses({ variant: 'outline' })}
       >
-        ⬇ Download {state.a.title}
+        ⬇ Download {loadState.a.title}
       </a>
     {:else}
       <p class="text-sm text-muted">This artifact type isn’t viewable here yet.</p>

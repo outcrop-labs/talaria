@@ -118,7 +118,9 @@ export default defineConfig({
     },
   },
   plugins: [
-    viteTsConfigPaths({ projects: ['./tsconfig.json'] }),
+    // loose: resolve `@/…` for non-TS files too (.svelte) — the default only
+    // maps imports TypeScript itself would resolve.
+    viteTsConfigPaths({ projects: ['./tsconfig.json'], loose: true }),
     tailwindcss(),
     svelte(),
     apiDev(),

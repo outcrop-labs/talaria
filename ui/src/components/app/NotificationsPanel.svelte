@@ -9,7 +9,7 @@
   import { fly, PANEL } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useMarkNotificationsRead, useNotifications, type Notification } from '@/lib/notifications'
-  import { navigate } from '@/router'
+  import { navigateHref } from '@/router'
 
   // The notifications half of the Inbox surface: mentions (and more kinds as
   // they land), newest first, mark-read on open. Lives at the top of `/` now —
@@ -25,7 +25,7 @@
   const open = (n: Notification) => {
     void markRead([n.id])
     // n.href is a server-built path, not a compile-time route literal.
-    if (n.href) navigate(n.href as Parameters<typeof navigate>[0])
+    if (n.href) void navigateHref(n.href)
   }
 </script>
 

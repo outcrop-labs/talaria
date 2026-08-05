@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
-  import { navigate } from '@/router'
+  import { navigateHref } from '@/router'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -108,7 +108,7 @@
             {#each byKind.get(k)! as e, i (`${e.at}-${i}`)}
               <button
                 type="button"
-                onclick={() => void navigate(e.href)}
+                onclick={() => void navigateHref(e.href)}
                 class="flex w-full items-start gap-3 px-6 py-3 text-left transition-colors hover:bg-hover"
               >
                 <Avatar name={e.actor} class="mt-0.5 h-6 w-6 shrink-0 text-xs" />

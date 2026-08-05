@@ -79,10 +79,10 @@
             <li>
               <button
                 type="button"
-                onclick={() => void navigate(`/boards/${w.boardId}/${w.id}`)}
+                onclick={() => void navigate('/boards/:boardId/:taskId', { params: { boardId: w.boardId, taskId: w.id } })}
                 oncontextmenu={(e) =>
                   menu.openMenu(e, [
-                    { label: 'Open', onSelect: () => void navigate(`/boards/${w.boardId}/${w.id}`) },
+                    { label: 'Open', onSelect: () => void navigate('/boards/:boardId/:taskId', { params: { boardId: w.boardId, taskId: w.id } }) },
                     { label: 'Copy link', onSelect: () => copyAppLink(`/boards/${w.boardId}/${w.id}`) },
                     ...(w.ticketRef
                       ? ([

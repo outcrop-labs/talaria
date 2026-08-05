@@ -35,7 +35,10 @@
         : null,
   )
   // ?a=<artifactId> deep-links an artifact — the URL IS the selection.
-  const activeId = $derived(searchParams.get('a') || null)
+  // searchParams.get parses values (string | number | boolean | null); ids are
+  // strings, so normalize back before comparing/passing down.
+  const rawActive = $derived(searchParams.get('a'))
+  const activeId = $derived(rawActive ? String(rawActive) : null)
   const setActiveId = (id: string | null) => {
     if (id) searchParams.set('a', id)
     else searchParams.delete('a')

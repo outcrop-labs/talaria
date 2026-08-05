@@ -10,7 +10,7 @@
     SquareCode,
     Strikethrough,
     TextQuote,
-    type Icon as IconType,
+    type LucideIcon as IconType,
   } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'

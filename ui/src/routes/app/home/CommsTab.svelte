@@ -40,10 +40,10 @@
           <li>
             <button
               type="button"
-              onclick={() => void navigate(`/comms?c=${c.id}`)}
+              onclick={() => void navigate('/comms', { search: { c: c.id } })}
               oncontextmenu={(e) =>
                 menu.openMenu(e, [
-                  { label: 'Open', onSelect: () => void navigate(`/comms?c=${c.id}`) },
+                  { label: 'Open', onSelect: () => void navigate('/comms', { search: { c: c.id } }) },
                   { label: 'Copy link', onSelect: () => copyAppLink(`/comms?c=${c.id}`) },
                 ])}
               class="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-card2"

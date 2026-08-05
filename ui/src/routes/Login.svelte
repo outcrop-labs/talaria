@@ -6,7 +6,10 @@
   import { useSession } from '@/lib/session'
 
   const session = useSession()
-  const error = $derived(searchParams.get('error') ?? undefined)
+  // searchParams.get returns string | number | boolean | null; the login
+  // screen wants string | undefined.
+  const rawError = $derived(searchParams.get('error'))
+  const error = $derived(rawError == null ? undefined : String(rawError))
 
   // Already signed in → straight to the cockpit.
   $effect(() => {

@@ -1,7 +1,7 @@
 // Models tab client: provider presets + endpoint CRUD.
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson, getList } from '@/lib/fetch-json'
-import type { LlmEndpoint } from '@/lib/fleet-defs.svelte'
+import type { LlmEndpoint } from '@/lib/fleet-defs'
 
 /** Every common US model provider, preconfigured: base URLs and provider
  *  wiring are baked in so adding one is pick → name the key env → done. NO

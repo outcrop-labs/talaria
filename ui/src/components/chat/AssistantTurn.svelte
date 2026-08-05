@@ -72,7 +72,7 @@
 
     {#if message.content}
       <div class="font-sans text-sm text-fg">
-        <Markdown>{resolveAgentMedia(message.content, agentModel)}</Markdown>
+        <Markdown children={resolveAgentMedia(message.content, agentModel)} />
       </div>
     {/if}
     {#if !live}<GuardCaveat findings={message.guard} />{/if}

@@ -22,31 +22,33 @@
 
   let q = $state('')
   let files = $state<DriveEntry[] | null>(null)
-  let state = $state<'loading' | 'ready' | 'not_connected' | 'reconnect' | 'error'>('loading')
+  // Named `status` rather than `state`: a variable called `state` collides
+  // with the $state rune in Svelte's compiler.
+  let status = $state<'loading' | 'ready' | 'not_connected' | 'reconnect' | 'error'>('loading')
   let importing = $state<string | null>(null)
 
   const load = async (query: string) => {
-    state = 'loading'
+    status = 'loading'
     const r = await fetch(`/api/integrations/google/drive/files?q=${encodeURIComponent(query)}`).catch(() => null)
     if (!r) {
-      state = 'error'
+      status = 'error'
       return
     }
     if (r.ok) {
       files = ((await r.json()) as { files: DriveEntry[] }).files
-      state = 'ready'
+      status = 'ready'
       return
     }
     const j = (await r.json().catch(() => null)) as { error?: string } | null
     if (j?.error === 'not_connected') {
-      state = 'not_connected'
+      status = 'not_connected'
       return
     }
     if (j?.error === 'reconnect_needed') {
-      state = 'reconnect'
+      status = 'reconnect'
       return
     }
-    state = 'error'
+    status = 'error'
   }
   // Debounced search.
   $effect(() => {
@@ -85,15 +87,15 @@
       <DownloadCloud size={16} class="text-muted" /> Import from Google Drive
     </span>
   {/snippet}
-  {#if state === 'not_connected' || state === 'reconnect'}
+  {#if status === 'not_connected' || status === 'reconnect'}
     <div class="py-6 text-center">
       <div class="mb-3 text-sm text-muted">
-        {state === 'reconnect'
+        {status === 'reconnect'
           ? 'Reconnect Google to grant Drive read access.'
           : 'Connect a Google account to browse your Drive.'}
       </div>
       <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm' })}>
-        {state === 'reconnect' ? 'Reconnect Google' : 'Connect Google'}
+        {status === 'reconnect' ? 'Reconnect Google' : 'Connect Google'}
       </a>
     </div>
   {:else}
@@ -107,10 +109,10 @@
       />
     </div>
     <div class="max-h-[50vh] min-h-[12rem] overflow-y-auto">
-      {#if state === 'loading'}<SkeletonRows rows={6} class="px-2 py-3" />{/if}
-      {#if state === 'error'}<div class="p-6 text-center text-xs text-danger">Couldn’t reach Google Drive.</div>{/if}
-      {#if state === 'ready' && files && files.length === 0}<EmptyState variant="compact" title="No files found." />{/if}
-      {#if state === 'ready' && files}
+      {#if status === 'loading'}<SkeletonRows rows={6} class="px-2 py-3" />{/if}
+      {#if status === 'error'}<div class="p-6 text-center text-xs text-danger">Couldn’t reach Google Drive.</div>{/if}
+      {#if status === 'ready' && files && files.length === 0}<EmptyState variant="compact" title="No files found." />{/if}
+      {#if status === 'ready' && files}
         {#each files as f (f.id)}
           <button
             type="button"

@@ -104,7 +104,7 @@
           <div class="mt-1 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">enter to save · esc to cancel</div>
         </div>
       {:else if m.content}
-        <Markdown>{m.authorType === 'agent' ? resolveAgentMedia(m.content, m.author) : m.content}</Markdown>
+        <Markdown children={m.authorType === 'agent' ? resolveAgentMedia(m.content, m.author) : m.content} />
       {:else if live}
         <!-- Awaiting the agent's first token — SIGNAL WEAVE burst (spec §9). -->
         <GeneratingDots class="py-1" />

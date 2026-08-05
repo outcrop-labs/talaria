@@ -1,5 +1,5 @@
 // Shared bits of the Artifacts page (Artifacts.svelte + tree rows + editor).
-import { FileText, Table, Globe2, Paperclip, type Icon as IconType } from '@lucide/svelte'
+import { FileText, Table, Globe2, Paperclip, type LucideIcon as IconType } from '@lucide/svelte'
 import type { ArtifactKind } from '@/lib/artifacts'
 
 export const KIND_ICON: Record<ArtifactKind, IconType> = { doc: FileText, sheet: Table, microsite: Globe2, file: Paperclip }

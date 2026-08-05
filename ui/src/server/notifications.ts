@@ -50,10 +50,10 @@ import {
   type NotifyPrefs,
   type NotifyRoute,
   type NotifySettings,
-} from '@/lib/notifications'
+} from '@/lib/notify-classes'
 
 export type { DigestPref, NotifyClass, NotifyPrefs, NotifyRoute, NotifySettings }
-export { notifyClassOf } from '@/lib/notifications'
+export { notifyClassOf } from '@/lib/notify-classes'
 
 export interface Notification {
   id: string

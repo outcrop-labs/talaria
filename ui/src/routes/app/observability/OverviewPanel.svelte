@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
-  import { navigate } from '@/router'
+  import { navigateHref } from '@/router'
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -176,7 +176,7 @@
     {:else}
       <ul>
         {#each audit.slice(0, 6) as a, i (i)}
-          <ActivityRow actor={a.actor} detail={a.detail} at={a.at} onClick={() => a.href && void navigate(a.href as Parameters<typeof navigate>[0])} />
+          <ActivityRow actor={a.actor} detail={a.detail} at={a.at} onClick={() => a.href && void navigateHref(a.href)} />
         {/each}
       </ul>
     {/if}

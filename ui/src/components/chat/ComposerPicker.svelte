@@ -8,7 +8,7 @@
   // readout on hover) over the §7 popover pattern — search row with ⌘K hint,
   // panel bg, mono section header, right-aligned mono meta, hover fill,
   // dashed-gold selected row.
-  import type { Icon as IconType } from '@lucide/svelte'
+  import type { LucideIcon as IconType } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
   import PopSearch from '@/components/chat/PopSearch.svelte'

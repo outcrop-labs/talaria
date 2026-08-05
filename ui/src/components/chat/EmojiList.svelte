@@ -28,7 +28,8 @@
       return true
     }
     if (e.key === 'Enter' || e.key === 'Tab') {
-      if (items[active]) command(items[active])
+      const item = items[active]
+      if (item) command(item)
       return true
     }
     return false

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
   import { ChevronDown, ChevronRight } from '@lucide/svelte'
-  import { navigate } from '@/router'
+  import { navigateHref } from '@/router'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -55,7 +55,7 @@
   {:else}
     <ul>
       {#each query.data.slice(0, 12) as a, i (i)}
-        <ActivityRow actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigate(a.href)} />
+        <ActivityRow actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigateHref(a.href)} />
       {/each}
     </ul>
   {/if}

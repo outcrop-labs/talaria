@@ -15,7 +15,7 @@ export default defineConfig({
       '@talaria/sdk': resolve(here, 'src/sdk/index.ts'),
     },
   },
-  plugins: [viteTsConfigPaths({ projects: ['./tsconfig.json'] })],
+  plugins: [viteTsConfigPaths({ projects: ['./tsconfig.json'], loose: true })],
   build: {
     ssr: 'src/server/app.ts',
     outDir: 'dist/server',

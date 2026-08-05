@@ -4,7 +4,7 @@
 // SYSTEM holds Settings (everyone) and Admin (role-locked) — moved out of the
 // user menu into the sidebar per the Mercury design (spec §5).
 
-import type { LucideIcon } from 'lucide-react'
+import type { LucideIcon } from '@lucide/svelte'
 import {
   Activity,
   BookOpen,
@@ -22,7 +22,7 @@ import {
   Settings,
   Settings2,
   Shield,
-} from 'lucide-react'
+} from '@lucide/svelte'
 
 export interface NavItem {
   to: string

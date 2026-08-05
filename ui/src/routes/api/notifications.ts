@@ -12,7 +12,7 @@ import {
   setNotifySettings,
   unreadCount,
 } from '@/server/notifications'
-import { NOTIFY_CLASSES } from '@/lib/notifications'
+import { NOTIFY_CLASSES } from '@/lib/notify-classes'
 
 // GET /api/notifications → the user's inbox, unread count, routing prefs, the
 //   daily-digest switch, and whether this INSTANCE sends mail at all.

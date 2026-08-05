@@ -20,20 +20,20 @@
   // `r.ok ? … : reject('not found')` made EVERY status "not found", including
   // the ones that mean the server is having a bad minute. A visitor with a
   // perfectly good share link was told the page does not exist.
-  let state = $state<{ doc?: PublicDoc; missing?: boolean; error?: unknown }>({})
+  let loadState = $state<{ doc?: PublicDoc; missing?: boolean; error?: unknown }>({})
   let reload = $state(0)
   $effect(() => {
     void reload
     let live = true
-    state = {}
+    loadState = {}
     getJson<{ doc: PublicDoc }>(`/api/kb/public/${slug}`)
       .then((d) => {
-        if (live) state = { doc: d.doc }
+        if (live) loadState = { doc: d.doc }
       })
       .catch((e: unknown) => {
         if (!live) return
         // 404 is the only status that means "there is no such page".
-        state = e instanceof HttpError && e.status === 404 ? { missing: true } : { error: e }
+        loadState = e instanceof HttpError && e.status === 404 ? { missing: true } : { error: e }
       })
     return () => {
       live = false
@@ -44,11 +44,11 @@
   const skeletonWidths = ['100%', '94%', '98%', '88%', '96%', '73%', '100%', '91%', '97%', '85%', '95%', '60%']
 </script>
 
-{#if state.missing}
+{#if loadState.missing}
   <PublicNotFound />
-{:else if state.error}
-  <PublicUnavailable detail={errorMessage(state.error)} onRetry={() => (reload += 1)} />
-{:else if !state.doc}
+{:else if loadState.error}
+  <PublicUnavailable detail={errorMessage(loadState.error)} onRetry={() => (reload += 1)} />
+{:else if !loadState.doc}
   <!-- First paint for link recipients — hold the document's shape. -->
   <PublicShell>
     <div aria-hidden="true">
@@ -63,8 +63,8 @@
     </div>
   </PublicShell>
 {:else}
-  <PublicShell meta={`Updated ${relativeTime(state.doc.updatedAt)}`}>
-    <h1 class="mb-5 font-sans text-3xl font-semibold tracking-tight text-fg">{state.doc.title}</h1>
-    <Markdown class="tiptap" children={state.doc.body} />
+  <PublicShell meta={`Updated ${relativeTime(loadState.doc.updatedAt)}`}>
+    <h1 class="mb-5 font-sans text-3xl font-semibold tracking-tight text-fg">{loadState.doc.title}</h1>
+    <Markdown class="tiptap" children={loadState.doc.body} />
   </PublicShell>
 {/if}

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { Check, Lock, Plug, X } from '@lucide/svelte'
-  import type { Icon as IconType } from '@lucide/svelte'
+  import type { LucideIcon as IconType } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import GeneratingBars from '@/components/ui/GeneratingBars.svelte'

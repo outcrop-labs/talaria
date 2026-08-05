@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { navigate } from '@/router'
+  import { navigateHref } from '@/router'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -16,7 +16,7 @@
   {:else}
     <ul>
       {#each activity as a, i (i)}
-        <ActivityRow actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigate(a.href)} />
+        <ActivityRow actor={a.actor} detail={a.detail} at={a.at} context={a.context} onClick={() => a.href && void navigateHref(a.href)} />
       {/each}
     </ul>
   {/if}

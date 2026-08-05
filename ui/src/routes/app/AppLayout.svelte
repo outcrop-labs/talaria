@@ -28,7 +28,10 @@
   const logout = useLogout()
 
   const user = $derived(session.data)
-  const tab = $derived(searchParams.get('tab') ?? undefined)
+  // sv-router auto-parses query values (numbers, bare flags) — the inbox
+  // decision check compares tab names, so keep it a string.
+  const rawTab = $derived(searchParams.get('tab'))
+  const tab = $derived(rawTab == null ? undefined : String(rawTab))
 
   // Only a SUCCESSFUL session read saying "nobody is signed in" sends anyone to
   // /login. /api/auth/session answers 200 with `{ user: null }` when you're

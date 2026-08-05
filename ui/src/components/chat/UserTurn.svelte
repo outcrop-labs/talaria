@@ -30,7 +30,7 @@
     <div class="font-sans text-sm text-fg">
       <!-- Markdown, like every other message surface — a user turn was the
           one bubble still rendering raw text. -->
-      <Markdown>{content}</Markdown>
+      <Markdown children={content} />
       {#if attachments && attachments.length > 0}<MessageAttachments items={attachments} />{/if}
     </div>
   </div>

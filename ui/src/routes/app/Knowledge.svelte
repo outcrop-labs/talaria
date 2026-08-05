@@ -41,8 +41,14 @@
   // bug as a swallowed error, one layer up. Normalizing here fixes all six and
   // any seventh, which chasing the call sites would not. `s` is taken for the
   // same reason before someone writes the matching short form for the space.
-  const spaceId = $derived(searchParams.get('space') || searchParams.get('s') || null)
-  const docId = $derived(searchParams.get('doc') || searchParams.get('d') || null)
+  // sv-router auto-parses query values (numbers, bare flags) — ids must stay
+  // strings, so anything non-string is stringified and bare flags dropped.
+  const idParam = (k: string) => {
+    const v = searchParams.get(k)
+    return v == null || v === true ? null : String(v)
+  }
+  const spaceId = $derived(idParam('space') || idParam('s') || null)
+  const docId = $derived(idParam('doc') || idParam('d') || null)
   // One navigation per selection change — space + doc move together.
   const setLoc = (space: string | null, doc: string | null) =>
     navigate('/knowledge', { search: { ...(space ? { space } : {}), ...(doc ? { doc } : {}) } })

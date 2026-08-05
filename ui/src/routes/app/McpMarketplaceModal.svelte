@@ -2,7 +2,6 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { Check, Plus } from '@lucide/svelte'
   import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'

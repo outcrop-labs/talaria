@@ -2,7 +2,7 @@
 // label; `user:<uuid>` entries render with the member's name. One helper so
 // kanban cards, list rows, pickers, and filters all agree.
 import { isHumanAssignee, humanAssigneeId } from './task-const'
-import type { BoardMember } from './boards'
+import type { BoardMember } from './boards.svelte'
 
 export interface AssigneeInfo {
   /** The raw assignee string (stable key). */
