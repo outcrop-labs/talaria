@@ -1,10 +1,13 @@
 import { createRouter } from 'sv-router'
 import NotFound from './routes/NotFound.svelte'
-import AppLayout from './routes/app/AppLayout.svelte'
 
 // The whole route map, explicit (sv-router code-based tree mode). Lazy
 // `() => import(...)` per view keeps code splitting; the app shell
-// (AppLayout) is the layout for everything behind the session gate.
+// (AppLayout) is the layout for everything behind the session gate — and it
+// is lazy TOO (the old _app.tsx was a lazy file route for the same reason):
+// eager, it hoists the whole shell graph — InboxFocusShell → InboxChatPanel →
+// RichEditor → tiptap/prosemirror — into the entry chunk that /login and the
+// public share pages must also download.
 //
 // Old TanStack file routes → this tree:
 //   routes/login.tsx            → '/login'
@@ -61,7 +64,7 @@ export const { p, navigate, isActive, preload, route } = createRouter({
     },
     '/settings': () => import('./routes/app/Settings.svelte'),
     '/admin': () => import('./routes/app/Admin.svelte'),
-    layout: AppLayout,
+    layout: () => import('./routes/app/AppLayout.svelte'),
     hooks: {
       onError(error) {
         // A lazy chunk that no longer exists after a deploy lands here, as
