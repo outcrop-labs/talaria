@@ -2,10 +2,17 @@
 # (Qdrant + a native CPU embedding model via TEI). The app itself runs on the
 # host (`scripts/dev.sh` → vite on :5273); agents render into fleet/ and run
 # under the separate `talaria-fleet` compose project.
+#
+# Every image below is FULLY QUALIFIED (docker.io/...). A short name like
+# `redis:7-alpine` is resolved by whatever unqualified-search registries the
+# local engine is configured with (Podman, Rancher Desktop, corporate mirrors,
+# a containerd namespace), which on some hosts lands on a different image
+# entirely or on one with no arm64 manifest. Spelling out the registry makes
+# the pull identical on every machine — keep new services qualified too.
 name: talaria-dev
 services:
   postgres:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     container_name: ${TALARIA_PG_CONTAINER:-talaria-postgres-dev}
     restart: unless-stopped
     environment:
@@ -22,7 +29,7 @@ services:
       timeout: 3s
       retries: 20
   redis:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     container_name: ${TALARIA_REDIS_CONTAINER:-talaria-redis-dev}
     restart: unless-stopped
     ports:
@@ -35,7 +42,7 @@ services:
       timeout: 3s
       retries: 20
   qdrant:
-    image: qdrant/qdrant:latest
+    image: docker.io/qdrant/qdrant:latest
     container_name: ${TALARIA_QDRANT_CONTAINER:-talaria-qdrant-dev}
     restart: unless-stopped
     ports:
@@ -74,7 +81,7 @@ services:
   # (AWS/Backblaze/R2/...). Creds must match the app's TALARIA_S3_* env — both
   # default to the same dev values; setup.sh generates a random secret.
   minio:
-    image: minio/minio:latest
+    image: docker.io/minio/minio:latest
     container_name: ${TALARIA_MINIO_CONTAINER:-talaria-minio-dev}
     restart: unless-stopped
     command: ['server', '/data']
