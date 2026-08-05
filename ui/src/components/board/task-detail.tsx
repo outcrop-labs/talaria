@@ -41,7 +41,8 @@ import {
 import { useNavigate } from '@tanstack/react-router'
 import { userAssignee } from '@/lib/assignees'
 import { userMentionInsert, type Mentionable } from '@/components/chat/mentions'
-import { ColorPill, dateInputValue, dueIsoFromDateInput, startIsoFromDateInput } from '@/components/board/field-pills'
+import { ColorPill } from '@/components/board/field-pills'
+import { dateInputValue, dueIsoFromDateInput, startIsoFromDateInput } from '@/lib/dates'
 import {
   EFFORTS,
   EFFORT_LABEL,
