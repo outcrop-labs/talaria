@@ -2,7 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ChevronUp, ChevronDown } from '@lucide/svelte'
   import { useAgents } from '@/lib/agents'
-  import { archiveTask, updateTask, useBoardLabels, type BoardMember } from '@/lib/boards.svelte'
+  import { archiveTask, prefetchTask, updateTask, useBoardLabels, type BoardMember } from '@/lib/boards.svelte'
   import { assigneeInfo, userAssignee } from '@/lib/assignees'
   import { ticketMenuEntries } from '@/components/board/ticket-menu'
   import AssigneesPill from './AssigneesPill.svelte'
@@ -23,7 +23,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { cn } from '@/lib/cn'
-  import { fade, QUICK } from '@/lib/motion'
+  import { fade, listStagger, QUICK } from '@/lib/motion'
   import { EFFORT_LABEL, OFF_BOARD_STATUSES, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, pgNum, pgNumOr, taskTimeSpent, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
   import { relativeTime } from '@/lib/fleet'
   import {
@@ -434,6 +434,7 @@
           {#each groups as g (g.key)}
             {@const open = !collapsed.has(g.key)}
             <tbody
+              use:listStagger
               class={cn('divide-y divide-line-subtle', dragOverGroup === g.key && dragRow && 'bg-accent/5')}
               ondragover={groupDroppable
                 ? (e) => {
@@ -492,6 +493,7 @@
                       dragOverGroup = null
                     }}
                     onclick={() => onOpen(t.id)}
+                    onpointerenter={() => prefetchTask(qc, t.id)}
                     oncontextmenu={(e) => rowMenu(e, t)}
                     class={cn('group cursor-pointer transition-colors hover:bg-hover', sel.has(t.id) && 'bg-raised/70', dragRow === t.id && 'opacity-40')}
                   >

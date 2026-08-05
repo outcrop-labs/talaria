@@ -5,7 +5,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { cn } from '@/lib/cn'
-  import { fade, fly, slide, QUICK } from '@/lib/motion'
+  import { fade, slide, GROW_X, QUICK } from '@/lib/motion'
   import KbCommentBody from './KbCommentBody.svelte'
   import type { KbComment } from './knowledge.svelte'
 
@@ -149,7 +149,13 @@
   </div>
 {/snippet}
 
-<aside in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="flex w-80 shrink-0 flex-col border-l border-line-subtle">
+<!-- IN-FLOW panel: slide={GROW_X} on both legs so the editor glides as the
+     rail grows/shrinks instead of snapping (ANIMATIONS.md). |global:
+     KbDocEditor mounts this whole component per toggle, so local legs on the
+     component root never play (the |global rule). Inner wrapper pinned to the
+     resting width so comment text clips instead of rewrapping. -->
+<aside transition:slide|global={GROW_X} class="shrink-0 border-l border-line-subtle">
+<div class="flex h-full w-80 flex-col">
   <!-- §8 section header row: mono uppercase dim + right-aligned mono meta. -->
   <div class="flex items-center gap-2 border-b border-line-subtle px-3 py-2">
     <MessageSquareText size={13} class="text-muted" />
@@ -201,4 +207,5 @@
       class="text-sm"
     />
   </div>
+</div>
 </aside>

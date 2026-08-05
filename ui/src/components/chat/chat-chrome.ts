@@ -28,10 +28,10 @@ export const tileBase = cn(
   focusGold,
 )
 
-/** Picker popover panel (model-menu pattern, `3Q-0`). `gd-enter` gives every
- *  popover the §9 entrance (180ms fade + 4px rise; fade-only under
- *  prefers-reduced-motion) — exits stay instant, i.e. shorter. */
-export const popPanel = 'gd-enter rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]'
+/** Picker popover panel (model-menu pattern, `3Q-0`). Entrance lives at each
+ *  use site as `in:pop={POPOVER}` from @/lib/motion (reduced-motion aware via
+ *  the JS wrappers) — exits stay quick fades, i.e. shorter. */
+export const popPanel = 'rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]'
 /** 10px mono ink-dim section header inside a popover. */
 export const popHeader = 'px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'
 /** Popover option row: 13px sans, hover fill; selected adds a dashed gold outline. */

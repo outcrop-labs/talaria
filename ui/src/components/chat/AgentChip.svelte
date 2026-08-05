@@ -4,6 +4,7 @@
   import MeterBars from '@/components/chat/MeterBars.svelte'
   import PopSearch from '@/components/chat/PopSearch.svelte'
   import { chipPrimary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
+  import { listStagger, pop, POPOVER } from '@/lib/motion'
 
   /** The composer rail's agent chip (spec §7): assistant-chip style — strong border,
    *  mono uppercase agent name, 3×12 meter marking where the pick sits in the
@@ -80,13 +81,14 @@
   <div
     use:portal
     bind:this={panelRef}
+    in:pop={POPOVER}
     class={cn(popPanel, 'fixed z-[60] min-w-56 overflow-hidden')}
     style:left="{pos.left}px"
     style:bottom="{pos.bottom}px"
   >
     <PopSearch value={q} onChange={(v) => (q = v)} placeholder="Search agents" />
     <div class={popHeader}>Agent</div>
-    <div class="max-h-72 overflow-auto">
+    <div class="max-h-72 overflow-auto" use:listStagger>
       {#each visible as a (a.id)}
         <button
           type="button"

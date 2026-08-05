@@ -36,6 +36,7 @@
   import GroupHeader from './GroupHeader.svelte'
   import SublistFooter from './SublistFooter.svelte'
   import { cn } from '@/lib/cn'
+  import { listStagger } from '@/lib/motion'
   import { useBoards, useArchivedBoards, moveBoardToTeam } from '@/lib/boards.svelte'
   import { useTeams } from '@/lib/teams'
   import { navigate, p } from '@/router'
@@ -201,7 +202,7 @@
         class={cn(dragging && overGroup === group && 'rounded-md bg-raised ring-1 ring-[color:var(--theme-accent-border)]')}
       >
         <GroupHeader label={group} count={g.boards.length} {open} onToggle={() => toggleGroup(group, open)} />
-        <ul class="space-y-px">
+        <ul class="space-y-px" use:listStagger>
           {#each rows as b (b.id)}
             <li>{@render boardLink(b)}</li>
           {/each}
@@ -237,7 +238,7 @@
           {#snippet icon()}<Archive size={11} />{/snippet}
         </GroupHeader>
         {#if open}
-          <ul class="space-y-px">
+          <ul class="space-y-px" use:listStagger>
             {#each [...archived].sort(byName) as b (b.id)}
               <li>{@render boardLink(b)}</li>
             {/each}

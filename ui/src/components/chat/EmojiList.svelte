@@ -1,6 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
-  import { fade, QUICK } from '@/lib/motion'
+  import { fade, listStagger, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel, popRow } from '@/components/chat/chat-chrome'
   import type { EmojiEntry } from '@/lib/emoji'
 
@@ -38,7 +38,7 @@
 </script>
 
 {#if items.length > 0}
-  <div out:fade={QUICK} class={cn(popPanel, 'w-56')}>
+  <div in:pop={POPOVER} out:fade={QUICK} class={cn(popPanel, 'w-56')} use:listStagger>
     {#each items as item, i (item.ch)}
       <button
         type="button"

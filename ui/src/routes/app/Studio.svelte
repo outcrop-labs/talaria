@@ -9,14 +9,15 @@
   import Chip from '@/components/ui/Chip.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import WorkflowDetail from '@/components/workflows/WorkflowDetail.svelte'
   import StudioSkillEditor from '@/components/workflows/StudioSkillEditor.svelte'
   import StudioGuide, { type GuidePrefill } from '@/components/workflows/StudioGuide.svelte'
   import { cn } from '@/lib/cn'
+  import { staggerIn } from '@/lib/motion'
   import { useAgents } from '@/lib/agents'
   import { useSession } from '@/lib/session'
   import { useBoards } from '@/lib/boards.svelte'
@@ -146,11 +147,15 @@
   </div>
 {:else}
   <div class="h-full overflow-y-auto p-8">
-    <div class="mx-auto max-w-6xl">
-      <div class="mb-6 flex items-center gap-1.5">
-        <h1 class="font-sans text-2xl font-semibold tracking-tight text-fg">Studio</h1>
-        <InfoTip text="Build your agents, one at a time: what each one knows (skills), what work gets routed to it (workflows), and what it's asked for help with. Pick who you're building for on the left." />
-      </div>
+    <!-- Page content entrance AND post-skeleton reveal in one: this branch
+         mounts when the library lands, so title → failures → rail+world grid
+         rise in sequence (ANIMATIONS.md). Never on the skeleton branch. -->
+    <div use:staggerIn class="mx-auto max-w-6xl">
+      <ViewHeader
+        class="mb-6"
+        title="Studio"
+        info="Build your agents, one at a time: what each one knows (skills), what work gets routed to it (workflows), and what it's asked for help with. Pick who you're building for on the left."
+      />
 
       {#if sideFailures.length > 0}
         <div class="mb-6 space-y-2 rounded-xl border border-line-subtle p-3">
@@ -165,7 +170,11 @@
         </div>
       {/if}
 
-      <div class="grid gap-8 lg:grid-cols-[15rem_minmax(0,1fr)]">
+      <!-- The rail+world grid is the section whose items cascade: the frame
+           fades while the rail's rows and the world's blocks (agent header,
+           Suggestions, Knows, Routed here) rise 30ms apart, capped —
+           staggerIn's data-stagger-items contract. -->
+      <div class="grid gap-8 lg:grid-cols-[15rem_minmax(0,1fr)]" data-stagger-items="aside > *, main > *">
         <!-- ── Who you're building for ── -->
         <aside class="space-y-1">
           <div class="mb-2 px-2.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Building for</div>

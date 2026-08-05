@@ -5,6 +5,7 @@
   import StatCard from '@/components/ui/StatCard.svelte'
   import { formatTokens } from '@/lib/cost.svelte'
   import { relativeTime } from '@/lib/fleet'
+  import { listStagger } from '@/lib/motion'
   import type { InferenceLive } from './inference'
 
   /** The live strip: generating-now, gateway pulse, fleet temperature, and the
@@ -53,7 +54,7 @@
 {#if live.lastHour.length > 0}
   <Panel>
     <SectionHeader title="Active this hour" action={String(live.lastHour.length).padStart(2, '0')} />
-    <div class="divide-y divide-line">
+    <div class="divide-y divide-line" use:listStagger>
       {#each live.lastHour as a (a.agentModel)}
         <div class="flex items-center gap-3 py-3 text-sm transition-colors hover:bg-hover">
           <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{a.agentModel}</span>

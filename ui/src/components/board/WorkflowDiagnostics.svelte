@@ -4,6 +4,7 @@
   import { listQuery } from '@/components/ui/query-state'
   import { getList } from '@/lib/fetch-json'
   import { cn } from '@/lib/cn'
+  import { listStagger } from '@/lib/motion'
 
   /** A board-shape problem the server found, in its own words. Mirrors
    *  `StatusDiagnostic` in @/server/statuses — the sentences are composed THERE,
@@ -38,7 +39,7 @@
 {:else if !list.rows.length}
   {#if list.stale && list.notice}<QueryError {...list.notice} />{/if}
 {:else}
-  <div class="space-y-2">
+  <div class="space-y-2" use:listStagger>
     {#if list.notice}<QueryError {...list.notice} />{/if}
     {#each list.rows as d, i (i)}
       <div

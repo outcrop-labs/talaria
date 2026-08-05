@@ -5,6 +5,7 @@
   // title, right-aligned mono meta/time; the active row carries the gold dot.
   import { Plus } from '@lucide/svelte'
   import { useHasPerm } from '@/lib/session'
+  import { listStagger } from '@/lib/motion'
   import AgentPicker from '@/components/chat/AgentPicker.svelte'
   import SessionRowBody from '@/components/chat/SessionRowBody.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
@@ -83,13 +84,14 @@
   {:else if agentConvs.length === 0}
     <div class="px-2 py-6 text-center text-xs text-muted">No plans yet with this agent.</div>
   {:else}
-    <ul class="space-y-0.5">
+    <!-- div, not ul: RailRow renders div rows. -->
+    <div class="space-y-0.5" use:listStagger>
       {#each agentConvs as c (c.id)}
         <RailRow active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)}>
           <SessionRowBody conv={c} active={c.id === selectedConversationId} />
         </RailRow>
       {/each}
-    </ul>
+    </div>
   {/if}
 
   <!-- Plans shared WITH you ride other agents — always visible. -->

@@ -6,6 +6,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { cn } from '@/lib/cn'
+  import { listStagger } from '@/lib/motion'
   import { createTeam, useTeams } from '@/lib/teams'
   import TeamMembers from './TeamMembers.svelte'
 
@@ -35,7 +36,7 @@
   <div class="flex min-h-[24rem] gap-7">
     <!-- Team list -->
     <div class="flex w-60 shrink-0 flex-col border-r border-line-subtle pr-6">
-      <div class="space-y-1.5">
+      <div class="space-y-1.5" use:listStagger>
         {#if teamsLoading}<SkeletonRows rows={3} class="px-2 py-1.5" />{/if}
         {#if teamsList.notice}<QueryError {...teamsList.notice} />{/if}
         {#each teams as t (t.id)}

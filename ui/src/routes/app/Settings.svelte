@@ -14,6 +14,7 @@
   import AppSurface from '@/components/app/AppSurface.svelte'
   import { useEnabledApps } from '@/lib/apps'
   import Tabs from '@/components/ui/Tabs.svelte'
+  import { fly, staggerIn } from '@/lib/motion'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import PreferredModelPicker from './settings/PreferredModelPicker.svelte'
   import NotificationsSection from './settings/NotificationsSection.svelte'
@@ -95,6 +96,13 @@
     <h1 class="mb-4 text-2xl font-semibold tracking-tight text-fg">Settings</h1>
     <Tabs items={[...SETTINGS_TABS, ...appTabs]} value={tab} onChange={setTab} class="mb-6" />
     {#if appsList.notice}<div class="-mt-4 mb-6"><QueryError {...appsList.notice} /></div>{/if}
+    <!-- Tab-pane grammar: pane rises in on switch (no exit) and its sections
+         stagger — settings panes are section stacks. Keying is safe here: the
+         profile input's state (`name`) lives in this component, not the pane.
+         No AutoHeight — the pane is the last thing on a scrolling page, so its
+         resize has nothing below it to displace. -->
+    {#key tab}
+    <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-6">
     {#if tab === 'profile'}
       <Panel as="section">
         <div class="mb-4 flex items-center gap-3">
@@ -145,5 +153,7 @@
     {/if}
     {#if tab === 'keys'}<ApiKeysSection />{/if}
     {#if tab.startsWith('app:')}<AppSurface slug={tab.slice(4)} surface="settings" />{/if}
+    </div>
+    {/key}
   </div>
 </div>

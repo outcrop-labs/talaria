@@ -4,6 +4,8 @@
   import { chipSecondary, popHeader, popPanel, popRow } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
+  // Aliased: the local `pop` popover controller shadows motion's `pop`.
+  import { listStagger, pop as popIn, POPOVER } from '@/lib/motion'
   import type { RailItem } from './assistant-composer-controls'
   import { createAnchoredPopover } from './anchored-popover.svelte'
 
@@ -40,13 +42,14 @@
   <div
     use:portal
     bind:this={pop.panel}
+    in:popIn={POPOVER}
     class={cn(popPanel, 'fixed z-[70] w-64 overflow-hidden')}
     style:left="{pop.position.left}px"
     style:bottom="{pop.position.bottom}px"
   >
     <PopSearch value={query} onChange={(v) => (query = v)} placeholder={kind === 'mcp' ? 'Search MCPs' : 'Search skills'} />
     <div class={popHeader}>{kind === 'mcp' ? 'Agent MCP access' : 'Available skills'}</div>
-    <div class="max-h-64 overflow-y-auto">
+    <div class="max-h-64 overflow-y-auto" use:listStagger>
       {#each visible as item (item.id)}
         <div class={cn(popRow, 'text-muted')}>
           {#if kind === 'mcp'}<PlugZap size={12} class="shrink-0 text-accent" />{:else}<Sparkles size={12} class="shrink-0 text-accent" />{/if}

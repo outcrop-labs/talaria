@@ -247,6 +247,19 @@ export interface JudgeReview {
   createdAt: string
 }
 
+/** Warm the ticket cache from a card hover/press: by the time the modal's
+ *  entrance finishes, the content is usually already there — the modal opens
+ *  full, not skeleton-then-pop ("half-animated"). Same key+fn as useTask, so
+ *  the modal's query resolves from cache. Fire-and-forget; staleTime keeps a
+ *  hover from spamming the endpoint. */
+export function prefetchTask(qc: import('@tanstack/svelte-query').QueryClient, taskId: string) {
+  void qc.prefetchQuery({
+    queryKey: ['task', taskId],
+    queryFn: (): Promise<TaskFull | null> => getJsonOr404<TaskFull>(`/api/tasks/${taskId}`),
+    staleTime: 15_000,
+  })
+}
+
 export function useTask(taskId: MaybeGetter<string | null>) {
   return createQuery(() => {
     const id = resolve(taskId)

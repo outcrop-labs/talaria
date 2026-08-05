@@ -9,13 +9,15 @@
   import Panel from '@/components/ui/Panel.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import Materialize from '@/components/ui/Materialize.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { useContextMenu, copyAppLink } from '@/components/ui/context-menu.svelte'
   import { cn } from '@/lib/cn'
+  import { fly, staggerIn } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { createTemplate, deleteTemplate, useTemplates, type Template, type TemplateKind } from '@/lib/templates'
   import TemplateDetail from './templates/TemplateDetail.svelte'
@@ -95,51 +97,68 @@
   <EmptyState icon="▣" title="Admins only" />
 {:else}
   <div class="h-full overflow-y-auto p-8">
-    <div class="mx-auto max-w-5xl space-y-6">
-      <div class="flex items-center gap-1.5">
-        <h1 class="font-sans text-2xl font-semibold tracking-tight text-fg">Templates</h1>
-        <InfoTip text="The markdown skeletons work starts from. Resolution order everywhere: explicit pick → agent binding → board default → freeform." />
-      </div>
+    <!-- Page content entrance: header row → tab strip → list+detail pane rise
+         in sequence (ANIMATIONS.md). The keyed pane keeps its own fly on kind
+         switch and stays unstaggered inside — one level only. -->
+    <div use:staggerIn class="mx-auto max-w-5xl space-y-6">
+      <ViewHeader
+        title="Templates"
+        info="The markdown skeletons work starts from. Resolution order everywhere: explicit pick → agent binding → board default → freeform."
+      />
 
       <Tabs items={tabItems} value={tab} onChange={setTab} />
 
-      <div class="grid gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
+      <!-- Tab-pane grammar: the whole list+detail pane rises in on a kind
+           switch (no exit). Safe to key: the new-template input's state and
+           `editorOpen` live above; the detail is already keyed by selection.
+           The sidebar list's own cascade belongs to Materialize's content
+           branch — row-shaped skeletons materialize into the template rows. -->
+      {#key tab}
+      <div in:fly={{ y: 6, duration: 200 }} class="grid gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
         <aside class="space-y-3">
-          {#if isLoading}
-            <SkeletonRows rows={4} />
-          {:else if failed}
-            <QueryError
-              variant="compact"
-              error={templatesQuery.error}
-              title="Could not load templates"
-              onRetry={() => void templatesQuery.refetch()}
-            />
-          {:else}
-            <ul class="space-y-0.5">
+          <!-- Materialize direct (no QueryState here): this site already keys
+               everything off `isLoading`/`failed`, so error and empty stay in
+               the resolved branch and only the loading swap changes shape. -->
+          <Materialize loading={isLoading} count={5} class="space-y-0.5">
+            {#snippet skeleton(i)}
+              <!-- One sidebar row's silhouette: same rounded-md px-2.5 py-2
+                   frame, name bar at a width that varies by index. -->
+              <div aria-hidden="true" class="rounded-md px-2.5 py-2">
+                <div class="flex h-5 items-center">
+                  <Skeleton class={`h-3 rounded-full ${['w-32', 'w-24', 'w-40', 'w-28', 'w-36'][i % 5]}`} delay={i * 0.12} />
+                </div>
+              </div>
+            {/snippet}
+            {#if failed}
+              <QueryError
+                variant="compact"
+                error={templatesQuery.error}
+                title="Could not load templates"
+                onRetry={() => void templatesQuery.refetch()}
+              />
+            {:else}
               {#each list as t (t.id)}
-                <li>
-                  <button
-                    type="button"
-                    onclick={() => select(t.id)}
-                    oncontextmenu={(e) =>
-                      menu.openMenu(e, [
-                        { label: 'Open', onSelect: () => select(t.id) },
-                        { label: 'Copy link', onSelect: () => copyAppLink(`/templates?tab=${t.kind}&t=${t.id}`) },
-                        'sep',
-                        { label: 'Delete', danger: true, onSelect: () => void remove(t) },
-                      ])}
-                    class={cn(
-                      'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors',
-                      selected?.id === t.id ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
-                    )}
-                  >
-                    <span class="min-w-0 flex-1 truncate font-sans">{t.name}</span>
-                  </button>
-                </li>
+                <button
+                  type="button"
+                  onclick={() => select(t.id)}
+                  oncontextmenu={(e) =>
+                    menu.openMenu(e, [
+                      { label: 'Open', onSelect: () => select(t.id) },
+                      { label: 'Copy link', onSelect: () => copyAppLink(`/templates?tab=${t.kind}&t=${t.id}`) },
+                      'sep',
+                      { label: 'Delete', danger: true, onSelect: () => void remove(t) },
+                    ])}
+                  class={cn(
+                    'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors',
+                    selected?.id === t.id ? 'bg-raised text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+                  )}
+                >
+                  <span class="min-w-0 flex-1 truncate font-sans">{t.name}</span>
+                </button>
               {/each}
-              {#if list.length === 0}<li class="px-2.5 py-2 text-xs text-muted">None yet.</li>{/if}
-            </ul>
-          {/if}
+              {#if list.length === 0}<div class="px-2.5 py-2 text-xs text-muted">None yet.</div>{/if}
+            {/if}
+          </Materialize>
           <div class="flex items-center gap-1.5 border-t border-line pt-3">
             <Input size="sm" bind:value={newName} placeholder={`New ${tab} template`} onkeydown={(e) => e.key === 'Enter' && void create()} />
             <Button size="sm" variant="outline" disabled={!newName.trim()} onclick={() => void create()}>
@@ -167,6 +186,7 @@
           </Panel>
         {/if}
       </div>
+      {/key}
     </div>
     <ContextMenu {menu} />
   </div>

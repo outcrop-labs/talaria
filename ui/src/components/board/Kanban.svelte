@@ -8,9 +8,9 @@
   import KanbanCard from './KanbanCard.svelte'
   import { COL_ACCENT, fmtHours } from './kanban'
   import { cn } from '@/lib/cn'
-  import { fade, flip, LIST, QUICK } from '@/lib/motion'
+  import { fade, flip, LIST, listStagger, QUICK } from '@/lib/motion'
   import { useAgents } from '@/lib/agents'
-  import { archiveTask, createTask, updateTask, useBoardLabels, type Board, type BoardMember } from '@/lib/boards.svelte'
+  import { archiveTask, createTask, prefetchTask, updateTask, useBoardLabels, type Board, type BoardMember } from '@/lib/boards.svelte'
   import { OFF_BOARD_STATUSES, STATUS_LABEL, TASK_STATUSES, pgNumOr, type Task, type TaskStatus } from '@/lib/task-const'
   import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
   import { useSession } from '@/lib/session'
@@ -180,13 +180,20 @@
               </span>
             {/if}
           </div>
-          <div class="flex-1 space-y-2 overflow-y-auto px-2 pb-2">
+          <div class="flex-1 space-y-2 overflow-y-auto px-2 pb-2" use:listStagger>
             {#each colTasks as t (t.id)}
               <!-- flip makes reorders and drops glide; cheap even in big
                    columns — it only transforms cards whose position changed,
                    as compositor transforms. A cross-column move fades out of
                    one column and into the other (flip can't span lists). -->
-              <div animate:flip={LIST} in:fade={{ duration: 150 }} out:fade={QUICK}>
+              <!-- Hover warms the ticket cache so the detail modal opens with
+                   content already in place instead of skeleton-then-pop. -->
+              <div
+                animate:flip={LIST}
+                in:fade={{ duration: 150 }}
+                out:fade={QUICK}
+                onpointerenter={() => prefetchTask(qc, t.id)}
+              >
                 <KanbanCard
                   task={t}
                   pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, statuses: boardStatuses, boardId: board.id }}

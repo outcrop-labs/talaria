@@ -1,7 +1,7 @@
 <script lang="ts">
   import CloseButton from '@/components/ui/CloseButton.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import { fade, fly, QUICK } from '@/lib/motion'
+  import { slide, GROW_X } from '@/lib/motion'
   import type { Heading } from './knowledge.svelte'
 
   // The table-of-contents side rail — identical in the space and doc editors.
@@ -18,7 +18,13 @@
   } = $props()
 </script>
 
-<div in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="w-56 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+<!-- IN-FLOW rail: slide={GROW_X} on both legs so the editor glides as the rail
+     grows/shrinks instead of snapping (ANIMATIONS.md). |global: the editors
+     mount this whole component per toggle, so local legs on the component root
+     never play (the |global rule). Inner wrapper pinned to the resting width so
+     the empty-state sentence clips instead of rewrapping mid-grow. -->
+<div transition:slide|global={GROW_X} class="shrink-0 overflow-y-auto border-l border-line-subtle">
+<div class="w-56 p-3">
   <!-- §8 section header: 10px mono uppercase 0.08em ink-dim. -->
   <div class="mb-2 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
     <span>Contents</span>
@@ -40,4 +46,5 @@
       {/each}
     </div>
   {/if}
+</div>
 </div>

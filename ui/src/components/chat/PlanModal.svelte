@@ -4,6 +4,7 @@
   // assigned. Board-first: picking the board up front lets its default ticket
   // template shape the drafts (resolution: explicit pick → agent → board default).
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { listStagger } from '@/lib/motion'
   import Button from '@/components/ui/Button.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Select from '@/components/ui/Select.svelte'
@@ -236,7 +237,7 @@
         </Button>
       </div>
     {:else}
-      <div class="max-h-[65vh] space-y-3 overflow-y-auto pr-1">
+      <div class="max-h-[65vh] space-y-3 overflow-y-auto pr-1" use:listStagger>
         {#each proposals as p, i (i)}
           <ProposalCard index={i} proposal={p} all={proposals} onPatch={(patchP) => patch(i, patchP)} />
         {/each}

@@ -8,7 +8,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { getJson } from '@/lib/fetch-json'
-  import { fade, QUICK } from '@/lib/motion'
+  import Modal from '@/components/ui/Modal.svelte'
   import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
 
   let {
@@ -64,24 +64,25 @@
      A failed read must never seed it with '': saving from there would replace
      the real SKILL.md with an empty file. -->
 {#if !query.data}
-  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div out:fade={QUICK} class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onclick={query.isError ? onClose : undefined}>
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-    <div class="w-full max-w-3xl space-y-3 rounded-lg border border-line bg-[var(--theme-panel)] p-6" onclick={(e) => e.stopPropagation()}>
-      {#if query.isError}
-        <QueryError
-          variant="compact"
-          error={query.error}
-          title={`Could not open ${name}`}
-          onRetry={() => void query.refetch()}
-        />
-      {:else}
+  <!-- The one Modal primitive carries the shell (backdrop, Escape, portal,
+       entrance/exit) — don't re-animate inside it. While loading, dismissal
+       stays inert (as before): only a failed read may be clicked/Esc'd away. -->
+  <Modal open onClose={query.isError ? onClose : () => {}} width="max-w-3xl">
+    {#if query.isError}
+      <QueryError
+        variant="compact"
+        error={query.error}
+        title={`Could not open ${name}`}
+        onRetry={() => void query.refetch()}
+      />
+    {:else}
+      <div class="space-y-3">
         <Skeleton class="h-2.5 w-2/3 rounded-full" />
         <Skeleton class="h-2.5 w-full rounded-full" delay={0.12} />
         <Skeleton class="h-2.5 w-3/4 rounded-full" delay={0.24} />
-      {/if}
-    </div>
-  </div>
+      </div>
+    {/if}
+  </Modal>
 {:else}
   {#snippet deleteSkill()}
     <Button variant="ghost" size="sm" onclick={() => void remove()}>

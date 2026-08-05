@@ -19,7 +19,7 @@
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { cn } from '@/lib/cn'
-  import { fade, fly, QUICK } from '@/lib/motion'
+  import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { deleteArtifact, saveArtifact, uploadFile, useArtifact } from '@/lib/artifacts'
@@ -244,7 +244,10 @@
             <RichEditor bind:this={editorRef} value={artifact.body} slash prose autosave onSave={() => void saveBody()} placeholder="Draft your artifact" fill class="min-w-0 flex-1" />
           {/key}
         {:else}
-          <div class="re-prose min-w-0 flex-1 overflow-y-auto">
+          <!-- Tab-pane grammar on the READ pane only: the edit pane holds live
+               editor state (and is seed-keyed for Muse/revision swaps), so it
+               keeps its hard cut rather than replaying an entrance. -->
+          <div in:fly={{ y: 6, duration: 200 }} class="re-prose min-w-0 flex-1 overflow-y-auto">
             {#if artifact.body.trim()}
               <Markdown class="tiptap" children={artifact.body} />
             {:else}
@@ -268,9 +271,9 @@
           />
         {:else if artifact.body.trim()}
           <!-- Sandboxed: scripts run, but no same-origin — can't touch the app. -->
-          <iframe title={artifact.title} srcdoc={artifact.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" class="min-w-0 flex-1 border-0 bg-white"></iframe>
+          <iframe in:fly={{ y: 6, duration: 200 }} title={artifact.title} srcdoc={artifact.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" class="min-w-0 flex-1 border-0 bg-white"></iframe>
         {:else}
-          <div class="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
+          <div in:fly={{ y: 6, duration: 200 }} class="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
             <button type="button" onclick={() => (mode = 'edit')} class="hover:text-fg">Empty microsite. Switch to Edit to write HTML.</button>
           </div>
         {/if}
@@ -320,7 +323,10 @@
         </div>
       {/if}
       {#if showHistory}
-        <div in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+        <!-- IN-FLOW rail: slide={GROW_X} on both legs (ANIMATIONS.md); inner
+             wrapper pinned to the resting width so rows clip, not rewrap. -->
+        <div transition:slide={GROW_X} class="shrink-0 overflow-y-auto border-l border-line-subtle">
+        <div class="w-64 p-3">
           <ArtifactHistory
             {id}
             onRestore={async (content) => {
@@ -332,6 +338,7 @@
               seed += 1
             }}
           />
+        </div>
         </div>
       {/if}
     </div>

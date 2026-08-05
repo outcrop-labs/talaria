@@ -46,6 +46,7 @@ export { buttonClasses } from '@/components/ui/button'
 // reach into ui/src.
 export { fade, fly, scale, slide, flip, QUICK, POP, PANEL, LIST } from '@/lib/motion'
 export { default as IconButton } from '@/components/ui/IconButton.svelte'
+export { default as ViewHeader } from '@/components/ui/ViewHeader.svelte'
 export { default as Combobox } from '@/components/ui/Combobox.svelte'
 export { type ComboOption } from '@/components/ui/combobox'
 export { default as Modal } from '@/components/ui/Modal.svelte'

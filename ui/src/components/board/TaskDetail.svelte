@@ -9,6 +9,7 @@
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import type { RichEditorHandle } from '@/components/ui/rich-editor'
   import CloseButton from '@/components/ui/CloseButton.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -58,7 +59,7 @@
   import type { TicketMusePatch } from '@/lib/muse.svelte'
   import { statusLabelOf, useBoardStatuses } from '@/lib/statuses'
   import { cn } from '@/lib/cn'
-  import { fade, fly, slide, QUICK } from '@/lib/motion'
+  import { fade, listStagger, slide, QUICK } from '@/lib/motion'
   import DescriptionSection from './DescriptionSection.svelte'
   import AttachmentsSection from './AttachmentsSection.svelte'
   import JudgeVerdict from './JudgeVerdict.svelte'
@@ -176,21 +177,11 @@
   }
 </script>
 
-<svelte:document
-  onkeydown={(e) => {
-    if (e.key === 'Escape') onClose()
-  }}
-/>
-
-<div class="fixed inset-0 z-40 grid place-items-center p-4">
-  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="absolute inset-0 bg-black/50" transition:fade={QUICK} onclick={onClose}></div>
-  <!-- framer: opacity/y/scale 160ms in, shorter out — fly carries the fade. -->
-  <div
-    in:fly={{ y: 12, duration: 160 }}
-    out:fly={{ y: 12, duration: 120 }}
-    class="relative z-10 flex h-[85vh] w-full max-w-4xl overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]"
-  >
+<!-- The one Modal primitive (fixed height + unpadded): the ticket detail is
+     content INSIDE it, not its own hand-rolled shell. Entrance/exit, backdrop,
+     Escape, and portal all come from Modal. -->
+<Modal open onClose={onClose} width="max-w-4xl" height="h-[85vh]" padded={false}>
+  <div class="flex h-full w-full overflow-hidden">
     {#if taskQuery.isError && data === undefined}
       <div class="grid h-full w-full place-items-center p-6">
         <CloseButton onClick={onClose} class="absolute right-3 top-3" />
@@ -222,8 +213,11 @@
         </div>
       </div>
     {:else}
-      <!-- Content -->
-      <div class="flex min-w-0 flex-1 flex-col">
+      <!-- Content. LOCAL fades on purpose: on a cold load this branch toggles
+           in after mount (skeleton → content) and the reveal plays; when the
+           hover-prefetch already warmed the cache the branch renders AT mount,
+           local intros stay quiet, and the modal entrance is the only motion. -->
+      <div in:fade={{ duration: 250 }} class="flex min-w-0 flex-1 flex-col">
         <div class="flex items-center gap-2 border-b border-line-subtle px-5 py-2.5">
           {#if t.ticketRef}<span class="font-mono text-xs tracking-[0.05em] text-muted">{t.ticketRef}</span>{/if}
           <span class="text-xs text-muted">·</span>
@@ -327,7 +321,7 @@
           </div>
 
           {#if tab === 'comments'}
-            <ul class="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-3">
+            <ul class="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-3" use:listStagger>
               {#each data!.comments as c (c.id)}
                 <li in:fade={{ duration: 150 }} out:fade={QUICK} class="rounded-lg border border-line bg-card p-2">
                   <div class="mb-0.5 flex items-center justify-between text-xs">
@@ -358,7 +352,7 @@
               />
             {/key}
           {:else}
-            <ul class="min-h-0 flex-1 space-y-1 overflow-y-auto px-5 py-3">
+            <ul class="min-h-0 flex-1 space-y-1 overflow-y-auto px-5 py-3" use:listStagger>
               {#each data!.activity as a (a.id)}
                 <li in:fade={{ duration: 150 }} out:fade={QUICK} class="flex items-center gap-2 text-xs text-muted">
                   <span class="font-mono text-[11px] tracking-[0.05em] text-accent">{a.actor}</span>
@@ -386,7 +380,7 @@
       </div>
 
       <!-- Properties rail -->
-      <aside class="flex w-60 shrink-0 flex-col border-l border-line-subtle bg-sidebar">
+      <aside in:fade={{ duration: 250, delay: 60 }} class="flex w-60 shrink-0 flex-col border-l border-line-subtle bg-sidebar">
         <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
           <CloseButton onClick={onClose} class="-mr-1 ml-auto" />
           <Prop label="Status">
@@ -557,7 +551,7 @@
             </Prop>
           {:else}
             <Prop label={`Sub-tasks (${subTasks.length})`}>
-              <div class="space-y-1">
+              <div class="space-y-1" use:listStagger>
                 {#each subTasks as st (st.id)}
                   <div class="flex items-center gap-1.5 text-xs">
                     <span
@@ -703,4 +697,4 @@
       </aside>
     {/if}
   </div>
-</div>
+</Modal>

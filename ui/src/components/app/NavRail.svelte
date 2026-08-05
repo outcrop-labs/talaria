@@ -20,6 +20,7 @@
   import BoardsSublist from './BoardsSublist.svelte'
   import NavIcon from './NavIcon.svelte'
   import RailTooltip from './RailTooltip.svelte'
+  import CollapsePane from '@/components/ui/CollapsePane.svelte'
   import SidebarWorkOverview from './SidebarWorkOverview.svelte'
   import { useNavCollapsed } from './nav-rail.svelte'
   import { cn } from '@/lib/cn'
@@ -104,9 +105,14 @@
   <TeamsModal open={teamsOpen} onClose={() => (teamsOpen = false)} />
 {/snippet}
 
+<!-- CollapsePane owns the collapse/expand width glide (the two variants used
+     to be separate <nav>s, so the flip snapped with no animation possible).
+     Inner divs pin each variant's width so content clips during the glide
+     instead of squishing. -->
+<CollapsePane tag="nav" collapsed={nav.collapsed} width="w-[208px]" collapsedWidth="w-16" class="h-full shrink-0 border-r border-line bg-sidebar">
 {#if nav.collapsed}
   <!-- ── Icon rail (64px, spec §5) ───────────────────────────────────────── -->
-  <nav class="flex h-full w-16 shrink-0 flex-col items-center border-r border-line bg-sidebar pb-5 pt-3">
+  <div class="flex h-full w-16 flex-col items-center pb-5 pt-3">
     <div class="grid h-9 w-9 shrink-0 place-items-center" aria-label="Talaria">
       <WingMark class="h-5 w-5" />
     </div>
@@ -118,6 +124,7 @@
           <RailTooltip label={item.label}>
             <a
               href={item.to}
+              data-view-transition
               data-status={statusFor(item)}
               aria-label={item.label}
               class={cn(
@@ -179,10 +186,10 @@
     </div>
 
     {@render modals()}
-  </nav>
+  </div>
 {:else}
   <!-- ── Sidebar (208px, spec §5) ──────────────────────────────────────────── -->
-  <nav class="flex h-full w-[208px] shrink-0 flex-col border-r border-line bg-sidebar px-3 pb-4 pt-5">
+  <div class="flex h-full w-[208px] flex-col px-3 pb-4 pt-5">
     <div class="flex h-6 shrink-0 items-center">
       <Brand />
     </div>
@@ -200,6 +207,7 @@
               <li>
                 <a
                   href={item.to}
+                  data-view-transition
                   data-status={statusFor(item)}
                   class={cn(
                     'flex h-[30px] items-center gap-[9px] rounded-md px-2 font-sans text-[13px] leading-4 text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg',
@@ -258,5 +266,6 @@
     </div>
 
     {@render modals()}
-  </nav>
+  </div>
 {/if}
+</CollapsePane>

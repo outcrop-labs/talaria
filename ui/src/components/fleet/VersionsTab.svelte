@@ -12,6 +12,7 @@
   import { getList } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import type { AgentDef } from '@/lib/fleet-defs'
+  import { listStagger } from '@/lib/motion'
   import InternalEditorModal from './InternalEditorModal.svelte'
 
   interface Version {
@@ -78,6 +79,7 @@
     {#snippet skeleton()}<SkeletonRows rows={4} class="py-3" />{/snippet}
     {#snippet empty()}<div class="py-2.5 text-sm text-muted">No version history.</div>{/snippet}
     {#snippet children(versions)}
+      <div use:listStagger>
       {#each versions as v (v.version)}
         <div class="flex items-center gap-3 py-2.5 text-sm transition-colors hover:bg-hover">
           <span class={cn('w-12 shrink-0 font-mono', v.version === def.currentVersion ? 'text-accent' : 'text-muted')}>v{v.version}</span>
@@ -91,6 +93,7 @@
           {#if v.version === def.currentVersion}<span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-success">current</span>{/if}
         </div>
       {/each}
+      </div>
     {/snippet}
   </QueryState>
 </div>

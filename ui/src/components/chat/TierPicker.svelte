@@ -4,6 +4,7 @@
   import MeterBars from '@/components/chat/MeterBars.svelte'
   import PopSearch from '@/components/chat/PopSearch.svelte'
   import { chipPrimary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
+  import { pop, POPOVER } from '@/lib/motion'
 
   // The composer's model chip (Mercury spec §7): a 36px mono chip — ✳ glyph,
   // tier name, and a 3×12 meter showing where the pick sits on the agent's tier
@@ -65,6 +66,7 @@
   <div
     use:portal
     bind:this={panelRef}
+    in:pop={POPOVER}
     class={cn(popPanel, 'fixed z-[60] min-w-44 overflow-hidden')}
     style:left="{pos.left}px"
     style:bottom="{pos.bottom}px"

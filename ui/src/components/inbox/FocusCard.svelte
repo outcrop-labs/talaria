@@ -5,6 +5,7 @@
   import { cn } from '@/lib/cn'
   import { relativeTime } from '@/lib/fleet'
   import type { FocusAction, FocusItem } from '@/lib/inbox-focus.svelte'
+  import { listStagger } from '@/lib/motion'
   import { INBOX_SNOOZE_OPTIONS } from './inbox-focus-shell'
   import { PIPELINE, metadataValue, priorityClass, sourceLabel, stageFor } from './focus-inbox'
 
@@ -54,7 +55,7 @@
   </div>
 
   {#if item.evidence.length > 0}
-    <div class="mt-5 grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2">
+    <div class="mt-5 grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2" use:listStagger>
       {#each item.evidence.slice(0, 4) as evidence (`${evidence.label}:${evidence.text}`)}
         <div class="bg-panel px-3 py-3">
           <div class="mb-1 font-mono text-[9px] uppercase tracking-[0.08em] text-ink-dim">{evidence.label}</div>

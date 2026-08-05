@@ -6,6 +6,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import UserPicker from '@/components/app/UserPicker.svelte'
   import { shareBoard, unshareBoard, useBoardMembers, type Board } from '@/lib/boards.svelte'
+  import { listStagger } from '@/lib/motion'
 
   // The People tab of BoardSettingsModal.svelte.
   let { board }: { board: Board } = $props()
@@ -50,7 +51,7 @@
   </div>
   {#if err}<div class="mt-2 font-sans text-xs text-danger">{err}</div>{/if}
 
-  <div class="mt-4 space-y-1">
+  <div class="mt-4 space-y-1" use:listStagger>
     <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">People with access</div>
     {#if membersLoading}<SkeletonRows rows={3} avatar class="px-1 py-1.5" />{/if}
     {#if membersQuery.isError}

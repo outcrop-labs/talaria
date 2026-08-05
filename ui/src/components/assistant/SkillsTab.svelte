@@ -25,7 +25,7 @@ Describe when your assistant should use this skill and how.
   import SkillEditor from './SkillEditor.svelte'
   import { getList } from '@/lib/fetch-json'
   import { type Assistant } from '@/lib/assistant'
-  import { fade, slide, QUICK } from '@/lib/motion'
+  import { fade, listStagger, slide, QUICK } from '@/lib/motion'
 
   let { assistant }: { assistant: Assistant } = $props()
 
@@ -101,7 +101,7 @@ Describe when your assistant should use this skill and how.
       <EmptyState icon="✦" title="No skills yet" hint="Teach it its first playbook below." />
     {/snippet}
     {#snippet children(skills)}
-      <ul class="divide-y divide-line rounded-lg border border-line">
+      <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
         {#each skills as s (s.name)}
           <li in:fade={{ duration: 150 }} out:fade={QUICK}>
             <button

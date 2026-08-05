@@ -4,6 +4,7 @@
   import AttachButton from '@/components/chat/AttachButton.svelte'
   import { attachmentUrl, humanSize, isImage, splitAttachments, type Attachment } from '@/lib/attachments'
   import { updateTask } from '@/lib/boards.svelte'
+  import { listStagger } from '@/lib/motion'
   import type { Task } from '@/lib/task-const'
   import Section from './Section.svelte'
 
@@ -20,7 +21,7 @@
 {#if items.length || canEdit}
   <Section label="Attachments">
     {#if items.length > 0}
-      <div class="mb-2 flex flex-wrap gap-2">
+      <div class="mb-2 flex flex-wrap gap-2" use:listStagger>
         {#each items as a (a.id)}
           <span class="inline-flex items-center gap-2 rounded-md border border-line bg-raised/50 px-2.5 py-1.5 font-sans text-xs">
             {#if a.refType}

@@ -4,9 +4,8 @@
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { cn } from '@/lib/cn'
-  import { fade, fly, PANEL, QUICK } from '@/lib/motion'
+  import { fade, fly, listStagger, PANEL, QUICK } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useMarkNotificationsRead, useNotifications, type Notification } from '@/lib/notifications'
   import { navigateHref } from '@/router'
@@ -48,10 +47,27 @@
 {:else if !query.data}
   <!-- In flight → hold a modest space at the top of the page (this panel leads
        the column, so popping in late shoves EVERYTHING down). Resolved empty →
-       nothing: a quiet inbox takes no space. -->
-  <Panel>
-    <Skeleton class="mb-3 h-3 w-28 rounded-full" />
-    <SkeletonRows rows={2} />
+       nothing: a quiet inbox takes no space. The sketch mirrors the real
+       anatomy — collapsed header line, then two notification-row silhouettes
+       (unread treatment: dot + title + time in a raised bordered row). No
+       Materialize here: loaded, the rows sit behind the collapsed header, so
+       there is no visible list for the skeletons to materialize into. -->
+  <Panel aria-hidden="true">
+    <div class="flex min-h-6 items-center gap-2">
+      <Skeleton class="h-3 w-3 rounded" />
+      <Skeleton class="h-2.5 w-24 rounded-full" />
+    </div>
+    <div class="mt-2 space-y-1">
+      {#each [0, 1] as i (i)}
+        <div class="rounded-md border border-line bg-raised px-3 py-2.5">
+          <div class="flex h-5 items-center gap-2">
+            <Skeleton class="h-1.5 w-1.5 shrink-0 rounded-full" delay={i * 0.15} />
+            <Skeleton class={`h-3 rounded-full ${i ? 'w-2/5' : 'w-3/5'}`} delay={i * 0.15} />
+            <span class="ml-auto"><Skeleton class="h-2.5 w-10 rounded-full" delay={i * 0.15 + 0.1} /></span>
+          </div>
+        </div>
+      {/each}
+    </div>
   </Panel>
 {:else if items.length > 0}
   <Panel>
@@ -91,7 +107,7 @@
       />
     {/if}
     {#if expanded}
-      <ul in:fly={PANEL} out:fade={QUICK} class="max-h-80 space-y-1 overflow-y-auto">
+      <ul in:fly={PANEL} out:fade={QUICK} class="max-h-80 space-y-1 overflow-y-auto" use:listStagger>
         {#each items as n (n.id)}
           <li in:fade={{ duration: 150 }} out:fade={QUICK}>
             <button

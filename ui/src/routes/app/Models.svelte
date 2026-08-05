@@ -6,6 +6,8 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
+  import ViewHeader from '@/components/ui/ViewHeader.svelte'
+  import { fly, staggerIn } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { useEndpoints } from '@/lib/models'
   import type { LlmEndpoint } from '@/lib/fleet-defs'
@@ -45,7 +47,9 @@
   {#if eps.length > 0}
     <div>
       <SectionHeader class="mb-2" {title} action={String(eps.length).padStart(2, '0')} />
-      <div class="space-y-3">
+      <!-- data-cards: the hook the pane's data-stagger-items selector targets —
+           endpoint cards cascade on entrance; skeletons/other panes don't. -->
+      <div class="space-y-3" data-cards>
         {#each eps as e (e.id)}
           <ModelsEndpointCard ep={e} />
         {/each}
@@ -58,18 +62,29 @@
   <EmptyState icon="▤" title="Admins only" />
 {:else}
   <div class="h-full overflow-y-auto p-8">
-    <div class="mx-auto max-w-4xl space-y-6">
-      <div class="flex items-center gap-3">
-        <h1 class="font-sans text-2xl font-semibold tracking-tight text-fg">Models</h1>
-        {#if tab === 'models'}
-          <Button size="sm" class="ml-auto" onclick={() => (adding = true)}>
-            Add provider
-          </Button>
-        {/if}
-      </div>
+    <!-- Page content entrance: header row → tab strip → pane rise in sequence
+         (ANIMATIONS.md). The keyed pane keeps its own fly on tab switch and
+         stays unstaggered inside — one level only. -->
+    <div use:staggerIn class="mx-auto max-w-4xl space-y-6">
+      <ViewHeader title="Models">
+        {#snippet actions()}
+          {#if tab === 'models'}
+            <Button size="sm" onclick={() => (adding = true)}>
+              Add provider
+            </Button>
+          {/if}
+        {/snippet}
+      </ViewHeader>
 
       <Tabs items={MODEL_TABS} value={tab} onChange={setTab} />
 
+      <!-- Tab-pane grammar: rise in on switch, no exit. On MOUNT the pane is a
+           section whose items cascade: endpoint cards (the [data-cards] hook)
+           rise 30ms apart while the frame fades. The selector deliberately
+           misses skeletons and the other tabs' panels — those must not
+           animate row-by-row. -->
+      {#key tab}
+      <div in:fly={{ y: 6, duration: 200 }} class="space-y-6" data-stagger-items="[data-cards] > *">
       {#if tab === 'models'}
         {#if endpointsQuery.isPending}
           <div class="space-y-3">
@@ -104,6 +119,8 @@
       {#if tab === 'roles'}<ModelsRolesPanel />{/if}
       {#if tab === 'platform'}<ModelsPlatformAgentsPanel />{/if}
       {#if tab === 'access'}<ModelsMemberAccessPanel />{/if}
+      </div>
+      {/key}
 
       {#if adding}<ModelsAddProviderModal open={adding} onClose={() => (adding = false)} onAdded={(id) => (manageId = id)} />{/if}
       {#if managing}<ModelsEndpointModal ep={managing} onClose={() => (manageId = null)} />{/if}

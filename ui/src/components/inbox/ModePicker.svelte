@@ -2,6 +2,8 @@
   import { chipSecondary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
+  // Aliased: the local `pop` popover controller shadows motion's `pop`.
+  import { pop as popIn, POPOVER } from '@/lib/motion'
   import type { AssistantMode } from './assistant-composer-controls'
   import { createAnchoredPopover } from './anchored-popover.svelte'
 
@@ -33,6 +35,7 @@
   <div
     use:portal
     bind:this={pop.panel}
+    in:popIn={POPOVER}
     class={cn(popPanel, 'fixed z-[70] w-64')}
     style:left="{pop.position.left}px"
     style:bottom="{pop.position.bottom}px"

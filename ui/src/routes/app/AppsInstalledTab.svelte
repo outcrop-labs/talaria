@@ -84,7 +84,9 @@
     hint="Discover community and official apps in the next tab, or drop a codebase into apps/ — see apps/README.md for building your own"
   />
 {:else}
-  <div class="space-y-3">
+  <!-- data-app-cards: the hook Apps.svelte's data-stagger-items selector
+       targets — these cards cascade on the page entrance. -->
+  <div class="space-y-3" data-app-cards>
     {#each apps as a (a.slug)}
       <div class="flex items-center gap-4 rounded-lg border border-line bg-panel p-4">
         <span class="w-8 text-center text-2xl text-accent">{a.icon}</span>

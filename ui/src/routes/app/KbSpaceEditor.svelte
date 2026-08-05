@@ -16,7 +16,7 @@
   import { inlineEditKeys } from '@/components/ui/control'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { updateSpace, useSpace } from '@/lib/kb'
-  import { fade, fly, QUICK } from '@/lib/motion'
+  import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import KbDocPageSkeleton from './KbDocPageSkeleton.svelte'
   import KbHistoryRail from './KbHistoryRail.svelte'
   import KbMuseBar from './KbMuseBar.svelte'
@@ -232,7 +232,10 @@
           />
         </div>
       {:else}
-        <div class="flex min-w-0 flex-1 flex-col">
+        <!-- Tab-pane entrance on the READ pane only — the edit pane holds live
+             editor state (seed-keyed for Muse/revisions), so it keeps its hard
+             cut rather than replaying an entrance. -->
+        <div in:fly={{ y: 6, duration: 200 }} class="flex min-w-0 flex-1 flex-col">
           <div
             class="re-prose min-w-0 flex-1 overflow-y-auto"
             role="presentation"
@@ -277,7 +280,10 @@
         <KbTocPanel {headings} onJump={scrollToHeading} onClose={() => (showToc = false)} emptyText="No headings yet." />
       {/if}
       {#if showHistory}
-        <div in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+        <!-- IN-FLOW rail: slide={GROW_X} on both legs (ANIMATIONS.md); inner
+             wrapper pinned to the resting width so rows clip, not rewrap. -->
+        <div transition:slide={GROW_X} class="shrink-0 overflow-y-auto border-l border-line-subtle">
+        <div class="w-64 p-3">
           <KbHistoryRail
             kind="kb-space"
             id={spaceId}
@@ -290,6 +296,7 @@
               seed += 1
             }}
           />
+        </div>
         </div>
       {/if}
     </div>

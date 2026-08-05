@@ -2,7 +2,7 @@
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import type { ContextMenuEntry, MenuIcon } from './context-menu.svelte'
 
@@ -113,7 +113,7 @@
           ? align === 'right' ? 'origin-bottom-right' : 'origin-bottom-left'
           : align === 'right' ? 'origin-top-right' : 'origin-top-left',
       )}
-      in:scale={POP}
+      in:pop={POPOVER}
       out:fade={QUICK}
     >
       {#if content}

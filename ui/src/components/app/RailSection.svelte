@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { listStagger } from '@/lib/motion'
 
   /** Rail section label ("CHANNELS", "AGENTS") with optional icon action. */
   let {
@@ -14,5 +15,6 @@
     <span class="flex-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</span>
     {@render action?.()}
   </div>
-  <ul class="space-y-0.5">{@render children()}</ul>
+  <!-- div, not ul: RailRow renders div rows (Materialize-friendly geometry). -->
+  <div class="space-y-0.5" use:listStagger>{@render children()}</div>
 </div>

@@ -6,6 +6,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import UserPicker from '@/components/app/UserPicker.svelte'
+  import { listStagger } from '@/lib/motion'
   import { addTeamMember, removeTeamMember, useTeamMembers, type TeamRole } from '@/lib/teams'
 
   // Members panel of TeamsModal.svelte (module-private there in React; its own
@@ -56,7 +57,7 @@
   {#if err}<div class="mt-1 font-sans text-xs text-danger">{err}</div>{/if}
   {#if membersLoading}<SkeletonRows rows={3} avatar class="mt-4 px-1 py-2" />{/if}
   {#if membersList.notice}<div class="mt-4"><QueryError {...membersList.notice} /></div>{/if}
-  <ul class="mt-4 space-y-1.5">
+  <ul class="mt-4 space-y-1.5" use:listStagger>
     {#each members as m (m.userId)}
       <li class="flex items-center gap-2 rounded-md px-1 py-2">
         <Avatar name={m.name ?? m.email} class="h-6 w-6" />

@@ -8,7 +8,9 @@
 //   <div transition:fade>            import { fade } from '@/lib/motion'
 //   <div in:fly={{ y: 8 }}>          import { fly } from '@/lib/motion'
 import { flip as svFlip, type FlipParams, type AnimationConfig } from 'svelte/animate'
+import { quintOut } from 'svelte/easing'
 import {
+  crossfade as svCrossfade,
   fade as svFade,
   fly as svFly,
   scale as svScale,
@@ -53,13 +55,181 @@ export function flip(node: HTMLElement, positions: { from: DOMRect; to: DOMRect 
   return reducedMotion() ? { duration: 0 } : svFlip(node, positions, params)
 }
 
+// ── Round 2: perceptible, elegant ────────────────────────────────────────────
+// The 0.96-scale/160ms first pass read as "completely unanimated". Motion that
+// can't be felt is cost without signal: entrances now rise AND scale on a
+// quint curve — still calm, unmistakably alive.
+
+const EASE = 'cubic-bezier(0.22, 1, 0.36, 1)' // quintOut, as a CSS string for WAAPI
+
+/** Overlay entrance: rise + scale + fade on one quint curve. The one
+ *  transition for modals and popovers (scale alone was imperceptible). */
+export function pop(
+  node: Element,
+  params?: { duration?: number; delay?: number; y?: number; start?: number },
+): TransitionConfig {
+  if (reducedMotion()) return degrade(node, params)
+  const { duration = 300, delay, y = 12, start = 0.94 } = params ?? {}
+  return {
+    duration,
+    delay,
+    easing: quintOut,
+    css: (t, u) => `opacity: ${t}; transform: translateY(${u * y}px) scale(${start + t * (1 - start)})`,
+  }
+}
+
+/** Animated resize. Put this on a wrapper whose ONLY child is the measured
+ *  content (AutoHeight.svelte gives you the structure); when the content's
+ *  height changes — a wizard step swap, a disclosure, an error row — the
+ *  wrapper's height glides instead of snapping. WAAPI, native, no layout
+ *  thrash: the content is already at its final size, only the clip animates. */
+export function autoHeight(node: HTMLElement, opts?: { duration?: number }) {
+  const inner = node.firstElementChild
+  if (!inner) return
+  let last = node.offsetHeight
+  let anim: Animation | null = null
+  const ro = new ResizeObserver(() => {
+    const next = (inner as HTMLElement).offsetHeight
+    if (next === last || last === 0) {
+      last = next
+      return
+    }
+    if (!reducedMotion()) {
+      anim?.cancel()
+      const prevOverflow = node.style.overflow
+      node.style.overflow = 'hidden'
+      anim = node.animate([{ height: `${last}px` }, { height: `${next}px` }], {
+        duration: opts?.duration ?? 220,
+        easing: EASE,
+      })
+      anim.onfinish = anim.oncancel = () => {
+        node.style.overflow = prevOverflow
+      }
+    }
+    last = next
+  })
+  ro.observe(inner)
+  return {
+    destroy() {
+      ro.disconnect()
+      anim?.cancel()
+    },
+  }
+}
+
+/** Staggered content entrance: direct children rise in, 50ms apart. Put it on
+ *  the container INSIDE a `{#key …}` block (or on a view/loaded-content
+ *  container) so mounts re-run it. `fill: backwards` hides delayed children
+ *  until their turn; `data-no-stagger` sits an element out.
+ *
+ *  NESTED CASCADE: a direct child marked `data-stagger-items` is treated as a
+ *  section whose ITEMS cascade within the section's slot — the section frame
+ *  fades in place (no travel: frame + items both translating reads as double
+ *  motion) while its items rise 30ms apart starting at the frame's delay.
+ *  By default the items are the marked element's direct children; give the
+ *  attribute a selector value (`data-stagger-items="li"`) when the list sits
+ *  deeper (e.g. inside a Panel body). Items beyond `maxItems` appear together
+ *  with the last cadence slot — a 200-row table must not take 6 seconds.
+ *
+ *  Reduced motion: everything simply appears. */
+export function staggerIn(
+  node: HTMLElement,
+  opts?: { step?: number; duration?: number; y?: number; maxSteps?: number; itemStep?: number; maxItems?: number },
+) {
+  if (reducedMotion()) return
+  const { step = 50, duration = 320, y = 10, maxSteps = 8, itemStep = 30, maxItems = 12 } = opts ?? {}
+  const rise = (el: Element, delay: number) =>
+    el.animate(
+      [
+        { opacity: 0, transform: `translateY(${y}px)` },
+        { opacity: 1, transform: 'translateY(0)' },
+      ],
+      { duration, delay, easing: EASE, fill: 'backwards' },
+    )
+  Array.from(node.children).forEach((el, i) => {
+    if (el.hasAttribute('data-no-stagger')) return
+    const base = Math.min(i, maxSteps) * step
+    const itemsSel = el.getAttribute('data-stagger-items')
+    if (itemsSel === null) {
+      rise(el, base)
+      return
+    }
+    // Section frame: fade only, at its slot. Items: rise within the slot.
+    el.animate([{ opacity: 0 }, { opacity: 1 }], { duration, delay: base, easing: EASE, fill: 'backwards' })
+    const items = itemsSel === '' ? Array.from(el.children) : Array.from(el.querySelectorAll(`:scope ${itemsSel}`))
+    items.forEach((item, j) => {
+      if (item.hasAttribute('data-no-stagger')) return
+      if (j >= maxItems) return // beyond the cap: present immediately (see listStagger)
+      rise(item, base + (j + 1) * itemStep)
+    })
+  })
+}
+
+/** THE RULE OF THUMB: any grid or list staggers its items subtly on mount.
+ *  Put this on the element whose direct children are the items ({#each}
+ *  container). Quieter than staggerIn — less travel, tighter cadence — and
+ *  capped: items beyond `maxItems` appear together. If the list sits inside a
+ *  `use:staggerIn` container, also mark it `data-no-stagger` so the section
+ *  cascade skips it and this cascade owns it. */
+export function listStagger(
+  node: HTMLElement,
+  opts?: { step?: number; duration?: number; y?: number; maxItems?: number },
+) {
+  if (reducedMotion()) return
+  const { step = 30, duration = 280, y = 6, maxItems = 12 } = opts ?? {}
+  Array.from(node.children).forEach((el, i) => {
+    if (el.hasAttribute('data-no-stagger')) return
+    // Items beyond the cap don't animate AT ALL — they're simply there.
+    // (Clamping only the delay made a 200-row list sit invisible and then
+    // materialize as a block: the whole list read as one slow stagger. The
+    // cascade is for the first screenful; below the fold, presence wins.)
+    if (i >= maxItems) return
+    el.animate(
+      [
+        { opacity: 0, transform: `translateY(${y}px)` },
+        { opacity: 1, transform: 'translateY(0)' },
+      ],
+      { duration, delay: i * step, easing: EASE, fill: 'backwards' },
+    )
+  })
+}
+
+/** A send/receive pair for the one element that MOVES between spots — a tab
+ *  underline, a segmented thumb. Make one pair per component:
+ *    const [sendMark, receiveMark] = markCrossfade()
+ *    {#if active === tab.id}<div in:receiveMark={{key:'mark'}} out:sendMark={{key:'mark'}} …>
+ *  Reduced motion falls back to a quick fade (the fallback leg). */
+export function markCrossfade(duration = 200) {
+  return svCrossfade({
+    duration: () => (reducedMotion() ? 0 : duration),
+    easing: quintOut,
+    fallback: (node) => svFade(node, { duration: 100 }),
+  })
+}
+
 // House defaults, so surfaces feel like one system rather than 141 opinions:
-//   modals/popovers  in:scale={POP}  out:fade={QUICK}
-//   panels/drawers   fly with a small travel (8–16px), 150–200ms
-//   list/row reveal  slide (height) or fade, ≤150ms
-//   reorder/move     animate:flip={LIST} on the keyed {#each} items
-//   banners          slide
-export const QUICK: FadeParams = { duration: 120 }
-export const POP: ScaleParams = { duration: 160, start: 0.96 }
-export const PANEL: FlyParams = { duration: 180, y: 8 }
-export const LIST: FlipParams = { duration: 150 }
+//   modals            in:pop            out:fade={QUICK}
+//   popovers/menus    in:pop={POPOVER}  out:fade={QUICK}   (origin-* toward trigger)
+//   panels/drawers    in:fly={PANEL} (or x: PANEL_X)  out:fade={QUICK}
+//   step/tab content  {#key} + use:staggerIn, wrapped in AutoHeight when the
+//                     container height changes with the content
+//   list/row reveal   slide (height) or fade, ≤150ms
+//   reorder/move      animate:flip={LIST} on the keyed {#each} items
+//   banners           slide
+//   view changes      data-view-transition on the nav link (CSS in styles.css)
+// Round-3 tempo: round 2 was mechanically correct and still read as "stupid
+// fast". These are the slowest values that stay calm — entrances you can
+// actually watch, exits that don't make anyone wait.
+export const QUICK: FadeParams = { duration: 160 }
+export const POP = { duration: 300, y: 12, start: 0.94 }
+export const POPOVER = { duration: 220, y: 8, start: 0.95 }
+export const PANEL: FlyParams = { duration: 320, y: 18, easing: quintOut }
+export const PANEL_X: FlyParams = { duration: 320, x: 20, easing: quintOut }
+// IN-FLOW panels (they occupy layout, siblings must glide): grow open, shrink
+// closed — `transition:slide={GROW_X}` on both legs. fly/PANEL_X is ONLY for
+// OVERLAY panels (portaled, out of flow) where nothing reflows around them;
+// on an in-flow panel fly animates the transform while the width lands
+// instantly, so the layout snap eats the animation.
+export const GROW_X: SlideParams = { axis: 'x', duration: 300, easing: quintOut }
+export const GROW_Y: SlideParams = { axis: 'y', duration: 300, easing: quintOut }
+export const LIST: FlipParams = { duration: 250 }

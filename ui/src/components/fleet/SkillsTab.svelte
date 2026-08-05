@@ -6,6 +6,7 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { getList } from '@/lib/fetch-json'
+  import { listStagger } from '@/lib/motion'
   import SkillEditorModal from './SkillEditorModal.svelte'
 
   interface SkillSummary {
@@ -53,7 +54,7 @@
     {#snippet skeleton()}<SkeletonRows rows={3} class="py-2" />{/snippet}
     {#snippet empty()}<EmptyState icon="✦" title="No skills yet" hint={isAdmin ? 'Add one below.' : undefined} />{/snippet}
     {#snippet children(owners)}
-      <div class="divide-y divide-line">
+      <div class="divide-y divide-line" use:listStagger>
         {#each skillsOf(owners) as s (s.name)}
           <button type="button" onclick={() => (open = s.name)} class="flex w-full items-baseline gap-3 py-2.5 text-left transition-colors hover:bg-hover">
             <span class="shrink-0 font-sans text-sm font-medium text-fg">{s.name}</span>

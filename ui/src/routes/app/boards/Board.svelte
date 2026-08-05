@@ -21,6 +21,7 @@
   import Chip from '@/components/ui/Chip.svelte'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
+  import { staggerIn } from '@/lib/motion'
   import { useAgents } from '@/lib/agents'
   import {
     useBoards,
@@ -355,7 +356,12 @@
 {:else if !board}
   <EmptyState icon="⧉" title="Board not found" hint="It may have been deleted, or you don’t have access." />
 {:else}
-  <div class="flex h-full min-w-0 flex-col">
+  <!-- Page content entrance AND post-skeleton reveal in one: this branch
+       mounts when board+tasks land, so header → view row → filter row → the
+       task canvas rise in sequence (ANIMATIONS.md). The canvas is ONE child —
+       its columns/rows are query data and never stagger. Never on the
+       skeleton branch. -->
+  <div use:staggerIn class="flex h-full min-w-0 flex-col">
     <BoardHeader {board} onSettings={() => (settingsOpen = true)} />
 
     <!-- Row 1 — the VIEW: mode toggle, saved views, save. -->

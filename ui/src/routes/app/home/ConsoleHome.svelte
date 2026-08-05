@@ -3,7 +3,9 @@
   import { navigate } from '@/router'
   import Tabs from '@/components/ui/Tabs.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import { listQuery } from '@/components/ui/query-state'
+  import { fly, staggerIn } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { useChannels } from '@/lib/channels.svelte'
   import { greeting, useHome, type HomeTab } from './home'
@@ -54,8 +56,11 @@
 </script>
 
 <div class="h-full overflow-y-auto p-8">
-  <div class="mx-auto max-w-6xl space-y-6">
-    <h1 class="font-sans text-2xl font-semibold tracking-tight text-fg">{greeting(session.data?.name ?? session.data?.email)}</h1>
+  <!-- Page content entrance: greeting → tab strip → pane rise in sequence
+       (ANIMATIONS.md). The keyed pane below keeps its own fly on tab switch —
+       one level of stagger only, so the dense panes themselves stay flat. -->
+  <div use:staggerIn class="mx-auto max-w-6xl space-y-6">
+    <ViewHeader title={greeting(session.data?.name ?? session.data?.email)} />
 
     <Tabs
       value={tab}
@@ -72,11 +77,17 @@
          from here. `home` goes into BoardsTab whole, not pre-unwrapped:
          the tab needs `isError`/`refetch` to tell an empty queue from a
          queue it could not read. -->
-    {#if tab === 'boards'}<BoardsTab {home} />{/if}
-    {#if tab === 'comms'}<CommsTab />{/if}
-    {#if tab === 'plans'}<PlansTab />{/if}
-    {#if tab === 'research'}<ResearchTab />{/if}
-    {#if tab === 'docs'}<DocsTab />{/if}
-    {#if tab === 'fleet' && isAdmin}<FleetTab {home} />{/if}
+    <!-- Tab-pane grammar: rise in on switch, no exit. These are dense work
+         queues (boards, comms, fleet) — no stagger, no AutoHeight. -->
+    {#key tab}
+      <div in:fly={{ y: 6, duration: 200 }}>
+        {#if tab === 'boards'}<BoardsTab {home} />{/if}
+        {#if tab === 'comms'}<CommsTab />{/if}
+        {#if tab === 'plans'}<PlansTab />{/if}
+        {#if tab === 'research'}<ResearchTab />{/if}
+        {#if tab === 'docs'}<DocsTab />{/if}
+        {#if tab === 'fleet' && isAdmin}<FleetTab {home} />{/if}
+      </div>
+    {/key}
   </div>
 </div>

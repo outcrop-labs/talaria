@@ -520,3 +520,32 @@ kbd,
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* ── View transitions (spec §9, round 2) ─────────────────────────────────────
+   Nav-rail links carry `data-view-transition`, so sv-router wraps those
+   navigations in document.startViewTransition(). Only the content region
+   (.vt-view, stamped in AppLayout) participates: the old view fades down-and-
+   out fast, the new one rises in on the house quint curve. The root snapshot
+   is pinned to `animation: none` so the rail/strip never flicker. Browsers
+   without the API, and people who ask for reduced motion, get an instant swap. */
+.vt-view {
+  view-transition-name: talaria-view;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(talaria-view) {
+    animation: 180ms ease-out both talaria-vt-out;
+  }
+  ::view-transition-new(talaria-view) {
+    animation: 320ms cubic-bezier(0.22, 1, 0.36, 1) both talaria-vt-in;
+  }
+}
+@keyframes talaria-vt-out {
+  to { opacity: 0; }
+}
+@keyframes talaria-vt-in {
+  from { opacity: 0; transform: translateY(8px); }
+}

@@ -5,7 +5,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { getJson } from '@/lib/fetch-json'
-  import { fade, QUICK } from '@/lib/motion'
+  import { fade, fly, QUICK } from '@/lib/motion'
   import InternalEditorModal from './InternalEditorModal.svelte'
 
   let { slug, name, isAdmin, onClose }: { slug: string; name: string; isAdmin: boolean; onClose: () => void } = $props()
@@ -48,7 +48,10 @@
      (same surface InternalEditorModal uses in nested mode) with a skeleton
      body, then swap to the real editor when the content arrives. -->
 {#if !query.data}
-  <div out:fade={QUICK} class="absolute inset-0 z-30 flex flex-col bg-[var(--theme-panel)]">
+  <!-- The slide promised above: same surface + travel as InternalEditorModal's
+       nested entrance. |global — this block is true the moment the component
+       mounts, so local legs would be suppressed (ANIMATIONS.md). -->
+  <div in:fly|global={{ x: '100%', duration: 180, opacity: 1 }} out:fade|global={QUICK} class="absolute inset-0 z-30 flex flex-col bg-[var(--theme-panel)]">
     <div class="flex shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-3.5">
       <div class="text-sm font-semibold text-fg">{name} · SKILL.md</div>
       <Button variant="ghost" size="sm" class="ml-auto" onclick={onClose}>

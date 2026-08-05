@@ -1,56 +1,86 @@
-# Animation pass — the motion contract
+# Animation pass — the motion contract (round 2)
 
 One motion language for the whole cockpit, built ONLY from native Svelte
-primitives: `svelte/transition` + `svelte/animate` via the reduced-motion-aware
-wrappers in `@/lib/motion` (`fade`, `fly`, `scale`, `slide`, `flip`, presets
-`QUICK`, `POP`, `PANEL`, `LIST`). Import from `@/lib/motion` — never directly
-from `svelte/transition`/`svelte/animate`, so reduced-motion stays handled in
-exactly one place. No CSS keyframe additions, no JS animation libraries.
+primitives (`svelte/transition`, `svelte/animate`, actions + WAAPI) via the
+reduced-motion-aware wrappers in `@/lib/motion`. Import from `@/lib/motion` —
+never directly from `svelte/transition`/`svelte/animate` — so reduced-motion
+stays handled in one place. No animation libraries, no CSS keyframe additions
+outside the sanctioned view-transition block in styles.css.
 
-Mercury is matte and calm (spec §9): motion confirms what happened; it never
-performs. If a transition would make someone wait, it's too long. If it would
-make them look, it's too loud.
+Round 2 verdict (design review): the first pass was too timid — 160ms at 0.96
+scale reads as *nothing*, and unanimated container resizes read as jank. The
+grammar now is: **perceptible entrances, animated resizes, staggered content,
+transitions between views and tabs.** Still matte, still calm — motion confirms,
+never performs — but it must be *felt*.
+
+## Primitives (`@/lib/motion`)
+
+- `pop` — overlay entrance: rise + scale + fade, one quint curve. Modals
+  (`in:pop`), popovers (`in:pop={POPOVER}`).
+- `fade`, `fly`, `scale`, `slide` — as before; presets carry quint easing.
+- `flip` + `LIST` — keyed-list reorder/move.
+- `autoHeight` action / `<AutoHeight>` (ui) — the box glides to its new height
+  whenever content height changes. **Rule: if it resizes, it animates.**
+- `staggerIn` action — direct children rise in 40ms apart (WAAPI,
+  `fill: backwards`, `data-no-stagger` to opt an element out). Put it on the
+  container INSIDE a `{#key …}` block so step/tab changes re-run it.
+- `markCrossfade()` — send/receive pair for the one element that moves between
+  spots (tab underline, segmented thumb).
+- Presets: `QUICK` (exit fade 140), `POP`, `POPOVER`, `PANEL` (y:14/240),
+  `PANEL_X` (x:16/240), `LIST` (180).
 
 ## The grammar
 
-| Surface | Enter | Exit | Notes |
-|---|---|---|---|
-| Modal / dialog | `in:scale={POP}` | `out:fade={QUICK}` | Modal.svelte already does this — reuse Modal, don't re-animate its children |
-| Dropdown / context menu / popover / tooltip / suggest list | `in:scale={{ ...POP, start: 0.97 }}` | `out:fade={QUICK}` | set `transform-origin` toward the trigger (e.g. `origin-top-left`) via class |
-| Side panel / drawer | `in:fly={PANEL}` (x or y toward its resting place, 8–16px) | `out:fade={QUICK}` | |
-| Banner / inline notice / error row | `transition:slide={{ duration: 150 }}` | same | height animation announces "something appeared between things" |
-| Collapsible / disclosure | `transition:slide={{ duration: 150 }}` | same | |
-| List rows appearing/disappearing (chat messages, notifications, activity, table rows) | `in:fade={{ duration: 150 }}` | `out:fade={QUICK}` — or `out:slide` when siblings should close the gap smoothly | keep it cheap; no travel on rows |
-| Keyed list REORDER / cross-column move (kanban cards, sortable rows) | `animate:flip={LIST}` on the `{#each}` item | — | flip only where order genuinely changes while visible |
-| Empty state / zero-state swap | `in:fade={{ duration: 150 }}` | none | |
-| Toast / floating status | `in:fly={{ y: 8, duration: 180 }}` | `out:fade={QUICK}` | |
-| Wizard / step change | `in:fade={{ duration: 150, delay: 80 }}` on the entering step | `out:fade={QUICK}` | delay lets the leaving step clear; no horizontal slides |
+| Surface | Treatment |
+|---|---|
+| Modal / dialog | `in:pop` / `out:fade={QUICK}`; backdrop `in:fade={{duration:180}}` / `out:fade={QUICK}` (Modal.svelte does this — reuse it, don't re-animate children) |
+| Dropdown / menu / popover / tooltip / suggest | `in:pop={POPOVER}` / `out:fade={QUICK}`, `origin-*` toward the trigger |
+| Side panel / drawer — OVERLAY (portaled, out of flow) | `in:fly={PANEL}` or `={PANEL_X}` toward resting place / `out:fade={QUICK}` (Drawer.svelte) |
+| Side panel — IN-FLOW (occupies layout: thread panel, comment rails, history rails) | `transition:slide={GROW_X}` on BOTH legs (`|global` when the panel is the component root) — the panel grows open and shrinks closed so siblings glide instead of snapping. If text visibly reflows during the grow, pin an inner wrapper to the panel's resting width so it clips instead |
+| Wizard / step flow | `{#key step}` → container with `use:staggerIn`, wrapped in `<AutoHeight>`; no per-branch fade soup, the stagger IS the entrance |
+| Tab pane change | `{#key active}` → pane `in:fly={{ y: 6, duration: 200 }}` (no exit — the new pane replaces in place); `use:staggerIn` where the pane is section-shaped; `<AutoHeight>` when the pane's container height varies (modals, settings). Indicator/thumb moves via `markCrossfade` pair |
+| View change (nav) | `data-view-transition` on the nav link — the View Transitions API cross-fades ONLY the `.vt-view` region (CSS in styles.css). Never animate the rail/strip |
+| Page content entrance | `use:staggerIn` on the view's top-level section container — the page's panels/sections rise in as the view mounts (composes with the view transition), and again when loaded content replaces a skeleton (put it on the loaded branch's container). A section whose meat is a list carries `data-stagger-items` (optionally `="<selector>"`) so its rows cascade inside the section's slot |
+| **Any grid or list** (rule of thumb) | `use:listStagger` on the `{#each}` container — items rise subtly, 30ms cadence, capped at 12 slots so big tables never crawl. Inside a `use:staggerIn` region, prefer `data-stagger-items` on the section; a standalone list that also sits under staggerIn adds `data-no-stagger` to itself so exactly one cascade owns it. Exempt: chat transcript history, virtualized/streaming lists, skeleton branches |
+| Banner / notice / error row | `transition:slide={{ duration: 150 }}` |
+| Collapsible / disclosure | `transition:slide={{ duration: 150 }}`; if a sibling container visibly resizes with it, that container rides `<AutoHeight>` |
+| List rows in/out | `in:fade={{ duration: 150 }}` / `out:fade={QUICK}` (or `out:slide` when siblings should close the gap) |
+| Keyed reorder / cross-column move | `animate:flip={LIST}` |
+| Empty/error state swap | `in:fade={{ duration: 150 }}` |
+| Skeleton → content | `<Materialize>` (ui): item-SHAPED skeletons (a snippet mirroring the real item's silhouette — frame, avatar block, line widths) render in the same container/geometry as the list, then fade out in place while the items stagger in over them. Grid-stacked, so no layout jump. Generic `SkeletonRows` stays only for non-list prose regions |
+| Confirmation flash (saved/copied) | `in:fade={{ duration: 150 }}` |
+
+## The `|global` rule (round 3 — this bug shipped twice)
+
+Svelte transitions are LOCAL by default: they play only when their own block
+toggles, and are SUPPRESSED when the block is created because an ancestor
+mounted. Most overlays are rendered `{#if x}<SomeModal …>` — the component
+mounts with its internal `{#if open}` already true, so a local intro never
+plays. That is how "modals are completely unanimated" survived two review
+rounds.
+
+- **Overlay roots** (modal, drawer, side panel, popover panel — anything that
+  should animate *no matter what mounted it*): every transition leg gets
+  `|global` (`in:pop|global`, `out:fade|global={QUICK}`).
+- **Rows, banners, inline reveals** (things that must NOT animate on page
+  load): stay local — that's what local is for.
+- Litmus test: "should this animate when its parent component mounts?" Yes →
+  `|global`. No → local.
 
 ## Hard rules
 
-- **Never animate**: route/page swaps, the nav rail's contents on load, large
-  scroll containers, text mid-reflow, anything on a hot path that streams
-  (message tokens during SSE, generating indicators beyond what exists).
-- **No loops, no springs, no bounce, no stagger cascades.** Durations 120–200ms;
-  exits ≤ enters.
-- **`{#if}` + `transition:` is the pattern** — never mount/unmount via CSS
-  visibility to fake it.
-- Svelte 5 transitions are LOCAL by default (they don't fire when a parent
-  mounts) — that's what we want. Do not add `|global`.
-- A transition on a `{#each}` row must not fire for the initial page render's
-  rows — local default handles this; verify by loading the page fresh.
-- Don't double-animate: if a parent already transitions (Modal), children don't.
-- Don't touch `animate:flip` onto lists that can exceed ~100 visible items.
-- Skeletons already pulse via CSS and stagger via their `delay` prop — leave
-  the skeleton system alone.
-- If a surface already has a transition from the migration, keep it unless it
-  breaks this grammar.
+- **Never animate**: streaming token text, live readouts on data change,
+  skeletons, initial page render (local rows cover it).
+- **No loops, no springs, no bounce.** Stagger is sanctioned ONLY via
+  `staggerIn` (uniform 40ms cadence) — no hand-rolled per-element delays.
+- Durations 140–240ms; exits ≤ enters; quint ease via the presets.
+- `{#if}` + `transition:` is the pattern — no CSS-visibility fakes.
+- Don't double-animate: Modal's children, staggered containers' grandchildren.
+- A resize the user watches must glide (`AutoHeight`); a resize behind a
+  view-transition or a full swap must not double-animate.
 
 ## Definition of done per file
 
-- Only `@/lib/motion` imports added (plus preset consts); Tailwind classes
-  otherwise untouched except `origin-*` where a popover needs it.
-- The dev server (already running) compiles it — check for red in
-  `npx svelte-check` on YOUR files if unsure.
-- A one-line comment is NOT needed for each transition — the grammar is the
-  documentation. Comment only where you deviate and say why.
+- Only `@/lib/motion` / `<AutoHeight>` imports added; Tailwind classes
+  untouched except `origin-*` where needed.
+- svelte-check clean; comment only where you deviate, and say why.

@@ -38,7 +38,9 @@
   const detail = $derived(stale ? '' : messageOf(error))
 </script>
 
-<div in:fade={{ duration: 150 }} class={cn(variant === 'full' ? 'grid h-full min-h-[60vh] place-items-center p-6' : 'px-2 py-6', 'text-center', className)}>
+<!-- |global: this IS the component root, mounted by error boundaries when
+     they trip — a local intro would never play (ANIMATIONS.md). -->
+<div in:fade|global={{ duration: 150 }} class={cn(variant === 'full' ? 'grid h-full min-h-[60vh] place-items-center p-6' : 'px-2 py-6', 'text-center', className)}>
   <div class={cn('max-w-sm', variant === 'compact' && 'mx-auto')}>
     <!-- Not `mercury-text`: the brand gradient is for welcome moments. A
          failure gets the danger token, plainly. -->

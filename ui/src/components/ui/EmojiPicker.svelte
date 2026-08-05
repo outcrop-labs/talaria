@@ -53,7 +53,7 @@
 <script lang="ts">
   import Input from '@/components/ui/Input.svelte'
   import { cn } from '@/lib/cn'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, listStagger, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popHeader, popPanel } from '@/components/chat/chat-chrome'
 
   let {
@@ -95,7 +95,7 @@
 </script>
 
 {#snippet grid(entries: EmojiEntry[])}
-  <div class="grid grid-cols-8 gap-0.5">
+  <div class="grid grid-cols-8 gap-0.5" use:listStagger>
     {#each entries as e (e.id)}
       <button type="button" title={e.name} onclick={() => onPick(e.native)} class="grid h-8 place-items-center rounded-md text-lg transition-colors hover:bg-hover">
         {e.native}
@@ -106,10 +106,12 @@
 
 <svelte:document onmousedown={onDocMousedown} />
 
+<!-- |global: the panel IS the component root — call sites render
+     {#if open}<EmojiPicker/>, so local legs never play (ANIMATIONS.md). -->
 <div
   bind:this={el}
-  in:scale={POP}
-  out:fade={QUICK}
+  in:pop|global={POPOVER}
+  out:fade|global={QUICK}
   class={cn(
     popPanel,
     'absolute top-full z-30 mt-1 w-72 p-2',

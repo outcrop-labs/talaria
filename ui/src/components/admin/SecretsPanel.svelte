@@ -14,7 +14,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import { slide } from '@/lib/motion'
+  import { listStagger, slide } from '@/lib/motion'
   import { GROUP_LABELS, useClearSecret, useSecretHealth, type SecretGroup, type SecretRow } from '@/lib/secrets'
   import RootCard from './RootCard.svelte'
   import SecretsRow from './SecretsRow.svelte'
@@ -132,7 +132,7 @@
             <h3 class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
               {GROUP_LABELS[group]}
             </h3>
-            <ul class="divide-y divide-line-subtle">
+            <ul class="divide-y divide-line-subtle" use:listStagger>
               {#each rows as r (r.id)}
                 <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} />
               {/each}

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import type { ContextMenuController, ContextMenuItem, MenuIcon } from './context-menu.svelte'
 
@@ -100,7 +100,7 @@
     style="position: fixed; left: {st.x}px; top: {st.y}px; z-index: 80"
     class={cn(popPanel, 'min-w-44 origin-top-left')}
     oncontextmenu={(e) => e.preventDefault()}
-    in:scale={POP}
+    in:pop={POPOVER}
     out:fade={QUICK}
   >
     {#each rows as { item, i, idx } (item === 'sep' ? `s${i}` : `${item.label}${i}`)}
@@ -153,7 +153,7 @@
             {/if}
           </button>
           {#if hasKids && openSub === i}
-            <div class={cn(popPanel, 'absolute left-full top-0 z-10 -ml-0.5 min-w-40 origin-top-left')} in:scale={POP} out:fade={QUICK}>
+            <div class={cn(popPanel, 'absolute left-full top-0 z-10 -ml-0.5 min-w-40 origin-top-left')} in:pop={POPOVER} out:fade={QUICK}>
               {#each item.children ?? [] as kid, k (kid === 'sep' ? `ks${k}` : `${kid.label}${k}`)}
                 {#if kid === 'sep'}
                   <div class="mx-2 my-1 border-t border-line"></div>

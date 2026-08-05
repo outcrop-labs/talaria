@@ -4,6 +4,7 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Panel from '@/components/ui/Panel.svelte'
+  import { listStagger } from '@/lib/motion'
   import QueryState from '@/components/ui/QueryState.svelte'
   import { getList } from '@/lib/fetch-json'
 
@@ -49,7 +50,7 @@
       {/snippet}
       {#snippet children(alerts)}
         <Panel class="p-0">
-          <div class="divide-y divide-line">
+          <div class="divide-y divide-line" use:listStagger>
             {#each alerts as a, i (i)}
               <button
                 type="button"

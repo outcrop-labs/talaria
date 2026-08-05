@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import Materialize from '@/components/ui/Materialize.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import { staggerIn } from '@/lib/motion'
   import { useInboxFocusWorkspace } from './inbox-focus-shell'
   import { isEditable } from './focus-inbox'
   import FocusCard from './FocusCard.svelte'
@@ -62,7 +64,10 @@
 <svelte:document onkeydown={onKey} />
 
 <div class="h-full min-h-0 min-w-0 overflow-y-auto px-4 pb-8 pt-8 sm:px-8 sm:pt-12">
-  <main class="mx-auto w-full max-w-[760px]">
+  <!-- Page content entrance: header then the queue block rise in sequence
+       (ANIMATIONS.md). Runs once at mount; the loaded branch below staggers
+       again when data replaces the skeleton. -->
+  <main use:staggerIn class="mx-auto w-full max-w-[760px]">
     <FocusHeader
       count={failed ? null : (workspace.data?.counts.total ?? 0)}
       current={workspace.active ? 1 : 0}
@@ -82,33 +87,43 @@
 
     {#if failed}
       <FocusOffline error={workspace.error} onRetry={() => void workspace.refetch()} />
-    {:else if workspace.data === undefined}
-      <!-- `isLoading` is svelte-query's "first fetch IN FLIGHT", and it is
-           false in the states between — a disabled query, a retry backoff,
-           a mount before the fetch starts. Every one of those has no data
-           and no error, and branching on `isLoading` alone dropped them
-           through to `InboxZero`: "no decisions are waiting", asserted by a
-           surface that had not asked yet. The skeleton is the honest
-           placeholder for "we do not know", so it owns ALL of them. -->
-      <FocusLoading />
-    {:else if workspace.active}
-      <FocusCard
-        item={workspace.active}
-        recommendedAction={workspace.recommendedAction}
-        busyAction={workspace.busyAction}
-        snoozeMs={workspace.snoozeMs}
-        onSnoozeMs={workspace.setSnoozeMs}
-        onAction={(action) => void workspace.performAction(workspace.active!, action.id)}
-        onSnooze={() => void workspace.snooze()}
-        onSkip={workspace.skip}
-        canSkip={workspace.orderedItems.length > 1}
-      />
-      <QueuePreview items={workspace.orderedItems.slice(1, 5)} remaining={Math.max(0, workspace.orderedItems.length - 1)} />
     {:else}
-      <!-- Only reachable with data in hand, so "inbox zero" is something the
-           server actually said — never a stand-in for a read that failed or
-           a read that has not happened. -->
-      <InboxZero />
+      <!-- `workspace.data === undefined` (not `isLoading`): svelte-query's
+           "first fetch IN FLIGHT" is false in the states between — a disabled
+           query, a retry backoff, a mount before the fetch starts. Every one
+           of those has no data and no error, and branching on `isLoading`
+           alone dropped them through to `InboxZero`: "no decisions are
+           waiting", asserted by a surface that had not asked yet. The
+           skeleton is the honest placeholder for "we do not know".
+
+           Skeleton → content as one motion: FocusLoading sketches the card +
+           queue silhouette ONCE (count=1 — this surface is a card plus a
+           short queue, not a homogeneous list), and the resolved card and
+           queue preview stagger in over it (Materialize's content branch
+           owns the cascade — the old staggerIn/data-stagger-items pair is
+           retired with it). -->
+      <Materialize loading={workspace.data === undefined} count={1}>
+        {#snippet skeleton()}<FocusLoading />{/snippet}
+        {#if workspace.active}
+          <FocusCard
+            item={workspace.active}
+            recommendedAction={workspace.recommendedAction}
+            busyAction={workspace.busyAction}
+            snoozeMs={workspace.snoozeMs}
+            onSnoozeMs={workspace.setSnoozeMs}
+            onAction={(action) => void workspace.performAction(workspace.active!, action.id)}
+            onSnooze={() => void workspace.snooze()}
+            onSkip={workspace.skip}
+            canSkip={workspace.orderedItems.length > 1}
+          />
+          <QueuePreview items={workspace.orderedItems.slice(1, 5)} remaining={Math.max(0, workspace.orderedItems.length - 1)} />
+        {:else}
+          <!-- Only reachable with data in hand, so "inbox zero" is something
+               the server actually said — never a stand-in for a read that
+               failed or a read that has not happened. -->
+          <InboxZero />
+        {/if}
+      </Materialize>
     {/if}
   </main>
 </div>

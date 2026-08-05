@@ -21,6 +21,7 @@
   import KeyHint from '@/components/ui/KeyHint.svelte'
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
+  import Materialize from '@/components/ui/Materialize.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -128,77 +129,76 @@
     <div class="mb-3">
       <AgentPicker {agents} value={agent} onChange={pickAgent} loading={agentsLoading} fullWidth />
     </div>
-    {#if runsLoading}
-      <!-- Rail-row-shaped placeholders while the run list loads; the empty
-           state only appears once the query has RESOLVED empty. -->
-      <div aria-hidden="true" class="space-y-0.5">
-        {#each ['88%', '72%', '95%', '60%', '80%'] as w, i (i)}
-          <div class="px-2 py-1.5">
-            <div style:width={w}>
-              <Skeleton class="h-3 w-full rounded-full" delay={i * 0.12} />
-            </div>
-            <div class="mt-1.5 w-2/5 pl-3.5">
-              <Skeleton class="h-2.5 w-full rounded-full" delay={i * 0.12 + 0.06} />
-            </div>
+    <!-- Skeleton → content as one motion: run-row-shaped skeletons (dot +
+         title line, then the chip/meta line) materialize into the real rows.
+         Materialize direct (no QueryState here): error and resolved-empty
+         stay in the content branch, exactly as this site already keyed them. -->
+    <Materialize loading={runsLoading} count={5} class="space-y-0.5">
+      {#snippet skeleton(i)}
+        <div aria-hidden="true" class="rounded-md px-2 py-1.5">
+          <div class="flex h-5 items-center gap-2">
+            <Skeleton class="h-1.5 w-1.5 shrink-0 rounded-full" delay={i * 0.12} />
+            <Skeleton class={`h-3 rounded-full ${['w-4/5', 'w-3/5', 'w-11/12', 'w-1/2', 'w-2/3'][i % 5]}`} delay={i * 0.12} />
           </div>
-        {/each}
-      </div>
-    {:else if runsQuery.isError && runsQuery.data === undefined}
-      <!-- The run list is someone's research history. "No research yet" over
-           a failed read invites them to re-run work they already paid for. -->
-      <QueryError
-        variant="compact"
-        error={runsQuery.error}
-        title="Could not load your research"
-        onRetry={() => void runsQuery.refetch()}
-      />
-    {:else if runs.length === 0}
-      <EmptyState variant="compact" icon="◎" title="No research yet." hint="Ask something worth knowing." />
-    {:else}
-      <ul class="space-y-0.5">
+          <div class="mt-0.5 flex h-4 items-center gap-2 pl-3.5">
+            <Skeleton class="h-3 w-12 rounded" delay={i * 0.12 + 0.06} />
+            <Skeleton class="h-2.5 w-16 rounded-full" delay={i * 0.12 + 0.1} />
+          </div>
+        </div>
+      {/snippet}
+      {#if runsQuery.isError && runsQuery.data === undefined}
+        <!-- The run list is someone's research history. "No research yet" over
+             a failed read invites them to re-run work they already paid for. -->
+        <QueryError
+          variant="compact"
+          error={runsQuery.error}
+          title="Could not load your research"
+          onRetry={() => void runsQuery.refetch()}
+        />
+      {:else if runs.length === 0}
+        <EmptyState variant="compact" icon="◎" title="No research yet." hint="Ask something worth knowing." />
+      {:else}
         {#each runs as r (r.id)}
-          <li>
-            <button
-              type="button"
-              onclick={() => setSelectedId(r.id)}
-              oncontextmenu={(e) =>
-                menu.openMenu(e, [
-                  { label: 'Open', onSelect: () => setSelectedId(r.id) },
-                  { label: 'Copy link', onSelect: () => copyAppLink(`/research?r=${r.id}`) },
-                  ...(canDelete(r)
-                    ? (['sep', { label: 'Remove', danger: true, onSelect: () => void remove(r) }] as ContextMenuEntry[])
-                    : []),
-                ])}
-              class={cn(
-                'group w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover',
-                selectedId === r.id ? 'bg-card' : '',
-              )}
-            >
-              <div class="flex items-center gap-2">
-                <StatusDot status={STATUS_DOT[r.status]} pulse={r.status === 'running'} class="h-1.5 w-1.5" />
-                <span class="min-w-0 flex-1 truncate text-sm text-fg">{r.title ?? r.question}</span>
-                {#if canDelete(r)}
-                  <Trash2
-                    size={13}
-                    class="hidden shrink-0 text-muted transition-colors hover:text-danger group-hover:block"
-                    onclick={(e: MouseEvent) => {
-                      e.stopPropagation()
-                      void remove(r)
-                    }}
-                  />
-                {/if}
-              </div>
-              <!-- §10 session-row meta: 10px mono chrome voice. -->
-              <div class="mt-0.5 flex items-center gap-2 pl-3.5 font-mono text-[10px] tracking-[0.05em] text-muted">
-                <Chip>{MODE_META[r.mode].label}</Chip>
-                <span class="truncate">{r.requestedBy}</span>
-                <span class="ml-auto shrink-0">{relativeTime(r.createdAt)}</span>
-              </div>
-            </button>
-          </li>
+          <button
+            type="button"
+            onclick={() => setSelectedId(r.id)}
+            oncontextmenu={(e) =>
+              menu.openMenu(e, [
+                { label: 'Open', onSelect: () => setSelectedId(r.id) },
+                { label: 'Copy link', onSelect: () => copyAppLink(`/research?r=${r.id}`) },
+                ...(canDelete(r)
+                  ? (['sep', { label: 'Remove', danger: true, onSelect: () => void remove(r) }] as ContextMenuEntry[])
+                  : []),
+              ])}
+            class={cn(
+              'group block w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover',
+              selectedId === r.id ? 'bg-card' : '',
+            )}
+          >
+            <div class="flex items-center gap-2">
+              <StatusDot status={STATUS_DOT[r.status]} pulse={r.status === 'running'} class="h-1.5 w-1.5" />
+              <span class="min-w-0 flex-1 truncate text-sm text-fg">{r.title ?? r.question}</span>
+              {#if canDelete(r)}
+                <Trash2
+                  size={13}
+                  class="hidden shrink-0 text-muted transition-colors hover:text-danger group-hover:block"
+                  onclick={(e: MouseEvent) => {
+                    e.stopPropagation()
+                    void remove(r)
+                  }}
+                />
+              {/if}
+            </div>
+            <!-- §10 session-row meta: 10px mono chrome voice. -->
+            <div class="mt-0.5 flex items-center gap-2 pl-3.5 font-mono text-[10px] tracking-[0.05em] text-muted">
+              <Chip>{MODE_META[r.mode].label}</Chip>
+              <span class="truncate">{r.requestedBy}</span>
+              <span class="ml-auto shrink-0">{relativeTime(r.createdAt)}</span>
+            </div>
+          </button>
         {/each}
-      </ul>
-    {/if}
+      {/if}
+    </Materialize>
   </Rail>
 
   <Stage header={stageHeader}>

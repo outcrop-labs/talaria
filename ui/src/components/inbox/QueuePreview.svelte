@@ -14,6 +14,8 @@
   {#if items.length === 0}
     <p class="font-sans text-sm text-muted">No other decisions are waiting.</p>
   {:else}
+    <!-- No listStagger here: FocusInbox renders this section inside
+         <Materialize>, whose content branch owns the region's cascade. -->
     <ol class="divide-y divide-line border-y border-line">
       {#each items as item (item.key)}
         <li class="grid min-h-11 grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-3 py-2">

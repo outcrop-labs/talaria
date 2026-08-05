@@ -1,6 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import Input from './Input.svelte'
   import type { DocSearchFn } from './rich-editor'
@@ -46,10 +46,12 @@
   })
 </script>
 
+<!-- |global: the panel IS the component root — EditorToolbar renders
+     {#if docLinkOpen}<DocLinkPopover/>, so local legs never play (ANIMATIONS.md). -->
 <div
   bind:this={ref}
-  in:scale={{ ...POP, start: 0.97 }}
-  out:fade={QUICK}
+  in:pop|global={POPOVER}
+  out:fade|global={QUICK}
   class={cn('absolute left-0 top-full z-30 mt-1 w-72 origin-top-left', popPanel)}
 >
   <!-- svelte-ignore a11y_autofocus -->

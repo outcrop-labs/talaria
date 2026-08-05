@@ -13,6 +13,7 @@
   import { submitOnEnter } from '@/components/ui/control'
   import { getList } from '@/lib/fetch-json'
   import type { AgentDef } from '@/lib/fleet-defs'
+  import { listStagger } from '@/lib/motion'
   import { p } from '@/router'
 
   type ProbeState = 'ok' | 'auth' | 'unreachable' | 'error'
@@ -79,7 +80,7 @@
     {#snippet skeleton()}<SkeletonRows rows={2} class="py-2" />{/snippet}
     {#snippet empty()}<div class="text-sm text-muted">No MCP servers connected.</div>{/snippet}
     {#snippet children(agents)}
-      <div class="divide-y divide-line">
+      <div class="divide-y divide-line" use:listStagger>
         {#each serversOf(agents) as s (s.name)}
           {@const probe = probes[s.name]}
           <div class="flex items-center gap-3 py-2.5 text-sm">

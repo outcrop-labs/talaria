@@ -6,7 +6,7 @@
   import { submitOnEnter } from '@/components/ui/control'
   import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
   import TargetRow from '@/components/fleet/TargetRow.svelte'
-  import { fade, slide } from '@/lib/motion'
+  import { fade, listStagger, slide } from '@/lib/motion'
   import { saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
 
   type AliasRow = ModelTarget & { name: string }
@@ -52,7 +52,7 @@
 
   <section>
     <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Model tiers (aliases)</div>
-    <div class="space-y-1.5">
+    <div class="space-y-1.5" use:listStagger>
       <!-- Index-keyed rows: entries fade in; no exit — an outro would fade the
            LAST index while the remaining rows' contents shift, showing a
            duplicate. Instant removal is the honest form here. -->
@@ -77,7 +77,7 @@
 
   <section>
     <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Fallbacks (when the model above is down)</div>
-    <div class="space-y-1.5">
+    <div class="space-y-1.5" use:listStagger>
       {#each fallbacks as f, i (i)}
         <div in:fade={{ duration: 150 }}>
           <TargetRow

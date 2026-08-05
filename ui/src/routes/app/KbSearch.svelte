@@ -3,7 +3,7 @@
   import Input from '@/components/ui/Input.svelte'
   import { popPanel } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { searchKb, type KbSearchHit } from '@/lib/kb'
 
   let { onOpen }: { onOpen: (hit: KbSearchHit) => void } = $props()
@@ -43,7 +43,7 @@
   />
   {#if open && hits.length > 0}
     <div
-      in:scale={{ ...POP, start: 0.97 }}
+      in:pop={POPOVER}
       out:fade={QUICK}
       class={cn(popPanel, 'absolute left-0 right-0 top-full z-20 mt-1 max-h-80 origin-top overflow-y-auto')}
     >

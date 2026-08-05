@@ -16,7 +16,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import GoogleButton from './GoogleButton.svelte'
   import PasswordForm from './PasswordForm.svelte'
-  import { fly, slide } from '@/lib/motion'
+  import { fly, slide, PANEL } from '@/lib/motion'
   import { useProviders } from '@/lib/session'
 
   let { error }: { error?: string } = $props()
@@ -36,7 +36,10 @@
     <ThemeToggle />
   </div>
 
-  <div in:fly={{ y: 8, duration: 180 }} class="w-full max-w-sm">
+  <!-- |global: the card animates on COMPONENT mount (the route renders it
+       unconditionally), so a local intro never plays. Hard page loads stay
+       still anyway — mount() runs without intro. (ANIMATIONS.md) -->
+  <div in:fly|global={PANEL} class="w-full max-w-sm">
     <Panel class="p-8">
       <div class="mb-6 flex flex-col items-center gap-2 text-center">
         <Brand showTag class="flex-col" />

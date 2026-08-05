@@ -4,7 +4,6 @@
   import { navigate } from '@/router'
   import { CheckCheck, ClipboardList, Settings } from '@lucide/svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import GeneratingOverlay from '@/components/ui/GeneratingOverlay.svelte'
@@ -242,7 +241,24 @@
     else next.add(id)
     expandedAgents = next
   }
+
+  // Silhouette widths for the rail-row skeletons — varied per index so the
+  // sketch doesn't look stamped.
+  const railW = ['w-24', 'w-32', 'w-20', 'w-28']
 </script>
+
+<!-- One rail row's silhouette (RailRow anatomy: glyph lane + name, px-2
+     py-1.5). `avatar` swaps the glyph square for the 5×5 avatar circle. -->
+{#snippet railRowSkeleton(i: number, avatar: boolean)}
+  <div aria-hidden="true" class="rounded-md px-2 py-1.5">
+    <div class="flex h-5 items-center gap-1.5">
+      <Skeleton class={avatar ? 'h-5 w-5 shrink-0 rounded-full' : 'h-3 w-3 shrink-0 rounded'} delay={i * 0.12} />
+      <Skeleton class={`h-3 rounded-full ${railW[i % railW.length]}`} delay={i * 0.12 + 0.06} />
+    </div>
+  </div>
+{/snippet}
+{#snippet glyphRowSkeleton(i: number)}{@render railRowSkeleton(i, false)}{/snippet}
+{#snippet avatarRowSkeleton(i: number)}{@render railRowSkeleton(i, true)}{/snippet}
 
 <RailSurface>
   <Rail title="Comms">
@@ -251,6 +267,9 @@
       meta={rooms.length > 0 ? String(rooms.length).padStart(2, '0') : undefined}
       createPlaceholder="channel name"
       onCreate={mayCreateChannels.current ? (v) => void create(v, 'channel') : undefined}
+      loading={channelsQuery.isLoading}
+      count={4}
+      rowSkeleton={glyphRowSkeleton}
     >
       {#each rooms as c (c.id)}
         <RailRow active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
@@ -263,9 +282,7 @@
         </RailRow>
       {/each}
       {#if rooms.length === 0}
-        {#if channelsQuery.isLoading}
-          <SkeletonRows rows={4} class="px-2 py-1.5" />
-        {:else if channelsQuery.isError && channelsQuery.data === undefined}
+        {#if channelsQuery.isError && channelsQuery.data === undefined}
           <RailFailure
             error={channelsQuery.error}
             title="Could not load channels"
@@ -282,6 +299,9 @@
       meta={relays.length > 0 ? String(relays.length).padStart(2, '0') : undefined}
       createPlaceholder="what's it about?"
       onCreate={mayStartRelays.current ? (v) => void create(v, 'group') : undefined}
+      loading={channelsQuery.isLoading}
+      count={3}
+      rowSkeleton={glyphRowSkeleton}
     >
       {#each relays as c (c.id)}
         <RailRow active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
@@ -293,9 +313,7 @@
         </RailRow>
       {/each}
       {#if relays.length === 0}
-        {#if channelsQuery.isLoading}
-          <SkeletonRows rows={3} class="px-2 py-1.5" />
-        {:else if channelsQuery.isError && channelsQuery.data === undefined}
+        {#if channelsQuery.isError && channelsQuery.data === undefined}
           <RailFailure
             error={channelsQuery.error}
             title="Could not load relays"
@@ -307,7 +325,13 @@
       {/if}
     </Section>
 
-    <Section label="Teammates" meta={people.length > 0 ? String(people.length).padStart(2, '0') : undefined}>
+    <Section
+      label="Teammates"
+      meta={people.length > 0 ? String(people.length).padStart(2, '0') : undefined}
+      loading={usersQuery.isLoading}
+      count={4}
+      rowSkeleton={avatarRowSkeleton}
+    >
       {#each people as u (u.id)}
         {@const dm = dmByPeer.get(u.id)}
         <RailRow
@@ -326,9 +350,7 @@
         </RailRow>
       {/each}
       {#if people.length === 0}
-        {#if usersQuery.isLoading}
-          <SkeletonRows rows={4} avatar class="px-2 py-1.5" />
-        {:else if usersQuery.isError && usersQuery.data === undefined}
+        {#if usersQuery.isError && usersQuery.data === undefined}
           <!-- "Just you so far." over a failed directory read is how a
                20-person org gets told it is one person. -->
           <RailFailure
@@ -342,7 +364,13 @@
       {/if}
     </Section>
 
-    <Section label="Agents" meta={fleet.length > 0 ? String(fleet.length).padStart(2, '0') : undefined}>
+    <Section
+      label="Agents"
+      meta={fleet.length > 0 ? String(fleet.length).padStart(2, '0') : undefined}
+      loading={fleetQuery.isLoading}
+      count={3}
+      rowSkeleton={avatarRowSkeleton}
+    >
       {#each fleet as a (a.id)}
         {@const activeAgent = agentSel?.model === a.id}
         {@const agentThreads = conversations.filter((c) => c.agentModel === a.id)}
@@ -350,8 +378,8 @@
              peeking at an agent's threads shouldn't require selecting it. -->
         {@const expanded = activeAgent || expandedAgents.has(a.id)}
         {@const threads = expanded ? agentThreads.slice(0, 8) : []}
-        <li>
-          <ul class="space-y-0.5">
+        <div>
+          <div class="space-y-0.5">
             <!-- Clicking the agent = its working thread if one is live, else fresh. -->
             <RailRow active={activeAgent && agentSel?.conversationId === null} onClick={() => openAgent(a.id)}>
               <span
@@ -416,13 +444,11 @@
                 </span>
               </RailRow>
             {/each}
-          </ul>
-        </li>
+          </div>
+        </div>
       {/each}
       {#if fleet.length === 0}
-        {#if fleetQuery.isLoading}
-          <SkeletonRows rows={3} avatar class="px-2 py-1.5" />
-        {:else if fleetQuery.isError && fleetQuery.data === undefined}
+        {#if fleetQuery.isError && fleetQuery.data === undefined}
           <RailFailure
             error={fleetQuery.error}
             title="Could not load your agents"

@@ -3,6 +3,7 @@
   import { cn } from '@/lib/cn'
   import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
   import { popPanel, popRow, tileBase } from '@/components/chat/chat-chrome'
+  import { pop, POPOVER } from '@/lib/motion'
   import RefPicker from './RefPicker.svelte'
   import { uploadFile, type Attachment } from '@/lib/attachments'
 
@@ -69,7 +70,7 @@
     {/if}
   </button>
   {#if open}
-    <div class={cn(popPanel, 'absolute bottom-full left-0 z-30 mb-1.5 w-64')}>
+    <div in:pop={POPOVER} class={cn(popPanel, 'absolute bottom-full left-0 z-30 mb-1.5 w-64')}>
       {#if pick}
         <RefPicker
           kind={pick}

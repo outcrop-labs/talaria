@@ -16,7 +16,9 @@
   } = $props()
 </script>
 
-<li>
+<!-- div, not li: rail lists render rows directly inside a plain container so
+     Materialize can stack row-shaped skeletons in the same geometry. -->
+<div>
   <button
     type="button"
     onclick={onClick}
@@ -28,4 +30,4 @@
   >
     {@render children()}
   </button>
-</li>
+</div>

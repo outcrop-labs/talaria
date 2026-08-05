@@ -4,6 +4,7 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import type { Board } from '@/lib/boards.svelte'
+  import { listStagger } from '@/lib/motion'
   import { setBoardTemplates, useBoardTemplates, useTemplates } from '@/lib/templates'
 
   // The ticket templates this board uses: bind from the org library, mark one as
@@ -64,7 +65,7 @@
   {:else if ticketTemplates.length === 0}
     <div class="font-sans text-xs text-muted">No ticket templates in the library yet. Create one to templatize this board's tickets.</div>
   {:else}
-    <div class="space-y-1 rounded-lg border border-line p-2">
+    <div class="space-y-1 rounded-lg border border-line p-2" use:listStagger>
       {#each ticketTemplates as t (t.id)}
         <div class="flex items-center gap-2 font-sans text-sm">
           <input

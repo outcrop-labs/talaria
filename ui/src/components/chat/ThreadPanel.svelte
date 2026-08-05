@@ -4,7 +4,7 @@
   import ChannelComposer from './ChannelComposer.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { fade, fly, QUICK } from '@/lib/motion'
+  import { slide, GROW_X } from '@/lib/motion'
   import { sendChannelMessage, useThreadMessages } from '@/lib/channels.svelte'
   import { splitAttachments, type Attachment } from '@/lib/attachments'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
@@ -50,8 +50,14 @@
   }
 </script>
 
-<!-- Thread side panel — a proper panel surface (spec §8) beside the feed. -->
-<div in:fly={{ x: 12, duration: 180 }} out:fade={QUICK} class="flex w-[380px] shrink-0 flex-col border-l border-line bg-panel">
+<!-- Thread side panel — a proper panel surface (spec §8) beside the feed.
+     IN-FLOW panel: slide={GROW_X} on both legs so the feed glides as the panel
+     grows/shrinks instead of snapping when the width lands (ANIMATIONS.md).
+     |global: ChannelView mounts this whole component per thread, so local legs
+     on the component root never play (the |global rule). The inner wrapper is
+     pinned to the resting width so message text clips instead of rewrapping. -->
+<div transition:slide|global={GROW_X} class="shrink-0 border-l border-line bg-panel">
+<div class="flex h-full w-[380px] flex-col">
   <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
     <MessageSquareText size={14} class="text-muted" />
     <span class="font-sans text-sm font-semibold text-fg">Thread</span>
@@ -111,4 +117,5 @@
     {/if}
   </div>
   <ChannelComposer channelName="thread" placeholder="Reply in thread. @mention an agent to bring it in" {mentionables} onSend={send} />
+</div>
 </div>

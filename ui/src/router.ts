@@ -40,8 +40,12 @@ export const { p, navigate, isActive, preload, route } = createRouter({
     '/boards': {
       '/': () => import('./routes/app/boards/BoardsIndex.svelte'),
       '/:boardId': {
-        '/': () => import('./routes/app/boards/Board.svelte'),
+        // BoardLayout persists across board↔ticket navigation (sv-router
+        // layouts survive child swaps), so opening a ticket mounts ONLY the
+        // overlay — the board behind it never re-renders.
+        '/': () => import('./routes/app/boards/NoOverlay.svelte'),
         '/:taskId': () => import('./routes/app/boards/Task.svelte'),
+        layout: () => import('./routes/app/boards/BoardLayout.svelte'),
       },
     },
     '/plan': () => import('./routes/app/Plan.svelte'),

@@ -17,7 +17,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { cn } from '@/lib/cn'
-  import { fade, slide } from '@/lib/motion'
+  import { fade, listStagger, slide } from '@/lib/motion'
   import { getList } from '@/lib/fetch-json'
   import { useBoards, type Board } from '@/lib/boards.svelte'
   import { p } from '@/router'
@@ -131,7 +131,7 @@
       No projects or tasks match “{query.trim()}”.
     </div>
   {:else}
-    <div class="mt-2 max-h-52 space-y-0.5 overflow-y-auto">
+    <div class="mt-2 max-h-52 space-y-0.5 overflow-y-auto" use:listStagger>
       {#each projects as board (board.id)}
         <a
           in:fade={{ duration: 150 }}

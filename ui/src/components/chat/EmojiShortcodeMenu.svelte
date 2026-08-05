@@ -1,6 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
-  import { fade, QUICK } from '@/lib/motion'
+  import { fade, listStagger, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel, popRow } from '@/components/chat/chat-chrome'
   import type { EmojiShortcodeState } from './emoji.svelte'
 
@@ -19,7 +19,9 @@
   } = $props()
 </script>
 
-<div out:fade={QUICK} class={cn(popPanel, 'z-10 w-56 overflow-hidden', className)}>
+<!-- |global: the panel IS the component root — hosts render it {#if}-gated,
+     so local legs never play (ANIMATIONS.md, the |global rule). -->
+<div in:pop|global={POPOVER} out:fade|global={QUICK} class={cn(popPanel, 'z-10 w-56 overflow-hidden', className)} use:listStagger>
   {#each state.options as e, i (e.ch)}
     <button
       type="button"

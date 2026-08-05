@@ -3,6 +3,7 @@
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import FieldPill from '@/components/ui/FieldPill.svelte'
   import { cn } from '@/lib/cn'
+  import { listStagger } from '@/lib/motion'
   import { LABEL_CSS } from './field-pills'
 
   // Color picker as a dropdown swatch GRID — same pill grammar as every other
@@ -49,7 +50,7 @@
     {/snippet}
     {#snippet content(close)}
       <div class="p-1">
-        <div class="grid grid-cols-4 gap-2 p-1">
+        <div class="grid grid-cols-4 gap-2 p-1" use:listStagger>
           {#each colors as c (c)}
             <button
               title={c}

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, listStagger, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
 
@@ -47,8 +47,9 @@
 {#if items.length > 0}
   <div
     bind:this={listEl}
-    in:scale={{ ...POP, start: 0.97 }}
+    in:pop={POPOVER}
     out:fade={QUICK}
+    use:listStagger
     class={cn(popPanel, 'max-h-56 w-60 origin-top-left overflow-y-auto')}
   >
     {#each items as item, i (item.insert)}

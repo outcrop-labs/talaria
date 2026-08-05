@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Smile } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
-  import { fade, QUICK } from '@/lib/motion'
+  import { fade, listStagger, pop, POPOVER, QUICK } from '@/lib/motion'
   import Input from '@/components/ui/Input.svelte'
   import { popPanel, tileBase } from '@/components/chat/chat-chrome'
   import { EMOJI, searchEmoji } from '@/lib/emoji'
@@ -39,9 +39,9 @@
     <Smile size={15} />
   </button>
   {#if open}
-    <div out:fade={QUICK} class={cn(popPanel, 'absolute bottom-full left-0 z-30 mb-1.5 w-72 p-2')}>
+    <div in:pop={POPOVER} out:fade={QUICK} class={cn(popPanel, 'absolute bottom-full left-0 z-30 mb-1.5 w-72 p-2')}>
       <Input autofocus size="sm" bind:value={q} placeholder="Search emoji" class="mb-2" />
-      <div class="grid max-h-48 grid-cols-8 gap-0.5 overflow-y-auto">
+      <div class="grid max-h-48 grid-cols-8 gap-0.5 overflow-y-auto" use:listStagger>
         {#each results as e (e.ch)}
           <button
             type="button"

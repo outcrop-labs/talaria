@@ -2,7 +2,7 @@
   import { LogOut, SunMoon } from '@lucide/svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import type { SessionUser } from '@/lib/session'
 
   // The strip's only control: status dot + account email, with everything
@@ -40,7 +40,7 @@
          outside the @/lib/motion reduced-motion wrapper — swapped for the
          popover grammar. -->
     <div
-      in:scale={{ ...POP, start: 0.97 }}
+      in:pop={POPOVER}
       out:fade={QUICK}
       class="absolute right-0 top-full z-30 mt-2 w-64 origin-top-right rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]"
     >

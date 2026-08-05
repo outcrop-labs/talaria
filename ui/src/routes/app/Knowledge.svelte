@@ -6,7 +6,9 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import Materialize from '@/components/ui/Materialize.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
@@ -170,9 +172,20 @@
       </div>
     {/if}
     <div class="min-h-0 flex-1 overflow-y-auto p-2">
-      {#if spacesQuery.isLoading}
-        <SkeletonRows rows={6} class="px-2 py-3" />
-      {:else if spacesQuery.isError && spacesQuery.data === undefined}
+      <!-- Skeleton → content as one motion: space-row-shaped skeletons (icon
+           lane + name, KbSpaceRow's own frame) materialize into the rows.
+           Materialize direct — error and resolved-empty stay in the content
+           branch, keyed off the query exactly as before. -->
+      <Materialize loading={spacesQuery.isLoading} count={6}>
+        {#snippet skeleton(i)}
+          <div aria-hidden="true" class="mb-2 rounded-md px-2 py-1.5">
+            <div class="flex h-5 items-center gap-2">
+              <Skeleton class="h-4 w-4 shrink-0 rounded" delay={i * 0.12} />
+              <Skeleton class={`h-3 rounded-full ${['w-28', 'w-20', 'w-36', 'w-24'][i % 4]}`} delay={i * 0.12 + 0.06} />
+            </div>
+          </div>
+        {/snippet}
+        {#if spacesQuery.isError && spacesQuery.data === undefined}
         <!-- Unreachable is not deleted. Without this branch an outage reads
              as somebody having wiped the whole knowledgebase. -->
         <div in:fade={{ duration: 150 }}>
@@ -221,6 +234,7 @@
           </div>
         {/each}
       {/if}
+      </Materialize>
     </div>
   </aside>
 

@@ -6,7 +6,7 @@
   import Combobox from '@/components/ui/Combobox.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { fade, slide } from '@/lib/motion'
+  import { fade, listStagger, slide } from '@/lib/motion'
   import UserPicker from '@/components/app/UserPicker.svelte'
   import {
     addChannelAgent,
@@ -84,7 +84,7 @@
   <div class="space-y-5">
     <section>
       <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">People</div>
-      <ul class="space-y-1">
+      <ul class="space-y-1" use:listStagger>
         {#each detail.members as m (m.userId)}
           <!-- Fires only for live add/remove while the modal is open — the
               Modal's own transition covers the initial roster (local default). -->

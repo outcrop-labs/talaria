@@ -45,7 +45,9 @@
   }
 </script>
 
-<li class="px-3.5 py-3">
+<!-- div, not li: the schedules lists render these directly inside a divide-y
+     container (Materialize-friendly geometry). -->
+<div class="px-3.5 py-3">
   <div class="flex items-center gap-2.5">
     <span class="h-[7px] w-[7px] shrink-0 rounded-full" style:background={jobDot(job)} title={paused ? 'paused' : job.state}></span>
     <button type="button" onclick={() => (expanded = !expanded)} class="min-w-0 flex-1 text-left">
@@ -123,4 +125,4 @@
       </div>
     </div>
   {/if}
-</li>
+</div>

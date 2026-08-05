@@ -1,5 +1,6 @@
 <script lang="ts" generics="T extends string">
   import { cn } from '@/lib/cn'
+  import { markCrossfade } from '@/lib/motion'
   import { focusRing } from './control'
   import type { SegmentedOption } from './segmented'
 
@@ -20,6 +21,10 @@
     size?: 'xs' | 'sm'
     class?: string
   } = $props()
+
+  // The raised thumb slides between cells (ANIMATIONS.md `markCrossfade`);
+  // one pair per control instance so neighboring Segmenteds never trade marks.
+  const [sendMark, receiveMark] = markCrossfade()
 </script>
 
 <div class={cn('inline-flex shrink-0 rounded-md border border-line p-0.5', className)}>
@@ -30,13 +35,23 @@
       aria-pressed={value === o.id}
       onclick={() => onChange(o.id)}
       class={cn(
-        'rounded font-mono uppercase tracking-[0.05em] transition-colors',
+        'relative rounded font-mono uppercase tracking-[0.05em] transition-colors',
         focusRing,
         size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : 'px-2.5 py-1 text-[10px] leading-4',
-        value === o.id ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
+        value === o.id ? 'text-fg' : 'text-muted hover:text-fg',
       )}
     >
-      {#if typeof o.label === 'string'}{o.label}{:else}{@render o.label()}{/if}
+      {#if value === o.id}
+        <span
+          aria-hidden="true"
+          in:receiveMark={{ key: 'mark' }}
+          out:sendMark={{ key: 'mark' }}
+          class="absolute inset-0 rounded bg-raised"
+        ></span>
+      {/if}
+      <span class="relative">
+        {#if typeof o.label === 'string'}{o.label}{:else}{@render o.label()}{/if}
+      </span>
     </button>
   {/each}
 </div>

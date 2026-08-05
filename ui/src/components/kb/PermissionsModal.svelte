@@ -14,6 +14,7 @@
   import { useAgents } from '@/lib/agents'
   import { useEditors, type EditPolicy, type GrantRole, type KbEditor, type Visibility } from '@/lib/kb'
   import { cn } from '@/lib/cn'
+  import { listStagger } from '@/lib/motion'
 
   // Google-Drive-style sharing: a list of people + agents each with a Viewer/
   // Editor role, then a "general access" tier (restricted / org / public).
@@ -251,7 +252,7 @@
         {:else if principalsLoading || !known}
           <SkeletonRows rows={3} avatar class="px-1 py-2" />
         {:else}
-          <div class="space-y-1">
+          <div class="space-y-1" use:listStagger>
             <!-- The grants below are real; it is their NAMES that are missing.
                  Without this line an id in an access list reads as the grant
                  itself being junk. -->

@@ -19,7 +19,8 @@
   import Markdown from '@/components/ui/Markdown.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
-  import { fade, fly, slide, PANEL, QUICK } from '@/lib/motion'
+  import CollapsePane from '@/components/ui/CollapsePane.svelte'
+  import { fade, listStagger, slide, GROW_Y, QUICK } from '@/lib/motion'
   import { getJson } from '@/lib/fetch-json'
   import { useAgents } from '@/lib/agents'
   import { splitAttachments, uploadFile, type Attachment } from '@/lib/attachments'
@@ -386,8 +387,21 @@
 
 <svelte:document onkeydown={onGlobalKeyDown} />
 
+<!-- CollapsePane owns the collapse/expand width glide — same primitive as the
+     nav rail. Desktop (≥1400px): the pane's width is the panel width and the
+     aside fills it (clipping during the glide). Below 1400px the expanded
+     panel is an OVERLAY: the pane contributes no flow width (w-0,
+     overflow-visible) and the aside positions itself absolutely as before. -->
+<CollapsePane
+  collapsed={collapsed}
+  collapsedWidth="w-11"
+  width="w-0 min-[1400px]:w-[min(var(--panel-w),calc(100%_-_44px))]"
+  animate={!resizing}
+  style="--panel-w: {panelWidth}px"
+  class="relative z-20 h-full shrink-0 overflow-visible min-[1400px]:overflow-hidden"
+>
 {#if collapsed}
-  <aside class="relative z-20 flex h-full w-11 shrink-0 flex-col items-center border-r border-line bg-sidebar py-3" aria-label="Assistant conversation collapsed">
+  <aside class="flex h-full w-11 flex-col items-center border-r border-line bg-sidebar py-3" aria-label="Assistant conversation collapsed">
     <button
       bind:this={expandButton}
       type="button"
@@ -406,11 +420,12 @@
     <MessageSquareText size={14} class="mt-auto text-ink-dim" />
   </aside>
 {:else}
-  <button type="button" onclick={collapse} aria-label="Close assistant overlay" class="absolute inset-0 z-30 bg-black/45 min-[1400px]:hidden"></button>
+  <!-- fixed, not absolute: the pane (nearest positioned ancestor now) has zero
+       width in overlay mode, so an absolute inset-0 backdrop would be zero-size. -->
+  <button type="button" onclick={collapse} aria-label="Close assistant overlay" class="fixed inset-0 z-30 bg-black/45 min-[1400px]:hidden"></button>
   <aside
     class={cn(
       'absolute inset-y-0 left-0 z-40 flex shrink-0 flex-col border-r border-line bg-sidebar shadow-[var(--theme-shadow-3)] min-[1400px]:relative min-[1400px]:z-20 min-[1400px]:shadow-none',
-      !resizing && 'motion-safe:transition-[width,transform] motion-safe:duration-200',
     )}
     style:width="min({panelWidth}px, calc(100% - 44px))"
     aria-label="Assistant conversation"
@@ -478,7 +493,7 @@
           </div>
         </div>
       {:else}
-        <div class="space-y-5">
+        <div class="space-y-5" use:listStagger>
           {#each entries as entry (entry.id)}
             <div in:fade={{ duration: 150 }} out:fade={QUICK}>
               <TimelineEntry
@@ -510,7 +525,13 @@
       {#if notice}<div role="status" transition:slide={{ duration: 150 }} class="mb-2 rounded-md border border-line bg-panel px-3 py-2 font-sans text-[11px] leading-4 text-muted">{notice}</div>{/if}
       {#if attachmentError}<div role="alert" transition:slide={{ duration: 150 }} class="mb-2 rounded-md border border-danger/45 bg-panel px-3 py-2 font-sans text-[11px] leading-4 text-danger">{attachmentError}</div>{/if}
       {#if active}
-        <div in:fly={PANEL} out:fade={QUICK} class="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2">
+        <!-- IN-FLOW row: slide={GROW_Y} on both legs so the composer glides as
+             the row appears/leaves instead of snapping (ANIMATIONS.md). The
+             panel's own collapse stays on its CSS width transition — this row
+             only animates its own height. |global: in focus mode the panel
+             mounts with a decision already active, so a local intro would be
+             suppressed. -->
+        <div transition:slide|global={GROW_Y} class="mb-2 flex min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2">
           <Paperclip size={12} class={attached ? 'text-accent' : 'text-ink-dim'} />
           <button type="button" onclick={toggleActiveDecisionAttachment} class="min-w-0 flex-1 truncate text-left font-sans text-[11px] text-muted">
             {attached ? active.question : 'Decision detached — general conversation'}
@@ -558,3 +579,4 @@
     </div>
   </aside>
 {/if}
+</CollapsePane>

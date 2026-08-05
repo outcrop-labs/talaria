@@ -10,7 +10,7 @@
   import { submitOnEnter } from '@/components/ui/control'
   import { getList } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
-  import { slide } from '@/lib/motion'
+  import { listStagger, slide } from '@/lib/motion'
 
   interface SecretMeta {
     name: string
@@ -91,7 +91,7 @@
       <EmptyState icon={keyIcon} title="No secrets" hint="Everything it needs comes from the shared platform env." />
     {/snippet}
     {#snippet children(secrets)}
-      <ul class="divide-y divide-line rounded-lg border border-line">
+      <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
         {#each secrets as s (s.name)}
           <li class="flex items-center gap-3 px-3.5 py-2.5 transition-colors hover:bg-hover">
             <code class="font-mono text-sm text-fg">{s.name}</code>

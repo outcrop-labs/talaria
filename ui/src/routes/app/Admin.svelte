@@ -18,7 +18,7 @@
   import { useAgents } from '@/lib/agents'
   import { useSession } from '@/lib/session'
   import { relativeTime } from '@/lib/fleet'
-  import { slide } from '@/lib/motion'
+  import { fly, slide, staggerIn } from '@/lib/motion'
   import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
   import { useEnabledApps } from '@/lib/apps'
   import AdminEmailPanel from './AdminEmailPanel.svelte'
@@ -98,6 +98,10 @@
       <!-- One concern per tab; every panel keeps its own component. -->
       <Tabs items={ADMIN_TABS} value={tab} onChange={setTab} />
 
+      <!-- Tab-pane grammar: pane rises in on switch (no exit), panels stagger —
+           these are section stacks, one Panel per concern. -->
+      {#key tab}
+      <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-6">
       {#if tab === 'org'}
         <AdminOrgPanel />
         <AdminInstanceDomainPanel />
@@ -253,6 +257,8 @@
           {/if}
         </Panel>
       {/if}
+      </div>
+      {/key}
     </div>
   </div>
 {/if}

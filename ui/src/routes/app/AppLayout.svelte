@@ -159,7 +159,9 @@
            confused colleague days later. Renders nothing for members, and
            nothing at all when there is nothing to say. -->
       <UnreadableSecretsBanner />
-      <div class="min-h-0 min-w-0 flex-1 overflow-hidden">
+      <!-- vt-view: the View Transitions API animates ONLY this region on nav
+           clicks (styles.css) — the rail and strip stay planted. -->
+      <div class="vt-view min-h-0 min-w-0 flex-1 overflow-hidden">
         <InboxFocusShell attachActiveDecision={shouldAttachInboxDecision(route.pathname, tab)}>
           {@render children()}
         </InboxFocusShell>

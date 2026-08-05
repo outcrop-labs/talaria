@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
   import { popRow, popRowSelected } from '@/components/chat/chat-chrome'
   import { controlSizes, type ControlSize } from './control'
@@ -152,7 +152,7 @@
     <div
       use:portal
       bind:this={panelRef}
-      in:scale={POP}
+      in:pop={POPOVER}
       out:fade={QUICK}
       class={cn(
         'fixed z-[60] rounded-[10px] border border-line bg-panel p-1 shadow-[var(--theme-shadow-2)]',

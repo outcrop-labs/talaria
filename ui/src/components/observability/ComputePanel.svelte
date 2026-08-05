@@ -7,7 +7,7 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatCard from '@/components/ui/StatCard.svelte'
   import { formatTokens } from '@/lib/cost.svelte'
-  import { fade } from '@/lib/motion'
+  import { fade, listStagger } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { useInference } from './inference'
   import LiveSection from './LiveSection.svelte'
@@ -103,7 +103,7 @@
       {#if (data?.usage.perModel.length ?? 0) > 0}
         <Panel>
           <SectionHeader title="Served self-hosted · 30 days" action={String(data!.usage.perModel.length).padStart(2, '0')} />
-          <div class="divide-y divide-line">
+          <div class="divide-y divide-line" use:listStagger>
             {#each data!.usage.perModel as m (m.llmModel ?? '?')}
               <div class="flex items-center gap-3 py-3 text-sm transition-colors hover:bg-hover">
                 <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{m.llmModel ?? 'unattributed'}</span>

@@ -3,8 +3,9 @@
   import { Plus } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
-  import { slide } from '@/lib/motion'
+  import { listStagger, slide } from '@/lib/motion'
   import Input from '@/components/ui/Input.svelte'
+  import Materialize from '@/components/ui/Materialize.svelte'
 
   // Sidebar section: the create affordance is a small "+" IN the heading (Slack-
   // style) that expands to an inline name input — no chunky buttons under lists.
@@ -15,6 +16,9 @@
     meta,
     createPlaceholder,
     onCreate,
+    loading = false,
+    count = 3,
+    rowSkeleton,
     children,
   }: {
     label: string
@@ -22,6 +26,12 @@
     meta?: string
     createPlaceholder?: string
     onCreate?: (name: string) => void
+    /** First load of the query behind this section — row-shaped skeletons
+     *  materialize into the rows (Materialize) instead of a branch swap. */
+    loading?: boolean
+    count?: number
+    /** One row's silhouette, mirroring this section's RailRow anatomy. */
+    rowSkeleton?: Snippet<[number]>
     children: Snippet
   } = $props()
 
@@ -70,5 +80,16 @@
       />
     </div>
   {/if}
-  <ul class="space-y-0.5">{@render children()}</ul>
+  <!-- Any grid or list staggers its items on mount (ANIMATIONS.md). With a
+       rowSkeleton the section renders through Materialize: row-shaped
+       skeletons occupy the same stack and the real rows stagger in over them
+       (its content branch owns the cascade). Rows are divs (see RailRow). -->
+  {#if rowSkeleton}
+    <Materialize {loading} {count} class="space-y-0.5">
+      {#snippet skeleton(i)}{@render rowSkeleton(i)}{/snippet}
+      {@render children()}
+    </Materialize>
+  {:else}
+    <div use:listStagger class="space-y-0.5">{@render children()}</div>
+  {/if}
 </div>

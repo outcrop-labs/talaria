@@ -11,8 +11,9 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
+  import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import { getJson, getList } from '@/lib/fetch-json'
-  import { slide } from '@/lib/motion'
+  import { fly, slide } from '@/lib/motion'
   import AdminGithubGuideModal from './AdminGithubGuideModal.svelte'
   import AdminRepoCreationSection from './AdminRepoCreationSection.svelte'
   import AdminRepoFlowSection from './AdminRepoFlowSection.svelte'
@@ -142,6 +143,12 @@
           {#if effMode === 'app'}<span class="text-xs text-muted">recommended — short-lived tokens, per-repo installs</span>{/if}
         </div>
 
+        <!-- Method switch = a tab pane: fields rise in (no exit) and the rows
+             below glide as the region's height changes (app: 2 rows, pat: 1).
+             Keying is safe — appId/privateKey/pat state lives above. -->
+        <AutoHeight>
+        {#key effMode === 'pat'}
+        <div in:fly={{ y: 6, duration: 200 }} class="space-y-2">
         {#if effMode !== 'pat'}
           <div class="flex items-center gap-3">
             <label class="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">App ID</label>
@@ -210,6 +217,9 @@
             </Button>
           </div>
         {/if}
+        </div>
+        {/key}
+        </AutoHeight>
         {#if error}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</div>{/if}
       </div>
 

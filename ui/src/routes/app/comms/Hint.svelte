@@ -4,4 +4,4 @@
   let { children }: { children: Snippet } = $props()
 </script>
 
-<li class="px-2 py-1 text-[11px] leading-relaxed text-muted">{@render children()}</li>
+<div class="px-2 py-1 text-[11px] leading-relaxed text-muted">{@render children()}</div>

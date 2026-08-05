@@ -76,7 +76,9 @@
   const problems = $derived((alerts ?? []).filter((a) => a.severity !== 'info'))
 </script>
 
-<div class="space-y-6">
+<!-- data-obs-sections: the hook Observability's data-stagger-items selector
+     targets — this pane's three blocks cascade on the page entrance. -->
+<div class="space-y-6" data-obs-sections>
   <!-- Worst news first: alerts strip -->
   <Panel>
     <button type="button" onclick={() => onOpen('alerts')} class="group -mx-1.5 mb-3 flex min-h-6 w-[calc(100%+0.75rem)] items-center gap-2 rounded px-1.5 text-left transition-colors duration-[120ms] hover:bg-hover">

@@ -1,7 +1,9 @@
 <script lang="ts">
+  import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
+  import { fly, staggerIn } from '@/lib/motion'
   import AdminGhFields from './AdminGhFields.svelte'
   import AdminGhStep from './AdminGhStep.svelte'
 
@@ -26,7 +28,13 @@
       value={tab}
       onChange={(t) => (tab = t)}
     />
-    <div class="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
+    <!-- Tab-pane grammar, in a modal whose height follows the guide: the modal
+         glides between the two methods' heights (AutoHeight), the steps rise
+         in with a stagger — this pane is a stack of sections. -->
+    <AutoHeight>
+      <div class="max-h-[60vh] overflow-y-auto pr-1">
+        {#key tab}
+        <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-4">
       {#if tab === 'app'}
         <AdminGhStep n={1} title="Create the App">
           <p class="text-xs text-muted">
@@ -88,7 +96,10 @@
           <p class="text-xs text-muted">Stored encrypted; never shown again. The status line confirms who it acts as.</p>
         </AdminGhStep>
       {/if}
-    </div>
+        </div>
+        {/key}
+      </div>
+    </AutoHeight>
     <div class="flex justify-end">
       <Button size="sm" variant="outline" onclick={onClose}>
         Done

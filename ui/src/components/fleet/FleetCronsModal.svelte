@@ -9,7 +9,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { getList } from '@/lib/fetch-json'
-  import { slide } from '@/lib/motion'
+  import { listStagger, slide } from '@/lib/motion'
   import { type CronJob } from './agent-crons'
   import CronForm from './CronForm.svelte'
   import CronListSkeleton from './CronListSkeleton.svelte'
@@ -110,7 +110,8 @@
       {#snippet skeleton()}<CronListSkeleton />{/snippet}
       {#snippet empty()}<EmptyState icon={calendarIcon} title="Nothing scheduled anywhere" hint="Create the first job below." />{/snippet}
       {#snippet children(_agents)}
-        <ul class="divide-y divide-line rounded-lg border border-line">
+        <!-- div, not ul: CronRow renders div rows. -->
+        <div class="divide-y divide-line rounded-lg border border-line" use:listStagger>
           {#each withJobs as { agent, job } (`${agent.id}-${job.id}`)}
             <CronRow
               {job}
@@ -119,7 +120,7 @@
               onEdit={(patch) => edit(agent.id, job.id, patch)}
             />
           {/each}
-        </ul>
+        </div>
       {/snippet}
     </QueryState>
     {#if agents.some((a) => a.error)}

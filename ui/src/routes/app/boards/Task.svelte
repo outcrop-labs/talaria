@@ -2,15 +2,15 @@
   import { searchParams } from 'sv-router'
   import { navigate, route } from '@/router'
   import TaskDetail from '@/components/board/TaskDetail.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { useBoards, useArchivedBoards } from '@/lib/boards.svelte'
-  import Board from './Board.svelte'
 
-  // Directly-linkable ticket route. The React version nested it under the
-  // board route (an <Outlet/>); sv-router renders it INSTEAD of the board, so
-  // this component draws the board behind the modal itself — landing here
-  // directly still opens the board + ticket.
+  // Directly-linkable ticket route — the OVERLAY only. BoardLayout (the
+  // persistent sv-router layout above this route) draws the board, so this
+  // component must never mount its own <Board/>: that was a full board
+  // re-render behind the modal on every ticket open.
   const params = $derived(route.getParams('/boards/:boardId/:taskId'))
   const boardId = $derived(params.boardId)
   const taskId = $derived(params.taskId)
@@ -28,7 +28,6 @@
   const close = () => void navigate('/boards/:boardId', { params: { boardId }, search: searchParams.toString() })
 </script>
 
-<Board />
 <!-- Nothing to look the ticket up IN. EITHER read failing is enough: the ticket
      may live on an archived board, so a live-boards list that came back fine
      does not license the conclusion "no such board" when the archived read
@@ -38,11 +37,9 @@
      why the ticket did not open. -->
 {#if !board && (boardsList.failed || archivedList.failed)}
   {@const notice = boardsList.notice ?? archivedList.notice}
-  <div class="fixed inset-0 z-40 grid place-items-center bg-black/50 p-4" onclick={close}>
-    <div class="w-full max-w-sm rounded-2xl border border-line-subtle bg-card p-4" onclick={(e) => e.stopPropagation()}>
-      {#if notice}<QueryError {...notice} />{/if}
-    </div>
-  </div>
+  <Modal open onClose={close} width="max-w-sm">
+    {#if notice}<QueryError {...notice} />{/if}
+  </Modal>
 {:else if board}
   <TaskDetail {taskId} {board} onClose={close} />
 {/if}

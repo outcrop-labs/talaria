@@ -4,6 +4,8 @@
   import { chipPrimary, popHeader, popPanel, popRow, popRowSelected } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
+  // Aliased: the local `pop` popover controller shadows motion's `pop`.
+  import { listStagger, pop as popIn, POPOVER } from '@/lib/motion'
   import type { GatewayModel } from '@/lib/muse.svelte'
   import { createAnchoredPopover } from './anchored-popover.svelte'
 
@@ -59,13 +61,14 @@
   <div
     use:portal
     bind:this={pop.panel}
+    in:popIn={POPOVER}
     class={cn(popPanel, 'fixed z-[70] w-72 overflow-hidden')}
     style:left="{pop.position.left}px"
     style:bottom="{pop.position.bottom}px"
   >
     <PopSearch value={query} onChange={(v) => (query = v)} placeholder="Search models" />
     <div class={popHeader}>Available models</div>
-    <div class="max-h-72 overflow-y-auto">
+    <div class="max-h-72 overflow-y-auto" use:listStagger>
       {#each visible as model (model.id)}
         <button
           type="button"

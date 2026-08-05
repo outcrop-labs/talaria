@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Info } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
 
   // An ⓘ that explains an area on hover — the home for the sentence that used
   // to sit under a section header cluttering it. Keep the text to one or two
@@ -21,7 +21,7 @@
   {#if open}
     <span
       role="tooltip"
-      in:scale={{ ...POP, start: 0.97 }}
+      in:pop={POPOVER}
       out:fade={QUICK}
       class="pointer-events-none absolute left-1/2 top-full z-[70] mt-1.5 w-64 origin-top -translate-x-1/2 rounded-lg border border-line bg-panel px-2.5 py-2 font-sans text-[11px] font-normal normal-case leading-snug tracking-normal text-muted shadow-[var(--theme-shadow-2)]"
     >

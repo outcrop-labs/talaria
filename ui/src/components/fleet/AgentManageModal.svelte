@@ -12,6 +12,7 @@
   import SummaryTab from '@/components/fleet/SummaryTab.svelte'
   import VersionsTab from '@/components/fleet/VersionsTab.svelte'
   import type { AgentDef, LlmEndpoint } from '@/lib/fleet-defs'
+  import { fly } from '@/lib/motion'
 
   type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'secrets' | 'mcp' | 'versions'
   const TABS: TabItem<Tab>[] = [
@@ -52,22 +53,29 @@
     <Tabs items={TABS} value={tab} onChange={(t) => (tab = t)} class="shrink-0 border-b border-line pb-2" />
 
     <div class="min-h-0 flex-1 overflow-y-auto pt-4">
-      {#if tab === 'summary'}<SummaryTab {def} {isAdmin} />{/if}
-      {#if tab === 'config'}
-        {#if isAdmin}
-          <AgentConfigForm {def} {endpoints} onSaved={onClose} />
-        {:else}
-          <ReadOnlyConfig {def} />
-        {/if}
-      {/if}
-      {#if tab === 'skills'}<SkillsTab slug={def.slug} {isAdmin} />{/if}
-      {#if tab === 'memory'}<MemoryTab {def} {isAdmin} />{/if}
-      {#if tab === 'crons'}<CronsPanel agentId={def.id} />{/if}
-      {#if tab === 'secrets'}
-        {#if isAdmin}<SecretsTab agentId={def.id} />{:else}<div class="text-sm text-muted">Admins only.</div>{/if}
-      {/if}
-      {#if tab === 'mcp'}<McpTab {def} {isAdmin} />{/if}
-      {#if tab === 'versions'}<VersionsTab {def} {isAdmin} />{/if}
+      <!-- Tab-pane grammar: the incoming pane rises in, the old one is simply
+           replaced (no exit). No AutoHeight — the takeover frame is fixed-height
+           by design. No stagger — several panes are dense data lists. -->
+      {#key tab}
+        <div in:fly={{ y: 6, duration: 200 }}>
+          {#if tab === 'summary'}<SummaryTab {def} {isAdmin} />{/if}
+          {#if tab === 'config'}
+            {#if isAdmin}
+              <AgentConfigForm {def} {endpoints} onSaved={onClose} />
+            {:else}
+              <ReadOnlyConfig {def} />
+            {/if}
+          {/if}
+          {#if tab === 'skills'}<SkillsTab slug={def.slug} {isAdmin} />{/if}
+          {#if tab === 'memory'}<MemoryTab {def} {isAdmin} />{/if}
+          {#if tab === 'crons'}<CronsPanel agentId={def.id} />{/if}
+          {#if tab === 'secrets'}
+            {#if isAdmin}<SecretsTab agentId={def.id} />{:else}<div class="text-sm text-muted">Admins only.</div>{/if}
+          {/if}
+          {#if tab === 'mcp'}<McpTab {def} {isAdmin} />{/if}
+          {#if tab === 'versions'}<VersionsTab {def} {isAdmin} />{/if}
+        </div>
+      {/key}
     </div>
   </div>
 </Modal>

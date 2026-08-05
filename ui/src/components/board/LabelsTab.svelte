@@ -17,6 +17,7 @@
     type LabelColor,
   } from '@/lib/boards.svelte'
   import { LABEL_CSS } from '@/components/board/field-pills'
+  import { listStagger } from '@/lib/motion'
   import ColorDot from './ColorDot.svelte'
 
   // ── Labels: the board's label registry — create, rename (cascades into
@@ -58,7 +59,7 @@
       onRetry={() => void labelsQuery.refetch()}
     />
   {/if}
-  <ul class="divide-y divide-line-subtle">
+  <ul class="divide-y divide-line-subtle" use:listStagger>
     {#each labels as l (l.id)}
       <li class="flex items-center gap-2 py-2">
         <DropdownMenu align="left" items={colorItems(l)}>

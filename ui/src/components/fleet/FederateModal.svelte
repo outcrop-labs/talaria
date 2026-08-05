@@ -6,8 +6,9 @@
   import Input from '@/components/ui/Input.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import Steps from '@/components/ui/Steps.svelte'
+  import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import { reconcileFleet } from '@/lib/fleet-defs'
-  import { fade, slide, QUICK } from '@/lib/motion'
+  import { listStagger, slide, staggerIn } from '@/lib/motion'
   import { cn } from '@/lib/cn'
 
   interface FederateResult {
@@ -70,60 +71,72 @@
 </script>
 
 <Modal open onClose={onClose} title="Federate outside agents" width="max-w-lg">
-  <div class="space-y-5">
-    <Steps steps={STEPS} current={step} />
+  <!-- Step-to-step motion (ANIMATIONS.md wizard row): AutoHeight glides the
+       panel between step heights, {#key step} + staggerIn brings each step's
+       sections in 40ms apart. No exit on the outgoing step — the incoming
+       stagger + gliding height IS the transition. -->
+  <AutoHeight>
+    <div class="space-y-5">
+      <Steps steps={STEPS} current={step} />
 
-    {#if step === 0}
-      <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-4">
-        <p class="text-sm leading-relaxed text-muted">
-          Point at a Hermes-format directory on the server (<code class="text-fg">agents.yaml</code> roster,
-          each agent's <code class="text-fg">SOUL.md</code> + <code class="text-fg">config.yaml</code>).
-          Each agent is recreated <em>natively</em>: Talaria's chassis and orchestration, a fresh key and state
-          volume, models mapped into the registry, skills carried over. The source directory is never referenced
-          again. Agents whose handle already exists are skipped.
-        </p>
-        <div>
-          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Directory on server</label>
-          <Input
-            bind:value={dir}
-            onkeydown={submitOnEnter(() => {
-              if (!busy && dir.trim()) void federate()
-            })}
-            placeholder="/path/to/stack"
-            autofocus
-          />
-        </div>
-        {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
-      </div>
-    {/if}
-
-    {#if step === 1 && result}
-      <div in:fade={{ duration: 150, delay: 80 }} out:fade={QUICK} class="space-y-3">
-        <div class="text-sm text-fg">
-          {fresh.length} federated · {result.agents.length - fresh.length} already here
-        </div>
-        {#if result.agents.length > 0}
-          <ul class="max-h-56 divide-y divide-line overflow-y-auto rounded-lg border border-line">
-            {#each result.agents as a (a.slug)}
-              <li class="flex items-center gap-2 px-3.5 py-2 text-sm">
-                <span class="font-mono text-xs text-fg">{a.slug}</span>
-                <span class={cn('ml-auto font-mono text-[10px] uppercase tracking-[0.05em]', a.status === 'federated' ? 'text-accent' : 'text-muted')}>
-                  {a.status === 'federated' ? 'federated' : 'already exists'}
-                </span>
-              </li>
-            {/each}
-          </ul>
+      {#key step}
+        {#if step === 0}
+          <div use:staggerIn class="space-y-4">
+            <p class="text-sm leading-relaxed text-muted">
+              Point at a Hermes-format directory on the server (<code class="text-fg">agents.yaml</code> roster,
+              each agent's <code class="text-fg">SOUL.md</code> + <code class="text-fg">config.yaml</code>).
+              Each agent is recreated <em>natively</em>: Talaria's chassis and orchestration, a fresh key and state
+              volume, models mapped into the registry, skills carried over. The source directory is never referenced
+              again. Agents whose handle already exists are skipped.
+            </p>
+            <div>
+              <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Directory on server</label>
+              <Input
+                bind:value={dir}
+                onkeydown={submitOnEnter(() => {
+                  if (!busy && dir.trim()) void federate()
+                })}
+                placeholder="/path/to/stack"
+                autofocus
+              />
+            </div>
+            {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
+          </div>
         {/if}
-        {#each result.errors as e (e)}
-          <p class="text-xs text-danger">
-            {e}
-          </p>
-        {/each}
-      </div>
-    {/if}
 
-    {#if step === 2}<p in:fade={{ duration: 150, delay: 80 }} class="text-sm text-fg">{started}</p>{/if}
-  </div>
+        {#if step === 1 && result}
+          <div use:staggerIn class="space-y-3">
+            <div class="text-sm text-fg">
+              {fresh.length} federated · {result.agents.length - fresh.length} already here
+            </div>
+            {#if result.agents.length > 0}
+              <!-- data-no-stagger: the surrounding staggerIn cascade skips this
+                   list so listStagger alone owns its rows (one cascade rule). -->
+              <ul data-no-stagger use:listStagger class="max-h-56 divide-y divide-line overflow-y-auto rounded-lg border border-line">
+                {#each result.agents as a (a.slug)}
+                  <li class="flex items-center gap-2 px-3.5 py-2 text-sm">
+                    <span class="font-mono text-xs text-fg">{a.slug}</span>
+                    <span class={cn('ml-auto font-mono text-[10px] uppercase tracking-[0.05em]', a.status === 'federated' ? 'text-accent' : 'text-muted')}>
+                      {a.status === 'federated' ? 'federated' : 'already exists'}
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            {#each result.errors as e (e)}
+              <p class="text-xs text-danger">
+                {e}
+              </p>
+            {/each}
+          </div>
+        {/if}
+
+        {#if step === 2}
+          <div use:staggerIn><p class="text-sm text-fg">{started}</p></div>
+        {/if}
+      {/key}
+    </div>
+  </AutoHeight>
 
   {#snippet footer()}
     {#if step === 0}

@@ -29,7 +29,9 @@
   const am = useAgentMenu(() => d, () => running, () => (manage = true), () => onDuplicate())
 </script>
 
-<li oncontextmenu={am.onContextMenu} class={cn('flex items-center gap-3 px-4 py-3 transition-colors hover:bg-hover', !d.enabled && 'opacity-60')}>
+<!-- div, not li: the roster list renders these directly inside Materialize's
+     container (a div carrying the panel frame + divide classes). -->
+<div role="presentation" oncontextmenu={am.onContextMenu} class={cn('flex items-center gap-3 px-4 py-3 transition-colors hover:bg-hover', !d.enabled && 'opacity-60')}>
   <AgentStatusDot def={d} {containers} />
   <Avatar name={d.displayName} class="h-7 w-7" />
   <button type="button" onclick={() => (manage = true)} class="min-w-0 flex-1 text-left">
@@ -38,7 +40,7 @@
   </button>
   <AgentBrainChip {brain} />
   <AgentControls def={d} {running} onManage={() => (manage = true)} {onDuplicate} />
-</li>
+</div>
 <ContextMenu menu={am.menu} />
 {#if am.retiring}
   <AgentRetireModal def={d} onClose={() => (am.retiring = false)} onConfirm={() => void am.act('retire', 'retiring')} />

@@ -21,7 +21,7 @@
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
   import { cn } from '@/lib/cn'
-  import { fade, fly, QUICK } from '@/lib/motion'
+  import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { deleteDoc, saveDoc, useBacklinks, useDoc, type KbDocMeta } from '@/lib/kb'
@@ -469,8 +469,11 @@
         </div>
       {:else}
         <!-- Read mode: rendered markdown with the identical measure/typography as
-             the editor (both use .re-prose), so switching modes doesn't reflow. -->
-        <div class="flex min-w-0 flex-1 flex-col">
+             the editor (both use .re-prose), so switching modes doesn't reflow.
+             Tab-pane entrance on the READ pane only — the edit pane holds live
+             editor state (seed-keyed for Muse/revisions), so it keeps its hard
+             cut rather than replaying an entrance. -->
+        <div in:fly={{ y: 6, duration: 200 }} class="flex min-w-0 flex-1 flex-col">
           <div
             bind:this={readRef}
             class="re-prose relative min-w-0 flex-1 overflow-y-auto"
@@ -639,7 +642,10 @@
         />
       {/if}
       {#if showHistory}
-        <div in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="w-64 shrink-0 overflow-y-auto border-l border-line-subtle p-3">
+        <!-- IN-FLOW rail: slide={GROW_X} on both legs (ANIMATIONS.md); inner
+             wrapper pinned to the resting width so rows clip, not rewrap. -->
+        <div transition:slide={GROW_X} class="shrink-0 overflow-y-auto border-l border-line-subtle">
+        <div class="w-64 p-3">
           <KbHistoryRail
             id={docId}
             onRestore={async (content) => {
@@ -652,6 +658,7 @@
               seed += 1
             }}
           />
+        </div>
         </div>
       {/if}
     </div>

@@ -11,7 +11,7 @@
   import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { popPanel } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
-  import { fade, scale, POP, QUICK } from '@/lib/motion'
+  import { fade, listStagger, pop, POPOVER, QUICK } from '@/lib/motion'
   import { createArtifact, createFolder, deleteArtifact, saveArtifact, updateFolder, useArtifacts, useFolders, type Artifact, type ArtifactFolder, type ArtifactKind } from '@/lib/artifacts'
   import ArtifactEditor from './ArtifactEditor.svelte'
   import ArtifactFolderNode from './ArtifactFolderNode.svelte'
@@ -144,7 +144,7 @@
       </div>
       {#if newOpen}
         <div
-          in:scale={{ ...POP, start: 0.97 }}
+          in:pop={POPOVER}
           out:fade={QUICK}
           class={cn(popPanel, 'absolute right-3 top-full z-30 mt-1 w-44 origin-top-right')}
           onmouseleave={() => (newOpen = false)}
@@ -181,6 +181,12 @@
           <EmptyState variant="inline" title="No artifacts yet." class="px-2 py-6 text-center" />
         </div>
       {:else}
+        <!-- Any grid or list staggers its items on mount (ANIMATIONS.md). One
+             wrapper over both {#each} runs — folders then loose artifacts —
+             so a single cascade owns the tree. It mounts only once both reads
+             RESOLVED — never on the skeleton branch. An expanded folder's
+             nested rows ride their parent row's rise (direct children only). -->
+        <div use:listStagger>
         {#each rootFolders as f (f.id)}
           <ArtifactFolderNode
             folder={f}
@@ -203,6 +209,7 @@
         {#each rootArtifacts as a (a.id)}
           <ArtifactRow artifact={a} depth={0} {activeId} onSelect={setActiveId} setDrag={(d) => (drag = d)} onContextMenu={(e) => menu.openMenu(e, artifactMenu(a))} />
         {/each}
+        </div>
         <!-- One half answered, the other didn't. Keep what loaded and say
              the tree is INCOMPLETE — replacing a populated pane over a
              partial failure loses more than it explains. -->

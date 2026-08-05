@@ -4,7 +4,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { getList } from '@/lib/fetch-json'
   import { cn } from '@/lib/cn'
-  import { slide } from '@/lib/motion'
+  import { listStagger, slide } from '@/lib/motion'
 
   interface WbJob {
     id: string
@@ -66,7 +66,7 @@
     </p>
   </div>
 {:else if jobs !== undefined && live.length}
-  <div transition:slide={{ duration: 150 }} class="mb-3 space-y-2">
+  <div transition:slide={{ duration: 150 }} class="mb-3 space-y-2" use:listStagger>
     {#each live as j (j.id)}
       <div
         class={cn(

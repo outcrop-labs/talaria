@@ -18,6 +18,7 @@
     deleteBoardStatus,
     type BoardStatus,
   } from '@/lib/statuses'
+  import { listStagger } from '@/lib/motion'
   import ColorDot from './ColorDot.svelte'
   import WorkflowDiagnostics from './WorkflowDiagnostics.svelte'
 
@@ -114,7 +115,7 @@
       onRetry={() => void statusesQuery.refetch()}
     />
   {/if}
-  <ul class="divide-y divide-line-subtle">
+  <ul class="divide-y divide-line-subtle" use:listStagger>
     {#each statuses as st (st.key)}
       <li
         draggable={canEdit && !st.system}

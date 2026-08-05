@@ -1,10 +1,10 @@
 <script lang="ts">
-  import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Materialize from '@/components/ui/Materialize.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatCard from '@/components/ui/StatCard.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { relativeTime } from '@/lib/fleet'
@@ -17,7 +17,6 @@
   // usage_events — real gateway-reported counts, or char-based estimates (~).
   const costQuery = useCost()
   const data = $derived(costQuery.data)
-  const isLoading = $derived(costQuery.isLoading)
   const t = $derived(data?.totals)
   const perAgent = $derived(data?.perAgent ?? [])
   const perDay = $derived(data?.perDay ?? [])
@@ -56,14 +55,47 @@
         error={costQuery.error}
         onRetry={() => void costQuery.refetch()}
       />
-    {:else if isLoading || !data}
-      <div class="grid grid-cols-3 gap-4">
-        {#each [0, 1, 2] as i (i)}
-          <SkeletonCard delay={i * 0.1} />
-        {/each}
-      </div>
-      <SkeletonRows rows={5} class="mt-2" />
-    {:else if total(t?.month) === 0}
+    {:else}
+    <!-- Skeleton → content as one motion: the sketch mirrors the ledger's
+         real anatomy — the four stat tiles, then the by-agent panel with
+         row silhouettes (avatar + label bars + right-aligned figures) — and
+         the resolved readout staggers in over it (count=1: the region is a
+         composition, not a homogeneous list; the per-item shapes live in the
+         sketch). `data === undefined`, not `isLoading`, so a paused first
+         fetch also reads as "we don't know yet". -->
+    <Materialize loading={data === undefined} count={1} class="space-y-8">
+      {#snippet skeleton()}
+        <div aria-hidden="true" class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          {#each [0, 1, 2, 3] as i (i)}
+            <div class="rounded-lg border border-line bg-panel p-5">
+              <Skeleton class="h-2.5 w-20 rounded-full" delay={i * 0.1} />
+              <Skeleton class={`mt-2.5 h-6 rounded ${['w-16', 'w-20', 'w-14', 'w-16'][i]}`} delay={i * 0.1 + 0.06} />
+              <Skeleton class="mt-2 h-2.5 w-24 rounded-full" delay={i * 0.1 + 0.12} />
+            </div>
+          {/each}
+        </div>
+        <div aria-hidden="true" class="rounded-lg border border-line bg-panel p-6">
+          <div class="mb-4 flex items-center justify-between">
+            <Skeleton class="h-3 w-32 rounded-full" />
+            <Skeleton class="h-2.5 w-6 rounded" delay={0.1} />
+          </div>
+          <div class="divide-y divide-line">
+            {#each [0, 1, 2, 3, 4] as i (i)}
+              <div class="flex items-center gap-3 py-3">
+                <Skeleton class="h-6 w-6 shrink-0 rounded-full" delay={i * 0.1} />
+                <span class="min-w-0 flex-1 space-y-1.5">
+                  <Skeleton class={`h-3 rounded-full ${['w-24', 'w-32', 'w-20'][i % 3]}`} delay={i * 0.1} />
+                  <Skeleton class={`h-2.5 rounded-full ${['w-16', 'w-24', 'w-28'][i % 3]}`} delay={i * 0.1 + 0.08} />
+                </span>
+                <Skeleton class="h-3 w-14 rounded" delay={i * 0.1} />
+                <Skeleton class="h-3 w-14 rounded" delay={i * 0.1 + 0.05} />
+                <Skeleton class="h-3 w-20 rounded" delay={i * 0.1 + 0.1} />
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/snippet}
+      {#if total(t?.month) === 0}
       <div in:fade={{ duration: 150 }}>
         <EmptyState
           icon="⌗"
@@ -105,7 +137,9 @@
       {/if}
 
       {#if t && t.split.local + t.split.cloud + t.split.other > 0}
-        <SplitPanel split={t.split} perModel={data.perModel} />
+        <!-- `data!`: this branch renders only when Materialize's `loading`
+             (data === undefined) is false, which TS cannot see across props. -->
+        <SplitPanel split={t.split} perModel={data!.perModel} />
       {/if}
 
       {#if perDay.length > 1}
@@ -126,6 +160,8 @@
 
       <Panel>
         <SectionHeader title="By agent · 30 days" action={String(perAgent.length).padStart(2, '0')} />
+        <!-- No listStagger on the rows: Materialize's content branch owns the
+             region's cascade (the panel rises; its rows come with it). -->
         <ul class="divide-y divide-line">
           {#each perAgent as a (a.agentModel)}
             {@const d = agentLabel(a.agentModel)}
@@ -155,6 +191,8 @@
           gateway didn't report token usage for them.
         </p>
       {/if}
+    {/if}
+    </Materialize>
     {/if}
   </div>
 </div>

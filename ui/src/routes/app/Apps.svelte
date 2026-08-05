@@ -1,6 +1,7 @@
 <script lang="ts">
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
+  import ViewHeader from '@/components/ui/ViewHeader.svelte'
+  import { fly, staggerIn } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import AppsInstalledTab from './AppsInstalledTab.svelte'
   import AppsDiscoverTab from './AppsDiscoverTab.svelte'
@@ -16,14 +17,19 @@
 </script>
 
 <div class="h-full overflow-y-auto p-8">
-  <div class="mx-auto w-full max-w-4xl">
-    <div class="mb-1 flex items-baseline gap-3">
-      <h1 class="font-sans text-2xl font-semibold tracking-tight text-fg">Apps</h1>
-      <InfoTip text="Self-contained apps that compile into this deployment and render as native Talaria surfaces — built by your team, the community, or Outcrop. They run under each signed-in user's session, so platform permissions apply unchanged." />
-    </div>
-    <p class="mb-6 font-sans text-xs text-muted">
-      Extend Talaria with new work and manage views. Apps live in the <code class="text-fg">apps/</code> directory and become part of the deployment.
-    </p>
+  <!-- Page content entrance: title → blurb → tab strip → pane rise in sequence
+       (ANIMATIONS.md). The keyed pane keeps its own fly on tab switch and
+       stays unstaggered inside — one level only. -->
+  <div use:staggerIn class="mx-auto w-full max-w-4xl">
+    <ViewHeader
+      class="mb-6"
+      title="Apps"
+      info="Self-contained apps that compile into this deployment and render as native Talaria surfaces — built by your team, the community, or Outcrop. They run under each signed-in user's session, so platform permissions apply unchanged."
+    >
+      {#snippet blurb()}
+        Extend Talaria with new work and manage views. Apps live in the <code class="text-fg">apps/</code> directory and become part of the deployment.
+      {/snippet}
+    </ViewHeader>
 
     <Tabs
       class="mb-6"
@@ -35,6 +41,14 @@
       onChange={(id) => (tab = id)}
     />
 
-    {#if tab === 'installed'}<AppsInstalledTab {isAdmin} />{:else}<AppsDiscoverTab {isAdmin} />{/if}
+    <!-- Tab-pane grammar: rise in on switch, no exit; the page scrolls, so no
+         AutoHeight. On MOUNT the pane is a section whose items cascade: the
+         app cards (each tab's [data-app-cards] hook) rise 30ms apart while
+         the frame fades. The selector deliberately misses the skeleton rows. -->
+    {#key tab}
+      <div in:fly={{ y: 6, duration: 200 }} data-stagger-items="[data-app-cards] > *">
+        {#if tab === 'installed'}<AppsInstalledTab {isAdmin} />{:else}<AppsDiscoverTab {isAdmin} />{/if}
+      </div>
+    {/key}
   </div>
 </div>

@@ -10,7 +10,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
   import { cn } from '@/lib/cn'
-  import { slide } from '@/lib/motion'
+  import { listStagger, slide } from '@/lib/motion'
   import CollectionRow from './CollectionRow.svelte'
   import HealthDot from './HealthDot.svelte'
   import RerankSection from './RerankSection.svelte'
@@ -132,7 +132,9 @@
         {#each [0, 1, 2] as i (i)}<SkeletonCard delay={i * 0.15} />{/each}
       {/snippet}
       {#snippet children(collections)}
-        {#each collections as c (c.id)}<CollectionRow col={c} spaces={rag?.spaces ?? []} />{/each}
+        <div class="space-y-3" use:listStagger>
+          {#each collections as c (c.id)}<CollectionRow col={c} spaces={rag?.spaces ?? []} />{/each}
+        </div>
       {/snippet}
     </QueryState>
   </div>

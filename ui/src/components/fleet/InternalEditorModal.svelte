@@ -13,7 +13,7 @@
   import { getList } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { streamMuse, type MuseKind } from '@/lib/muse.svelte'
-  import { fade, fly, slide, QUICK } from '@/lib/motion'
+  import { fade, fly, listStagger, slide, GROW_X, QUICK } from '@/lib/motion'
   import { cn } from '@/lib/cn'
   import DiffView from './DiffView.svelte'
   import { diffLines, type DiffLine } from './line-diff'
@@ -209,6 +209,11 @@
     <div class="flex min-h-0 flex-1 gap-3">
       <div class="flex min-w-0 flex-1 flex-col">
         {#if proposal !== null}
+          <!-- Tab-pane grammar: the proposal / diff views rise in on switch (no
+               exit). The editor views below keep their hard cut — they carry
+               unsaved input and are seed-keyed, so an entrance would replay on
+               every Muse accept / revision load. -->
+          <div in:fly={{ y: 6, duration: 200 }} class="flex min-h-0 flex-1 flex-col">
           <div class="mb-2 flex items-center gap-2 text-xs text-muted">
             <Sparkles size={13} class="shrink-0 text-accent" />
             {#if generating}
@@ -245,7 +250,9 @@
               <DiffView diff={proposalDiff} fallback={proposal ?? ''} />
             {/if}
           </div>
+          </div>
         {:else if diffing}
+          <div in:fly={{ y: 6, duration: 200 }} class="flex min-h-0 flex-1 flex-col">
           <div class="mb-2 flex items-center gap-2 text-xs text-muted">
             <span>
               Changes since {diffing.rev.version !== undefined ? `v${diffing.rev.version} · ` : ''}
@@ -264,6 +271,7 @@
           </div>
           <div class="min-h-0 flex-1">
             <DiffView diff={diffing.diff} fallback={diffing.content} />
+          </div>
           </div>
         {:else if mode === 'plain'}
           {#if editable}
@@ -295,12 +303,20 @@
         {/if}
       </div>
       {#if showHistory && history}
-        <div in:fly={{ x: 8, duration: 180 }} out:fade={QUICK} class="w-64 shrink-0 overflow-y-auto rounded-lg border border-line p-1">
+        <!-- IN-FLOW rail: slide={GROW_X} on both legs so the editor glides as
+             the rail grows/shrinks instead of snapping (ANIMATIONS.md).
+             |global: showHistory starts true, so this rail exists the moment
+             the editor mounts — a local intro would be suppressed there and
+             only ever play on a manual re-toggle. Inner wrapper pinned to the
+             resting width so rows clip, not rewrap. -->
+        <div transition:slide|global={GROW_X} class="shrink-0 overflow-y-auto rounded-lg border border-line">
+        <div class="w-64 p-1">
           <div class="px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">History</div>
           <QueryState query={historyQuery} errorTitle="Could not load history" errorVariant="inline">
             {#snippet skeleton()}<SkeletonRows rows={4} class="px-2 py-2" />{/snippet}
             {#snippet empty()}<div class="px-2 py-2 text-xs text-muted">No saved revisions yet.</div>{/snippet}
             {#snippet children(revisions)}
+              <div use:listStagger>
               {#each revisions as rev, i (rev.id)}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                 <div
@@ -337,8 +353,10 @@
                   {/if}
                 </div>
               {/each}
+              </div>
             {/snippet}
           </QueryState>
+        </div>
         </div>
       {/if}
     </div>
@@ -400,10 +418,12 @@
 {#if nested}
   {#if open}
     <!-- framer-motion slid this in from the right (tween 180ms easeOut);
-         fly with x travel and opacity pinned replicates the pure slide. -->
+         fly with x travel and opacity pinned replicates the pure slide.
+         |global: SkillEditorModal renders this with `open` already true at
+         mount, so a local intro would be suppressed (ANIMATIONS.md). -->
     <div
-      in:fly={{ x: '100%', duration: 180, opacity: 1 }}
-      out:fade={QUICK}
+      in:fly|global={{ x: '100%', duration: 180, opacity: 1 }}
+      out:fade|global={QUICK}
       class="absolute inset-0 z-30 flex flex-col bg-[var(--theme-panel)]"
     >
       <div class="flex shrink-0 items-center gap-2 border-b border-line px-6 py-3.5">

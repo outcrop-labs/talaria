@@ -80,7 +80,9 @@
       hint={catalog?.error ? `${catalog.error} — you can still install any app from its git URL below` : 'No apps in the catalog yet — install from a git URL below'}
     />
   {:else}
-    <div class="grid gap-3 sm:grid-cols-2">
+    <!-- data-app-cards: the hook Apps.svelte's data-stagger-items selector
+         targets — these cards cascade on the page entrance. -->
+    <div class="grid gap-3 sm:grid-cols-2" data-app-cards>
       {#each catalog!.apps as c (c.slug)}
         <div class="flex flex-col gap-2 rounded-lg border border-line bg-panel p-4">
           <div class="flex items-center gap-3">

@@ -8,6 +8,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Minus, Plus } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
+  import { listStagger } from '@/lib/motion'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { updateTask, type Board } from '@/lib/boards.svelte'
   import { LABEL_CSS, isOverdueTask } from './field-pills'
@@ -281,8 +282,10 @@
       </div>
 
       <!-- ── Rows (also the drop target for scheduling) ── -->
-      <div bind:this={rowsEl} class="relative flex-1" ondragover={onChartDragOver} ondragleave={() => (dropDay = null)} ondrop={onChartDrop}>
-        <div class="pointer-events-none absolute inset-y-0" style="left: {labelW}px">
+      <div bind:this={rowsEl} use:listStagger class="relative flex-1" ondragover={onChartDragOver} ondragleave={() => (dropDay = null)} ondrop={onChartDrop}>
+        <!-- Grid scaffolding (weekend shading, today line) is not a row — the
+             cascade skips it so the chart frame never shifts. -->
+        <div data-no-stagger class="pointer-events-none absolute inset-y-0" style="left: {labelW}px">
           {#each { length: days } as _, i (i)}
             {@const d = new Date(rangeStart + i * DAY)}
             {@const wk = d.getDay() === 0 || d.getDay() === 6}
@@ -379,7 +382,7 @@
         <span class="font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-ink-dim">Unscheduled ({unscheduled.length})</span>
         {#if canEdit}<span class="font-sans text-[10px] text-muted">drag a row onto a day above to schedule it</span>{/if}
       </div>
-      <ul class="divide-y divide-line-subtle/60 px-2 pb-2">
+      <ul class="divide-y divide-line-subtle/60 px-2 pb-2" use:listStagger>
         {#each unscheduled as t (t.id)}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
           <li

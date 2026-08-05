@@ -10,7 +10,7 @@
   import Select from '@/components/ui/Select.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { createFleetAgent, type AgentDef } from '@/lib/fleet-defs'
-  import { fade, slide } from '@/lib/motion'
+  import { fade, listStagger, slide } from '@/lib/motion'
   import { parseAgentDraft, streamMuse, type AgentDraft } from '@/lib/muse.svelte'
   import RefineBar from './RefineBar.svelte'
   import SkillPreviewRow from './SkillPreviewRow.svelte'
@@ -234,7 +234,7 @@
       {#if skills.length > 0}
         <div in:fade={{ duration: 150 }}>
           <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Starter skills</label>
-          <ul class="divide-y divide-line rounded-lg border border-line">
+          <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
             {#each skills as s (s.name)}
               <SkillPreviewRow skill={s} onRemove={() => (skills = skills.filter((x) => x.name !== s.name))} />
             {/each}

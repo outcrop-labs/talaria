@@ -2,7 +2,7 @@
   import { SlidersHorizontal, GripVertical } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
-  import { fade, flip, scale, LIST, POP, QUICK } from '@/lib/motion'
+  import { fade, flip, pop, LIST, POPOVER, QUICK } from '@/lib/motion'
   import { popHeader, popPanel } from '@/components/chat/chat-chrome'
   import { LIST_COLUMNS, type ColumnKey } from './board-list'
 
@@ -76,7 +76,7 @@
     <SlidersHorizontal size={13} />
   </button>
   {#if open && pos}
-    <div bind:this={panelEl} use:portal style={pos} class={cn(popPanel, 'w-48')} in:scale={POP} out:fade={QUICK}>
+    <div bind:this={panelEl} use:portal style={pos} class={cn(popPanel, 'w-48')} in:pop={POPOVER} out:fade={QUICK}>
       <div class={popHeader}>Drag to reorder</div>
       {#each order as key (key)}
         {@const c = LIST_COLUMNS.find((x) => x.key === key)!}
