@@ -1,13 +1,15 @@
 <script lang="ts">
-  import { LogOut, SunMoon } from '@lucide/svelte'
+  import { LogOut, Settings, Shield, SunMoon } from '@lucide/svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import type { SessionUser } from '@/lib/session'
+  import { p } from '@/router'
 
-  // The strip's only control: status dot + account email, with everything
-  // personal nested in a flyover (profile, theme, sign out). Settings and Admin
-  // moved to the sidebar SYSTEM section — no duplicates here (spec §5).
+  // The strip's only control: status dot + display name, with everything
+  // personal nested in a flyover (profile, theme, Settings, Admin, sign out).
+  // Settings/Admin live HERE, not the rail: they're about the person and the
+  // instance, not the work.
   let { user, onLogout }: { user: SessionUser; onLogout: () => void } = $props()
 
   let open = $state(false)
@@ -31,8 +33,9 @@
     class="flex h-7 items-center gap-2 rounded-md px-2 transition-colors duration-[120ms] hover:bg-hover"
   >
     <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-success" aria-hidden="true"></span>
+    <!-- Display name, not email: the flyover header still shows both. -->
     <span class="hidden max-w-[16rem] truncate font-mono text-[11px] text-muted sm:block">
-      {user.email ?? user.name ?? 'Account'}
+      {user.name ?? user.email ?? 'Account'}
     </span>
   </button>
   {#if open}
@@ -57,6 +60,26 @@
         </div>
       </div>
 
+      <a
+        href={p('/settings')}
+        data-view-transition
+        onclick={() => (open = false)}
+        class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms] hover:bg-hover"
+      >
+        <Settings size={15} class="shrink-0 text-muted" />
+        <span>Settings</span>
+      </a>
+      {#if user.role === 'admin'}
+        <a
+          href={p('/admin')}
+          data-view-transition
+          onclick={() => (open = false)}
+          class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms] hover:bg-hover"
+        >
+          <Shield size={15} class="shrink-0 text-muted" />
+          <span>Admin</span>
+        </a>
+      {/if}
       <div class="flex items-center justify-between rounded-md px-3 py-1.5 text-sm text-muted">
         <span class="flex items-center gap-2.5">
           <SunMoon size={15} class="shrink-0 text-muted" />

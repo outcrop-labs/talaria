@@ -19,9 +19,7 @@ import {
   LayoutTemplate,
   MessageCircle,
   PlugZap,
-  Settings,
   Settings2,
-  Shield,
 } from '@lucide/svelte'
 
 export interface NavItem {
@@ -92,20 +90,15 @@ export const NAV: NavSection[] = [
       { to: '/apps', label: 'Apps', icon: Hexagon },
     ],
   },
-  {
-    // Settings is always reachable (never gateable); Admin stays role-locked
-    // via adminOnly (it feeds ADMIN_VIEWS below, same as before the move).
-    title: 'System',
-    items: [
-      { to: '/settings', label: 'Settings', icon: Settings },
-      { to: '/admin', label: 'Admin', icon: Shield, adminOnly: true },
-    ],
-  },
+  // Settings and Admin live in the USER MENU (top strip), not the rail: they
+  // are about the person and the instance, not the work. Settings stays
+  // always-reachable (never gateable); /admin stays role-locked via the
+  // explicit ADMIN_VIEWS entry below.
 ]
 
 /** Routes members can never reach regardless of grants. Manage views moved to
- *  the grantable set; Admin (now in the sidebar SYSTEM section) stays
- *  role-locked via its adminOnly flag. */
+ *  the grantable set; Admin (in the user menu) stays role-locked via the
+ *  explicit '/admin' entry — it must never depend on a nav section existing. */
 export const ADMIN_VIEWS: string[] = [
   ...new Set([
     ...NAV.flatMap((s) => s.items.filter((i) => s.adminOnly || i.adminOnly).map((i) => i.to)),
