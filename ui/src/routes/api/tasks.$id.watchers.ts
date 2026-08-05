@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { parseBody, requireUser, type SessionUser } from '@/server/api-guard'
 import { boardRole, canEdit } from '@/server/boards'
@@ -35,41 +35,37 @@ function isSelf(user: SessionUser, watcher: string): boolean {
 //          the person getting mail about a board she cannot open, and the old
 //          route answered her 403 — the worst shape this can take, because the
 //          only remaining exit is asking someone else to stop it.
-export const Route = createFileRoute('/api/tasks/$id/watchers')({
-  server: {
-    handlers: {
-      POST: async ({ request, params }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        const task = await getTask(params.id)
-        if (!task) return json({ error: 'not found' }, { status: 404 })
-        const role = await boardRole(user.id, task.boardId)
-        if (role === null) return json({ error: 'forbidden' }, { status: 403 })
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        if (!isSelf(user, body.watcher) && !canEdit(role)) {
-          return json({ error: 'only a board editor can make someone else follow this ticket' }, { status: 403 })
-        }
-        const added = await addWatcher(params.id, body.watcher)
-        if (!added.ok) return json({ error: added.error }, { status: 400 })
-        return json({ watchers: await listWatchers(params.id) })
-      },
-      DELETE: async ({ request, params }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        const task = await getTask(params.id)
-        if (!task) return json({ error: 'not found' }, { status: 404 })
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        const role = await boardRole(user.id, task.boardId)
-        if (!isSelf(user, body.watcher) && !canEdit(role)) return json({ error: 'forbidden' }, { status: 403 })
-        await removeWatcher(params.id, body.watcher)
-        // The unsubscribe hatch must not become a disclosure hatch: someone with
-        // no membership gets confirmation that they are off the ticket, never
-        // the list of who else is on it.
-        if (role === null) return json({ unwatched: true })
-        return json({ watchers: await listWatchers(params.id) })
-      },
-    },
+export const Route = defineApi('/api/tasks/$id/watchers', {
+  POST: async ({ request, params }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const task = await getTask(params.id)
+    if (!task) return json({ error: 'not found' }, { status: 404 })
+    const role = await boardRole(user.id, task.boardId)
+    if (role === null) return json({ error: 'forbidden' }, { status: 403 })
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    if (!isSelf(user, body.watcher) && !canEdit(role)) {
+      return json({ error: 'only a board editor can make someone else follow this ticket' }, { status: 403 })
+    }
+    const added = await addWatcher(params.id, body.watcher)
+    if (!added.ok) return json({ error: added.error }, { status: 400 })
+    return json({ watchers: await listWatchers(params.id) })
+  },
+  DELETE: async ({ request, params }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const task = await getTask(params.id)
+    if (!task) return json({ error: 'not found' }, { status: 404 })
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    const role = await boardRole(user.id, task.boardId)
+    if (!isSelf(user, body.watcher) && !canEdit(role)) return json({ error: 'forbidden' }, { status: 403 })
+    await removeWatcher(params.id, body.watcher)
+    // The unsubscribe hatch must not become a disclosure hatch: someone with
+    // no membership gets confirmation that they are off the ticket, never
+    // the list of who else is on it.
+    if (role === null) return json({ unwatched: true })
+    return json({ watchers: await listWatchers(params.id) })
   },
 })

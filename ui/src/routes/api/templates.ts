@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { createTemplate, listTemplates } from '@/server/templates'
@@ -14,22 +14,18 @@ const Body = z.object({
 // The org's template library (ticket + plan formats). GET → all (any member —
 // the library grounds pickers everywhere). POST → create (any member, like
 // boards/channels; the skeletons are org-shared working material, not policy).
-export const Route = createFileRoute('/api/templates')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        return json({ templates: await listTemplates() })
-      },
-      POST: async ({ request }) => {
-        const user = await requirePerm(request, 'templates.manage')
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        const template = await createTemplate({ ...body, createdBy: user.email ?? user.name ?? 'user' })
-        return json({ template })
-      },
-    },
+export const Route = defineApi('/api/templates', {
+  GET: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    return json({ templates: await listTemplates() })
+  },
+  POST: async ({ request }) => {
+    const user = await requirePerm(request, 'templates.manage')
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    const template = await createTemplate({ ...body, createdBy: user.email ?? user.name ?? 'user' })
+    return json({ template })
   },
 })

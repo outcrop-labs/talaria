@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import { createAgent } from '@/server/fleet-create'
@@ -28,35 +28,31 @@ const Body = z.object({
 // POST → create a new agent from a template (an existing agent's definition):
 // fresh gateway key, re-stamped config, soul (scaffold or supplied), optional
 // starter skills, v1. Optionally render + start it immediately. Admin.
-export const Route = createFileRoute('/api/fleet/create')({
-  server: {
-    handlers: {
-      POST: async ({ request }) => {
-        const user = await requirePerm(request, 'agents.manage')
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        try {
-          const actor = user.email ?? user.name ?? 'admin'
-          const { def, keyCreated } = await createAgent({
-            ...body,
-            createdBy: actor,
-          })
-          for (const s of body.skills ?? []) {
-            await writeSkill(def.slug, s.name, s.content, actor).catch(() => {})
-          }
-          void logAudit({ actor: actorOf(user), action: 'agent.create', targetType: 'agent', targetId: def.id, targetLabel: def.displayName, after: { slug: def.slug, department: def.department } })
-          const render = await renderFleet()
-          let healthy: boolean | undefined
-          if (body.start) {
-            await fleetUp(def.department)
-            healthy = await waitHealthy(def.department)
-          }
-          return json({ ok: true, def, keyCreated, healthy, warnings: render.warnings })
-        } catch (e) {
-          return json({ error: (e as Error).message }, { status: 400 })
-        }
-      },
-    },
+export const Route = defineApi('/api/fleet/create', {
+  POST: async ({ request }) => {
+    const user = await requirePerm(request, 'agents.manage')
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    try {
+      const actor = user.email ?? user.name ?? 'admin'
+      const { def, keyCreated } = await createAgent({
+        ...body,
+        createdBy: actor,
+      })
+      for (const s of body.skills ?? []) {
+        await writeSkill(def.slug, s.name, s.content, actor).catch(() => {})
+      }
+      void logAudit({ actor: actorOf(user), action: 'agent.create', targetType: 'agent', targetId: def.id, targetLabel: def.displayName, after: { slug: def.slug, department: def.department } })
+      const render = await renderFleet()
+      let healthy: boolean | undefined
+      if (body.start) {
+        await fleetUp(def.department)
+        healthy = await waitHealthy(def.department)
+      }
+      return json({ ok: true, def, keyCreated, healthy, warnings: render.warnings })
+    } catch (e) {
+      return json({ error: (e as Error).message }, { status: 400 })
+    }
   },
 })

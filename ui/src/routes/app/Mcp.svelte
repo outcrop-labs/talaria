@@ -1,0 +1,132 @@
+<script lang="ts">
+  import { useQueryClient } from '@tanstack/svelte-query'
+  import { Plus } from '@lucide/svelte'
+  import Button from '@/components/ui/Button.svelte'
+  import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Materialize from '@/components/ui/Materialize.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import ViewHeader from '@/components/ui/ViewHeader.svelte'
+  import { staggerIn } from '@/lib/motion'
+  import McpAddServerModal from './McpAddServerModal.svelte'
+  import McpMarketplaceModal from './McpMarketplaceModal.svelte'
+  import McpServerCard from './McpServerCard.svelte'
+  import { useMcpServers } from './mcp'
+
+  // Manage → MCP: the org's MCP servers in one registry. Register a server
+  // once; decide which agents carry it (optionally a tool subset per agent) and
+  // which people may exercise it through agents acting for them (optionally
+  // their own tool subset). Per-user servers act with each person's CONNECTED
+  // ACCOUNT (Settings → Connections). Enforcement lives in the MCP gateway,
+  // not in agent configs.
+  const qc = useQueryClient()
+  const serversQuery = useMcpServers()
+  let adding = $state<null | 'marketplace' | 'custom'>(null)
+
+  // Silhouette widths vary per index so the sketch doesn't look stamped.
+  const titleW = ['w-36', 'w-28', 'w-44']
+  const descW = ['w-3/5', 'w-2/5', 'w-1/2']
+  const pillW = ['w-16', 'w-14', 'w-20', 'w-12', 'w-16']
+</script>
+
+<!-- One server card's silhouette (see McpServerCard: header with 36px mark,
+     tools pill strip, then the access table) — same Panel frame and spacing,
+     so the real card materializes over it without a jump. -->
+{#snippet serverSkeleton(i: number)}
+  <div aria-hidden="true" class="rounded-lg border border-line bg-panel p-6">
+    <div class="flex items-center gap-3">
+      <Skeleton class="h-9 w-9 shrink-0 rounded-md" delay={i * 0.15} />
+      <div class="min-w-0 flex-1 space-y-2">
+        <div class="flex items-baseline gap-2">
+          <Skeleton class={`h-3.5 rounded-full ${titleW[i % titleW.length]}`} delay={i * 0.15} />
+          <Skeleton class="h-2.5 w-24 rounded-full" delay={i * 0.15 + 0.1} />
+        </div>
+        <Skeleton class={`h-2.5 rounded-full ${descW[i % descW.length]}`} delay={i * 0.15 + 0.1} />
+      </div>
+      <Skeleton class="h-5 w-20 shrink-0 rounded" delay={i * 0.15} />
+    </div>
+    <div class="mt-3 flex items-center gap-1.5">
+      {#each pillW as w, j (j)}
+        <Skeleton class={`h-[22px] rounded ${w}`} delay={i * 0.15 + j * 0.06} />
+      {/each}
+    </div>
+    <div class="mt-4 border-t border-line pt-3">
+      <Skeleton class="h-2.5 w-12 rounded-full" delay={i * 0.15 + 0.2} />
+      <div class="mt-3 space-y-2.5">
+        <div class="flex items-center gap-3">
+          <Skeleton class="h-2.5 w-14 rounded-full" delay={i * 0.15 + 0.25} />
+          <Skeleton class="h-3 w-40 rounded-full" delay={i * 0.15 + 0.3} />
+        </div>
+        <div class="flex items-center gap-3">
+          <Skeleton class="h-2.5 w-14 rounded-full" delay={i * 0.15 + 0.35} />
+          <Skeleton class="h-3 w-32 rounded-full" delay={i * 0.15 + 0.4} />
+        </div>
+      </div>
+    </div>
+  </div>
+{/snippet}
+
+<!-- The OAuth popup announces completion — refresh connection states live. -->
+<svelte:window
+  onmessage={(e) => {
+    if (e.origin === window.location.origin && (e.data as { type?: string })?.type === 'talaria:mcp-oauth-done') {
+      void qc.invalidateQueries({ queryKey: ['mcp-servers'] })
+    }
+  }}
+/>
+
+<div class="h-full overflow-y-auto p-8">
+  <!-- Page content entrance: header row, then the registry region, rise in
+       sequence (ANIMATIONS.md). The registry region rises as one child here;
+       the card cascade inside it belongs to Materialize's content branch. -->
+  <div use:staggerIn class="mx-auto max-w-5xl space-y-6">
+    <ViewHeader
+      title="MCP"
+      info="Model Context Protocol servers, managed org-wide. Register once; choose which agents carry each server and which people may use it — down to individual tools. Agents reach servers only through Talaria's gateway, so the limits here are enforced, not advisory."
+    >
+      {#snippet actions()}
+        <Button size="sm" variant="ghost" onclick={() => (adding = 'custom')}>
+          Custom server
+        </Button>
+        <Button size="sm" onclick={() => (adding = 'marketplace')}>
+          <Plus size={14} /> Browse marketplace
+        </Button>
+      {/snippet}
+    </ViewHeader>
+
+    <!-- Skeleton → content as one motion: card-shaped skeletons materialize
+         into the real cards (Materialize grid-stacks the branches, so no
+         layout jump). QueryState keeps owning ERROR and EMPTY — its loading
+         branch is bypassed in practice because Materialize intercepts the
+         in-flight window; the item-shaped snippet it holds only covers the
+         paused-fetch edge (offline before first byte). -->
+    <Materialize loading={serversQuery.isLoading} count={3} class="space-y-6">
+      {#snippet skeleton(i)}{@render serverSkeleton(i)}{/snippet}
+      <QueryState
+        query={serversQuery}
+        errorTitle="Could not load the MCP registry"
+      >
+        {#snippet skeleton()}{@render serverSkeleton(0)}{/snippet}
+        {#snippet empty()}
+          <EmptyState
+            icon="⌁"
+            title="No MCP servers yet"
+            hint="Browse the marketplace, or register a custom endpoint your agents should reach."
+          >
+            {#snippet action()}
+              <Button size="sm" onclick={() => (adding = 'marketplace')}>Browse marketplace</Button>
+            {/snippet}
+          </EmptyState>
+        {/snippet}
+        {#snippet children(servers)}
+          {#each servers as s (s.id)}
+            <McpServerCard server={s} />
+          {/each}
+        {/snippet}
+      </QueryState>
+    </Materialize>
+
+    {#if adding === 'marketplace'}<McpMarketplaceModal onClose={() => (adding = null)} onCustom={() => (adding = 'custom')} />{/if}
+    {#if adding === 'custom'}<McpAddServerModal onClose={() => (adding = null)} />{/if}
+  </div>
+</div>

@@ -1,17 +1,95 @@
 import { existsSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { tanstackStart } from '@tanstack/react-start/plugin/vite'
-import viteReact from '@vitejs/plugin-react'
+import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from 'vite'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
 
-// Talaria UI — Vite + TanStack Start (matches the hermes-workspace stack so its
-// chat/agent components lift with minimal friction). Tailwind v4 via the vite
-// plugin; path alias `@/*` → `src/*` (see tsconfig).
+// Talaria UI — Vite + Svelte 5 SPA, sv-router on the client, and the API
+// served from the same origin in both modes:
+//   dev   the middleware below routes /api/* through src/server/app.ts
+//   prod  server-entry.js wraps the built handler (see vite.server.config.ts)
+// Tailwind v4 via the vite plugin; path alias `@/*` → `src/*` (see tsconfig).
+
+/** /api/* (+ /.well-known/*) in dev, answered by the real server handler.
+ *  ssrLoadModule keeps the server graph hot-reloadable like any other module. */
+function apiDev(): Plugin {
+  let server: ViteDevServer
+  return {
+    name: 'talaria-api-dev',
+    config(_config, { mode }) {
+      // `vite dev` historically loaded ui/.env into the server's process.env
+      // (TanStack Start did this). Same rule as server-entry.js: the real
+      // environment wins; the file only fills gaps.
+      const fileEnv = loadEnv(mode, here, '')
+      for (const [key, value] of Object.entries(fileEnv)) {
+        if (!(key in process.env)) process.env[key] = value
+      }
+    },
+    configureServer(s) {
+      server = s
+      server.middlewares.use((req, res, next) => {
+        const pathname = (req.url ?? '/').split('?')[0]!
+        if (!pathname.startsWith('/api/') && !pathname.startsWith('/.well-known/')) return next()
+        void (async () => {
+          const mod = (await server.ssrLoadModule('/src/server/app.ts')) as {
+            default: { fetch: (request: Request) => Promise<Response> }
+          }
+
+          const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+          const headers = new Headers()
+          for (const [k, v] of Object.entries(req.headers)) {
+            if (v) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
+          }
+          let body: Uint8Array<ArrayBuffer> | null = null
+          if (req.method !== 'GET' && req.method !== 'HEAD') {
+            body = await new Promise<Uint8Array<ArrayBuffer>>((resolveBody) => {
+              const chunks: Buffer[] = []
+              req.on('data', (c: Buffer) => chunks.push(c))
+              // Copy into a plain Uint8Array<ArrayBuffer>: Buffer's ArrayBufferLike
+              // backing store isn't assignable to fetch's BodyInit.
+              req.on('end', () => resolveBody(new Uint8Array(Buffer.concat(chunks))))
+            })
+          }
+
+          const response = await mod.default.fetch(
+            new Request(url.toString(), { method: req.method, headers, body }),
+          )
+          res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
+          if (!response.body) {
+            res.end(await response.text())
+            return
+          }
+          // Stream (SSE chat is the primary workload); stop pulling if the
+          // client hangs up so upstream streams get cancelled too.
+          const reader = response.body.getReader()
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (res.destroyed || res.writableEnded) {
+              await reader.cancel().catch(() => {})
+              return
+            }
+            if (!res.write(value)) await new Promise((r) => res.once('drain', r))
+          }
+          res.end()
+        })().catch((err) => {
+          console.error(`[api-dev] ${req.method} ${req.url}`, err)
+          if (!res.headersSent) {
+            res.writeHead(500, { 'content-type': 'text/plain' })
+            res.end('Internal Server Error')
+          } else if (!res.writableEnded) {
+            res.destroy()
+          }
+        })
+      })
+    },
+  }
+}
+
 export default defineConfig({
   // Per-worktree Vite cache. Worktrees symlink the main node_modules (fast), but
   // that would SHARE node_modules/.vite — which concurrent dev servers corrupt.
@@ -24,12 +102,13 @@ export default defineConfig({
   // fs.allow ..: Talaria app codebases live in ../apps and compile into this
   // build (import.meta.glob) — the dev server must be allowed to serve them.
   server: { host: true, allowedHosts: true, fs: { allow: ['..'] } },
+  build: { outDir: 'dist/client' },
   // App codebases have no node_modules of their own; shared deps resolve from
-  // the host's — the peer-dependency model (one React, one router, one query
+  // the host's — the peer-dependency model (one Svelte, one router, one query
   // client across the whole deployment). dedupe (not alias) keeps Vite's
-  // normal CJS/ESM interop and SSR externalization intact.
+  // normal CJS/ESM interop intact.
   resolve: {
-    dedupe: ['react', 'react-dom', '@tanstack/react-query', '@tanstack/react-router', 'lucide-react'],
+    dedupe: ['svelte', '@tanstack/svelte-query', 'sv-router', '@lucide/svelte'],
     // The SDK ids must resolve for app files OUTSIDE the Vite root, where the
     // tsconfig-paths plugin doesn't reach ('/server' entry listed first — the
     // bare id would otherwise prefix-match it).
@@ -39,9 +118,11 @@ export default defineConfig({
     },
   },
   plugins: [
-    viteTsConfigPaths({ projects: ['./tsconfig.json'] }),
+    // loose: resolve `@/…` for non-TS files too (.svelte) — the default only
+    // maps imports TypeScript itself would resolve.
+    viteTsConfigPaths({ projects: ['./tsconfig.json'], loose: true }),
     tailwindcss(),
-    tanstackStart(),
-    viteReact(),
+    svelte(),
+    apiDev(),
   ],
 })

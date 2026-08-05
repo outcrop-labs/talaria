@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getList } from '@/lib/fetch-json'
 
 export type TeamRole = 'owner' | 'member'
@@ -16,21 +16,29 @@ export interface TeamMember {
   role: TeamRole
 }
 
+/** A reactive argument: pass a plain value, or a getter for values that change
+ *  over a component's life (route params, selections). */
+type MaybeGetter<T> = T | (() => T)
+const resolve = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
+
 const post = (url: string, body: unknown) =>
   fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body) })
 
 export function useTeams() {
-  return useQuery({
+  return createQuery(() => ({
     queryKey: ['teams'],
     queryFn: (): Promise<Team[]> => getList<Team>('/api/teams', 'teams'),
-  })
+  }))
 }
 
-export function useTeamMembers(teamId: string | null) {
-  return useQuery({
-    queryKey: ['team-members', teamId],
-    enabled: !!teamId,
-    queryFn: (): Promise<TeamMember[]> => getList<TeamMember>(`/api/teams/${teamId}/members`, 'members'),
+export function useTeamMembers(teamId: MaybeGetter<string | null>) {
+  return createQuery(() => {
+    const id = resolve(teamId)
+    return {
+      queryKey: ['team-members', id],
+      enabled: !!id,
+      queryFn: (): Promise<TeamMember[]> => getList<TeamMember>(`/api/teams/${id}/members`, 'members'),
+    }
   })
 }
 

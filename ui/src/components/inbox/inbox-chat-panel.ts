@@ -1,0 +1,79 @@
+// Shared types + panel-chrome persistence for InboxChatPanel.svelte. The
+// localStorage read/write helpers live here (plain TS, no runes) — the
+// component mirrors them into $state and subscribes to the sync events.
+import type { AssistantMode } from '@/components/inbox/assistant-composer-controls'
+import { DEFAULT_INBOX_PANEL_WIDTH, clampInboxPanelWidth } from '@/lib/inbox-panel-size'
+
+export interface InboxChatPanelHandle {
+  focus: () => void
+  expand: () => void
+  insertText: (text: string) => void
+}
+
+export interface StreamingTurn {
+  user: string
+  status: string
+  content: string
+}
+
+export interface InboxCommandOptions {
+  focusKey: string | null
+  delegateModel: string | null
+  responseModel: string | null
+  mode: AssistantMode
+  attachmentIds: string[]
+  refs: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
+}
+
+export const PANEL_COLLAPSED_KEY = 'talaria:inbox-chat-collapsed'
+export const PANEL_COLLAPSED_EVENT = 'talaria:inbox-chat-collapsed'
+// v2 adopts the 700px composer width from the design spec as the default,
+// while retaining resizing.
+export const PANEL_WIDTH_KEY = 'talaria:inbox-chat-width-v2'
+let collapsedFallback = false
+let widthFallback = DEFAULT_INBOX_PANEL_WIDTH
+
+export function readPanelCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(PANEL_COLLAPSED_KEY) === '1'
+  } catch {
+    return collapsedFallback
+  }
+}
+
+export function subscribePanelCollapsed(onChange: () => void): () => void {
+  window.addEventListener(PANEL_COLLAPSED_EVENT, onChange)
+  window.addEventListener('storage', onChange)
+  return () => {
+    window.removeEventListener(PANEL_COLLAPSED_EVENT, onChange)
+    window.removeEventListener('storage', onChange)
+  }
+}
+
+export function writePanelCollapsed(next: boolean): void {
+  collapsedFallback = next
+  try {
+    window.localStorage.setItem(PANEL_COLLAPSED_KEY, next ? '1' : '0')
+  } catch {
+    /* private mode: keep the in-memory preference for this tab */
+  }
+  window.dispatchEvent(new Event(PANEL_COLLAPSED_EVENT))
+}
+
+export function readPanelWidth(): number {
+  try {
+    const stored = window.localStorage.getItem(PANEL_WIDTH_KEY)
+    return stored === null ? widthFallback : clampInboxPanelWidth(Number(stored))
+  } catch {
+    return widthFallback
+  }
+}
+
+export function writePanelWidth(next: number): void {
+  widthFallback = next
+  try {
+    window.localStorage.setItem(PANEL_WIDTH_KEY, String(next))
+  } catch {
+    /* private mode: keep the in-memory preference for this tab */
+  }
+}

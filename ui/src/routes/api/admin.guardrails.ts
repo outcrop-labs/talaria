@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
@@ -15,24 +15,20 @@ const Body = z.object({
 
 // Confab guardrail config + observability (admin). GET → config + stats + recent
 // findings. PUT → update config.
-export const Route = createFileRoute('/api/admin/guardrails')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const gate = await requireAdmin(request)
-        if (gate instanceof Response) return gate
-        const [config, stats, findings] = await Promise.all([getGuardConfig(), guardStats(), listFindings(50)])
-        return json({ config, stats, findings, rules: guardRuleMeta() })
-      },
-      PUT: async ({ request }) => {
-        const user = await requireAdmin(request)
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        await setGuardConfig(body)
-        void logAudit({ actor: actorOf(user), action: 'settings.guardrails', targetType: 'settings', after: { mode: body.mode } })
-        return json({ config: body })
-      },
-    },
+export const Route = defineApi('/api/admin/guardrails', {
+  GET: async ({ request }) => {
+    const gate = await requireAdmin(request)
+    if (gate instanceof Response) return gate
+    const [config, stats, findings] = await Promise.all([getGuardConfig(), guardStats(), listFindings(50)])
+    return json({ config, stats, findings, rules: guardRuleMeta() })
+  },
+  PUT: async ({ request }) => {
+    const user = await requireAdmin(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    await setGuardConfig(body)
+    void logAudit({ actor: actorOf(user), action: 'settings.guardrails', targetType: 'settings', after: { mode: body.mode } })
+    return json({ config: body })
   },
 })

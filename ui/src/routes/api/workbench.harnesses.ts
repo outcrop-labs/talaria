@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { deleteCustomHarness, listHarnessDefs, upsertCustomHarness } from '@/server/workbench-harnesses'
@@ -23,30 +23,26 @@ const Definition = z.object({
 // grounds the per-agent dropdowns). PUT → register/replace a CUSTOM
 // definition (declarative JSON, no code); DELETE ?slug= removes one.
 // Builtin/app-shipped entries can be shadowed by slug but never deleted.
-export const Route = createFileRoute('/api/workbench/harnesses')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        return json({ harnesses: await listHarnessDefs() })
-      },
-      PUT: async ({ request }) => {
-        const user = await requirePerm(request, 'agents.manage')
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Definition)
-        if (body instanceof Response) return body
-        await upsertCustomHarness(body.slug, body, actorOf(user))
-        return json({ harnesses: await listHarnessDefs() })
-      },
-      DELETE: async ({ request }) => {
-        const user = await requirePerm(request, 'agents.manage')
-        if (user instanceof Response) return user
-        const slug = new URL(request.url).searchParams.get('slug')
-        if (!slug) return json({ error: 'slug required' }, { status: 400 })
-        await deleteCustomHarness(slug)
-        return json({ harnesses: await listHarnessDefs() })
-      },
-    },
+export const Route = defineApi('/api/workbench/harnesses', {
+  GET: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    return json({ harnesses: await listHarnessDefs() })
+  },
+  PUT: async ({ request }) => {
+    const user = await requirePerm(request, 'agents.manage')
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Definition)
+    if (body instanceof Response) return body
+    await upsertCustomHarness(body.slug, body, actorOf(user))
+    return json({ harnesses: await listHarnessDefs() })
+  },
+  DELETE: async ({ request }) => {
+    const user = await requirePerm(request, 'agents.manage')
+    if (user instanceof Response) return user
+    const slug = new URL(request.url).searchParams.get('slug')
+    if (!slug) return json({ error: 'slug required' }, { status: 400 })
+    await deleteCustomHarness(slug)
+    return json({ harnesses: await listHarnessDefs() })
   },
 })

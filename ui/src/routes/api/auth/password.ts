@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { getAuthConfig, isEmailAllowed } from '@/server/auth/config'
 import { verifyPasswordLogin } from '@/server/auth/password'
@@ -26,37 +26,33 @@ function rateLimited(ip: string): boolean {
 }
 
 // POST /api/auth/password { username, password } → sets the session cookie.
-export const Route = createFileRoute('/api/auth/password')({
-  server: {
-    handlers: {
-      POST: async ({ request }) => {
-        const cfg = getAuthConfig()
-        if (!cfg.password.enabled) {
-          return json({ ok: false, error: 'Password login is disabled' }, { status: 400 })
-        }
+export const Route = defineApi('/api/auth/password', {
+  POST: async ({ request }) => {
+    const cfg = getAuthConfig()
+    if (!cfg.password.enabled) {
+      return json({ ok: false, error: 'Password login is disabled' }, { status: 400 })
+    }
 
-        const ip =
-          request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
-        if (rateLimited(ip)) {
-          return json({ ok: false, error: 'Too many attempts, try again shortly' }, { status: 429 })
-        }
+    const ip =
+      request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
+    if (rateLimited(ip)) {
+      return json({ ok: false, error: 'Too many attempts, try again shortly' }, { status: 429 })
+    }
 
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) {
-          return json({ ok: false, error: 'Invalid request' }, { status: 400 })
-        }
+    const parsed = Body.safeParse(await request.json().catch(() => null))
+    if (!parsed.success) {
+      return json({ ok: false, error: 'Invalid request' }, { status: 400 })
+    }
 
-        const identity = verifyPasswordLogin(parsed.data.username, parsed.data.password)
-        if (!identity || !isEmailAllowed(identity.email, cfg)) {
-          // Slow the failure path a touch to blunt brute force.
-          await new Promise((r) => setTimeout(r, 400))
-          return json({ ok: false, error: 'Invalid credentials' }, { status: 401 })
-        }
+    const identity = verifyPasswordLogin(parsed.data.username, parsed.data.password)
+    if (!identity || !isEmailAllowed(identity.email, cfg)) {
+      // Slow the failure path a touch to blunt brute force.
+      await new Promise((r) => setTimeout(r, 400))
+      return json({ ok: false, error: 'Invalid credentials' }, { status: 401 })
+    }
 
-        const user = await upsertUser(identity)
-        const sid = await createSession({ ...user, provider: identity.provider })
-        return json({ ok: true, user }, { headers: { 'Set-Cookie': sessionCookie(sid) } })
-      },
-    },
+    const user = await upsertUser(identity)
+    const sid = await createSession({ ...user, provider: identity.provider })
+    return json({ ok: true, user }, { headers: { 'Set-Cookie': sessionCookie(sid) } })
   },
 })

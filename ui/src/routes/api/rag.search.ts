@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
@@ -15,33 +15,29 @@ const Body = z.object({
 // signed-in user (their bindings) OR a fleet agent (agent-key + x-agent-name →
 // that agent's bindings). This is the endpoint the search_knowledge MCP tool
 // calls — retrieval as function-calling.
-export const Route = createFileRoute('/api/rag/search')({
-  server: {
-    handlers: {
-      POST: async ({ request }) => {
-        let principal: { userId?: string; agentModel?: string } | null = null
-        const caller = await agentCaller(request)
-        if (caller instanceof Response) return caller
-        if (caller) {
-          const name = caller.model
-          principal = { agentModel: name }
-        } else {
-          const user = await requireUser(request)
-          if (user instanceof Response) return user
-          principal = { userId: user.id }
-        }
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        try {
-          const hits = await searchForPrincipal(principal, body.query, {
-            limit: body.limit,
-            collectionIds: body.collectionIds,
-          })
-          return json({ hits })
-        } catch (e) {
-          return json({ error: (e as Error).message }, { status: 502 })
-        }
-      },
-    },
+export const Route = defineApi('/api/rag/search', {
+  POST: async ({ request }) => {
+    let principal: { userId?: string; agentModel?: string } | null = null
+    const caller = await agentCaller(request)
+    if (caller instanceof Response) return caller
+    if (caller) {
+      const name = caller.model
+      principal = { agentModel: name }
+    } else {
+      const user = await requireUser(request)
+      if (user instanceof Response) return user
+      principal = { userId: user.id }
+    }
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    try {
+      const hits = await searchForPrincipal(principal, body.query, {
+        limit: body.limit,
+        collectionIds: body.collectionIds,
+      })
+      return json({ hits })
+    } catch (e) {
+      return json({ error: (e as Error).message }, { status: 502 })
+    }
   },
 })

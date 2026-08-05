@@ -4,7 +4,6 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "jsx": "react-jsx",
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -14,19 +13,13 @@
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": false,
     "noEmit": true,
-    "types": ["node", "vite/client"],
+    "types": ["node", "vite/client", "svelte"],
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
       "@talaria/sdk": ["./src/sdk/index.ts"],
-      "@talaria/sdk/server": ["./src/sdk/server.ts"],
-      "react": ["./node_modules/@types/react"],
-      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime"],
-      "react-dom": ["./node_modules/@types/react-dom"],
-      "@tanstack/react-query": ["./node_modules/@tanstack/react-query"],
-      "@tanstack/react-router": ["./node_modules/@tanstack/react-router"],
-      "lucide-react": ["./node_modules/lucide-react"]
+      "@talaria/sdk/server": ["./src/sdk/server.ts"]
     }
   },
-  "include": ["src", "vite.config.ts", "../apps"]
+  "include": ["src", "vite.config.ts", "vite.server.config.ts", "../apps"]
 }

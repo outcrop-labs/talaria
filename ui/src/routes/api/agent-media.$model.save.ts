@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { agentCaller } from '@/server/agent-auth'
@@ -23,72 +23,68 @@ const Body = z.object({
 // humans (session; any agent they may use) AND by the agent itself over the
 // talaria MCP (agent key; its OWN container only). Same path/type guardrails
 // as viewing the image inline.
-export const Route = createFileRoute('/api/agent-media/$model/save')({
-  server: {
-    handlers: {
-      POST: async ({ request, params }) => {
-        let actor: string
-        let ownerUserId: string | null = null
-        let agentActor = false
-        const agent = await agentCaller(request)
-        if (agent instanceof Response) return agent
-        if (agent) {
-          agentActor = true
-          if (agent.model !== params.model) {
-            return json({ error: 'agents can only save from their own workspace' }, { status: 403 })
-          }
-          actor = agent.model
-          // A personal assistant saves media FOR ITS OWNER — owned + private.
-          // Asked with the CALLER: writing into a human's account needs a
-          // proven identity, not an asserted one.
-          ownerUserId = await assistantOwnerFor(agent)
-        } else {
-          const user = await getSessionUser(request)
-          if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-          if (!(await canUseAgentModel(user.id, user.role, params.model))) {
-            return json({ error: 'forbidden' }, { status: 403 })
-          }
-          actor = user.email ?? user.name ?? 'user'
-          ownerUserId = user.id
-        }
-        const parsed = Body.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+export const Route = defineApi('/api/agent-media/$model/save', {
+  POST: async ({ request, params }) => {
+    let actor: string
+    let ownerUserId: string | null = null
+    let agentActor = false
+    const agent = await agentCaller(request)
+    if (agent instanceof Response) return agent
+    if (agent) {
+      agentActor = true
+      if (agent.model !== params.model) {
+        return json({ error: 'agents can only save from their own workspace' }, { status: 403 })
+      }
+      actor = agent.model
+      // A personal assistant saves media FOR ITS OWNER — owned + private.
+      // Asked with the CALLER: writing into a human's account needs a
+      // proven identity, not an asserted one.
+      ownerUserId = await assistantOwnerFor(agent)
+    } else {
+      const user = await getSessionUser(request)
+      if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+      if (!(await canUseAgentModel(user.id, user.role, params.model))) {
+        return json({ error: 'forbidden' }, { status: 403 })
+      }
+      actor = user.email ?? user.name ?? 'user'
+      ownerUserId = user.id
+    }
+    const parsed = Body.safeParse(await request.json().catch(() => null))
+    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
 
-        const media = await readAgentImage(params.model, parsed.data.path)
-        if (isMediaError(media)) return json({ error: media.error }, { status: media.status })
+    const media = await readAgentImage(params.model, parsed.data.path)
+    if (isMediaError(media)) return json({ error: media.error }, { status: media.status })
 
-        // Folder by name: find-or-create (case-insensitive) — "Memes" just works.
-        // With no folder given, media files under the agent's own cabinet.
-        let folderId = parsed.data.folderId ?? null
-        if (!folderId && parsed.data.folder) {
-          const existing = (await listFolders()).find((f) => f.name.toLowerCase() === parsed.data.folder!.toLowerCase())
-          folderId = existing?.id ?? (await createFolder({ name: parsed.data.folder, createdBy: actor })).id
-        }
-        if (!folderId) folderId = await agentCategoryFolder(describeAgent(params.model).label, 'Media', actor)
+    // Folder by name: find-or-create (case-insensitive) — "Memes" just works.
+    // With no folder given, media files under the agent's own cabinet.
+    let folderId = parsed.data.folderId ?? null
+    if (!folderId && parsed.data.folder) {
+      const existing = (await listFolders()).find((f) => f.name.toLowerCase() === parsed.data.folder!.toLowerCase())
+      folderId = existing?.id ?? (await createFolder({ name: parsed.data.folder, createdBy: actor })).id
+    }
+    if (!folderId) folderId = await agentCategoryFolder(describeAgent(params.model).label, 'Media', actor)
 
-        const filename = parsed.data.path.split('/').pop() ?? 'image'
-        const upload = await saveUpload({ filename, mime: media.mime, bytes: media.bytes, userId: ownerUserId })
-        const created = await createArtifact({
-          kind: 'file',
-          title: parsed.data.title?.trim() || filename,
-          createdBy: actor,
-          ownerUserId,
-        })
-        const artifact = await saveArtifact(
-          created.id,
-          {
-            storageRef: upload.id,
-            contentType: media.mime,
-            folderId,
-            // ORG-agent media is for the TEAM (a private no-owner artifact
-            // would be invisible to humans). A personal assistant's media
-            // belongs to its owner — private, shareable by the human.
-            ...(agentActor && !ownerUserId ? { visibility: 'org' as const } : {}),
-          },
-          actor,
-        )
-        return json({ artifact: artifact ?? created })
+    const filename = parsed.data.path.split('/').pop() ?? 'image'
+    const upload = await saveUpload({ filename, mime: media.mime, bytes: media.bytes, userId: ownerUserId })
+    const created = await createArtifact({
+      kind: 'file',
+      title: parsed.data.title?.trim() || filename,
+      createdBy: actor,
+      ownerUserId,
+    })
+    const artifact = await saveArtifact(
+      created.id,
+      {
+        storageRef: upload.id,
+        contentType: media.mime,
+        folderId,
+        // ORG-agent media is for the TEAM (a private no-owner artifact
+        // would be invisible to humans). A personal assistant's media
+        // belongs to its owner — private, shareable by the human.
+        ...(agentActor && !ownerUserId ? { visibility: 'org' as const } : {}),
       },
-    },
+      actor,
+    )
+    return json({ artifact: artifact ?? created })
   },
 })

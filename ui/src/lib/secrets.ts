@@ -1,8 +1,13 @@
 // Client view of the secrets inventory. The shapes mirror server/secret-health.ts
 // exactly — including the absence of any field that could hold a plaintext
 // secret, which is the point: there is nowhere for one to arrive.
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
+
+/** A reactive argument: pass a plain value, or a getter for values that change
+ *  over a component's life (route params, selections). */
+type MaybeGetter<T> = T | (() => T)
+const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export type SecretState = 'ok' | 'unreadable' | 'missing' | 'env'
 export type SecretGroup = 'models' | 'integrations' | 'agents' | 'platform'
@@ -44,16 +49,16 @@ export const SECRETS_KEY = ['admin-secrets'] as const
 /** `enabled` so the admin-only banner can mount for everyone and simply not
  *  ask — a member hitting this endpoint gets a 403, and a 403 in the console
  *  on every page load is noise that trains people to ignore the console. */
-export const useSecretHealth = (enabled = true) =>
-  useQuery({
+export const useSecretHealth = (enabled: MaybeGetter<boolean> = true) =>
+  createQuery(() => ({
     queryKey: SECRETS_KEY,
     queryFn: (): Promise<SecretHealth> => getJson<SecretHealth>('/api/admin/secrets'),
-    enabled,
+    enabled: resolve(enabled),
     // The banner mounts app-wide, so this runs on every navigation. One probe
     // is eight queries; a minute of staleness is invisible for a state that
     // only changes when an operator does something.
     staleTime: 60_000,
-  })
+  }))
 
 export const GROUP_LABELS: Record<SecretGroup, string> = {
   models: 'Models',

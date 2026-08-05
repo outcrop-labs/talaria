@@ -1,5 +1,5 @@
 // Directory of signed-in users — powers the people pickers.
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getList } from '@/lib/fetch-json'
 
 export interface DirectoryUser {
@@ -9,10 +9,10 @@ export interface DirectoryUser {
 }
 
 export function useUsers() {
-  return useQuery({
+  return createQuery(() => ({
     queryKey: ['users'],
     // An empty directory in a people picker reads as "nobody works here".
     queryFn: (): Promise<DirectoryUser[]> => getList<DirectoryUser>('/api/users', 'users'),
     staleTime: 30_000,
-  })
+  }))
 }

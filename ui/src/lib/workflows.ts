@@ -1,7 +1,12 @@
 // Task workflow client: match rules → instructions/toolkits that ride with
 // dispatched agent work. Managed on /workflows.
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getList } from '@/lib/fetch-json'
+
+/** A reactive argument: pass a plain value, or a getter for values that change
+ *  over a component's life (route params, selections). */
+type MaybeGetter<T> = T | (() => T)
+const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export interface WorkflowMatch {
   labels?: string[]
@@ -33,17 +38,17 @@ export interface SkillLibraryOwner {
 /** The fleet skill library (shared + per-agent) — what workflows bind to
  *  and what the Studio manages. Any member reads. */
 export function useSkillLibrary() {
-  return useQuery({
+  return createQuery(() => ({
     queryKey: ['skill-library'],
     queryFn: (): Promise<SkillLibraryOwner[]> => getList<SkillLibraryOwner>('/api/skills', 'owners'),
-  })
+  }))
 }
 
 export function useWorkflows() {
-  return useQuery({
+  return createQuery(() => ({
     queryKey: ['workflows'],
     queryFn: (): Promise<TaskWorkflow[]> => getList<TaskWorkflow>('/api/workflows', 'workflows'),
-  })
+  }))
 }
 
 const send = (url: string, method: string, body?: unknown) =>
@@ -96,10 +101,13 @@ export interface CapabilityGap {
   lastSeen: string
 }
 
-export function useGaps(status = 'open') {
-  return useQuery({
-    queryKey: ['gaps', status],
-    queryFn: (): Promise<CapabilityGap[]> => getList<CapabilityGap>(`/api/gaps?status=${status}`, 'gaps'),
+export function useGaps(status: MaybeGetter<string> = 'open') {
+  return createQuery(() => {
+    const s = resolve(status)
+    return {
+      queryKey: ['gaps', s],
+      queryFn: (): Promise<CapabilityGap[]> => getList<CapabilityGap>(`/api/gaps?status=${s}`, 'gaps'),
+    }
   })
 }
 

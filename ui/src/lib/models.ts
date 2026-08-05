@@ -1,5 +1,5 @@
 // Models tab client: provider presets + endpoint CRUD.
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getJson, getList } from '@/lib/fetch-json'
 import type { LlmEndpoint } from '@/lib/fleet-defs'
 
@@ -146,25 +146,33 @@ export function inferClass(baseUrl?: string | null): 'local' | 'cloud' {
     : 'cloud'
 }
 
+/** A reactive argument: pass a plain value, or a getter for values that change
+ *  over a component's life (route params, selections). */
+type MaybeGetter<T> = T | (() => T)
+const resolve = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
+
 /** The provider's live catalog — what it offers right now (server-side fetch
  *  on every open; `note` explains an empty result, e.g. missing key). */
-export function useAvailableModels(endpointId: string) {
-  return useQuery({
-    queryKey: ['available-models', endpointId],
-    staleTime: 60_000,
-    // An empty catalog WITH a `note` (missing key, provider down) is a 200 the
-    // picker explains. A non-2xx has no note and must not read as "no models".
-    queryFn: (): Promise<{ models: string[]; note?: string }> =>
-      getJson<{ models: string[]; note?: string }>(`/api/fleet/endpoints/${endpointId}/available`),
+export function useAvailableModels(endpointId: MaybeGetter<string>) {
+  return createQuery(() => {
+    const id = resolve(endpointId)
+    return {
+      queryKey: ['available-models', id],
+      staleTime: 60_000,
+      // An empty catalog WITH a `note` (missing key, provider down) is a 200 the
+      // picker explains. A non-2xx has no note and must not read as "no models".
+      queryFn: (): Promise<{ models: string[]; note?: string }> =>
+        getJson<{ models: string[]; note?: string }>(`/api/fleet/endpoints/${id}/available`),
+    }
   })
 }
 
-export function useEndpoints(enabled = true) {
-  return useQuery({
+export function useEndpoints(enabled: MaybeGetter<boolean> = true) {
+  return createQuery(() => ({
     queryKey: ['fleet-endpoints'],
-    enabled,
+    enabled: resolve(enabled),
     queryFn: (): Promise<LlmEndpoint[]> => getList<LlmEndpoint>('/api/fleet/endpoints', 'endpoints'),
-  })
+  }))
 }
 
 export interface AffectedAgent {

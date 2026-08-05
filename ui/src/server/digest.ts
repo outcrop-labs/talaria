@@ -71,7 +71,7 @@ import {
 } from './approvals'
 import { registerJob } from './scheduler'
 import { db } from './db/pg'
-import { digestEnabled } from '@/lib/notifications'
+import { digestEnabled } from '@/lib/notify-classes'
 
 // ── Configuration ────────────────────────────────────────────────────────────
 

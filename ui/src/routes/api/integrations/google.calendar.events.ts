@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { createEvent, listUpcomingEvents } from '@/server/google/calendar'
@@ -27,29 +27,25 @@ function fail(err: Error) {
 
 // GET  → upcoming events on the user's primary calendar
 // POST → create an event
-export const Route = createFileRoute('/api/integrations/google/calendar/events')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        try {
-          return json({ events: await listUpcomingEvents(user.id, Date.now()) })
-        } catch (err) {
-          return fail(err as Error)
-        }
-      },
-      POST: async ({ request }) => {
-        const user = await getSessionUser(request)
-        if (!user) return json({ error: 'unauthorized' }, { status: 401 })
-        const parsed = CreateBody.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
-        try {
-          return json({ event: await createEvent(user.id, Date.now(), parsed.data) })
-        } catch (err) {
-          return fail(err as Error)
-        }
-      },
-    },
+export const Route = defineApi('/api/integrations/google/calendar/events', {
+  GET: async ({ request }) => {
+    const user = await getSessionUser(request)
+    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    try {
+      return json({ events: await listUpcomingEvents(user.id, Date.now()) })
+    } catch (err) {
+      return fail(err as Error)
+    }
+  },
+  POST: async ({ request }) => {
+    const user = await getSessionUser(request)
+    if (!user) return json({ error: 'unauthorized' }, { status: 401 })
+    const parsed = CreateBody.safeParse(await request.json().catch(() => null))
+    if (!parsed.success) return json({ error: 'bad request' }, { status: 400 })
+    try {
+      return json({ event: await createEvent(user.id, Date.now(), parsed.data) })
+    } catch (err) {
+      return fail(err as Error)
+    }
   },
 })

@@ -9,7 +9,7 @@
 // requirePerm (permission catalog) lives in ./permissions and follows the
 // same contract. parseBody standardizes zod validation + the 400 shape;
 // actorOf standardizes audit-actor derivation.
-import { json } from '@tanstack/react-start'
+import { json } from '@/server/http'
 import type { z } from 'zod'
 import { getSessionUser, type SessionUser } from './auth/session'
 import { deniedViews } from './users'

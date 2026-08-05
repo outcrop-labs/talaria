@@ -1,5 +1,7 @@
 // Client-side session + provider hooks (thin wrappers over the auth API).
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+// Like the query hooks everywhere in lib/, these call createQuery and so must
+// run during component init (same rule React hooks had).
+import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 import type { ProviderMeta } from '@/server/auth/config'
 
@@ -42,25 +44,38 @@ const fetchSession = async (): Promise<SessionResult> => {
 }
 
 export function useSession() {
-  return useQuery({ queryKey: ['session'], queryFn: fetchSession, select: (d) => d.user })
+  return createQuery(() => ({ queryKey: ['session'], queryFn: fetchSession, select: (d: SessionResult) => d.user }))
 }
 
 /** True while the effective permission set includes `perm`. Admins hold every
  *  permission. Defaults false until the session resolves — affordances appear,
- *  never flash-then-vanish. */
-export function useHasPerm(perm: string): boolean {
-  const { data } = useQuery({ queryKey: ['session'], queryFn: fetchSession, select: (d) => d.perms })
-  return (data ?? []).includes(perm)
+ *  never flash-then-vanish.
+ *
+ *  Returns a `{ current }` box, not a bare boolean: a primitive computed once
+ *  at init would freeze before the session resolves. Read `.current` where the
+ *  answer is used (template or `$derived`). */
+export function useHasPerm(perm: string): { readonly current: boolean } {
+  const query = createQuery(() => ({ queryKey: ['session'], queryFn: fetchSession, select: (d: SessionResult) => d.perms }))
+  return {
+    get current() {
+      return (query.data ?? []).includes(perm)
+    },
+  }
 }
 
-/** Views the current user may NOT reach (empty for admins / open access). */
-export function useDeniedViews(): string[] {
-  const { data } = useQuery({ queryKey: ['session'], queryFn: fetchSession, select: (d) => d.deniedViews })
-  return data ?? []
+/** Views the current user may NOT reach (empty for admins / open access).
+ *  Same `{ current }` box as `useHasPerm`, for the same reason. */
+export function useDeniedViews(): { readonly current: string[] } {
+  const query = createQuery(() => ({ queryKey: ['session'], queryFn: fetchSession, select: (d: SessionResult) => d.deniedViews }))
+  return {
+    get current() {
+      return query.data ?? []
+    },
+  }
 }
 
 export function useProviders() {
-  return useQuery({
+  return createQuery(() => ({
     queryKey: ['auth-providers'],
     // `configured: false` is a real server answer ("no provider is set up"),
     // not a stand-in for a failed request — telling someone their auth is
@@ -68,7 +83,7 @@ export function useProviders() {
     queryFn: (): Promise<{ providers: ProviderMeta[]; configured: boolean }> =>
       getJson<{ providers: ProviderMeta[]; configured: boolean }>('/api/auth/providers'),
     staleTime: 60_000,
-  })
+  }))
 }
 
 export function useLogout() {

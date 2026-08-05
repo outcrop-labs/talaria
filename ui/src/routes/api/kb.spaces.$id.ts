@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { deleteSpace, getSpace, updateSpace } from '@/server/kb'
@@ -19,49 +19,45 @@ const Patch = z.object({
 
 // One KB folder (space). Same permission model as docs: read gated by
 // visibility, writes by the edit policy + editor grants, sharing owner-only.
-export const Route = createFileRoute('/api/kb/spaces/$id')({
-  server: {
-    handlers: {
-      GET: async ({ request, params }) => {
-        const space = await getSpace(params.id)
-        if (!space) return json({ error: 'not found' }, { status: 404 })
-        const gate = await requireUser(request)
-        if (gate instanceof Response) return gate
-        const user = gate
-        const editors = await listEditors('space', space.id)
-        if (!canRead(space, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
-        return json({ space, editors })
-      },
-      PUT: async ({ request, params }) => {
-        const space = await getSpace(params.id)
-        if (!space) return json({ error: 'not found' }, { status: 404 })
-        const gate = await requireUser(request)
-        if (gate instanceof Response) return gate
-        const user = gate
-        const body = await parseBody(request, Patch)
-        if (body instanceof Response) return body
-        const editors = await listEditors('space', space.id)
-        if (!canEditHuman(space, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
-        const owner = await canGovern(space, user)
-        if (!owner && (body.visibility !== undefined || body.editPolicy !== undefined || body.editors !== undefined)) {
-          return json({ error: 'only the owner can change sharing' }, { status: 403 })
-        }
-        if (owner && body.editors !== undefined) await setEditors('space', params.id, body.editors)
-        const updated = await updateSpace(params.id, body, user.email ?? user.name ?? 'user')
-        return json({ space: updated, editors: await listEditors('space', params.id) })
-      },
-      DELETE: async ({ request, params }) => {
-        const space = await getSpace(params.id)
-        if (!space) return json({ error: 'not found' }, { status: 404 })
-        const gate = await requireUser(request)
-        if (gate instanceof Response) return gate
-        const user = gate
-        const editors = await listEditors('space', space.id)
-        if (!canEditHuman(space, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
-        await deleteSpace(params.id)
-        void logAudit({ actor: actorOf(user), action: 'kb.space.delete', targetType: 'kb-space', targetId: params.id })
-        return json({ ok: true })
-      },
-    },
+export const Route = defineApi('/api/kb/spaces/$id', {
+  GET: async ({ request, params }) => {
+    const space = await getSpace(params.id)
+    if (!space) return json({ error: 'not found' }, { status: 404 })
+    const gate = await requireUser(request)
+    if (gate instanceof Response) return gate
+    const user = gate
+    const editors = await listEditors('space', space.id)
+    if (!canRead(space, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
+    return json({ space, editors })
+  },
+  PUT: async ({ request, params }) => {
+    const space = await getSpace(params.id)
+    if (!space) return json({ error: 'not found' }, { status: 404 })
+    const gate = await requireUser(request)
+    if (gate instanceof Response) return gate
+    const user = gate
+    const body = await parseBody(request, Patch)
+    if (body instanceof Response) return body
+    const editors = await listEditors('space', space.id)
+    if (!canEditHuman(space, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
+    const owner = await canGovern(space, user)
+    if (!owner && (body.visibility !== undefined || body.editPolicy !== undefined || body.editors !== undefined)) {
+      return json({ error: 'only the owner can change sharing' }, { status: 403 })
+    }
+    if (owner && body.editors !== undefined) await setEditors('space', params.id, body.editors)
+    const updated = await updateSpace(params.id, body, user.email ?? user.name ?? 'user')
+    return json({ space: updated, editors: await listEditors('space', params.id) })
+  },
+  DELETE: async ({ request, params }) => {
+    const space = await getSpace(params.id)
+    if (!space) return json({ error: 'not found' }, { status: 404 })
+    const gate = await requireUser(request)
+    if (gate instanceof Response) return gate
+    const user = gate
+    const editors = await listEditors('space', space.id)
+    if (!canEditHuman(space, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
+    await deleteSpace(params.id)
+    void logAudit({ actor: actorOf(user), action: 'kb.space.delete', targetType: 'kb-space', targetId: params.id })
+    return json({ ok: true })
   },
 })

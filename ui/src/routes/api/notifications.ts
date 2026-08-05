@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
@@ -12,7 +12,7 @@ import {
   setNotifySettings,
   unreadCount,
 } from '@/server/notifications'
-import { NOTIFY_CLASSES } from '@/lib/notifications'
+import { NOTIFY_CLASSES } from '@/lib/notify-classes'
 
 // GET /api/notifications → the user's inbox, unread count, routing prefs, the
 //   daily-digest switch, and whether this INSTANCE sends mail at all.
@@ -72,60 +72,56 @@ const PrefsPatch = z
  *  inbox still renders. */
 const deliveryOrOff = () => getNotifyDelivery().catch(() => ({ emailEnabled: false }))
 
-export const Route = createFileRoute('/api/notifications')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        return json({
-          notifications: await listNotifications(user.id),
-          unread: await unreadCount(user.id),
-          ...(await getNotifySettings(user.id)),
-          delivery: await deliveryOrOff(),
-          /** Whether THIS user may flip the switch — the panel needs it to know
-           *  whether to render a control or an explanation. */
-          canSetDelivery: user.role === 'admin',
-        })
-      },
-      PUT: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        const body = await parseBody(request, z.object({ ids: z.array(z.string().uuid()).max(200).optional() }))
-        if (body instanceof Response) return body
-        await markNotificationsRead(user.id, body.ids)
-        return json({ ok: true })
-      },
-      PATCH: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        const body = await parseBody(request, PrefsPatch)
-        if (body instanceof Response) return body
+export const Route = defineApi('/api/notifications', {
+  GET: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    return json({
+      notifications: await listNotifications(user.id),
+      unread: await unreadCount(user.id),
+      ...(await getNotifySettings(user.id)),
+      delivery: await deliveryOrOff(),
+      /** Whether THIS user may flip the switch — the panel needs it to know
+       *  whether to render a control or an explanation. */
+      canSetDelivery: user.role === 'admin',
+    })
+  },
+  PUT: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, z.object({ ids: z.array(z.string().uuid()).max(200).optional() }))
+    if (body instanceof Response) return body
+    await markNotificationsRead(user.id, body.ids)
+    return json({ ok: true })
+  },
+  PATCH: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, PrefsPatch)
+    if (body instanceof Response) return body
 
-        // The master switch decides whether the whole instance mails ANYBODY.
-        // Checked here rather than by putting it on an admin route so that one
-        // PATCH can never half-apply: a member who sends both gets 403 and
-        // neither change, instead of their own prefs silently saved alongside a
-        // rejected switch.
-        if (body.delivery !== undefined) {
-          if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
-          const next = await setNotifyDelivery(body.delivery)
-          // Audited: turning this on starts mailing every user in the
-          // workspace, and "who did that, and when" is the first question.
-          void logAudit({
-            actor: actorOf(user),
-            action: next.emailEnabled ? 'notifications.email.enabled' : 'notifications.email.disabled',
-            targetType: 'notifications',
-            after: next,
-          })
-        }
+    // The master switch decides whether the whole instance mails ANYBODY.
+    // Checked here rather than by putting it on an admin route so that one
+    // PATCH can never half-apply: a member who sends both gets 403 and
+    // neither change, instead of their own prefs silently saved alongside a
+    // rejected switch.
+    if (body.delivery !== undefined) {
+      if (user.role !== 'admin') return json({ error: 'forbidden' }, { status: 403 })
+      const next = await setNotifyDelivery(body.delivery)
+      // Audited: turning this on starts mailing every user in the
+      // workspace, and "who did that, and when" is the first question.
+      void logAudit({
+        actor: actorOf(user),
+        action: next.emailEnabled ? 'notifications.email.enabled' : 'notifications.email.disabled',
+        targetType: 'notifications',
+        after: next,
+      })
+    }
 
-        const settings =
-          body.prefs !== undefined || body.digest !== undefined
-            ? await setNotifySettings(user.id, body)
-            : await getNotifySettings(user.id)
-        return json({ ...settings, delivery: await deliveryOrOff(), canSetDelivery: user.role === 'admin' })
-      },
-    },
+    const settings =
+      body.prefs !== undefined || body.digest !== undefined
+        ? await setNotifySettings(user.id, body)
+        : await getNotifySettings(user.id)
+    return json({ ...settings, delivery: await deliveryOrOff(), canSetDelivery: user.role === 'admin' })
   },
 })

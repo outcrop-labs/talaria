@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { channelRole, listChannelAgents } from '@/server/channels'
@@ -19,40 +19,36 @@ const Body = z.object({
 // POST → ask a channel agent to draft ticket proposals from the transcript.
 // Members only; the agent must be in the channel and usable by the caller.
 // Nothing is created here — the human reviews and creates via the boards API.
-export const Route = createFileRoute('/api/channels/$id/plan')({
-  server: {
-    handlers: {
-      POST: async ({ request, params }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
+export const Route = defineApi('/api/channels/$id/plan', {
+  POST: async ({ request, params }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    if (!(await channelRole(user.id, params.id))) return json({ error: 'forbidden' }, { status: 403 })
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
 
-        const agents = await listChannelAgents(params.id)
-        if (!agents.includes(body.agentModel)) {
-          return json({ error: 'that agent is not in this channel' }, { status: 400 })
-        }
-        if (!(await canUseAgentModel(user.id, user.role, body.agentModel))) {
-          return json({ error: 'you do not have access to that agent' }, { status: 403 })
-        }
-        const routed =
-          (body.tier ? await routedModelFor(body.agentModel, body.tier).catch(() => null) : null) ??
-          body.agentModel
+    const agents = await listChannelAgents(params.id)
+    if (!agents.includes(body.agentModel)) {
+      return json({ error: 'that agent is not in this channel' }, { status: 400 })
+    }
+    if (!(await canUseAgentModel(user.id, user.role, body.agentModel))) {
+      return json({ error: 'you do not have access to that agent' }, { status: 403 })
+    }
+    const routed =
+      (body.tier ? await routedModelFor(body.agentModel, body.tier).catch(() => null) : null) ??
+      body.agentModel
 
-        try {
-          const { proposals, raw } = await planFromChannel(params.id, body.agentModel, routed, {
-            boardId: body.boardId,
-            templateId: body.templateId,
-          })
-          if (proposals.length === 0) {
-            return json({ proposals: [], note: raw ? 'the agent did not return parseable tickets' : 'nothing to plan yet' })
-          }
-          return json({ proposals })
-        } catch (e) {
-          return json({ error: (e as Error).message }, { status: 502 })
-        }
-      },
-    },
+    try {
+      const { proposals, raw } = await planFromChannel(params.id, body.agentModel, routed, {
+        boardId: body.boardId,
+        templateId: body.templateId,
+      })
+      if (proposals.length === 0) {
+        return json({ proposals: [], note: raw ? 'the agent did not return parseable tickets' : 'nothing to plan yet' })
+      }
+      return json({ proposals })
+    } catch (e) {
+      return json({ error: (e as Error).message }, { status: 502 })
+    }
   },
 })

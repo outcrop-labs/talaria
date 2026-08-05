@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { createWorkflow, listWorkflows } from '@/server/workflows'
@@ -22,21 +22,17 @@ export const Body = z.object({
 // Task workflows — match rules classify tickets; the payload (bound Hermes
 // skills + declared toolkits) rides with dispatched/picked-up work. GET → all (any
 // member; they ground what agents will be told). POST → agents.manage.
-export const Route = createFileRoute('/api/workflows')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        return json({ workflows: await listWorkflows() })
-      },
-      POST: async ({ request }) => {
-        const user = await requirePerm(request, 'agents.manage')
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        return json({ workflow: await createWorkflow({ ...body, createdBy: actorOf(user) }) })
-      },
-    },
+export const Route = defineApi('/api/workflows', {
+  GET: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    return json({ workflows: await listWorkflows() })
+  },
+  POST: async ({ request }) => {
+    const user = await requirePerm(request, 'agents.manage')
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    return json({ workflow: await createWorkflow({ ...body, createdBy: actorOf(user) }) })
   },
 })

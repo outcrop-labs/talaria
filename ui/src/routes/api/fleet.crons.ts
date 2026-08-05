@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { createFleetCrons, listFleetCrons } from '@/server/agent-crons'
@@ -16,30 +16,26 @@ const Body = z.object({
 // Fleet-wide crons (admin). GET → every managed agent's jobs (down containers
 // reported per-agent, not fatal). POST → create the same job across agents,
 // staggered per agent when the schedule is a fixed-minute cron expression.
-export const Route = createFileRoute('/api/fleet/crons')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await requireAdmin(request)
-        if (user instanceof Response) return user
-        return json({ agents: await listFleetCrons() })
-      },
-      POST: async ({ request }) => {
-        const user = await requireAdmin(request)
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Body)
-        if (body instanceof Response) return body
-        const results = await createFleetCrons(body)
-        void logAudit({
-          actor: actorOf(user),
-          action: 'cron.create',
-          targetType: 'fleet',
-          targetId: 'fleet',
-          targetLabel: body.name,
-          after: { agentIds: body.agentIds, schedule: body.schedule },
-        })
-        return json({ results })
-      },
-    },
+export const Route = defineApi('/api/fleet/crons', {
+  GET: async ({ request }) => {
+    const user = await requireAdmin(request)
+    if (user instanceof Response) return user
+    return json({ agents: await listFleetCrons() })
+  },
+  POST: async ({ request }) => {
+    const user = await requireAdmin(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Body)
+    if (body instanceof Response) return body
+    const results = await createFleetCrons(body)
+    void logAudit({
+      actor: actorOf(user),
+      action: 'cron.create',
+      targetType: 'fleet',
+      targetId: 'fleet',
+      targetLabel: body.name,
+      after: { agentIds: body.agentIds, schedule: body.schedule },
+    })
+    return json({ results })
   },
 })

@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { getSessionUser } from '@/server/auth/session'
 import { appServerModule, enabledAppSlugs } from '@/server/apps'
 import { storeFor } from '@/server/app-store'
@@ -39,14 +39,10 @@ const dispatch = async ({ request, params }: { request: Request; params: { app: 
   }
 }
 
-export const Route = createFileRoute('/api/apps/$app/$')({
-  server: {
-    handlers: {
-      GET: dispatch,
-      POST: dispatch,
-      PUT: dispatch,
-      PATCH: dispatch,
-      DELETE: dispatch,
-    },
-  },
+export const Route = defineApi('/api/apps/$app/$', {
+  GET: dispatch,
+  POST: dispatch,
+  PUT: dispatch,
+  PATCH: dispatch,
+  DELETE: dispatch,
 })

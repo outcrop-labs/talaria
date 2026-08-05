@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 
 export type AgentStatus = 'offline' | 'idle' | 'busy' | 'error'
@@ -22,11 +22,11 @@ export interface FleetOverview {
 }
 
 export function useFleet() {
-  return useQuery({
+  return createQuery(() => ({
     queryKey: ['fleet'],
     queryFn: (): Promise<FleetOverview> => getJson<FleetOverview>('/api/fleet'),
     refetchInterval: 15_000,
-  })
+  }))
 }
 
 /** "3m ago" / "2h ago" / "just now" — compact relative time. */

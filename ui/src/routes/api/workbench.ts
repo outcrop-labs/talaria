@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { z } from 'zod'
 import { parseBody, requirePerm, requireUser } from '@/server/api-guard'
 import { listProfiles, updateProfile } from '@/server/workbench'
@@ -19,23 +19,19 @@ const Patch = z.object({
 // Workbench profiles — the role-agnostic sandbox registry ('dev' seeded;
 // designer/data/etc ride the same table). GET → any member (the Studio and
 // agent views show attachment state); PUT → agents.manage.
-export const Route = createFileRoute('/api/workbench')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const user = await requireUser(request)
-        if (user instanceof Response) return user
-        return json({ profiles: await listProfiles() })
-      },
-      PUT: async ({ request }) => {
-        const user = await requirePerm(request, 'agents.manage')
-        if (user instanceof Response) return user
-        const body = await parseBody(request, Patch)
-        if (body instanceof Response) return body
-        const { slug, ...patch } = body
-        if (!(await updateProfile(slug, patch))) return json({ error: 'unknown profile' }, { status: 404 })
-        return json({ ok: true })
-      },
-    },
+export const Route = defineApi('/api/workbench', {
+  GET: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    return json({ profiles: await listProfiles() })
+  },
+  PUT: async ({ request }) => {
+    const user = await requirePerm(request, 'agents.manage')
+    if (user instanceof Response) return user
+    const body = await parseBody(request, Patch)
+    if (body instanceof Response) return body
+    const { slug, ...patch } = body
+    if (!(await updateProfile(slug, patch))) return json({ error: 'unknown profile' }, { status: 404 })
+    return json({ ok: true })
   },
 })

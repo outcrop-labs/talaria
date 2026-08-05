@@ -2,7 +2,7 @@
 // via /api/boards/:id/statuses (defaults + the system Blocked column when the
 // board never customized). Helpers keep label/color lookups safe for custom
 // keys and legacy constants alike.
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getList } from '@/lib/fetch-json'
 import { STATUS_LABEL } from './task-const'
 import { LABEL_CSS } from '@/components/board/field-pills'
@@ -20,13 +20,21 @@ export interface BoardStatus {
   system?: boolean
 }
 
-export function useBoardStatuses(boardId: string | null) {
-  return useQuery({
-    queryKey: ['board-statuses', boardId],
-    enabled: !!boardId,
-    // An empty status set collapses the board to zero columns — that must only
-    // ever happen because the server said so.
-    queryFn: (): Promise<BoardStatus[]> => getList<BoardStatus>(`/api/boards/${boardId}/statuses`, 'statuses'),
+/** A reactive argument: pass a plain value, or a getter for values that change
+ *  over a component's life (route params, selections). */
+type MaybeGetter<T> = T | (() => T)
+const resolve = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
+
+export function useBoardStatuses(boardId: MaybeGetter<string | null>) {
+  return createQuery(() => {
+    const id = resolve(boardId)
+    return {
+      queryKey: ['board-statuses', id],
+      enabled: !!id,
+      // An empty status set collapses the board to zero columns — that must only
+      // ever happen because the server said so.
+      queryFn: (): Promise<BoardStatus[]> => getList<BoardStatus>(`/api/boards/${id}/statuses`, 'statuses'),
+    }
   })
 }
 

@@ -1,5 +1,5 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
+import { defineApi } from '@/server/api-route'
+import { json } from '@/server/http'
 import { getSessionUser } from '@/server/auth/session'
 import { agentCaller } from '@/server/agent-auth'
 import { listUsers } from '@/server/users'
@@ -8,15 +8,11 @@ import { listUsers } from '@/server/users'
 // people pickers (board sharing, teams, channels). Any signed-in user — and
 // agents (fleet key): they need the directory to resolve "email Priya" or
 // "add Priya to the board" into an address.
-export const Route = createFileRoute('/api/users')({
-  server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const agent = await agentCaller(request)
-        if (agent instanceof Response) return agent
-        if (!agent && !(await getSessionUser(request))) return json({ error: 'unauthorized' }, { status: 401 })
-        return json({ users: await listUsers() })
-      },
-    },
+export const Route = defineApi('/api/users', {
+  GET: async ({ request }) => {
+    const agent = await agentCaller(request)
+    if (agent instanceof Response) return agent
+    if (!agent && !(await getSessionUser(request))) return json({ error: 'unauthorized' }, { status: 401 })
+    return json({ users: await listUsers() })
   },
 })

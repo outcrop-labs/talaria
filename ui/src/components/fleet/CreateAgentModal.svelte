@@ -1,0 +1,283 @@
+<script lang="ts">
+  import { useQueryClient } from '@tanstack/svelte-query'
+  import { Sparkles } from '@lucide/svelte'
+  import Button from '@/components/ui/Button.svelte'
+  import Generating from '@/components/ui/Generating.svelte'
+  import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import Input from '@/components/ui/Input.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
+  import RichEditor from '@/components/ui/RichEditor.svelte'
+  import Select from '@/components/ui/Select.svelte'
+  import Textarea from '@/components/ui/Textarea.svelte'
+  import { createFleetAgent, type AgentDef } from '@/lib/fleet-defs'
+  import { fade, listStagger, slide } from '@/lib/motion'
+  import { parseAgentDraft, streamMuse, type AgentDraft } from '@/lib/muse.svelte'
+  import RefineBar from './RefineBar.svelte'
+  import SkillPreviewRow from './SkillPreviewRow.svelte'
+
+  // Spin up a brand-new agent two ways: DESCRIBE it (the AI designs the whole
+  // agent — identity, soul, starter skills — for review before anything is
+  // created) or configure it by hand from a template. Either way a template
+  // supplies the chassis: model tiers, tools, and plugins carry over with
+  // identity re-stamped; Talaria allocates the key, writes v1, renders, starts.
+  let {
+    open,
+    onClose,
+    templates,
+    templateId: preselect,
+  }: {
+    open: boolean
+    onClose: () => void
+    templates: AgentDef[]
+    /** Preselect a template (e.g. "Duplicate" from a specific agent) — skips the describe step. */
+    templateId?: string
+  } = $props()
+
+  const qc = useQueryClient()
+  let step = $state<'describe' | 'review'>(preselect ? 'review' : 'describe')
+
+  // Describe → generate
+  let purpose = $state('')
+  let generating = $state(false)
+  let genPreview = $state('')
+  let chat = $state<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+  let genErr = $state<string | null>(null)
+
+  // Review fields (filled by generation or by hand)
+  let displayName = $state('')
+  let slug = $state('')
+  let department = $state('')
+  let role = $state('')
+  let soul = $state('')
+  let soulRev = $state(0)
+  let skills = $state<AgentDraft['skills']>([])
+  let templateId = $state(preselect ?? templates[0]?.id ?? '') // '' = platform defaults
+  let start = $state(true)
+  let busy = $state(false)
+  let err = $state<string | null>(null)
+
+  const applyDraft = (d: AgentDraft) => {
+    displayName = d.name
+    slug = d.handle
+    department = d.department
+    role = d.role
+    soul = d.soul
+    soulRev += 1 // reseed the editor with the new draft
+    skills = d.skills
+  }
+
+  const currentDraftJson = () =>
+    JSON.stringify({ name: displayName, handle: slug, department, role, soul, skills })
+
+  const generate = async (instruction: string, refining: boolean) => {
+    if (!instruction.trim()) return
+    generating = true
+    genErr = null
+    genPreview = ''
+    try {
+      const full = await streamMuse(
+        {
+          kind: 'agent',
+          instruction: instruction.trim(),
+          ...(refining ? { current: currentDraftJson() } : {}),
+          chat,
+        },
+        (piece) => (genPreview += piece),
+      )
+      const draft = parseAgentDraft(full)
+      if (!draft) {
+        genErr = 'could not design an agent from that. Try adding a sentence about what it should do'
+        return
+      }
+      chat = [...chat.slice(-8), { role: 'user', content: instruction.trim() }, { role: 'assistant', content: full }]
+      applyDraft(draft)
+      step = 'review'
+    } catch (e) {
+      genErr = (e as Error).message
+    } finally {
+      generating = false
+    }
+  }
+
+  const onName = (v: string) => {
+    const prev = displayName
+    displayName = v
+    if (!slug || slug === prev.toLowerCase().replace(/[^a-z0-9]/g, '')) {
+      slug = v.toLowerCase().replace(/[^a-z0-9]/g, '')
+    }
+  }
+
+  const create = async () => {
+    err = null
+    busy = true
+    try {
+      const r = await createFleetAgent({
+        slug,
+        department,
+        displayName,
+        role: role.trim() || null,
+        ...(templateId ? { templateId } : {}),
+        ...(soul.trim() ? { soul } : {}),
+        ...(skills.length ? { skills } : {}),
+        start,
+      })
+      if (r.error) {
+        err = r.error
+        return
+      }
+      if (start && r.healthy === false) err = 'created, but the container is not healthy yet. Check /agents'
+      await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+      await qc.invalidateQueries({ queryKey: ['fleet-containers'] })
+      if (!r.error) onClose()
+    } finally {
+      busy = false
+    }
+  }
+
+  const generated = $derived(chat.length > 0)
+</script>
+
+{#if step === 'describe'}
+  <!-- ── Step 1: describe ─────────────────────────────────────────────────── -->
+  <Modal {open} {onClose} title="New agent" width="max-w-lg">
+    <div class="space-y-5">
+      <p class="text-sm leading-relaxed text-muted">
+        Describe what this agent should do: its job, what it watches, what it produces. The AI designs the whole
+        agent (identity, soul, starter skills) for you to review before anything is created.
+      </p>
+      <div class="flex items-end gap-2.5">
+        <Sparkles size={14} class="mb-3 shrink-0 text-accent" />
+        <Textarea
+          autoGrow
+          rows={3}
+          bind:value={purpose}
+          placeholder="e.g. “A release manager that tracks our deploy trains, chases sign-offs before each cut, and posts a go/no-go summary.”"
+          class="max-h-48 text-sm"
+          autofocus
+        />
+      </div>
+      {#if generating}
+        <pre class="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line bg-surface p-3 font-mono text-xs leading-5 text-muted">{genPreview || 'Designing'}<span class="gd-pulse text-accent">▍</span></pre>
+      {/if}
+      {#if genErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr}</p>{/if}
+      <div class="flex items-center gap-3 border-t border-line pt-4">
+        <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'review')}>
+          Configure manually →
+        </button>
+        <span class="ml-auto"></span>
+        <Button variant="ghost" size="sm" onclick={onClose}>
+          Cancel
+        </Button>
+        <Button onclick={() => void generate(purpose, false)} disabled={generating || !purpose.trim()}>
+          {#if generating}<GeneratingBars bars={3} variant="weave" step={0.15} />{/if}
+          {generating ? 'Designing' : 'Design agent'}
+        </Button>
+      </div>
+    </div>
+  </Modal>
+{:else}
+  <!-- ── Step 2: review + create ──────────────────────────────────────────── -->
+  <Modal {open} {onClose} title="New agent" takeover>
+    <div class="max-h-[75vh] space-y-5 overflow-y-auto pr-1">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
+          <Input value={displayName} oninput={(e) => onName(e.currentTarget.value)} placeholder="Remy" autofocus={!generated} />
+        </div>
+        <div>
+          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</label>
+          <Input bind:value={slug} placeholder="remy" />
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role</label>
+          <Input bind:value={role} placeholder="Research Analyst" />
+        </div>
+        <div>
+          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Department</label>
+          <Input bind:value={department} placeholder="research" />
+        </div>
+      </div>
+      <p class="-mt-2 font-sans text-xs text-muted">
+        Role is the roster title; department is the routing/mount key. The fleet model id becomes
+        <span class="font-mono text-fg">{slug || 'handle'}-{department || 'department'}</span>.
+      </p>
+
+      <div>
+        <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+          Chassis template <span class="normal-case">(model tiers, tools, and plugins carry over)</span>
+        </label>
+        <Select bind:value={templateId} class="w-full">
+          <option value="">Platform defaults: chassis + first local model</option>
+          {#each templates as t (t.id)}
+            <option value={t.id}>{t.displayName} · {t.department} (v{t.currentVersion})</option>
+          {/each}
+        </Select>
+      </div>
+
+      <div>
+        <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Soul</label>
+        {#if soul.trim()}
+          <!-- Rich like the post-creation soul editor; autosave keeps `soul`
+               fresh for create + refine, reseeded whenever muse redrafts. -->
+          <div class="max-h-72 overflow-y-auto">
+            {#key soulRev}
+              <RichEditor value={soul} onSave={(md) => (soul = md)} autosave minHeight="9rem" />
+            {/key}
+          </div>
+        {:else}
+          <p class="text-xs text-muted">Starts from a scaffold you edit after creation, or go back and describe the agent to have one designed.</p>
+        {/if}
+      </div>
+
+      {#if skills.length > 0}
+        <div in:fade={{ duration: 150 }}>
+          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Starter skills</label>
+          <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
+            {#each skills as s (s.name)}
+              <SkillPreviewRow skill={s} onRemove={() => (skills = skills.filter((x) => x.name !== s.name))} />
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
+      {#if generated}
+        <RefineBar
+          busy={generating}
+          preview={generating ? genPreview : null}
+          error={genErr}
+          onRefine={(text) => void generate(text, true)}
+        />
+      {/if}
+
+      <label class="flex cursor-pointer items-center gap-2 text-sm text-fg">
+        <input type="checkbox" bind:checked={start} class="accent-accent" />
+        Start the container now
+      </label>
+      {#if busy}
+        <Generating
+          label={start
+            ? `Hiring ${displayName || slug}: rendering the config, starting the container, waiting for health`
+            : `Creating ${displayName || slug}`}
+          lines={3}
+        />
+      {/if}
+      {#if err}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err}</div>{/if}
+      <div class="flex items-center gap-2 border-t border-line pt-4">
+        {#if !preselect}
+          <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'describe')}>
+            ← Describe instead
+          </button>
+        {/if}
+        <span class="ml-auto"></span>
+        <Button variant="ghost" size="sm" onclick={onClose}>
+          Cancel
+        </Button>
+        <Button onclick={() => void create()} disabled={busy || generating || !slug || !department || !displayName}>
+          {busy ? 'Creating' : 'Create agent'}
+        </Button>
+      </div>
+    </div>
+  </Modal>
+{/if}

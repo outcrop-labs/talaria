@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Default-theme attributes match the boot script's default branch so the
+     common case never repaints; the script only retunes a stored non-default
+     theme before first paint (no flash-of-wrong-theme). Mirrors applyTheme()
+     in lib/theme.ts: swap the mode class (never stack 'dark light'), then
+     stamp data-theme + color-scheme. -->
+<html lang="en" data-theme="mercury" class="dark" style="color-scheme: dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Talaria — the winged fleet cockpit</title>
+    <script>
+      ;(function () {
+        try {
+          var t = localStorage.getItem('talaria-theme')
+          if (t !== 'mercury' && t !== 'mercury-light') t = 'mercury'
+          var m = t === 'mercury' ? 'dark' : 'light'
+          var r = document.documentElement
+          r.setAttribute('data-theme', t)
+          r.classList.remove('light', 'dark')
+          r.classList.add(m)
+          r.style.setProperty('color-scheme', m)
+        } catch (e) {}
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

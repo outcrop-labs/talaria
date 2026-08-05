@@ -6,7 +6,7 @@
 // membership, KB editors, plan/research shares, personal-agent ownership)
 // stay where they are — a permission says what a user CAN DO, an ACL says
 // what they can do it TO.
-import { json } from '@tanstack/react-start'
+import { json } from '@/server/http'
 import { db } from './db/pg'
 import { getSetting, setSetting } from './audit'
 import { getSessionUser, type SessionUser } from './auth/session'
