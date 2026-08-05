@@ -182,8 +182,14 @@ One script takes a blank machine to a running instance (secrets, admin login, do
 ./scripts/dev.sh           # postgres + redis + the app → http://localhost:5273
 ```
 
+Then back up `TALARIA_SECRET_KEY` from `ui/.env` somewhere a snapshot isn't — every stored secret is
+sealed with it, and a database restored without it cannot read its own secrets
+([`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md)).
+
 Sign in, add an LLM provider on `/models` (keys are encrypted in the DB), set your organization in
 Admin, and design your first agent on `/agents`; Muse drafts the whole thing from a description.
+**Admin → Secrets** lists everything the instance holds sealed, per row, with whether it can still
+be decrypted and a way to clear anything that cannot.
 Details in [`ui/README.md`](./ui/README.md) and [`HANDOFF.md`](./HANDOFF.md); parallel-branch dev in
 [`docs/WORKTREES.md`](./docs/WORKTREES.md).
 

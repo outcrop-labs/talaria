@@ -150,6 +150,49 @@ say "Git convenience"
 # instead of a plain `git worktree add` keeps a second app off your main DB.
 git config alias.wt '!bash scripts/worktree.sh' 2>/dev/null && ok "git wt → scripts/worktree.sh" || skip "git alias"
 
+# ── Verify what we just produced ─────────────────────────────────────────────
+# This block exists because an install once shipped with a ui/.env that LOOKED
+# right and a database nothing could read. Every check here corresponds to a
+# way that actually happened — none of them are hypothetical.
+say "Verifying"
+
+# `|| true` is load-bearing: `set -o pipefail` makes the pipeline inherit
+# grep's exit status, so a variable that is simply ABSENT would abort the whole
+# script under `set -e` — and every check below is about absent variables.
+env_val() { grep -m1 "^$1=" ui/.env | cut -d= -f2- || true; }
+
+ROOT_KEY=$(env_val TALARIA_SECRET_KEY)
+ROOT_FILE=$(env_val TALARIA_SECRET_KEY_FILE)
+if [ -n "$ROOT_KEY" ]; then
+  # Generation can fail quietly: `rand` falls back to /dev/urandom + od, and a
+  # missing tool there yields an empty value that writes a syntactically valid
+  # but load-bearing-empty line. Empty means the app silently falls back to
+  # AUTH_SECRET — the exact fallback this file exists to stop relying on.
+  [ "${#ROOT_KEY}" -ge 32 ] || die "TALARIA_SECRET_KEY in ui/.env is only ${#ROOT_KEY} chars — generation failed. Delete the line and re-run, or set it by hand: openssl rand -base64 48"
+  ok "encryption root set (${#ROOT_KEY} chars)"
+elif [ -n "$ROOT_FILE" ]; then
+  [ -r "$ROOT_FILE" ] || die "TALARIA_SECRET_KEY_FILE points at $ROOT_FILE, which this user cannot read"
+  ok "encryption root from key file"
+else
+  warn "no TALARIA_SECRET_KEY in ui/.env — secrets cannot be sealed until one is set (see docs/ENCRYPTION.md)"
+fi
+
+# The environment WINS over ui/.env at runtime. A stale export in a shell
+# profile is how one install ran `vite dev` and `node server-entry.js` against
+# two different roots, sealed under one and unable to read under the other,
+# with nothing rotated and nothing to see in any config file.
+if [ -n "${TALARIA_SECRET_KEY:-}" ] && [ -n "$ROOT_KEY" ] && [ "${TALARIA_SECRET_KEY}" != "$ROOT_KEY" ]; then
+  warn "TALARIA_SECRET_KEY is EXPORTED in your shell and differs from ui/.env."
+  warn "The exported value wins at runtime, so secrets will be sealed with it —"
+  warn "and anything started without that export will not be able to read them."
+  warn "Unset it, or make the two match. See docs/ENCRYPTION.md."
+fi
+
+for v in DATABASE_URL REDIS_URL; do
+  [ -n "$(env_val "$v")" ] || die "$v missing from ui/.env — the app cannot start"
+done
+ok "database + redis configured"
+
 echo
 printf '\033[1;32mSetup complete.\033[0m\n\n'
 echo "  Start everything:   ./scripts/dev.sh"
@@ -158,3 +201,7 @@ echo "  Sign in:            ${ADMIN_EMAIL}  /  ${ADMIN_PASS}"
 echo
 echo "  First steps in the app: Settings → add an LLM endpoint on /models,"
 echo "  then design your first agent on /agents (Muse will draft it)."
+echo
+echo "  Back up TALARIA_SECRET_KEY from ui/.env somewhere a snapshot isn't."
+echo "  Every stored secret is sealed with it, and a database restored without"
+echo "  it cannot read its own secrets. Admin → Secrets shows what it holds."

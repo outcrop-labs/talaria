@@ -20,6 +20,13 @@
 #   live counts from the actual database — and require you to type the mode name
 #   to proceed. There is no -y flag on purpose.
 #
+#   TRY ADMIN → SECRETS FIRST. If the app starts at all, that page reports each
+#   secret's health individually and clears only the ones that are actually
+#   unreadable — an instance whose Google token predates a key change but whose
+#   provider key was entered yesterday keeps the second. `secrets` mode below
+#   cannot make that distinction and destroys everything sealed. This script is
+#   the backstop for when the app will not come up.
+#
 # USAGE
 #   ./scripts/reset.sh secrets    clear unreadable secrets, keep all other data
 #   ./scripts/reset.sh database   drop + recreate the database (ALL data)
@@ -34,7 +41,10 @@ warn() { printf '  \033[33m! %s\033[0m\n' "$*"; }
 die()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  # Everything from line 2 until the header stops being comments. A fixed line
+  # range silently truncates the help the first time somebody edits the header
+  # — which is exactly what happened when this comment block grew.
+  awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
   exit "${1:-0}"
 }
 [ $# -eq 1 ] || usage 1

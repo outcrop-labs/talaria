@@ -3,6 +3,13 @@
 _Plan, 2026-08-05. Written after a contributor's install spent a day unusable because its
 data key could not be unwrapped and there was no way out that did not involve a shell._
 
+> **Status: delivered 2026-08-05.** All six pieces shipped. The two open questions that
+> needed answers before building were decided as proposed — admins see per-user rows as
+> existence, owner and health only (`USER_SCOPED_METADATA` in `secret-health.ts` records
+> it), and `Replace` deep-links rather than duplicating seven forms. The third —
+> auto-clearing an unreadable row on replace — was dropped: replacing overwrites the
+> ciphertext anyway, so there is no dead weight to collect and no delete to confirm.
+
 ---
 
 ## Why

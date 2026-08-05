@@ -3,15 +3,27 @@
 How Talaria protects secrets at rest, and the one rule that keeps them
 recoverable.
 
+> **Back up the root secret with the database.** `TALARIA_SECRET_KEY` lives only
+> in `ui/.env`; a dump restored without it restores an instance that cannot read
+> its own secrets. Keep it somewhere a snapshot isn't. ([`BACKUPS.md`](./BACKUPS.md))
+
 ## What's encrypted
 
-Live credentials Talaria must store and replay, in Postgres:
+Live credentials Talaria must store and replay — provider API keys, per-agent
+secrets and credentials, Google tokens (per-user and org), MCP OAuth tokens and
+headers, the email transport credential, external object-storage keys, the
+GitHub App key or PAT, and the reranker key.
 
-| Where | What |
-|---|---|
-| `llm_endpoints.api_key_cipher` | provider API keys (OpenAI, Anthropic, OpenRouter, your self-hosted gateway…) |
-| `google_connections`, `google_org_connection` | Google OAuth access + refresh tokens |
-| `agent_secrets.value_enc` | per-agent secrets (tokens the agent's tools use) |
+**Do not maintain that list by hand anywhere.** `secretHealth()` in
+`server/secret-health.ts` enumerates every store, and **Admin → Secrets** shows
+what this instance actually holds, per row, with whether it can still be
+decrypted. A list in a document goes stale the first time someone adds a
+secret; that page cannot.
+
+When you introduce a new sealed value, add it in two places: `CIPHER_TARGETS` in
+`secret-rotation.ts` (so rotation re-encrypts it) and `secretHealth()` (so it is
+visible and recoverable). `clearSecret()` will not compile a new id form without
+you deciding what clearing it means.
 
 Everything is **AES-256-GCM**. That's the post-quantum-safe choice for data at
 rest: the only quantum threat to symmetric crypto is Grover's algorithm, which
@@ -78,11 +90,30 @@ wrapped DEKs can't be unwrapped and every stored secret becomes unrecoverable.**
 - To move the root secret intentionally, use the rotation flow with a new root —
   it re-wraps everything so nothing is lost.
 
-If the root secret is genuinely lost or was changed without a rotation, the app
-still boots (a loud `[secretbox]` error is logged; unreadable ciphers fall back
-to their env-var source where one exists). Recovery is: restore the original
-root secret, **or** reset the encryption (clear `secret_keys` + the cipher
-columns, restart to mint a fresh DEK, and re-enter secrets on `/models`).
+## When the root secret is gone
+
+The app still boots. That is deliberate and was once not true: `initSecretbox`
+runs inside the migration pass, so throwing from it rejected every `db()` call
+and took down boards, teams and agents — none of which touch a secret. It now
+**records** the failure and lets the operations that actually need a key report
+it. A loud `[secretbox]` line is logged either way, and unreadable ciphertext
+falls back to its env-var source where one exists.
+
+Recovery, in order of preference:
+
+1. **Restore the original root secret.** This recovers everything, and is why
+   the backup rule at the top of this document matters.
+2. **Admin → Secrets** — per-row health and a per-row **Clear**, plus **Clear
+   all unreadable**, which names every value it will delete and leaves readable
+   ones alone. This is the normal path: an instance whose Google token predates
+   a key change but whose provider key was entered yesterday keeps the second.
+3. **`./scripts/reset.sh secrets`** — the backstop for an instance that will not
+   start at all, where the UI cannot help. It clears *everything* sealed,
+   because a shell script cannot tell what is broken.
+
+After a clear, re-enter what was lost: provider keys on `/models`, Google and
+MCP accounts by reconnecting, and re-render the fleet so agents get fresh
+credentials.
 
 ## Provider keys specifically
 
