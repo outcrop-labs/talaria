@@ -23,6 +23,7 @@ import { useEnabledApps } from '@/lib/apps'
 import { RetrievalPanel } from '@/components/admin/retrieval-panel'
 import { StoragePanel } from '@/components/admin/storage-panel'
 import { SecretsPanel } from '@/components/admin/secrets-panel'
+import { NoEmailBump } from '@/components/setup/setup-bumps'
 import { Tabs } from '@/components/ui/tabs'
 import { Checkbox } from '@/components/ui/checkbox'
 import { SectionHeader } from '@/components/ui/section-header'
@@ -784,6 +785,9 @@ function InvitesPanel() {
         title="Invites"
         info="Invite by email — they get a join link and are admitted the moment they sign in with Google on that address. Invites expire after two weeks; re-inviting re-issues a fresh link; revoking shuts the door instantly. Needs the Email provider on the Org tab."
       />
+      {/* Said before the send, not after it fails: an invite that goes nowhere
+          reads as a bug in invites rather than a missing transport. */}
+      <NoEmailBump className="mb-3" />
       <div className="mb-3 flex items-center gap-2">
         <Input
           size="sm"

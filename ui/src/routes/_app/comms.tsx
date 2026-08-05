@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input'
 import { GeneratingOverlay } from '@/components/ui/generating'
 import { alert, confirm, prompt } from '@/components/ui/confirm'
 import { ChatView } from '@/components/chat/chat-view'
+import { NoModelBump } from '@/components/setup/setup-bumps'
 import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu'
 import { CountPill, Rail, RailRow, RailSurface } from '@/components/app/surface'
 import { QueryError } from '@/components/ui/query-state'
@@ -597,6 +598,9 @@ function AgentDmPane({
           <SquarePen size={16} />
         </IconAction>
       </header>
+      {/* Chat is the surface where a missing provider is most confusing — the
+          thread opens, the composer works, and nothing comes back. */}
+      <NoModelBump className="m-4 shrink-0" />
       <div className="min-h-0 flex-1">
         <ChatView
           agentModel={model}

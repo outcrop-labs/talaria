@@ -5,6 +5,7 @@ import { MercuryBackdrop } from '@/components/mercury-backdrop'
 import { NavRail, useNavCollapsed } from '@/components/app/nav-rail'
 import { TopStrip } from '@/components/app/top-strip'
 import { InboxFocusShell } from '@/components/inbox/inbox-focus-shell'
+import { UnreadableSecretsBanner } from '@/components/setup/setup-bumps'
 import { Skeleton, SkeletonRows } from '@/components/ui/skeleton'
 import { QueryError } from '@/components/ui/query-state'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -84,6 +85,11 @@ function AppLayout() {
         <NavRail user={user} />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <TopStrip user={user} onLogout={() => void logout()} />
+          {/* Above the content, below the strip: unreadable secrets fail at USE
+              time, so without a standing signal an admin learns about it from a
+              confused colleague days later. Renders nothing for members, and
+              nothing at all when there is nothing to say. */}
+          <UnreadableSecretsBanner />
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             <InboxFocusShell attachActiveDecision={shouldAttachInboxDecision(pathname, tab)}>
               <Outlet />

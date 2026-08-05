@@ -49,6 +49,10 @@ export const useSecretHealth = (enabled = true) =>
     queryKey: SECRETS_KEY,
     queryFn: (): Promise<SecretHealth> => getJson<SecretHealth>('/api/admin/secrets'),
     enabled,
+    // The banner mounts app-wide, so this runs on every navigation. One probe
+    // is eight queries; a minute of staleness is invisible for a state that
+    // only changes when an operator does something.
+    staleTime: 60_000,
   })
 
 export const GROUP_LABELS: Record<SecretGroup, string> = {

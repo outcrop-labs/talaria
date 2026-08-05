@@ -20,6 +20,7 @@ import { useAgents } from '@/lib/agents'
 import { useTemplates } from '@/lib/templates'
 import { useSession } from '@/lib/session'
 import { useStickyAgent } from '@/lib/sticky-agent'
+import { NoModelBump } from '@/components/setup/setup-bumps'
 import { sharePlan, unsharePlan, usePlanMembers, useConversations, type Conversation } from '@/lib/conversations'
 
 // Plan surface: think through the work with an agent, then draft tickets and
@@ -253,7 +254,11 @@ function PlanPage() {
       >
         {selectedAgent && current ? (
           <div className="flex h-full min-h-0">
-            <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-1 flex-col">
+              {/* Above the composer, not instead of it: a plan with no model
+                  behind it still opens, and the fix is offered here. */}
+              <NoModelBump className="m-4 shrink-0" />
+              <div className="min-h-0 flex-1">
               <ChatView
                 key={selectedAgent}
                 agentModel={selectedAgent}
@@ -270,6 +275,7 @@ function PlanPage() {
                 mentionables={mentionables}
                 onTurnComplete={() => setTurnSignal((n) => n + 1)}
               />
+              </div>
             </div>
             {/* The plan's living document — side by side from the FIRST
                 keystroke, so the surface never re-layouts mid-thought. Before

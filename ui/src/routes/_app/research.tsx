@@ -26,6 +26,7 @@ import { useArtifact } from '@/lib/artifacts'
 import { useHasPerm, useSession } from '@/lib/session'
 import { useStickyAgent } from '@/lib/sticky-agent'
 import { relativeTime } from '@/lib/fleet'
+import { NoModelBump } from '@/components/setup/setup-bumps'
 import {
   deleteResearch,
   MODE_META,
@@ -196,6 +197,9 @@ function ResearchPage() {
         }
       >
         <div className="flex h-full min-h-0 flex-col">
+          {/* Research cannot run without a provider; the surface still opens
+              and past runs still read. */}
+          <NoModelBump className="m-4 shrink-0" />
           <div className="min-h-0 flex-1 overflow-y-auto">
             {selectedId ? (
               <RunView runId={selectedId} />
