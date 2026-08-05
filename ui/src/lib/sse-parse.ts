@@ -14,6 +14,13 @@ export type ChatEvent =
   | { type: 'reasoning'; text: string }
   | { type: 'tool'; id?: string; name: string; label: string; status?: 'running' | 'completed' }
   | { type: 'usage'; promptTokens: number; completionTokens: number }
+  // Not produced by the parser below — `streamChat` yields it when the server
+  // answers with JSON instead of a stream because the reply joined history
+  // rather than streaming. It belongs in the union anyway: this is the type
+  // every chat consumer switches on, and chat-view already handles it. Leaving
+  // it out made streamChat's inferred return type wider than its own declared
+  // event type, which nothing caught until a test tried to annotate it.
+  | { type: 'queued' }
 
 function parseToolProgress(payload: string): Extract<ChatEvent, { type: 'tool' }> | null {
   try {
@@ -99,6 +106,11 @@ export async function* parseAgentStream(body: ReadableStream<Uint8Array>): Async
     // Swallow: on an errored/aborted stream cancel() rejects with the stored
     // error, which would otherwise mask the real failure the caller is handling.
     await reader.cancel().catch(() => {})
+    // cancel() closes the stream but does NOT release the lock — that is two
+    // separate operations in the spec. Leaving it locked means nothing can ever
+    // read the body again, which matters when a caller retries against a
+    // response it still holds.
+    reader.releaseLock()
   }
 }
 

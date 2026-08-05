@@ -129,6 +129,11 @@ export async function initSecretbox(sql: Sql): Promise<void> {
     await sql`insert into secret_keys (version, wrapped_dek, active) values (1, ${wrapDek(dek)}, true)`
     g.__sbDeks!.set(1, dek)
     g.__sbActive = 1
+    // Clear any recorded diagnosis: we just minted a key we can read, so the
+    // old one is stale. Without this, an instance that failed to unwrap and then
+    // had its keys cleared (Admin → Secrets, or reset.sh) would keep throwing
+    // the previous boot's message at every seal() despite being healthy.
+    g.__sbFailure = undefined
     return
   }
   // Sealed under the fallback already: works, but one AUTH_SECRET rotation from

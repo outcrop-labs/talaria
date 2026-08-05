@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import { test } from 'vitest'
 import {
   DEFAULT_INBOX_PANEL_WIDTH,
   MAX_INBOX_PANEL_WIDTH,

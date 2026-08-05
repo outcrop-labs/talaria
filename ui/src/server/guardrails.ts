@@ -174,13 +174,34 @@ function ungroundedRefs(text: string, haystack: string, policedHosts: string[]):
 // ── Secret leak ──────────────────────────────────────────────────────────────
 // High-value security check: an agent should never emit a live credential.
 const SECRET_PATTERNS: Array<{ label: string; re: RegExp; redactRe?: RegExp }> = [
-  { label: 'OpenAI key', re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/ },
+  // Before the OpenAI rule: `sk-ant-…` also satisfies the looser `sk-…` shape,
+  // and whichever matches first decides the label a human sees.
   { label: 'Anthropic key', re: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/ },
+  { label: 'OpenAI key', re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/ },
+  // Stripe live + restricted-live keys. Underscore-separated, so neither `sk-`
+  // rule above ever saw them. Test keys (sk_test_…) are deliberately excluded:
+  // they appear in every tutorial and are not a live credential.
+  { label: 'Stripe secret key', re: /\b[sr]k_live_[A-Za-z0-9]{16,}\b/ },
   { label: 'AWS access key', re: /\bAKIA[0-9A-Z]{16}\b/ },
+  // Google keys are a fixed 39 characters; the exact count is the precision.
   { label: 'Google API key', re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
   { label: 'Slack token', re: /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/ },
+  // Slack APP-level token (Socket Mode). Not an xox* shape, so it needs its own.
+  { label: 'Slack app token', re: /\bxapp-[0-9A-Za-z-]{10,}\b/ },
   { label: 'GitHub token', re: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/ },
+  // Fine-grained PAT. `gh[pousr]_` cannot match `github_pat_`, and this is the
+  // exact shape the workbench hands a dev agent in PAT mode — the credential an
+  // agent is most likely to have in context and echo back.
+  { label: 'GitHub fine-grained token', re: /\bgithub_pat_[A-Za-z0-9_]{30,}\b/ },
   { label: 'Talaria gateway key', re: /\btlk_[a-f0-9]{40,}\b/ },
+  // The agent's OWN credential (`tak_` + 24 random bytes hex, agent-auth.ts).
+  // Of every secret in this list it is the one an agent is most certain to
+  // have in its environment, and the guard did not know the prefix existed.
+  { label: 'Talaria agent credential', re: /\btak_[a-f0-9]{40,}\b/ },
+  // user:password@host in any URI — how database, registry and proxy
+  // credentials actually leak. Requires BOTH a userinfo colon and an '@', so
+  // ordinary links (https://host:8443/path, ssh://user@host) don't match.
+  { label: 'Credentials in URL', re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/?#@]*:[^\s/?#@]+@[^\s/?#]+/i },
   {
     label: 'Private key block',
     re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/,

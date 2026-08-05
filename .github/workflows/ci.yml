@@ -1,4 +1,4 @@
-# Talaria CI — typecheck only.
+# Talaria CI — typecheck, unit tests, and the invariant tripwire.
 #
 # WHAT THIS DOES
 #   On every pull request and every push to main: install ui/ from the lockfile
@@ -13,8 +13,10 @@
 #   with nothing automated having run on it. This closes that gap and nothing else.
 #
 # DELIBERATELY LEFT OUT (do not treat these as oversights)
-#   - Test steps. There are no tests to run. Add the step in the same job when
-#     there are; do not add a green step that asserts nothing.
+#   - Lint / format only (see below). The test step that this list used to
+#     exclude now exists: `npm test` runs vitest, which DISCOVERS its files
+#     rather than being handed a list, so a new `*.test.ts` gates on the next
+#     push without anyone remembering to register it.
 #   - Lint / format. That is a separate decision (audit task 19) with its own
 #     rollout cost — a linter added on day one against an unlinted codebase
 #     produces hundreds of failures and gets disabled. Not this file's problem.
@@ -164,6 +166,11 @@ jobs:
 
       - name: Typecheck
         run: npx tsc --noEmit
+
+      # After the typecheck, in the same job: it reuses the install, and a type
+      # error is the cheaper failure to read first.
+      - name: Test
+        run: npm test
 
   mcp:
     name: typecheck + build (mcp)
