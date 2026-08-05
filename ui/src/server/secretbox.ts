@@ -107,8 +107,24 @@ export async function initSecretbox(sql: Sql): Promise<void> {
       )
     }
   }
-  if (!g.__sbActive) g.__sbActive = g.__sbDeks!.size ? Math.max(...g.__sbDeks!.keys()) : 0
-  if (!g.__sbActive) console.error('[secretbox] no usable data key — new secrets cannot be sealed until the root secret is restored')
+  // SOME versions unwrapping and others not is survivable and deliberate (see
+  // the catch above): the readable ones keep working and callers fall back on
+  // the rest. NONE unwrapping is not survivable — every seal() and open() in
+  // the process will throw, and it will throw as "secretbox: not initialized",
+  // which names the wrong cause and sends whoever reads it looking at the
+  // migration runner instead of at their root secret.
+  //
+  // So refuse to boot, here, while we still know why. This database has keys;
+  // this process cannot read any of them; the only fix is the operator's.
+  if (!g.__sbActive && g.__sbDeks!.size === 0) {
+    throw new Error(
+      `secretbox: this database has ${rows.length} data key(s) and none can be unwrapped with the current root secret. ` +
+        'TALARIA_SECRET_KEY (or TALARIA_SECRET_KEY_FILE, or AUTH_SECRET if neither is set) is not the value these keys were created with. ' +
+        'Restore the original root secret — every provider key, agent secret and OAuth token in this database is sealed with it. ' +
+        'If AUTH_SECRET is doing this job, set TALARIA_SECRET_KEY to that same value and stop rotating AUTH_SECRET (see docs/ENCRYPTION.md).',
+    )
+  }
+  if (!g.__sbActive) g.__sbActive = Math.max(...g.__sbDeks!.keys())
 }
 
 function dekFor(version: number): Buffer {

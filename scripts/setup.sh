@@ -29,6 +29,30 @@ if [ -f ui/.env ]; then
   skip "ui/.env"
   ADMIN_EMAIL="(unchanged — see ui/.env)"
   ADMIN_PASS="(unchanged)"
+  # An install that predates TALARIA_SECRET_KEY has been wrapping its secrets
+  # with AUTH_SECRET all along (secretbox.ts kekMaterial falls back to it). That
+  # is invisible until somebody rotates AUTH_SECRET — which ui/.env itself calls
+  # safe — and then every provider key, agent secret and OAuth token in the
+  # database is unrecoverable. Pin the CURRENT effective value so the fallback
+  # stops being load-bearing. Never generate a fresh one here: this file is
+  # skipped precisely because the database is already sealed with what it holds.
+  if ! grep -q '^TALARIA_SECRET_KEY=..*' ui/.env; then
+    existing=$(grep -m1 '^AUTH_SECRET=' ui/.env | cut -d= -f2-)
+    if [ -n "$existing" ]; then
+      sed -i '/^TALARIA_SECRET_KEY=$/d' ui/.env
+      cat >> ui/.env <<EOF
+
+# Pinned by scripts/setup.sh $(date -u +%F): this instance was sealing secrets
+# with AUTH_SECRET via the fallback in server/secretbox.ts. Same value, now
+# explicit — so AUTH_SECRET can be rotated again without destroying them.
+# NEVER change this line; see docs/ENCRYPTION.md.
+TALARIA_SECRET_KEY=$existing
+EOF
+      ok "TALARIA_SECRET_KEY pinned to the existing AUTH_SECRET (the value already in use)"
+    else
+      warn "ui/.env has neither TALARIA_SECRET_KEY nor AUTH_SECRET — the app cannot seal secrets until one is set"
+    fi
+  fi
 else
   ADMIN_EMAIL="admin@talaria.local"
   ADMIN_PASS="$(rand 9)"
