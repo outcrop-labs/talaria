@@ -6,7 +6,7 @@
 // notification goes. The client cannot reach `server/`, but `server/` already
 // imports from `@/lib` — so the list lives here and exists exactly once
 // (same reason `OFF_BOARD_STATUSES` lives in `lib/task-const.ts`).
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 
 export interface Notification {
@@ -248,11 +248,11 @@ export interface NotificationsPayload extends NotifySettings {
 }
 
 export function useNotifications() {
-  return useQuery({
+  return createQuery(() => ({
     queryKey: ['notifications'],
     queryFn: (): Promise<NotificationsPayload> => getJson<NotificationsPayload>('/api/notifications'),
     refetchInterval: 30_000,
-  })
+  }))
 }
 
 export function useMarkNotificationsRead() {

@@ -44,12 +44,14 @@ function apiDev(): Plugin {
           for (const [k, v] of Object.entries(req.headers)) {
             if (v) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
           }
-          let body: Buffer | null = null
+          let body: Uint8Array<ArrayBuffer> | null = null
           if (req.method !== 'GET' && req.method !== 'HEAD') {
-            body = await new Promise<Buffer>((resolveBody) => {
+            body = await new Promise<Uint8Array<ArrayBuffer>>((resolveBody) => {
               const chunks: Buffer[] = []
               req.on('data', (c: Buffer) => chunks.push(c))
-              req.on('end', () => resolveBody(Buffer.concat(chunks)))
+              // Copy into a plain Uint8Array<ArrayBuffer>: Buffer's ArrayBufferLike
+              // backing store isn't assignable to fetch's BodyInit.
+              req.on('end', () => resolveBody(new Uint8Array(Buffer.concat(chunks))))
             })
           }
 

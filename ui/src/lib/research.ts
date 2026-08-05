@@ -1,6 +1,11 @@
 // Research client: runs list + detail, mode catalog, start/delete.
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getJson, getList } from '@/lib/fetch-json'
+
+/** A reactive argument: pass a plain value, or a getter for values that change
+ *  over a component's life (route params, selections). */
+type MaybeGetter<T> = T | (() => T)
+const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export type ResearchMode = 'recon' | 'brief' | 'expedition'
 export type ResearchStatus = 'queued' | 'running' | 'done' | 'error'
@@ -36,24 +41,28 @@ export const MODE_META: Record<ResearchMode, { label: string; tagline: string; e
 }
 
 export function useResearchRuns() {
-  return useQuery({
+  return createQuery(() => ({
     queryKey: ['research-runs'],
     queryFn: (): Promise<ResearchRun[]> => getList<ResearchRun>('/api/research', 'runs'),
     // Live while anything is in flight.
-    refetchInterval: (q) => (q.state.data?.some((r) => r.status === 'queued' || r.status === 'running') ? 3_000 : false),
-  })
+    refetchInterval: (q: { state: { data?: ResearchRun[] } }) =>
+      q.state.data?.some((r) => r.status === 'queued' || r.status === 'running') ? 3_000 : false,
+  }))
 }
 
-export function useResearchRun(id: string | null) {
-  return useQuery({
-    queryKey: ['research-run', id],
-    enabled: !!id,
-    queryFn: (): Promise<{ run: ResearchRun; sources: ResearchSource[] }> =>
-      getJson<{ run: ResearchRun; sources: ResearchSource[] }>(`/api/research/${id}`),
-    refetchInterval: (q) => {
-      const s = q.state.data?.run.status
-      return s === 'queued' || s === 'running' ? 2_500 : false
-    },
+export function useResearchRun(id: MaybeGetter<string | null>) {
+  return createQuery(() => {
+    const i = resolve(id)
+    return {
+      queryKey: ['research-run', i],
+      enabled: !!i,
+      queryFn: (): Promise<{ run: ResearchRun; sources: ResearchSource[] }> =>
+        getJson<{ run: ResearchRun; sources: ResearchSource[] }>(`/api/research/${i}`),
+      refetchInterval: (q: { state: { data?: { run: ResearchRun } } }) => {
+        const s = q.state.data?.run.status
+        return s === 'queued' || s === 'running' ? 2_500 : false
+      },
+    }
   })
 }
 

@@ -1,5 +1,10 @@
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getJsonOr404, getList } from '@/lib/fetch-json'
+
+/** A reactive argument: pass a plain value, or a getter for values that change
+ *  over a component's life (route params, selections). */
+type MaybeGetter<T> = T | (() => T)
+const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export type Visibility = 'private' | 'org' | 'public'
 export type EditPolicy = 'owner' | 'org' | 'restricted'
@@ -23,13 +28,16 @@ export interface KbSpace {
   createdBy: string | null
 }
 
-export const useSpace = (id: string | null) =>
-  useQuery({
-    queryKey: ['kb-space', id],
-    enabled: !!id,
-    // 404 = the space is gone or was never yours: a real "not found".
-    queryFn: async (): Promise<KbSpace | null> =>
-      (await getJsonOr404<{ space: KbSpace }>(`/api/kb/spaces/${id}`))?.space ?? null,
+export const useSpace = (id: MaybeGetter<string | null>) =>
+  createQuery(() => {
+    const i = resolve(id)
+    return {
+      queryKey: ['kb-space', i],
+      enabled: !!i,
+      // 404 = the space is gone or was never yours: a real "not found".
+      queryFn: async (): Promise<KbSpace | null> =>
+        (await getJsonOr404<{ space: KbSpace }>(`/api/kb/spaces/${i}`))?.space ?? null,
+    }
   })
 export interface KbDocMeta {
   id: string
@@ -61,25 +69,31 @@ export interface KbDoc extends KbDocMeta {
 }
 
 export const useSpaces = () =>
-  useQuery({
+  createQuery(() => ({
     queryKey: ['kb-spaces'],
     queryFn: (): Promise<KbSpace[]> => getList<KbSpace>('/api/kb/spaces', 'spaces'),
+  }))
+
+export const useDocs = (spaceId: MaybeGetter<string | null>) =>
+  createQuery(() => {
+    const i = resolve(spaceId)
+    return {
+      queryKey: ['kb-docs', i],
+      enabled: !!i,
+      queryFn: (): Promise<KbDocMeta[]> => getList<KbDocMeta>(`/api/kb/spaces/${i}/docs`, 'docs'),
+    }
   })
 
-export const useDocs = (spaceId: string | null) =>
-  useQuery({
-    queryKey: ['kb-docs', spaceId],
-    enabled: !!spaceId,
-    queryFn: (): Promise<KbDocMeta[]> => getList<KbDocMeta>(`/api/kb/spaces/${spaceId}/docs`, 'docs'),
-  })
-
-export const useDoc = (id: string | null) =>
-  useQuery({
-    queryKey: ['kb-doc', id],
-    enabled: !!id,
-    // 404 = the doc is gone or was never yours: a real "not found".
-    queryFn: async (): Promise<KbDoc | null> =>
-      (await getJsonOr404<{ doc: KbDoc }>(`/api/kb/docs/${id}`))?.doc ?? null,
+export const useDoc = (id: MaybeGetter<string | null>) =>
+  createQuery(() => {
+    const i = resolve(id)
+    return {
+      queryKey: ['kb-doc', i],
+      enabled: !!i,
+      // 404 = the doc is gone or was never yours: a real "not found".
+      queryFn: async (): Promise<KbDoc | null> =>
+        (await getJsonOr404<{ doc: KbDoc }>(`/api/kb/docs/${i}`))?.doc ?? null,
+    }
   })
 
 export const createSpace = (name: string) =>
@@ -107,11 +121,14 @@ export const fetchEditors = (kind: 'docs' | 'spaces' | 'artifacts', id: string):
 /** The Share modal's read of the current grants. Enabled only while the modal
  *  is open, so reopening re-reads rather than trusting a stale copy. The query
  *  key lives here next to the fetcher — one place owns this read. */
-export const useEditors = (kind: 'docs' | 'spaces' | 'artifacts', id: string, enabled: boolean) =>
-  useQuery({
-    queryKey: ['kb-editors', kind, id],
-    enabled: enabled && !!id,
-    queryFn: () => fetchEditors(kind, id),
+export const useEditors = (kind: 'docs' | 'spaces' | 'artifacts', id: MaybeGetter<string>, enabled: MaybeGetter<boolean>) =>
+  createQuery(() => {
+    const i = resolve(id)
+    return {
+      queryKey: ['kb-editors', kind, i],
+      enabled: resolve(enabled) && !!i,
+      queryFn: () => fetchEditors(kind, i),
+    }
   })
 
 export const deleteSpace = (id: string) => fetch(`/api/kb/spaces/${id}`, { method: 'DELETE' })
@@ -126,13 +143,13 @@ export const saveDoc = (
 
 /** Custom brains (names only for members) — the doc "Brain" routing picker. */
 export const useBrains = () =>
-  useQuery({
+  createQuery(() => ({
     queryKey: ['rag-collections-public'],
     queryFn: async (): Promise<Array<{ id: string; name: string; kind: string }>> => {
       const all = await getList<{ id: string; name: string; kind: string }>('/api/rag/collections', 'collections')
       return all.filter((c) => c.kind === 'custom')
     },
-  })
+  }))
 
 export const deleteDoc = (id: string) => fetch(`/api/kb/docs/${id}`, { method: 'DELETE' })
 
@@ -180,9 +197,12 @@ export interface KbBacklink {
   icon: string | null
   spaceId: string
 }
-export const useBacklinks = (docId: string | null) =>
-  useQuery({
-    queryKey: ['kb-backlinks', docId],
-    enabled: !!docId,
-    queryFn: (): Promise<KbBacklink[]> => getList<KbBacklink>(`/api/kb/docs/${docId}/backlinks`, 'backlinks'),
+export const useBacklinks = (docId: MaybeGetter<string | null>) =>
+  createQuery(() => {
+    const i = resolve(docId)
+    return {
+      queryKey: ['kb-backlinks', i],
+      enabled: !!i,
+      queryFn: (): Promise<KbBacklink[]> => getList<KbBacklink>(`/api/kb/docs/${i}/backlinks`, 'backlinks'),
+    }
   })

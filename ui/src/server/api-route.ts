@@ -10,12 +10,29 @@
 
 export type ApiParams = Record<string, string> & { _splat?: string }
 
-export interface ApiContext {
+/** `$param` segment names in a path literal — the trailing splat `$` (its
+ *  "name" is the empty string) is excluded; it surfaces as `_splat` instead. */
+type ParamNames<Path extends string> = Path extends `${infer Head}/${infer Rest}`
+  ? ParamNames<Head> | ParamNames<Rest>
+  : Path extends `$${infer Name}`
+    ? Name extends ''
+      ? never
+      : Name
+    : never
+
+/** Params as typed by the path: `'/api/boards/$id'` → `{ id: string }`, plus
+ *  `_splat` when the path ends in `$`. Declared properties (not an index
+ *  signature) so `params.id` is `string`, not `string | undefined` under
+ *  noUncheckedIndexedAccess — the matcher only calls a handler once every
+ *  `$param` segment matched, so the values are always present. */
+export type PathParams<Path extends string> = { [K in ParamNames<Path>]: string } & { _splat?: string }
+
+export interface ApiContext<P = ApiParams> {
   request: Request
-  params: ApiParams
+  params: P
 }
 
-export type ApiHandler = (ctx: ApiContext) => Response | Promise<Response>
+export type ApiHandler<P = ApiParams> = (ctx: ApiContext<P>) => Response | Promise<Response>
 
 export type ApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS'
 
@@ -24,8 +41,13 @@ export interface ApiRoute {
   handlers: Partial<Record<ApiMethod, ApiHandler>>
 }
 
-export function defineApi(path: string, handlers: ApiRoute['handlers']): ApiRoute {
-  return { path, handlers }
+export function defineApi<Path extends string>(
+  path: Path,
+  handlers: Partial<Record<ApiMethod, ApiHandler<PathParams<Path>>>>,
+): ApiRoute {
+  // The cast only widens the compile-time view back to the runtime shape
+  // (Record<string, string>); matchRoute always supplies every `$param`.
+  return { path, handlers: handlers as unknown as ApiRoute['handlers'] }
 }
 
 interface CompiledRoute extends ApiRoute {

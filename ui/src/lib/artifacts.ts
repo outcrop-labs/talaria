@@ -1,6 +1,11 @@
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getJsonOr404, getList } from '@/lib/fetch-json'
 import type { EditPolicy, KbEditor, Visibility } from '@/lib/kb'
+
+/** A reactive argument: pass a plain value, or a getter for values that change
+ *  over a component's life (route params, selections). */
+type MaybeGetter<T> = T | (() => T)
+const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export type ArtifactKind = 'doc' | 'sheet' | 'microsite' | 'file'
 
@@ -39,19 +44,22 @@ export interface ArtifactFolder {
 }
 
 export const useArtifacts = () =>
-  useQuery({
+  createQuery(() => ({
     queryKey: ['artifacts'],
     queryFn: (): Promise<Artifact[]> => getList<Artifact>('/api/artifacts', 'artifacts'),
-  })
+  }))
 
-export const useArtifact = (id: string | null) =>
-  useQuery({
-    queryKey: ['artifact', id],
-    enabled: !!id,
-    // 404 = deleted or not shared with you: a real "not found" the surface
-    // tells the truth about. 403/500 must not masquerade as that.
-    queryFn: async (): Promise<Artifact | null> =>
-      (await getJsonOr404<{ artifact: Artifact }>(`/api/artifacts/${id}`))?.artifact ?? null,
+export const useArtifact = (id: MaybeGetter<string | null>) =>
+  createQuery(() => {
+    const i = resolve(id)
+    return {
+      queryKey: ['artifact', i],
+      enabled: !!i,
+      // 404 = deleted or not shared with you: a real "not found" the surface
+      // tells the truth about. 403/500 must not masquerade as that.
+      queryFn: async (): Promise<Artifact | null> =>
+        (await getJsonOr404<{ artifact: Artifact }>(`/api/artifacts/${i}`))?.artifact ?? null,
+    }
   })
 
 export const createArtifact = (input: { kind?: ArtifactKind; title?: string }) =>
@@ -64,10 +72,10 @@ export const saveArtifact = (
 
 // ── Folders ──────────────────────────────────────────────────────────────────
 export const useFolders = () =>
-  useQuery({
+  createQuery(() => ({
     queryKey: ['artifact-folders'],
     queryFn: (): Promise<ArtifactFolder[]> => getList<ArtifactFolder>('/api/artifact-folders', 'folders'),
-  })
+  }))
 
 export const createFolder = (name: string, parentId?: string | null) =>
   fetch('/api/artifact-folders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, parentId }) }).then((r) => r.json())
@@ -89,12 +97,15 @@ export const uploadFile = async (file: File): Promise<{ id: string; filename: st
 export const deleteArtifact = (id: string) => fetch(`/api/artifacts/${id}`, { method: 'DELETE' })
 
 // ── Attachments ──────────────────────────────────────────────────────────────
-export const useTargetArtifacts = (targetType: string, targetId: string | null) =>
-  useQuery({
-    queryKey: ['artifacts-for', targetType, targetId],
-    enabled: !!targetId,
-    queryFn: (): Promise<Artifact[]> =>
-      getList<Artifact>(`/api/artifacts/for?targetType=${targetType}&targetId=${targetId}`, 'artifacts'),
+export const useTargetArtifacts = (targetType: string, targetId: MaybeGetter<string | null>) =>
+  createQuery(() => {
+    const i = resolve(targetId)
+    return {
+      queryKey: ['artifacts-for', targetType, i],
+      enabled: !!i,
+      queryFn: (): Promise<Artifact[]> =>
+        getList<Artifact>(`/api/artifacts/for?targetType=${targetType}&targetId=${i}`, 'artifacts'),
+    }
   })
 
 export const attachArtifact = (id: string, targetType: string, targetId: string) =>

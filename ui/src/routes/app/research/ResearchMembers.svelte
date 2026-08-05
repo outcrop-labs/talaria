@@ -1,0 +1,95 @@
+<script lang="ts">
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import { UserPlus, X } from '@lucide/svelte'
+  import Avatar from '@/components/ui/Avatar.svelte'
+  import UserPicker from '@/components/app/UserPicker.svelte'
+  import { alert } from '@/components/ui/confirm.svelte'
+  import { getJson } from '@/lib/fetch-json'
+  import { useSession } from '@/lib/session'
+
+  // Members + share, in the run header. Mirrors plan sharing: the owner adds
+  // teammates (they get the run AND its report), a collaborator can leave.
+  let { runId }: { runId: string } = $props()
+
+  const sessionQuery = useSession()
+  const session = $derived(sessionQuery.data)
+  const qc = useQueryClient()
+  let adding = $state(false)
+  // Already rejected on non-2xx; this just routes it through the shared door so
+  // the thrown message is the server's own. The avatars stay hidden on failure
+  // — the run header has no room for an error, and hiding a SHARE control is
+  // the safe direction (it grants nothing and claims nothing).
+  type Member = { userId: string; name: string | null; email: string | null; role: 'owner' | 'collaborator' }
+  const query = createQuery(() => ({
+    queryKey: ['research-members', runId],
+    queryFn: (): Promise<{ members: Member[] }> => getJson<{ members: Member[] }>(`/api/research/${runId}/members`),
+  }))
+  const members = $derived(query.data?.members ?? [])
+  const isOwner = $derived(!!session?.id && session.id === members.find((m) => m.role === 'owner')?.userId)
+  const refresh = () => qc.invalidateQueries({ queryKey: ['research-members', runId] })
+  const remove = (userId: string) =>
+    fetch(`/api/research/${runId}/members`, {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userId }),
+    }).then(refresh)
+</script>
+
+<!-- Org-wide runs (no owner) have nothing to share. -->
+{#if members.length > 0 && members.some((m) => m.role === 'owner')}
+  <span class="flex items-center gap-1.5">
+    <span class="flex -space-x-1.5">
+      {#each members as m (m.userId)}
+        <span class="group relative" title={`${m.name ?? m.email}${m.role === 'owner' ? ' (owner)' : ''}`}>
+          <Avatar name={m.name ?? m.email ?? '?'} class="h-6 w-6 text-[10px] ring-2 ring-surface" />
+          {#if (isOwner && m.role !== 'owner') || (m.userId === session?.id && m.role === 'collaborator')}
+            <button
+              type="button"
+              title={m.userId === session?.id ? 'Leave this research' : `Remove ${m.name ?? m.email}`}
+              onclick={() => void remove(m.userId)}
+              class="absolute -right-1 -top-1 hidden h-3.5 w-3.5 place-items-center rounded-full bg-card text-muted shadow group-hover:grid hover:text-fg"
+            >
+              <X size={9} />
+            </button>
+          {/if}
+        </span>
+      {/each}
+    </span>
+    {#if isOwner}
+      {#if adding}
+        <UserPicker
+          size="sm"
+          class="w-48"
+          placeholder="Share with"
+          exclude={members.map((m) => m.userId)}
+          onPick={(u) => {
+            adding = false
+            if (!u.email) return
+            void fetch(`/api/research/${runId}/members`, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ email: u.email }),
+            }).then(async (r) => {
+              if (!r.ok) {
+                const e = ((await r.json().catch(() => ({}))) as { error?: string }).error
+                void alert({ title: 'Could not share', message: e ?? 'share failed' })
+              }
+              refresh()
+            })
+          }}
+        />
+      {:else}
+        <button
+          type="button"
+          title="Share this research with a teammate"
+          onclick={() => (adding = true)}
+          class="grid h-6 w-6 place-items-center rounded-full border border-dashed border-line text-muted hover:text-fg"
+        >
+          <UserPlus size={12} />
+        </button>
+      {/if}
+    {/if}
+  </span>
+{/if}

@@ -1,5 +1,5 @@
 // Client for the signed-in user's personal assistant (/api/me/assistant).
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 
 export interface AssistantTier {
@@ -24,13 +24,13 @@ export interface Assistant {
 }
 
 export function useAssistant() {
-  return useQuery({
+  return createQuery(() => ({
     queryKey: ['my-assistant'],
     // "You have no assistant yet" is a 200 carrying `{ assistant: null }` —
     // the route never 404s — so any non-2xx is a failure, not an absence.
     queryFn: async (): Promise<Assistant | null> =>
       (await getJson<{ assistant: Assistant | null }>('/api/me/assistant')).assistant,
-  })
+  }))
 }
 
 export interface AssistantResult {

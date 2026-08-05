@@ -45,7 +45,7 @@
     "remark-rehype": "^11.1.1",
     "sv-router": "^0.18.1",
     "svelte": "^5.56.8",
-    "svelte-tiptap": "^3.0.1",
+    "svelte-tiptap": "^2.2.0",
     "tailwind-merge": "^3.4.0",
     "tiptap-markdown": "^0.8.10",
     "unified": "^11.0.5",

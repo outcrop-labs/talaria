@@ -73,3 +73,10 @@ export const { p, navigate, isActive, preload, route } = createRouter({
   },
   '*': NotFound,
 })
+
+/** Navigate to a server-supplied href (alert / notification / activity links).
+ *  The typed `navigate` wants a route-path literal; these arrive as plain
+ *  strings (possibly with a query string). One widening cast here instead of
+ *  an unsound one at every call site. */
+export const navigateHref = (href: string, options?: { replace?: boolean }): Promise<unknown> =>
+  (navigate as unknown as (path: string, options?: { replace?: boolean }) => Promise<unknown>)(href, options)

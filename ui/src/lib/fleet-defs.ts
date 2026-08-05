@@ -1,6 +1,11 @@
 // Harness registry client (admin): agent definitions + LLM endpoints.
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getJson, getList } from '@/lib/fetch-json'
+
+/** A reactive argument: pass a plain value, or a getter for values that change
+ *  over a component's life (route params, selections). */
+type MaybeGetter<T> = T | (() => T)
+const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export interface ModelTarget {
   endpoint: string
@@ -86,13 +91,13 @@ export interface AgentBrainHealth {
   targets: BrainTarget[]
 }
 
-export function useFleetDefs(enabled: boolean) {
-  return useQuery({
+export function useFleetDefs(enabled: MaybeGetter<boolean>) {
+  return createQuery(() => ({
     queryKey: ['fleet-defs'],
-    enabled,
+    enabled: resolve(enabled),
     queryFn: (): Promise<{ defs: AgentDef[]; endpoints: LlmEndpoint[]; brains?: AgentBrainHealth[] }> =>
       getJson<{ defs: AgentDef[]; endpoints: LlmEndpoint[]; brains?: AgentBrainHealth[] }>('/api/fleet/defs'),
-  })
+  }))
 }
 
 export interface ReconcileResult {
@@ -122,15 +127,15 @@ export interface AgentContainers {
   managed: ContainerState | null
 }
 
-export function useFleetContainers(enabled: boolean) {
-  return useQuery({
+export function useFleetContainers(enabled: MaybeGetter<boolean>) {
+  return createQuery(() => ({
     queryKey: ['fleet-containers'],
-    enabled,
+    enabled: resolve(enabled),
     refetchInterval: 10_000,
     // "No containers" and "could not ask Docker" look identical on the roster
     // otherwise — every agent silently reads as stopped.
     queryFn: (): Promise<AgentContainers[]> => getList<AgentContainers>('/api/fleet/containers', 'containers'),
-  })
+  }))
 }
 
 export interface AgentEdit {

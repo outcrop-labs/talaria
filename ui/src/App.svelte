@@ -27,7 +27,7 @@
     <Router />
     <ConfirmHost />
     {#snippet failed(error, reset)}
-      <ErrorFallback {error} {reset} />
+      <ErrorFallback {error} {reset} what="Talaria" />
     {/snippet}
   </svelte:boundary>
 </QueryClientProvider>

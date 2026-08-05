@@ -1,6 +1,11 @@
 // Template library client: org-wide ticket/plan formats + board bindings.
-import { useQuery } from '@tanstack/react-query'
+import { createQuery } from '@tanstack/svelte-query'
 import { getList } from '@/lib/fetch-json'
+
+/** A reactive argument: pass a plain value, or a getter for values that change
+ *  over a component's life (route params, selections). */
+type MaybeGetter<T> = T | (() => T)
+const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export type TemplateKind = 'ticket' | 'plan'
 
@@ -20,18 +25,21 @@ export interface BoardTemplateBinding {
 }
 
 export function useTemplates() {
-  return useQuery({
+  return createQuery(() => ({
     queryKey: ['templates'],
     queryFn: (): Promise<Template[]> => getList<Template>('/api/templates', 'templates'),
-  })
+  }))
 }
 
-export function useBoardTemplates(boardId: string | null) {
-  return useQuery({
-    queryKey: ['board-templates', boardId],
-    enabled: !!boardId,
-    queryFn: (): Promise<BoardTemplateBinding[]> =>
-      getList<BoardTemplateBinding>(`/api/boards/${boardId}/templates`, 'bindings'),
+export function useBoardTemplates(boardId: MaybeGetter<string | null>) {
+  return createQuery(() => {
+    const i = resolve(boardId)
+    return {
+      queryKey: ['board-templates', i],
+      enabled: !!i,
+      queryFn: (): Promise<BoardTemplateBinding[]> =>
+        getList<BoardTemplateBinding>(`/api/boards/${i}/templates`, 'bindings'),
+    }
   })
 }
 
