@@ -45,6 +45,13 @@ function kekMaterial(): string {
   if (!material) throw new Error('secretbox: set TALARIA_SECRET_KEY, TALARIA_SECRET_KEY_FILE, or AUTH_SECRET')
   return material
 }
+/** Is a DEDICATED root secret configured, as opposed to borrowing AUTH_SECRET?
+ *  Creating a key is allowed only when this is true; unwrapping is not gated,
+ *  so databases already sealed under the fallback keep working. */
+function explicitRoot(): boolean {
+  return Boolean(process.env.TALARIA_SECRET_KEY || process.env.TALARIA_SECRET_KEY_FILE)
+}
+
 function kek(): Buffer {
   if (!g.__sbKek) g.__sbKek = scryptSync(kekMaterial(), SALT, 32)
   return g.__sbKek
@@ -86,11 +93,38 @@ export async function initSecretbox(sql: Sql): Promise<void> {
   `) as unknown as Array<{ version: number; wrappedDek: string; active: boolean }>
 
   if (rows.length === 0) {
+    // The FIRST key is only ever created under an EXPLICIT root secret. The
+    // AUTH_SECRET fallback below stays for databases already sealed with it,
+    // but sealing something NEW under a value whose own documentation calls it
+    // safe to rotate is how a database ends up unable to read itself.
+    //
+    // It is also how the two run modes diverged: `vite dev` loads ui/.env and
+    // sees TALARIA_SECRET_KEY, a bare `node server-entry.js` did not — and
+    // setup.sh generates the two secrets as separate randoms, so whichever
+    // happened to be visible when this row was written became the key. Refusing
+    // here means a database can never be created under an accident.
+    if (!explicitRoot()) {
+      throw new Error(
+        'secretbox: refusing to create this database\'s encryption key from AUTH_SECRET. ' +
+          'Set TALARIA_SECRET_KEY (or TALARIA_SECRET_KEY_FILE) to a dedicated, stable value and keep it for the life of the database — ' +
+          'every provider key, agent secret and OAuth token will be sealed with it, and there is no recovery if it changes. ' +
+          'Generate one with: openssl rand -base64 48   (see docs/ENCRYPTION.md)',
+      )
+    }
     const dek = randomBytes(32) // 256-bit
     await sql`insert into secret_keys (version, wrapped_dek, active) values (1, ${wrapDek(dek)}, true)`
     g.__sbDeks!.set(1, dek)
     g.__sbActive = 1
     return
+  }
+  // Sealed under the fallback already: works, but one AUTH_SECRET rotation from
+  // being unreadable. Say so every boot until it is pinned.
+  if (!explicitRoot()) {
+    console.warn(
+      '[secretbox] this database is sealed with AUTH_SECRET because TALARIA_SECRET_KEY is not set. ' +
+        'Rotating AUTH_SECRET will make every stored secret unrecoverable. ' +
+        'Pin it: set TALARIA_SECRET_KEY to the CURRENT AUTH_SECRET value (scripts/setup.sh does this for you).',
+    )
   }
   for (const r of rows) {
     if (g.__sbDeks!.has(r.version)) continue

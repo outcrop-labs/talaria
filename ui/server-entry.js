@@ -3,11 +3,53 @@
 // streaming pump so SSE chat responses flush incrementally.
 import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
+import { readFileSync, existsSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import server from './dist/server/server.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
+
+// ── ui/.env, before anything reads process.env ───────────────────────────────
+// `vite dev` loads this file; `node server-entry.js` did not. Same install,
+// two different views of the environment — and because setup.sh generates
+// AUTH_SECRET and TALARIA_SECRET_KEY as two SEPARATE random values, and
+// secretbox falls back from one to the other, that difference silently changed
+// the key every stored secret is wrapped with. A database created under `dev`
+// then served by `npm start` could not decrypt its own provider keys, with
+// nothing in the config having changed. Loading it here makes the two modes
+// agree.
+//
+// REAL ENVIRONMENT WINS. A value already in process.env — systemd, docker,
+// Kubernetes, the shell — is never overwritten by the file. This is a fallback
+// for the single-box case, not a source of truth that can surprise a deploy.
+function loadEnvFile() {
+  const path = join(__dirname, '.env')
+  if (!existsSync(path)) return 0
+  let loaded = 0
+  for (const raw of readFileSync(path, 'utf8').split('\n')) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    const eq = line.indexOf('=')
+    if (eq < 1) continue
+    const key = line.slice(0, eq).trim()
+    if (key in process.env) continue // already set: the real environment wins
+    let value = line.slice(eq + 1).trim()
+    // Strip one layer of matching quotes, the way every .env reader does.
+    if (value.length >= 2 && ((value[0] === '"' && value.at(-1) === '"') || (value[0] === "'" && value.at(-1) === "'"))) {
+      value = value.slice(1, -1)
+    }
+    process.env[key] = value
+    loaded++
+  }
+  return loaded
+}
+const envLoaded = loadEnvFile()
+if (envLoaded) console.log(`[talaria-ui] loaded ${envLoaded} value(s) from ui/.env (existing environment left untouched)`)
+
+// Imported AFTER the env is in place: a static import is hoisted above every
+// statement here, and the server graph reads process.env as it loads.
+const { default: server } = await import('./dist/server/server.js')
+
 const CLIENT_DIR = join(__dirname, 'dist', 'client')
 const port = parseInt(process.env.PORT || '3000', 10)
 const host = process.env.HOST || '0.0.0.0'
