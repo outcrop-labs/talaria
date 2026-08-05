@@ -32,7 +32,17 @@ const SALT = 'talaria.secretbox.v1'
 // In-memory key material lives on globalThis so a Vite HMR reload of this module
 // (dev) doesn't wipe the loaded DEKs while the one-time migration/init stays
 // cached — which would leave seal()/open() with no key until a full restart.
-const g = globalThis as unknown as { __sbKek?: Buffer; __sbDeks?: Map<number, Buffer>; __sbActive?: number }
+const g = globalThis as unknown as {
+  __sbKek?: Buffer
+  __sbDeks?: Map<number, Buffer>
+  __sbActive?: number
+  /** Why there is no usable key, if there isn't one. Recorded rather than
+   *  thrown: `initSecretbox` runs inside the migration run, so throwing from it
+   *  rejects EVERY `db()` call and takes down boards, teams and agents —
+   *  none of which touch a secret. It did exactly that once. The diagnosis
+   *  belongs to the operations that actually need a key; see `active()`. */
+  __sbFailure?: string
+}
 g.__sbDeks ??= new Map<number, Buffer>()
 
 // ── KEK: the root of trust, derived from the operator secret ──────────────────
@@ -104,12 +114,16 @@ export async function initSecretbox(sql: Sql): Promise<void> {
     // happened to be visible when this row was written became the key. Refusing
     // here means a database can never be created under an accident.
     if (!explicitRoot()) {
-      throw new Error(
-        'secretbox: refusing to create this database\'s encryption key from AUTH_SECRET. ' +
-          'Set TALARIA_SECRET_KEY (or TALARIA_SECRET_KEY_FILE) to a dedicated, stable value and keep it for the life of the database — ' +
-          'every provider key, agent secret and OAuth token will be sealed with it, and there is no recovery if it changes. ' +
-          'Generate one with: openssl rand -base64 48   (see docs/ENCRYPTION.md)',
-      )
+      // Recorded, not thrown — same reason as below. A fresh install with no
+      // root secret should still come up, show its UI and say what to set; it
+      // should not 500 every endpoint including the ones that would tell you.
+      g.__sbFailure =
+        "secretbox: refusing to create this database's encryption key from AUTH_SECRET. " +
+        'Set TALARIA_SECRET_KEY (or TALARIA_SECRET_KEY_FILE) to a dedicated, stable value and keep it for the life of the database — ' +
+        'every provider key, agent secret and OAuth token will be sealed with it, and there is no recovery if it changes. ' +
+        'Generate one with: openssl rand -base64 48   (see docs/ENCRYPTION.md)'
+      console.error(`[secretbox] ${g.__sbFailure}`)
+      return
     }
     const dek = randomBytes(32) // 256-bit
     await sql`insert into secret_keys (version, wrapped_dek, active) values (1, ${wrapDek(dek)}, true)`
@@ -151,13 +165,20 @@ export async function initSecretbox(sql: Sql): Promise<void> {
   // So refuse to boot, here, while we still know why. This database has keys;
   // this process cannot read any of them; the only fix is the operator's.
   if (!g.__sbActive && g.__sbDeks!.size === 0) {
-    throw new Error(
+    // RECORDED, NOT THROWN. This function runs inside the migration run, so a
+    // throw here rejects every db() call in the process — boards, teams, agents
+    // and the whole app, none of which need a key. An earlier version of this
+    // check did throw, and turned "secrets are unreadable" into "nothing
+    // works", which is both worse and much harder to diagnose from the browser.
+    g.__sbFailure =
       `secretbox: this database has ${rows.length} data key(s) and none can be unwrapped with the current root secret. ` +
-        'TALARIA_SECRET_KEY (or TALARIA_SECRET_KEY_FILE, or AUTH_SECRET if neither is set) is not the value these keys were created with. ' +
-        'Restore the original root secret — every provider key, agent secret and OAuth token in this database is sealed with it. ' +
-        'If AUTH_SECRET is doing this job, set TALARIA_SECRET_KEY to that same value and stop rotating AUTH_SECRET (see docs/ENCRYPTION.md).',
-    )
+      'TALARIA_SECRET_KEY (or TALARIA_SECRET_KEY_FILE, or AUTH_SECRET if neither is set) is not the value these keys were created with. ' +
+      'Restore the original root secret — every provider key, agent secret and OAuth token in this database is sealed with it. ' +
+      'If AUTH_SECRET is doing this job, set TALARIA_SECRET_KEY to that same value and stop rotating AUTH_SECRET (see docs/ENCRYPTION.md).'
+    console.error(`[secretbox] ${g.__sbFailure}`)
+    return
   }
+  g.__sbFailure = undefined
   if (!g.__sbActive) g.__sbActive = Math.max(...g.__sbDeks!.keys())
 }
 
@@ -167,6 +188,9 @@ function dekFor(version: number): Buffer {
   return key
 }
 function active(): { key: Buffer; version: number } {
+  // The recorded diagnosis wins: it says the root secret changed, which is the
+  // real cause, instead of pointing at the migration runner that ran fine.
+  if (g.__sbFailure) throw new Error(g.__sbFailure)
   if (!g.__sbActive) throw new Error('secretbox: not initialized (initSecretbox must run during DB migration)')
   return { key: dekFor(g.__sbActive), version: g.__sbActive }
 }
