@@ -7,7 +7,7 @@
   import type { ContextMenuEntry, MenuIcon } from '@/components/ui/context-menu.svelte'
   import { userAssignee } from '@/lib/assignees'
   import type { BoardLabel, BoardMember } from '@/lib/boards.svelte'
-  import { PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, type Priority } from '@/lib/task-const'
+  import { OFF_BOARD_STATUSES, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, type Priority } from '@/lib/task-const'
   import { LABEL_CSS, STATUS_COLOR, dotIcon } from './field-pills'
   import { statusColorOf, statusLabelOf, type BoardStatus } from '@/lib/statuses'
   import FacetPill from './FacetPill.svelte'
@@ -40,7 +40,7 @@
   const flagIcon = (p: Priority): MenuIcon => [Flag, { size: 12, style: `color: ${PRIORITY_COLOR[p]}` }]
 
   const statusItems = $derived(
-    [...(statuses?.length ? statuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])), 'failed', 'cancelled'].map((s) => ({
+    [...(statuses?.length ? statuses.map((st) => st.key) : ([...TASK_STATUSES] as string[])), ...OFF_BOARD_STATUSES].map((s) => ({
       label: statusLabelOf(s, statuses ?? []),
       icon: dotIcon(statuses?.length ? statusColorOf(s, statuses) : STATUS_COLOR[s] ?? 'var(--theme-muted)'),
       checked: value.statuses.includes(s),

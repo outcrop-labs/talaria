@@ -12,7 +12,7 @@
 import type { MenuIcon } from '@/components/ui/context-menu.svelte'
 import type { BoardLabel, BoardMember, LabelColor } from '@/lib/boards.svelte'
 import type { BoardStatus } from '@/lib/statuses'
-import type { Priority, Task, TaskStatus } from '@/lib/task-const'
+import { isOffBoardStatus, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
 import ColorDot from './ColorDot.svelte'
 
 export type TicketPatch = {
@@ -75,9 +75,16 @@ export const STATUS_COLOR: Record<string, string> = {
   cancelled: 'var(--theme-muted)',
 }
 
-/** Closed = done-category on this board (or the legacy terminal keys). */
+/** Closed = done-category on this board, plus the legacy terminals: the bare
+ *  `done` key (boards that predate custom statuses) and the OFF-BOARD list,
+ *  which is imported rather than spelled out — see `@/lib/task-const`.
+ *
+ *  THE ONE CLIENT-SIDE CLOSED PREDICATE. `routes/app/boards/Board.svelte`
+ *  carried a byte-identical second copy inside `matchesDue`, so a board's
+ *  overdue filter and its ticket pills could disagree about whether a ticket
+ *  was closed. It imports this now. */
 export const isClosedStatus = (key: string, statuses?: BoardStatus[]): boolean =>
-  statuses?.find((s) => s.key === key)?.category === 'done' || ['done', 'cancelled', 'failed'].includes(key)
+  statuses?.find((s) => s.key === key)?.category === 'done' || key === 'done' || isOffBoardStatus(key)
 
 export const isOverdueTask = (t: Pick<Task, 'dueDate' | 'status'>, statuses?: BoardStatus[]) =>
   !!t.dueDate && new Date(t.dueDate).getTime() < Date.now() && !isClosedStatus(t.status, statuses)
