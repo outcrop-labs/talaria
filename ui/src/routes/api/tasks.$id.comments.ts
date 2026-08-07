@@ -78,7 +78,13 @@ export const Route = defineApi('/api/tasks/$id/comments', {
       boardId: task.boardId,
       ticketRef: task.ticketRef,
       author,
-      content: parsed.data.content,
+      // `comment.content`, NOT `parsed.data.content`: `addComment` runs an
+      // agent's comment through the agent-writes door and returns the REDACTED
+      // body, so the raw one reaching the index put a credential into the
+      // retrieval brain — which is read back into model contexts, the exact
+      // re-entry guardrails.ts's cardinal invariant forbids. The persisted
+      // comment was already clean; only these copies were not.
+      content: comment.content,
     }).catch(() => {})
 
     // @mention any board member — they get an inbox notification linking to
@@ -90,7 +96,10 @@ export const Route = defineApi('/api/tasks/$id/comments', {
           members,
           sender?.id ?? '',
           sender?.name ?? author,
-          parsed.data.content,
+          // Redacted, for the same reason as the index above: this text lands
+          // in a person's inbox, and it must not be the one copy of an agent's
+          // comment that still carries the credential the ticket no longer does.
+          comment.content,
           task.ticketRef ?? 'a ticket',
           `/boards/${task.boardId}/${params.id}`,
         ),

@@ -13,6 +13,7 @@
 // no mail leaves the building unless someone asks for it. Repeats — the
 // seen_count bumps that make a shape rank — say nothing at all.
 import { db } from './db/pg'
+import { guardAgentFields } from './agent-writes'
 import { addNotification } from './notifications'
 import { audienceFor, type Authority } from './approvals'
 
@@ -183,6 +184,18 @@ export async function reportGap(input: {
   taskId?: string | null
 }): Promise<{ id: string; seenCount: number; first: boolean }> {
   const sql = await db()
+  // THE ONE DOOR (agent-writes.ts). `report_gap` is an MCP tool, so `missing`
+  // and `needs` are agent-authored text — and this is the one tool whose SUBJECT
+  // is "the access and credentials I am missing", which makes it the likeliest
+  // of all of them to quote one. It reaches an admin's notification, their mail,
+  // the `capability_gaps` row and the Studio queue, and none of that was
+  // scanned: the leak was neither redacted in strict mode nor recorded against
+  // the agent in any mode.
+  const scrubbed = await guardAgentFields('capability-gap', input.agentModel, {
+    missing: input.missing,
+    needs: input.needs ?? null,
+  })
+  input = { ...input, missing: scrubbed.missing ?? input.missing, needs: scrubbed.needs ?? undefined }
   // The authority decides the ROW as well as the announcement. A gap the agent
   // could not bind itself, that we placed from a live refusal, gets that board's
   // signature — so it collapses onto the row the honest report would have

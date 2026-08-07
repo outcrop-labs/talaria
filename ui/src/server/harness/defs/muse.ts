@@ -1,0 +1,809 @@
+// The Muse's nine kinds: three STRUCTURED (cron, agent, ticket) and six PROSE
+// (soul, personality, skill, memory, document, template).
+//
+// WHY THIS FILE EXISTS
+//   The Muse has nine kinds. Six of them draft prose and stream token-by-token
+//   into an editor, which is the feature and stays exactly as it is — they are
+//   `museDraftHarness` at the bottom of this file, and the streaming route runs
+//   them through the runner by replay rather than by bypass (the argument is on
+//   that definition). The other three demand JSON, and
+//   until this file they were parsed IN THE BROWSER by three greedy
+//   `/\{[\s\S]*\}/` regexes (`lib/muse.svelte.ts`, audit 1.1) — the same
+//   non-scanner that was verified to fail on three shapes a 14B model emits
+//   constantly, running in the one place where:
+//
+//     - no repair turn is possible (the tokens are already spent and gone),
+//     - no guardrail can run (a drafted soul carrying a credential was neither
+//       flagged nor redacted — audit 1.5),
+//     - nothing is recorded (a failed draft left no trace anywhere),
+//     - and the failure is a `return null` that renders as a button that does
+//       nothing when you click it.
+//
+//   Moving the parse to the server is not a refactor for tidiness. It is the
+//   difference between "design an agent" silently no-opping on a small model and
+//   getting one repair turn, a schema error the model can act on, and a
+//   harness_runs row an operator can read afterwards.
+//
+// WHAT MOVED HERE FROM THE CLIENT, AND WHY IT HAD TO
+//   `ident()` and the ticket field allowlist were the client's sanitization
+//   layer, and both are security-adjacent:
+//
+//     `ident()`  coerces a drafted handle/department/skill name into its
+//                identifier alphabet. A handle becomes a container name, a fleet
+//                model id (`<handle>-<department>`) and a mount key, so a model
+//                that answers `"handle": "../../etc"` must never reach the
+//                create endpoint with that string intact. Client-side coercion
+//                protects nothing — the endpoint is reachable without the
+//                client. It is a zod transform here, so the value the route
+//                returns is ALREADY the coerced one.
+//
+//     allowlist  zod objects strip unrecognized keys by default, which is
+//                exactly `parseTicketPatch`'s behavior and exactly what we want:
+//                a model that invents `"assignees"` gets it dropped rather than
+//                failing the whole patch. The `{ error }` escape hatch is part
+//                of the contract, not an afterthought — it is how the Muse says
+//                "that asks for something I cannot change".
+import { z } from 'zod'
+import { PRIORITIES, EFFORTS, TASK_STATUSES, TICKET_COLORS } from '@/lib/task-const'
+import { defineHarness } from '../define'
+import { buildMuseMessages, MUSE_MODEL, type MuseInput, type MuseJsonKind, type MuseKind } from '../../muse'
+
+/** Everything a Muse call carries except the kind, which each harness owns. */
+export type MuseDraftInput = Omit<MuseInput, 'kind'>
+
+/** The Muse is a drafting tool, not a report of work performed, so only the two
+ *  content rules make sense: a drafted cron prompt that says "report if the
+ *  deploy failed" is not a fabricated outage, and a drafted soul that says
+ *  "when you have created the ticket, say so" is not a zero-tool claim. Running
+ *  those three here would file findings against every draft and poison the
+ *  per-model confabulation rate the fitness page reads.
+ *
+ *  `redact: true` because every one of these outputs is PERSISTED — a cron
+ *  prompt, an agent's SOUL.md, a ticket description. The credential a user
+ *  pasted into the instruction ("schedule a job that curls this with token
+ *  sk-...") is the realistic path, and it must not come back out in a document
+ *  that gets saved. */
+const GUARD: { rules: string[]; redact: boolean } = { rules: ['secret_leak', 'pii_leak'], redact: true }
+
+/** Today's route sends 0.4 for every kind. Kept, deliberately: the structure is
+ *  held by the schema and the repair turn now, so the temperature is free to go
+ *  on doing what it was there for — naming an agent something other than
+ *  "Agent" and writing a voice with some life in it. */
+const TEMPERATURE = 0.4
+
+// ── cron ─────────────────────────────────────────────────────────────────────
+
+export interface CronDraft {
+  name: string
+  schedule: string
+  prompt: string
+}
+
+/** Hermes accepts a 5-field cron expression or an interval shorthand, and the
+ *  builder (`components/fleet/agent-crons.ts` `parseSchedule`) opens anything
+ *  else as a raw "custom" string. So this is an EVAL assertion, not a schema
+ *  constraint: rejecting an unrecognized-but-valid schedule would fail a draft
+ *  the user could have used, while measuring it tells an admin honestly that a
+ *  given model does not produce schedules this build can render in the builder. */
+export const looksLikeSchedule = (s: string): boolean =>
+  /^(?:every\s+)?\d+\s*(?:m|min|minutes?|h|hours?)$/i.test(s.trim()) || /^[\d*/,-]+(?:\s+[\w*/,-]+){4}$/.test(s.trim())
+
+const isKebab = (s: string): boolean => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s)
+
+export const MUSE_CRON = z.object({
+  name: z.string().trim().min(1).max(80),
+  schedule: z.string().trim().min(1).max(200),
+  prompt: z.string().trim().min(1).max(20_000),
+})
+
+export const museCronHarness = defineHarness<MuseDraftInput, CronDraft>({
+  id: 'muse:cron',
+  label: 'Muse — scheduled job',
+  job: 'Turns "every weekday morning, summarize my inbox" into a named job with a schedule and a prompt.',
+  requires: ['json'],
+  floor: {
+    // EMPTY, and `requires` above carries the ask instead. `capabilities` is the
+    // refusal list and `runHarness` only reads it when `refuseBelow` is true
+    // (see RoleFloor in define.ts); listing 'json' here and then not refusing
+    // was an inert declaration that read like a hard requirement.
+    capabilities: [],
+    // FALSE on purpose. A user who clicks "Draft" on a small model should get a
+    // best effort and, if it fails, a sentence saying so — not a refusal. The
+    // form underneath is fully usable by hand; the Muse is the shortcut, and a
+    // shortcut that declines to try is worse than one that sometimes misses.
+    refuseBelow: false,
+    note: 'On a model that cannot return JSON, drafting a job from a description will often fail and you will fill the form in by hand.',
+  },
+  model: MUSE_MODEL,
+  render: (input) => buildMuseMessages({ ...input, kind: 'cron' }),
+  output: { kind: 'json', schema: MUSE_CRON },
+  // The caller keeps its empty form and shows the reason. Nothing is
+  // overwritten by a failed draft — that property is why this is 'null' and not
+  // a fallback.
+  onFailure: 'null',
+  guard: GUARD,
+  temperature: TEMPERATURE,
+  evals: [
+    {
+      name: 'a weekday morning brief',
+      input: { instruction: 'every weekday at 8am, summarize my inbox into a short brief and post it to me' },
+      check: (v) => {
+        if (!isKebab(v.name)) return `name "${v.name}" is not kebab-case`
+        if (!looksLikeSchedule(v.schedule)) return `schedule "${v.schedule}" is neither a 5-field cron expression nor an interval`
+        if (v.prompt.length < 20) return 'the prompt is too short to be a self-contained instruction'
+        return null
+      },
+    },
+    {
+      name: 'an interval, not a clock time',
+      input: { instruction: 'check the deploy queue every 30 minutes and tell me if anything is stuck' },
+      check: (v) => {
+        if (!looksLikeSchedule(v.schedule)) return `schedule "${v.schedule}" is neither a 5-field cron expression nor an interval`
+        if (!isKebab(v.name)) return `name "${v.name}" is not kebab-case`
+        return null
+      },
+    },
+  ],
+})
+
+// ── agent ────────────────────────────────────────────────────────────────────
+
+export interface AgentDraft {
+  name: string
+  handle: string
+  department: string
+  role: string
+  soul: string
+  skills: Array<{ name: string; content: string }>
+}
+
+/** The identifier coercion that used to run in the browser, verbatim.
+ *
+ *  Lowercase, drop everything outside the alphabet, drop leading non-letters,
+ *  cap at 30. A handle becomes a container name and half of the fleet model id
+ *  `<handle>-<department>`; a skill name becomes a file name. This is the
+ *  function that stands between a drafted `"handle": "../../etc"` and those
+ *  places, which is precisely why it cannot live on the client. */
+const ident = (v: string, allowDash: boolean): string =>
+  v
+    .toLowerCase()
+    .replace(allowDash ? /[^a-z0-9-]/g : /[^a-z0-9]/g, '')
+    .replace(/^[^a-z]+/, '')
+    .slice(0, 30)
+
+export const MUSE_AGENT: z.ZodType<AgentDraft> = z
+  .object({
+    name: z.string().trim().min(1),
+    handle: z.string().optional(),
+    department: z.string().optional(),
+    role: z.string().optional(),
+    soul: z.string().trim().min(1),
+    // Both members OPTIONAL and filtered below, not required and validated.
+    // That is the client's `.filter((s) => s?.name && s?.content)` preserved on
+    // purpose: a half-written skill should cost the user that skill, not the
+    // whole agent design and a second full generation of the soul with it.
+    skills: z.array(z.object({ name: z.string().optional(), content: z.string().optional() })).optional(),
+  })
+  .transform((j) => {
+    // The client's exact fallbacks: a missing handle is derived from the name, a
+    // missing department from the handle, and a department that coerces to
+    // nothing falls back to the handle rather than to empty (an empty
+    // department would produce the fleet model id "handle-").
+    const handle = ident(j.handle ?? j.name, false)
+    const department = ident(j.department ?? handle, true) || handle
+    return {
+      name: j.name.slice(0, 60),
+      handle,
+      department,
+      role: (j.role ?? '').slice(0, 80),
+      soul: j.soul,
+      skills: (j.skills ?? [])
+        .flatMap((s) => (s.name && s.content ? [{ name: ident(s.name, true).replace(/^-+|-+$/g, ''), content: s.content }] : []))
+        .slice(0, 5)
+        .filter((s) => s.name.length >= 2),
+    }
+  })
+  // A one-character handle is not a usable agent id, and this is the check the
+  // client did by returning null. As a refine it becomes a REPAIR instruction
+  // instead: the model is told the field is wrong and gets one more turn, which
+  // is the whole point of moving the parse to this side of the wire.
+  .refine((d) => d.handle.length >= 2, {
+    message: "'handle' must be at least 2 characters once lowercased to letters and digits — give it a plain word like \"remy\"",
+  })
+
+const SOUL_HEADINGS = ['## Who you are', '## Voice & personality', '## How you work']
+
+export const museAgentHarness = defineHarness<MuseDraftInput, AgentDraft>({
+  id: 'muse:agent',
+  label: 'Muse — agent design',
+  job: 'Designs a whole agent from a sentence of purpose: identity, SOUL.md, and starter skills.',
+  // 'json-strict' is REQUIRED but not in the floor: this object nests several
+  // full markdown documents inside string fields, which is the hardest
+  // structured ask in the product. Declaring it makes the fitness matrix honest
+  // about why a small model struggles here and not with the cron draft.
+  requires: ['json', 'json-strict'],
+  floor: {
+    // Empty for the same reason as the cron draft: nothing here refuses, so
+    // nothing belongs in the refusal list.
+    capabilities: [],
+    refuseBelow: false,
+    note: 'On a model that cannot return JSON, designing an agent will often fail and you will configure it from a template by hand.',
+  },
+  model: MUSE_MODEL,
+  render: (input, ctx) => buildMuseMessages({ ...input, kind: 'agent' }, { widened: ctx.widened }),
+  output: { kind: 'json', schema: MUSE_AGENT },
+  onFailure: 'null',
+  guard: GUARD,
+  temperature: TEMPERATURE,
+  /** THE ARGUMENT, since the brief asked for one.
+   *
+   *  A stronger model does not draft a DIFFERENT agent — the identity, the
+   *  guardrails and the skill count are the same either way, and widening must
+   *  never expand authority. What it does is hold three complete SKILL.md
+   *  playbooks inside one JSON object without dropping a quote or running out of
+   *  room mid-document. That is `json-strict` and nothing else: the failure mode
+   *  of asking a 7B for long nested strings is not a thinner playbook, it is an
+   *  unterminated value, and `parseJson` correctly refuses to guess at the tail.
+   *
+   *  So the widened prompt asks for the full playbook and the narrow one asks
+   *  for a short complete one. Both are real answers — a 20-line skill with the
+   *  right steps in it is genuinely useful, and it is what the user is going to
+   *  edit anyway. Nothing here lets the model create, assign or start anything;
+   *  the draft goes to a review screen either way. */
+  widen: {
+    requires: ['json-strict'],
+    note: 'Models known to hold long nested JSON reliably are asked for complete starter playbooks; the others are asked for short ones, because a truncated draft is worth less than a brief one.',
+  },
+  evals: [
+    {
+      name: 'a release manager',
+      input: {
+        instruction: 'A release manager that tracks our deploy trains, chases sign-offs before each cut, and posts a go/no-go summary.',
+      },
+      check: (v) => {
+        // `handle` is coerced by the schema, so what this measures is whether
+        // the model produced enough of one to survive the coercion at all.
+        if (v.handle.length < 2) return `handle "${v.handle}" did not survive identifier coercion`
+        if (!isKebab(v.department)) return `department "${v.department}" is not a kebab-case word`
+        const missing = SOUL_HEADINGS.filter((h) => !v.soul.includes(h))
+        if (missing.length) return `the soul is missing ${missing.join(', ')}`
+        if (v.skills.some((s) => !isKebab(s.name))) return 'a skill name is not kebab-case'
+        if (new Set(v.skills.map((s) => s.name)).size !== v.skills.length) return 'two skills share a name'
+        return null
+      },
+    },
+    {
+      name: 'a two-word purpose',
+      // The short prompt is the interesting one: a weak model asked for very
+      // little tends to answer with a field list rather than a document.
+      input: { instruction: 'someone who keeps our changelog current' },
+      check: (v) => {
+        if (v.handle.length < 2) return `handle "${v.handle}" did not survive identifier coercion`
+        const missing = SOUL_HEADINGS.filter((h) => !v.soul.includes(h))
+        if (missing.length) return `the soul is missing ${missing.join(', ')}`
+        if (v.soul.length < 200) return 'the soul is too short to be a SOUL.md'
+        return null
+      },
+    },
+  ],
+})
+
+// ── ticket ───────────────────────────────────────────────────────────────────
+
+/** The field allowlist, as a type. Every key here is one the ticket save path
+ *  already accepts; nothing else survives the parse. */
+export interface TicketMusePatch {
+  title?: string
+  description?: string
+  priority?: (typeof PRIORITIES)[number]
+  effort?: (typeof EFFORTS)[number] | null
+  estimatedHours?: number | null
+  dueDate?: string | null
+  startDate?: string | null
+  color?: (typeof TICKET_COLORS)[number] | null
+  tags?: string[]
+  status?: (typeof TASK_STATUSES)[number]
+  /** The escape hatch: the instruction asked for something outside the fields
+   *  above (an assignee, a board move, a question). Part of the contract, and
+   *  the reason a Muse that cannot help says so instead of guessing. */
+  error?: string
+}
+
+/** The enums are the allowlist's teeth. `parseTicketPatch` accepted
+ *  `priority: string` — any string at all — so a model answering
+ *  `"priority": "P1"` produced a patch the save path then wrote or rejected
+ *  further downstream. Here it is a named issue the model gets one turn to fix:
+ *  "field 'priority' must be one of "low" | "medium" | "high" | "urgent"".
+ *
+ *  `TASK_STATUSES` and not `TASK_STATUSES + OFF_BOARD_STATUSES`, deliberately:
+ *  'failed' and 'cancelled' are terminal states nothing on the board may park
+ *  work in, and a natural-language edit is not the place to acquire that power. */
+export const MUSE_TICKET: z.ZodType<TicketMusePatch> = z
+  .object({
+    error: z.string().trim().min(1).optional(),
+    // EVERY BOUND BELOW IS THE ROUTE'S OWN, transcribed from `Patch` in
+    // routes/api/tasks.$id.ts, because a Muse patch goes STRAIGHT there when the
+    // user presses Apply. Wherever this schema was looser than that one, the
+    // harness recorded a held contract and the PUT then 400'd — and the command
+    // bar swallows that rejection (see the note on `onFailure` below), so the
+    // whole patch, including the fields that were perfectly good, vanished with
+    // nothing shown. A named issue here buys a repair turn instead; there is
+    // nothing a 400 can teach the model that this cannot teach it first.
+    title: z.string().trim().min(1).max(300).optional(),
+    description: z.string().max(20_000).optional(),
+    priority: z.enum(PRIORITIES).optional(),
+    effort: z.enum(EFFORTS).nullable().optional(),
+    estimatedHours: z.number().min(0).max(999).nullable().optional(),
+    // THE SAME SHAPE THE WRITE PATH ACCEPTS (`z.string().datetime()`, character
+    // for character). As a bare `z.string()` these were the one pair of fields
+    // where the harness was LOOSER than the API: "due friday" produced
+    // `"2026-03-06"` or `"Friday"`, the harness recorded a held contract, and
+    // the PUT then 400'd. The repair turn is exactly the right answer to a date
+    // in the wrong format, and a loose schema is what stopped it firing.
+    //
+    // FORMAT IS ALL A SCHEMA CAN SAY ABOUT A DATE. Whether the instant is the
+    // one the user meant is a relation to the input — see `dateAnchorIssue`.
+    dueDate: z.string().datetime().nullable().optional(),
+    startDate: z.string().datetime().nullable().optional(),
+    color: z.enum(TICKET_COLORS).nullable().optional(),
+    tags: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
+    status: z.enum(TASK_STATUSES).optional(),
+  })
+  // An object with nothing in it is not a patch. The client used to spell this
+  // as `Object.keys(out).length ? out : null` and show "returned something
+  // unusable"; as a refine the model is told what was wrong first.
+  .refine((v) => Object.keys(v).length > 0, {
+    message: 'return the fields to change, or {"error": "<one short sentence why not>"}',
+  })
+  // `parseTicketPatch` short-circuited on `error` and returned nothing else.
+  // Kept, because the two are genuinely exclusive: an answer that both refuses
+  // and edits is an answer nobody should half-apply.
+  .transform((v): TicketMusePatch => (v.error !== undefined ? { error: v.error } : v))
+
+const TICKET_FIELDS = ['title', 'description', 'priority', 'effort', 'estimatedHours', 'dueDate', 'startDate', 'color', 'tags', 'status'] as const
+const touched = (v: TicketMusePatch): string[] => TICKET_FIELDS.filter((f) => v[f] !== undefined)
+
+/** The clock the CALLER put in the prompt. `TicketMuseBar` sends
+ *  `context: "now: <iso>"` and `buildMuseMessages` passes it through verbatim,
+ *  so this reads back exactly the string the model was shown. Nothing else in
+ *  the context looks like this, and a context that does not carry it disables
+ *  the check below rather than guessing at a clock. */
+const NOW_IN_CONTEXT = /\bnow:\s*(\S+)/i
+
+/** How far before `now` a date may land before it stops being a backdate and
+ *  starts being a different year.
+ *
+ *  A YEAR IS DELIBERATELY WIDE. The failure this names is specific: a small
+ *  model works "friday" out from its own training cutoff instead of from the
+ *  time it was handed, and answers 2024 while the ticket is being edited in
+ *  2026. Everything a person actually types into this bar — "due friday",
+ *  "start monday", "due end of the month", and even "it was due last week" —
+ *  lands inside a year of now, so the tolerance costs nothing real and keeps the
+ *  check away from the one case where a past date is what the user meant. */
+const STALE_CLOCK_MS = 365 * 24 * 60 * 60 * 1_000
+
+/** THE HALF OF THE DATE CONTRACT A SCHEMA CANNOT STATE.
+ *
+ *  `z.string().datetime()` above says the value is a well-formed instant and
+ *  matches the write path exactly, which is everything a module constant can
+ *  say: it is built at import time and the ticket's own clock arrives with the
+ *  run. So the FORMAT bug is closed and the ANCHOR bug is not, and the anchor
+ *  bug is the worse of the two — a malformed date 400s and at least fails, while
+ *  `"2024-03-08T00:00:00.000Z"` is accepted by the route, written to the board,
+ *  and shows up as a ticket that has been overdue for two years. Nothing errors
+ *  anywhere; the user just gets a wrong date they did not ask for.
+ *
+ *  Written as an instruction because it is fed back on the repair turn: it
+ *  quotes the time the model was given and tells it what to do with it. */
+function dateAnchorIssue(v: TicketMusePatch, input: MuseDraftInput): string | null {
+  const stated = NOW_IN_CONTEXT.exec(input.context ?? '')?.[1]
+  const now = stated ? Date.parse(stated) : Number.NaN
+  // No clock in the prompt means the model was never told what "friday" is
+  // relative to, and grading it against a clock it never saw would be the
+  // check being wrong rather than quiet.
+  if (!Number.isFinite(now)) return null
+  for (const field of ['dueDate', 'startDate'] as const) {
+    const iso = v[field]
+    if (typeof iso !== 'string') continue
+    const at = Date.parse(iso)
+    // Unparseable cannot reach here — the schema refused it — but a verify runs
+    // on model output and must never throw or assert its way to a wrong answer.
+    if (!Number.isFinite(at) || now - at <= STALE_CLOCK_MS) continue
+    return `you set ${field} to ${iso}, which is more than a year before the current time you were given (${stated}). Work dates like "friday" or "next week" out from that time, not from your own idea of what today is.`
+  }
+  return null
+}
+
+/** Hoisted so the fixture's `check` can grade against the very clock the
+ *  fixture's `input` shows the model. */
+const DUE_FRIDAY: MuseDraftInput = {
+  instruction: 'make it urgent and due friday',
+  context: 'now: 2026-03-03T09:00:00.000Z',
+  current: JSON.stringify({ title: 'Ship the ledger migration', priority: 'medium', status: 'assigned', tags: [], dueDate: null }),
+}
+
+export const museTicketHarness = defineHarness<MuseDraftInput, TicketMusePatch>({
+  id: 'muse:ticket',
+  label: 'Muse — ticket edit',
+  job: 'Turns "urgent, due friday, label launch" into a previewable patch on one ticket.',
+  requires: ['json'],
+  floor: {
+    capabilities: [],
+    refuseBelow: false,
+    note: 'On a model that cannot return JSON, the ticket command bar will often fail and you will edit the fields directly.',
+  },
+  model: MUSE_MODEL,
+  render: (input) => buildMuseMessages({ ...input, kind: 'ticket' }),
+  output: { kind: 'json', schema: MUSE_TICKET, verify: dateAnchorIssue },
+  // Nothing is applied without the user pressing Apply on a preview, so a
+  // failed draft costs a sentence and no state.
+  //
+  // WHICH IS ONLY TRUE UP TO THE POINT THE USER PRESSES APPLY, and past that
+  // point the surface is still lossy in a way this definition cannot fix:
+  // `TicketMuseBar.applyFields` clears `fieldPatch` BEFORE awaiting `onPatch`,
+  // and the click handler is `onclick={() => void applyFields()}`, so a
+  // rejection from `PUT /api/tasks/:id` is discarded with the preview already
+  // gone and nothing shown. Every constraint on this contract exists partly to
+  // keep a patch from ever reaching that path in a state the route will refuse —
+  // but the swallow is a component fix, not a harness one.
+  onFailure: 'null',
+  guard: GUARD,
+  temperature: TEMPERATURE,
+  evals: [
+    {
+      name: 'two fields, named',
+      input: DUE_FRIDAY,
+      check: (v) => {
+        if (v.error) return `refused instead of editing: ${v.error}`
+        if (v.priority !== 'urgent') return `priority is ${String(v.priority)}, expected urgent`
+        if (!v.dueDate) return 'no dueDate was set'
+        // THE SAME FUNCTION `output.verify` ENFORCES, against the same clock this
+        // fixture puts in the prompt — so the offline score and the production
+        // `schema_valid` column cannot come to disagree about one reply, which is
+        // the defect this whole round is about. `EvalCase.check` is handed the
+        // value alone, hence the closed-over input.
+        const anchor = dateAnchorIssue(v, DUE_FRIDAY)
+        if (anchor) return anchor
+        // THE assertion the audit asked for: only what was asked. A model that
+        // helpfully rewrites the title or moves the ticket to in_progress has
+        // done something the user did not sanction, and this is where that
+        // shows up as a red cell rather than as a surprise on the board.
+        const extra = touched(v).filter((f) => f !== 'priority' && f !== 'dueDate')
+        return extra.length ? `also changed ${extra.join(', ')}, which the instruction did not ask for` : null
+      },
+    },
+    {
+      name: 'outside the fields it may change',
+      input: {
+        instruction: 'assign this to Dana and move it to the design board',
+        context: 'now: 2026-03-03T09:00:00.000Z',
+        current: JSON.stringify({ title: 'Ship the ledger migration', priority: 'medium', status: 'assigned', tags: [] }),
+      },
+      // Assignees and boards are not in the allowlist. The right answer is the
+      // escape hatch, not a plausible-looking patch of something else.
+      check: (v) => (v.error ? null : `invented a patch (${touched(v).join(', ')}) for an instruction it cannot carry out`),
+    },
+  ],
+})
+
+// ── the six prose kinds ──────────────────────────────────────────────────────
+//
+// THE GUARD GAP THIS CLOSES (audit 1.5, the Muse row)
+//   These six draft the documents an agent is MADE of: its SOUL.md, its
+//   personality brief, its SKILL.md playbooks, its MEMORY.md. Until now they
+//   reached the gateway by hand from `routes/api/muse.ts` and ran with no
+//   guardrail at all, which matters more here than anywhere else the audit
+//   looked: a chat message carrying a credential is read once and scrolls away,
+//   while a soul is a DURABLE document that gets rendered into an agent's
+//   context on every single run. A leaked key in a drafted soul is a leaked key
+//   in every future prompt that agent ever sends.
+//
+// WHY ONE DEFINITION AND NOT SIX
+//   The three structured kinds are three harnesses because they are three
+//   contracts — a cron object, an agent design and a ticket patch share no
+//   schema, no repair story and no failure meaning. The six prose kinds share
+//   all of it: one output contract (the reply IS the document), one guard
+//   posture, one model policy, one temperature. What differs between them is a
+//   paragraph of system prompt, which is an INPUT, not a harness. Six registry
+//   rows whose only difference was `kind` would split the fitness signal six
+//   ways and tell an operator less, not more; the eval fixtures below cover the
+//   two kinds with hard, checkable rules (soul and template) and score the
+//   shared contract for all six.
+
+/** The kinds whose answer is a DOCUMENT. Spelled as the complement of the three
+ *  structured kinds rather than as a second list, so the route's `else` branch
+ *  (which TypeScript narrows through `isJsonKind`) and this type cannot drift
+ *  apart the day a tenth kind is added. */
+export type MuseProseKind = Exclude<MuseKind, MuseJsonKind>
+
+/** Everything a prose draft carries. The kind travels IN the input — see "why
+ *  one definition and not six" above. */
+export type MuseProseInput = MuseDraftInput & { kind: MuseProseKind }
+
+const FENCE_LINE = /^\s*`{3,}/
+
+/** THE `DOC_RULES` ASSERTION, shared by every prose eval: "Return ONLY the
+ *  complete revised document — no commentary, no preamble, no code fences."
+ *
+ *  Worth measuring precisely because nothing between the model and the editor
+ *  unwraps a fence or strips a lead-in (see the note on `output` below), so a
+ *  model that cannot hold this rule costs the user an edit on every single
+ *  draft. That is the honest thing for a fitness matrix to show. */
+const startsWithTheDocument = (v: string, heading: string): string | null => {
+  const first = v.split('\n').find((l) => l.trim())?.trim() ?? ''
+  if (!first) return 'the model returned nothing'
+  if (FENCE_LINE.test(first)) return 'the document is wrapped in a code fence'
+  if (!first.startsWith(heading)) return `starts with "${first.slice(0, 60)}" instead of a "${heading.trim()}" heading — the reply must BE the document`
+  return null
+}
+
+const HEADING_LINE = /^(#{1,6})\s/
+
+/** The template kind's HARD RULES, exactly as `SYSTEM.template` states them:
+ *  `##` headings only, 3-6 of them, whole template under 25 lines. They are the
+ *  most mechanically checkable rules in the Muse and the ones a small model
+ *  breaks first — asked for a template it writes the document. */
+const templateIssue = (v: string): string | null => {
+  const lines = v.trim().split('\n')
+  if (lines.length >= 25) return `${lines.length} lines — a template must be under 25, so this is a document rather than a skeleton`
+  const levels = lines.flatMap((l) => {
+    const m = HEADING_LINE.exec(l)
+    return m?.[1] ? [m[1].length] : []
+  })
+  const wrong = levels.filter((n) => n !== 2)
+  if (wrong.length) return `uses ${[...new Set(wrong)].map((n) => '#'.repeat(n)).join(' and ')} headings — a template is "##" only`
+  if (levels.length < 3 || levels.length > 6) return `${levels.length} sections — a template has 3 to 6`
+  return null
+}
+
+const SOUL_REVISION = [
+  '# Remy — Release Manager',
+  '',
+  '## Who you are',
+  'You keep the deploy trains running for Northwind and chase sign-offs before each cut.',
+  '',
+  '## Voice & personality',
+  'Dry, calm, allergic to drama.',
+  '',
+  '## How you work',
+  '- Keep humans in the loop: create and triage tickets, never assign or close them.',
+  '- Ask in the channel instead of guessing.',
+].join('\n')
+
+export const museDraftHarness = defineHarness<MuseProseInput, string>({
+  id: 'muse:draft',
+  label: 'Muse — document draft',
+  job: 'Drafts and revises the documents an agent is made of: souls, personalities, skills, memories, plans and templates.',
+  // Neither of these ever refuses (the floor is empty), so both are here purely
+  // to make the fitness matrix say something true about WHY a model is weak at
+  // this job. `instruction-following` is the whole of DOC_RULES — "return only
+  // the document" is a format instruction and nothing else. `long-context` is
+  // the revise flow: the route accepts a current document up to 300k characters
+  // and pastes it into the system prompt, so a short-context model does not
+  // draft a worse revision, it drafts one having never seen the second half.
+  requires: ['instruction-following', 'long-context'],
+  floor: {
+    // Empty, and `refuseBelow` false, for the same reason as the three
+    // structured kinds: the editor underneath works perfectly well by hand. The
+    // Muse is the shortcut, and a shortcut that declines to try is worse than
+    // one that sometimes needs tidying up after.
+    capabilities: [],
+    refuseBelow: false,
+    note: 'A small model drafts a thinner document and often wraps it in a lead-in or a code fence you will delete; on a long existing document it may only revise the part it could see.',
+  },
+  model: MUSE_MODEL,
+  render: (input) => buildMuseMessages(input),
+  // TEXT WITH NO `clean`, DELIBERATELY. A `clean` that stripped fences and
+  // lead-ins would be a real improvement to the value this harness returns — and
+  // an improvement the PRODUCT never sees, because the six prose kinds stream
+  // and the user's editor already holds every character by the time any
+  // whole-text cleaner could run. Declaring one here would make the fitness
+  // matrix score a cleaned string the user is never given, which is worse than
+  // no score at all. So the contract is exactly what lands in the editor, the
+  // evals assert on exactly that, and the fix (a stream-safe unfencer applied on
+  // the way out, beside the redactor below) is a change to the ROUTE that this
+  // definition would then follow.
+  output: { kind: 'text' },
+  // The editor keeps what it had. Nothing is overwritten by a failed draft.
+  onFailure: 'null',
+  guard: GUARD,
+  temperature: TEMPERATURE,
+  // NO WIDENING, and the brief asked for the argument rather than for the
+  // setting.
+  //
+  //   The tempting version is "a capable model drafting a SOUL should be asked
+  //   for a richer document". Reject it, for a reason specific to what a soul
+  //   IS: the model that DRAFTS the soul is not the model that RUNS the agent.
+  //   A soul is rendered into the agent's context on every run, so length bought
+  //   at draft time is paid for by a different, usually smaller model, forever —
+  //   and the failure mode of a long soul on a 7B is not verbosity, it is the
+  //   guardrails at the bottom of "## How you work" getting crowded out of
+  //   attention by three paragraphs of voice. Widening here would tune the
+  //   document to the wrong model's capability.
+  //
+  //   That is not an argument against widening in general. `museAgentHarness`
+  //   widens, correctly, because what a capable model earns there is holding
+  //   long nested JSON without truncating — a property of the DRAFTING call and
+  //   nothing else. The test is whether the extra ability is spent at draft time
+  //   or charged to whatever reads the result afterwards. Here it is charged, so
+  //   there is no widening to earn.
+  evals: [
+    {
+      name: 'a soul revision keeps the sections it was not asked about',
+      // The REVISE flow rather than the from-scratch one, and the choice is
+      // itself the assertion: `SYSTEM.soul` says "keep the heading structure"
+      // and "never silently drop sections" but never names the three headings,
+      // so demanding them of a blank-page draft would score a model against a
+      // rule nobody gave it. Given a current version that HAS them, all three
+      // surviving is exactly the stated contract — and it is the failure that
+      // costs most, because a revision that quietly drops "## How you work"
+      // drops the agent's guardrails with it.
+      input: {
+        kind: 'soul',
+        instruction: 'Add a guardrail: never start a deploy on a Friday without a named approver.',
+        current: SOUL_REVISION,
+      },
+      check: (v) => {
+        const shape = startsWithTheDocument(v, '# ')
+        if (shape) return shape
+        const missing = SOUL_HEADINGS.filter((h) => !v.includes(h))
+        if (missing.length) return `the revision dropped ${missing.join(', ')}`
+        if (!/friday/i.test(v)) return 'the guardrail the instruction asked for is not in the document'
+        if (!/never assign or close/i.test(v)) return 'the revision silently dropped the existing keep-humans-in-the-loop guardrail'
+        return null
+      },
+    },
+    {
+      name: 'a template stays a skeleton',
+      input: { kind: 'template', instruction: 'a template for a bug report' },
+      check: (v) => startsWithTheDocument(v, '## ') ?? templateIssue(v),
+    },
+    {
+      name: 'a big process comes back as section names, not as the process',
+      // `SYSTEM.template`'s last rule, and the one that separates a model that
+      // learned the format from one pattern-matching on the topic: asked for a
+      // complete runbook it must still answer with the skeleton such a runbook
+      // would start from.
+      input: {
+        kind: 'template',
+        instruction:
+          'Write our complete incident response runbook: detection, triage, comms, mitigation, verification and postmortem, with the full steps for each stage.',
+      },
+      check: (v) => startsWithTheDocument(v, '## ') ?? templateIssue(v),
+    },
+  ],
+})
+
+// ── streaming redaction ──────────────────────────────────────────────────────
+//
+// WHY A STREAM NEEDS ITS OWN REDACTOR
+//   `guardrails.ts` describes strict mode as redaction "applied only to what
+//   Talaria persists or hasn't yet relayed — a live stream already showed the
+//   original, but the saved copy stays clean". On a Muse draft those two are the
+//   SAME STRING: `streamMuse` accumulates every chunk and hands the total back,
+//   and that total is what the user saves as a SOUL.md. There is no later copy
+//   to clean up. A credential is unredactable the moment its characters are on
+//   the wire, so on this path "hasn't yet relayed" has to mean a few characters
+//   of hold-back rather than a pass at the end.
+//
+// WHY IT IS SAFE TO CUT WHERE IT CUTS. Emitting text early is only wrong if a
+// pattern match could STRADDLE the cut — start in what we already sent and end
+// in what we still hold. Two rules make that impossible:
+//
+//   1. Cut only just after a WHITESPACE character whose predecessor is not a
+//      digit. Every secret pattern in guardrails.ts matches a run of
+//      non-whitespace (keys, tokens, IBANs, user:pass@host URIs), so none of
+//      them can contain the cut. The one exception is the card-number pattern,
+//      whose separators may be spaces — but every space inside a card match has
+//      a DIGIT on both sides, which the predecessor test excludes. A consequence
+//      worth stating: the last token is always held back, so nothing is ever
+//      relayed mid-word.
+//   2. Never cut at or after a private-key BEGIN marker, and always hold the
+//      last `TAIL_HOLD` characters, which is longer than the longest marker.
+//      That block is the one pattern that spans newlines and is unbounded in
+//      length, so it is held from its first character until the stream ends and
+//      `flush` redacts the whole of it. Relaying the rest of a draft while a
+//      private key is in flight is not a trade worth making.
+//
+// GENERAL, DESPITE LIVING HERE. Nothing above is Muse-specific; the moment a
+// second streaming surface needs strict-mode redaction this belongs beside
+// `redactSecrets` in guardrails.ts. It takes the redactor as an argument rather
+// than importing one so that this module stays free of the settings and database
+// imports that come with guardrails.ts.
+
+/** Longer than the longest BEGIN marker guardrails.ts knows
+ *  ("-----BEGIN OPENSSH PRIVATE KEY-----", 35 characters), so a marker that
+ *  arrives split across two chunks is whole in the buffer before any cut could
+ *  fall inside it. */
+const TAIL_HOLD = 48
+
+/** DELIBERATELY LOOSER than guardrails.ts's own pattern (`[A-Z]+` for the key
+ *  type rather than the four named ones). This regex only decides when to STOP
+ *  relaying, so over-matching costs a moment of buffering and under-matching
+ *  costs a private key. */
+const PRIVATE_KEY_BEGIN = /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/
+
+export interface StreamRedactor {
+  /** Take the next raw chunk; return the text that is safe to relay right now
+   *  (frequently ''). */
+  push(chunk: string): string
+  /** Everything still held back, redacted. Call once, at end of stream. */
+  flush(): string
+}
+
+/** A redactor that runs ON THE WAY OUT of a stream. `redact` is
+ *  `redactSecrets` in production; it is a parameter so that this module needs
+ *  no database. */
+export function createStreamRedactor(redact: (text: string) => { text: string }): StreamRedactor {
+  // THE BUFFER IS SPLIT IN TWO, and that is a performance property rather than a
+  // behavioural one. As one growing string, every push re-searched it for a
+  // BEGIN marker and re-scanned it backwards for a cut point — two O(n) passes
+  // per delta — and indexing into a string V8 has just appended to flattens the
+  // rope, which is a third. On prose none of that showed, because the first
+  // space cuts and empties the buffer; on a long run with NO cut point in it (a
+  // base64 data URI, a minified bundle, a hex chain, all ordinary inside a
+  // drafted document) nothing ever cut and the cost went quadratic. Measured at
+  // 4-character deltas: 20k characters took ~0.9s and 80k took ~13s of
+  // SYNCHRONOUS CPU — and `onDelta` runs inside the transport's SSE read loop,
+  // so that is the whole Node process serving nobody while a draft sits still.
+  //
+  //   `parts`  the prefix already scanned, with no acceptable cut point in it.
+  //            Held as chunks and never indexed or searched, so appending stays
+  //            free; it is joined once, on the cut that ends it.
+  //   `tail`   the only region anything looks at. Bounded at TAIL_HOLD once a
+  //            push settles, so a scan costs one chunk's work no matter how long
+  //            the stream has run.
+  let parts: string[] = []
+  let partsLen = 0
+  let tail = ''
+  /** The character immediately before `tail[0]`, for the card-separator rule at
+   *  the seam. */
+  let prevChar = ''
+  /** Absolute index of the BEGIN marker once seen; from there the buffer only
+   *  grows and nothing is relayed, so no further searching is needed. */
+  let keyAt = -1
+  return {
+    push(chunk) {
+      tail += chunk
+      const total = partsLen + tail.length
+      if (keyAt === -1) {
+        const hit = tail.search(PRIVATE_KEY_BEGIN)
+        if (hit !== -1) keyAt = partsLen + hit
+      }
+      const limit = Math.min(keyAt === -1 ? total : keyAt, total - TAIL_HOLD)
+      for (let i = limit - partsLen - 1; i >= 0; i--) {
+        const c = tail[i]
+        if (!c || !/\s/.test(c)) continue
+        const prev = i > 0 ? (tail[i - 1] ?? '') : prevChar
+        // A space with a digit before it may be a card-number separator.
+        if (prev >= '0' && prev <= '9') continue
+        const head = parts.join('') + tail.slice(0, i + 1)
+        tail = tail.slice(i + 1)
+        parts = []
+        partsLen = 0
+        prevChar = ''
+        keyAt = -1
+        return redact(head).text
+      }
+      // Nothing in [partsLen, limit) can ever cut, so retire it out of `tail`.
+      const move = limit - partsLen
+      if (move > 0) {
+        const moved = tail.slice(0, move)
+        parts.push(moved)
+        partsLen += move
+        prevChar = moved[moved.length - 1] ?? prevChar
+        tail = tail.slice(move)
+      }
+      return ''
+    },
+    flush() {
+      const buf = parts.join('') + tail
+      parts = []
+      partsLen = 0
+      tail = ''
+      prevChar = ''
+      keyAt = -1
+      return buf ? redact(buf).text : ''
+    },
+  }
+}

@@ -211,6 +211,14 @@
         failure = staleMessage
         await refreshQueue(sourceTypeFromFocusKey(options.focusKey))
       } else if (commandResult?.kind === 'proposal' && commandResult.actionId && options.focusKey) {
+        // Handing the proposal to the server is NOT the same as executing it,
+        // and this line must not be read as if it were. `runFocusAction` looks
+        // up who proposed the action (`requiresHumanConfirmation`), and answers
+        // `confirmation_required` for anything a model selected rather than a
+        // regex matched — `performAction` then just expands the panel and the
+        // owner clicks Confirm on the timeline card. The decision lives on the
+        // server because only the server knows the proposal's provenance; the
+        // client cannot tell them apart and must not try.
         const item = items.find((candidate) => candidate.key === options.focusKey)
         if (item) await performAction(item, commandResult.actionId, commandResult.payload, { commandDecisionId: commandResult.decisionId, replaceBusy: true })
       }

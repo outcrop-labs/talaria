@@ -3,7 +3,7 @@ import { json } from '@/server/http'
 import { authenticateKey } from '@/server/llm-keys'
 import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '@/server/llm-gateway'
 import { estimateTokens } from '@/server/usage'
-import { getGuardConfig, guardCompletion, needsRedaction, redactSecrets } from '@/server/guardrails'
+import { getGuardConfig, groundingTextOf, guardCompletion, needsRedaction, redactSecrets } from '@/server/guardrails'
 import { getSetting } from '@/server/audit'
 
 // OpenAI-compatible chat completions over the org's model stack. Streaming and
@@ -101,7 +101,17 @@ export const Route = defineApi('/api/llm/v1/chat/completions', {
             // findings append the human-facing caveat.
             const g = await guardCompletion({ answer: content, messages: body.messages as unknown[], caller, model: body.model as string, endpoint: route.endpoint.name })
             if (g.findings.length && j.choices?.[0]?.message) {
-              const safe = g.mode === 'strict' && needsRedaction(g.findings) ? redactSecrets(content).text : content
+              // GROUNDED, like the findings on the line above. `guardCompletion`
+              // already grounds what it REPORTS against this request's messages;
+              // redacting without the same material was the two halves of one
+              // rule disagreeing about the same span — the caller's own order
+              // number would survive `pii_leak`'s finding and then be rewritten
+              // out of the reply anyway. Both halves get the same input, which
+              // is the rule guardrails.ts's header now states.
+              const safe =
+                g.mode === 'strict' && needsRedaction(g.findings)
+                  ? redactSecrets(content, groundingTextOf(body.messages as Array<{ role?: string; content?: unknown }>)).text
+                  : content
               j.choices[0].message.content = `${safe}${g.caveat}`
               text = JSON.stringify(j)
             }

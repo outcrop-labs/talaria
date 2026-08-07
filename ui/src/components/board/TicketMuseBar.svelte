@@ -4,7 +4,7 @@
   import Input from '@/components/ui/Input.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import type { RichEditorHandle } from '@/components/ui/rich-editor'
-  import { parseTicketPatch, streamMuse, type TicketMusePatch } from '@/lib/muse.svelte'
+  import { draftTicketPatch, streamMuse, type TicketMusePatch } from '@/lib/muse.svelte'
   import type { Task } from '@/lib/task-const'
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
@@ -84,13 +84,12 @@
           tags: t.tags,
           status: t.status,
         })
-        const full = await streamMuse(
-          { kind: 'ticket', context: `now: ${new Date().toISOString()}`, current, instruction: instr },
-          () => {},
-          ac.signal,
-        )
-        const patch = parseTicketPatch(full)
-        if (!patch) throw new Error('Muse returned something unusable — try rephrasing')
+        // Validated server-side against the FIELD ALLOWLIST — the patch that
+        // comes back can only ever touch fields this bar is allowed to change,
+        // and `error` is how the Muse says the instruction asked for something
+        // else (an assignee, a board move) instead of inventing a plausible
+        // edit. Nothing is written either way until Apply.
+        const patch = await draftTicketPatch({ context: `now: ${new Date().toISOString()}`, current, instruction: instr }, ac.signal)
         if (patch.error) throw new Error(patch.error)
         fieldPatch = patch
       }
@@ -102,18 +101,35 @@
     }
   }
 
+  // THE PREVIEW SURVIVES UNTIL THE WRITE LANDS. `onPatch` is `updateTask`, which
+  // THROWS on a non-2xx: clearing `fieldPatch` first and calling it from
+  // `onclick={() => void applyFields()}` turned a 400 from PUT /api/tasks/:id
+  // into an unhandled rejection with the chips already gone — the user watched
+  // the preview vanish and nothing happen, and the patch was unrecoverable.
+  // The harness contract now catches the likeliest causes before the model's
+  // answer ever gets here (muse.ts's schema is the route's `Patch`, bound for
+  // bound), but a board with a custom status set can still refuse a status this
+  // schema allows, and "rare" is not "never" for the one step that writes.
   const applyFields = async () => {
     if (!fieldPatch) return
     const p = fieldPatch
-    fieldPatch = null
-    await onPatch(p)
+    error = null
+    try {
+      await onPatch(p)
+      fieldPatch = null
+    } catch (e) {
+      error = (e as Error).message
+    }
   }
   const applyPassage = () => {
     if (passage === null) return
     editor?.replaceSelection(passage)
     passage = null
     const md = editor?.getMarkdown()
-    if (md !== undefined) void onPatch({ description: md })
+    // Same swallow as `applyFields` had, one field narrower: the replacement is
+    // already in the editor, so a rejected write leaves the screen disagreeing
+    // with the server until something refetches. Saying so is the whole fix.
+    if (md !== undefined) void onPatch({ description: md }).catch((e: unknown) => (error = (e as Error).message))
   }
 </script>
 

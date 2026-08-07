@@ -4,6 +4,7 @@
 // channel_agents and reply (streamed) when @mentioned. Message seq comes from
 // a per-channel counter so concurrent writers can't collide.
 import { db } from './db/pg'
+import { guardAgentWrite } from './agent-writes'
 import { publishChannel } from './realtime'
 import { isElevatedAssistant } from './users'
 import { subjectModel, type AgentSubject } from './agent-auth'
@@ -318,7 +319,26 @@ export async function listThreadMessages(channelId: string, rootId: string): Pro
   return decorateMessages(rows as unknown as ChannelMessage[])
 }
 
-/** Insert a message, drawing seq from the channel's counter. */
+/** Insert a message, drawing seq from the channel's counter.
+ *
+ *  THE AGENT-POST GUARD LIVES HERE. `mcp post_to_channel` arrives as a tool
+ *  ARGUMENT — model output that never went through a harness — and lands in a
+ *  room everybody reads. `guardAgentWrite` runs the gate-safe rules over it,
+ *  records what they find against the posting agent, and in strict mode stores
+ *  the redacted body. It runs on `authorType === 'agent'` only: a person's
+ *  message is not model output, and guard_findings.model has to keep meaning
+ *  "this model's confabulation rate".
+ *
+ *  Inside the insert rather than at the route, so no caller can express the
+ *  ungated post — and the streamed reply path costs nothing for it, because
+ *  that path inserts an EMPTY row and fills it in through
+ *  `updateChannelMessage`, where `guardChatReply` already stands.
+ *
+ *  Findings are recorded, not PINNED to the row. `channel_messages.guard` is in
+ *  `MSG_SELECT`, and agents read channels through the same API humans do — so
+ *  pinning a finding here would put its `snippet` (a verbatim excerpt of the
+ *  flagged span) on a path back into a model's context, which is the one thing
+ *  guardrails.ts forbids outright. */
 export async function insertChannelMessage(
   channelId: string,
   authorType: 'user' | 'agent',
@@ -329,6 +349,7 @@ export async function insertChannelMessage(
   threadRootId: string | null = null,
 ): Promise<ChannelMessage> {
   const sql = await db()
+  const body = authorType === 'agent' ? (await guardAgentWrite('channel-post', { agent: author }, content)).text : content
   const row = await sql.begin(async (tx) => {
     const seqRows = await tx`
       update channels set msg_seq = msg_seq + 1, updated_at = now() where id = ${channelId} returning msg_seq
@@ -336,7 +357,7 @@ export async function insertChannelMessage(
     const seq = (seqRows[0] as { msg_seq: number }).msg_seq
     const rows = await tx`
       insert into channel_messages (channel_id, seq, author_type, author, content, status, attachments, thread_root_id)
-      values (${channelId}, ${seq}, ${authorType}, ${author}, ${content}, ${status}, ${sql.json(attachments as never)}, ${threadRootId})
+      values (${channelId}, ${seq}, ${authorType}, ${author}, ${body}, ${status}, ${sql.json(attachments as never)}, ${threadRootId})
       returning id, seq, author_type as "authorType", author, content, status, created_at as "createdAt", attachments,
         thread_root_id as "threadRootId"
     `

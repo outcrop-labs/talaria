@@ -11,7 +11,7 @@
   import Textarea from '@/components/ui/Textarea.svelte'
   import { createFleetAgent, type AgentDef } from '@/lib/fleet-defs'
   import { fade, listStagger, slide } from '@/lib/motion'
-  import { parseAgentDraft, streamMuse, type AgentDraft } from '@/lib/muse.svelte'
+  import { draftAgent, type AgentDraft } from '@/lib/muse.svelte'
   import RefineBar from './RefineBar.svelte'
   import SkillPreviewRow from './SkillPreviewRow.svelte'
 
@@ -36,10 +36,13 @@
   const qc = useQueryClient()
   let step = $state<'describe' | 'review'>(preselect ? 'review' : 'describe')
 
-  // Describe → generate
+  // Describe → generate. There is no token stream to show any more: an agent
+  // design is a JSON contract, so the server parses and validates it (and gets
+  // a repair turn when a small model fumbles the shape) and answers with the
+  // finished draft. What used to be a live preview of raw JSON scrolling past
+  // is a progress label — the thing worth watching was never the braces.
   let purpose = $state('')
   let generating = $state(false)
-  let genPreview = $state('')
   let chat = $state<Array<{ role: 'user' | 'assistant'; content: string }>>([])
   let genErr = $state<string | null>(null)
 
@@ -73,23 +76,16 @@
     if (!instruction.trim()) return
     generating = true
     genErr = null
-    genPreview = ''
     try {
-      const full = await streamMuse(
-        {
-          kind: 'agent',
-          instruction: instruction.trim(),
-          ...(refining ? { current: currentDraftJson() } : {}),
-          chat,
-        },
-        (piece) => (genPreview += piece),
-      )
-      const draft = parseAgentDraft(full)
-      if (!draft) {
-        genErr = 'could not design an agent from that. Try adding a sentence about what it should do'
-        return
-      }
-      chat = [...chat.slice(-8), { role: 'user', content: instruction.trim() }, { role: 'assistant', content: full }]
+      const draft = await draftAgent({
+        instruction: instruction.trim(),
+        ...(refining ? { current: currentDraftJson() } : {}),
+        chat,
+      })
+      // The turn the model sees on the next refine is the VALIDATED draft, not
+      // whatever text it happened to emit — so a reply that needed a repair turn
+      // does not teach the model its own broken shape on the way round again.
+      chat = [...chat.slice(-8), { role: 'user', content: instruction.trim() }, { role: 'assistant', content: JSON.stringify(draft) }]
       applyDraft(draft)
       step = 'review'
     } catch (e) {
@@ -157,7 +153,7 @@
         />
       </div>
       {#if generating}
-        <pre class="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line bg-surface p-3 font-mono text-xs leading-5 text-muted">{genPreview || 'Designing'}<span class="gd-pulse text-accent">▍</span></pre>
+        <Generating label="Designing the agent: identity, soul, and starter skills" lines={3} />
       {/if}
       {#if genErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr}</p>{/if}
       <div class="flex items-center gap-3 border-t border-line pt-4">
@@ -245,7 +241,7 @@
       {#if generated}
         <RefineBar
           busy={generating}
-          preview={generating ? genPreview : null}
+          preview={null}
           error={genErr}
           onRefine={(text) => void generate(text, true)}
         />

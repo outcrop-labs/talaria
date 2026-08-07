@@ -67,6 +67,18 @@ export async function taskItems(userId: string, sourceId?: string): Promise<RawF
 
   return rows.map((row) => {
     const bucket = taskBucket(row.status, row.isReview, row.isTriage)
+    // `risk` DESCRIBES A HUMAN CLICK ON THIS CARD, and 'safe' is still right for
+    // both: the reviewer is looking at the evidence, and asking them to confirm
+    // their own click would be a modal for its own sake.
+    //
+    // It is NOT a statement that anything may run these without a person. That
+    // reading is what made this line the sharpest edge in the Inbox — a widened
+    // model can now select `approve_task`, and `confirmationRequired: false`
+    // sent it straight to `completeQualityReview(..., 'approved')` with an audit
+    // row naming the human who never clicked. Confirmation now depends on the
+    // action AND on who proposed it (`requiresHumanConfirmation` in
+    // inbox-focus-policy.ts), so a model-proposed sign-off takes the
+    // confirmation path while a human's own click does not.
     const actions = row.isReview
       ? [
           focusAction('approve_task', 'Approve', 'safe'),
@@ -131,6 +143,10 @@ export async function approvalItems(user: SessionUser, sourceId?: string): Promi
       sourceHref: '/',
       briefStatus: 'fallback',
       actions: [
+        // Asymmetric on purpose: approving SENDS something under the owner's
+        // identity, rejecting only declines to. Same note as the review pair
+        // above — 'safe' is about a human's click, and a model that proposes
+        // `reject` still takes the confirmation path.
         focusAction('approve', approval.kind === 'gmail_send' ? 'Approve send' : 'Approve event', 'confirmation'),
         focusAction('reject', 'Reject', 'safe'),
       ],

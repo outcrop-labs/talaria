@@ -1,17 +1,37 @@
 // The drafting muse: users iteratively construct agent internals (souls,
-// personalities, skills, memories, cron jobs) with an LLM. One server entry
-// builds kind-aware messages and rides the Talaria gateway machinery (route
-// resolution, provider keys, request defaults, metering) — so the muse
-// respects the same model registry as everything else, on the user's
-// preferred model.
-import { gatewayModels, resolveRoute } from './llm-gateway'
-import { memberModelAllowlist, modelAllowedFor } from './model-access'
-import { resolveRoleModel } from './model-roles'
-import { platformAgentModel } from './platform-agents'
+// personalities, skills, memories, cron jobs) with an LLM. This file owns the
+// PROMPTS and the model policy; how a given kind reaches a model is split in
+// two, and the split is the point:
+//
+//   six PROSE kinds stream, through `runHarnessStreamed` + `gatewayStream`.
+//   Live tokens landing in the editor is the feature, so the runner pumps the
+//   deltas out as they land and does everything it always does with the
+//   completed reply — the guard pass, the findings row, the harness_runs row
+//   (`muse:draft` in harness/defs/muse.ts). Strict guard mode additionally
+//   redacts chunk-wise on the way OUT, in the route, because on this path the
+//   streamed copy IS the copy the user saves and only the caller is on that
+//   path. There is no replay transport and no second SSE pump any more; prompts
+//   and model policy still live in this file and the definition renders through
+//   `buildMuseMessages` below, so there is exactly one spelling of the ask.
+//
+//   three JSON kinds (cron, agent, ticket) go through `runHarness` — see
+//   harness/defs/muse.ts. They used to stream too, and the browser parsed the
+//   result with a greedy `/\{[\s\S]*\}/` (audit 1.1) in the one place where no
+//   repair turn, no guardrail and no telemetry are possible. They are parsed and
+//   validated on this side now, and the route returns the value.
 import { orgLine, orgProfile } from './org'
-import { getPreferredModel, getUserRole } from './users'
+import { resolveHarnessModel, type ModelSpec } from './harness/model'
+import type { Message } from './harness/define'
 
 export type MuseKind = 'soul' | 'personality' | 'skill' | 'memory' | 'cron' | 'agent' | 'document' | 'template' | 'ticket'
+
+/** The kinds whose answer is a CONTRACT rather than a document. Exported so the
+ *  route has one place to branch on, instead of three string comparisons that
+ *  can drift from the three harness definitions. */
+export type MuseJsonKind = 'cron' | 'agent' | 'ticket'
+export const JSON_KINDS: ReadonlySet<MuseKind> = new Set<MuseKind>(['cron', 'agent', 'ticket'])
+/** Narrows, so the route can index a per-kind message table without a cast. */
+export const isJsonKind = (k: MuseKind): k is MuseJsonKind => JSON_KINDS.has(k)
 
 const DOC_RULES =
   'Return ONLY the complete revised document — no commentary, no preamble, no code fences. ' +
@@ -85,10 +105,29 @@ export interface MuseInput {
 /** Kinds that define WHO an agent is — these anchor to the organization. */
 const ORG_KINDS = new Set<MuseKind>(['agent', 'soul', 'personality'])
 
-export async function buildMuseMessages(input: MuseInput): Promise<Array<{ role: string; content: string }>> {
+/** The one prompt difference a capability-gated widening buys (see the argument
+ *  on `museAgentHarness.widen`). Same number of skills either way, and the same
+ *  guardrails: what changes is how much document the model is asked to hold in
+ *  one nested JSON string, which is the thing that actually breaks on a 7B. */
+const AGENT_SKILL_DEPTH: Record<'wide' | 'narrow', string> = {
+  wide: '\n\nWrite each skill out in full: the real steps, the tools or sources it touches, and what "done" looks like.',
+  narrow: '\n\nKeep each skill under 25 lines. A short playbook that is complete beats a long one that gets cut off mid-sentence.',
+}
+
+/** `Message[]`, not the old `Array<{role: string; content: string}>` — a
+ *  harness `render` must return the union the transports actually accept, and
+ *  the roles here were already exactly those three. */
+export async function buildMuseMessages(input: MuseInput, opts?: { widened?: boolean }): Promise<Message[]> {
   let system = SYSTEM[input.kind]
+  if (input.kind === 'agent') system += AGENT_SKILL_DEPTH[opts?.widened ? 'wide' : 'narrow']
   if (ORG_KINDS.has(input.kind)) {
-    const org = orgLine(await orgProfile())
+    // The org anchor is DECORATION on the prompt, so a settings read that fails
+    // must not take the draft down with it. Inside a harness `render`, a throw
+    // surfaces as the unhelpful "rendered no messages" — an agent design lost to
+    // a blip on a table that only supplies one sentence of context.
+    const org = await orgProfile()
+      .then(orgLine)
+      .catch(() => null)
     if (org) {
       system +=
         `\n\nOrganization: ${org}. The agent is a member of this business's team — anchor its identity, mission, and voice to the business ` +
@@ -105,30 +144,42 @@ export async function buildMuseMessages(input: MuseInput): Promise<Array<{ role:
   ]
 }
 
-/** The model powering a user's muse: their preference if it still routes AND
- *  their role may use it, else the env default, else pl-main, else the first
- *  registered model the role may use. Admins gate the expensive brains via
- *  the member model allowlist (see model-access). */
+/** The Muse's model policy, declared once instead of written out (audit 1.10 —
+ *  this was one of the seven hand-copied spellings of the fallback chain, and
+ *  1.7, which is why 'pl-main' no longer appears in this file at all).
+ *
+ *  The ORDER is today's, preserved exactly, and it is not the default chain:
+ *
+ *    pin        an admin-assigned Muse model (Models → Platform) is ORG POLICY
+ *               and wins over a personal preference.
+ *    preferred  then the user's own choice — the whole reason the Muse is
+ *               user-scoped and the reason 'preferred' comes before the role.
+ *    utility    then the org's Utility role model. Spelled as the 'utility'
+ *               step rather than `role: 'utility'` + a 'role' step: the two
+ *               resolve identically (harness/model.ts runs `resolveRoleModel`
+ *               under the same allowlist gate either way) and differ only in the
+ *               `chain_step` recorded on the run, so every harness in the tree
+ *               uses the one label. Same chain as the distiller and the
+ *               concluder, which are the other two user-scoped harnesses.
+ *    env        then TALARIA_COPILOT_MODEL.
+ *    first-…    then whatever the gateway serves (which prefers 'pl-main' where
+ *               that name exists, so the reference deployment resolves as it
+ *               always did, and a self-host that never used the name still gets
+ *               a real model instead of nothing).
+ *
+ *  THE MEMBER MODEL ALLOWLIST SURVIVES THIS. It is an admin gating the expensive
+ *  brains, and `resolveHarnessModelWith` applies it to exactly the steps that
+ *  hand a user's own choice or the user-visible catalog to a harness —
+ *  'preferred', 'role', 'first-routable' — and deliberately not to 'pin' or
+ *  'env', which is the same distinction this function drew by hand. It is armed
+ *  by `userId` being present on the spec, so every caller must pass one. */
+export const MUSE_MODEL: ModelSpec = { pin: 'muse', chain: ['pin', 'preferred', 'utility', 'env', 'first-routable'] }
+
+/** The model a user's muse resolves to right now. Kept as a function because
+ *  two other subsystems ask the question without running a harness: /api/models
+ *  shows it in the picker, and comms-decay falls back to it for the distiller
+ *  and the concluder. */
 export async function museModelFor(userId: string): Promise<string | null> {
-  const role = await getUserRole(userId)
-  const catalog = await gatewayModels()
-  const allow = await memberModelAllowlist()
-  const pref = await getPreferredModel(userId)
-  const utility = await resolveRoleModel('utility')
-  const candidates = [
-    // An admin-pinned Muse model (Models → Platform) is org policy — it wins
-    // over personal preference and isn't subject to the member allowlist.
-    await platformAgentModel('muse'),
-    pref && modelAllowedFor(role, pref, allow, catalog) ? pref : null,
-    // The org's assigned Utility role model (Model Roles on /models) — still
-    // subject to the member allowlist for non-admins.
-    utility && modelAllowedFor(role, utility, allow, catalog) ? utility : null,
-    process.env.TALARIA_COPILOT_MODEL ?? null,
-    'pl-main',
-  ]
-  for (const m of candidates) {
-    if (m && (await resolveRoute(m))) return m
-  }
-  const first = catalog.find((m) => !m.qualified && modelAllowedFor(role, m.id, allow, catalog))
-  return first?.id ?? null
+  const resolved = await resolveHarnessModel({ ...MUSE_MODEL, userId })
+  return resolved?.model ?? null
 }

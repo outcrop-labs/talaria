@@ -5,62 +5,24 @@
 // their question the moment they start. Everything here is fire-and-forget:
 // naming must never block or fail the work it names.
 import { db } from './db/pg'
-import { completeViaGateway, gatewayModels, resolveRoute } from './llm-gateway'
-import { resolveRoleModel } from './model-roles'
-import { platformAgentModel } from './platform-agents'
-
-const PROMPT: Record<'chat' | 'plan' | 'research', string> = {
-  chat:
-    'Name this conversation. 3–7 words, specific to what it is actually about — the subject, not the activity. ' +
-    'No quotes, no trailing punctuation, never generic fillers like "Chat about" or "Discussion of". Reply with ONLY the title.',
-  plan:
-    'Name this plan. 3–7 words, outcome-focused — what the plan will deliver, not the conversation around it. ' +
-    'No quotes, no trailing punctuation. Reply with ONLY the title.',
-  research:
-    'Name this research run from its question. 3–7 words capturing the subject under investigation. ' +
-    'No quotes, no trailing punctuation, do not restate it as a question. Reply with ONLY the title.',
-}
-
-const clip = (s: string, max = 4000) => (s.length > max ? s.slice(0, max) : s)
-
-async function titlerModel(): Promise<string | null> {
-  const pinned = await platformAgentModel('titler')
-  if (pinned) return pinned
-  const utility = await resolveRoleModel('utility')
-  if (utility) return utility
-  for (const m of [process.env.TALARIA_COPILOT_MODEL ?? null, 'pl-main']) {
-    if (m && (await resolveRoute(m))) return m
-  }
-  return (await gatewayModels()).find((m) => !m.qualified)?.id ?? null
-}
+import { titlerHarness, type TitleKind } from './harness/defs/titler'
+import { runHarness } from './harness/run'
 
 /** One short completion → a clean title, or null when nothing routes / the
- *  model rambles. Callers keep their existing title on null. */
-export async function generateTitle(kind: 'chat' | 'plan' | 'research', text: string): Promise<string | null> {
+ *  model rambles. Callers keep their existing title on null.
+ *
+ *  Everything this used to do by hand — resolving the model down four fallback
+ *  steps, catching the upstream hiccup, taking the first non-empty line and
+ *  stripping the quotes off it — is declared in harness/defs/titler.ts and done
+ *  by the runner. Null still means exactly what it meant: KEEP THE CURRENT
+ *  TITLE. `sweepTitles` reads it as a stop signal as well, so nothing here may
+ *  ever start returning a placeholder on failure. */
+export async function generateTitle(kind: TitleKind, text: string): Promise<string | null> {
+  // Ahead of the harness on purpose: an empty transcript has no title in it, and
+  // this early-out is what keeps a chat with no user message from spending a
+  // model call and a harness_runs row to discover that.
   if (!text.trim()) return null
-  const model = await titlerModel()
-  if (!model) return null
-  let out: string
-  try {
-    out = (
-      await completeViaGateway(
-        model,
-        [
-          { role: 'system', content: PROMPT[kind] },
-          { role: 'user', content: clip(text) },
-        ],
-        { temperature: 0.3, caller: 'platform:titler' },
-      )
-    ).text
-  } catch {
-    return null // upstream hiccup (rate limit, dead route) — keep the current title
-  }
-  const t = (out.split('\n').find((l) => l.trim()) ?? '')
-    .replace(/^["'#*\s]+|["'*\s]+$/g, '')
-    .replace(/[.。]$/, '')
-    .trim()
-  if (!t) return null
-  return t.length > 90 ? `${t.slice(0, 90).trimEnd()}…` : t
+  return (await runHarness(titlerHarness, { kind, text }, { caller: 'platform:titler' })).value
 }
 
 /** The mechanical default chat.ts stamps at creation — a title still equal to
@@ -88,7 +50,14 @@ export async function maybeRetitleConversation(conversationId: string): Promise<
   if (!stillMechanical) return
   const transcript = msgs.map((m) => `${m.role}: ${m.content.slice(0, 1500)}`).join('\n\n')
   const title = await generateTitle(conv.kind === 'plan' ? 'plan' : 'chat', transcript)
-  if (title) await sql`update conversations set title = ${title} where id = ${conversationId}`
+  // THE GATE IS CHECKED AGAINST A SNAPSHOT AND THE WRITE HAPPENS SECONDS LATER,
+  // so the write repeats the gate. `stillMechanical` above was true when the row
+  // was read; a model call sits between that and here, and a rename landing in
+  // the gap was silently overwritten — permanently, because a model-written
+  // title no longer matches the mechanical truncation and neither retitle path
+  // ever revisits the row. `is not distinct from` because the mechanical state
+  // includes a NULL title.
+  if (title) await sql`update conversations set title = ${title} where id = ${conversationId} and title is not distinct from ${conv.title}`
 }
 
 // ── The sweep: retroactive + ongoing naming ─────────────────────────────────
@@ -131,14 +100,20 @@ export async function sweepTitles(): Promise<number> {
     const mechanical = !c.title || c.title === 'chat' || (c.first != null && c.title === mechanicalFrom(c.first))
     if (!mechanical) continue
     spent++
-    if (!(await maybeRetitleConversationAnyLength(c.id, c.kind))) return spent // ditto
+    if (!(await maybeRetitleConversationAnyLength(c.id, c.kind, c.title))) return spent // ditto
   }
   return spent
 }
 
 /** Sweep-side retitle: same gate, but without the first-messages-only limit —
- *  a pre-Titler conversation can be long and still mechanically titled. */
-async function maybeRetitleConversationAnyLength(conversationId: string, kind: 'chat' | 'plan'): Promise<boolean> {
+ *  a pre-Titler conversation can be long and still mechanically titled.
+ *
+ *  `expect` is the title the sweep's gate approved, and the write asserts it is
+ *  still there. The sweep snapshots up to 100 rows and then makes up to twelve
+ *  sequential model calls against them, so the gap between deciding a title is
+ *  mechanical and overwriting it is minutes wide — and every one of those rows
+ *  is renameable from the same screen that kicked the sweep. */
+async function maybeRetitleConversationAnyLength(conversationId: string, kind: 'chat' | 'plan', expect: string | null): Promise<boolean> {
   const sql = await db()
   const msgs = (await sql`
     select role, content from messages
@@ -146,7 +121,7 @@ async function maybeRetitleConversationAnyLength(conversationId: string, kind: '
   `) as unknown as Array<{ role: string; content: string }>
   const transcript = msgs.map((m) => `${m.role}: ${m.content.slice(0, 1200)}`).join('\n\n')
   const title = await generateTitle(kind === 'plan' ? 'plan' : 'chat', transcript)
-  if (title) await sql`update conversations set title = ${title} where id = ${conversationId}`
+  if (title) await sql`update conversations set title = ${title} where id = ${conversationId} and title is not distinct from ${expect}`
   return title != null
 }
 

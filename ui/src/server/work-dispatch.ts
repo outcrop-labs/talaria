@@ -6,13 +6,31 @@
 // stops progressing, or the turn cap lands. One turn is never the budget for
 // real work. Matched task WORKFLOWS ride along; the plugin heartbeat remains
 // the pull-side safety net.
-import { proxyChat } from './gateway'
-import { parseAgentStream } from '@/lib/sse-parse'
-import { estimateTokens, recordUsage } from './usage'
+//
+// THE TURN ITSELF IS A HARNESS (harness/defs/work-session.ts). Everything in
+// this file is ticket-state orchestration — who may still work this ticket, when
+// the session stops, what lands in the activity trail — and every predicate in
+// it is unchanged. The one thing that moved is the model call: an agent's reply
+// saying a ticket is DONE now goes through `runHarness`, so `zero_tool_claim`
+// finally runs on the output it was written for (audit 1.5).
+//
+// AND NOTHING IN THIS FILE REACHES A MODEL ANY MORE. It used to carry
+// `sessionTransport` — a hand-written persona transport that existed for three
+// slots `TransportRequest` did not have: the agent's own tools, the ticket the
+// spend belongs to, and a ten-minute hold for an agent restarting under a config
+// propagation. All three exist now, two as declarations on the harness
+// (`tools: 'own'`, `holdMs`) and one as `RunContext.ledger`, so the transport is
+// gone rather than reduced. That matters beyond tidiness: the shim mapped a
+// request onto a `proxyChat` payload by hand and dropped `temperature` and
+// `jsonMode` doing it, which is the exact class of silent divergence the harness
+// layer exists to end.
 import { workflowsForTask } from './workflows'
 import { statusMeta } from './statuses'
 import { listAllSkills, SHARED } from './agent-skills'
 import { db } from './db/pg'
+import { runHarness } from './harness/run'
+import { workSessionHarness } from './harness/defs/work-session'
+import type { Finding } from './guardrails'
 import type { Task } from '@/lib/task-const'
 
 /** Skill names this agent can actually load: the shared root + its own. */
@@ -36,7 +54,6 @@ const liveSessions = new Set<string>()
  *  looping agent can't burn unbounded tokens. The session also ends the
  *  moment the ticket leaves the working statuses. */
 const MAX_SESSION_TURNS = 12
-const TURN_WAIT_MS = 600_000
 
 /** Where the ticket is now — the session's continue/stop signal.
  *
@@ -69,6 +86,23 @@ async function sessionState(
   if (!meta.workingKeys.includes(t.status)) return { status: t.status, stop: `ticket moved to "${t.status}"` }
   return { status: t.status, stop: null }
 }
+
+/** Guard findings, on the line a HUMAN reads.
+ *
+ *  `runHarness` already writes them to `guard_findings`, which is where the
+ *  fitness page reads a per-model confabulation rate — but nobody reviewing
+ *  PLAT-118 opens that table. A turn flagged `zero_tool_claim` on a ticket is
+ *  the exact thing the reviewer signing that ticket off needs to see, so the
+ *  check ids ride on the activity line, in FRONT of the reply so a bounded
+ *  slice can never truncate them away.
+ *
+ *  IDS ONLY — never `message` and above all never `snippet`, which is a verbatim
+ *  excerpt of the flagged text. And this never travels back to the agent: the
+ *  next turn's prompt is built from the ticket's state, not from this line.
+ *  Feeding a finding back would break guardrails.ts's cardinal invariant and
+ *  teach the agent to argue with the guard instead of to call a tool. */
+const noted = (line: string, findings: Finding[]): string =>
+  findings.length ? `[guard: ${[...new Set(findings.map((f) => f.check))].join(', ')}] ${line}` : line
 
 /** Drive one ticket with one agent as a SESSION. Fire-and-forget from task
  *  mutations; re-entry for the same ticket+agent is a no-op. */
@@ -147,32 +181,41 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
       `That status move in step 4 is your LAST one on this ticket. Once it is in review, or parked in blocked, only a person moves it again — triage_ticket will refuse you with a 403, and so will add_time once the ticket is closed. Don't retry it; comment instead, which stays open.\n` +
       `\nBe honest about capability: if you genuinely can't do this properly (a tool or access you're missing, an org-specific process you'd be guessing at), don't improvise — report_gap once with what a flow would need, then block. Never report a gap for work you can simply do.\n` +
       `End each reply with a short status line: what you just did and what you'll do next (or DONE / BLOCKED).`
-    const sendTurn = async (content: string): Promise<string> => {
-      const upstream = await proxyChat({ model: agentModel, messages: [{ role: 'user', content }] }, { waitMs: TURN_WAIT_MS })
-      if (!upstream.ok || !upstream.body) throw new Error(`gateway ${upstream.status}`)
-      let text = ''
-      let usage: { promptTokens: number; completionTokens: number } | null = null
-      for await (const ev of parseAgentStream(upstream.body)) {
-        if (ev.type === 'content') text += ev.text
-        else if (ev.type === 'usage') usage = ev
-      }
-      void recordUsage({
-        agentModel,
-        source: 'chat',
-        refId: task.id,
-        // The ticket this session's spend belongs to — without it the turn
-        // lands in the ledger but never in the ticket's cost.
-        taskId: task.id,
-        tier: null,
-        promptTokens: usage?.promptTokens ?? estimateTokens(content.length),
-        completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
-        estimated: !usage,
-      }).catch(() => {})
-      return text.trim()
+    // ONE TURN = ONE HARNESS RUN, on the runner's own transport. The model is
+    // named by the caller (it is the agent assigned to this ticket, not a
+    // chain-resolved one); the tool loop and the ten-minute hold are declared on
+    // the harness; and everything else is the runner's — the guard pass that
+    // finally covers this output, redaction of the copy that gets persisted, and
+    // the harness_runs row.
+    //
+    // THE LEDGER LINE IS THE ONE THING ONLY THIS FILE CAN SAY. `recordUsage`
+    // writes `task_id`, and `taskUsage` sums a ticket's cost by that column
+    // alone — so without `taskId` here a session's spend lands in the ledger and
+    // never in the number the ticket's owner reads. `source` stays 'chat'
+    // deliberately: 'ticket' rows are agent-SELF-REPORTED through MCP
+    // `log_usage`, and this turn is metered by Talaria on its own request path.
+    //
+    // The policy — a turn that produced nothing usable ends the session with a
+    // logged failure instead of driving eleven more turns off a blank — lives in
+    // `workSessionHarness.onFailure: 'throw'` and nowhere else now. It used to be
+    // restated here because `runHarness` RETURNED rather than threw for the
+    // pre-call failures (nothing resolved, render threw, the transport died
+    // mid-stream); it throws on all of them, and the throw lands in the outer
+    // catch below exactly as the old `throw new Error('gateway ' + status)` did.
+    // What is left is the TYPE narrowing: `HarnessResult.value` is `O | null` on
+    // every result alike, so the compiler cannot see the guarantee.
+    const sendTurn = async (content: string): Promise<{ text: string; findings: Finding[] }> => {
+      const run = await runHarness(
+        workSessionHarness,
+        { prompt: content },
+        { caller: `ticket:${task.id}`, model: agentModel, ledger: { source: 'chat', refId: task.id, taskId: task.id } },
+      )
+      if (run.value === null) throw new Error(run.error ?? `no reply from ${agentModel}`)
+      return { text: run.value, findings: run.findings }
     }
 
-    let reply = await sendTurn(prompt)
-    await logActivity(task.id, agentModel, 'dispatch', `picked up: ${reply.slice(0, 300) || '(no reply)'}`)
+    let last = await sendTurn(prompt)
+    await logActivity(task.id, agentModel, 'dispatch', noted(`picked up: ${last.text.slice(0, 300) || '(no reply)'}`, last.findings))
 
     // The session: keep the agent working until the ticket leaves the working
     // statuses (review/blocked/done/unassigned), it declares DONE/BLOCKED, or
@@ -189,19 +232,19 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
         ).catch(() => {})
         return
       }
-      if (/\b(DONE|BLOCKED)\b/.test(reply.slice(-200))) {
+      if (/\b(DONE|BLOCKED)\b/.test(last.text.slice(-200))) {
         // The agent says it's finished but the ticket disagrees — one nudge to
         // reconcile (report_outcome / set blocked), then stop pushing.
-        reply = await sendTurn(
+        last = await sendTurn(
           `[Work session — reconcile] You said DONE/BLOCKED but the ticket is still "${state.status}". If finished: report_outcome now. If blocked: set status "blocked" with a comment. If neither, keep working.`,
         )
-        await logActivity(task.id, agentModel, 'dispatch', `session reconcile: ${reply.slice(0, 200) || '(no reply)'}`).catch(() => {})
+        await logActivity(task.id, agentModel, 'dispatch', noted(`session reconcile: ${last.text.slice(0, 200) || '(no reply)'}`, last.findings)).catch(() => {})
         continue
       }
-      reply = await sendTurn(
+      last = await sendTurn(
         `[Work session — turn ${turn}/${MAX_SESSION_TURNS}] You're mid-work on this ticket (status: "${state.status}"). Continue like a developer: next step, run it, read the result, adjust. Verify before you finish — tests, your own diff, and for UI work drive it in a real browser (Playwright) and attach evidence. When genuinely done: report_outcome. If stuck: status "blocked" + comment. End with your status line.`,
       )
-      await logActivity(task.id, agentModel, 'dispatch', `session turn ${turn}: ${reply.slice(0, 250) || '(no reply)'}`).catch(() => {})
+      await logActivity(task.id, agentModel, 'dispatch', noted(`session turn ${turn}: ${last.text.slice(0, 250) || '(no reply)'}`, last.findings)).catch(() => {})
     }
     await logActivity(task.id, 'talaria', 'dispatch', `work session hit the ${MAX_SESSION_TURNS}-turn cap — leaving the ticket to the agent/heartbeat`).catch(() => {})
   } catch (e) {

@@ -7,9 +7,9 @@ import { db } from './db/pg'
 import { agentCategoryFolder, createArtifact, saveArtifact } from './artifacts'
 import { archiveChannel, insertChannelMessage, listChannelAgents, listChannelMessages } from './channels'
 import { describeAgent } from './gateway'
-import { completeViaGateway } from './llm-gateway'
-import { museModelFor } from './muse'
-import { platformAgentModel } from './platform-agents'
+import { concluderHarness } from './harness/defs/concluder'
+import { distillerHarness } from './harness/defs/distiller'
+import { runHarness } from './harness/run'
 import { indexActivity, indexPersonal } from './retrieval/sources'
 import { registerJob } from './scheduler'
 
@@ -21,10 +21,6 @@ const TTL_DAYS = () => Math.max(1, Number(process.env.TALARIA_CHAT_TTL_DAYS ?? 1
 // archives an hour (~190/day) draining gradually rather than a wall of
 // "where did my chats go" on the morning of a deploy.
 const SWEEP_BATCH = 8
-
-const DISTILL_PROMPT =
-  'Distill this conversation into its durable substance: decisions made, facts established, preferences expressed, and outcomes — terse markdown bullets, grouped when helpful. ' +
-  'Skip pleasantries and process chatter. Never invent anything. Reply with ONLY the distillation.'
 
 const clip = (s: string, max = 60_000) => (s.length > max ? `${s.slice(0, max)}\n…(truncated)` : s)
 
@@ -46,6 +42,30 @@ type DistillOutcome =
    *  a failed distillation is how the substance is lost. */
   | 'empty-distillation'
 
+/** What a harness run means to this file: a usable distillation, or the
+ *  non-archiving outcome it has to be counted as.
+ *
+ *  THE TWO NULLS ARE NOT THE SAME EVENT, and this function exists so nothing
+ *  ever has to re-derive which is which. `runHarness` reports `model` and
+ *  `value` separately for exactly this reason:
+ *
+ *    model === null   nothing is CONFIGURED to summarize with. Every
+ *                     conversation in the batch will hit it, it will still be
+ *                     true in an hour, and the sweep escalates it to a human
+ *                     because only a human can assign a model.
+ *    value === null   a model was asked and could not answer. This one
+ *                     conversation is left alone and retried next pass.
+ *
+ *  Collapsing them loses the escalation. Treating either as success archives a
+ *  conversation whose substance was never captured — the exact failure this
+ *  whole file is written around. Exported so the mapping is tested directly.
+ */
+export function distillOutcome<T>(run: { model: string | null; value: T | null }): { ok: true; value: T } | { ok: false; outcome: Exclude<DistillOutcome, 'archived'> } {
+  if (!run.model) return { ok: false, outcome: 'no-model' } // no routable model — leave it for a sweep that has one
+  if (run.value === null) return { ok: false, outcome: 'empty-distillation' } // don't archive on a failed distillation
+  return { ok: true, value: run.value }
+}
+
 /** Distill one idle agent DM into the activity brain, then archive it. */
 async function distillConversation(conv: {
   id: string
@@ -54,9 +74,6 @@ async function distillConversation(conv: {
   title: string | null
 }): Promise<DistillOutcome> {
   const sql = await db()
-  // The Distiller platform agent: its assigned model, else the owner's muse.
-  const model = (await platformAgentModel('distiller')) ?? (await museModelFor(conv.userId))
-  if (!model) return 'no-model' // no routable model — leave it for a sweep that has one
   const msgs = (await sql`
     select role, content from messages
     where conversation_id = ${conv.id} and content <> '' order by seq asc
@@ -64,16 +81,21 @@ async function distillConversation(conv: {
   const label = describeAgent(conv.agentModel).label
   const transcript = clip(msgs.map((m) => `${m.role === 'assistant' ? label : 'User'}: ${m.content}`).join('\n\n'))
 
+  // BEHAVIOR CHANGE, deliberate: a conversation with nothing in it now archives
+  // without needing a model at all. The chain used to be resolved first, so a
+  // wholly empty chat on an install with no Distiller model came back
+  // 'no-model' — unarchivable for ever, and counted into the skippedNoModel
+  // total that makes the job throw. There is no substance to lose here, so the
+  // "never archive on a failed distillation" rule has nothing to protect.
   if (transcript.trim()) {
-    const { text } = await completeViaGateway(
-      model,
-      [
-        { role: 'system', content: DISTILL_PROMPT },
-        { role: 'user', content: `Conversation with ${label}:\n\n${transcript}` },
-      ],
-      { temperature: 0.2, caller: `platform:distiller:${conv.userId}` },
-    )
-    if (!text.trim()) return 'empty-distillation' // don't archive on a failed distillation
+    // The model chain, the empty-reply check and the failure policy all moved
+    // into harness/defs/distiller.ts. `userId` is what turns on the owner's
+    // preferred model and the member allowlist — the two things `museModelFor`
+    // used to supply by hand.
+    const run = await runHarness(distillerHarness, { agentLabel: label, transcript }, { caller: `platform:distiller:${conv.userId}`, userId: conv.userId })
+    const read = distillOutcome(run)
+    if (!read.ok) return read.outcome
+    const text = read.value
     const title = `Distilled: ${conv.title || `chat with ${label}`}`
     // Twice on purpose: the activity copy keeps the owner's ambient search
     // working as before (owner-scoped), and the personal-brain copy is what
@@ -205,9 +227,6 @@ registerJob({
 /** Conclude a Relay: post + index a summary of what was decided, then archive.
  *  Returns the summary so the UI can show it after the relay leaves the list. */
 export async function concludeRelay(channelId: string, byUserId: string, channelName: string): Promise<string> {
-  // The Concluder platform agent: its assigned model, else the user's muse.
-  const model = (await platformAgentModel('concluder')) ?? (await museModelFor(byUserId))
-  if (!model) throw new Error('no model configured to summarize with — add an endpoint on /models')
   const history = await listChannelMessages(channelId, -1, 500, { includeThreads: true })
   const transcript = clip(
     history
@@ -217,19 +236,27 @@ export async function concludeRelay(channelId: string, byUserId: string, channel
   )
   if (!transcript.trim()) throw new Error('nothing to conclude — the relay has no messages')
 
-  const { text } = await completeViaGateway(
-    model,
-    [
-      {
-        role: 'system',
-        content:
-          'Write the closing summary for a work discussion: what was decided, what was produced, and any follow-ups — crisp markdown, a few bullets per section, no preamble.',
-      },
-      { role: 'user', content: `Relay "${channelName}":\n\n${transcript}` },
-    ],
-    { temperature: 0.2, caller: `platform:concluder:${byUserId}` },
-  )
-  if (!text.trim()) throw new Error('the summary came back empty — try again')
+  // The model chain and the empty-reply check moved into
+  // harness/defs/concluder.ts. The failures are still mapped BY HAND rather than
+  // with `onFailure: 'throw'`, and the reason is down to one: these strings are
+  // USER-FACING COPY shown by the conclude button, not a developer's error
+  // message. ('throw' would now cover all three — it stopped being contract-only
+  // — so the other half of this note is gone: the runner no longer returns for
+  // an unresolved chain under that policy.)
+  const run = await runHarness(concluderHarness, { channelName, transcript }, { caller: `platform:concluder:${byUserId}`, userId: byUserId })
+  if (!run.model) throw new Error('no model configured to summarize with — add an endpoint on /models')
+  // THREE outcomes, not two. `runHarness` also returns for a transport failure,
+  // and folding that into "came back empty" told a user whose provider was rate
+  // limiting to try again — into the same rate limit — while the only sentence
+  // that explains it (`gateway completion 429: …`, which is what the button
+  // showed before the port) sat on the `harness_runs` row. The runner's sentence
+  // is the right one whenever the model never answered, and `answered` is that
+  // question under its own name: this asked `raw === null` before, which is a
+  // drill-down field pressed into service as a control-flow test and which reads
+  // a stream that died after three tokens as a model that answered.
+  if (!run.answered && run.error) throw new Error(run.error)
+  if (run.value === null) throw new Error('the summary came back empty — try again')
+  const text = run.value
 
   // The summary is the relay's last word: posted into history (visible if the
   // relay is ever revisited) and indexed for retrieval (channel-membership ACL).

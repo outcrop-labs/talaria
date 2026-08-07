@@ -16,7 +16,7 @@ import {
 } from './conversations'
 import { routedModelFor } from './fleet-agents'
 import { estimateTokens, recordUsage } from './usage'
-import { guardChatReply, needsRedaction, redactSecrets } from './guardrails'
+import { guardChatReply, needsRedaction, redactFindings, redactSecrets } from './guardrails'
 import { notifyPlanMentions, PLAN_MODE_PROMPT, planRoutingBlock } from './plan-doc'
 import { describeAgent, proxyChat } from './gateway'
 import { indexActivity } from './retrieval/sources'
@@ -118,6 +118,42 @@ export async function persistAssistantStream(
     // title once there's a real exchange to name (early-outs make this a
     // single cheap query on every later reply).
     void maybeRetitleConversation(conversationId).catch(() => {})
+    // Confab guard on the final reply (structural). The fleet stream gives tool
+    // names, so zero-tool-claim + secret-leak apply here. annotate/strict pin
+    // the findings onto the message row (the UI renders a caveat; transcripts
+    // never see it); strict also redacts leaked secrets from the SAVED copy so
+    // future turns can't re-feed them.
+    //
+    // AWAITED, AND AHEAD OF THE INDEX AND THE NOTIFICATION, because both take a
+    // COPY of `content`. As a detached IIFE below them, strict mode scrubbed the
+    // `messages` row while `indexActivity` had already put the unredacted reply
+    // into the owner's brain — where nothing ever re-indexes it, and where
+    // `search_knowledge` hands it back to a model, which is the one thing
+    // guardrails.ts's cardinal invariant forbids — and `notifyPlanMentions` had
+    // already mailed it. channels.$id.messages.ts and tasks.$id.comments.ts
+    // order these the same way, for the same reason. Failure here must not fail
+    // the persist, so the whole block is caught rather than the outer `catch`
+    // flushing the message as errored.
+    if (usageMeta && content) {
+      await (async () => {
+        const { findings, mode } = await guardChatReply({
+          answer: content,
+          toolNames: tools.map((t) => t.name),
+          userMessage: '',
+          caller: `chat:${usageMeta.agentModel}`,
+          model: usageMeta.agentModel,
+        })
+        if (!findings.length || (mode !== 'annotate' && mode !== 'strict')) return
+        if (mode === 'strict' && needsRedaction(findings)) {
+          content = redactSecrets(content).text
+          reasoning = redactSecrets(reasoning).text
+          await flush('complete')
+        }
+        // Scrubbed: a pinned finding carries a verbatim excerpt of the flagged
+        // span, and `zero_tool_claim` does not truncate its own.
+        await setMessageGuard(messageId, redactFindings(findings))
+      })().catch(() => {})
+    }
     if (usageMeta?.plan && content.trim()) {
       void indexActivity({
         sourceType: 'plan',
@@ -142,29 +178,6 @@ export async function persistAssistantStream(
         tier: usageMeta.tier ?? null,
         plan: usageMeta.plan ?? null,
       }).catch(() => {})
-    }
-    // Confab guard on the final reply (structural; fire-and-forget). The fleet
-    // stream gives tool names, so zero-tool-claim + secret-leak apply here.
-    // annotate/strict pin the findings onto the message row (the UI renders a
-    // caveat; transcripts never see it); strict also redacts leaked secrets
-    // from the SAVED copy so future turns can't re-feed them.
-    if (usageMeta && content) {
-      void (async () => {
-        const { findings, mode } = await guardChatReply({
-          answer: content,
-          toolNames: tools.map((t) => t.name),
-          userMessage: '',
-          caller: `chat:${usageMeta.agentModel}`,
-          model: usageMeta.agentModel,
-        })
-        if (!findings.length || (mode !== 'annotate' && mode !== 'strict')) return
-        if (mode === 'strict' && needsRedaction(findings)) {
-          content = redactSecrets(content).text
-          reasoning = redactSecrets(reasoning).text
-          await flush('complete')
-        }
-        await setMessageGuard(messageId, findings)
-      })().catch(() => {})
     }
   } catch {
     await flush('error').catch(() => {})
