@@ -7,6 +7,9 @@
   import Select from '@/components/ui/Select.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { getJson } from '@/lib/fetch-json'
+  import CapabilityTags from '@/components/models/CapabilityTags.svelte'
+  import { assignmentNotice } from '@/components/models/fitness'
+  import { useModelCapabilities } from '@/components/models/fitness-queries'
 
   // ── Platform sub-agents: Talaria's own workers, one model pick each ─────────
   interface PlatformAgentRow {
@@ -24,6 +27,14 @@
     queryKey: ['platform-agents'],
     queryFn: (): Promise<PlatformAgentsData> => getJson<PlatformAgentsData>('/api/admin/platform-agents'),
   }))
+  // What is known about the model each sub-agent is running on, and whether the
+  // last fitness run found it unfit for this exact slot. Advisory: it says so
+  // and lets the admin proceed, who may know something the probe does not.
+  const capsQuery = useModelCapabilities()
+  const rowFor = (model: string | undefined) => capsQuery.data?.models.find((m) => m.id === model)
+  const noticeFor = (id: string, model: string | undefined) =>
+    model ? assignmentNotice({ entry: capsQuery.data?.index[model], slotKey: `agent:${id}` }) : null
+
   const assign = async (id: string, model: string | null) => {
     await fetch('/api/admin/platform-agents', {
       method: 'PUT',
@@ -70,6 +81,8 @@
     />
     <ul class="divide-y divide-line">
       {#each data.agents as a (a.id)}
+        {@const assigned = data.assignments[a.id]}
+        {@const notice = noticeFor(a.id, assigned)}
         <li class="flex items-center gap-3 py-3">
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2 font-sans text-sm text-fg">
@@ -77,9 +90,15 @@
               {#each a.skills as sk (sk)}
                 <Chip>{sk}</Chip>
               {/each}
+              {#if notice}<Chip tone="warn">unfit</Chip>{/if}
             </div>
             <div class="font-sans text-xs text-muted">{a.job}</div>
             <div class="font-mono text-[11px] text-muted/80">Auto: {a.auto}</div>
+            <CapabilityTags class="mt-1" row={rowFor(assigned)} />
+            {#if notice}
+              <!-- A sentence, not a validation error: the assignment stands. -->
+              <p class="mt-1 max-w-prose font-sans text-xs text-warning">{notice.text}</p>
+            {/if}
           </div>
           {#if a.assignable}
             <Select

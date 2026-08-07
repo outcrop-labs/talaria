@@ -10,12 +10,15 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { getJson } from '@/lib/fetch-json'
   import { useModels } from '@/lib/muse.svelte'
+  import CapabilityTags from '@/components/models/CapabilityTags.svelte'
+  import { useModelCapabilities } from '@/components/models/fitness-queries'
 
   // Which models MEMBERS may pick (preferred model, muse drafting). Admins are
   // never restricted; an empty allowlist means everything is open. This is how
   // admins keep the expensive/powerful brains for deliberate use.
   const qc = useQueryClient()
   const catalogQuery = useModels()
+  const capsQuery = useModelCapabilities()
   // `['admin-settings']` is ONE cache entry shared with Admin.svelte's Organization
   // and Settings panels. Declare the whole payload, not a private slice of it,
   // so all three readers agree on what that entry holds (Admin.svelte carries the
@@ -110,6 +113,11 @@
             <span class="min-w-0">
               <span class="block truncate font-sans text-sm text-fg">{m.label ?? m.id}</span>
               <span class="block truncate font-sans text-xs text-muted">{m.blurb || m.id}</span>
+              <!-- What is measured about each model members could be handed.
+                   A capability recorded FALSE here is the difference between a
+                   member picking a brain that works and one that quietly
+                   returns nothing on every structured surface. -->
+              <CapabilityTags class="mt-0.5" row={capsQuery.data?.models.find((c) => c.id === m.id)} />
             </span>
           </label>
         {/each}

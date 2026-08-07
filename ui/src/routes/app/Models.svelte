@@ -14,6 +14,7 @@
   import ModelsAddProviderModal from './ModelsAddProviderModal.svelte'
   import ModelsEndpointCard from './ModelsEndpointCard.svelte'
   import ModelsEndpointModal from './ModelsEndpointModal.svelte'
+  import ModelsFitnessPanel from './ModelsFitnessPanel.svelte'
   import ModelsMemberAccessPanel from './ModelsMemberAccessPanel.svelte'
   import ModelsPlatformAgentsPanel from './ModelsPlatformAgentsPanel.svelte'
   import ModelsRolesPanel from './ModelsRolesPanel.svelte'
@@ -65,7 +66,10 @@
     <!-- Page content entrance: header row → tab strip → pane rise in sequence
          (ANIMATIONS.md). The keyed pane keeps its own fly on tab switch and
          stays unstaggered inside — one level only. -->
-    <div use:staggerIn class="mx-auto max-w-4xl space-y-6">
+    <!-- The fitness matrix is 20-odd columns wide. It scrolls inside its own
+         box either way, but at 4xl almost every column is off-screen and the
+         "at a glance" the page exists for stops working. -->
+    <div use:staggerIn class="mx-auto space-y-6 {tab === 'fitness' ? 'max-w-6xl' : 'max-w-4xl'}">
       <ViewHeader title="Models">
         {#snippet actions()}
           {#if tab === 'models'}
@@ -118,6 +122,7 @@
       {/if}
       {#if tab === 'roles'}<ModelsRolesPanel />{/if}
       {#if tab === 'platform'}<ModelsPlatformAgentsPanel />{/if}
+      {#if tab === 'fitness'}<ModelsFitnessPanel />{/if}
       {#if tab === 'access'}<ModelsMemberAccessPanel />{/if}
       </div>
       {/key}
