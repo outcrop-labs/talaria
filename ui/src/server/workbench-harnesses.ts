@@ -1,11 +1,15 @@
 // The harness REGISTRY — the extension point developers build against. A
-// harness is a declarative HarnessDefinition (see @talaria/sdk defineHarness):
+// harness is a declarative WorkbenchHarnessDefinition (see @talaria/sdk
+// defineWorkbenchHarness) — NOT the activity harness in server/harness/, which
+// is a prompt plus an output schema run by `runHarness`. Two contracts, and
+// until the rename they shared the spelling `defineHarness`:
 // how it authenticates, how it's invoked (structured output first), how it
 // serves/consumes MCP, and what a driving agent should understand about it.
 //
 // Three layers merge by slug, later winning:
 //   builtin      the harnesses Talaria ships (below)
-//   app-shipped  apps/<slug>/harness.ts (defineHarness) — enabled apps only
+//   app-shipped  apps/<slug>/harness.ts (defineWorkbenchHarness; the deprecated
+//                `defineHarness` overload still builds) — enabled apps only
 //   custom       workbench_harness_defs rows (admin-registered JSON)
 //
 // Effort→model stays the platform's call: agents pick effort, Talaria
@@ -13,11 +17,14 @@
 import { db } from './db/pg'
 import { resolveRoleModel } from './model-roles'
 import { resolveRoute } from './llm-gateway'
-import type { HarnessDefinition } from '@/sdk/server'
+import type { WorkbenchHarnessDefinition } from '@/sdk/server'
 
-export type { HarnessDefinition }
+export type { WorkbenchHarnessDefinition }
+/** @deprecated Import `WorkbenchHarnessDefinition`. Re-exported only so the
+ *  route and MCP modules that already name it keep compiling. */
+export type HarnessDefinition = WorkbenchHarnessDefinition
 
-export interface ResolvedHarness extends HarnessDefinition {
+export interface ResolvedHarness extends WorkbenchHarnessDefinition {
   source: 'builtin' | `app:${string}` | 'custom'
   /** Full container env: auth-derived + definition env. */
   fullEnv: Record<string, string>
@@ -35,7 +42,7 @@ export interface ResolvedHarness extends HarnessDefinition {
 // raw upstream, so no gateway brain is provisioned) on the key it configured.
 const GATEWAY_ENV = { OPENAI_BASE_URL: '${LLM_BASE_URL}', OPENAI_API_KEY: '${LLM_WORKBENCH_API_KEY:-${LLM_API_KEY}}' }
 
-const BUILTINS: HarnessDefinition[] = [
+const BUILTINS: WorkbenchHarnessDefinition[] = [
   {
     slug: 'opencode',
     label: 'opencode',
@@ -85,20 +92,20 @@ const BUILTINS: HarnessDefinition[] = [
 const HARNESS_MODS = import.meta.glob('../../../apps/*/harness.ts') as Record<string, () => Promise<unknown>>
 const appSlugOf = (path: string): string => /apps\/([^/]+)\//.exec(path)?.[1] ?? path
 
-async function appHarnesses(): Promise<Array<{ def: HarnessDefinition; app: string }>> {
+async function appHarnesses(): Promise<Array<{ def: WorkbenchHarnessDefinition; app: string }>> {
   const { enabledApps } = await import('./apps')
   const enabled = new Set((await enabledApps()).map((a) => a.slug))
-  const out: Array<{ def: HarnessDefinition; app: string }> = []
+  const out: Array<{ def: WorkbenchHarnessDefinition; app: string }> = []
   for (const [path, load] of Object.entries(HARNESS_MODS)) {
     const app = appSlugOf(path)
     if (!enabled.has(app)) continue
-    const mod = (await load().catch(() => null)) as { default?: HarnessDefinition } | null
+    const mod = (await load().catch(() => null)) as { default?: WorkbenchHarnessDefinition } | null
     if (mod?.default?.slug && mod.default.invoke && mod.default.guide) out.push({ def: mod.default, app })
   }
   return out
 }
 
-function resolveDef(def: HarnessDefinition, source: ResolvedHarness['source']): ResolvedHarness {
+function resolveDef(def: WorkbenchHarnessDefinition, source: ResolvedHarness['source']): ResolvedHarness {
   const authEnv = def.auth === 'gateway' ? GATEWAY_ENV : {}
   return { ...def, source, fullEnv: { ...authEnv, ...(def.env ?? {}) } }
 }
@@ -107,13 +114,13 @@ function resolveDef(def: HarnessDefinition, source: ResolvedHarness['source']): 
 export async function listHarnessDefs(): Promise<ResolvedHarness[]> {
   const bySlug = new Map<string, ResolvedHarness>()
   for (const b of BUILTINS) bySlug.set(b.slug, resolveDef(b, 'builtin'))
-  for (const { def, app } of await appHarnesses().catch(() => [] as Array<{ def: HarnessDefinition; app: string }>)) {
+  for (const { def, app } of await appHarnesses().catch(() => [] as Array<{ def: WorkbenchHarnessDefinition; app: string }>)) {
     bySlug.set(def.slug, resolveDef(def, `app:${app}`))
   }
   const sql = await db()
   const rows = (await sql`select slug, definition from workbench_harness_defs where enabled`) as unknown as Array<{
     slug: string
-    definition: HarnessDefinition
+    definition: WorkbenchHarnessDefinition
   }>
   for (const r of rows) {
     const def = { ...r.definition, slug: r.slug }
@@ -123,7 +130,7 @@ export async function listHarnessDefs(): Promise<ResolvedHarness[]> {
 }
 
 /** Admin-custom definitions (declarative only — no code runs from these). */
-export async function upsertCustomHarness(slug: string, definition: HarnessDefinition, createdBy: string): Promise<void> {
+export async function upsertCustomHarness(slug: string, definition: WorkbenchHarnessDefinition, createdBy: string): Promise<void> {
   const sql = await db()
   await sql`
     insert into workbench_harness_defs (slug, definition, created_by)
@@ -138,7 +145,7 @@ export async function deleteCustomHarness(slug: string): Promise<void> {
 }
 
 /** The model id as THIS harness's CLI expects it. */
-export const harnessModelArg = (h: HarnessDefinition, model: string): string => `${h.modelPrefix ?? ''}${model}`
+export const harnessModelArg = (h: WorkbenchHarnessDefinition, model: string): string => `${h.modelPrefix ?? ''}${model}`
 
 // ── Effort → model (unchanged contract) ──────────────────────────────────────
 

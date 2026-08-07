@@ -130,7 +130,7 @@ your team, and watch the work (and what it costs) move in one place.
   agent**, `finish_job` opens the ticket-linked PR, and an optional per-repo testing branch takes
   integration merges without ever replacing review. Effort→model routing means agents pick
   low/medium/high and the platform picks the model. Harnesses are an **open registry** —
-  `defineHarness` in the SDK, app-shipped or admin-registered JSON. [`docs/WORKBENCH.md`](./docs/WORKBENCH.md).
+  `defineWorkbenchHarness` in the SDK, app-shipped or admin-registered JSON. [`docs/WORKBENCH.md`](./docs/WORKBENCH.md).
 - **Platform sub-agents.** Talaria's own workers (Muse, Titler, Librarian, Distiller, Concluder,
   Briefer, Judge, Catalog writer, Summarizer) are visible, per-agent model-assignable citizens on
   Models → Platform — the platform's internal AI is governed like everything else.
@@ -195,7 +195,7 @@ Details in [`ui/README.md`](./ui/README.md) and [`HANDOFF.md`](./HANDOFF.md); pa
 
 ## Under the hood
 
-Talaria is its own app ([`ui/`](./ui), Vite + TanStack Start, React 19 + TypeScript) with its own
+Talaria is its own app ([`ui/`](./ui), Vite + Svelte 5 + TypeScript) with its own
 Postgres/Redis state. Beneath it sits the fleet: Hermes agent containers that Talaria **renders** from
 one chassis and manages end to end. Everything routes through Talaria's own gateway: each agent calls
 it for LLM completions (routed to the providers you register, with request policies like no-train
@@ -258,7 +258,8 @@ Milestones and detail: [`ROADMAP.md`](./ROADMAP.md) · [`docs/TODO.md`](./docs/T
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 **Docs:** building apps [`docs/APPS.md`](./docs/APPS.md) · SDK reference
-[`docs/SDK.md`](./docs/SDK.md) · MCP governance [`docs/MCP.md`](./docs/MCP.md) · permissions
+[`docs/SDK.md`](./docs/SDK.md) · harnesses & model fitness
+[`docs/HARNESSES.md`](./docs/HARNESSES.md) · MCP governance [`docs/MCP.md`](./docs/MCP.md) · permissions
 [`docs/PERMISSIONS.md`](./docs/PERMISSIONS.md) · onboarding/domains/email
 [`docs/ONBOARDING.md`](./docs/ONBOARDING.md) · API conventions
 [`docs/API-CONVENTIONS.md`](./docs/API-CONVENTIONS.md) · UI conventions

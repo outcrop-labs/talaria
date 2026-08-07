@@ -1,4 +1,4 @@
-// Production server: a Node HTTP server wrapping the TanStack Start fetch handler
+// Production server: a Node HTTP server wrapping the app's fetch handler
 // (dist/server/server.js) and serving the client assets (dist/client). Keeps the
 // streaming pump so SSE chat responses flush incrementally.
 import { createServer } from 'node:http'
