@@ -87,16 +87,21 @@ rebuilding (managed update flows are on the roadmap).
 
 ## Shipping a harness
 
-Apps can extend the **Workbench** — the sandboxed execution layer Hermes agents drive real work through — by shipping a harness definition:
+Talaria has **two** things called a harness and they are not specializations of each other. This
+section is the **workbench** one — the sandboxed execution layer Hermes agents drive real work
+through. For an **activity** harness (a model call Talaria makes on your app's behalf, shipped at
+`apps/<slug>/harnesses/*.ts`), see [`SDK.md`](./SDK.md) and [`HARNESSES.md`](./HARNESSES.md).
+
+Apps extend the workbench by shipping a harness definition:
 
 ```
 apps/<slug>/harness.ts
 ```
 
 ```ts
-import { defineHarness } from '@talaria/sdk'
+import { defineWorkbenchHarness } from '@talaria/sdk/server'
 
-export default defineHarness({
+export default defineWorkbenchHarness({
   slug: 'aider',
   label: 'Aider',
   auth: 'gateway', // OpenAI-compatible → pointed at Talaria's gateway (metered, attributed)

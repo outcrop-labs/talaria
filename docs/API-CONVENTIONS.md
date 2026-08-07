@@ -1,8 +1,15 @@
 # API conventions — one dialect for every route
 
 The contract that keeps 160+ routes predictable. Swept across the whole tree (2026-07); new routes
-follow it from day one. Routes live in `ui/src/routes/api/` (TanStack Start file routes); server
+follow it from day one. Routes live in `ui/src/routes/api/` — **file-based routes**, where a dot in
+the filename is a path separator (`admin.model-fitness.ts` serves `/api/admin/model-fitness`). Server
 logic in `ui/src/server/`.
+
+That dot rule is also why `vitest.config.ts` excludes `src/routes/**`: `routes/api/foo.test.ts` is
+the handler for `/api/foo/test`, not a suite. **Nothing under `routes/` can be unit tested**, so a
+route parses the request, calls ONE function in `src/server/*`, and serializes the result. A decision
+that lives in a route is a decision with no test — `routes/api/admin.model-fitness.ts` carried ~920
+lines of them until they moved to `server/fitness/surface.ts`.
 
 ## Guards — `server/api-guard.ts`
 

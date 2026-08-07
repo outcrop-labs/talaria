@@ -1,103 +1,82 @@
-# Talaria CI — typecheck, unit tests, and the invariant tripwire.
+# Talaria CI — the invariant tripwire, the unit tests, and the typecheck.
 #
 # WHAT THIS DOES
-#   On every pull request and every push to main: install ui/ from the lockfile
-#   and run `tsc --noEmit`. That is the whole job. It takes roughly a minute.
+#   On every pull request and every push to main:
+#     node scripts/check-invariants.mjs      (no install, seconds)
+#     cd ui && npm test                      (vitest)
+#     cd ui && npm run typecheck             (svelte-check)
+#     cd mcp && typecheck + build
+#   That is the whole thing. It takes a couple of minutes.
 #
-# WHY ONLY THAT
-#   As of this file's creation the repo has no tests, no linter and no formatter.
-#   `tsc --noEmit` is the single automated correctness signal that exists, and it
-#   is a strong one here: tsconfig.json turns on `strict`, `noUncheckedIndexedAccess`,
-#   `noUnusedLocals` and `noUnusedParameters`. Until now it only ran when a human
-#   remembered to run it. Every PR-numbered commit in this repo's history merged
-#   with nothing automated having run on it. This closes that gap and nothing else.
+# WHY IT IS THIS SHORT. It is a TRIPWIRE, not a pipeline. Every PR-numbered
+#   commit in this repo's history merged with nothing automated having run on
+#   it; the point is to close that, cheaply enough that nobody is tempted to
+#   skip it. A slow required check gets bypassed, and a bypassed check is worse
+#   than none because it reads as coverage.
+#
+# WHY `npm run typecheck` AND NOT `npx tsc --noEmit`. They are not the same
+#   check any more and the difference is 384 files. The UI is Svelte 5 +
+#   sv-router; `tsc` does not read `.svelte` at all, so a component with a
+#   broken prop type, a missing import or a bad `$derived` typechecks perfectly
+#   under `tsc` and fails under `svelte-check`. The script in ui/package.json is
+#   the one source of truth for what "typechecked" means here — CI runs the same
+#   command a developer runs, so the two can never disagree about the flags.
+#   `svelte-check` exits 0 on warnings and non-zero on errors, which is the
+#   behavior this job wants: 127 pre-existing a11y warnings must not fail the
+#   build, and one new type error must.
+#
+# WHY THE TESTS ARE NOT A LIST. `npm test` runs vitest, which DISCOVERS
+#   `src/**/*.test.ts` rather than being handed a list, so a new test file gates
+#   on the next push without anyone remembering to register it.
 #
 # DELIBERATELY LEFT OUT (do not treat these as oversights)
-#   - Lint / format only (see below). The test step that this list used to
-#     exclude now exists: `npm test` runs vitest, which DISCOVERS its files
-#     rather than being handed a list, so a new `*.test.ts` gates on the next
-#     push without anyone remembering to register it.
-#   - Lint / format. That is a separate decision (audit task 19) with its own
-#     rollout cost — a linter added on day one against an unlinted codebase
-#     produces hundreds of failures and gets disabled. Not this file's problem.
-#   - Build (`vite build`) and any deploy. `tsc --noEmit` already covers the
+#   - THE MODEL FITNESS SUITE (ui/src/server/fitness/*). It costs money and
+#     needs a live model, and its answer is a property of the model rather than
+#     of the commit — a run that fails because a provider is rate-limiting is a
+#     red build nobody can fix by editing code. It is an admin-initiated sweep
+#     from Admin → Models, and it stays one. Its SCORERS are pure and are
+#     covered by the ordinary unit tests above, which is the part a commit can
+#     actually break.
+#   - Lint / format. A separate decision with its own rollout cost: a linter
+#     added against an unlinted codebase produces hundreds of failures and then
+#     gets disabled. Not this file's problem.
+#   - Build (`vite build`) and any deploy. `svelte-check` already covers the
 #     type surface; a full build roughly triples the runtime for a weaker signal.
-#   - `adapter/` and `plugin/` — no build or typecheck to run at all. (`scripts/`
-#     was on this list too until the `invariants` job below; it is still not
-#     typechecked, it is EXECUTED.)
-#
-# ADDED SINCE: the `invariants` job. `tsc` cannot see the failure this repo
-#   actually keeps having. Seven consecutive review rounds found the same shape
-#   of bug — a predicate that decides whether an AGENT may write to a ticket, or
-#   which statuses are terminal, written out by hand at a new call site instead
-#   of imported — and every one of those copies typechecked perfectly, because a
-#   copy of a correct expression is a correct expression until the original
-#   changes. Each round centralized one predicate and the next round found the
-#   neighbouring one that had not been. Nothing in CI failed for any of it.
-#   `scripts/check-invariants.mjs` fails on the specific patterns that history
-#   says are wrong, and prints what to write instead. It is plain Node with ZERO
-#   dependencies, so this job needs no install step and finishes in seconds —
-#   which is also why it is not eslint (a linter is a dependency, a config, and a
-#   rollout against an unlinted codebase; see audit task 19).
-#   The rules live in that file, commented; amend them there, not here.
-#
-#   VERIFIED, not assumed. The commit that added the check said "NOT VERIFIED";
-#   it has since been exercised against a throwaway copy of the tree. Each of the
-#   six rules was re-introduced as a deliberate violation and each one failed the
-#   run, naming the file, the line and the fix. So were the three checks that
-#   guard the rules themselves, which matter more than the rules do:
-#     · the canonical definition RENAMED     -> `…-home-is-empty` fires, because a
-#       duplicate-definition rule whose subject no longer exists passes forever.
-#       This is not hypothetical: it is what happened when `closedToAgents`
-#       became `agentTicketRefusal`, and this post-check is what caught it.
-#     · the two OFF_BOARD_STATUSES lists made to DISAGREE -> cross-check fires.
-#     · a censused occurrence FIXED without lowering the count -> `…-census-stale`
-#       fires, so the census shrinks as debt is paid and can never rot into a
-#       standing amnesty for code that was cleaned up years ago.
-#
-#   KNOWN BLIND SPOTS (real, and cheap to close when they start to matter):
-#     · It scans `ui/src` and `mcp/src` only. `apps/` is compiled by ui's
-#       tsconfig and `apps/contacts/app.tsx` is a React surface that could grow a
-#       swallowing queryFn tomorrow; `adapter/`, `plugin/` and `scripts/` are
-#       unscanned too. Add them to SOURCE_DIRS in the script — it is one array.
-#     · Whole-line comments are stripped, trailing ones are not, so a pattern
-#       hidden after code on the same line still matches. Deliberate: a false
-#       positive costs one comment rewrite, a false negative costs a round.
-#     · The duplicate-definition rule reports the line where the match's leading
-#       whitespace starts, not the declaration — off by the size of the preceding
-#       blank/comment run. Cosmetic, but the file promises an exact line.
-#
-#   A NOTE THAT IS NOT ABOUT THIS FILE: `components/board/gantt.tsx` is the third
-#   board view on `useBoardStatuses`, and unlike `kanban.tsx` and
-#   `board-list.tsx` it does not refuse to draw when that read fails with no
-#   cached data — it renders every bar from an invented status set and prints a
-#   banner calling its own output "guesses", so `isOverdueTask` loses the board's
-#   terminal categories and finished work can show as overdue. Same hazard,
-#   diagnosed in its own comment, warned about rather than refused. No rule here
-#   catches it (the shape is an ABSENCE, which regex cannot see); it needs the
-#   four-line refusal the other two views have.
-#
-# ADDED SINCE: the `mcp` job. `mcp/src/index.ts` is ~1000 lines that ui's tsc
-#   never sees, and it mediates every agent write, so it now typechecks here on
-#   its own package.json/tsconfig. It also BUILDS: `mcp/dist` is gitignored and
-#   spawned at runtime by the app (`ui/src/server/mcp-service.ts`), so `tsc`
-#   emitting cleanly is the only signal CI can give that a developer's rebuild
-#   will succeed. The artifact is thrown away — CI does not ship dist; dev.sh
-#   and setup.sh build it locally.
+#   - `adapter/` and `plugin/` — no build or typecheck to run at all. `scripts/`
+#     is not typechecked either; it is EXECUTED, by the invariants job.
 #   - `paths:` filters. Tempting (a docs-only push does not need this), but a
 #     required status check that is skipped by a path filter reports "pending"
 #     forever and blocks the merge. Not worth the sixty seconds.
 #
+# THE INVARIANTS JOB, and why a typechecker cannot replace it. `tsc` cannot see
+#   the failure this repo actually keeps having. Seven consecutive review rounds
+#   found the same shape of bug — a predicate that decides whether an AGENT may
+#   write to a ticket, or which statuses are terminal, written out by hand at a
+#   new call site instead of imported — and every one of those copies typechecked
+#   perfectly, because a copy of a correct expression is a correct expression
+#   until the original changes. `scripts/check-invariants.mjs` fails on the
+#   specific patterns that history says are wrong and prints what to write
+#   instead. It is plain Node with ZERO dependencies, so this job needs no
+#   install step and finishes in seconds — which is also why it is not eslint.
+#   The rules live in that file, commented; amend them there, not here.
+#
+#   VERIFIED, not assumed: each rule was re-introduced as a deliberate violation
+#   against a throwaway copy of the tree and each one failed the run, naming the
+#   file, the line and the fix. So were the three checks that guard the rules
+#   themselves (a renamed canonical definition, two cross-checked lists made to
+#   disagree, a censused occurrence fixed without lowering the count), which
+#   matter more than the rules do — a duplicate-definition rule whose subject no
+#   longer exists passes forever.
+#
 # NOTES FOR WHOEVER TOUCHES THIS NEXT
-#   - Node 22 is a hard floor, not a preference: @tanstack/react-start declares
-#     `engines.node >= 22.12.0` and vite 7 declares `^20.19.0 || >=22.12.0`.
-#     Node 20 will fail to install. If you add a .nvmrc at the repo root, switch
-#     this to `node-version-file:` so there is one source of truth.
+#   - Node 22 is a hard floor, not a preference: vite 7 declares
+#     `^20.19.0 || >=22.12.0`. If you add a .nvmrc at the repo root, switch this
+#     to `node-version-file:` so there is one source of truth.
 #   - `ui/tsconfig.json` includes `../apps`, so this needs a full-repo checkout,
-#     not a sparse one.
-#   - `ui/src/routeTree.gen.ts` is committed, so no codegen step is needed before
-#     typechecking. If that ever becomes gitignored, this workflow breaks and the
-#     fix is to run the router generator here, not to loosen tsconfig.
+#     not a sparse one. `apps/contacts` is Svelte and is therefore checked by
+#     the ui typecheck job, not by a job of its own.
+#   - There is no committed route codegen to run: sv-router resolves
+#     `src/routes/**` at build time from the files themselves.
 
 name: CI
 
@@ -118,7 +97,7 @@ permissions:
 jobs:
   # Deliberately FIRST and deliberately dependency-free: it needs no `npm ci`,
   # so it reports in well under a minute and a PR that re-introduces a known bug
-  # learns that before the typecheck jobs have finished installing.
+  # learns that before the other jobs have finished installing.
   invariants:
     name: invariants (no deps)
     runs-on: ubuntu-latest
@@ -139,10 +118,10 @@ jobs:
       - name: Check invariants
         run: node scripts/check-invariants.mjs
 
-  typecheck:
-    name: typecheck (ui)
+  ui:
+    name: test + typecheck (ui)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     defaults:
       run:
@@ -164,13 +143,16 @@ jobs:
       - name: Install
         run: npm ci --no-audit --no-fund
 
-      - name: Typecheck
-        run: npx tsc --noEmit
-
-      # After the typecheck, in the same job: it reuses the install, and a type
-      # error is the cheaper failure to read first.
+      # TESTS FIRST, and the order is a decision rather than a coin toss. The
+      # unit suite runs in seconds and its failures name a behavior ("the runner
+      # repairs once and no more"); svelte-check takes a minute or two and its
+      # failures name a type. When both are broken the behavioral failure is the
+      # one worth reading first.
       - name: Test
         run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
 
   mcp:
     name: typecheck + build (mcp)
@@ -194,11 +176,12 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       # Emit for real. `--noEmit` above proves the types; this proves the thing
       # dev.sh and setup.sh actually run can produce mcp/dist/index.js, which is
-      # what the app spawns. Fails the job if it can't.
+      # what the app spawns (`ui/src/server/mcp-service.ts`). The artifact is
+      # thrown away — CI does not ship dist.
       - name: Build
         run: npm run build
 
