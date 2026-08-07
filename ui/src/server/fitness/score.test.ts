@@ -40,6 +40,8 @@ function reg<I, O>(def: HarnessDefinition<I, O>, source: HarnessSource = 'builti
     floor: def.floor,
     model: def.model,
     outputKind: def.output.kind,
+    tools: def.tools ?? 'none',
+    bandOf: Object.fromEntries((def.evals ?? []).map((e) => [e.name, e.band ?? ('standard' as const)])),
     widen: def.widen ?? null,
     guard: def.guard ?? null,
     temperature: def.temperature ?? null,
@@ -71,15 +73,19 @@ const score = (id: string, over: Partial<HarnessScore> = {}): HarnessScore => ({
   label: id,
   source: 'builtin',
   outputKind: 'json',
+  tools: 'none',
   requires: [],
   verifies: true,
   repairable: true,
   cases: 10,
+  skipped: 0,
+  skipReason: null,
   scored: 10,
   contractRate: 1,
   repairRate: 1,
   repairYield: null,
   taskScore: 1,
+  bandScores: { easy: null, standard: 1, hard: null },
   guardRate: 0,
   answeredRate: 1,
   latencyP50: 100,
@@ -96,6 +102,8 @@ const score = (id: string, over: Partial<HarnessScore> = {}): HarnessScore => ({
 const kase = (harnessId: string, over: Partial<EvalCaseScore> = {}): EvalCaseScore => ({
   harness: harnessId,
   case: 'one',
+  band: 'standard',
+  skipped: null,
   contractHeld: true,
   firstPass: true,
   repairs: 0,
@@ -400,6 +408,110 @@ describe('bands', () => {
     )
     expect(report.slots[0]?.band).toBe('untested')
     expect(report.slots[0]?.reasons[0]?.assertion).toBe('refused below the capability floor: search')
+  })
+
+  it('is NOT unfit when a registered tool reaches the capability the model lacks', () => {
+    // THE CORRECTION THIS WHOLE PASS IS ABOUT. deepseek-v4-flash: `search`
+    // measured false, `tools` measured true, and a web-search server in the
+    // registry. It was reported Not-a-fit for all three Research slots — a true
+    // statement about the weights and a false one about the slot, which is a
+    // model running inside Talaria with the tools this org registered.
+    const h = harness('h', { requires: ['search'] })
+    const report = run(
+      {
+        sweep: sweep({ harnesses: [score('h')], cases: [kase('h')] }),
+        harnesses: [h],
+        capabilities: { search: fact(false) },
+        reach: { search: { capability: 'search', reached: true, via: 'tool', supplier: { server: 'exa', tool: 'web_search' }, detail: 'x' } },
+      },
+      oneSlot(h, { id: 'research-recon', label: 'Research · Recon', requires: ['search'] }),
+    )
+    expect(report.slots[0]?.band).toBe('ready')
+    // Reported, not silent: if that server is removed the cell changes, and this
+    // is the sentence that explains why.
+    const supplied = report.slots[0]?.reasons.filter((r) => r.kind === 'supplied-capability') ?? []
+    expect(supplied.length).toBeGreaterThan(0)
+    expect(supplied[0]?.detail).toContain('exa.web_search')
+  })
+
+  it('is still unfit when nothing reaches the capability', () => {
+    // Reach widens the question; it does not soften it. An org with no search
+    // server and a memory-only model gets the same verdict it always got.
+    const h = harness('h', { requires: ['search'] })
+    const report = run(
+      {
+        sweep: sweep({ harnesses: [score('h')], cases: [kase('h')] }),
+        harnesses: [h],
+        capabilities: { search: fact(false) },
+        reach: { search: { capability: 'search', reached: false, via: null, supplier: null, detail: 'no enabled MCP server offers a tool for it' } },
+      },
+      oneSlot(h, { id: 'research-recon', label: 'Research · Recon', requires: ['search'] }),
+    )
+    expect(report.slots[0]?.band).toBe('unfit')
+    // And the sentence names the org's next move rather than blaming the model.
+    expect(report.slots[0]?.reasons[0]?.detail).toContain('no enabled MCP server')
+  })
+
+  it('falls back to the raw capability fact when nothing asked about reach', () => {
+    // Every caller that has no registry to ask gets the pre-reach verdict, which
+    // is narrower and never wrong in the unsafe direction.
+    const h = harness('h', { requires: ['search'] })
+    const report = run({ sweep: sweep({ harnesses: [score('h')], cases: [kase('h')] }), harnesses: [h], capabilities: { search: fact(false) } }, oneSlot(h))
+    expect(report.slots[0]?.band).toBe('unfit')
+  })
+
+  it('reports a harness the sweep could not run as not-runnable, not as a contract failure', () => {
+    // The tool-loop harnesses on a gateway candidate. `cases: 0` with a
+    // `skipReason` is how the sweep says "nothing ran"; a band of `unfit` here
+    // would blame a model that was never called.
+    const h = harness('h')
+    const why = 'X runs the model\u2019s own tool loop, and "gw/model" is served by the org gateway, which has no tool loop.'
+    const report = run(
+      { sweep: sweep({ harnesses: [score('h', { cases: 0, skipped: 2, skipReason: why, contractRate: 0, repairRate: 0, taskScore: null, answeredRate: 0 })], cases: [] }), harnesses: [h] },
+      oneSlot(h),
+    )
+    expect(report.slots[0]?.band).toBe('untested')
+    expect(report.slots[0]?.reasons[0]?.kind).toBe('not-runnable')
+    // The sweep's own sentence, verbatim — not "this sweep did not run it",
+    // which reads as "press Test again" and would be wrong.
+    expect(report.slots[0]?.reasons[0]?.detail).toBe(why)
+  })
+
+  it('states a missing capability once, not once per harness that also needs it', () => {
+    // THE NOISE THIS KILLS. A research slot declares `requires: ['search']` and
+    // binds a harness that requires it too, so the same fact was reported twice
+    // — and the harness telling dragged the runner's whole refusal paragraph
+    // with it, once per slot, burying every other reason on the page.
+    const h = harness('h', { requires: ['search'] })
+    const report = run(
+      {
+        sweep: sweep({
+          harnesses: [score('h', { answeredRate: 0, contractRate: 0, repairRate: 0, taskScore: null })],
+          cases: [kase('h', { answered: false, contractHeld: false, firstPass: false, task: 'unscored', error: 'a very long refusal paragraph' })],
+        }),
+        harnesses: [h],
+        capabilities: { search: fact(false) },
+      },
+      oneSlot(h, { id: 'research-recon', label: 'Research \u00b7 Recon', requires: ['search'] }),
+    )
+    expect(report.slots[0]?.band).toBe('unfit')
+    // One line, about the slot the admin is choosing for.
+    expect(report.slots[0]?.reasons).toHaveLength(1)
+    expect(report.slots[0]?.reasons[0]?.harness).toBe(null)
+    expect(report.slots[0]?.reasons[0]?.capability).toBe('search')
+    // And no `no-answer` restating the same refusal a third time.
+    expect(report.slots[0]?.reasons.map((r) => r.kind)).not.toContain('no-answer')
+  })
+
+  it('keeps a harness-level capability line the slot does not itself declare', () => {
+    // The dedupe is per capability, not per reason kind: a harness needing
+    // something its slot never asked for is news, and must survive.
+    const h = harness('h', { requires: ['vision'] })
+    const report = run(
+      { sweep: sweep({ harnesses: [score('h')], cases: [kase('h')] }), harnesses: [h], capabilities: { search: fact(false), vision: fact(false) } },
+      oneSlot(h, { requires: ['search'] }),
+    )
+    expect(report.slots[0]?.reasons.map((r) => r.capability)).toEqual(['search', 'vision'])
   })
 })
 

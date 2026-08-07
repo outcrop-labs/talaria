@@ -64,10 +64,27 @@ import { getSetting, setSetting } from '../audit'
 import { getGuardConfig } from '../guardrails'
 import { listActivityHarnesses, type HarnessSource, type RegisteredHarness } from '../harness/registry'
 import { runHarness, type HarnessDeps, type HarnessResult, type HarnessRunRow } from '../harness/run'
-import { defaultTransport, type Transport, type TransportRequest } from '../harness/transport'
+import { defaultTransport, offersToolDefinitions, runsOwnToolLoop, type Transport, type TransportRequest } from '../harness/transport'
+import { makeSandbox } from './toolbox/sandbox'
+import { makeWorkbench } from './toolbox/hermes-tools'
+import { sandboxTransport, type DryRunResult } from './toolbox/dry-run'
+
+/** WHAT A DRY RUN NEEDS OF ITS SANDBOX, and no more: the two surfaces
+ *  (`toolbox/sandbox.ts` for Talaria's toolkit, `toolbox/hermes-tools.ts` for a
+ *  file workspace) differ in everything except this. `world` is optional
+ *  because only one of them has one, and a fixture that reaches for it knows
+ *  which surface it is written against. */
+interface DrySandbox {
+  calls: EvalContext['calls']
+  calledBefore: EvalContext['calledBefore']
+  tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>
+  dispatch: (call: { name: string; args: string }) => Promise<{ text: string; isError: boolean }>
+  world?: unknown
+}
 import { estimateTokens } from '../usage'
 import type { Capability } from '../harness/capability'
-import type { EvalCase, HarnessDefinition } from '../harness/define'
+import type { ToolPolicy } from '../harness/transport'
+import { NO_TOOLS, type EvalBand, type EvalCase, type EvalContext, type HarnessDefinition } from '../harness/define'
 
 // ── The scoring surface ──────────────────────────────────────────────────────
 
@@ -76,6 +93,34 @@ export interface EvalCaseScore {
   harness: string
   /** `EvalCase.name`. Unique within a harness; `caseKey` joins the two. */
   case: string
+  /** `EvalCase.band`, defaulted. Carried on the CASE rather than looked up from
+   *  the registry later, because a report read back from the archive has to keep
+   *  meaning what it meant when it was written — a fixture re-banded next
+   *  quarter must not silently re-band last quarter's run. */
+  band: EvalBand
+
+  /** THE SWEEP NEVER CALLED THE MODEL, and this is not a result about it.
+   *
+   *  Non-null carries the sentence saying why, written for the admin reading the
+   *  drill-down. Every field below it is a zero that means "not measured", and
+   *  `scoreHarness` excludes the case from every rate rather than averaging the
+   *  zeros in — which is the whole reason the field exists.
+   *
+   *  THE NUMBER THIS REPLACES WAS A LIE, and an expensive one. Three harnesses
+   *  declare `tools: 'own'` because the tool loop IS their feature
+   *  (`work-session`, `outreach:check-in`, `briefer:chat`). Replayed against an
+   *  ORG GATEWAY candidate, `gatewayToolsRefusal` refuses each one in about four
+   *  milliseconds, before a token is spent — and the sweep recorded that as
+   *  `contractHeld: false`, so the matrix printed "0% first pass" for a model
+   *  nothing had asked a question. An admin reading three red rows concludes the
+   *  candidate cannot hold a contract; the truth is that this install has no way
+   *  to test it, which is a fact about the install.
+   *
+   *  Tier 1 already had this distinction — `ProbeOutcome` has a `skipped` kind
+   *  and the tool probes use it the moment `offersToolDefinitions` says no. Tier
+   *  2 did not, and the two tiers disagreed about the same model on the same
+   *  page. */
+  skipped: string | null
 
   /** THE CONTRACT HELD — `harness_runs.schema_valid`, taken from the row the
    *  runner wrote rather than recomputed here. See the file header. */
@@ -163,6 +208,9 @@ export interface HarnessMeta {
   label: string
   source: HarnessSource
   outputKind: 'text' | 'json'
+  /** The model's-own-tool-loop policy. Read by `harnessSkipReason`, which needs
+   *  it before the harness runs. */
+  tools: ToolPolicy
   requires: Capability[]
   /** Does this harness declare the input-relational half of its contract? See
    *  `EvalCaseScore.optimistic`. */
@@ -183,7 +231,19 @@ export interface HarnessMeta {
 
 /** The per-harness column of the fitness matrix. */
 export interface HarnessScore extends HarnessMeta {
+  /** Fixtures this sweep RAN — skipped ones are not cases, they are absences.
+   *
+   *  Every rate below is over this denominator, so a harness the candidate
+   *  cannot be tested on reports zero of everything with `cases: 0`, which every
+   *  consumer already reads as "no evidence". A denominator that counted the
+   *  skips would print 0% instead, and 0% is a verdict. */
   cases: number
+  /** Fixtures the sweep declined to run against this candidate, with the reason
+   *  on `skipReason`. Reported so a full-green matrix can still say what it did
+   *  not look at. */
+  skipped: number
+  /** Why, verbatim from the first skipped case. Null when nothing was skipped. */
+  skipReason: string | null
   /** Cases that reached a verdict — everything except a timeout. */
   scored: number
 
@@ -207,6 +267,16 @@ export interface HarnessScore extends HarnessMeta {
    *  none were — a model that never held the contract has no task score, and
    *  printing 0 would blame it twice. */
   taskScore: number | null
+  /** THE SAME NUMBER, SPLIT BY DIFFICULTY. Null per band when that band had
+   *  nothing scorable.
+   *
+   *  WHY IT IS WORTH THE FIELD: one flat rate cannot tell "competent, loses the
+   *  hard edge cases" from "unreliable on the basics", and those are different
+   *  purchasing decisions. A 70% that is easy 100 / standard 100 / hard 20 is a
+   *  fine Utility model; a 70% that is easy 70 / standard 70 / hard 70 is a
+   *  model that fails one job in three at random, which is worse in every way
+   *  that matters. */
+  bandScores: Record<EvalBand, number | null>
   /** Findings per run. */
   guardRate: number
   answeredRate: number
@@ -296,6 +366,18 @@ export interface EvalDeps {
    *  a cost estimate nobody can reconcile with the invoice is worse than none.
    *  The hook is here so a caller that HAS an oracle can supply it. */
   price: (model: string, promptTokens: number, completionTokens: number) => Promise<number | null>
+  /** CAN this candidate run a harness that wants the model's OWN tool loop?
+   *  Asked once per sweep, before any harness runs — see `harnessSkipReason`.
+   *  Defaults to the transport's own answer, which is derived from
+   *  `pickTransport` and therefore cannot disagree with the call that would
+   *  otherwise refuse. */
+  servesOwnTools: (model: string) => Promise<boolean>
+  /** CAN this candidate be handed tool DEFINITIONS — the other half of the
+   *  question above. A gateway model can; a fleet persona cannot (its loop runs
+   *  inside the agent container and reports only names). Together they decide
+   *  whether a tool-loop harness runs as production runs it, is dry-run against
+   *  the sandbox, or is honestly skipped. */
+  acceptsToolDefinitions: (model: string) => Promise<boolean>
   now: () => number
 }
 
@@ -319,6 +401,12 @@ const REAL_DEPS: EvalDeps = {
   readStatus: () => getSetting<EvalSweepStatus>(STATUS_KEY, IDLE_STATUS),
   writeStatus: (status) => setSetting(STATUS_KEY, status),
   price: async () => null,
+  // A THROW HERE MUST NOT SKIP EVERYTHING. If the fleet listing is unreachable
+  // the honest fallback is "assume it can run", which spends one refusal per
+  // fixture and records the refusal — the pre-port behaviour — rather than
+  // silently marking three harnesses untestable on a transient outage.
+  servesOwnTools: (model) => runsOwnToolLoop(model).catch(() => true),
+  acceptsToolDefinitions: (model) => offersToolDefinitions(model).catch(() => false),
   now: () => Date.now(),
 }
 
@@ -352,6 +440,71 @@ const DRILLDOWN_CAP = 4_000
 
 export const caseKey = (harness: string, name: string): string => `${harness}::${name}`
 
+// ── Skipping ─────────────────────────────────────────────────────────────────
+
+/** WHY THIS CANDIDATE CANNOT BE TESTED ON THIS HARNESS AT ALL, or null when it
+ *  can. Asked once per harness, before any fixture runs.
+ *
+ *  A SKIP IS NOT A KINDNESS AND NOT A PASS. The rule it encodes is narrow on
+ *  purpose: the harness declares a REQUEST this candidate's transport is
+ *  documented to refuse, so the call cannot happen and no reply can exist. That
+ *  is a fact about the pairing, and it is knowable without spending anything.
+ *
+ *  EVERY OTHER FAILURE STILL RUNS. In particular a capability floor refusing a
+ *  model (`research-search` on a model with no web search) is NOT skipped: the
+ *  floor refusing IS the tier-2 result, the harness genuinely cannot be trusted
+ *  on that model, and `score.ts` already turns the recorded fact into an `unfit`
+ *  band naming the capability. Skipping it would replace a correct red cell with
+ *  a shrug.
+ *
+ *  ONE RULE TODAY. Kept as a function returning a sentence rather than a boolean
+ *  so the next one — a streaming-only harness against a transport that cannot
+ *  stream, say — adds a branch and an explanation together. */
+export function harnessSkipReason(
+  harness: { label: string; tools: ToolPolicy },
+  model: string,
+  reach: { ownToolLoop: boolean; toolDefinitions: boolean },
+): string | null {
+  if (harness.tools !== 'own') return null
+  // THE ORDER MATTERS. A fleet persona runs its own loop, so the harness runs as
+  // production runs it. A gateway model has no loop of its own but CAN be handed
+  // definitions — so the platform supplies the loop and the sandbox
+  // (`toolbox/dry-run.ts`), which measures the thing that actually matters:
+  // not "can it emit a tool call" but "given these tools and this situation,
+  // what did it do". Only a model that can do neither is untestable here.
+  if (reach.ownToolLoop || reach.toolDefinitions) return null
+  return (
+    `${harness.label} runs a tool loop, and "${model}" can neither run its own nor be handed tool definitions. ` +
+    'The sweep did not call the model: nothing here is a measurement of it.'
+  )
+}
+
+/** The record of a fixture that was never sent. Every measured field is a zero
+ *  that `scoreHarness` excludes rather than averages — see `EvalCaseScore.skipped`. */
+const skippedCase = (harness: string, name: string, band: EvalBand, reason: string): EvalCaseScore => ({
+  harness,
+  case: name,
+  band,
+  skipped: reason,
+  contractHeld: false,
+  firstPass: false,
+  repairs: 0,
+  answered: false,
+  task: 'unscored',
+  taskError: null,
+  findings: 0,
+  latencyMs: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+  costUsd: null,
+  estimated: false,
+  timedOut: false,
+  optimistic: false,
+  error: null,
+  prompt: null,
+  raw: null,
+})
+
 // ── Scoring (pure over recorded cases) ───────────────────────────────────────
 
 /** Nearest-rank percentile. Exact on the small samples a sweep produces — a
@@ -365,9 +518,21 @@ function percentile(sorted: number[], q: number): number {
 
 const rate = (n: number, of: number): number => (of === 0 ? 0 : n / of)
 
+/** A band's pass rate over the cases that were scorable in it, or null when it
+ *  had none. NULL, never zero: a band with no fixtures has not been failed. */
+function bandScore(taskable: EvalCaseScore[], band: EvalBand): number | null {
+  const mine = taskable.filter((c) => c.band === band)
+  return mine.length === 0 ? null : rate(mine.filter((c) => c.task === 'pass').length, mine.length)
+}
+
 /** Score one harness's cases. Pure, and it takes the METADATA rather than the
  *  registry so that a test can score recorded cases without a registry at all. */
-export function scoreHarness(meta: HarnessMeta, cases: EvalCaseScore[]): HarnessScore {
+export function scoreHarness(meta: HarnessMeta, all: EvalCaseScore[]): HarnessScore {
+  // THE PARTITION IS THE WHOLE FUNCTION. A skipped case is an absence, not a
+  // zero, and every line below counts over `cases` — the ones that ran. Mixing
+  // the two would divide by a denominator that includes fixtures nothing asked.
+  const skips = all.filter((c) => c.skipped !== null)
+  const cases = all.filter((c) => c.skipped === null)
   const total = cases.length
   const scored = cases.filter((c) => !c.timedOut)
   const first = cases.filter((c) => c.firstPass).length
@@ -380,11 +545,18 @@ export function scoreHarness(meta: HarnessMeta, cases: EvalCaseScore[]): Harness
   return {
     ...meta,
     cases: total,
+    skipped: skips.length,
+    skipReason: skips[0]?.skipped ?? null,
     scored: scored.length,
     contractRate: rate(first, total),
     repairRate: rate(held, total),
     repairYield: failedFirst === 0 || !meta.repairable ? null : rate(recovered, failedFirst),
     taskScore: taskable.length === 0 ? null : rate(taskable.filter((c) => c.task === 'pass').length, taskable.length),
+    bandScores: {
+      easy: bandScore(taskable, 'easy'),
+      standard: bandScore(taskable, 'standard'),
+      hard: bandScore(taskable, 'hard'),
+    },
     guardRate: rate(
       cases.reduce((n, c) => n + c.findings, 0),
       total,
@@ -418,6 +590,7 @@ export const metaOf = (h: RegisteredHarness): HarnessMeta => ({
   label: h.label,
   source: h.source,
   outputKind: h.outputKind,
+  tools: h.tools,
   requires: h.requires,
   verifies: h.use((def) => def.output.verify !== undefined),
   // Mirrors `maxRepairs` in run.ts, which is the only thing that decides
@@ -512,13 +685,36 @@ async function runOneCase<I, O>(
   model: string,
   deps: EvalDeps,
   timeoutMs: number,
+  dryRun: boolean,
 ): Promise<EvalCaseScore> {
   const capture: CaseRun = { row: null, prompt: '', promptTokens: 0, completionTokens: 0, estimated: false, threw: null, timedOut: false }
   const controller = new AbortController()
 
+  // AN ISOLATED TALARIA, ONE PER CASE. Built only for a harness whose feature is
+  // the tool loop; every other harness gets `null` and its fixtures see
+  // `NO_TOOLS`. Per case rather than per harness because two fixtures sharing a
+  // mutable board would make the second one's assertions depend on the first
+  // one's model.
+  // WHICH SURFACE. A harness declaring `workspace` is a CODING harness and gets
+  // files and a test runner (`toolbox/hermes-tools.ts`); everything else gets
+  // Talaria's own toolkit. They are different jobs with different tools, and a
+  // harness has exactly one of them.
+  const workspace = dryRun ? def.dryRun?.workspace?.(fixture.input) : undefined
+  // The two sandboxes share exactly the surface `EvalContext` needs — a call
+  // log, an ordering question, and (only Talaria's) a world. Narrowed to that
+  // rather than to a union, so a third surface adds a branch above and nothing
+  // else here.
+  const sandbox: DrySandbox | null = !dryRun
+    ? null
+    : workspace
+      ? makeWorkbench(workspace)
+      : makeSandbox({ tools: def.dryRun?.tools, ...(def.dryRun?.world ? { world: def.dryRun.world } : {}) })
+  const dry: { result?: DryRunResult } = {}
+  const base = deps.harnessDeps.transport ?? defaultTransport
+
   const harnessDeps: Partial<HarnessDeps> = {
     ...deps.harnessDeps,
-    transport: recordingTransport(deps.harnessDeps.transport ?? defaultTransport, capture),
+    transport: recordingTransport(sandbox ? sandboxTransport(sandbox, base, dry) : base, capture),
     // The row the runner writes IS the predicate this file scores. Captured
     // here and NOT forwarded to the real `recordRun`: see the file header on why
     // a sweep must not file into the table it is being compared against.
@@ -565,11 +761,18 @@ async function runOneCase<I, O>(
   // to grade, and `onFailure: { fallback }` hands back the harness author's
   // declared constant with `schemaValid: false` over it — grading that would
   // award the model marks for a value it never produced.
+  // WHAT THE MODEL DID, for a fixture that grades behaviour rather than prose.
+  // `NO_TOOLS` for everything else, so a single-shot fixture reaching for
+  // `ctx.calls` sees an honest empty list rather than undefined.
+  const evalContext: EvalContext = sandbox
+    ? { calls: sandbox.calls, calledBefore: sandbox.calledBefore, world: sandbox.world ?? null, exhausted: dry.result?.exhausted ?? false }
+    : NO_TOOLS
+
   let task: EvalCaseScore['task'] = 'unscored'
   let taskError: string | null = null
   if (contractHeld && result && result.value !== null) {
     try {
-      taskError = fixture.check(result.value)
+      taskError = fixture.check(result.value, evalContext)
     } catch (err) {
       // A fixture check is author code meeting model output, the same as
       // `clean` and `verify`, and `run.ts` holds those to "a throw is a
@@ -587,6 +790,8 @@ async function runOneCase<I, O>(
   return {
     harness: def.id,
     case: fixture.name,
+    band: fixture.band ?? 'standard',
+    skipped: null,
     contractHeld,
     firstPass,
     repairs,
@@ -681,17 +886,48 @@ export async function runEvalSweep(model: string, opts: EvalOptions = {}): Promi
       .then((c) => c.mode !== 'off')
       .catch(() => false)
 
+    // ASKED ONCE, NOT PER HARNESS. The answer is a property of the candidate's
+    // transport and cannot change inside one sweep; asking per harness would put
+    // a fleet listing on the hot path three times for no new information.
+    const ownTools = await deps.servesOwnTools(model).catch(() => true)
+    // CAN THE PLATFORM SUPPLY THE LOOP INSTEAD. A gateway model has no loop of
+    // its own and can be handed definitions, which is what lets the three
+    // tool-loop harnesses be measured on it at all — see `harnessSkipReason`.
+    const toolDefs = await deps.acceptsToolDefinitions(model).catch(() => false)
+
     for (const harness of wanted) {
       if (stopRequested) break
       const pending = harness.evalNames.filter((name) => !already.has(caseKey(harness.id, name)))
       if (pending.length === 0) continue
+
+      // THE SKIP, BEFORE A TOKEN IS SPENT. A harness this candidate's transport
+      // is documented to refuse produces no reply on any fixture, so the sweep
+      // records the absence and its reason instead of buying `pending.length`
+      // refusals and scoring them as contract failures. The cases are still
+      // WRITTEN — they are the resume ledger and the progress denominator, and a
+      // sweep that merely `continue`d would restart into the same skip and show
+      // a progress bar that never reaches its total.
+      const skip = harnessSkipReason(harness, model, { ownToolLoop: ownTools, toolDefinitions: toolDefs })
+      if (skip) {
+        for (const name of pending) {
+          cases.push(skippedCase(harness.id, name, harness.bandOf[name] ?? 'standard', skip))
+        }
+        await write('running', harness.id, null)
+        continue
+      }
+
       // Persisted AFTER EVERY CASE, not after every harness. The status is both
       // the progress bar and the resume ledger, and a sweep that checkpointed
       // per harness would re-buy a whole harness's fixtures after a restart —
       // and, on the slowest harnesses, show a progress bar that does not move
       // for minutes.
+      // A DRY RUN is for a tool-loop harness the PLATFORM has to drive: the model
+      // cannot run its own loop here, but it can be handed definitions, so the
+      // sweep supplies the loop and an isolated Talaria to run it against. A
+      // fleet persona runs its own loop and needs none of this.
+      const dryRun = harness.tools === 'own' && !ownTools && toolDefs
       await harness.use(<I, O>(def: HarnessDefinition<I, O>) =>
-        runHarnessCases(def, pending, model, deps, timeoutMs, () => stopRequested, async (score) => {
+        runHarnessCases(def, pending, model, deps, timeoutMs, () => stopRequested, dryRun, async (score) => {
           cases.push(score)
           await write('running', harness.id, null)
         }),
@@ -726,12 +962,13 @@ async function runHarnessCases<I, O>(
   deps: EvalDeps,
   timeoutMs: number,
   stopped: () => boolean,
+  dryRun: boolean,
   onCase: (score: EvalCaseScore) => Promise<void>,
 ): Promise<void> {
   for (const fixture of def.evals ?? []) {
     if (stopped()) break
     if (!pending.includes(fixture.name)) continue
-    await onCase(await runOneCase(def, fixture, model, deps, timeoutMs))
+    await onCase(await runOneCase(def, fixture, model, deps, timeoutMs, dryRun))
   }
 }
 

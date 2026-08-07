@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { concluderHarness } from '@/server/harness/defs/concluder'
 import { distillerHarness } from '@/server/harness/defs/distiller'
 import type { HarnessResult } from '@/server/harness/run'
+import { NO_TOOLS, type EvalContext } from '@/server/harness/define'
 
 // THE INVARIANT UNDER TEST, and the reason this file exists at all:
 // `distillConversation` has three outcomes and two of them mean "archived
@@ -238,45 +239,70 @@ describe('concludeRelay', () => {
 // declared check against a hand-written good answer and a hand-written bad one,
 // so the fixtures are known to DISCRIMINATE before any model is scored on them.
 
-const checksOf = <I, O>(def: { evals?: Array<{ name: string; input: I; check: (v: O) => string | null }> }) => def.evals ?? []
+const checksOf = <I, O>(def: { evals?: Array<{ name: string; input: I; check: (v: O, ctx: EvalContext) => string | null }> }) =>
+  (def.evals ?? []).map((e) => ({ ...e, check: (v: O) => e.check(v, NO_TOOLS) }))
 
 describe('distiller evals', () => {
   const good = ['- Ledger store: Postgres over SQLite (locked)', '- Ledger migration ships Friday', '- Nadia owns the rollback plan'].join('\n')
 
-  it('passes a faithful distillation', () => {
-    for (const e of checksOf(distillerHarness)) expect(e.check(good)).toBeNull()
+  // BY NAME, NOT BY INDEX. These used to be `[0]` and `[1]`, which silently
+  // re-pointed at different fixtures the moment the suite grew — and the failure
+  // read as "the distiller check is wrong" rather than "this test is holding the
+  // wrong fixture".
+  const named = (name: string) => {
+    const found = checksOf(distillerHarness).find((e) => e.name === name)
+    if (!found) throw new Error(`no distiller fixture called "${name}"`)
+    return found.check
+  }
+  const planted = () => named('keeps the planted decisions and drops the planted pleasantries')
+
+  it('passes a faithful distillation of the transcript it is about', () => {
+    // Only the fixtures that RUN on `FIXTURE`: the suite covers several
+    // transcripts now, and a distillation of one is not an answer to another.
+    expect(planted()(good)).toBeNull()
+    expect(named('is shorter than the conversation it distills')(good)).toBeNull()
   })
 
   it('fails one that lost a decision', () => {
-    expect(checksOf(distillerHarness)[0]?.check('- Ledger store: Postgres over SQLite')).toMatch(/friday|nadia/i)
+    expect(planted()('- Ledger store: Postgres over SQLite')).toMatch(/friday|nadia/i)
   })
 
   it('fails one that kept the pleasantries', () => {
-    expect(checksOf(distillerHarness)[0]?.check(`${good}\n- Hope you had a good weekend`)).toMatch(/pleasantries/)
+    expect(planted()(`${good}\n- Hope you had a good weekend`)).toMatch(/pleasantries/)
   })
 
   it('fails a "distillation" that just restates the transcript', () => {
     const restated = `${'User: Morning! Hope you had a good weekend. '.repeat(20)} Postgres Friday Nadia`
-    expect(checksOf(distillerHarness)[1]?.check(restated)).toMatch(/no shorter/)
+    expect(named('is shorter than the conversation it distills')(restated)).toMatch(/no shorter/)
   })
 })
 
 describe('concluder evals', () => {
   const good = ['## Decided', '- CSV only for the pilot, no XLSX', '## Produced', '- The export endpoint and its fixtures', '## Follow-ups', '- Customer-facing note before Thursday'].join('\n')
 
+  // BY NAME, NOT BY INDEX — see the distiller block above. The suite covers
+  // several relays now, and a summary of one is not an answer to another.
+  const named = (name: string) => {
+    const found = checksOf(concluderHarness).find((e) => e.name === name)
+    if (!found) throw new Error(`no concluder fixture called "${name}"`)
+    return found.check
+  }
+
   it('passes a sectioned summary that carries all three', () => {
-    for (const e of checksOf(concluderHarness)) expect(e.check(good)).toBeNull()
+    // Only the fixtures that run on the pilot-export relay this summary is of.
+    expect(named('comes back as sections rather than a paragraph')(good)).toBeNull()
+    expect(named('carries the decision, the deliverable and the follow-up')(good)).toBeNull()
   })
 
   it('fails a summary that came back as prose', () => {
-    expect(checksOf(concluderHarness)[0]?.check('We agreed to ship CSV, the endpoint is done, and a note is due Thursday.')).toMatch(/prose/)
+    expect(named('comes back as sections rather than a paragraph')('We agreed to ship CSV, the endpoint is done, and a note is due Thursday.')).toMatch(/prose/)
   })
 
   it('fails a summary that dropped the follow-up', () => {
-    expect(checksOf(concluderHarness)[1]?.check('## Decided\n- CSV only\n## Produced\n- the endpoint')).toMatch(/follow-up/)
+    expect(named('carries the decision, the deliverable and the follow-up')('## Decided\n- CSV only\n## Produced\n- the endpoint')).toMatch(/follow-up/)
   })
 
   it('fails an empty summary', () => {
-    expect(checksOf(concluderHarness)[0]?.check('   ')).toMatch(/empty/)
+    expect(named('comes back as sections rather than a paragraph')('   ')).toMatch(/empty/)
   })
 })

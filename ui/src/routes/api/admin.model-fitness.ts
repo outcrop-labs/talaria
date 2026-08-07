@@ -88,9 +88,9 @@ export const Route = defineApi('/api/admin/model-fitness', {
         action: 'model_fitness.forget',
         targetType: 'model',
         targetId: body.model,
-        after: { keys: result.keys },
+        after: { keys: result.keys, report: result.report },
       })
-      return json({ models: result.models })
+      return json({ models: result.models, report: result.report })
     }
 
     const started = await startFitnessRun({

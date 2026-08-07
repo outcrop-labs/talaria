@@ -31,8 +31,8 @@ it('census', () => {
     platformAgents: PLATFORM_AGENTS.length,
   }
   expect(report).toEqual({
-    harnesses: 23,
-    fixtures: 70,
+    harnesses: 26,
+    fixtures: 247,
     widens: 12,
     refuses: ['judge', 'research-search'],
     roles: 11,

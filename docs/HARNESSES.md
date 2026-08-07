@@ -46,7 +46,7 @@ failure behavior — it *declares* them, and `runHarness` honors the declaration
 | `server/harness/capability.ts` | What a model can actually do, and who says so. |
 | `server/harness/transport.ts` | The gateway and fleet-persona transports (blocking + streaming), the request that reaches them, and the refusals a transport raises rather than dropping a field it cannot honor. |
 | `server/harness/registry.ts` | The 23 shipped harnesses, merged builtin < app-shipped < admin-custom. |
-| `server/harness/defs/*.ts` | The definitions themselves — 23 harnesses, 70 eval fixtures. |
+| `server/harness/defs/*.ts` | The definitions themselves — 26 harnesses, 247 eval fixtures. |
 | `server/harness/recorded.ts` | Run any harness against written-down replies: no gateway, no fleet, no DB, no clock. |
 
 **One chokepoint, and CI holds it.** `node scripts/check-invariants.mjs` fails the build on a call to
@@ -245,7 +245,7 @@ Two sharp edges, both locked by `registry.test.ts`:
   bad. That is what put the judge on `zero_tool_claim` and `fabricated_outage` — rules structurally
   wrong for a verdict, which *describes* claimed work rather than doing any — and inflated
   `guard_findings.model`, the per-model confabulation rate the fitness page reads, for whichever
-  model the admin had chosen to judge with. All 23 harnesses name their rules. A harness that
+  model the admin had chosen to judge with. All 26 harnesses name their rules. A harness that
   genuinely wants all of them says so by listing them.
 
 Redaction runs on the raw reply and then **re-applies the whole contract, `verify` included**, so a
@@ -258,7 +258,7 @@ to validate would be the worst of both.
 `{ requires: Capability[]; note: string }`. Set it and `render` is called with `widened: true` only
 when every capability listed is **known-true from a probe** for the resolved model. Both branches
 must be real answers: `widened: false` is the product working, not a degraded mode with an apology in
-it. Twelve of the 23 harnesses widen; the titler deliberately does not, because a wider prompt would
+it. Twelve of the 26 harnesses widen; the titler deliberately does not, because a wider prompt would
 only buy a longer name.
 
 ### `ground`
@@ -553,7 +553,8 @@ comes from the subject of the call have no pin; the judge has a platform agent b
 export interface EvalCase<I, O> {
   name: string
   input: I
-  check: (value: O) => string | null
+  check: (value: O, ctx: EvalContext) => string | null
+  band?: 'easy' | 'standard' | 'hard'
 }
 ```
 
@@ -582,6 +583,50 @@ Rules of thumb, all of them learned the hard way:
 - **Name the safety assertion.** `inbox-command`'s fixture asserting that the model never proposes an
   `actionId` outside the allowlist is the one the whole feature rests on; that same relation is also
   in `output.verify`, so the offline fixture and the production column agree by construction.
+- **State the shared assertion once.** Several suites shipped with two fixtures that spelled the same
+  four checks in two different orders, one of them omitting a rule — so which fixture you read decided
+  what you believed about the model. Every suite now has one `…Problem(value, …)` function carrying
+  what is true of *every* answer, and each fixture adds only the part its own input makes checkable.
+- **Reference fixtures by NAME in tests, never by index.** `evals?.[0]` silently re-points at a
+  different fixture the moment a suite grows, and the failure reads as "the check is wrong" rather
+  than "this test is holding the wrong fixture".
+
+### Bands
+
+`band` splits a suite into `easy` / `standard` / `hard`, reported separately by the fitness suite
+(`HarnessScore.bandScores`). It defaults to `standard`.
+
+One flat pass rate cannot tell *competent, loses the hard edge cases* from *unreliable on the basics*,
+and those are different purchasing decisions: a 70% that is easy 100 / standard 100 / hard 20 is a
+fine Utility model, while a 70% that is 70 across all three fails one job in three at random. Bands
+also fixed a concrete defect — `muse:ticket` decided the Utility and Muse verdicts from **two**
+fixtures, so one failure was 50%, more than 10% under the floor, and a whole model was rejected on a
+coin flip. Aim for **8–12 fixtures per harness**, spread across the bands.
+
+### The dry run — measuring what a model DID, not what it said
+
+Three harnesses declare `tools: 'own'` because the tool loop *is* the feature (`work-session`,
+`outreach:check-in`, `briefer:chat`), and three more are coding harnesses (`workbench:*`). For those,
+"did it *say* it triaged the ticket" is the wrong question; the failure that costs an org a week is a
+model that says so having called nothing.
+
+A harness declares `dryRun` and the fitness suite supplies the loop, against an isolated in-memory
+world (`server/fitness/toolbox/`):
+
+| Surface | Tools | World |
+| --- | --- | --- |
+| `dryRun.tools` | Talaria's real MCP toolkit — names and descriptions **copied from `mcp/src/index.ts`** and locked by `talaria-tools.sync.test.ts` | tickets, channels, teammates |
+| `dryRun.workspace` | the base coding surface: `list_files`, `read_file`, `search`, `write_file`, `run_tests` | a small repository, per fixture, with the fixture's own pass oracle |
+
+Fixtures then assert over `ctx.calls` — the log of what actually happened. `NO_TOOLS` is what every
+single-shot harness's fixture receives, so a check reaching for `ctx.calls` sees an honest empty list.
+
+Two things are deliberately *not* claimed. The loop is **ours**, not the persona's (production runs
+Hermes's), so what it measures is the decision — given these tools and this situation, what did the
+model do — rather than end-to-end harness driving. And `run_tests` **does not execute code**: it
+applies the fixture's own predicate to the current file contents, because running model-written code
+inside a benchmark is a sandbox-escape surface and a flake source. The model cannot tell the
+difference; a reader of the verdict should be able to.
 
 ## The fitness suite
 

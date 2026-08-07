@@ -69,16 +69,40 @@ const SYSTEM: Record<MuseKind, string> = {
     'Include 0–3 skills, only ones clearly implied by the purpose (each a # title, a when-to-use line, concrete numbered steps). ' +
     'When a current draft is given, revise it per the request instead of starting over — keep everything not asked about.',
   document: 'You help edit a markdown document. ' + DOC_RULES,
+  // THE CLOSED WORLD IS STATED THREE TIMES, and that is deliberate rather than
+  // sloppy. This prompt has exactly two jobs — patch a field, or refuse — and a
+  // small model asked to "assign this to Dana and move it to the design board"
+  // used to do neither: it reached for the nearest fields it COULD write and
+  // answered `{"status":"in_progress","tags":["design"]}`, which is a
+  // plausible-looking patch of something nobody asked for, sitting behind an
+  // Apply button. It is the worst failure this surface has, because a refusal
+  // costs a sentence and a wrong patch costs a board.
+  //
+  // The old wording carried the escape hatch as the LAST clause of a run-on
+  // "Rules:" paragraph, after a 90-word field list and a strong "you make edits"
+  // framing. So: the boundary is named before the fields, the fields are named
+  // as the whole of the world, the out-of-scope asks a user actually types are
+  // listed as CONCRETE NOUNS (a small model matches "assignee" far more reliably
+  // than it infers the complement of a set), and the substitution failure is
+  // forbidden by name with the refusal shown as a worked example.
   ticket:
     'You make fast edits to a project TICKET from a natural-language instruction. The current ticket is given as JSON.\n' +
+    'You can change TEN fields and nothing else. Anything else the instruction asks for, you refuse — you never approximate it with a field you do have.\n' +
     'Reply with ONLY a JSON object — no prose, no code fence — containing exactly the fields to CHANGE:\n' +
     '{ "title"?: string, "description"?: markdown string (the FULL replacement), "priority"?: "low"|"medium"|"high"|"urgent", ' +
     '"effort"?: "xs"|"s"|"m"|"l"|"xl"|null, "estimatedHours"?: number|null, "dueDate"?: ISO datetime|null, "startDate"?: ISO datetime|null, ' +
     '"color"?: "slate"|"bronze"|"green"|"amber"|"red"|"blue"|"purple"|"teal"|"pink"|"orange"|"lime"|"cyan"|"indigo"|"magenta"|"olive"|"brown"|null, ' +
     '"tags"?: string[] (the FULL replacement label set), "status"?: "inbox"|"assigned"|"in_progress"|"blocked"|"quality_review"|"done" }\n' +
-    'Rules: include ONLY fields the instruction asks to change; omit everything else. Relative dates resolve against the "now" timestamp in the context. ' +
+    'THINGS THAT ARE NOT ON THAT LIST, and are therefore always a refusal: the assignee or owner, the board or project the ticket lives on, ' +
+    'comments, attachments, subtasks, linked or blocking tickets, watchers, sprints, estimates of anyone else\'s time, and deleting or archiving the ticket. ' +
+    'Refuse by replying exactly {"error": "<one short sentence why>"} and nothing else — for example, ' +
+    '{"error": "I can only edit this ticket\'s own fields, not its assignee or board."} ' +
+    'A refusal is the RIGHT answer here and costs nothing; a patch of a different field is silently wrong and a person has to undo it.\n' +
+    'Rules: include ONLY fields the instruction asks to change; omit everything else — an instruction to change one field never changes a second. ' +
+    'Relative dates resolve against the "now" timestamp in the context. ' +
     'Rewriting or extending the description: return the complete new markdown in "description", preserving everything not asked about. ' +
-    'If the instruction is unclear or asks for something outside these fields, return {"error": "<one short sentence why>"}.',
+    'If part of the instruction is in scope and part is not, refuse the whole thing and say which part you cannot do. ' +
+    'If the instruction is unclear, refuse the same way.',
   template:
     'You write TEMPLATES for Talaria — the markdown skeleton a ticket description or plan document STARTS from. A template is scaffolding, never a finished document.\n' +
     'Hard rules:\n' +

@@ -139,11 +139,104 @@ async function perplexityModels(): Promise<string[]> {
   return unique
 }
 
-/** The models a provider reports right now. Throws with a human message. */
-export async function availableModels(ep: LlmEndpoint): Promise<string[]> {
+/** ONE MODEL AS THE PROVIDER DESCRIBES IT — the fields every OpenAI-compatible
+ *  catalog that publishes them agrees on, normalized.
+ *
+ *  WHY THIS TYPE EXISTS AT ALL. `availableModels` used to return `string[]`, and
+ *  it parsed the provider's answer down to that: OpenRouter publishes
+ *  `context_length`, `architecture.input_modalities`, `supported_parameters` and
+ *  `pricing` for all 400 models it serves, and every one of those fields was
+ *  read into a local and discarded. The cost was not abstract. The fitness page
+ *  reported "nothing advertises a context window" for a model whose catalog
+ *  entry says 1,048,576, because `smallestWindow` was reading a single integer
+ *  off the ENDPOINT row — one number for a gateway serving four hundred models,
+ *  written only by `fleet-federate.ts`, and not even refreshed by
+ *  `ensureEndpoint`'s `on conflict do update`. Meanwhile `tools`, `json`,
+ *  `json-strict` and `vision` sat unmeasured on the matrix while the provider
+ *  had already answered all four for free.
+ *
+ *  EVERY FIELD IS OPTIONAL AND MEANS "THE PROVIDER DID NOT SAY". Never "no":
+ *  see `capabilitiesFromCatalog` for why that distinction is load-bearing
+ *  rather than pedantic. */
+export interface CatalogModel {
+  id: string
+  /** Display name where the provider gives one. */
+  name: string | null
+  /** Total window in tokens, as advertised. Null when unpublished. */
+  contextLength: number | null
+  /** e.g. `['text', 'image']`. Null when the provider does not describe
+   *  modalities — which is most non-OpenRouter catalogs. */
+  inputModalities: string[] | null
+  /** The request parameters this model accepts — `tools`, `response_format`,
+   *  `structured_outputs`, `web_search_options`, … Null when unpublished. */
+  supportedParameters: string[] | null
+  /** USD per token, as strings in the source; parsed to numbers per MILLION
+   *  tokens to match how everything else in Talaria quotes a price. */
+  pricing: { inPerMTok: number | null; outPerMTok: number | null } | null
+}
+
+const num = (v: unknown): number | null => {
+  const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : Number.NaN
+  return Number.isFinite(n) ? n : null
+}
+const strings = (v: unknown): string[] | null => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : null)
+
+/** The raw shape, unioned across the catalogs Talaria talks to. Everything is
+ *  optional because every one of these providers omits something. */
+interface RawCatalogEntry {
+  id?: string
+  name?: string
+  context_length?: unknown
+  /** Anthropic and some OpenAI-compat servers spell it this way. */
+  max_context_length?: unknown
+  architecture?: { input_modalities?: unknown; modality?: unknown }
+  supported_parameters?: unknown
+  top_provider?: { context_length?: unknown }
+  pricing?: { prompt?: unknown; completion?: unknown }
+}
+
+/** THE SMALLER OF THE TWO WINDOWS OPENROUTER PUBLISHES. `context_length` is the
+ *  model's own; `top_provider.context_length` is what the endpoint it routes to
+ *  will actually accept, and it is routinely lower. A claim has to hold for the
+ *  request that gets made, not for the spec sheet. */
+function windowOf(m: RawCatalogEntry): number | null {
+  const candidates = [num(m.context_length), num(m.top_provider?.context_length), num(m.max_context_length)].filter(
+    (n): n is number => n !== null && n > 0,
+  )
+  return candidates.length ? Math.min(...candidates) : null
+}
+
+function toCatalogModel(m: RawCatalogEntry, normalize: (id: string) => string): CatalogModel | null {
+  const id = m.id ?? m.name ?? ''
+  if (!id) return null
+  // `modality: 'text+image->text'` is the older spelling, still served by some
+  // entries. Split it rather than ignore it — it is the only vision signal
+  // those rows carry.
+  const modalities =
+    strings(m.architecture?.input_modalities) ??
+    (typeof m.architecture?.modality === 'string' ? (m.architecture.modality.split('->')[0]?.split('+').filter(Boolean) ?? null) : null)
+  const inTok = num(m.pricing?.prompt)
+  const outTok = num(m.pricing?.completion)
+  return {
+    id: normalize(id),
+    name: m.name ?? null,
+    contextLength: windowOf(m),
+    inputModalities: modalities,
+    supportedParameters: strings(m.supported_parameters),
+    pricing: inTok === null && outTok === null ? null : { inPerMTok: inTok === null ? null : inTok * 1e6, outPerMTok: outTok === null ? null : outTok * 1e6 },
+  }
+}
+
+/** The models a provider reports right now, WITH everything it says about them.
+ *  Throws with a human message. `availableModels` is this, projected to ids. */
+export async function catalogModels(ep: LlmEndpoint): Promise<CatalogModel[]> {
   const base = (ep.baseUrl ?? NATIVE_BASE[ep.provider])?.replace(/\/$/, '')
   if (!base) throw new Error('no API base known for this provider')
-  if (base.includes('api.perplexity.ai')) return perplexityModels()
+  // Perplexity has no catalog API; its docs give ids and nothing else, so every
+  // descriptive field is honestly null rather than guessed at.
+  if (base.includes('api.perplexity.ai')) {
+    return (await perplexityModels()).map((id) => ({ id, name: null, contextLength: null, inputModalities: null, supportedParameters: null, pricing: null }))
+  }
   const keyEnv = ep.apiKeyEnv ?? DEFAULT_KEY_ENV[ep.provider] ?? null
   const key = await resolveEndpointKey(ep)
 
@@ -156,10 +249,15 @@ export async function availableModels(ep: LlmEndpoint): Promise<string[]> {
     headers['Authorization'] = `Bearer ${key}`
   }
 
+  // Gemini's OpenAI-compat layer reports ids as "models/gemini-" while its
+  // chat API is documented with the bare id — normalize to what chat expects.
+  const normalize = base.includes('generativelanguage.googleapis.com') ? (id: string) => id.replace(/^models\//, '') : (id: string) => id
+
   // Follow pagination where the provider pages (Anthropic defaults to 20 per
   // page); OpenAI-compatible catalogs return everything in one response. The
   // provider's own ordering is preserved — OpenRouter lists newest first.
-  const ids: string[] = []
+  const out: CatalogModel[] = []
+  const seen = new Set<string>()
   let qs = ep.provider === 'anthropic' ? '?limit=1000' : ''
   for (let page = 0; page < 20; page++) {
     const r = await fetchModels(base, headers, qs)
@@ -173,22 +271,27 @@ export async function availableModels(ep: LlmEndpoint): Promise<string[]> {
       throw new Error(`provider answered ${r.status}${hint}`)
     }
     const j = (await r.json()) as
-      | Array<{ id?: string; name?: string }> // Together returns a bare array
-      | {
-          data?: Array<{ id?: string }>
-          models?: Array<{ id?: string; name?: string }>
-          has_more?: boolean
-          last_id?: string
-        }
+      | RawCatalogEntry[] // Together returns a bare array
+      | { data?: RawCatalogEntry[]; models?: RawCatalogEntry[]; has_more?: boolean; last_id?: string }
     const list = Array.isArray(j) ? j : (j.data ?? j.models ?? [])
-    ids.push(...list.map((m) => m.id ?? (m as { name?: string }).name ?? '').filter(Boolean))
+    for (const raw of list) {
+      const m = toCatalogModel(raw, normalize)
+      // First entry wins, matching the old `new Set(ids)` dedupe: the provider's
+      // own ordering puts the canonical row first.
+      if (m && !seen.has(m.id)) {
+        seen.add(m.id)
+        out.push(m)
+      }
+    }
     if (Array.isArray(j) || !j.has_more || !j.last_id) break
     qs = `${ep.provider === 'anthropic' ? '?limit=1000&' : '?'}after_id=${encodeURIComponent(j.last_id)}`
   }
-  // Gemini's OpenAI-compat layer reports ids as "models/gemini-" while its
-  // chat API is documented with the bare id — normalize to what chat expects.
-  const normalize = base.includes('generativelanguage.googleapis.com')
-    ? (id: string) => id.replace(/^models\//, '')
-    : (id: string) => id
-  return [...new Set(ids.map(normalize))]
+  return out
 }
+
+/** The model IDS a provider reports right now. Kept as the narrow answer for the
+ *  three callers that only ever wanted a picker list. */
+export async function availableModels(ep: LlmEndpoint): Promise<string[]> {
+  return (await catalogModels(ep)).map((m) => m.id)
+}
+

@@ -104,6 +104,27 @@ export interface RoleFloor {
   /** True: refuse the run and say which capability is missing. False: run
    *  anyway and let the result carry the fact. Never silently half-work. */
   refuseBelow: boolean
+  /** CAPABILITIES THE PLATFORM MAY SUPPLY, so the floor asks whether the RUN can
+   *  reach them rather than whether the MODEL has them.
+   *
+   *  THE DISTINCTION IS THE WHOLE POINT. A slot an admin assigns is not a bare
+   *  model — it is a model running inside Talaria, with the tools this org has
+   *  registered and a gateway that can hand it definitions. `research-search`
+   *  refusing every model without native browsing was correct about the weights
+   *  and wrong about the deployment: a model measured at 100% tool calling and
+   *  100% tool selection, with a web-search server registered, does the job.
+   *
+   *  Listing a capability here does NOT weaken the floor. It redirects it:
+   *  `capability-reach.ts` still has to find a registered, enabled tool AND a
+   *  model that can call it, and an org with neither gets the same refusal with
+   *  a better sentence. What it stops is refusing on a fact that was true about
+   *  the model and irrelevant to the run.
+   *
+   *  A harness that lists a capability here MUST have a code path that actually
+   *  uses the tool — see `researchSearchHarness`, which picks its transport on
+   *  the answer. Declaring it without one would turn a refusal into a silently
+   *  worse run, which is the failure this floor was built to prevent. */
+  suppliable?: Capability[]
   /** One sentence, shown next to the model picker in Admin. Written for the
    *  admin choosing a model, not for the developer reading this file. */
   note: string
@@ -121,8 +142,61 @@ export interface RoleFloor {
 export interface EvalCase<I, O> {
   name: string
   input: I
-  check: (value: O) => string | null
+  /** `ctx` carries WHAT THE MODEL DID, for the harnesses that are dry-run
+   *  against a sandbox Talaria (see `fitness/toolbox/`). Optional to receive and
+   *  empty for every single-shot harness, so the hundred existing fixtures that
+   *  ignore it stay correct — a fixture only reaches for it when the question it
+   *  is asking is behavioural.
+   *
+   *  THE POINT OF IT: "did it SAY it triaged the ticket" is answerable from the
+   *  value and is the wrong question; "did it call triage_ticket before claiming
+   *  to have started" is answerable only from here, and is the failure that
+   *  costs an org a week. */
+  check: (value: O, ctx: EvalContext) => string | null
+  /** Which difficulty band this fixture belongs to. Bands are reported
+   *  separately, so "solid on standard, fails the hard band" is sayable instead
+   *  of collapsing into one rate that hides which half a model can do.
+   *
+   *  Defaults to 'standard' — the band a fixture belongs to unless its author
+   *  says otherwise, so adding a band to the type did not silently re-label
+   *  every existing fixture as easy. */
+  band?: EvalBand
 }
+
+/** EASY is the floor a model must clear to be usable at all; STANDARD is the job
+ *  as it actually arrives; HARD is where a frontier model should pull ahead —
+ *  ambiguity, a trap, a rule that has to be applied against the grain. A model
+ *  failing only the hard band is a real and useful answer, and the old flat rate
+ *  could not express it. */
+export type EvalBand = 'easy' | 'standard' | 'hard'
+
+/** What a fixture can see about a DRY RUN — a harness turn the fitness suite ran
+ *  with a real tool loop against an isolated, in-memory Talaria.
+ *
+ *  Typed structurally rather than importing `fitness/toolbox`, because a harness
+ *  definition must stay importable without the fitness suite: `registry.ts`
+ *  enumerates every definition — `evals` included — in production, and dragging
+ *  a benchmark's module graph into that path would be exactly the kind of
+ *  coupling the harness layer exists to avoid. */
+export interface EvalContext {
+  /** Every tool call the model made, in order, with what it got back. Empty for
+   *  a harness that was not dry-run. */
+  calls: ReadonlyArray<{ tool: string; args: Record<string, unknown>; result: unknown; error: string | null }>
+  /** Did the model call `a` at any point before it called `b`? False when either
+   *  never happened, which is the reading a fixture wants: "read the ticket
+   *  before commenting" is not satisfied by doing neither. */
+  calledBefore: (a: string, b: string) => boolean
+  /** The sandbox world AFTER the run — the state a fixture asserts the model
+   *  left behind. Null when the harness was not dry-run. */
+  world: unknown
+  /** The loop hit its turn bound with the model still calling tools. */
+  exhausted: boolean
+}
+
+/** The context a single-shot harness's fixture receives: nothing happened,
+ *  because nothing could. Exported so the fitness suite and every test that
+ *  calls a `check` by hand agree on what "no tools ran" looks like. */
+export const NO_TOOLS: EvalContext = { calls: [], calledBefore: () => false, world: null, exhausted: false }
 
 /** THE FLOOR EVERY TEXT FIXTURE NEEDS, and the bug it closes.
  *
@@ -380,6 +454,46 @@ export interface HarnessDefinition<I, O> {
    *  GATEWAY cannot honor 'own' at all, and says so by failing the call rather
    *  than by quietly running a tool-loop harness as a single completion. */
   tools?: ToolPolicy
+
+  /** HOW TO DRY-RUN THIS HARNESS in the fitness suite, when the platform has to
+   *  supply the tool loop the model cannot run for itself.
+   *
+   *  Only meaningful alongside `tools: 'own'`. Production hands those turns to a
+   *  persona whose loop lives inside the agent container, where the platform can
+   *  see tool NAMES and nothing else — so the suite could never ask the question
+   *  that matters, which is not "can this model emit a tool call" but "given
+   *  these tools and this situation, what did it actually do". The suite offers
+   *  the tools named here, backed by an isolated in-memory Talaria, and the
+   *  fixtures assert over the call log (`EvalContext.calls`).
+   *
+   *  NAME THE TOOLS THE JOB NEEDS AND NO MORE. A tool surface is a prompt:
+   *  handing a briefing chat the ticket-triage tools measures a model's
+   *  tolerance for irrelevant options rather than its judgement, and a candidate
+   *  that looks worse for it has been measured against a deployment nobody has.
+   *
+   *  Omitted means every sandboxed tool, which is right only for a harness whose
+   *  agent genuinely carries the whole toolkit. */
+  dryRun?: {
+    /** Which Talaria toolkit tools to offer. Omit when `workspace` is set —
+     *  those two are different surfaces and a harness has one. */
+    tools?: string[]
+    /** Overrides on the sandbox's standard world — a ticket in a particular
+     *  state, a gap already filed, a DM already sent. Typed loosely here so this
+     *  module stays free of the fitness suite's imports; the suite narrows it. */
+    world?: Record<string, unknown>
+    /** THE OTHER SURFACE: a FILE workspace with a test runner, for the coding
+     *  harnesses. Built per fixture from that fixture's own input, because a
+     *  repository and the oracle that decides whether its tests pass are
+     *  properties of the case rather than of the harness.
+     *
+     *  Typed structurally for the same reason `EvalContext` is: a harness
+     *  definition must stay importable without the fitness suite, since
+     *  `registry.ts` enumerates every definition in production. */
+    workspace?: (input: I) => {
+      files: Array<{ path: string; content: string }>
+      passes: (files: ReadonlyArray<{ path: string; content: string }>) => string | null
+    }
+  }
 
   /** Tools this harness OFFERS the model on the turn — a different question from
    *  `tools` above, which is about the model's own loop (see `ToolPolicy` in

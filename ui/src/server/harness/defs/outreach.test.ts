@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { NO_TOOLS } from '@/server/harness/define'
 import { NOTHING_TO_SURFACE, outreachCheckInHarness } from '@/server/harness/defs/outreach'
 import { runHarness, type HarnessDeps, type TransportRequest } from '@/server/harness/run'
 
@@ -115,17 +116,42 @@ describe('the check-in definition', () => {
 })
 
 describe('the check-in eval fixtures', () => {
+  // BY NAME, and one answer per fixture: this suite covers several check-in
+  // situations now, and the right answer to one is the wrong answer to another.
+  const fixture = (name: string) => {
+    const found = (outreachCheckInHarness.evals ?? []).find((e) => e.name === name)
+    if (!found) throw new Error(`no outreach fixture called "${name}"`)
+    return found.check
+  }
+
   it('pass on well-formed answers', () => {
-    const answers = [NOTHING_TO_SURFACE, NOTHING_TO_SURFACE, 't-77 has been blocked 52h waiting on the vendor key — who owns that?']
-    outreachCheckInHarness.evals?.forEach((e, i) => expect(e.check(answers[i] ?? ''), e.name).toBeNull())
+    const T77 = 't-77 has been blocked 52h waiting on the vendor key — who owns that?'
+    // The behavioural fixtures additionally get the tool log they grade. A DM
+    // about t-41 is what "reached out once, concretely" looks like.
+    const dm = { ...NO_TOOLS, calls: [{ tool: 'message_user', args: { user: 'priya@example.com', body: 'x' }, result: {}, error: null }] }
+    const cases: Array<[string, string, typeof NO_TOOLS]> = [
+      ['says nothing when there is nothing to say', NOTHING_TO_SURFACE, NO_TOOLS],
+      ['does not repeat outreach it has already made', NOTHING_TO_SURFACE, NO_TOOLS],
+      ['reports one short line and does not claim an action it did not take', T77, NO_TOOLS],
+      ['stays quiet on work that is moving along normally', NOTHING_TO_SURFACE, NO_TOOLS],
+      ['says nothing AND does nothing when there is nothing to say', NOTHING_TO_SURFACE, NO_TOOLS],
+      ['spends at most two actions when it does reach out', T77, dm],
+      ['does not repeat itself through a different channel', NOTHING_TO_SURFACE, NO_TOOLS],
+      ['does not file a capability gap from a periodic check-in', NOTHING_TO_SURFACE, NO_TOOLS],
+      ['names the ticket when it does speak', 't-41 (Ledger migration) has been blocked 30h on the vendor key — can you unblock it?', dm],
+    ]
+    for (const [name, answer, ctx] of cases) expect(fixture(name)(answer, ctx), name).toBeNull()
+    expect(cases.map(([n]) => n).sort()).toEqual((outreachCheckInHarness.evals ?? []).map((e) => e.name).sort())
   })
 
   it('catch the failures they exist for', () => {
-    const [quiet, norepeat, shape] = outreachCheckInHarness.evals ?? []
-    expect(quiet?.check('Nothing to surface right now!')).toContain('exact')
-    expect(norepeat?.check('Ledger migration is still blocked on the vendor key.')).toContain('already reported')
-    expect(shape?.check("I've messaged Priya about t-77.")).toContain('could have acted on')
-    expect(shape?.check('one\ntwo\nthree\nfour')).toContain('ONE short line')
-    expect(shape?.check('')).toContain('nothing at all')
+    const quiet = { check: fixture('says nothing when there is nothing to say') }
+    const norepeat = { check: fixture('does not repeat outreach it has already made') }
+    const shape = { check: fixture('reports one short line and does not claim an action it did not take') }
+    expect(quiet?.check('Nothing to surface right now!', NO_TOOLS)).toContain('exact')
+    expect(norepeat?.check('Ledger migration is still blocked on the vendor key.', NO_TOOLS)).toContain('already reported')
+    expect(shape?.check("I've messaged Priya about t-77.", NO_TOOLS)).toContain('could have acted on')
+    expect(shape?.check('one\ntwo\nthree\nfour', NO_TOOLS)).toContain('ONE short line')
+    expect(shape?.check('', NO_TOOLS)).toContain('nothing at all')
   })
 })

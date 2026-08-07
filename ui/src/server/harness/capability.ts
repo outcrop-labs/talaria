@@ -38,7 +38,20 @@ export type Capability =
   | 'code'
   | 'instruction-following' // honors "reply with exactly X"
 
-export type CapabilitySource = 'probe' | 'learned' | 'declared'
+/** WHERE A FACT CAME FROM, and the four are RANKED — see `SOURCE_RANK`.
+ *
+ *  'probe'     the platform ran the model and watched. The strongest evidence
+ *              there is, and the only kind that may contradict a catalog.
+ *  'declared'  a HUMAN said so, in Admin. A person overriding the platform is
+ *              exercising judgement the platform does not have, so it outranks
+ *              everything except a measurement.
+ *  'catalog'   the PROVIDER said so, in its published model list. Free, wide,
+ *              and only ever positive (see `capabilitiesFromCatalog`) — a
+ *              catalog that omits a field has not denied anything.
+ *  'learned'   inferred from an upstream 400. One data point about one
+ *              parameter on one endpoint, which is why it is the weakest and the
+ *              only one that expires. */
+export type CapabilitySource = 'probe' | 'declared' | 'catalog' | 'learned'
 
 export interface CapabilityFact {
   value: boolean
@@ -59,7 +72,7 @@ export interface CapabilityFact {
 export type CapabilityKey = string
 export const capabilityKey = (endpoint: string, upstreamModel: string): CapabilityKey => `${endpoint}:${upstreamModel}`
 
-/** Learned facts expire; probe and declared facts do not. A provider that fixes
+/** Learned and catalog facts expire; probe and declared facts do not. A provider that fixes
  *  JSON mode must be able to be re-discovered without an admin action — that is
  *  the release valve on the gateway's one-way ratchet. Probe facts are a
  *  deliberate measurement and expire only when someone re-measures; declared
@@ -82,7 +95,25 @@ const ALL_CAPABILITIES: Record<Capability, true> = {
   code: true,
   'instruction-following': true,
 }
-const ALL_SOURCES: Record<CapabilitySource, true> = { probe: true, learned: true, declared: true }
+const ALL_SOURCES: Record<CapabilitySource, true> = { probe: true, declared: true, catalog: true, learned: true }
+
+/** PRECEDENCE, and the reason it had to exist the day the catalog became a
+ *  writer. Every write used to be last-write-wins, which was correct while the
+ *  writers were an admin, a probe run and a 400 — all three episodic and
+ *  deliberate. A catalog refresh is neither: it runs on a daily cadence across
+ *  every model an endpoint serves, so under last-write-wins it would overwrite
+ *  a probe result with a provider's marketing copy every single day, and an
+ *  admin who probed a model and found its tool calling broken would watch that
+ *  finding evaporate overnight.
+ *
+ *  Equal rank still means last write wins — re-probing a model must be able to
+ *  correct the previous probe. */
+const SOURCE_RANK: Record<CapabilitySource, number> = { probe: 3, declared: 2, catalog: 1, learned: 0 }
+
+/** May `next` replace `prev`? Yes when nothing is there, when it is at least as
+ *  authoritative, or when what is there has expired. */
+export const outranks = (next: CapabilitySource, prev: CapabilitySource | undefined): boolean =>
+  prev === undefined || SOURCE_RANK[next] >= SOURCE_RANK[prev]
 
 /** Every capability, derived from the exhaustive record above rather than
  *  re-listed. Exported because three other places used to hand-list the same
@@ -101,7 +132,12 @@ const isSource = (v: unknown): v is CapabilitySource => typeof v === 'string' &&
  *  learned fact costs one re-discovery; keeping a corrupt one forever is
  *  exactly the ratchet the TTL exists to release. */
 const isExpired = (fact: CapabilityFact, now: number): boolean => {
-  if (fact.source !== 'learned') return false
+  // A CATALOG FACT EXPIRES LIKE A LEARNED ONE, and for the same reason rather
+  // than out of symmetry: both are re-derivable without asking anyone. If an
+  // endpoint is removed, or a provider stops advertising a parameter, the claim
+  // must decay on its own rather than outlive the thing that made it. The
+  // refresh cadence is well inside the TTL, so a live endpoint never lapses.
+  if (fact.source !== 'learned' && fact.source !== 'catalog') return false
   const at = Date.parse(fact.at)
   return !Number.isFinite(at) || now - at > LEARNED_TTL_MS
 }
@@ -173,6 +209,55 @@ export async function recordCapability(key: CapabilityKey, cap: Capability, fact
     entry[cap] = fact
     all[key] = entry
     await setSetting(KEY, all)
+  })
+}
+
+/** MANY FACTS, MANY KEYS, ONE WRITE — and it respects `SOURCE_RANK`.
+ *
+ *  Two things forced this, and both come from the catalog becoming a writer:
+ *
+ *    VOLUME. `recordCapability` is a read-modify-write of one `app_settings`
+ *    row, serialized. A catalog refresh derives up to four facts for each of
+ *    four hundred models on each of several endpoints; done one fact at a time
+ *    that is thousands of sequential rewrites of a row that grows with every
+ *    one of them. Here it is one read and one write for the whole refresh.
+ *
+ *    PRECEDENCE. See `SOURCE_RANK`. A weaker source never displaces a stronger
+ *    one, so a nightly catalog sweep cannot erase a probe result — and the
+ *    return value says how many facts were actually taken, so a refresh can
+ *    report "wrote 12, deferred to existing evidence on 3" rather than claiming
+ *    credit for writes it did not make.
+ *
+ *  Facts under capability ids THIS BUILD DOES NOT RECOGNIZE are preserved
+ *  untouched, exactly as `recordCapability` preserves them, because during a
+ *  rolling deploy the other process may be a newer build. */
+export async function mergeCapabilities(key: CapabilityKey, facts: Partial<Record<Capability, CapabilityFact>>): Promise<number>
+export async function mergeCapabilities(batch: Array<{ key: CapabilityKey; facts: Partial<Record<Capability, CapabilityFact>> }>): Promise<number>
+export async function mergeCapabilities(
+  a: CapabilityKey | Array<{ key: CapabilityKey; facts: Partial<Record<Capability, CapabilityFact>> }>,
+  b?: Partial<Record<Capability, CapabilityFact>>,
+): Promise<number> {
+  const batch = typeof a === 'string' ? [{ key: a, facts: b ?? {} }] : a
+  if (batch.length === 0) return 0
+  return serialize(async () => {
+    const all = await readAll()
+    const now = Date.now()
+    let written = 0
+    for (const { key, facts } of batch) {
+      const entry = { ...entryOf(all, key) }
+      for (const [cap, fact] of Object.entries(facts)) {
+        if (!isCapability(cap) || !fact) continue
+        // The incumbent is read through `readFact`, so an EXPIRED fact is not an
+        // incumbent at all and anything may replace it.
+        const prev = readFact(entry[cap], now)
+        if (!outranks(fact.source, prev?.source)) continue
+        entry[cap] = fact
+        written++
+      }
+      all[key] = entry
+    }
+    await setSetting(KEY, all)
+    return written
   })
 }
 

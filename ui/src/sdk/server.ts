@@ -150,7 +150,7 @@ export const defineWorkbenchHarness = (h: WorkbenchHarnessDefinition): Workbench
 // a silently wrong one. Say `WorkbenchHarnessDefinition` there. The VALUE
 // `defineHarness` still accepts either (see the overloads below), because a call
 // in an app's `harness.ts` has to keep building.
-export type { HarnessDefinition, EvalCase, RoleFloor, RenderContext, Message, Grounding, Verify } from '@/server/harness/define'
+export type { HarnessDefinition, EvalCase, EvalBand, EvalContext, RoleFloor, RenderContext, Message, Grounding, Verify } from '@/server/harness/define'
 export type { Capability } from '@/server/harness/capability'
 export type { ModelSpec } from '@/server/harness/model'
 export type { HarnessResult } from '@/server/harness/run'
@@ -173,6 +173,10 @@ export type { ToolDefinition, ToolCall } from '@/server/harness/transport'
  *  nothing. Give it a minimum length and a set of words the answer had to
  *  engage with, and a non-answer scores as one. */
 export { belowAnswerFloor } from '@/server/harness/define'
+/** The `EvalContext` a fixture receives when no tools ran — every single-shot
+ *  harness, which is most of them. Exported so an app author calling a `check`
+ *  by hand has the same value the suite would pass. */
+export { NO_TOOLS } from '@/server/harness/define'
 
 // `defineEvals` is deliberately absent. Fixtures written inside the
 // `defineHarness(...)` call are already contextually typed against the same I

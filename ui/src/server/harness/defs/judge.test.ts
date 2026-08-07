@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { NO_TOOLS } from '@/server/harness/define'
 import { runHarness, type HarnessDeps, type TransportRequest } from '@/server/harness/run'
 import { judgeHarness, JUDGE_VERDICT, type JudgeInput, type JudgeVerdict } from '@/server/harness/defs/judge'
 import type { Capability } from '@/server/harness/capability'
@@ -232,15 +233,15 @@ describe('the eval fixtures', () => {
     // The check that matters is the one nobody writes: a model that answers
     // "revise" to everything looks excellent on planted gaps and is useless,
     // because in enforcing mode it bounces finished work back forever.
-    const alwaysRevise = evals.filter((e) => e.check(verdictOf('revise')) !== null)
+    const alwaysRevise = evals.filter((e) => e.check(verdictOf('revise'), NO_TOOLS) !== null)
     expect(alwaysRevise).toHaveLength(5) // exactly the satisfied cases
 
-    const alwaysPass = evals.filter((e) => e.check(verdictOf('pass')) !== null)
+    const alwaysPass = evals.filter((e) => e.check(verdictOf('pass'), NO_TOOLS) !== null)
     expect(alwaysPass).toHaveLength(7) // the planted gaps and both ambiguous ones
   })
 
   it('will not accept a "revise" that never says what is wrong', () => {
     const gap = evals.find((e) => e.name.startsWith('gap: a required deliverable'))
-    expect(gap?.check(verdictOf('revise', []))).toContain('empty issues list')
+    expect(gap?.check(verdictOf('revise', []), NO_TOOLS)).toContain('empty issues list')
   })
 })

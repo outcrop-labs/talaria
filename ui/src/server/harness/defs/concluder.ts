@@ -59,6 +59,47 @@ const FIXTURE = [
  *  given, which is the reliable small-model tell on this harness. */
 const structuredLines = (value: string): number => value.split('\n').filter((l) => /^\s*(?:[-*+]\s+|#{1,6}\s+|\d+[.)]\s+)/.test(l)).length
 
+/** ONE DECISION, ONE DELIVERABLE, ONE FOLLOW-UP, and nothing to disentangle.
+ *  The easy floor: a model that cannot section this cannot section anything. */
+const SIMPLE = [
+  'Ada: The staging certs expire Sunday.',
+  'Nomad: Renewed them this morning and pushed the new bundle.',
+  'Ada: Decision: we move to auto-renew so this stops happening.',
+  'Nomad: Follow-up - I will wire the ACME client this week.',
+].join('\n\n')
+
+/** A relay where the DECISION IS A REVERSAL. The summary has to record what was
+ *  landed on, not both halves of the argument. */
+const REVERSED = [
+  'Priya: I think we put the export behind a feature flag.',
+  'Nomad: that would let us dark-launch it.',
+  'Priya: on reflection no - the flag is more moving parts than the feature. Decision: ship it unflagged to the pilot accounts only.',
+  'Nomad: unflagged, pilot accounts. Pushed the allowlist.',
+  'Priya: Follow-up - review the allowlist with Support on Monday.',
+].join('\n\n')
+
+/** A relay with UNATTRIBUTED follow-ups: nobody says who is doing it. The
+ *  widened prompt's hardest rule is "leave it unattributed rather than
+ *  guessing", and this is where a weak model invents an owner. */
+const UNOWNED = [
+  'Marta: The importer times out on files over 200MB.',
+  'Nomad: confirmed, it is the synchronous parse.',
+  'Marta: Decision: we chunk the parse rather than raising the timeout.',
+  'Nomad: I have the chunker prototyped.',
+  'Marta: Follow-up - someone needs to benchmark it against the worst customer file before we ship.',
+].join('\n\n')
+
+/** A relay that produced NO deliverable — a discussion that decided something
+ *  and built nothing. Inventing a deliverable to fill the section is the
+ *  failure. */
+const NO_DELIVERABLE = [
+  'Ivan: Are we keeping the nightly rebuild?',
+  'Nomad: it costs about forty minutes of runner time a day.',
+  'Ivan: Decision: drop it, move to on-demand rebuilds from the release branch.',
+  'Nomad: nothing to build for that, it is a config change on the schedule.',
+  'Ivan: Follow-up - Ivan will delete the schedule after the current train ships.',
+].join('\n\n')
+
 export const concluderHarness = defineHarness<ConcludeInput, string>({
   id: 'concluder',
   label: 'Concluder',
@@ -104,32 +145,151 @@ export const concluderHarness = defineHarness<ConcludeInput, string>({
   // places at once.
   guard: { rules: ['secret_leak', 'pii_leak'], redact: true },
   temperature: 0.2,
+  // NINE FIXTURES, THREE BANDS. Both originals ran on the same transcript, so a
+  // model that happened to section THAT relay scored a perfect concluder. The
+  // shapes below are the ones that break the job differently: a reversal, a
+  // relay with nobody named, a relay that produced nothing, and one long enough
+  // that keeping every section takes actually reading it.
   evals: [
     {
+      name: 'sections a short, unambiguous relay',
+      band: 'easy',
+      input: { channelName: 'certs', transcript: SIMPLE },
+      check: (value) => sectionProblem(value) ?? carries(value, [['cert', 'the expiring certs'], ['renew', 'the renewal decision']]),
+    },
+    {
       name: 'comes back as sections rather than a paragraph',
+      band: 'easy',
       input: { channelName: 'pilot-export', transcript: FIXTURE },
-      check: (value) => {
-        if (!value.trim()) return 'the summary was empty'
-        const lines = structuredLines(value)
-        return lines >= 3 ? null : `expected at least 3 bullet or heading lines, got ${lines} - the summary came back as prose`
-      },
+      check: (value) => sectionProblem(value),
     },
     {
       name: 'carries the decision, the deliverable and the follow-up',
+      band: 'standard',
       input: { channelName: 'pilot-export', transcript: FIXTURE },
+      check: (value) =>
+        carries(value, [
+          ['csv', 'the decision to ship CSV only'],
+          ['endpoint', 'the endpoint that was produced'],
+          ['thursday', 'the follow-up and its deadline'],
+        ]),
+    },
+    {
+      name: 'keeps all three sections on a relay with plenty to lose',
+      band: 'standard',
+      input: { channelName: 'importer', transcript: UNOWNED },
+      check: (value) =>
+        sectionProblem(value) ??
+        carries(value, [
+          ['chunk', 'the decision to chunk the parse'],
+          ['benchmark', 'the follow-up'],
+        ]),
+    },
+    {
+      name: 'does not turn a config change into an invented deliverable',
+      band: 'standard',
+      input: { channelName: 'ci', transcript: NO_DELIVERABLE },
       check: (value) => {
-        const v = value.toLowerCase()
-        const missing = (
-          [
-            ['csv', 'the decision to ship CSV only'],
-            ['endpoint', 'the endpoint that was produced'],
-            ['thursday', 'the follow-up and its deadline'],
-          ] as const
-        )
-          .filter(([token]) => !v.includes(token))
-          .map(([, label]) => label)
-        return missing.length ? `left out ${missing.join(', ')}` : null
+        const problem = sectionProblem(value) ?? carries(value, [['on-demand', 'the decision'], ['schedule', 'the follow-up']])
+        if (problem) return problem
+        // The relay explicitly says there is nothing to build. A summary that
+        // reports shipped code has invented the one thing nobody did.
+        return /\b(?:shipped|merged|deployed|released|built the)\b/i.test(value)
+          ? 'reported a deliverable on a relay whose participants said there was nothing to build'
+          : null
       },
+    },
+    {
+      name: 'names the channel’s subject rather than restating the transcript',
+      band: 'standard',
+      input: { channelName: 'pilot-export', transcript: FIXTURE },
+      // THE FLOOR FIRST. On its own this is a pure upper bound, and a
+      // fourteen-character non-answer is shorter than any transcript — the
+      // one-sided assertion the sweep's own garbage census exists to catch, and
+      // it caught this one in draft.
+      check: (value) =>
+        sectionProblem(value) ??
+        carries(value, [['csv', 'the decision']]) ??
+        (value.length < FIXTURE.length ? null : 'the summary is no shorter than the relay it closes — the model restated it rather than concluding it'),
+    },
+    // ── hard ────────────────────────────────────────────────────────────────
+    {
+      name: 'records the position the relay landed on, not the one it abandoned',
+      band: 'hard',
+      input: { channelName: 'pilot-export', transcript: REVERSED },
+      check: (value) => {
+        const problem = sectionProblem(value) ?? carries(value, [['unflagged', 'the decision that was actually taken'], ['allowlist', 'the deliverable']])
+        if (problem) return problem
+        // Naming the flag as the rejected option is fine; presenting it as the
+        // decision is the failure.
+        return /decision[^\n]*feature flag|ship[^\n]*behind (?:a )?(?:feature )?flag/i.test(value)
+          ? 'recorded the reversed decision (the feature flag) as if it still stood'
+          : null
+      },
+    },
+    {
+      name: 'leaves an unowned follow-up unowned instead of guessing at a name',
+      band: 'hard',
+      // The widened prompt's hardest clause. Nobody in this relay takes the
+      // benchmark, and a model asked for an owner on every follow-up will
+      // assign one — which is worse than naming nobody.
+      input: { channelName: 'importer', transcript: UNOWNED },
+      check: (value) => {
+        const followUp = value
+          .split('\n')
+          .filter((l) => /benchmark/i.test(l))
+          .join(' ')
+        if (!followUp) return 'left out the follow-up entirely'
+        // Marta and Nomad are the only names in the transcript, and neither
+        // volunteered for it.
+        const invented = /\b(?:Marta|Nomad)\b/.exec(followUp)
+        return invented ? `attributed the unowned follow-up to ${invented[0]}, who never took it on` : null
+      },
+    },
+    {
+      name: 'sections a relay whose decision is buried mid-thread',
+      band: 'hard',
+      input: {
+        channelName: 'billing',
+        transcript: [
+          'Sam: the invoice PDF renders wrong on Windows.',
+          'Nomad: it is the font fallback — the embedded subset is missing on their reader.',
+          'Sam: how bad?',
+          'Nomad: cosmetic, but it looks unprofessional on the total line.',
+          'Sam: fine. Decision: we embed the full font rather than the subset, and eat the extra 400KB per invoice.',
+          'Nomad: done, pushed the change and regenerated last month’s invoices.',
+          'Sam: anything else outstanding?',
+          'Nomad: no.',
+          'Sam: Follow-up - tell Support the old PDFs are being regenerated so they stop getting tickets about it.',
+        ].join('\n\n'),
+      },
+      check: (value) =>
+        sectionProblem(value) ??
+        carries(value, [
+          ['font', 'the decision about the embedded font'],
+          ['support', 'the follow-up to Support'],
+        ]),
     },
   ],
 })
+
+// ── Eval assertions ──────────────────────────────────────────────────────────
+
+/** THE FORMATTING HALF, with a floor under it. `structuredLines` alone is an
+ *  upper-bound-free NOT: three bullets saying nothing satisfies it. The length
+ *  floor is what makes it an assertion about a summary rather than about
+ *  punctuation. */
+function sectionProblem(value: string): string | null {
+  if (!value.trim()) return 'the summary was empty'
+  if (value.trim().length < 60) return `the summary is ${value.trim().length} characters — too short to carry three sections`
+  const lines = structuredLines(value)
+  return lines >= 3 ? null : `expected at least 3 bullet or heading lines, got ${lines} - the summary came back as prose`
+}
+
+/** THE CONTENT HALF: the load-bearing tokens of this relay, each with the
+ *  human sentence naming what its absence means. */
+function carries(value: string, wanted: ReadonlyArray<readonly [string, string]>): string | null {
+  const v = value.toLowerCase()
+  const missing = wanted.filter(([token]) => !v.includes(token)).map(([, label]) => label)
+  return missing.length ? `left out ${missing.join(', ')}` : null
+}

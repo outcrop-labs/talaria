@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { NO_TOOLS } from '@/server/harness/define'
 import type { Finding, GuardConfig } from '@/server/guardrails'
 import { runHarness, type HarnessDeps, type HarnessRunRow, type TransportRequest } from '@/server/harness/run'
 import type { Capability } from '@/server/harness/capability'
@@ -359,8 +360,8 @@ describe('the brief', () => {
 describe('eval fixtures', () => {
   it('every command fixture accepts a null actionId and rejects an invented one', () => {
     for (const fixture of inboxCommandHarness.evals ?? []) {
-      expect(fixture.check({ message: 'ok', actionId: null })).toBeNull()
-      const invented = fixture.check({ message: 'ok', actionId: 'rm_-rf' })
+      expect(fixture.check({ message: 'ok', actionId: null }, NO_TOOLS)).toBeNull()
+      const invented = fixture.check({ message: 'ok', actionId: 'rm_-rf' }, NO_TOOLS)
       expect(invented, `${fixture.name} accepted an invented action id`).not.toBeNull()
     }
   })

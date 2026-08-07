@@ -13,7 +13,7 @@ import { z } from 'zod'
 // VERBATIM, imported from `@talaria/sdk/server` exactly as the doc says to, and
 // run through the real runner against a recorded reply. A rename anywhere in the
 // contract now breaks the typecheck of the documentation itself.
-import { defineHarness, defineWorkbenchHarness, belowAnswerFloor, type EvalCase, type HarnessDefinition, type ToolDefinition, type ToolCall } from './server'
+import { defineHarness, defineWorkbenchHarness, belowAnswerFloor, NO_TOOLS, type EvalCase, type HarnessDefinition, type ToolDefinition, type ToolCall } from './server'
 import { runHarness } from '@/server/harness/run'
 
 const TRIAGE = z.object({ severity: z.enum(['low', 'medium', 'high']), reason: z.string() })
@@ -76,7 +76,7 @@ describe("SDK.md's activity-harness example", () => {
     expect(fixture).toBeDefined()
     const result = await runHarness(triage, fixture!.input, answer('{"severity":"high","reason":"total checkout outage"}'))
     expect(result.schemaValid).toBe(true)
-    expect(fixture!.check(result.value as Triage)).toBeNull()
+    expect(fixture!.check(result.value as Triage, NO_TOOLS)).toBeNull()
   })
 
   it('applies the failure policy it declares — a model that answers in prose returns null, it does not throw', async () => {
@@ -95,7 +95,7 @@ describe('the rest of the exported surface, as SDK.md lists it', () => {
       input: { subject: 'a', body: 'b' },
       check: (v) => (v.reason.length > 3 ? null : 'say why the message got that severity'),
     }
-    expect(apart.check({ severity: 'low', reason: 'ok' })).toBe('say why the message got that severity')
+    expect(apart.check({ severity: 'low', reason: 'ok' }, NO_TOOLS)).toBe('say why the message got that severity')
   })
 
   it('exports belowAnswerFloor, the floor a one-sided text fixture needs', () => {

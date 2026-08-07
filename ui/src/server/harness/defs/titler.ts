@@ -124,8 +124,9 @@ export function titleProblem(title: string, input: TitlerInput): string | null {
 /** One fixture. The check closes over the SAME input the model was given, so
  *  the restatement assertion is measured against the real transcript rather
  *  than a copy that can drift away from it. */
-const titleCase = (name: string, input: TitlerInput): EvalCase<TitlerInput, string> => ({
+const titleCase = (name: string, band: EvalCase<TitlerInput, string>['band'], input: TitlerInput): EvalCase<TitlerInput, string> => ({
   name,
+  band,
   input,
   check: (value) => titleProblem(value, input),
 })
@@ -179,31 +180,85 @@ export const titlerHarness = defineHarness<TitlerInput, string>({
   // prompt; there is no MORE for it to do here, and the only thing a wider
   // prompt would buy is a longer name — which is the failure mode, not the
   // upgrade. Widening exists for depth and authority, and a title has neither.
+  //
+  // TEN FIXTURES ACROSS THREE BANDS. EASY is one obvious subject stated plainly
+  // — a model that cannot name that cannot title anything. STANDARD is the job
+  // as it arrives: a real transcript with more than one noun in it. HARD is
+  // where the transcript actively misleads — a loud opening line that is not the
+  // subject, a quotable phrase that is a trap, a question short enough that
+  // handing it back looks like an answer.
   evals: [
-    titleCase('chat — names the subject, not the activity', {
+    titleCase('chat — one plain subject, stated outright', 'easy', {
+      kind: 'chat',
+      text: [
+        'user: the nightly backup job has been failing since Tuesday',
+        'assistant: the target volume filled up — the retention sweep stopped running when the cron user lost write access.',
+      ].join('\n'),
+    }),
+    titleCase('research — one plain subject, stated outright', 'easy', {
+      kind: 'research',
+      text: 'How do European data residency rules apply to customer support transcripts?',
+    }),
+    titleCase('plan — one plain deliverable, stated outright', 'easy', {
+      kind: 'plan',
+      text: [
+        'user: we need SSO working for the enterprise trial next month',
+        'assistant: that is SAML for two identity providers plus a group-to-role mapping.',
+      ].join('\n'),
+    }),
+    titleCase('chat — names the subject, not the activity', 'standard', {
       kind: 'chat',
       text: [
         'user: our checkout page takes about nine seconds to load on mobile and people are dropping off at payment',
         'assistant: the largest contentful paint is dominated by the payment iframe — it blocks render until the provider script resolves.',
       ].join('\n'),
     }),
-    titleCase('chat — does not adopt a quoted phrase from the transcript', {
+    titleCase('chat — does not adopt a quoted phrase from the transcript', 'standard', {
       kind: 'chat',
       text: [
         'user: someone filed a ticket called "URGENT!!! everything is broken." can we work out what they actually mean',
         'assistant: the attached log shows a single failing migration on the reporting replica.',
       ].join('\n'),
     }),
-    titleCase('plan — names the outcome, not the conversation', {
+    titleCase('plan — names the outcome, not the conversation', 'standard', {
       kind: 'plan',
       text: [
         'user: we need to get the warehouse off the old label printer before the holiday rush',
         'assistant: that means new firmware on twelve stations, a template migration, and a fallback for the two sites still on serial.',
       ].join('\n'),
     }),
-    titleCase('research — names the subject without restating the question', {
+    titleCase('research — names the subject without restating the question', 'standard', {
       kind: 'research',
       text: 'What are the practical tradeoffs between Postgres logical replication and Debezium for feeding a warehouse in near real time?',
+    }),
+    // THE BURIED SUBJECT. The loudest line is the opening complaint and it is
+    // not what the conversation turns out to be about. A weaker model titles the
+    // first sentence it read.
+    titleCase('chat — the subject is not the opening line', 'hard', {
+      kind: 'chat',
+      text: [
+        'user: I am so tired of this deploy pipeline, it is genuinely the worst part of my week, every single time',
+        'assistant: which step is failing for you?',
+        'user: honestly the pipeline is fine. what keeps biting me is that staging and production have different Postgres extensions installed, so migrations pass in one and fail in the other.',
+        'assistant: so the real problem is extension drift between environments.',
+      ].join('\n'),
+    }),
+    // A QUESTION SHORT ENOUGH TO HAND BACK. The prompt says "do not restate it
+    // as a question"; the cheap move is to strip the question mark and return
+    // the same words, which `restatesInput` catches.
+    titleCase('research — a short question it must not simply hand back', 'hard', {
+      kind: 'research',
+      text: 'Is Redis Streams a good fit for our job queue?',
+    }),
+    // A CONVERSATION ABOUT CONVERSATIONS. Every generic filler the prompt bans
+    // is sitting right there in the transcript for the taking.
+    titleCase('chat — a meta subject, with every filler word available to steal', 'hard', {
+      kind: 'chat',
+      text: [
+        'user: we keep having the same discussion about how we run these meetings and nothing changes',
+        'assistant: what usually derails it?',
+        'user: nobody writes down the decision, so the next meeting relitigates it. we need a decision log.',
+      ].join('\n'),
     }),
   ],
 })

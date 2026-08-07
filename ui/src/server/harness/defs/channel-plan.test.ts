@@ -3,6 +3,7 @@
 // have handled at all (a repair turn, and an envelope forced by protocol-level
 // JSON mode).
 import { describe, expect, it } from 'vitest'
+import { NO_TOOLS } from '@/server/harness/define'
 import { channelPlanHarness, TICKET_PROPOSALS, type TicketProposal } from '@/server/harness/defs/channel-plan'
 import { parseJson } from '@/server/harness/json'
 import { runHarness, type TransportRequest } from '@/server/harness/run'
@@ -182,26 +183,69 @@ describe('the definition', () => {
     expect(res.repairs).toBe(1) // audit 1.4 — nothing in this tree re-asked before
   })
 
+  // BY NAME, NOT BY INDEX, and one draft per fixture — the suite covers eight
+  // transcripts now, and a plan drawn from one is not an answer to another.
+  const fixture = (name: string) => {
+    const found = (channelPlanHarness.evals ?? []).find((e) => e.name === name)
+    if (!found) throw new Error(`no channel-plan fixture called "${name}"`)
+    return found.check
+  }
+  // Named apart from the module-level `ticket` helper above, which builds the
+  // RAW model reply rather than a parsed proposal.
+  const proposal = (title: string, description: string, over: Partial<TicketProposal> = {}): TicketProposal => ({
+    title,
+    description,
+    priority: 'medium',
+    effort: 's',
+    dependsOn: [],
+    tags: [],
+    ...over,
+  })
+
   it('its own eval fixtures pass on a well-formed draft', () => {
-    const good: TicketProposal[] = [
-      { title: 'Migrate the ledger store to Postgres', description: 'Move the ledger tables off SQLite in a maintenance window. Decided: Postgres over SQLite.', priority: 'high', effort: 'l', dependsOn: [], tags: [] },
-      { title: 'Write the rollback plan', description: 'Nadia owns this. Document the restore path before the migration runs.', priority: 'high', effort: 's', dependsOn: [], tags: [] },
-      { title: 'Send the weekly digest at 09:00 local', description: 'The digest currently goes out at 09:00 UTC regardless of the org timezone.', priority: 'medium', effort: 's', dependsOn: [], tags: ['billing'] },
+    const LEDGER: TicketProposal[] = [
+      proposal('Migrate the ledger store to Postgres', 'Move the ledger tables off SQLite in a maintenance window. Decided: Postgres over SQLite.', { priority: 'high', effort: 'l' }),
+      proposal('Write the rollback plan', 'Nadia owns this. Document the restore path before the migration runs.', { priority: 'high' }),
+      proposal('Send the weekly digest at 09:00 local', 'The digest currently goes out at 09:00 UTC regardless of the org timezone.', { tags: ['billing'] }),
     ]
-    for (const e of channelPlanHarness.evals ?? []) expect(e.check(good), e.name).toBeNull()
+    const drafts: Array<[string, TicketProposal[]]> = [
+      ['draws one actionable ticket per piece of discussed work', LEDGER],
+      ['covers the work that was discussed and plans none that was not', LEDGER],
+      ['tags only with labels the workflow map actually defines', LEDGER],
+      ['a dependency edge points at a real index, never at itself', LEDGER],
+      ['the plan document wins over the raw chat', LEDGER],
+      ['a transcript that names a person keeps them in the description', [LEDGER[1]!]],
+      ['an instruction inside the transcript is discussion, not a command', [LEDGER[1]!]],
+      ['one piece of work comes back as an array of one', [proposal('Backfill the audit log', 'Run the backfill against the archive table; roughly a day of work against historical rows.')]],
+      ['a transcript with nothing plannable draws nothing', []],
+      [
+        'shipping order is not a dependency',
+        [
+          proposal('Add a favicon to the login page', 'The login page currently serves the browser default icon; add the brand favicon.'),
+          proposal('Update the stale footer copyright year', 'The footer still reads last year; make it derive from the current date.'),
+          proposal('Fix the typo on the 404 page', 'The 404 body has a spelling mistake in the second sentence; correct it.'),
+        ],
+      ],
+    ]
+    for (const [name, draft] of drafts) expect(fixture(name)(draft, NO_TOOLS), name).toBeNull()
+    // Exhaustive, so a new fixture cannot be added without a draft proving it is
+    // satisfiable at all.
+    expect(drafts.map(([n]) => n).sort()).toEqual((channelPlanHarness.evals ?? []).map((e) => e.name).sort())
   })
 
   it('its eval fixtures catch the failures they exist for', () => {
-    const [coverage, invention, tagging] = [channelPlanHarness.evals?.[0], channelPlanHarness.evals?.[1], channelPlanHarness.evals?.[2]]
+    const coverage = { check: fixture('draws one actionable ticket per piece of discussed work') }
+    const invention = { check: fixture('covers the work that was discussed and plans none that was not') }
+    const tagging = { check: fixture('tags only with labels the workflow map actually defines') }
     const one: TicketProposal[] = [{ title: 'Do the thing', description: 'x', priority: 'medium', effort: null, dependsOn: [], tags: [] }]
-    expect(coverage?.check(one)).toContain('1 ticket(s)')
+    expect(coverage?.check(one, NO_TOOLS)).toContain('1 ticket(s)')
     expect(
       invention?.check([
         { title: 'Ledger migration', description: 'rollback and digest work', priority: 'medium', effort: null, dependsOn: [], tags: [] },
         { title: 'Build the Slack integration', description: 'x', priority: 'medium', effort: null, dependsOn: [], tags: [] },
-      ]),
+      ], NO_TOOLS),
     ).toContain('Slack')
-    expect(tagging?.check([{ title: 'T', description: 'D', priority: 'medium', effort: null, dependsOn: [], tags: ['payments'] }])).toContain('payments')
+    expect(tagging?.check([{ title: 'T', description: 'D', priority: 'medium', effort: null, dependsOn: [], tags: ['payments'] }], NO_TOOLS)).toContain('payments')
   })
 })
 

@@ -33,9 +33,17 @@
   const rows = $derived(
     [...new Set([...tested.map((t) => t.id), ...observed.map((o) => o.harness)])].sort((a, b) => a.localeCompare(b)),
   )
-  const testedOf = $derived(new Map(tested.map((t) => [t.id, t])))
+  // A HARNESS THE SWEEP SKIPPED HAS NO BENCH NUMBERS, and `cases: 0` is how it
+  // says so — every rate on it is the `n === 0` zero, not a measurement. It is
+  // kept out of `testedOf` so the three bench columns render a dash and the row
+  // takes the "unbenched" chip, which is exactly what happened: nothing was
+  // benched. Printing 0% for a model the sweep never called is the defect this
+  // whole pass is about, and the table was its loudest surface.
+  const testedOf = $derived(new Map(tested.filter((t) => t.cases > 0).map((t) => [t.id, t])))
+  const labelOf = $derived(new Map(tested.map((t) => [t.id, t.label])))
+  const skipOf = $derived(new Map(tested.filter((t) => t.skipReason).map((t) => [t.id, t.skipReason as string])))
   const liveOf = $derived(new Map(observed.map((o) => [o.harness, o])))
-  const label = (id: string): string => harnessLabels[id] ?? testedOf.get(id)?.label ?? id
+  const label = (id: string): string => harnessLabels[id] ?? labelOf.get(id) ?? id
   const dash = '—'
 </script>
 
@@ -76,7 +84,12 @@
           <tr class="border-b border-line-subtle last:border-0">
             <td class="py-1.5 pr-3 font-mono text-[11px] text-fg">
               {label(id)}
-              {#if !t}<Chip class="ml-1.5" title="Production runs this harness and the last bench did not cover it — either it declares no fixtures, or the sweep did not reach it.">unbenched</Chip>{/if}
+              {#if !t}<Chip
+                  class="ml-1.5"
+                  title={skipOf.get(id) ??
+                    'Production runs this harness and the last bench did not cover it — either it declares no fixtures, or the sweep did not reach it.'}
+                >{skipOf.has(id) ? 'not testable here' : 'unbenched'}</Chip
+                >{/if}
             </td>
             <td class="px-2 py-1.5 text-right font-mono text-[11px] text-muted">{t ? pct(t.contractRate) : dash}</td>
             <td class="px-2 py-1.5 text-right font-mono text-[11px] text-muted">{t ? pct(t.repairRate) : dash}</td>

@@ -1,0 +1,228 @@
+// CAN THIS DEPLOYMENT DO IT — as opposed to: can this model do it.
+//
+// THE CATEGORY ERROR THIS FIXES, in the words of the bug report that found it:
+// "search can be TOOL DRIVEN in Talaria, so saying a MODEL is not capable is
+// true, but at the harness level models are slotting into, it's completely
+// untrue."
+//
+// That is exactly right, and the fitness page was making the error out loud. It
+// probed `deepseek/deepseek-v4-flash`, measured `tools` at 100% and
+// `tool-select` at 100% over four prompts, measured `search` at 0% because the
+// model does not browse, and then reported the model Not-a-fit for all three
+// Research slots. Every number was correct. The conclusion was wrong, because
+// the slot an admin assigns is not a bare model — it is a model running inside
+// Talaria, with the tools this org has registered, behind a gateway that can
+// hand it definitions and run a loop. A model that calls the right tool every
+// time and has a search tool in front of it can do research. Telling an admin
+// otherwise costs them a capable, cheap model for no reason.
+//
+// SO CAPABILITY GETS TWO QUESTIONS INSTEAD OF ONE:
+//
+//   capability.ts   does the MODEL do this natively? An attribute of weights and
+//                   of the endpoint serving them. Probes measure it, catalogs
+//                   declare it, and it is the honest answer to "what did we
+//                   observe".
+//   THIS FILE       can the RUN reach it? Natively, or through a tool the
+//                   platform will supply. This is the question a floor should
+//                   ask before refusing, and the question a slot verdict should
+//                   answer, because it is the question the admin is actually
+//                   asking when they pick a model from a dropdown.
+//
+// WHAT IT DOES NOT DO: invent reach. A tool path counts only when the tool is
+// REGISTERED AND ENABLED in this install and the model can actually call tools.
+// An org with no search server gets the same "not a fit" it got before — with a
+// materially better sentence, naming the thing to go and install rather than
+// blaming the model.
+import { getSetting } from './audit'
+import { listMcpServers, type McpServer } from './mcp-registry'
+import { getCapabilities, type Capability, type CapabilityFact } from './harness/capability'
+
+/** How a capability is satisfied for one run. */
+export type ReachVia = 'native' | 'tool'
+
+export interface Reach {
+  capability: Capability
+  reached: boolean
+  via: ReachVia | null
+  /** The registered tool that supplies it, when `via` is 'tool'. */
+  supplier: { server: string; tool: string } | null
+  /** One sentence for the admin, written for the model picker rather than for
+   *  a developer. Always populated — the negative case is the one that has to
+   *  say what to do about it. */
+  detail: string
+}
+
+// ── Which capabilities a tool can stand in for ───────────────────────────────
+
+/** THE TABLE IS SHORT ON PURPOSE, and the discipline is the same one
+ *  `score.ts` applies to `DECLARED_EDGES`: an entry earns its place by being a
+ *  case where a tool genuinely does the job, not by being conceivable.
+ *
+ *  `search` qualifies completely. A web-search tool returns the same thing a
+ *  sonar model returns — passages with source URLs — and the synthesis stage
+ *  downstream cannot tell which produced them, because it consumes findings and
+ *  a source list either way.
+ *
+ *  WHAT IS DELIBERATELY ABSENT, so the next author does not have to relitigate:
+ *    `vision`      an OCR or captioning tool describes an image in words. That
+ *                  is a different, lossier capability wearing the same name, and
+ *                  recording it as vision would let a model be assigned to
+ *                  Image understanding on the strength of alt text.
+ *    `code`        the workbench RUNS code; the capability is about WRITING it.
+ *                  A sandbox does not make a model a programmer.
+ *    `long-context` chunking is a strategy, not a capability, and the harness
+ *                  that needs the window is the one that would have to implement
+ *                  it. Nothing here can supply it on that harness's behalf.
+ *    `json`, `json-strict`, `tools`, `tool-select`, `instruction-following`
+ *                  properties of the model's own decoding. There is no outside
+ *                  thing to hand it. */
+const TOOL_REACHABLE: ReadonlyArray<{
+  capability: Capability
+  /** Tool names that supply it, lowercased. Matched as a whole word against the
+   *  tool name so `search_knowledge` (Talaria's own RAG over the org's docs, not
+   *  the live web) cannot be mistaken for a web search tool. */
+  names: readonly string[]
+  /** Words in a tool's DESCRIPTION that corroborate a name match. */
+  hints: readonly string[]
+}> = [
+  {
+    capability: 'search',
+    names: ['web_search', 'websearch', 'search_web', 'brave_web_search', 'tavily_search', 'exa_search', 'google_search', 'perplexity_search', 'serper_search'],
+    hints: ['web', 'internet', 'live', 'browse', 'online'],
+  },
+]
+
+/** An ADMIN'S OWN WIRING, which always wins over the heuristic below.
+ *
+ *  Auto-detection by tool name is a convenience so a fresh install works without
+ *  a setup step; it is not a thing to be at the mercy of. A server whose search
+ *  tool is called `q` is invisible to the heuristic, and a tool called
+ *  `web_search` that actually searches an intranet is a false positive. Either
+ *  way an admin can say so, and what they say is the answer. */
+export type CapabilityProviders = Partial<Record<Capability, { server: string; tool: string } | null>>
+export const PROVIDERS_KEY = 'capability_providers'
+
+export interface ReachDeps {
+  servers: () => Promise<McpServer[]>
+  providers: () => Promise<CapabilityProviders>
+  capabilities: (key: string) => Promise<Partial<Record<Capability, CapabilityFact>>>
+}
+
+const REAL: ReachDeps = {
+  servers: listMcpServers,
+  providers: () => getSetting<CapabilityProviders>(PROVIDERS_KEY, {}),
+  capabilities: getCapabilities,
+}
+
+const withDeps = (over?: Partial<ReachDeps>): ReachDeps => ({ ...REAL, ...over })
+
+/** Whole-word match, so `search_knowledge` does not answer for `search`. */
+const nameMatches = (toolName: string, names: readonly string[]): boolean => {
+  const n = toolName.toLowerCase()
+  return names.some((want) => n === want || n.endsWith(`_${want}`) || n.startsWith(`${want}_`))
+}
+
+/** The registered, ENABLED tool that supplies this capability, or null.
+ *
+ *  Pure over the server list so the whole rule can be tested without a database
+ *  and without an MCP server anywhere near it. */
+export function supplierFor(capability: Capability, servers: readonly McpServer[], providers: CapabilityProviders = {}): { server: string; tool: string } | null {
+  const pinned = providers[capability]
+  // An explicit `null` is an admin saying "nothing supplies this here" — a
+  // deliberate answer, and not the same as having said nothing.
+  if (pinned === null) return null
+  if (pinned) {
+    const srv = servers.find((s) => s.name === pinned.server && s.enabled)
+    return srv?.tools.some((t) => t.name === pinned.tool) ? pinned : null
+  }
+
+  const rule = TOOL_REACHABLE.find((r) => r.capability === capability)
+  if (!rule) return null
+  for (const srv of servers) {
+    if (!srv.enabled) continue
+    for (const tool of srv.tools) {
+      if (!nameMatches(tool.name, rule.names)) continue
+      // A name match alone is enough when the tool publishes no description;
+      // when it does, one corroborating word keeps a same-named intranet search
+      // from being read as the live web.
+      const desc = (tool.description ?? '').toLowerCase()
+      if (desc && !rule.hints.some((h) => desc.includes(h))) continue
+      return { server: srv.name, tool: tool.name }
+    }
+  }
+  return null
+}
+
+/** CAN THIS RUN REACH THESE CAPABILITIES, and how.
+ *
+ *  `keys` are the capability keys the model resolves to — the same endpoint:model
+ *  keys `run.ts` derives, passed in rather than re-derived so this file never
+ *  becomes a second spelling of that rule. A capability counts as native only
+ *  when EVERY key says so, which is the same unanimity `missingCapabilities`
+ *  applies: a bare id can land on any endpoint in the pool, and a claim has to
+ *  hold for the worst of them. */
+export async function reachFor(keys: readonly string[], wanted: readonly Capability[], deps?: Partial<ReachDeps>): Promise<Record<string, Reach>> {
+  const d = withDeps(deps)
+  const out: Record<string, Reach> = {}
+  if (wanted.length === 0) return out
+
+  const facts = await Promise.all(keys.map((k) => d.capabilities(k).catch((): Partial<Record<Capability, CapabilityFact>> => ({}))))
+  const nativeYes = (cap: Capability): boolean => keys.length > 0 && facts.every((f) => f[cap]?.value === true)
+  const nativeNo = (cap: Capability): boolean => keys.length > 0 && facts.every((f) => f[cap]?.value === false)
+
+  // Only read the registry if something might need a tool. An install with no
+  // tool-reachable requirement should not pay for the query.
+  const needsTools = wanted.some((c) => TOOL_REACHABLE.some((r) => r.capability === c))
+  const [servers, providers] = needsTools
+    ? await Promise.all([d.servers().catch((): McpServer[] => []), d.providers().catch((): CapabilityProviders => ({}))])
+    : [[] as McpServer[], {} as CapabilityProviders]
+
+  for (const cap of wanted) {
+    if (nativeYes(cap)) {
+      out[cap] = { capability: cap, reached: true, via: 'native', supplier: null, detail: `the model does '${cap}' itself` }
+      continue
+    }
+
+    const supplier = supplierFor(cap, servers, providers)
+    if (supplier) {
+      // THE MODEL STILL HAS TO BE ABLE TO CALL THE TOOL. A search server in
+      // front of a model that cannot hold a tool call is not reach — it is a
+      // model that will answer from memory with a tool sitting unused beside it,
+      // which is the exact failure the search floor exists to prevent.
+      if (nativeNo('tools')) {
+        out[cap] = {
+          capability: cap,
+          reached: false,
+          via: null,
+          supplier: null,
+          detail: `'${supplier.server}.${supplier.tool}' could supply '${cap}', but this model is recorded as unable to call tools.`,
+        }
+        continue
+      }
+      out[cap] = {
+        capability: cap,
+        reached: true,
+        via: 'tool',
+        supplier,
+        detail: `the model calls '${supplier.server}.${supplier.tool}' for it`,
+      }
+      continue
+    }
+
+    // NOT REACHED, and the sentence has to say which of the two reasons — the
+    // model cannot, or the org has not installed the thing that could.
+    const reachable = TOOL_REACHABLE.some((r) => r.capability === cap)
+    out[cap] = {
+      capability: cap,
+      reached: false,
+      via: null,
+      supplier: null,
+      detail: reachable
+        ? `nothing here reaches '${cap}': the model does not do it natively and no enabled MCP server offers a tool for it. Register one, or assign a model that does '${cap}' itself.`
+        : nativeNo(cap)
+          ? `the model is recorded as not supporting '${cap}', and nothing can supply it on the model's behalf.`
+          : `nothing has measured '${cap}' on this model.`,
+    }
+  }
+  return out
+}

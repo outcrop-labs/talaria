@@ -69,6 +69,7 @@
 // which is also exactly how the model-fitness suite will replay eval fixtures.
 import { extractToolRecord, getGuardConfig, groundingTextOf, needsRedaction, recordFindings, redactSecrets, RULES, runGuardrails, guardText, type Available, type Finding, type GuardConfig, type ToolRecord } from '../guardrails'
 import { routingFor } from '../llm-gateway'
+import { reachFor, type Reach } from '../capability-reach'
 import { db } from '../db/pg'
 import { capabilityKey, missingCapabilities, getCapabilities, type Capability, type CapabilitySource } from './capability'
 import { personaCapabilityKeys } from './persona'
@@ -217,6 +218,12 @@ export interface HarnessDeps {
   personaKeys: (model: string) => Promise<string[]>
   missingCapabilities: (key: string, required: Capability[]) => Promise<Capability[]>
   capabilities: (key: string) => Promise<Partial<Record<Capability, { value: boolean; source?: CapabilitySource }>>>
+  /** CAN THE RUN reach these capabilities — natively, or through a tool this
+   *  install has registered. Consulted only for capabilities a harness declares
+   *  `suppliable` (see `RoleFloor`), and only when the floor is otherwise about
+   *  to refuse, so the registry read never lands on a path that would not have
+   *  used it. */
+  reach: (keys: readonly string[], wanted: readonly Capability[]) => Promise<Record<string, Reach>>
   transport: Transport
   guardConfig: () => Promise<GuardConfig>
   /** `input` is the turn's own grounding material — see the `grounding` block
@@ -237,6 +244,7 @@ const REAL_DEPS: HarnessDeps = {
   personaKeys: personaCapabilityKeys,
   missingCapabilities,
   capabilities: getCapabilities,
+  reach: reachFor,
   transport: defaultTransport,
   guardConfig: getGuardConfig,
   guardText,
@@ -249,6 +257,28 @@ const REAL_DEPS: HarnessDeps = {
     `
   },
   now: () => Date.now(),
+}
+
+/** THE CAPABILITY KEYS A ROUTED MODEL ANSWERS FOR — one per endpoint that could
+ *  take the call, because a bare model name may be served by a POOL and we
+ *  cannot know which member will take this one without advancing the round-robin
+ *  cursor.
+ *
+ *  Exported because `research.ts` has to ask `capability-reach.ts` the same
+ *  question the floor asks — "can this run reach search" — and had to derive the
+ *  same keys to do it. Two spellings of a key derivation is how a stage and the
+ *  floor that guards it come to disagree about which model they are talking
+ *  about, and the whole point of this pass is that they never do. */
+export const capabilityKeysOf = (route: { endpoints: string[]; upstreamModel: string }): string[] =>
+  route.endpoints.map((e) => capabilityKey(e, route.upstreamModel))
+
+/** The keys for a model id, resolved through the REAL routing — the convenience
+ *  form for callers outside the runner, which have no `HarnessDeps` in hand.
+ *  Falls back to a persona's inherited keys exactly as the runner does. */
+export async function capabilityKeysFor(model: string): Promise<string[]> {
+  const route = await REAL_DEPS.routing(model).catch(() => ({ endpoints: [] as string[], upstreamModel: model }))
+  const keys = capabilityKeysOf(route)
+  return keys.length > 0 ? keys : await REAL_DEPS.personaKeys(model).catch(() => [])
 }
 
 /** What the CALLER knows about where this turn's spend belongs. The runner
@@ -662,7 +692,7 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   // member it happens to land on. A persona's pool (its tier's target plus the
   // agent's fallback providers) is the same shape and gets the same treatment.
   const route = await deps.routing(routed).catch(() => ({ endpoints: [] as string[], upstreamModel: routed }))
-  let keys = route.endpoints.map((e) => capabilityKey(e, route.upstreamModel))
+  let keys = capabilityKeysOf(route)
   const endpoint = route.endpoints.length === 1 ? (route.endpoints[0] ?? null) : null
 
   // A FLEET PERSONA is not a gateway catalog model, so `routingFor` answers with
@@ -709,18 +739,41 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
     // never even sent the parameter, so nothing could disable it.
     //
     // A refusal needs DELIBERATE evidence: a probe that measured the model, or a
-    // human/catalog that declared it. Same unanimity rule as `missing` above —
-    // every key in the pool has to carry that evidence, because refusing is the
-    // harmful direction here.
+    // HUMAN who declared it. Same unanimity rule as `missing` above — every key
+    // in the pool has to carry that evidence, because refusing is the harmful
+    // direction here.
+    //
+    // NEITHER 'learned' NOR 'catalog' IS SUCH EVIDENCE. A learned fact is one
+    // upstream 400 about one parameter, for the reason above. A catalog fact is
+    // a provider's published spec sheet — good enough to grant a capability
+    // nobody has measured, never good enough to stop a run. (Today it cannot
+    // arise: `capabilitiesFromCatalog` only ever writes `true`. The guard is
+    // here so that stays a property of this refusal rather than an accident of
+    // the writer.)
     const nothing: Partial<Record<Capability, { value: boolean; source?: CapabilitySource }>> = {}
     const facts = await Promise.all(keys.map((k) => deps.capabilities(k).catch(() => nothing)))
-    const measured = blocking.filter((c) => facts.every((f) => f[c]?.value === false && f[c]?.source !== 'learned'))
-    if (measured.length) {
+    const measured = blocking.filter((c) => facts.every((f) => f[c]?.value === false && f[c]?.source !== 'learned' && f[c]?.source !== 'catalog'))
+
+    // THE PLATFORM MAY SUPPLY WHAT THE MODEL LACKS — `RoleFloor.suppliable`, and
+    // this is where "capability of the model" stops being the question and
+    // "capability of the run" becomes it. A harness that declares a capability
+    // suppliable is asking: is there a registered, enabled tool for this, and
+    // can this model call tools? If so the run proceeds, on the path the harness
+    // wrote for exactly that case.
+    //
+    // ASKED ONLY WHEN IT COULD CHANGE THE ANSWER. `reach` is a registry read;
+    // a harness with no `suppliable` capabilities, or one that is not about to
+    // refuse anyway, never pays for it.
+    const suppliable = measured.filter((c) => def.floor.suppliable?.includes(c))
+    const supplied = suppliable.length > 0 ? Object.values(await deps.reach(keys, suppliable).catch(() => ({}))).filter((r) => r.reached) : []
+    const unreachable = measured.filter((c) => !supplied.some((r) => r.capability === c))
+
+    if (unreachable.length) {
       return fail({
         ...empty,
         model: routed,
         step,
-        error: `"${routed}" cannot run harness "${def.id}": it is known not to support ${measured.join(', ')}. ${def.floor.note}`,
+        error: `"${routed}" cannot run harness "${def.id}": it is known not to support ${unreachable.join(', ')}. ${def.floor.note}`,
       })
     }
   }

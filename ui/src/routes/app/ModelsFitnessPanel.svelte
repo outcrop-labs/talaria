@@ -6,6 +6,7 @@
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
@@ -17,7 +18,6 @@
   import FitnessRunModal from '@/components/models/FitnessRunModal.svelte'
   import { TIER_META, usd } from '@/components/models/fitness'
   import { useFitnessDetail, useModelFitness } from '@/components/models/fitness-queries'
-  import { slide } from '@/lib/motion'
 
   // ── Model fitness — "can I swap this model in", per role, from the UI ───────
   //
@@ -148,41 +148,58 @@
       {/if}
     </Panel>
 
-    {#if selected}
-      <div transition:slide={{ duration: 150 }} class="space-y-4">
-        <div class="flex flex-wrap items-center gap-2">
+  </div>
+
+  <!-- THE REPORT IS A DIALOG, not a panel under the matrix.
+       It used to expand below, which put a full report — probes, per-slot
+       verdicts, the tested-vs-observed table, the adversarial breakdown — at the
+       bottom of a page whose top is a 21-column table. Clicking a cell scrolled
+       nothing, so the answer to "what did this model do" appeared off-screen.
+       A takeover modal puts it where the click was and gives it the height it
+       needs; the selection stays in the URL either way, so a link to a specific
+       model still opens straight onto its report. -->
+  {#if selected}
+    <Modal open={true} onClose={() => searchParams.delete('model')} takeover>
+      {#snippet title()}
+        <span class="flex flex-wrap items-center gap-2">
           <Chip tone="accent">{selected}</Chip>
           {#if data.index[selected]}
-            <span class="font-mono text-[11px] text-muted">
+            <span class="font-mono text-[11px] normal-case tracking-normal text-muted">
               {data.index[selected]?.calls} call(s) · {usd(data.index[selected]?.costUsd ?? null)}
               {#if data.index[selected]?.partial} · partial run{/if}
             </span>
+          {:else}
+            <span class="font-mono text-[11px] normal-case tracking-normal text-muted">never tested</span>
           {/if}
+        </span>
+      {/snippet}
+
+      {#if detailQuery.isPending}
+        <SkeletonRows rows={6} />
+      {:else if !detailQuery.data}
+        <QueryError
+          variant="compact"
+          error={detailQuery.error}
+          title="Could not load this model's report"
+          onRetry={() => void detailQuery.refetch()}
+        />
+      {:else}
+        <FitnessDetail detail={detailQuery.data} {row} />
+      {/if}
+
+      {#snippet footer()}
+        <!-- Forget sits beside Test, not at the bottom of a scroll: it is the
+             destructive twin of the button next to it and an admin should see
+             both without hunting. -->
+        <div class="flex flex-wrap items-center gap-2">
+          <DangerLink onClick={() => void forget(selected)}>Forget recorded capabilities</DangerLink>
           <span class="ml-auto"></span>
           <Button size="sm" variant="outline" onclick={() => openRun(selected)} disabled={inFlight}>Test this model</Button>
           <Button size="sm" variant="ghost" onclick={() => searchParams.delete('model')}>Close</Button>
         </div>
-
-        {#if detailQuery.isPending}
-          <Panel><SkeletonRows rows={4} /></Panel>
-        {:else if !detailQuery.data}
-          <Panel>
-            <QueryError
-              variant="compact"
-              error={detailQuery.error}
-              title="Could not load this model's report"
-              onRetry={() => void detailQuery.refetch()}
-            />
-          </Panel>
-        {:else}
-          <FitnessDetail detail={detailQuery.data} {row} />
-          <div class="flex justify-end">
-            <DangerLink onClick={() => void forget(selected)}>Forget recorded capabilities</DangerLink>
-          </div>
-        {/if}
-      </div>
-    {/if}
-  </div>
+      {/snippet}
+    </Modal>
+  {/if}
 
   {#if running}
     <FitnessRunModal

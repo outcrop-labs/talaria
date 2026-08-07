@@ -75,6 +75,53 @@ const FIXTURE = [
   'Nomad: Got it. Enjoy the rest of your day!',
 ].join('\n\n')
 
+/** ONE DECISION AND NOTHING ELSE. The easy floor: a model that cannot carry a
+ *  single stated decision through a four-line chat cannot do this job at all. */
+const ONE_DECISION = [
+  'User: quick one — do we cap the free tier at 3 seats or 5?',
+  'Nomad: what were we leaning towards?',
+  'User: three. Locked, do not reopen it.',
+  'Nomad: noted.',
+].join('\n\n')
+
+/** A chat where the substance is a decision NOT to do something. The failure to
+ *  catch is a distillation that records the idea and loses the rejection, which
+ *  is how a dropped plan comes back next quarter as an agreed one. */
+const NEGATIVE_DECISION = [
+  'User: should we build the Zendesk importer this quarter?',
+  'Nomad: it came up in planning twice.',
+  'User: no. We are explicitly not doing Zendesk this quarter — the effort goes to the ledger migration instead.',
+  'Nomad: understood, ledger migration takes the slot.',
+].join('\n\n')
+
+/** A chat that CHANGES ITS MIND. Only the last position is durable, and a model
+ *  that flattens the conversation records both and contradicts itself. */
+const REVERSAL = [
+  'User: let us put the rate limiter in the gateway.',
+  'Nomad: that would cover every caller at once.',
+  'User: actually no — scratch that. The gateway cannot see per-tenant quota, so it goes in the API layer where the tenant is known.',
+  'Nomad: API layer it is.',
+  'User: right, and Ivan owns it.',
+].join('\n\n')
+
+/** ALL CHATTER, NO SUBSTANCE. The right distillation says so; the failure is
+ *  inventing a decision to have something to write down. */
+const NOTHING_DURABLE = [
+  'User: morning!',
+  'Nomad: morning — anything you need?',
+  'User: no, just checking you were up. Have a good one.',
+  'Nomad: you too.',
+].join('\n\n')
+
+/** A chat carrying a NUMBER and a DATE, which are the two things a paraphrase
+ *  quietly rounds away. */
+const NUMBERS = [
+  'User: what did we settle on for the retry budget?',
+  'Nomad: nothing written down yet.',
+  'User: five attempts, exponential backoff, give up after 30 seconds total. Starts in the 4.2 release on 12 March.',
+  'Nomad: five attempts, 30 second ceiling, 4.2 on the 12th.',
+].join('\n\n')
+
 export const distillerHarness = defineHarness<DistillInput, string>({
   id: 'distiller',
   label: 'Distiller',
@@ -124,9 +171,39 @@ export const distillerHarness = defineHarness<DistillInput, string>({
   // from. That is why `redact` is on here and not merely observed.
   guard: { rules: ['secret_leak', 'pii_leak'], redact: true },
   temperature: 0.2,
+  // NINE FIXTURES, THREE BANDS. The two this file shipped with both run on the
+  // same transcript, so a model that happened to handle THAT conversation
+  // scored 100% on the distiller. The bands below vary the SHAPE of the
+  // conversation — one decision, a rejection, a reversal, numbers, nothing at
+  // all — because those are the shapes that break a small model differently.
   evals: [
     {
+      name: 'carries a single stated decision',
+      band: 'easy',
+      input: { agentLabel: 'Nomad', transcript: ONE_DECISION },
+      check: (value) => {
+        const thin = belowAnswerFloor(value, { minChars: 20, mentions: ['three', '3', 'seat', 'free tier'] })
+        if (thin) return thin
+        return value.length < ONE_DECISION.length ? null : 'the distillation is no shorter than the transcript'
+      },
+    },
+    {
+      name: 'keeps a number and a date exactly as they were stated',
+      band: 'easy',
+      input: { agentLabel: 'Nomad', transcript: NUMBERS },
+      check: (value) => {
+        const v = value.toLowerCase()
+        const lost = [
+          { term: 'five attempts', ok: /\bfive\b|\b5\b/.test(v) },
+          { term: 'the 30 second ceiling', ok: /\b30\b|thirty/.test(v) },
+          { term: 'the 4.2 release', ok: /4\.2/.test(v) },
+        ].filter((x) => !x.ok)
+        return lost.length ? `paraphrased away ${lost.map((x) => x.term).join(', ')}` : null
+      },
+    },
+    {
       name: 'keeps the planted decisions and drops the planted pleasantries',
+      band: 'standard',
       input: { agentLabel: 'Nomad', transcript: FIXTURE },
       check: (value) => {
         const v = value.toLowerCase()
@@ -139,6 +216,7 @@ export const distillerHarness = defineHarness<DistillInput, string>({
     },
     {
       name: 'is shorter than the conversation it distills',
+      band: 'standard',
       input: { agentLabel: 'Nomad', transcript: FIXTURE },
       // A "distillation" longer than its source is a model restating the
       // transcript, which is the small-model failure this job actually hits —
@@ -153,6 +231,72 @@ export const distillerHarness = defineHarness<DistillInput, string>({
         const thin = belowAnswerFloor(value, { minChars: 40, mentions: ['postgres', 'ledger', 'friday', 'nadia', 'rollback'] })
         if (thin) return thin
         return value.length < FIXTURE.length ? null : 'the distillation is no shorter than the transcript - the model restated it rather than distilling it'
+      },
+    },
+    {
+      name: 'records a decision NOT to do something as a decision',
+      band: 'standard',
+      // A distillation that keeps "Zendesk importer" and loses "no" is how a
+      // rejected plan comes back next quarter as an agreed one.
+      input: { agentLabel: 'Nomad', transcript: NEGATIVE_DECISION },
+      check: (value) => {
+        const thin = belowAnswerFloor(value, { minChars: 30, mentions: ['zendesk', 'ledger'] })
+        if (thin) return thin
+        const v = value.toLowerCase()
+        const refused = /\bnot\b|\bno\b|declin|reject|drop|defer|skip|instead/.test(v)
+        return refused ? null : 'recorded the Zendesk importer without recording that it was explicitly turned down'
+      },
+    },
+    {
+      name: 'skips process chatter in a conversation that is mostly process chatter',
+      band: 'standard',
+      input: {
+        agentLabel: 'Nomad',
+        transcript: [
+          'User: sorry for the slow reply, back to back all morning',
+          'Nomad: no problem at all.',
+          'User: anyway — the API version header is going to be required from 1 June. Unversioned callers get a 400 after that.',
+          'Nomad: got it.',
+          'User: thanks, sorry again for the delay, talk later!',
+        ].join('\n\n'),
+      },
+      check: (value) => {
+        const thin = belowAnswerFloor(value, { minChars: 25, mentions: ['version', 'header', 'june', '400'] })
+        if (thin) return thin
+        const chatter = ['sorry', 'slow reply', 'talk later', 'back to back'].filter((k) => value.toLowerCase().includes(k))
+        return chatter.length ? `kept process chatter it was told to skip: ${chatter.join(', ')}` : null
+      },
+    },
+    // ── hard ────────────────────────────────────────────────────────────────
+    {
+      name: 'keeps only the position the conversation ended on',
+      band: 'hard',
+      // The reversal. A model that flattens the chat records both placements and
+      // leaves the brain holding a contradiction.
+      input: { agentLabel: 'Nomad', transcript: REVERSAL },
+      check: (value) => {
+        const thin = belowAnswerFloor(value, { minChars: 30, mentions: ['api', 'rate limit', 'ivan'] })
+        if (thin) return thin
+        const v = value.toLowerCase()
+        if (!/api/.test(v)) return 'lost the decision the conversation actually landed on (the API layer)'
+        // Naming the gateway is fine as the rejected option; presenting it as
+        // the decision is not.
+        const presentsGateway = /(?:goes|lives|sits|put|place)\w*\s+(?:it\s+)?in\s+the\s+gateway/.test(v)
+        return presentsGateway ? 'recorded the reversed decision (the gateway) as if it still stood' : null
+      },
+    },
+    {
+      name: 'says a conversation held nothing durable rather than inventing something',
+      band: 'hard',
+      // "Never invent anything" is the prompt's hardest rule to keep, because
+      // an empty answer feels like a failure to a model. It is the right one.
+      input: { agentLabel: 'Nomad', transcript: NOTHING_DURABLE },
+      check: (value) => {
+        const v = value.trim().toLowerCase()
+        if (v.length === 0) return 'returned nothing at all — the contract asks for a line saying there was nothing durable'
+        const saysNothing = /nothing|no decision|no durable|none|small talk|pleasantr|greeting|nothing was decided|no action/.test(v)
+        if (saysNothing) return null
+        return `invented substance for a conversation that had none: "${value.trim().slice(0, 90)}"`
       },
     },
   ],

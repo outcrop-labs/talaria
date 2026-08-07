@@ -19,7 +19,9 @@ import {
   capabilityKey,
   forgetCapabilities,
   getCapabilities,
+  mergeCapabilities,
   missingCapabilities,
+  outranks,
   recordCapability,
   LEARNED_TTL_MS,
   type Capability,
@@ -256,5 +258,87 @@ describe('the learned TTL', () => {
     // dropping `response_format` while Admin reported the model as
     // unknown-but-fine. That is audit 1.2 growing back with the fix in place.
     expect(LEARNED_TTL_MS).toBe(LEARNED_PARAM_TTL_MS)
+  })
+})
+
+
+// ── Source precedence ────────────────────────────────────────────────────────
+
+describe('mergeCapabilities', () => {
+  it('ranks probe over declared over catalog over learned', () => {
+    expect(outranks('probe', 'declared')).toBe(true)
+    expect(outranks('declared', 'catalog')).toBe(true)
+    expect(outranks('catalog', 'learned')).toBe(true)
+    expect(outranks('catalog', 'probe')).toBe(false)
+    expect(outranks('catalog', 'declared')).toBe(false)
+    expect(outranks('learned', 'catalog')).toBe(false)
+    // Equal rank is last-write-wins, so re-probing can correct a probe.
+    expect(outranks('probe', 'probe')).toBe(true)
+    // Nothing there means anything may write.
+    expect(outranks('learned', undefined)).toBe(true)
+  })
+
+  it('does not let a nightly catalog refresh erase a probe result', async () => {
+    // THE REGRESSION THIS EXISTS TO PREVENT. An admin probes a model, finds its
+    // tool calling broken, and the provider's catalog cheerfully advertises
+    // `tools`. Under last-write-wins the finding evaporates the next night.
+    await recordCapability(KEY, 'tools', fact({ value: false, source: 'probe', detail: 'called no tool on 4 of 4 prompts' }))
+
+    const written = await mergeCapabilities(KEY, { tools: fact({ value: true, source: 'catalog' }) })
+
+    expect(written).toBe(0)
+    const after = await getCapabilities(KEY)
+    expect(after.tools?.value).toBe(false)
+    expect(after.tools?.source).toBe('probe')
+  })
+
+  it('does let a catalog fill in what nothing has measured, and a probe correct it later', async () => {
+    expect(await mergeCapabilities(KEY, { json: fact({ source: 'catalog' }) })).toBe(1)
+    expect((await getCapabilities(KEY)).json).toMatchObject({ value: true, source: 'catalog' })
+
+    await mergeCapabilities(KEY, { json: fact({ value: false, source: 'probe', detail: 'returned prose on 3 of 3' }) })
+    expect((await getCapabilities(KEY)).json).toMatchObject({ value: false, source: 'probe' })
+  })
+
+  it('never lets a catalog overrule the human who typed it', async () => {
+    await recordCapability(KEY, 'vision', fact({ value: false, source: 'declared', detail: 'our deployment strips images' }))
+    await mergeCapabilities(KEY, { vision: fact({ value: true, source: 'catalog' }) })
+    expect((await getCapabilities(KEY)).vision).toMatchObject({ value: false, source: 'declared' })
+  })
+
+  it('replaces an EXPIRED incumbent whatever it claimed to be', async () => {
+    seed({ [KEY]: { tools: { value: false, source: 'learned', at: iso(LEARNED_TTL_MS + 60_000) } } })
+    expect(await mergeCapabilities(KEY, { tools: fact({ source: 'catalog' }) })).toBe(1)
+    expect((await getCapabilities(KEY)).tools).toMatchObject({ value: true, source: 'catalog' })
+  })
+
+  it('writes many keys in one pass and leaves other keys alone', async () => {
+    await recordCapability(OTHER, 'json', fact())
+    const written = await mergeCapabilities([
+      { key: KEY, facts: { tools: fact({ source: 'catalog' }), json: fact({ source: 'catalog' }) } },
+      { key: 'spark:llama', facts: { tools: fact({ source: 'catalog' }) } },
+    ])
+    expect(written).toBe(3)
+    expect(Object.keys(await getCapabilities(KEY)).sort()).toEqual(['json', 'tools'])
+    expect((await getCapabilities(OTHER)).json?.source).toBe('probe')
+  })
+
+  it('preserves capability ids this build does not recognize', async () => {
+    // A rolling deploy can put a newer build alongside this one; rewriting the
+    // row must not delete facts it wrote under a capability we have not heard of.
+    seed({ [KEY]: { 'audio-input': { value: true, source: 'probe', at: iso(0) } } })
+    await mergeCapabilities(KEY, { tools: fact({ source: 'catalog' }) })
+    expect(raw()[KEY]?.['audio-input']).toBeDefined()
+  })
+
+  it('is a no-op on an empty batch rather than churning the row', async () => {
+    expect(await mergeCapabilities([])).toBe(0)
+  })
+
+  it('expires a catalog fact on the same clock as a learned one', async () => {
+    // Both are re-derivable without asking anyone, so both decay if the thing
+    // that produced them goes away.
+    seed({ [KEY]: { tools: { value: true, source: 'catalog', at: iso(LEARNED_TTL_MS + 60_000) } } })
+    expect((await getCapabilities(KEY)).tools).toBeUndefined()
   })
 })
