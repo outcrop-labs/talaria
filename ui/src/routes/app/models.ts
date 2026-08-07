@@ -7,6 +7,10 @@ export const MODEL_TABS = [
   { id: 'models', label: 'Models' },
   { id: 'roles', label: 'Roles' },
   { id: 'platform', label: 'Platform' },
+  // Fitness sits after the two panels that ASSIGN a model, because it is the
+  // evidence behind those assignments: an admin reads "which model runs this"
+  // and then "and is it any good at it".
+  { id: 'fitness', label: 'Fitness' },
   { id: 'access', label: 'Access' },
 ] as const
 export type ModelsTab = (typeof MODEL_TABS)[number]['id']
