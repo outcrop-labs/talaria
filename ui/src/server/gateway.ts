@@ -126,6 +126,7 @@ function unavailableChatStream(payload: ChatPayload): Response {
   const who = describeAgent(payload.model).label
   return cannedChatStream(
     `${who} is restarting (or down) and didn't come back within two minutes — your message is saved; send it again in a moment.`,
+    'unavailable',
   )
 }
 
@@ -134,11 +135,25 @@ function mockChatStream(payload: ChatPayload): Response {
   const who = describeAgent(payload.model).label
   return cannedChatStream(
     `Hi — this is ${who} (mock mode: the fleet isn't rendered yet). Create and start an agent to chat for real.`,
+    'mock',
   )
 }
 
+/** Set on every canned stream below, and on nothing else.
+ *
+ *  A canned stream is a 200 carrying an ordinary English sentence, which is the
+ *  right answer for a HUMAN in a chat window and the wrong one for a harness:
+ *  `personaTurn` checks `upstream.ok` and could not tell an outage from a model
+ *  reply, so "Penny is restarting…" was cleaned by every text harness, written
+ *  to `harness_runs` as a HELD CONTRACT, metered as a turn that never happened,
+ *  and then persisted as the agent's work — a briefing summary, an
+ *  `outreach_events` note fed back into the next check-in prompt, twelve
+ *  `task_activity` lines. An infrastructure outage recorded as a perfect
+ *  contract rate is the exact number the fitness page is being built to read. */
+export const CANNED_STREAM_HEADER = 'x-talaria-canned'
+
 /** Stream fixed text as OpenAI-format SSE chunks (mock + unavailable paths). */
-function cannedChatStream(text: string): Response {
+function cannedChatStream(text: string, kind: 'unavailable' | 'mock'): Response {
   const words = text.split(' ')
   const enc = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
@@ -153,6 +168,6 @@ function cannedChatStream(text: string): Response {
     },
   })
   return new Response(stream, {
-    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', [CANNED_STREAM_HEADER]: kind },
   })
 }

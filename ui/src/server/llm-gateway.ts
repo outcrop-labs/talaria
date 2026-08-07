@@ -13,6 +13,20 @@ import { getSetting, setSetting } from './audit'
 import { listEndpoints, type LlmEndpoint } from './agent-defs'
 import { NATIVE_BASE, openrouterUsPool, resolveEndpointKey } from './provider-catalog'
 import { guardCompletion } from './guardrails'
+import { capabilityKey, recordCapability } from './harness/capability'
+import {
+  activeLearnedParams,
+  classifyParam,
+  CONTRACT_PARAMS,
+  isContractParam,
+  readLearnedParams,
+  rejectedParam,
+  writeLearnedParams,
+  type ContractDrop,
+  type LearnedParamMap,
+} from './harness/gateway-params'
+
+export type { ContractDrop } from './harness/gateway-params'
 
 export interface GatewayModel {
   id: string
@@ -94,7 +108,23 @@ export interface UpstreamCall {
   url: string
   headers: Record<string, string>
   body: Record<string, unknown>
+  /** Contract-bearing parameters that did NOT reach the model (audit 1.2) —
+   *  empty on a clean call, which is the overwhelming majority.
+   *
+   *  Optional so that a caller holding a structurally-typed `{ url, headers,
+   *  body }` still compiles; `buildUpstream` always sets it, and `fetchUpstream`
+   *  MUTATES the array in place when a live 400 forces a drop mid-call. Mutation
+   *  rather than a wrapped return type is the whole trick here: `fetchUpstream`
+   *  hands back a `Response` that four call sites already stream, relay and
+   *  meter, and none of them had to change to gain the signal. Read it AFTER the
+   *  fetch resolves. */
+  contractDrops?: ContractDrop[]
 }
+
+/** Contract parameters this call lost, for a caller that would rather not think
+ *  about the optionality above. Empty means the model saw exactly what you
+ *  asked for. */
+export const contractDropsOf = (call: UpstreamCall): ContractDrop[] => call.contractDrops ?? []
 
 /** Build the outbound request: provider base/key + request_defaults merged
  *  UNDER the client body (client wins), model swapped to the upstream id. */
@@ -125,11 +155,33 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
   }
   const body: Record<string, unknown> = { ...deepMerge(defaults, clientBody), model: route.upstreamModel }
   if (body.stream) body.stream_options = { include_usage: true, ...(body.stream_options as object | undefined) }
-  // Pre-strip parameters this endpoint+model has already rejected (learned
-  // live from 400s below — dynamic specs with no maintained tables).
-  await loadUnsupportedParams()
-  for (const p of unsupportedParams.get(`${ep.name}:${route.upstreamModel}`) ?? []) delete body[p]
-  return { url: `${base}/chat/completions`, headers, body }
+
+  // Pre-strip parameters this endpoint+model has already rejected (learned live
+  // from the 400s below — dynamic specs with no maintained tables). A drop of a
+  // CONTRACT parameter is reported here too, not only on the call that first
+  // learned it: after the first 400 this is the ONLY path that removes it, so a
+  // caller that trusted the pre-strip path would go right back to handing prose
+  // to a JSON parser for the next thirty days.
+  await loadLearnedParams()
+  const learned = capabilityKey(ep.name, route.upstreamModel)
+  const { params, expired } = activeLearnedParams(learnedParams, learned, Date.now())
+  if (expired) persistLearnedParams()
+  const contractDrops: ContractDrop[] = []
+  for (const p of params) {
+    if (!(p in body)) continue // never sent it — nothing was dropped
+    delete body[p]
+    if (!isContractParam(p)) continue
+    const drop: ContractDrop = {
+      param: p,
+      capability: CONTRACT_PARAMS[p],
+      endpoint: ep.name,
+      model: route.upstreamModel,
+      source: 'remembered',
+    }
+    contractDrops.push(drop)
+    warnContractDrop(drop)
+  }
+  return { url: `${base}/chat/completions`, headers, body, contractDrops }
 }
 
 // Parameter support, learned from the source: when an upstream 400 names a
@@ -138,33 +190,82 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
 // Newer models routinely retire tunables (sonnet-5 rejects temperature); no
 // spec table could keep up, but the provider itself is always current.
 // Learnings persist in app_settings so a restart doesn't re-pay the 400s.
-const unsupportedParams = new Map<string, Set<string>>()
-let unsupportedLoaded: Promise<void> | null = null
-const loadUnsupportedParams = (): Promise<void> =>
-  (unsupportedLoaded ??= (async () => {
-    const stored = await getSetting<Record<string, string[]>>('gateway_unsupported_params', {})
-    for (const [key, params] of Object.entries(stored)) {
-      unsupportedParams.set(key, new Set([...(unsupportedParams.get(key) ?? []), ...params]))
+//
+// The classification, the 30-day TTL and the stored shape live in
+// harness/gateway-params.ts, where they can be tested without a database. What
+// stays here is the I/O: when to read, when to write, and what to shout about.
+const SETTINGS_KEY = 'gateway_unsupported_params'
+const learnedParams: LearnedParamMap = new Map()
+let learnedLoaded: Promise<void> | null = null
+const loadLearnedParams = (): Promise<void> =>
+  (learnedLoaded ??= (async () => {
+    const { byKey, changed } = readLearnedParams(await getSetting<unknown>(SETTINGS_KEY, {}), Date.now())
+    for (const [key, params] of byKey) {
+      // A 400 can land between the first call and this load resolving. The
+      // in-memory stamp is by definition the newer one, so it wins.
+      const into = learnedParams.get(key) ?? new Map<string, number>()
+      for (const [param, at] of params) if (!into.has(param)) into.set(param, at)
+      learnedParams.set(key, into)
     }
+    // The read normalized a legacy or stale entry: write it back once so the
+    // TTL clock actually starts ticking rather than restarting every boot.
+    if (changed) persistLearnedParams()
   })().catch(() => {}))
 
-const persistUnsupportedParams = (): void => {
-  const obj = Object.fromEntries([...unsupportedParams].map(([k, v]) => [k, [...v]]))
-  void setSetting('gateway_unsupported_params', obj).catch(() => {})
+const persistLearnedParams = (): void => {
+  void setSetting(SETTINGS_KEY, writeLearnedParams(learnedParams, Date.now())).catch(() => {})
 }
 
-const rejectedParam = (errText: string): string | null => {
-  const m =
-    /[`"']([a-z_]+)[`"'] is (?:deprecated|not supported|unsupported)/i.exec(errText) ??
-    /unsupported parameter[:\s`"']+([a-z_]+)/i.exec(errText) ??
-    /[`"']([a-z_]+)[`"'][^.]{0,40}(?:deprecated|not supported)/i.exec(errText)
-  return m?.[1] ?? null
+/** Clear learned parameter strips — one endpoint:model, or all of them.
+ *
+ *  The release valve on the ratchet, for an admin who has just fixed a provider
+ *  or re-pointed a model id at different weights and does not want to wait out
+ *  the TTL. Awaits its write, so the route that will call it can report whether
+ *  the reset landed.
+ *
+ *  This forgets what we stopped SENDING. The matching "what that told us about
+ *  the model" lives in `forgetCapabilities` (harness/capability.ts) under the
+ *  same key — an admin reset should call both, or the UI will keep reporting a
+ *  model as incapable of JSON while the gateway has cheerfully resumed asking
+ *  for it. */
+export async function forgetLearnedParams(key?: string): Promise<void> {
+  // Load first: an unresolved lazy load would otherwise merge the very entries
+  // we just deleted back in, and the strip would come back from the dead.
+  await loadLearnedParams()
+  if (key === undefined) learnedParams.clear()
+  else learnedParams.delete(key)
+  warnedContractDrops.clear()
+  await setSetting(SETTINGS_KEY, writeLearnedParams(learnedParams, Date.now()))
+}
+
+// One line per endpoint:model:param per process. A contract drop is a standing
+// condition, not an event — it recurs on every single call for as long as the
+// learning lives, and a log line per call would bury the one that matters.
+const warnedContractDrops = new Set<string>()
+
+/** Say it out loud, once: this reply is not the reply that was asked for.
+ *  Silence here is the failure mode of audit 1.2 — the call succeeds, the
+ *  response parses as a chat completion, and only the shape of the CONTENT is
+ *  wrong, which is the one thing no HTTP status can tell you. */
+function warnContractDrop(drop: ContractDrop): void {
+  const id = `${capabilityKey(drop.endpoint, drop.model)}:${drop.param}`
+  if (warnedContractDrops.has(id)) return
+  warnedContractDrops.add(id)
+  console.warn(
+    `[gateway] ${drop.endpoint} rejected "${drop.param}" for model ${drop.model} — requests are being sent WITHOUT it, ` +
+      `so replies are no longer constrained (capability ${CONTRACT_PARAMS[drop.param]} recorded false). ` +
+      `Callers expecting structured output must repair or fall back. Clear with forgetLearnedParams("${capabilityKey(drop.endpoint, drop.model)}").`,
+  )
 }
 
 /** POST to the upstream with two adaptations: the dev-mode hostname fallback
  *  (docker-internal bare names don't resolve from the host → retry localhost),
  *  and parameter-rejection recovery (a 400 naming a parameter we sent strips
- *  it and retries, remembering per endpoint:model). */
+ *  it and retries, remembering per endpoint:model).
+ *
+ *  If what got stripped was CONTRACT-bearing, `call.contractDrops` says so by
+ *  the time this resolves — read it (via `contractDropsOf`) before trusting a
+ *  200 to be the shape you asked for. */
 export async function fetchUpstream(call: UpstreamCall, route?: ResolvedRoute): Promise<Response> {
   const started = Date.now()
   try {
@@ -203,7 +304,7 @@ async function fetchUpstreamInner(call: UpstreamCall, route?: ResolvedRoute): Pr
     if (res.status !== 400) return res
     const text = await res.text().catch(() => '')
     const param = rejectedParam(text)
-    if (!param || !(param in call.body) || param === 'model' || param === 'messages') {
+    if (!param || !(param in call.body) || classifyParam(param) === 'protected') {
       // Not a strippable-parameter rejection — hand back the original error.
       return new Response(text, {
         status: res.status,
@@ -211,13 +312,40 @@ async function fetchUpstreamInner(call: UpstreamCall, route?: ResolvedRoute): Pr
       })
     }
     delete call.body[param]
+    // A contract parameter is still stripped — a completed call the caller knows
+    // is unconstrained beats a 400 it can do nothing with — but never quietly.
+    // The fact goes to three places: the caller (typed, below), the capability
+    // store (so role assignment and the model self-test can read it), and the
+    // log (once).
+    if (isContractParam(param)) {
+      const drop: ContractDrop = {
+        param,
+        capability: CONTRACT_PARAMS[param],
+        endpoint: route?.endpoint.name ?? '?',
+        model: String(call.body.model ?? route?.upstreamModel ?? '?'),
+        source: 'rejected',
+      }
+      ;(call.contractDrops ??= []).push(drop)
+      if (route) {
+        // Only on a LIVE 400, never on the pre-strip path: re-recording the fact
+        // from a remembered strip would restamp `at` on every process start and
+        // the capability's own TTL would never fire.
+        void recordCapability(capabilityKey(route.endpoint.name, route.upstreamModel), CONTRACT_PARAMS[param], {
+          value: false,
+          source: 'learned',
+          at: new Date().toISOString(),
+          detail: `${route.endpoint.name} rejected "${param}" with a 400; the call was retried without it.`,
+        }).catch(() => {})
+        warnContractDrop(drop)
+      }
+    }
     if (route) {
-      const key = `${route.endpoint.name}:${route.upstreamModel}`
-      const set = unsupportedParams.get(key) ?? new Set<string>()
-      if (!set.has(param)) {
-        set.add(param)
-        unsupportedParams.set(key, set)
-        persistUnsupportedParams()
+      const key = capabilityKey(route.endpoint.name, route.upstreamModel)
+      const entry = learnedParams.get(key) ?? new Map<string, number>()
+      if (!entry.has(param)) {
+        entry.set(param, Date.now())
+        learnedParams.set(key, entry)
+        persistLearnedParams()
       }
     }
   }
@@ -260,16 +388,35 @@ export function gatewayPulse(): GatewayPulse {
 
 /** Server-side non-streaming completion through the org gateway (routing +
  *  provider keys + metering). For internal callers like the QA judge — no tlk_
- *  key needed. Throws on an unknown model or an upstream error. */
+ *  key needed. Throws on an unknown model or an upstream error.
+ *
+ *  `responseFormat` is the structured-output slot, and its absence was itself an
+ *  audit finding: `inbox-focus-assistant` grew a SECOND request helper — prompt
+ *  suffix, different temperature, no protocol constraint — purely because this
+ *  signature had nowhere to put `response_format` (audit 1.3). So the same
+ *  command on the same item was a strict-JSON request or a prompt-and-pray
+ *  request depending on which model the user had picked. One slot, one strategy.
+ *
+ *  `guard` exists because this helper is no longer always the outermost caller.
+ *  `runHarness` runs its OWN guard pass with the harness's narrowed rule set and
+ *  an honest `Available` for the transport that ran; leaving `guardCompletion`
+ *  on underneath it would file two guard_findings rows for one reply and inflate
+ *  the per-model confabulation rate that the model-fitness page reads. Defaults
+ *  to true, so every existing caller keeps exactly the guard it has today.
+ *
+ *  `contractDrops` says whether `responseFormat` actually survived to the model.
+ *  A caller that asked for JSON and got an empty drop list may parse; one that
+ *  sees a `json` drop has been handed prose and must repair or fall back. */
 export async function completeViaGateway(
   model: string,
   messages: Array<{ role: string; content: string }>,
-  opts: { temperature?: number; caller: string },
-): Promise<{ text: string }> {
+  opts: { temperature?: number; caller: string; responseFormat?: 'json_object'; guard?: boolean },
+): Promise<{ text: string; contractDrops: ContractDrop[] }> {
   const route = await resolveRoute(model)
   if (!route) throw new Error(`model "${model}" is not on the gateway`)
   const clientBody: Record<string, unknown> = { model, messages, stream: false }
   if (opts.temperature !== undefined) clientBody.temperature = opts.temperature
+  if (opts.responseFormat) clientBody.response_format = { type: opts.responseFormat }
   const call = await buildUpstream(route, clientBody)
   const res = await fetchUpstream(call, route)
   if (!res.ok) throw new Error(`gateway completion ${res.status}: ${await res.text()}`)
@@ -290,8 +437,10 @@ export async function completeViaGateway(
   const text = j.choices?.[0]?.message?.content ?? ''
   // Confab guard (structural, no extra model call) — fire-and-forget so it can
   // never block or break a completion. Records findings out-of-band (observe).
-  void guardCompletion({ answer: text, messages, caller: opts.caller, model, endpoint: route.endpoint.name }).catch(() => {})
-  return { text }
+  if (opts.guard !== false) {
+    void guardCompletion({ answer: text, messages, caller: opts.caller, model, endpoint: route.endpoint.name }).catch(() => {})
+  }
+  return { text, contractDrops: contractDropsOf(call) }
 }
 
 /** Ledger row for a gateway call — attribution is direct (we KNOW the
