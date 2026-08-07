@@ -3,6 +3,7 @@
 // watchers, and a quality-review approval gate. Agents get assigned work via
 // heartbeat and report via PUT /api/tasks/:id.
 import { db } from './db/pg'
+import { guardAgentFields, guardAgentWrite } from './agent-writes'
 import { publishBoard } from './realtime'
 import { taskUsage, type TaskUsage } from './usage'
 import { listJudgeReviews, type JudgeReview } from './judge'
@@ -180,12 +181,21 @@ export async function createTask(input: {
   }
   if (input.parentId) await assertValidParent(null, input.parentId, input.boardId)
   if (input.tags?.length) await ensureLabels(input.boardId, input.tags)
+  // THE ONE DOOR, for the fourth write path (agent-writes.ts). `create_ticket`
+  // is an MCP tool and its title and description are agent-authored text on its
+  // way to a human — and, through `indexTicket`, on its way back into another
+  // agent's context. `createdBy` is verified against agent_defs inside, so a
+  // person's ticket is untouched.
+  const { title, description } = await guardAgentFields('ticket-write', input.createdBy, {
+    title: input.title,
+    description: input.description ?? null,
+  })
   const id = await sql.begin(async (tx) => {
     const seq = await tx`update boards set ticket_seq = ticket_seq + 1, updated_at = now() where id = ${input.boardId} returning ticket_seq`
     const ticketNo = (seq[0] as { ticket_seq: number }).ticket_seq
     const rows = await tx`
       insert into tasks (board_id, ticket_no, title, description, priority, effort, assignees, due_date, start_date, color, estimated_hours, parent_id, tags, created_by, status)
-      values (${input.boardId}, ${ticketNo}, ${input.title}, ${input.description ?? null}, ${input.priority ?? 'medium'},
+      values (${input.boardId}, ${ticketNo}, ${title ?? input.title}, ${description ?? null}, ${input.priority ?? 'medium'},
               ${input.effort ?? null}, ${sql.json(assignees)}, ${input.dueDate ?? null}, ${input.startDate ?? null}, ${input.color ?? null}, ${input.estimatedHours ?? null},
               ${input.parentId ?? null}, ${sql.json(input.tags ?? [])}, ${input.createdBy}, ${status})
       returning id
@@ -199,7 +209,7 @@ export async function createTask(input: {
   void import('./work-dispatch').then(({ maybeDispatchTicket }) => maybeDispatchTicket(task)).catch(() => {})
   void notifyTaskUsers(humanAssigneeIds(assignees), input.createdBy, {
     kind: 'task-assigned',
-    title: `Assigned: ${input.title}`,
+    title: `Assigned: ${title ?? input.title}`,
     body: task.ticketRef ?? undefined,
     href: `/boards/${input.boardId}/${id}`,
   })
@@ -531,6 +541,24 @@ export async function updateTask(id: string, patch: TaskPatch, who: TaskActor): 
     if (patch.status !== undefined && !meta.keys.includes(patch.status)) {
       throw new Error(`"${patch.status}" is not a status on this board`)
     }
+    // THE ONE DOOR, for the fifth write path (agent-writes.ts). `triage_ticket`
+    // and `report_outcome` are MCP tools, so every string below is a tool
+    // argument — model output that never touched a harness. `indexTicket`
+    // re-indexes title+description on every update, `notifyMentions` mails the
+    // description, and the judge reads `outcome`/`resolution` straight into
+    // another model's prompt: the outcome path is how an agent's own credential
+    // reached a third-party judge endpoint with the guard having said so one
+    // statement earlier and done nothing about it.
+    patch = {
+      ...patch,
+      ...(await guardAgentFields('ticket-write', { agent: who.id }, {
+        title: patch.title,
+        description: patch.description,
+        outcome: patch.outcome,
+        resolution: patch.resolution,
+        errorMessage: patch.errorMessage,
+      })),
+    }
   }
   const assignees = patch.assignees ?? cur.assignees
   const attachments = patch.attachments ?? cur.attachments
@@ -693,11 +721,25 @@ export async function listComments(taskId: string): Promise<TaskComment[]> {
     from task_comments where task_id = ${taskId} order by created_at asc
   `) as unknown as TaskComment[]
 }
+/** THE comment write, and therefore the place the guard on agent-authored
+ *  comments lives. `mcp comment` reaches here as a tool ARGUMENT — model output
+ *  that never touched a harness and, until this call existed, never touched a
+ *  guard either. `guardAgentWrite` decides whether this author is an agent at
+ *  all (a person's comment is not model output and is left alone), records what
+ *  the gate-safe rules find against that agent, and in strict mode hands back a
+ *  redacted body. See ui/src/server/agent-writes.ts for why a credential is
+ *  redacted rather than blocked.
+ *
+ *  Inside the write rather than at the route on purpose: `POST
+ *  /api/tasks/:id/comments` is not the only caller — the workbench posts an
+ *  agent's plan comment through here too — and a guard at one caller is a guard
+ *  the next caller does not have. */
 export async function addComment(taskId: string, author: string, content: string, parentId?: string): Promise<TaskComment> {
   const sql = await db()
+  const body = (await guardAgentWrite('ticket-comment', author, content)).text
   const rows = await sql`
     insert into task_comments (task_id, author, content, parent_id)
-    values (${taskId}, ${author}, ${content}, ${parentId ?? null})
+    values (${taskId}, ${author}, ${body}, ${parentId ?? null})
     returning id, author, content, parent_id as "parentId", created_at as "createdAt"
   `
   await logActivity(taskId, author, 'comment', 'commented')

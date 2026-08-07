@@ -3,7 +3,13 @@
 // separate model. This module finds/creates that artifact, lets the plan's own
 // agent rewrite it from the conversation, keeps it in the activity index, and
 // notifies teammates the plan @mentions (only ones who can read the document).
-import { parseAgentStream } from '@/lib/sse-parse'
+//
+// The rewrite prompt, the reply's contract and the data-loss guard now live in
+// harness/defs/plan-doc.ts and run through `runHarness`. Read that file's
+// header before touching `syncPlanDoc`: the model is asked for the WHOLE
+// document, so a truncated or gutted reply does not produce a worse document,
+// it destroys a good one — and before the port the only thing standing between
+// the two was a check for a completely empty string.
 import {
   agentCategoryFolder,
   artifactsForTarget,
@@ -14,13 +20,14 @@ import {
   type Artifact,
 } from './artifacts'
 import { listPlanMembers, priorMessages } from './conversations'
-import { describeAgent, proxyChat } from './gateway'
+import { describeAgent } from './gateway'
+import { planDocHarness, planDocRegression, type PlanDocInput } from './harness/defs/plan-doc'
+import { runHarness } from './harness/run'
 import { canRead, listEditors, setEditors } from './kb-perms'
 import { notifyMentions } from './mentions'
 import { indexActivity } from './retrieval/sources'
 import { resolveTemplate, templatePrompt } from './templates'
 import { routingContext } from './workflows'
-import { estimateTokens, recordUsage } from './usage'
 import { listUsers } from './users'
 
 /** The plan-mode harness, prepended to every plan-conversation turn. Without
@@ -37,13 +44,6 @@ export async function planRoutingBlock(): Promise<string> {
   if (!ctx) return ''
   return `\n\nThe org routes ticket work through workflows (match rules → skills → agents):\n${ctx}\nWhen converging on owners, prefer routing work where a workflow already covers it — and say so in passing, not as the plan's centerpiece.`
 }
-
-const SYNC_PROMPT = `You maintain the living plan document for a planning conversation. Rewrite the document so it reflects the conversation so far: goals, scope, decisions, open questions, and next steps — organized under markdown headings, tight and actionable.
-Start from the current version when one is given: keep what still holds, fold in what changed, never silently drop sections the conversation didn't overturn.
-Return ONLY the complete updated markdown document, starting with its "# " title heading as your very first characters — no commentary, no lead-in sentence, no code fences. Anything before the first heading corrupts the document.`
-
-const SYNC_ROUTING = (ctx: string) =>
-  `\n\nThe org routes ticket work through workflows (match rules → skills → agents):\n${ctx}\nAFTER the rest of the document, if parts of this plan clearly fall under one of these workflows, end with a short "## Agent routing" section — one line per mapping ("<work> → <workflow> → <agent>"). If nothing clearly matches, OMIT the section entirely; never force a fit.`
 
 /** The plan's linked doc artifact, if one exists yet. */
 export async function planDocFor(conversationId: string): Promise<Artifact | null> {
@@ -100,20 +100,31 @@ export async function indexPlanDoc(doc: Artifact, conversationId: string): Promi
   })
 }
 
-/** A model reply that wraps the whole document in a fence loses the fence, and
- *  a short conversational lead-in before the first "# " heading is dropped —
- *  persona agents narrate ("I'll update the plan") despite the prompt. */
-const cleanDoc = (s: string): string => {
-  let text = s.trim()
-  const fenced = /^```[a-z]*\n([\s\S]*)\n```$/.exec(text)
-  if (fenced) text = fenced[1]!.trim()
-  const heading = text.search(/^# /m)
-  if (heading > 0 && heading < 400 && !text.slice(0, heading).includes('#')) text = text.slice(heading)
-  return text
-}
+/** The alias NAME of a routed persona id, or null when no tier was picked — the
+ *  inverse of `routedModelFor`, which is the only thing that builds one
+ *  (`${agentModel}-${tier}`, or `agentModel` unchanged). Both plan surfaces
+ *  arrive holding the PAIR, and `RunContext.tier` wants the two halves apart.
+ *
+ *  A function rather than a slice at each call site because getting it wrong is
+ *  invisible rather than loud: `recordUsage` prices a row by finding
+ *  `agent_defs.model = agentModel` and then the alias named by `tier`, so a run
+ *  handed "dex-developer-opus" as its model with no tier misses BOTH lookups —
+ *  the row lands on an agent that does not exist, with no endpoint class, which
+ *  means no price. A plan drafted on a tier would quietly be free. This was the
+ *  second of the two gaps `plan-persona-turn.ts` existed to work around; the
+ *  runner carries the attribution itself now, and only needs to be told the two
+ *  names separately. */
+export const planTier = (agentModel: string, routedModel: string): string | null =>
+  routedModel === agentModel ? null : routedModel.slice(agentModel.length + 1)
 
 /** Rewrite the plan document from the conversation, via the plan's own agent
- *  (persona gateway → metered like any chat turn). Returns the saved artifact. */
+ *  (persona gateway → metered like any chat turn). Returns the saved artifact.
+ *
+ *  THIS FUNCTION OVERWRITES A DOCUMENT A TEAM HAS BEEN BUILDING, and every
+ *  refusal below exists for that. It throws rather than returning the unchanged
+ *  artifact so the Plan surface can say what happened — the route already maps a
+ *  throw to a 502 with this message, and silently returning the old document
+ *  would show a "synced" document that never synced. */
 export async function syncPlanDoc(
   conversationId: string,
   owner: { id: string; label: string },
@@ -132,41 +143,49 @@ export async function syncPlanDoc(
   if (!transcript.trim()) return doc
 
   const template = await resolveTemplate('plan', { explicitId: templateId, agentModel })
-  const routing = await routingContext()
-  const system =
-    (template ? `${SYNC_PROMPT}\n\n${templatePrompt(template, 'the plan document')}` : SYNC_PROMPT) +
-    (routing ? SYNC_ROUTING(routing) : '')
   const current = doc.body.trim()
-  const messages = [
-    { role: 'system', content: system },
-    {
-      role: 'user',
-      content:
-        (current ? `Current document:\n<<<\n${current}\n>>>\n\n` : 'There is no document yet — write one from scratch.\n\n') +
-        `Conversation transcript:\n\n${transcript}`,
-    },
-  ]
-  const upstream = await proxyChat({ model: routedModel, messages })
-  if (!upstream.ok || !upstream.body) throw new Error(`gateway error ${upstream.status}`)
-
-  let text = ''
-  let usage: { promptTokens: number; completionTokens: number } | null = null
-  for await (const ev of parseAgentStream(upstream.body)) {
-    if (ev.type === 'content') text += ev.text
-    else if (ev.type === 'usage') usage = ev
+  const input: PlanDocInput = {
+    current,
+    transcript,
+    ...(template ? { templatePrompt: templatePrompt(template, 'the plan document') } : {}),
+    ...(await routingContext()
+      .then((map) => (map ? { routingMap: map } : {}))
+      .catch(() => ({}))),
   }
-  void recordUsage({
-    agentModel,
-    source: 'chat',
-    refId: conversationId,
-    tier: routedModel !== agentModel ? routedModel.slice(agentModel.length + 1) : null,
-    promptTokens: usage?.promptTokens ?? estimateTokens(messages.reduce((n, m) => n + m.content.length, 0)),
-    completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
-    estimated: !usage,
-  }).catch(() => {})
 
-  const body = cleanDoc(text)
-  if (!body) throw new Error('the agent returned an empty document')
+  // The plan's OWN agent writes the document, so the model is pinned rather than
+  // resolved from a chain. `tier` is named separately from the base agent
+  // because the runner needs both: it calls `<agent>-<alias>` and meters the
+  // spend against `<agent>`. Nothing here supplies a transport any more — the
+  // runner routes a persona tier itself and carries this attribution on the
+  // request (see `planTier` above).
+  const tier = planTier(agentModel, routedModel)
+  const result = await runHarness(planDocHarness, input, {
+    caller: `plan:${conversationId}`,
+    model: agentModel,
+    ...(tier ? { tier } : {}),
+    ledger: { source: 'chat', refId: conversationId },
+  })
+
+  const body = result.value
+  if (!body) {
+    // The runner reports a failure in harness terms, which is the right sentence
+    // for `harness_runs` and the wrong one for a toast on the Plan surface. A
+    // reply that arrived and carried nothing keeps the wording this route has
+    // always thrown; anything else means we never got an answer, and the
+    // runner's sentence names why. `HarnessResult.answered` is that fact under
+    // its own name — this derived it from `model !== null && raw !== null`, and
+    // `raw` is a bounded drill-down field, not a control-flow signal.
+    throw new Error(result.answered ? 'the agent returned an empty document' : (result.error ?? 'the agent could not be reached'))
+  }
+  // THE DATA-LOSS GUARD (see harness/defs/plan-doc.ts). The reply is a whole
+  // document and it is about to replace one, so a rewrite that lost most of its
+  // sections, or dropped sections while coming back shorter, or kept the
+  // headings and threw away the substance, is not saved at all. The document the
+  // plan already has is always the better answer to "that reply was damage".
+  const regression = planDocRegression(current, body)
+  if (regression) throw new Error(`the agent returned ${regression}; the existing document was kept`)
+
   const saved = (await saveArtifact(doc.id, { body }, label)) ?? doc
   void indexPlanDoc(saved, conversationId).catch(() => {})
   return saved

@@ -6,13 +6,13 @@
 // (e.g. self-hosted) simply have no blurb — nothing is invented.
 //
 // Blurbs additionally get ONE rewrite pass in the org's voice (task-oriented:
-// what it's good at, when to pick it) via the gateway, cached in model_blurbs;
-// registered models without a rewrite get theirs on the next sweep, so new
-// models arrive speaking the workspace's language automatically.
+// what it's good at, when to pick it) through the `blurb-writer` harness, cached
+// in model_blurbs; registered models without a rewrite get theirs on the next
+// sweep, so new models arrive speaking the workspace's language automatically.
 import { db } from './db/pg'
-import { completeViaGateway, gatewayModels, resolveRoute } from './llm-gateway'
-import { resolveRoleModel } from './model-roles'
-import { platformAgentModel } from './platform-agents'
+import { gatewayModels } from './llm-gateway'
+import { blurbWriterHarness } from './harness/defs/blurb-writer'
+import { runHarness } from './harness/run'
 import { orgProfile } from './org'
 import { NATIVE_BASE } from './provider-catalog'
 
@@ -83,21 +83,6 @@ export async function modelInfo(modelId: string): Promise<ModelInfo | null> {
 
 // ── The org-voice rewrite pass ───────────────────────────────────────────────
 
-/** The model a background system task runs on: the "Utility" MODEL ROLE →
- *  env default → pl-main → the first routable bare model. Null when the
- *  gateway serves nothing. */
-async function systemModel(): Promise<string | null> {
-  // The Catalog-writer platform agent's own assignment, else the Utility role.
-  const pinned = await platformAgentModel('blurb-writer')
-  if (pinned) return pinned
-  const assigned = await resolveRoleModel('utility')
-  if (assigned) return assigned
-  for (const m of [process.env.TALARIA_COPILOT_MODEL ?? null, 'pl-main']) {
-    if (m && (await resolveRoute(m))) return m
-  }
-  return (await gatewayModels()).find((m) => !m.qualified)?.id ?? null
-}
-
 /** Rewrite catalog blurbs for registered models that don't have one yet —
  *  one batched completion, results cached in model_blurbs. Returns how many
  *  were written. Bounded per pass; failures just wait for the next sweep. */
@@ -117,36 +102,34 @@ export async function rewritePendingBlurbs(batch = 10): Promise<number> {
     if (info?.blurb) pending.push({ id, name: info.label, description: info.blurb })
   }
   if (pending.length === 0) return 0
-  const model = await systemModel()
-  if (!model) return 0
 
   const org = await orgProfile()
-  const { text } = await completeViaGateway(
-    model,
-    [
-      {
-        role: 'system',
-        content:
-          `You write one-line model descriptions for ${org.name || 'a team'}'s workspace pickers. ` +
-          'Each line tells a non-technical teammate what the model is good at and when to pick it — plain, confident, concrete. ' +
-          'No parameter counts, no version trivia, no vendor marketing. 110 characters max each. ' +
-          'Reply with ONLY a JSON object mapping each model id to its one-line description.',
-      },
-      { role: 'user', content: JSON.stringify(pending) },
-    ],
-    { temperature: 0.4, caller: 'platform:blurb-writer' },
-  )
-  const raw = /\{[\s\S]*\}/.exec(text)?.[0]
-  if (!raw) return 0
-  let map: Record<string, unknown>
-  try {
-    map = JSON.parse(raw) as Record<string, unknown>
-  } catch {
-    return 0
-  }
+  // Model resolution, the prompt, the extractor, the repair turn and the guard
+  // pass all live in the harness now. What is left here is what this file is
+  // actually for: which models are pending, and writing the rows.
+  const { value } = await runHarness(blurbWriterHarness, { orgName: org.name, models: pending }, { caller: 'platform:blurb-writer' })
+  if (!value) return 0
+
+  // A PARTIAL batch is still a good pass. The models this sweep missed stay
+  // pending and come back around in ten minutes, which is why the lookup is per
+  // pending id rather than an iteration over whatever the model returned.
+  //
+  // THE KEY-RESOLUTION PASS THAT USED TO SIT HERE IS GONE, and its absence is
+  // the point. `blurbsByCandidateId` re-keyed a reply the model had keyed by
+  // display name ("Qwen3 14B" for `qwen3-14b`) by normalizing ids and names
+  // until something matched. That rescued the batch and, in doing so, hid the
+  // fact that the model had not answered the question the prompt asked: nothing
+  // was re-asked, nothing was recorded, and the harness reported a perfect
+  // contract. The rule now lives on `blurbWriterHarness.output.verify`, where a
+  // wrong key is a repairable contract failure and lands on the `harness_runs`
+  // row — so every key in `value` is one of `pending`'s ids by the time it gets
+  // here and there is nothing left to resolve.
   let written = 0
   for (const p of pending) {
-    const blurb = map[p.id]
+    const blurb = value[p.id]
+    // Still guarded, because the contract deliberately tolerates a blank line in
+    // an otherwise good batch (one over-long or empty sentence must not cost the
+    // other nine). A blank blurb is worse than the catalog line it would replace.
     if (typeof blurb !== 'string' || !blurb.trim()) continue
     await sql`
       insert into model_blurbs (model_id, blurb) values (${p.id}, ${blurb.trim().slice(0, 200)})

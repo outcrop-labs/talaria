@@ -8,9 +8,15 @@ import { createHash } from 'node:crypto'
 import { db } from './db/pg'
 import { listChannels } from './channels'
 import { listPending } from './google/pending-actions'
-import { proxyChat } from './gateway'
-import { parseAgentStream } from '@/lib/sse-parse'
-import { estimateTokens, recordUsage } from './usage'
+import { briefingChatHarness, briefingHarness, type BriefingScope } from './harness/defs/briefer'
+import { fleetStream, runHarness, runHarnessStreamed } from './harness/run'
+
+// The prompts, the scope table and the model both halves run on live in
+// harness/defs/briefer.ts now. This file is what it always was underneath: the
+// attention state, the fingerprint that decides when to regenerate, and the
+// two database rows. Re-exported so every existing importer of `BriefingScope`
+// is untouched.
+export type { BriefingScope }
 
 interface AttentionState {
   /** Stable identity of the attention set — regenerate only when it changes. */
@@ -19,8 +25,6 @@ interface AttentionState {
   lines: string[]
   empty: boolean
 }
-
-export type BriefingScope = 'inbox' | 'boards' | 'comms' | 'plans' | 'research'
 
 async function attentionState(userId: string, isAdmin: boolean, scope: BriefingScope): Promise<AttentionState> {
   const sql = await db()
@@ -175,64 +179,26 @@ async function generateBriefing(
 ): Promise<void> {
   const sql = await db()
 
-  // Each console view gets its OWN prompt: what the view is, which verbs
-  // matter there, and what an empty state means — not one template with a
-  // swapped noun.
-  const SCOPE_PROMPT: Record<BriefingScope, { intro: string; guidance: string; empty: string }> = {
-    inbox: {
-      intro: 'You are briefing your owner as they open their INBOX — the cross-workspace view of everything unreviewed: notifications, work queues, approvals, unread rooms.',
-      guidance: 'Lead with whatever is most time-sensitive regardless of area. Recommend the single next action when one is obvious ("approve", "triage", "read").',
-      empty: 'Nothing is waiting on them anywhere. One short line saying they are all clear.',
-    },
-    boards: {
-      intro: 'You are briefing your owner on the BOARDS view — ticket work waiting on a human: triage (assign or park), review (sign off agent work), and unblocking.',
-      guidance: 'Think like a delivery lead: sizes of each queue, what is aging, what one triage or review pass would clear. Suggest where to start.',
-      empty: 'No tickets are waiting on them — queues are clear. One short line.',
-    },
-    comms: {
-      intro: 'You are briefing your owner on their COMMS — unread channels, relays, DMs, and mentions.',
-      guidance: 'Who is waiting on a reply matters most: name people and rooms, distinguish a direct question from ambient chatter. Suggest which thread to open first.',
-      empty: 'No unread conversations, nobody waiting on a reply. One short line.',
-    },
-    plans: {
-      intro: 'You are briefing your owner on their PLANS — living planning docs, some being actively worked by agents right now, some newly shared with them.',
-      guidance: 'Call out plans in motion RIGHT NOW first, then fresh shares they have not looked at. Frame as "what moved since you last looked".',
-      empty: 'No plan activity since they last looked. One short line.',
-    },
-    research: {
-      intro: 'You are briefing your owner on RESEARCH — runs in flight and finished reports they have not read yet.',
-      guidance: 'Ready-and-unread reports first (that is the payoff), then what is still running. Mention what each ready report answers, not just its title.',
-      empty: 'No research running and nothing unread. One short line.',
-    },
-  }
-  const spec = SCOPE_PROMPT[scope]
-  const prompt = state.empty
-    ? `[Automated ${scope} briefing — no human sent this.]\n${spec.intro}\n${spec.empty} No tools, no preamble.`
-    : `[Automated ${scope} briefing — no human sent this.]\n${spec.intro}\n` +
-      `${spec.guidance}\n` +
-      `Ground every line in the data below ONLY. Rules: at most 5 bullets, one short line each, most urgent first, lead word bolded. No preamble, no sign-off, no tools, no invented items. Group similar items ("3 research briefs ready") instead of listing each.\n\n` +
-      state.lines.map((l) => `- ${l}`).join('\n')
-
-  const upstream = await proxyChat({ model: assistant.model, messages: [{ role: 'user', content: prompt }] }, { waitMs: 30_000 })
-  if (!upstream.ok || !upstream.body) throw new Error(`gateway ${upstream.status}`)
-  let text = ''
-  let usage: { promptTokens: number; completionTokens: number } | null = null
-  for await (const ev of parseAgentStream(upstream.body)) {
-    if (ev.type === 'content') text += ev.text
-    else if (ev.type === 'usage') usage = ev
-  }
-  text = text.trim()
-  if (!text) throw new Error('empty briefing')
-
-  void recordUsage({
-    agentModel: assistant.model,
-    source: 'chat',
-    refId: null,
-    tier: null,
-    promptTokens: usage?.promptTokens ?? estimateTokens(prompt.length),
-    completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
-    estimated: !usage,
-  })
+  // The per-scope prompts, the model chain (there isn't one — see below) and
+  // the empty-reply check all moved into harness/defs/briefer.ts. What is left
+  // here is the attention state this function was always really about.
+  //
+  // `model` is passed EXPLICITLY and there is no fallback behind it. The
+  // briefer is the only platform agent an admin cannot assign — it is always
+  // the owner's own personal assistant, because it reads their private
+  // attention state — so the harness declares an empty chain and this is the
+  // one place the model comes from.
+  const run = await runHarness(
+    briefingHarness,
+    { scope, lines: state.lines, empty: state.empty },
+    { caller: `briefer:brief:${scope}`, model: assistant.model },
+  )
+  // Still a throw: `getBriefing` fires this detached and its `.catch` is what
+  // clears the `generating` flag, so a failure that returned quietly would leave
+  // the panel spinning until the grace window expired. The previous summary is
+  // untouched either way — a failed regeneration shows stale, never blank.
+  const text = run.value
+  if (!text) throw new Error(run.error ?? 'empty briefing')
 
   await sql`
     update briefings
@@ -241,9 +207,49 @@ async function generateBriefing(
   `
 }
 
+/** ONE CONTENT DELTA, in the only SSE shape `lib/sse-parse.ts` reads.
+ *
+ *  The tee used to relay the persona's own frames, so this file never had to
+ *  know the wire format; `runHarnessStreamed` hands over content deltas instead,
+ *  and something has to put them back on a wire. Exported so `briefing.test.ts`
+ *  can feed the output through the REAL `parseAgentStream` — a mismatch here is
+ *  not an error anywhere, it is a panel that streams nothing and an owner who
+ *  thinks their assistant did not answer.
+ *
+ *  Only `content` is re-emitted, which is exactly what `AssistantBriefing.svelte`
+ *  consumes: it ignores tool and usage events on this surface, and the run's own
+ *  guard pass is what the tool names are for. */
+export const contentFrame = (delta: string): string => `data: ${JSON.stringify({ choices: [{ delta: { content: delta } }] })}\n\n`
+
 /** Ephemeral follow-up chat on a briefing: the exchange streams through the
  *  assistant with the current briefing as context and is NEVER persisted —
- *  no conversation row, no messages, nothing to distill later. */
+ *  no conversation row, no messages, nothing to distill later.
+ *
+ *  STREAMING IS THE FEATURE, so this does not become a blocking harness call —
+ *  it is `runHarnessStreamed`, the runner's streaming entry point, over
+ *  `fleetStream`. The owner watches the answer arrive token by token; the runner
+ *  accumulates the same deltas and does its guard pass once the reply ends. That
+ *  is the arrangement guardrails.ts's header describes for a live surface: the
+ *  stream already showed the owner the original, and the guard's job here is the
+ *  FINDING — `guard_findings.model` is the per-model confabulation rate the
+ *  fitness page reads — rather than a rewrite. There is nothing to redact
+ *  because there is nothing saved, which is the same design decision this
+ *  function has always carried, now stated in the harness (`briefer:chat`
+ *  declares no `redact`).
+ *
+ *  THE TEE IS GONE. This function used to hand `runHarness` a transport of its
+ *  own that called `proxyChat`, split the body with `.tee()`, sent one branch to
+ *  the owner and drained the other for the guard — because the runner blocked,
+ *  and because its fleet transport disarmed the tools this prompt deliberately
+ *  permits. Both are declarations now (`runHarnessStreamed`, and `tools: 'own'`
+ *  on the harness), so the shim is deleted rather than reduced. What is left
+ *  here is the one thing the runner cannot do: turn content deltas back into the
+ *  SSE frames the panel's `parseAgentStream` reads.
+ *
+ *  Until this path was guarded at all, whether a personal-assistant reply got a
+ *  guardrail pass depended on which surface it came from: ordinary chat runs
+ *  `guardChatReply`, and this panel — asking the same assistant about the same
+ *  work — ran nothing (audit 1.5). */
 export async function briefingChat(
   userId: string,
   scope: BriefingScope,
@@ -254,23 +260,74 @@ export async function briefingChat(
   const assistants = (await sql`
     select model from agent_defs where owner_user_id = ${userId} and enabled limit 1
   `) as unknown as Array<{ model: string }>
-  if (!assistants[0]) throw new Error('no personal assistant')
+  const assistant = assistants[0]
+  if (!assistant) throw new Error('no personal assistant')
   const rows = (await sql`
     select summary from briefings where user_id = ${userId} and scope = ${scope}
   `) as unknown as Array<{ summary: string }>
 
-  const messages = [
+  // Settled on the first token the persona emits, or rejected by the run when it
+  // never got that far — so a caller that used to see `throw new Error('gateway
+  // 502')` still does, and the route still answers a dead gateway with a 500
+  // rather than with an empty stream the panel would render as a blank reply.
+  let deliver!: (response: Response) => void
+  let fail!: (error: Error) => void
+  const streamed = new Promise<Response>((resolve, reject) => {
+    deliver = resolve
+    fail = reject
+  })
+
+  const encoder = new TextEncoder()
+  const wire = new TransformStream<Uint8Array, Uint8Array>()
+  const writer = wire.writable.getWriter()
+  /** ONCE. `new Response(body)` may be constructed once per stream — a second
+   *  construction over a readable that is already being read throws — and
+   *  resolving a settled promise is a silent no-op, so the guard has to be here
+   *  rather than left to `deliver`. */
+  let delivered = false
+  const handOver = (): void => {
+    if (delivered) return
+    delivered = true
+    deliver(new Response(wire.readable, { headers: { 'content-type': 'text/event-stream' } }))
+  }
+
+  // Detached on purpose: the guard pass, the findings row and the harness_runs
+  // row all happen after the owner already has their answer. `fail` is a no-op
+  // once `handOver` has run, so a model that streamed a reply and then failed
+  // its contract does not retroactively turn a delivered stream into an error.
+  void runHarnessStreamed(
+    briefingChatHarness,
+    { scope, summary: rows[0]?.summary ?? null, history, content },
+    { caller: `briefer:chat:${scope}`, model: assistant.model },
     {
-      role: 'user',
-      content:
-        `[Ephemeral briefing chat — this thread is NOT saved. Keep replies short and direct; use tools only if the owner's question truly needs them.]\n` +
-        `Your latest briefing to your owner:\n${rows[0]?.summary ?? '(none yet)'}`,
+      stream: fleetStream,
+      onDelta: (delta) => {
+        handOver()
+        // Write ordering is the writer's own queue, so these do not need
+        // chaining. Backpressure is deliberately not applied: a briefing answer
+        // is a few hundred tokens, and blocking the persona stream on a slow
+        // reader would stall the guard pass as well as the screen.
+        void writer.write(encoder.encode(contentFrame(delta))).catch(() => {})
+      },
     },
-    { role: 'assistant', content: 'Got it.' },
-    ...history.slice(-12),
-    { role: 'user', content },
-  ]
-  const upstream = await proxyChat({ model: assistants[0].model, messages }, { waitMs: 30_000 })
-  if (!upstream.ok || !upstream.body) throw new Error(`gateway ${upstream.status}`)
-  return new Response(upstream.body, { headers: { 'content-type': 'text/event-stream' } })
+  )
+    .then((run) => {
+      // A run that produced a value MUST have emitted at least one delta, since
+      // both come from the same content events — but resolving anyway is the
+      // difference between a defensive branch and a request that hangs forever
+      // if that ever stops being true.
+      if (run.value) handOver()
+      else fail(new Error(run.error ?? 'the briefing chat produced no reply'))
+    })
+    .catch((err: unknown) => fail(err instanceof Error ? err : new Error(String(err))))
+    // The owner's stream closes when the RUN settles rather than when the
+    // persona stops talking, which adds the guard pass and two telemetry rows to
+    // the tail of the response. That is milliseconds of regex and one insert,
+    // and it is the price of the delta accumulation being inside the runner
+    // instead of in a tee here.
+    .finally(() => {
+      void writer.close().catch(() => {})
+    })
+
+  return streamed
 }

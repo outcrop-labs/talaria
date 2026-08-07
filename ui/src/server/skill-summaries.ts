@@ -3,15 +3,15 @@
 // Summaries persist keyed to a hash of the SKILL.md, so a skill is summarized
 // exactly once per version — list calls serve the stored line and quietly
 // queue a regeneration when the content changed. Never blocks a listing.
+//
+// The prompt, the model chain and the one-line extraction now live in
+// harness/defs/summarizer.ts; this file is the STORAGE half — the content hash,
+// the in-flight dedupe and the upsert — which is genuinely its own job and is
+// not the harness's business.
 import { createHash } from 'node:crypto'
 import { db } from './db/pg'
-import { completeViaGateway, gatewayModels, resolveRoute } from './llm-gateway'
-import { resolveRoleModel } from './model-roles'
-import { platformAgentModel } from './platform-agents'
-
-const PROMPT =
-  'Summarize this agent skill in ONE sentence (max 140 chars): what kind of work it covers and the gist of how. ' +
-  'Plain words, no markdown, no "This skill…" lead-in — start with the substance. Reply with ONLY the sentence.'
+import { summarizerHarness } from './harness/defs/summarizer'
+import { runHarness } from './harness/run'
 
 export const skillHash = (md: string): string => createHash('sha1').update(md).digest('hex')
 
@@ -32,45 +32,27 @@ export async function storedSummaries(): Promise<Map<string, StoredSummary>> {
   return new Map(rows.map((r) => [`${r.owner}/${r.name}`, { hash: r.hash, summary: r.summary }]))
 }
 
-async function summarizerModel(): Promise<string | null> {
-  const pinned = await platformAgentModel('summarizer')
-  if (pinned) return pinned
-  const utility = await resolveRoleModel('utility')
-  if (utility) return utility
-  for (const m of [process.env.TALARIA_COPILOT_MODEL ?? null, 'pl-main']) {
-    if (m && (await resolveRoute(m))) return m
-  }
-  return (await gatewayModels()).find((m) => !m.qualified)?.id ?? null
-}
-
 const inFlight = new Set<string>()
 
-/** Fire-and-forget: regenerate one skill's summary for this content hash. */
+/** Fire-and-forget: regenerate one skill's summary for this content hash.
+ *
+ *  The dedupe set is NOT the harness's concern and stays here: it stops the same
+ *  skill being summarized twice while one call is still out, which happens on
+ *  every listing because a list call queues a regeneration for every changed
+ *  skill it walks past. */
 export function queueSummary(owner: string, name: string, md: string): void {
   const key = `${owner}/${name}`
   if (inFlight.has(key) || !md.trim()) return
   inFlight.add(key)
   void (async () => {
     const hash = skillHash(md)
-    const model = await summarizerModel()
-    if (!model) return
-    const out = await completeViaGateway(
-      model,
-      [
-        { role: 'system', content: PROMPT },
-        { role: 'user', content: md.slice(0, 6000) },
-      ],
-      { temperature: 0.3, caller: 'platform:summarizer' },
-    ).catch((e: Error) => {
-      console.warn('[summarizer] gateway', key, model, e.message)
-      return null
-    })
-    const line = out?.text
-      .split('\n')
-      .map((l) => l.trim())
-      .find(Boolean)
-      ?.replace(/^["'#*\s]+|["'\s]+$/g, '')
-      .slice(0, 180)
+    // `onFailure: 'null'` — no model on the gateway, an unusable reply, a dead
+    // endpoint: all of them land here as a null value and nothing is written, so
+    // the previously stored summary survives. The runner has already recorded
+    // the attempt (model, chain step, latency, whether the contract held) on a
+    // harness_runs row, which is where a failure belongs now; the console.warn
+    // this replaced said less than that row does and said it to nobody.
+    const { value: line } = await runHarness(summarizerHarness, { md }, { caller: 'platform:summarizer' })
     if (!line) return
     const sql = await db()
     await sql`

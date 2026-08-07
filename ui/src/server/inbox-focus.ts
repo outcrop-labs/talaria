@@ -16,18 +16,21 @@ import { logAudit } from './audit'
 import { completeQualityReview, getTask, type TaskStatus } from './tasks'
 import { statusMeta } from './statuses'
 import { routedModelFor } from './fleet-agents'
-import { requestGatewayJsonObject, requestJsonObject } from './inbox-focus-assistant'
+import { requestFocusBrief, requestFocusCommand, type FocusCommandTurn } from './inbox-focus-assistant'
+import type { FocusCommandInput } from './harness/defs/inbox-focus'
 import { gatewayModelsFor } from './model-access'
 import {
   asIso,
-  buildInboxConversationPrompt,
   confirmationMissInvalidates,
   dedupeItems,
   deterministicProposal,
   keyOf,
+  proposalSourceFor,
+  proposalSourceOf,
+  requiresHumanConfirmation,
   sortItems,
   validBrief,
-  validateCommandObject,
+  type FocusProposalSource,
 } from './inbox-focus-policy'
 import { approvalItems, channelItems, notificationItems, taskItems } from './inbox-focus-sources'
 import type {
@@ -105,16 +108,11 @@ async function claimAndGenerateBrief(userId: string, assistant: FocusAssistant, 
 }
 
 async function generateBrief(userId: string, model: string, item: RawFocusItem): Promise<void> {
-  const allowed = item.actions.map((action) => ({ id: action.id, label: action.label }))
-  const prompt = [
-    '[Inbox Focus Queue brief. Tools are disabled.]',
-    'Return one JSON object only with keys: question, recommendation, recommendedActionId.',
-    'Question: one short decision-focused question grounded only in the source evidence.',
-    'Recommendation: one short recommended next step. Do not claim an action was executed.',
-    `recommendedActionId must be null or exactly one of: ${allowed.map((action) => action.id).join(', ') || '(none)'}.`,
-    `Source: ${JSON.stringify({ type: item.sourceType, evidence: item.evidence, metadata: item.metadata })}`,
-  ].join('\n')
-  const brief = validBrief(await requestJsonObject(model, prompt, 4_000), item.actions)
+  // The prompt and the output contract live on `inboxBriefHarness`; this is the
+  // persistence half. A null brief leaves the previous row untouched — the
+  // claim row already recorded the attempt, so a bad model costs one retry
+  // window rather than an overwritten card.
+  const brief = await requestFocusBrief(model, item, `user:${userId}`)
   if (!brief) return
   const sql = await db()
   await sql`
@@ -352,12 +350,19 @@ async function proposedConfirmation(
   payload: unknown,
   approval: PendingAction | null,
   actors: { agentModel?: string | null; delegateModel?: string | null } = {},
+  // Carried onto the confirmation row because this write REPLACES the command
+  // proposal wholesale, and `reissueFocusConfirmation` re-derives the same
+  // question from what it finds there. Dropping it would leave a widened
+  // sign-off looking like an action that never needed confirming, and the
+  // reissue path would then fail the pending confirmation on the owner's next
+  // page load.
+  source: FocusProposalSource = 'human',
   existingDecisionId?: string,
 ): Promise<FocusActionResult> {
   const token = randomToken(24)
   const expiresAt = new Date(Date.now() + CONFIRMATION_MS)
   const preview = exactPreview(item, actionId, payload, approval)
-  const proposal = { preview, payload, sourceFingerprint: item.sourceFingerprint, confirmationCipher: seal(token) }
+  const proposal = { preview, payload, source, sourceFingerprint: item.sourceFingerprint, confirmationCipher: seal(token) }
   let decisionId = existingDecisionId
   if (decisionId) {
     const sql = await db()
@@ -463,7 +468,12 @@ export async function reissueFocusConfirmation(user: SessionUser, decisionId: st
   const item = await findFocusItemForUser(user, `${row.sourceType}:${row.sourceId}`)
   const action = item?.actions.find((candidate) => candidate.id === row.actionId)
   const approval = item?.sourceType === 'approval' ? await pendingApprovalFor(user, item.sourceId) : null
-  const valid = item && action?.confirmationRequired
+  // The SAME question `runFocusAction` asked when it issued this token, asked
+  // again from the stored row: a pending confirmation is valid when the action
+  // needs one, or when the source that proposed it does. Reading
+  // `action.confirmationRequired` alone here would fail every widened sign-off
+  // the moment the owner reloaded the Inbox.
+  const valid = item && action && requiresHumanConfirmation(action, proposalSourceOf(proposal))
     && proposal.sourceFingerprint === item.sourceFingerprint
     && (item.sourceType !== 'approval' || approval !== null)
   if (!valid) {
@@ -518,7 +528,7 @@ async function commandDecision(
   decisionId: string,
   item: RawFocusItem,
   actionId: string,
-): Promise<{ payload: unknown; agentModel: string | null; delegateModel: string | null } | null> {
+): Promise<{ payload: unknown; agentModel: string | null; delegateModel: string | null; source: FocusProposalSource } | null> {
   const sql = await db()
   const rows = (await sql`
     select proposal, agent_model as "agentModel", delegate_model as "delegateModel"
@@ -535,6 +545,10 @@ async function commandDecision(
     payload: (row.proposal as { payload?: unknown }).payload,
     agentModel: row.agentModel,
     delegateModel: row.delegateModel,
+    // WHO PROPOSED THIS, read from the row the server wrote — never from the
+    // request. A client that could name its own provenance could name itself
+    // deterministic and skip the click, which is the whole gate.
+    source: proposalSourceOf(row.proposal),
   }
 }
 
@@ -778,14 +792,29 @@ export async function runFocusAction(
   const actors = command
     ? { agentModel: command.agentModel, delegateModel: command.delegateModel }
     : { agentModel: null, delegateModel: null }
+  // No command proposal behind this call means a person clicked a button on the
+  // card (or Retry on a past decision), and that click is the confirmation.
+  const source: FocusProposalSource = command ? command.source : 'human'
 
-  if (action.confirmationRequired) {
-    if (!input.confirmationToken || !input.decisionId) {
-      return proposedConfirmation(user, item, action.id, payload, approval, actors, input.commandDecisionId)
-    }
+  // A TOKEN ANSWERS A CONFIRMATION, whatever the action's own risk says. This
+  // used to sit inside `if (action.confirmationRequired)`, which was fine while
+  // tokens were only ever issued for actions that carried that flag. They are
+  // now issued for a `risk: 'safe'` action a model proposed, so the confirming
+  // click on one of those would have fallen through to a second, unconsumed
+  // execution — leaving the pending row 'proposed' forever and dropping the
+  // token's replay protection.
+  if (input.decisionId && input.confirmationToken) {
     const confirmed = await consumeConfirmation(user, input.decisionId, input.confirmationToken, item, action.id)
     if (!confirmed) return { status: 'stale', message: 'That confirmation expired or was already used.' }
     return executeAction(user, item, action.id, confirmed.payload, input.decisionId, confirmed.agentModel, confirmed.delegateModel)
+  }
+
+  // THE GATE (see `requiresHumanConfirmation`). The action's own risk, OR the
+  // fact that a model rather than a regex chose it. Everything past this line
+  // executes, and `executeAction` writes an audit row naming the session user as
+  // the actor — which is only honest because the user clicked.
+  if (requiresHumanConfirmation(action, source)) {
+    return proposedConfirmation(user, item, action.id, payload, approval, actors, source, input.commandDecisionId)
   }
 
   return executeAction(user, item, action.id, payload, input.commandDecisionId, actors.agentModel, actors.delegateModel)
@@ -806,31 +835,11 @@ async function validDelegate(
   return routedModelFor(requested, tier)
 }
 
-async function commandFromModel(
-  model: string,
-  prompt: string,
-  allowedActionIds: ReadonlySet<string>,
-  signal?: AbortSignal,
-): Promise<{ kind: 'clarification' | 'proposal'; message: string; actionId?: string; payload?: Record<string, unknown> } | null> {
-  return validateCommandObject(await requestJsonObject(model, prompt, 6_000, signal), allowedActionIds)
-}
-
 async function validResponseModel(user: SessionUser, requested: string | null | undefined): Promise<string | null> {
   if (!requested) return null
   const allowed = await gatewayModelsFor(user.role)
   if (!allowed.some((model) => model.id === requested)) throw new Error('That response model is no longer available to this account.')
   return requested
-}
-
-async function commandFromGatewayModel(
-  user: SessionUser,
-  model: string,
-  prompt: string,
-  allowedActionIds: ReadonlySet<string>,
-  signal?: AbortSignal,
-): Promise<{ kind: 'clarification' | 'proposal'; message: string; actionId?: string; payload?: Record<string, unknown> } | null> {
-  const value = await requestGatewayJsonObject(model, prompt, `user:${user.email ?? user.id}`, signal)
-  return validateCommandObject(value, allowedActionIds)
 }
 
 export async function runFocusCommand(
@@ -854,48 +863,67 @@ export async function runFocusCommand(
   const responseModel = await validResponseModel(user, input.responseModel)
   const mode = input.mode ?? 'normal'
   const deterministic = mode === 'plan' ? null : deterministicProposal(item, input.instruction)
-  const allowedActionIds = new Set(deterministic ? [deterministic.actionId] : [])
-  let response: { kind: 'clarification' | 'proposal'; message: string; actionId?: string; payload?: Record<string, unknown> } | null = null
-  let specialistResponse: { kind: 'clarification' | 'proposal'; message: string; actionId?: string; payload?: Record<string, unknown> } | null = null
-
-  const sharedPrompt = buildInboxConversationPrompt({
+  const caller = `user:${user.email ?? user.id}`
+  // Everything both seats share. `role` and `specialist` are the only fields
+  // that differ between the bounded specialist consultation and the owner's own
+  // assistant orchestrating the answer, so the prompt for each is a branch
+  // inside `inboxCommandHarness.render` rather than two prompts out here.
+  const shared: Omit<FocusCommandInput, 'role' | 'specialist'> = {
+    item,
     instruction: `${input.instruction}${input.attachmentContext ?? ''}`,
-    focus: {
-      key: item.key,
-      question: item.question,
-      sourceHref: item.sourceHref,
-      evidence: item.evidence,
-      metadata: item.metadata,
-    },
     history: input.history ?? [],
-    allowedActionIds: [...allowedActionIds],
-  })
+    mode,
+    deterministicActionId: deterministic?.actionId ?? null,
+  }
+  let response: FocusCommandTurn | null = null
+  let specialistResponse: FocusCommandTurn | null = null
+  /** Did the DELEGATE seat's answer carry the turn? The only seat fact
+   *  `proposalSourceFor` cannot recover from the proposal itself. */
+  let fromDelegate = false
 
   if (delegateModel && mode !== 'fast') {
-    specialistResponse = await commandFromModel(
-      delegateModel,
-      ['[Inbox Focus Queue specialist consultation. Tools are disabled. Do not execute anything.]', sharedPrompt].join('\n'),
-      allowedActionIds,
-      input.signal,
-    )
+    specialistResponse = await requestFocusCommand(delegateModel, { ...shared, role: 'specialist', specialist: null }, caller, input.signal)
   }
 
   if (mode === 'fast' && deterministic) {
     response = { kind: 'proposal', ...deterministic }
   } else if (responseModel || (assistant.configured && assistant.model)) {
-    const prompt = [
-      '[Inbox Focus Queue command. Tools are disabled. Do not execute anything.]',
-      `[Response mode: ${mode}. ${mode === 'plan' ? 'Return a plan or clarification only; no executable action is allowed.' : mode === 'fast' ? 'Be brief and direct.' : 'Balance clarity and actionability.'}]`,
-      'You are the personal assistant and final orchestrator. Assess the bounded specialist suggestion, if any.',
-      `Specialist suggestion: ${JSON.stringify(specialistResponse)}`,
-      sharedPrompt,
-    ].join('\n')
-    response = responseModel
-      ? await commandFromGatewayModel(user, responseModel, prompt, allowedActionIds, input.signal)
-      : await commandFromModel(assistant.model!, prompt, allowedActionIds, input.signal)
+    // One call whichever model won. Which transport carries it is
+    // `runHarness`'s decision now, and both get the same schema, the same
+    // temperature and the same repair turn (audit 1.3).
+    response = await requestFocusCommand(
+      responseModel ?? assistant.model!,
+      { ...shared, role: 'orchestrator', specialist: specialistResponse },
+      caller,
+      input.signal,
+    )
   }
 
-  response ??= specialistResponse
+  // The specialist's proposal can still carry the turn when the orchestrator
+  // produced nothing. Each seat was gated against ITS OWN allowlist inside
+  // `requestFocusCommand`, and both allowlists are subsets of this item's own
+  // actions, so falling through here can never widen authority.
+  //
+  // AND THE SPECIALIST CAN NOW BE THE WIDENED SEAT — this used to say it never
+  // was, on the grounds that a delegate is a fleet persona and a persona has no
+  // gateway route to hang capability facts on. `harness/persona.ts` fixed
+  // exactly that: a persona inherits the capability keys of the model behind it,
+  // so a probed delegate gets the full action list while an unprobed
+  // orchestrator does not. The authority argument above is what makes that safe,
+  // and it is unaffected — `validateCommandObject` still gates every proposal
+  // against `allowedFocusActionIds(input, result.widened)` for the seat that
+  // produced it.
+  //
+  // WHAT THE AUTHORITY ARGUMENT DOES NOT COVER, and this is the fix: a fall-
+  // through UNIONS two seats' judgement, and the delegate is a second model the
+  // owner pointed at this item rather than their own assistant answering a
+  // deterministic instruction. So a delegate proposal is flagged `fromDelegate`
+  // and needs the same human click a widened one does — it may still say "sign
+  // this off", and a person still clicks.
+  if (!response && specialistResponse) {
+    response = specialistResponse
+    fromDelegate = true
+  }
   response ??= deterministic
     ? { kind: 'proposal', ...deterministic }
     : {
@@ -913,8 +941,18 @@ export async function runFocusCommand(
     agentModel: responseModel ?? assistant.model,
     delegateModel,
     status: response.actionId ? 'proposed' : 'completed',
+    // `source` is written HERE, on the server, next to the fingerprint that
+    // already pins this proposal to the item it was made about. It is what
+    // `runFocusAction` reads back to decide whether this proposal may run
+    // without a click, and writing it anywhere the client can reach would make
+    // the gate advisory.
     proposal: response.actionId
-      ? { message: response.message, payload: response.payload ?? null, sourceFingerprint: item.sourceFingerprint }
+      ? {
+          message: response.message,
+          payload: response.payload ?? null,
+          source: proposalSourceFor({ fromDelegate, actionId: response.actionId, deterministicActionId: deterministic?.actionId ?? null }),
+          sourceFingerprint: item.sourceFingerprint,
+        }
       : undefined,
     outcome: response.actionId ? undefined : { kind: 'clarification' },
   })

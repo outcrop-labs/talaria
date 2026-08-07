@@ -1,106 +1,34 @@
 // Plan chat: turn a channel conversation into ticket proposals. A chosen
 // channel agent reads the transcript and drafts structured tickets; a human
 // reviews, edits, and creates them (into inbox — planning never assigns).
-import { describeAgent, proxyChat } from './gateway'
-import { parseAgentStream } from '@/lib/sse-parse'
-import { estimateTokens, recordUsage } from './usage'
+//
+// The prompt, the output schema and the coercion now live in
+// harness/defs/channel-plan.ts and run through `runHarness`. What went away
+// here: `extractProposals` and `parseArrayAt` (one of the six hand-written
+// structured-output extractors the audit found — the runner's `json.ts` scans
+// balanced spans, strips fences and prefers fenced content over prose, and it
+// repairs once with the concrete parser error, which nothing in this tree did),
+// and the bare unguarded `proxyChat` call whose output becomes ticket bodies.
+// What stays here: gathering the transcript, the template and the workflow map,
+// because those are database reads and a harness definition must stay pure.
+import { describeAgent } from './gateway'
+import { channelPlanHarness, type ChannelPlanInput, type TicketProposal } from './harness/defs/channel-plan'
+import { runHarness } from './harness/run'
 import { listChannelMessages } from './channels'
 import { priorMessages } from './conversations'
-import { planDocFor } from './plan-doc'
-import { resolveTemplate, templatePrompt, type Template } from './templates'
+import { planDocFor, planTier } from './plan-doc'
+import { resolveTemplate, templatePrompt } from './templates'
 import { routingContext } from './workflows'
 
-export interface TicketProposal {
-  title: string
-  description: string
-  priority: 'low' | 'medium' | 'high' | 'urgent'
-  effort: 'xs' | 's' | 'm' | 'l' | 'xl' | null
-  /** Zero-based indices of proposals in the SAME batch this one is blocked by. */
-  dependsOn: number[]
-  /** Routing labels — chosen to trip a workflow's match rules so dispatch
-   *  classification fires when the ticket is later approved to an agent. */
-  tags: string[]
-}
-
-const PRIORITIES = new Set(['low', 'medium', 'high', 'urgent'])
-const EFFORTS = new Set(['xs', 's', 'm', 'l', 'xl'])
-
-const PLAN_PROMPT = `You are a planning assistant. Break the discussed work into concrete, actionable tickets.
-When a plan document is provided, it is the curated source of truth — draft tickets from it and use the transcript only for supporting context; the raw chat never overrides the document.
-
-Respond with ONLY a JSON array — no prose before or after, no markdown fence. Each element:
-{"title": "imperative, <= 80 chars", "description": "markdown body with enough context that someone who didn't read the chat can act on it", "priority": "low|medium|high|urgent", "effort": "xs|s|m|l|xl", "dependsOn": [zero-based indices of tickets in THIS array that must finish first], "tags": ["optional routing labels"]}
-
-Rules: 2-10 tickets. Each independently actionable. Don't invent work nobody discussed. Capture decisions and constraints (and any @mentioned people) in the descriptions. Use dependsOn only for real ordering constraints — most tickets have none.
-When a workflow map is provided and a ticket clearly falls under one of its workflows, add that workflow's matching label(s) to tags and end the description with one line: "Routing: <workflow> → <agent>". Most tickets won't match — then omit tags and the routing line entirely; never force a fit.`
-
-/** Extract a JSON array of proposals from model output. Tries EVERY '['
- *  candidate (prose like "[DONE]" or markdown links before the real array must
- *  not break extraction); field limits mirror the boards API so review-modal
- *  creates can't 400. */
-export function extractProposals(text: string): TicketProposal[] {
-  for (let start = text.indexOf('['); start !== -1; start = text.indexOf('[', start + 1)) {
-    const arr = parseArrayAt(text, start)
-    if (!arr) continue
-    const objs = arr.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x))
-    // Dropping titleless entries shifts positions — remap dependsOn through the
-    // original→kept index map so references stay valid.
-    const kept = objs.map((x, i) => ({ x, i })).filter(({ x }) => String(x.title ?? '').trim().length > 0)
-    const newIndex = new Map(kept.map(({ i }, n) => [i, n]))
-    const proposals = kept.map(({ x, i }) => ({
-      title: String(x.title ?? '').slice(0, 300),
-      description: String(x.description ?? '').slice(0, 20_000),
-      priority: PRIORITIES.has(String(x.priority)) ? (String(x.priority) as TicketProposal['priority']) : 'medium',
-      effort: EFFORTS.has(String(x.effort)) ? (String(x.effort) as Exclude<TicketProposal['effort'], null>) : null,
-      tags: (Array.isArray(x.tags) ? x.tags : [])
-        .map((t) => String(t).trim().slice(0, 40))
-        .filter(Boolean)
-        .slice(0, 5),
-      dependsOn: [
-        ...new Set(
-          (Array.isArray(x.dependsOn) ? x.dependsOn : [])
-            .map((d) => newIndex.get(Number(d)))
-            .filter((d): d is number => d !== undefined && d !== newIndex.get(i)),
-        ),
-      ],
-    }))
-    if (proposals.length) return proposals
-  }
-  return []
-}
-
-/** Parse a balanced JSON array starting at `start`, or null. */
-function parseArrayAt(text: string, start: number): unknown[] | null {
-  let depth = 0
-  let inStr = false
-  let esc = false
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i]
-    if (esc) {
-      esc = false
-      continue
-    }
-    if (ch === '\\') {
-      esc = inStr
-      continue
-    }
-    if (ch === '"') inStr = !inStr
-    if (inStr) continue
-    if (ch === '[') depth++
-    if (ch === ']' && --depth === 0) {
-      try {
-        const v = JSON.parse(text.slice(start, i + 1)) as unknown
-        return Array.isArray(v) ? v : null
-      } catch {
-        return null
-      }
-    }
-  }
-  return null
-}
+export type { TicketProposal }
 
 /** Draft ticket proposals from a transcript. Shared by the channel Plan button
- *  and the first-class Plan surface. */
+ *  and the first-class Plan surface.
+ *
+ *  `raw` is the model's reply, and both callers use it for exactly one thing:
+ *  telling "the agent did not return parseable tickets" apart from "nothing to
+ *  plan yet". The runner bounds it (8k) because a run result is not an archive;
+ *  that is invisible to a truthiness check. */
 async function planFromTranscript(
   transcript: string,
   agentModel: string,
@@ -111,42 +39,52 @@ async function planFromTranscript(
     /** The plan's living document — the authoritative source when present. */
     planDoc?: string
     /** The resolved ticket template — descriptions must follow its skeleton. */
-    template?: Template | null
+    templatePrompt?: string
   } = {},
 ): Promise<{ proposals: TicketProposal[]; raw: string }> {
+  // Ahead of the harness on purpose: a conversation with nothing in it has no
+  // tickets in it, and this early-out is what stops the Plan button spending a
+  // model call and a harness_runs row to discover that.
   if (!transcript.trim() && !opts.planDoc?.trim()) return { proposals: [], raw: '' }
 
-  const system = opts.template ? `${PLAN_PROMPT}\n\n${templatePrompt(opts.template, 'ticket descriptions')}` : PLAN_PROMPT
-  const routing = await routingContext().catch(() => '')
-  const parts = [
-    ...(routing ? [`Workflow map (match rules → skills → agents):\n${routing}`] : []),
-    ...(opts.planDoc?.trim() ? [`Plan document (source of truth):\n\n${opts.planDoc}`] : []),
-    ...(transcript.trim() ? [`Transcript:\n\n${transcript}`] : []),
-  ]
-  const messages = [
-    { role: 'system', content: system },
-    { role: 'user', content: parts.join('\n\n---\n\n') },
-  ]
-  const upstream = await proxyChat({ model: routedModel, messages })
-  if (!upstream.ok || !upstream.body) throw new Error(`gateway error ${upstream.status}`)
-
-  let text = ''
-  let usage: { promptTokens: number; completionTokens: number } | null = null
-  for await (const ev of parseAgentStream(upstream.body)) {
-    if (ev.type === 'content') text += ev.text
-    else if (ev.type === 'usage') usage = ev
+  const input: ChannelPlanInput = {
+    transcript,
+    ...(opts.planDoc?.trim() ? { planDoc: opts.planDoc } : {}),
+    ...(opts.templatePrompt ? { templatePrompt: opts.templatePrompt } : {}),
+    // Never fatal: an org with no workflows, or a failed read, just means no
+    // routing labels. Same `.catch` this call has always had.
+    ...(await routingContext()
+      .then((map) => (map ? { routingMap: map } : {}))
+      .catch(() => ({}))),
   }
-  void recordUsage({
-    agentModel,
-    source,
-    refId,
-    tier: routedModel !== agentModel ? routedModel.slice(agentModel.length + 1) : null,
-    promptTokens: usage?.promptTokens ?? estimateTokens(messages.reduce((n, m) => n + m.content.length, 0)),
-    completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
-    estimated: !usage,
-  }).catch(() => {})
 
-  return { proposals: extractProposals(text), raw: text }
+  // The CHOSEN agent drafts, so the model is pinned rather than resolved from a
+  // chain — and the tier is named apart from the base agent because the runner
+  // needs both halves: it calls `<agent>-<alias>` and meters the spend against
+  // `<agent>` (see `planTier`). No transport is supplied: the runner routes a
+  // persona tier itself and carries the attribution on the request.
+  const tier = planTier(agentModel, routedModel)
+  const result = await runHarness(channelPlanHarness, input, {
+    caller: `${source}:${refId}`,
+    model: agentModel,
+    ...(tier ? { tier } : {}),
+    ledger: { source, refId },
+  })
+  // A run that never REACHED a model is not "nothing to plan yet". Both routes
+  // pick between "the agent did not return parseable tickets" and "nothing to
+  // plan yet", and a transport failure is neither — so a restarting agent
+  // container answered 200 "nothing to plan yet" on a channel full of work.
+  // Pre-port this threw `gateway error 502` and the routes turned it into a 502
+  // with that sentence; `plan-doc.ts` draws the same distinction the same way.
+  //
+  // `answered` is that question with a name on it. This used to ask `raw ===
+  // null`, which is a DRILL-DOWN field standing in for a control-flow fact, and
+  // it got one case wrong in both directions: a stream that died after three
+  // tokens leaves a `raw` behind and read here as a model that answered badly.
+  // A model that genuinely answered badly still falls through to the
+  // parseable-tickets note, which is what this test is for.
+  if (!result.answered && result.error) throw new Error(result.error)
+  return { proposals: result.value ?? [], raw: result.raw ?? '' }
 }
 
 /** Template context for a draft: where the tickets will land + any explicit
@@ -154,6 +92,13 @@ async function planFromTranscript(
 export interface DraftTemplateCtx {
   boardId?: string | null
   templateId?: string | null
+}
+
+/** The ticket template as the model is told about it, or nothing. Resolution is
+ *  a database read and stays on this side of the harness boundary. */
+async function templateBlock(agentModel: string, tpl: DraftTemplateCtx): Promise<string | undefined> {
+  const template = await resolveTemplate('ticket', { explicitId: tpl.templateId, agentModel, boardId: tpl.boardId })
+  return template ? templatePrompt(template, 'ticket descriptions') : undefined
 }
 
 export async function planFromChannel(
@@ -167,8 +112,10 @@ export async function planFromChannel(
     .filter((m) => m.status === 'complete' && m.content)
     .map((m) => `${m.authorType === 'agent' ? describeAgent(m.author).label : m.author}: ${m.content}`)
     .join('\n\n')
-  const template = await resolveTemplate('ticket', { explicitId: tpl.templateId, agentModel, boardId: tpl.boardId })
-  return planFromTranscript(transcript, agentModel, routedModel, channelId, 'channel', { template })
+  const block = await templateBlock(agentModel, tpl)
+  return planFromTranscript(transcript, agentModel, routedModel, channelId, 'channel', {
+    ...(block ? { templatePrompt: block } : {}),
+  })
 }
 
 /** Draft tickets from a plan conversation (the Plan surface). The plan's living
@@ -186,6 +133,9 @@ export async function planFromConversation(
     .map((m) => `${m.role === 'assistant' ? label : 'User'}: ${m.content}`)
     .join('\n\n')
   const doc = await planDocFor(conversationId)
-  const template = await resolveTemplate('ticket', { explicitId: tpl.templateId, agentModel, boardId: tpl.boardId })
-  return planFromTranscript(transcript, agentModel, routedModel, conversationId, 'chat', { planDoc: doc?.body, template })
+  const block = await templateBlock(agentModel, tpl)
+  return planFromTranscript(transcript, agentModel, routedModel, conversationId, 'chat', {
+    ...(doc?.body ? { planDoc: doc.body } : {}),
+    ...(block ? { templatePrompt: block } : {}),
+  })
 }

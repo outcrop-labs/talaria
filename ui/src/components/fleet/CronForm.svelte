@@ -7,7 +7,7 @@
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { slide } from '@/lib/motion'
-  import { parseCronDraft, streamMuse } from '@/lib/muse.svelte'
+  import { draftCron } from '@/lib/muse.svelte'
   import { DEFAULT_SCHED, parseSchedule, schedToString, type Sched } from './agent-crons'
   import ScheduleBuilder from './ScheduleBuilder.svelte'
 
@@ -34,19 +34,16 @@
   let draftErr = $state<string | null>(null)
   const ok = $derived(name.trim() && schedToString(sched) && prompt.trim())
 
-  // Natural language → {name, schedule, prompt} via the drafting muse.
+  // Natural language → {name, schedule, prompt}, validated server-side. A
+  // failed draft leaves the form exactly as it was and says why — the muse is
+  // the shortcut here, never the only way in.
   const draft = async () => {
     const ask = draftAsk.trim()
     if (!ask) return
     drafting = true
     draftErr = null
     try {
-      const full = await streamMuse({ kind: 'cron', instruction: ask }, () => {})
-      const j = parseCronDraft(full)
-      if (!j) {
-        draftErr = 'could not turn that into a job. Try rephrasing'
-        return
-      }
+      const j = await draftCron({ instruction: ask })
       name = j.name
       sched = parseSchedule(j.schedule)
       prompt = j.prompt

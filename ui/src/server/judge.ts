@@ -6,8 +6,9 @@
 // reviewer still decides — the judge sharpens that decision, it doesn't replace
 // it. (An enforcing revision-loop mode is planned; advisory ships first.)
 
-import { completeViaGateway } from './llm-gateway'
 import { guardText, recordFindings } from './guardrails'
+import { runHarness } from './harness/run'
+import { judgeHarness, type JudgeVerdict, type Verdict } from './harness/defs/judge'
 import { resolveTemplate } from './templates'
 import { getSetting, setSetting } from './audit'
 import { db } from './db/pg'
@@ -35,7 +36,10 @@ export const getJudgeConfig = async (): Promise<JudgeConfig> => ({
 })
 export const setJudgeConfig = (c: JudgeConfig) => setSetting(CONFIG_KEY, c)
 
-export type Verdict = 'pass' | 'revise' | 'escalate'
+// The verdict vocabulary is the harness's output contract, so it is declared
+// once, next to the schema that enforces it (harness/defs/judge.ts). Re-exported
+// here because this module is where the rest of the server asks about judging.
+export type { Verdict }
 export interface JudgeReview {
   id: string
   model: string | null
@@ -67,53 +71,18 @@ async function shouldJudge(boardId: string): Promise<{ run: boolean; model: stri
   return { run: mode !== 'off', model: cfg.model, mode }
 }
 
-const SYSTEM = `You are a meticulous, skeptical QA reviewer for a task tracker. An agent has completed a ticket and reported its outcome. Judge whether the work credibly satisfies the ticket.
-
-Return ONLY a JSON object, no prose around it:
-{"verdict": "pass" | "revise" | "escalate", "summary": "<2-4 sentence assessment>", "issues": ["<specific, actionable issue>", ...]}
-
-- "pass": the reported outcome credibly and completely satisfies the ticket.
-- "revise": concrete gaps, unmet requirements, or likely defects the agent should fix. List them in issues.
-- "escalate": needs a human decision — ambiguous/contradictory requirements, a risky or irreversible action, or a claim you cannot assess. Explain in issues.
-
-When a TICKET TEMPLATE is provided, treat it as the objective rubric: the ticket's requirements are its sections. Check each template section is meaningfully addressed by the ticket and its outcome ("n/a" only where truly inapplicable). A section that is missing, empty, or still skeleton text is a concrete "revise" issue — name the section.
-
-Be concrete. Prefer "revise" over "pass" when the outcome is vague, unverifiable, or skips a requirement. Judge the WORK, not the writing.`
-
-function buildPrompt(
-  task: {
-    title: string
-    description?: string | null
-    outcome?: string | null
-    resolution?: string | null
-    errorMessage?: string | null
-  },
-  template?: { name: string; body: string } | null,
-): string {
-  const parts = [`TICKET: ${task.title}`]
-  if (task.description) parts.push(`\nREQUIREMENTS:\n${task.description}`)
-  if (template) {
-    parts.push(`\nTICKET TEMPLATE ("${template.name}" — the rubric this ticket is expected to follow):\n<<<\n${template.body}\n>>>`)
-  }
-  parts.push(`\nAGENT REPORTED OUTCOME:\n${task.outcome || '(none provided)'}`)
-  if (task.resolution) parts.push(`\nHOW IT WAS RESOLVED:\n${task.resolution}`)
-  if (task.errorMessage) parts.push(`\nREPORTED ERROR:\n${task.errorMessage}`)
-  return parts.join('\n')
-}
-
-/** Pull the JSON verdict out of a model response (tolerates code fences/prose). */
-function parseVerdict(text: string): { verdict: Verdict; summary: string; issues: string[] } {
-  const escalate = (summary: string) => ({ verdict: 'escalate' as Verdict, summary, issues: [] as string[] })
-  const match = text.match(/\{[\s\S]*\}/)
-  if (!match) return escalate('Judge returned no parseable verdict — surfacing to a human.')
-  try {
-    const raw = JSON.parse(match[0]) as { verdict?: string; summary?: string; issues?: unknown }
-    const verdict: Verdict = raw.verdict === 'pass' || raw.verdict === 'revise' ? raw.verdict : 'escalate'
-    const issues = Array.isArray(raw.issues) ? raw.issues.map((i) => String(i)).filter(Boolean).slice(0, 20) : []
-    return { verdict, summary: String(raw.summary ?? '').slice(0, 4000), issues }
-  } catch {
-    return escalate('Judge returned malformed JSON — surfacing to a human.')
-  }
+/** The verdict the ticket gets when the model could not produce one.
+ *
+ *  The DIRECTION here is the load-bearing part and it predates the harness
+ *  layer: an unreadable verdict becomes an escalation, never a pass and never
+ *  silence. `judgeHarness` declares `onFailure: { escalate: true }`, the runner
+ *  raises the flag, and this is the row the flag turns into — so the escalation
+ *  notification below fires on exactly the cases it always fired on. The
+ *  wording is unchanged because it is already written on shipped review rows. */
+const UNPARSEABLE: JudgeVerdict = {
+  verdict: 'escalate',
+  summary: 'Judge returned no parseable verdict — surfacing to a human.',
+  issues: [],
 }
 
 /** Tell the people who can act on it that the gate stopped.
@@ -202,23 +171,51 @@ export async function runJudgeForTask(taskId: string): Promise<JudgeReview | nul
 
     // Layered tiering: a cheap structural pre-pass (gate-safe guard rules, e.g.
     // secret-leak) over the reported outcome, fed to the judge as evidence.
+    // The findings travel INTO the harness as input — rendering them into the
+    // prompt is the harness's business, running them is ours, because we are
+    // the half of this that can reach the database.
     const preFindings = await guardText(`${task.outcome ?? ''}\n${task.resolution ?? ''}`).catch(() => [])
-    const preNote = preFindings.length
-      ? `\n\nAUTOMATED PRE-CHECKS FLAGGED (weigh these):\n${preFindings.map((f) => `- ${f.check.replace(/_/g, ' ')}: ${f.message}`).join('\n')}`
-      : ''
+
+    // The configured pick is an explicit OVERRIDE, not a pin lookup: the judge's
+    // model lives in `judge_config` and admin.platform-agents.ts reads and writes
+    // it there so there is one source of truth (see the harness definition's
+    // header). Unset means the harness's own chain decides, which is how
+    // 'pl-main' stopped being a literal here (audit 1.7).
+    const res = await runHarness(
+      judgeHarness,
+      {
+        title: task.title,
+        description: task.description,
+        outcome: task.outcome,
+        resolution: task.resolution,
+        errorMessage: task.errorMessage,
+        template,
+        preFindings,
+      },
+      { caller: 'platform:judge', ...(model ? { model } : {}) },
+    )
+
+    // Attributed to the model that actually judged. This row is read back as a
+    // per-model confabulation rate, and until the chain could report its pick
+    // the only answer available here was the literal string 'pl-main'.
     if (preFindings.length) {
-      await recordFindings(preFindings, { caller: `ticket:${taskId}`, model: model ?? 'pl-main', endpoint: null, mode: 'observe' }).catch(() => {})
+      await recordFindings(preFindings, { caller: `ticket:${taskId}`, model: res.model ?? model ?? 'unresolved', endpoint: null, mode: 'observe' }).catch(() => {})
     }
 
-    const { text } = await completeViaGateway(
-      model ?? 'pl-main',
-      [
-        { role: 'system', content: SYSTEM },
-        { role: 'user', content: buildPrompt(task, template) + preNote },
-      ],
-      { temperature: 0, caller: 'platform:judge' },
-    )
-    const { verdict, summary, issues } = parseVerdict(text)
+    // Three outcomes, and the third one is not a failure of this function:
+    //   a value          the judge judged.
+    //   escalate         it answered, and no verdict could be read out of the
+    //                    answer even after a repair turn. A person decides.
+    //   neither          no model was reachable, or the model is known not to
+    //                    clear the judge's floor, so the gate never ran. The
+    //                    ticket keeps waiting for the human reviewer it was
+    //                    already waiting for — exactly what a thrown gateway
+    //                    error did here before, minus the stack trace.
+    if (!res.value && !res.escalate) {
+      if (import.meta.env.DEV && res.error) console.error('[judge] did not run:', res.error)
+      return null
+    }
+    const { verdict, summary, issues } = res.value ?? UNPARSEABLE
 
     const [row] = (await sql`
       insert into judge_reviews (task_id, model, verdict, summary, issues)

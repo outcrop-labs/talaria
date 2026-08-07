@@ -299,7 +299,96 @@ const RULES = [
  *  Counts are exact — a file that GAINS an occurrence fails, and a file that
  *  LOSES its last one fails too, so the table cannot rot into a permanent
  *  amnesty for code that was fixed years ago. */
+/** Census entries on `hand-written-harness` that are NOT debt: a pass-through
+ *  proxy and the live persona-conversation paths. They stay on the census
+ *  (their counts are still exact, so a new call in one of them fails) but they
+ *  are excluded from the "still owed" note, because they are never going to be
+ *  ported and a debt figure that never reaches zero is a figure nobody reads. */
+const HARNESS_NOT_A_HARNESS = new Set([
+  'ui/src/routes/api/llm.v1.chat.completions.ts',
+  'ui/src/routes/api/chat.ts',
+  'ui/src/server/chat-persist.ts',
+  'ui/src/server/channel-replies.ts',
+])
+
+/** THE THIRD CATEGORY IS GONE, and the deletion is the finding.
+ *
+ *  This set used to name five files — muse.ts, briefing.ts, outreach.ts,
+ *  work-dispatch.ts and plan-persona-turn.ts — that WERE declared harnesses but
+ *  supplied their own transport, because `runHarness` could not pass a model's
+ *  own tools through, stream, carry ledger attribution, or route a persona TIER
+ *  id. Four independent agents hit that one gap and each wrote the same shim.
+ *
+ *  run.ts serves all four now (`def.tools`, `runHarnessStreamed`, `ctx.ledger`,
+ *  `ctx.tier`), so the five shims were DELETED rather than reduced —
+ *  plan-persona-turn.ts as a whole file. The census below is back to what a
+ *  census should be: the permanent exceptions and nothing else. Anything that
+ *  reaches a model by hand from here on is a regression, not debt, and it fails
+ *  this rule with no entry to hide behind.
+ *
+ *  This comment is the only trace kept on purpose, so the next author who needs
+ *  one of those four capabilities looks for the runner slot instead of writing
+ *  a sixth shim. */
+
 const CENSUS = [
+  {
+    id: 'hand-written-harness',
+    // Reaching a model directly: the four transports. `server/gateway.ts` and
+    // `server/llm-gateway.ts` DEFINE them and are excluded by path below.
+    pattern: /\b(?:proxyChat|completeViaGateway|buildUpstream|fetchUpstream)\(/g,
+    // The transports themselves, the runner that is the one legitimate caller of
+    // all four, and tests that drive a transport on purpose.
+    exempt: (path) =>
+      path === 'ui/src/server/gateway.ts' ||
+      path === 'ui/src/server/llm-gateway.ts' ||
+      path.startsWith('ui/src/server/harness/') ||
+      path.endsWith('.test.ts'),
+    what: 'a model call written by hand instead of declared as a harness',
+    fix: [
+      'Declare it: `defineHarness({ ... })` in ui/src/server/harness/ and call it through',
+      '`runHarness`. The runner owns model resolution, the capability floor, structured-output',
+      'parsing WITH a repair round-trip, the guardrail pass, metering, and the harness_runs row.',
+      'A hand-written call gets none of those, and gets them wrong in its own particular way:',
+      'the audit found six different JSON extractors, six copies of the model-fallback chain,',
+      'and three model paths reaching users with no guardrail at all — every one of them a call',
+      'site that was written by hand by somebody who had read the code around it.',
+      '',
+      'THE PORT IS DONE AND THE CENSUS IS AT ITS FLOOR: the four entries below are a',
+      'pass-through proxy and three live persona conversations, none of which has a prompt, a',
+      'schema or a model policy to declare. There is no debt column any more, so a new match',
+      'here is not "one more to port" — it is a call that went around the runner, and the fix',
+      'is to declare it rather than to add a line to this table.',
+      '',
+      'IF WHAT YOU NEED IS A RUNNER CAPABILITY, ASK FOR IT IN run.ts. The five shims this',
+      'census used to carry (muse.ts, briefing.ts, outreach.ts, work-dispatch.ts and the whole',
+      'of plan-persona-turn.ts) all existed for four missing slots, and all four exist now:',
+      "  a model's OWN tools     `tools: 'own'` on the definition (harness/transport.ts ToolPolicy)",
+      '  streaming to a screen   `runHarnessStreamed(def, input, ctx, { stream, onDelta })`',
+      '  ledger attribution      `ctx.ledger` — source / refId / taskId',
+      '  a persona TIER id       `ctx.tier` — the alias NAME; the runner assembles `<agent>-<alias>`',
+    ],
+    sites: {
+      // The public gateway route is a PASS-THROUGH proxy: it relays a caller's
+      // own body to their chosen model and streams the answer back. It has no
+      // prompt, no schema and no model policy of its own to declare, and it
+      // already runs `guardCompletion` on all four of its exit paths.
+      'ui/src/routes/api/llm.v1.chat.completions.ts': 2,
+      // Live persona conversation. A human is talking to an agent and the reply
+      // streams to their screen token by token; there is no structured contract
+      // to parse and no repair turn that would make sense mid-stream. These
+      // guard through `guardChatReply`, which is the right shape for a path that
+      // sees tool NAMES but not tool results.
+      //
+      // These are NOT the streaming exception `runHarnessStreamed` closed. That
+      // one is for a harness — a declared prompt and a declared contract —
+      // whose OUTPUT happens to arrive token by token (the Muse's prose kinds,
+      // the briefing chat-back), and both moved onto the runner. A chat turn has
+      // no prompt of Talaria's to declare: the messages are the human's.
+      'ui/src/routes/api/chat.ts': 1,
+      'ui/src/server/chat-persist.ts': 1,
+      'ui/src/server/channel-replies.ts': 1,
+    },
+  },
   {
     id: 'off-board-status-literal',
     // 'failed' next to 'cancelled' (either order) in an array literal or a type
@@ -744,6 +833,12 @@ for (const rule of CENSUS) {
   const stale = []
   const counted = new Map()
   for (const [path, src] of sources) {
+    // `exempt` is for files where the pattern is the SUBJECT rather than a copy
+    // of it: the module that defines the thing, and the tests that drive it.
+    // A census entry says "this is a copy and it is owed"; an exemption says
+    // "this is not a copy at all", and conflating the two would put the
+    // definition on a debt list that can never reach zero.
+    if (rule.exempt?.(path)) continue
     const hits = matches(src, rule.pattern)
     if (hits.length) counted.set(path, hits)
     const allowed = rule.sites[path] ?? 0
@@ -767,6 +862,39 @@ for (const rule of CENSUS) {
       ],
       found: [],
     })
+  }
+  // "All clean" on this rule means "nobody added a NEW hand-written model call".
+  // That is now the whole statement, because the census is at its floor — but it
+  // is not the statement a reader assumes, so say the floor out loud and PROVE it
+  // from the table rather than asserting it in prose.
+  //
+  // DERIVED from the census, never written by hand, for the reason the last two
+  // rounds learned the hard way: the previous version of this block described a
+  // debt column and five shim files, and kept printing that description for the
+  // whole of the round that deleted them. A note that can only describe the
+  // census it is computed from cannot outlive its subject.
+  if (rule.id === 'hand-written-harness') {
+    const owed = Object.entries(rule.sites).filter(([p]) => !HARNESS_NOT_A_HARNESS.has(p))
+    if (owed.length) {
+      notes.push(
+        `${owed.length} file(s) still reach a model by hand instead of declaring a harness ` +
+          `(${owed.reduce((s, [, n]) => s + n, 0)} call sites: ${owed.map(([p]) => p.replace(/^ui\/src\//, '')).join(', ')}). ` +
+          'Each one re-implements some of model resolution, structured-output parsing, the repair ' +
+          'turn, the guardrail pass and metering, and gets a different subset of them wrong. On the ' +
+          'census in scripts/check-invariants.mjs.',
+      )
+    } else {
+      // THE CENSUS IS AT ITS FLOOR. Said out loud, once, because "no failures" is
+      // not the same statement and this is the one somebody will want to cite.
+      notes.push(
+        'THE HARNESS PORT IS COMPLETE AND THIS CENSUS IS AT ITS FLOOR: every entry is a permanent ' +
+          'exception (one pass-through proxy, three live persona conversations) and nothing on it is ' +
+          'debt. No file in the tree reaches a model with a hand-written prompt, parser, fallback ' +
+          'chain and guard pass, and none supplies its own transport to work around a missing runner ' +
+          'capability — run.ts serves tools, streaming, ledger attribution and tier routing itself. ' +
+          'The next match on this rule is a regression, not a backlog item.',
+      )
+    }
   }
   // The board-policy census carries a KNOWN DIVERGENCE, not just duplication —
   // say so on every run, or "all clean" reads as "and they agree".

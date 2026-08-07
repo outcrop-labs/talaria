@@ -2,15 +2,21 @@ import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
-import { getModelRoles, MODEL_ROLES, setModelRole } from '@/server/model-roles'
+import { getModelRoles, MODEL_ROLES, roleAssignmentIssues, setModelRole } from '@/server/model-roles'
 import { gatewayModels } from '@/server/llm-gateway'
 import { logAudit } from '@/server/audit'
 
 const ROLES = MODEL_ROLES.map((r) => r.role)
 
 // Model Roles — which model handles each activity class. GET → the catalog of
-// roles + current assignments + assignable models. PUT { role, model|null } →
-// assign (null = back to auto). Admins only.
+// roles + current assignments + assignable models + fitness issues. PUT
+// { role, model|null } → assign (null = back to auto). Admins only.
+//
+// `issues` is the audit-1.6 signal and it is ADVISORY on both verbs: a PUT that
+// creates one still succeeds, and answers with the issue it just created so the
+// panel can say so on the same round trip. Refusing the assignment would put
+// this route in the business of overruling an admin on the strength of a probe,
+// which is a call the admin is better placed to make.
 export const Route = defineApi('/api/admin/model-roles', {
   GET: async ({ request }) => {
     const gate = await requireAdmin(request)
@@ -19,6 +25,7 @@ export const Route = defineApi('/api/admin/model-roles', {
       roles: MODEL_ROLES,
       assignments: await getModelRoles(),
       models: (await gatewayModels()).map((m) => m.id),
+      issues: await roleAssignmentIssues(),
     })
   },
   PUT: async ({ request }) => {
@@ -40,6 +47,6 @@ export const Route = defineApi('/api/admin/model-roles', {
       targetId: body.role,
       after: { model: body.model },
     })
-    return json({ assignments: await getModelRoles() })
+    return json({ assignments: await getModelRoles(), issues: await roleAssignmentIssues() })
   },
 })

@@ -5,7 +5,7 @@
 // it type in real time. Runs detached from the sender's request.
 import { describeAgent, proxyChat } from './gateway'
 import { parseAgentStream } from '@/lib/sse-parse'
-import { guardChatReply, needsRedaction, redactSecrets } from './guardrails'
+import { guardChatReply, needsRedaction, redactFindings, redactSecrets } from './guardrails'
 import { notifyMentions } from './mentions'
 import { addNotification } from './notifications'
 import { db } from './db/pg'
@@ -235,19 +235,31 @@ async function streamReply(
     }
     await updateChannelMessage(channelId, messageId, content, 'complete')
     ledger()
-    // An agent reply @mentioning a human notifies like a human message would.
-    if (content) void notifyMentions(await listChannelMembers(channelId), '', describeAgent(model).label, content, `#${channelName}`, '/channels').catch(() => {})
-    // Confab guard (fire-and-forget). annotate/strict pin findings onto the
-    // message (republished, so viewers see the caveat live); strict also
-    // redacts leaked secrets from the saved copy.
+    // Confab guard. annotate/strict pin findings onto the message (republished,
+    // so viewers see the caveat live); strict also redacts leaked secrets from
+    // the saved copy.
+    //
+    // AWAITED, AND AHEAD OF THE MENTION FAN-OUT, because `notifyMentions` takes
+    // a COPY of `content` into a `notifications` row and out through gated mail,
+    // and nothing ever scrubs that row afterwards. Running it first left the
+    // live credential in a human's inbox — and in the inbox-focus brief, which
+    // reads notification bodies back into a model — beside a channel row strict
+    // mode had just cleaned. The MCP post path in channels.$id.messages.ts
+    // orders these the same way.
     if (content) {
-      void (async () => {
+      await (async () => {
         const { findings, mode } = await guardChatReply({ answer: content, toolNames, userMessage: '', caller: `channel:${model}`, model })
         if (!findings.length || (mode !== 'annotate' && mode !== 'strict')) return
         const redact = mode === 'strict' && needsRedaction(findings)
-        await setChannelMessageGuard(channelId, messageId, findings, redact ? redactSecrets(content).text : undefined)
+        if (redact) content = redactSecrets(content).text
+        // `redactFindings` and not the raw list: a pinned finding carries a
+        // verbatim excerpt of the flagged span, and `zero_tool_claim` does not
+        // truncate its own.
+        await setChannelMessageGuard(channelId, messageId, redactFindings(findings), redact ? content : undefined)
       })().catch(() => {})
     }
+    // An agent reply @mentioning a human notifies like a human message would.
+    if (content) void notifyMentions(await listChannelMembers(channelId), '', describeAgent(model).label, content, `#${channelName}`, '/channels').catch(() => {})
   } catch {
     await updateChannelMessage(channelId, messageId, content, 'error')
     ledger()

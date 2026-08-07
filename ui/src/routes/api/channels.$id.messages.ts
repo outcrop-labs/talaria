@@ -29,7 +29,14 @@ export const Route = defineApi('/api/channels/$id/messages', {
       // The CALLER, not its model — the elevated "any non-DM channel"
       // bypass is only for a proven identity.
       if (!(await agentMayAccessChannel(params.id, reader))) return json({ error: 'forbidden' }, { status: 403 })
-      return json({ messages: await page() })
+      // WITHOUT `guard`. An agent reads a channel through this route (the MCP
+      // `read_channel` tool proxies it), and a finding is the guard's verdict on
+      // flagged content plus a verbatim excerpt OF that content — the one thing
+      // guardrails.ts's cardinal invariant says must never re-enter a model's
+      // context. `channels.ts` declines to pin findings for exactly this reason
+      // and says so; the streamed-reply path pins them anyway, so the projection
+      // is where this is closed for good. Humans still get the caveat.
+      return json({ messages: (await page()).map(({ guard: _guard, ...m }) => m) })
     }
     const user = await getSessionUser(request)
     if (!user) return json({ error: 'unauthorized' }, { status: 401 })
@@ -61,9 +68,21 @@ export const Route = defineApi('/api/channels/$id/messages', {
       const msg = await insertChannelMessage(params.id, 'agent', name, parsed.data.content, 'complete')
       const sql0 = await db()
       const nm = ((await sql0`select name from channels where id = ${params.id}`)[0] as { name: string } | undefined)?.name ?? 'channel'
-      void indexActivity({ sourceType: 'channel', sourceId: msg.id, title: `#${nm} · ${name}`, text: parsed.data.content, payload: { channelId: params.id }, href: '/channels' }).catch(() => {})
+      // `msg.content`, NOT `parsed.data.content`. `insertChannelMessage` sends an
+      // agent's post through the agent-writes door, which in strict mode returns
+      // the REDACTED body — so the row in `channel_messages` is clean and these
+      // two copies of the same text were the raw one.
+      //
+      // The index is the half that matters. Retrieval is read back INTO model
+      // contexts, so an unredacted copy there is not merely a second place the
+      // credential is stored: it is the credential re-entering a model's context
+      // by the one route guardrails.ts exists to close, arriving as ambient
+      // "activity" long after the turn that leaked it. The notification is the
+      // same text landing in a human's inbox, unredacted, beside a message that
+      // is not.
+      void indexActivity({ sourceType: 'channel', sourceId: msg.id, title: `#${nm} · ${name}`, text: msg.content, payload: { channelId: params.id }, href: '/channels' }).catch(() => {})
       // An agent @mentioning a human notifies exactly like a human would.
-      void notifyUserMentions(params.id, nm, '', describeAgent(name).label, parsed.data.content).catch(() => {})
+      void notifyUserMentions(params.id, nm, '', describeAgent(name).label, msg.content).catch(() => {})
       return json({ message: msg })
     }
 

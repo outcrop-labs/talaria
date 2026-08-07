@@ -17,19 +17,48 @@
 // The report is a doc artifact (versioned, shareable, exportable) linked to
 // the run; completion notifies the requester and indexes into the activity
 // brain so future chats/plans can retrieve it.
-import { parseAgentStream } from '@/lib/sse-parse'
+//
+// AUDIT 1.5 / 1.6 — WHAT THE HARNESS PORT CHANGED HERE. All three model calls
+// (search, plan, synthesize) went out by hand and none of them was guarded, on
+// the one path in the product whose defining failure mode is a fabricated
+// citation. They are declared in `harness/defs/research.ts` now and run through
+// `runHarness`, which owns the model, the capability floor, the parse, the
+// repair turn, the guard pass and the ledger. ONE thing stays HERE on purpose
+// and it is commented where it happens: the line-based salvage of a query list
+// (the tolerance the old extractor had, kept as a declared salvage rather than
+// a silent one).
+//
+// The `ungrounded_ref` pass used to be the second exception — a `guardSynthesis`
+// function in this file, running one rule over a hand-built tool record,
+// because the runner had no way for a harness to declare what it was grounded
+// against. `HarnessDefinition.ground` closed that, so the rule is in
+// `researchSynthesisHarness`'s own guard list and this file counts the findings
+// the run already reported. Nothing here talks to guardrails.ts any more.
 import { agentCategoryFolder, attachArtifact, createArtifact, saveArtifact } from './artifacts'
 import { setEditors } from './kb-perms'
 import { db } from './db/pg'
-import { describeAgent, proxyChat } from './gateway'
-import { buildUpstream, fetchUpstream, gatewayModels, recordGatewayUsage, resolveRoute } from './llm-gateway'
+import { describeAgent } from './gateway'
+import {
+  clampQueries,
+  queriesFromLines,
+  researchQueriesHarness,
+  researchSearchHarness,
+  researchSynthesisHarness,
+  searchTransport,
+  type ResearchDepth,
+  type SearchSource,
+} from './harness/defs/research'
+import { runHarness } from './harness/run'
+import { gatewayModels } from './llm-gateway'
 import { resolveRoleModel } from './model-roles'
 import { addNotification } from './notifications'
 import { indexActivity, indexPersonal } from './retrieval/sources'
 import { generateTitle } from './titler'
-import { estimateTokens, recordUsage } from './usage'
 
-export type ResearchMode = 'recon' | 'brief' | 'expedition'
+/** Unchanged as a public name and as a type — `ResearchDepth` is declared in
+ *  the harness definition because that module cannot import this one, and this
+ *  alias keeps every existing importer of `ResearchMode` working. */
+export type ResearchMode = ResearchDepth
 export type ResearchStatus = 'queued' | 'running' | 'done' | 'error'
 
 export interface ResearchRun {
@@ -81,13 +110,22 @@ const STALE_MINUTES = 45
 
 interface SearchHit {
   content: string
-  sources: Array<{ url: string; title: string | null; snippet: string | null }>
+  sources: SearchSource[]
 }
 
 /** The search model for a tier: its per-tier MODEL ROLE when assigned (and
  *  still routable) — Perplexity's sonar family maps one-to-one onto the modes
  *  — else the first registered sonar from the mode's preference list.
- *  Research needs a search-capable model on the gateway to exist. */
+ *  Research needs a search-capable model on the gateway to exist.
+ *
+ *  AUDIT 1.6: `resolveRoleModel` validates that the assignment still ROUTES and
+ *  nothing else, so what comes back here may have no web search at all — the
+ *  auto path's careful sonar preference is bypassed the moment an admin picks
+ *  something. The RUNTIME defense is one layer down: `researchSearchHarness`
+ *  declares `requires: ['search']` with `refuseBelow: true`, so a model
+ *  positively known not to search refuses the stage instead of hallucinating a
+ *  cited brief. This function stays permissive on purpose — unknown is not
+ *  missing, and a fresh self-host has probed nothing. */
 export async function searchModelFor(mode: ResearchMode): Promise<string | null> {
   const assigned = await resolveRoleModel(`research-${mode}`)
   if (assigned) return assigned
@@ -103,100 +141,91 @@ export async function searchModelFor(mode: ResearchMode): Promise<string | null>
 
 /** A deep-research-class search model is an agentic researcher in itself
  *  (each call runs its own multi-search sweep) — shrink OUR loop so effort
- *  doesn't multiply: fewer, bigger stages instead of many small ones. */
+ *  doesn't multiply: fewer, bigger stages instead of many small ones.
+ *
+ *  AUDIT NOTE, left as-is deliberately: this is capability reasoning done by
+ *  REGEX ON A MODEL NAME, which is the shape `harness/capability.ts` exists to
+ *  replace. It is not converted here because "runs its own multi-search sweep"
+ *  is a genuinely new capability, not one of the nine that module declares, and
+ *  inventing a capability id that only one regex writes is worse than leaving
+ *  the regex where a reader can see it. The right end state is a
+ *  `deep-research` capability that a probe or a catalog declares, at which
+ *  point this becomes a `widen` on the search harness — a capable model
+ *  earning the fewer-bigger-stages loop — rather than a name match. Until then
+ *  the regex is honest about being a heuristic. */
 const isDeepResearchModel = (model: string) => /deep-research/i.test(model)
 function adaptBudget(budget: ReturnType<typeof budgetFor>, searchModel: string) {
   if (!isDeepResearchModel(searchModel)) return budget
   return { ...budget, rounds: Math.min(budget.rounds, 2), queries: 1 }
 }
 
-/** One search query → sonar's cited answer + its source list. Metered like any
- *  gateway call. Perplexity returns `search_results` (new) / `citations` (old). */
+/** One search query → the search model's cited answer + its source list.
+ *
+ *  Signature unchanged, and so is what a THROW means: the round loop catches
+ *  per query and records "(search failed: ...)" against that angle, so one dead
+ *  query costs one angle rather than the run, and a run where every query died
+ *  ends with no citable sources — which the pipeline already treats as a hard
+ *  error.
+ *
+ *  What is new is the capability floor. The harness declares `requires:
+ *  ['search']` and refuses below it, so a model an admin assigned to a
+ *  `research-*` role that is KNOWN not to search now fails loudly here instead
+ *  of answering fluently from training data and handing the synthesis stage an
+ *  uncited brief to write up (audit 1.6). The sources still come off the
+ *  provider's own `search_results`/`citations` fields, which the transport
+ *  captures — see `searchTransport`. */
 async function searchStage(model: string, query: string, runId: string): Promise<SearchHit> {
-  const route = await resolveRoute(model)
-  if (!route) throw new Error(`search model "${model}" is not routable`)
-  const call = await buildUpstream(route, {
-    model,
-    stream: false,
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You are a research search engine. Answer the query with dense, factual, well-sourced findings. Prefer primary sources and recent data. Note dates and numbers precisely.',
-      },
-      { role: 'user', content: query },
-    ],
-  })
-  const res = await fetchUpstream(call, route)
-  if (!res.ok) throw new Error(`search stage ${res.status}: ${(await res.text()).slice(0, 300)}`)
-  const j = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>
-    usage?: { prompt_tokens?: number; completion_tokens?: number }
-    search_results?: Array<{ url?: string; title?: string; snippet?: string }>
-    citations?: string[]
-  }
-  if (j.usage) {
-    void recordGatewayUsage({
-      caller: `research:${runId}`,
-      endpoint: route.endpoint,
-      upstreamModel: route.upstreamModel,
-      promptTokens: j.usage.prompt_tokens ?? 0,
-      completionTokens: j.usage.completion_tokens ?? 0,
-      estimated: false,
-    }).catch(() => {})
-  }
-  const sources =
-    j.search_results?.filter((s) => s.url).map((s) => ({ url: s.url!, title: s.title ?? null, snippet: s.snippet ?? null })) ??
-    j.citations?.map((url) => ({ url, title: null, snippet: null })) ??
-    []
-  return { content: j.choices?.[0]?.message?.content ?? '', sources }
+  const sources: SearchSource[] = []
+  const run = await runHarness(
+    researchSearchHarness,
+    { query },
+    { caller: `research:${runId}`, model, deps: { transport: searchTransport(runId, sources) } },
+  )
+  // `researchSearchHarness` declares `onFailure: 'throw'` and `runHarness` now
+  // honors it on every path that fails to produce a value — the transport and
+  // the pre-call ones included — so this is a TYPE narrowing rather than a
+  // second copy of the policy. `HarnessResult.value` is `O | null` on every
+  // result alike, and the compiler cannot see the guarantee the runner makes.
+  if (run.value === null) throw new Error(run.error ?? `search stage produced nothing on "${model}"`)
+  return { content: run.value, sources }
 }
 
 // ── Persona stages: the agent's own brain plans and synthesizes ──────────────
+// Both pin `RunContext.model` to the requesting agent's own persona, which is
+// the feature: a marketing agent researches like a marketer. `runHarness` picks
+// the fleet transport for it, sends no tools, and guards the reply with an
+// honest `Available` for a stream that reports tool names and nothing else.
 
-/** Non-streaming completion via the agent's persona gateway (its soul, memory,
- *  and domain expertise ride along). Metered like a chat turn. */
-async function personaStage(agentModel: string, runId: string, system: string, user: string): Promise<string> {
-  const messages = [
-    { role: 'system', content: system },
-    { role: 'user', content: user },
-  ]
-  const upstream = await proxyChat({ model: agentModel, messages })
-  if (!upstream.ok || !upstream.body) throw new Error(`persona gateway error ${upstream.status}`)
-  let text = ''
-  let usage: { promptTokens: number; completionTokens: number } | null = null
-  for await (const ev of parseAgentStream(upstream.body)) {
-    if (ev.type === 'content') text += ev.text
-    else if (ev.type === 'usage') usage = ev
-  }
-  void recordUsage({
-    agentModel,
-    source: 'research',
-    refId: runId,
-    tier: null,
-    promptTokens: usage?.promptTokens ?? estimateTokens(system.length + user.length),
-    completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
-    estimated: !usage,
-  }).catch(() => {})
-  return text
-}
-
-/** Pull a JSON array of strings out of a model reply (fence/prose tolerant). */
-function parseQueryList(text: string, max: number): string[] {
-  const match = text.match(/\[[\s\S]*?\]/)
-  if (match) {
-    try {
-      const arr = JSON.parse(match[0]) as unknown[]
-      return arr.map((q) => String(q).trim()).filter(Boolean).slice(0, max)
-    } catch {
-      /* fall through to line parsing */
-    }
-  }
-  return text
-    .split('\n')
-    .map((l) => l.replace(/^[-*\d.\s"']+/, '').replace(/["']$/, '').trim())
-    .filter((l) => l.length > 8 && !l.startsWith('#'))
-    .slice(0, max)
+/** This round's search queries, or an empty list when the persona says the
+ *  question is saturated. Never throws — a failed plan is one lost round, and
+ *  the loop already treats an empty list as "stop".
+ *
+ *  THE LINE-BASED SALVAGE, which used to live inside the extractor. On a small
+ *  model a numbered list is likelier than a JSON array, and the old
+ *  `parseQueryList` quietly read one — so a model that never once produced the
+ *  declared contract was indistinguishable from a model that always did. The
+ *  tolerance is kept and the silence is not: the harness records the contract
+ *  failure on its `harness_runs` row, and the salvage runs afterwards, here,
+ *  where it is visible.
+ *
+ *  It runs ONLY on a reply the guard found nothing in. These strings are sent
+ *  onward to a third-party search model, and guardrails.ts's cardinal invariant
+ *  is that flagged content never re-enters a model's context — a rule the
+ *  runner honors for its own repair turn and which a salvage path must not
+ *  quietly route around. */
+async function planQueries(agentModel: string, runId: string, question: string, findingsSoFar: string[], max: number): Promise<string[]> {
+  const run = await runHarness(
+    researchQueriesHarness,
+    { question, max, findingsSoFar },
+    // Both persona stages of a run carry the same attribution — see the
+    // synthesis call for why `source: 'research'` exists at all. An expedition
+    // plans up to three times, so leaving this off would make the planning half
+    // of a run's cost the half nobody could find.
+    { caller: `research:${runId}`, model: agentModel, ledger: { source: 'research', refId: runId } },
+  )
+  if (run.value !== null) return clampQueries(run.value, max)
+  if (run.raw && run.findings.length === 0) return clampQueries(queriesFromLines(run.raw), max)
+  return []
 }
 
 // ── The citation registry ─────────────────────────────────────────────────────
@@ -373,6 +402,7 @@ async function runResearch(runId: string): Promise<void> {
     const registry = new SourceRegistry()
     const notes: string[] = []
     let queriesRun = 0
+    let searchFailed = false
 
     // Round loop: plan queries (persona), search each (sonar), then — in
     // expedition — let the persona name what's still missing and go again.
@@ -380,15 +410,7 @@ async function runResearch(runId: string): Promise<void> {
     for (let round = 1; round <= budget.rounds; round++) {
       if (nextQueries.length === 0) {
         await setPhase(runId, round === 1 ? 'planning search angles' : `round ${round}: chasing gaps`)
-        const planned = await personaStage(
-          agentModel,
-          runId,
-          `You are planning web research in your domain of expertise. Return ONLY a JSON array of ${budget.queries} sharp, non-overlapping search queries (strings) — no prose.`,
-          round === 1
-            ? `Research question:\n${question}`
-            : `Research question:\n${question}\n\nFindings so far:\n${notes.join('\n\n').slice(0, 24_000)}\n\nWhat is still missing, contradictory, or unverified? Give queries that close those gaps. If nothing meaningful remains, return [].`,
-        )
-        nextQueries = parseQueryList(planned, budget.queries)
+        nextQueries = await planQueries(agentModel, runId, question, round === 1 ? [] : notes, budget.queries)
         if (nextQueries.length === 0) break // the persona says we're saturated
       }
       for (const q of nextQueries) {
@@ -398,6 +420,7 @@ async function runResearch(runId: string): Promise<void> {
           const hit = await searchStage(searchModel, q, runId)
           notes.push(`### Query: ${q}\n${registry.renumber(hit)}`)
         } catch (e) {
+          searchFailed = true
           notes.push(`### Query: ${q}\n(search failed: ${(e as Error).message})`)
         }
       }
@@ -407,35 +430,65 @@ async function runResearch(runId: string): Promise<void> {
     if (registry.size === 0) throw new Error('no sources found — search returned nothing citable')
 
     // Synthesis: the persona writes the document against the global registry.
+    // Throws on an unusable reply rather than saving an empty report — the
+    // searches are already paid for and this document is the run's only
+    // deliverable, so "keep what you had" is not an option here.
+    //
+    // THE GROUNDING PASS IS INSIDE THIS CALL. `searchFailed` and the findings
+    // are on the INPUT because `researchSynthesisHarness` declares `ground`
+    // (see its comment): the search hits are this turn's tool results, so
+    // `ungrounded_ref` — the definitive research failure mode — runs on the
+    // report, from the runner, with one findings row per fabricated link. This
+    // adapter used to run that rule itself in a `guardSynthesis` function; the
+    // rule moved into the harness's declared list and the function is gone.
     await setPhase(runId, 'writing the report')
-    const sourceList = registry
-      .list()
-      .map((s) => `[${s.idx}] ${s.title ?? s.url} — ${s.url}`)
-      .join('\n')
-    const depth =
-      mode === 'recon'
-        ? 'a tight, direct answer (a few paragraphs)'
-        : mode === 'brief'
-          ? 'a structured briefing (~1 page): summary up top, then the key findings under headings'
-          : 'a thorough report: executive summary, sections per theme, contradictions and open questions called out'
-    const doc = await personaStage(
-      agentModel,
-      runId,
-      `You are writing a research document in your domain. Requirements:
-- Start with a "# " title as your very first characters. No lead-in, no code fences.
-- EVERY factual claim carries an inline citation marker like [3] referring to the numbered source list you were given. Never invent a number; never cite a source the findings don't support. Uncited claims are defects.
-- Write ${depth}.
-- Do NOT append a sources section — it is added mechanically from the registry.`,
-      `Research question:\n${question}\n\nNumbered sources:\n${sourceList}\n\nFindings (citation markers already on global numbering):\n\n${notes.join('\n\n').slice(0, 80_000)}`,
+    const synthesis = await runHarness(
+      researchSynthesisHarness,
+      { question, mode, sources: registry.list().map((s) => ({ idx: s.idx, url: s.url, title: s.title })), findings: notes, searchFailed },
+      // `source: 'research'` + the run id is what makes a run's COST answerable.
+      // The persona stages used to meter as an ownerless chat turn, so research
+      // spend was indistinguishable from every other persona call in
+      // `usage_events`. The search stages meter themselves through the gateway.
+      { caller: `research:${runId}`, model: agentModel, ledger: { source: 'research', refId: runId } },
     )
+    // A TYPE NARROWING, not a policy — `researchSynthesisHarness` declares
+    // `onFailure: 'throw'` and the runner honors it on every path that fails to
+    // produce a value. It used to be a policy, restated here by hand, because
+    // 'throw' covered a CONTRACT failure and nothing else: a persona gateway
+    // answering 502 mid-synthesis arrived as `value: null`, and the `?? ''` this
+    // replaced saved an artifact containing only the Sources list, marked the
+    // run `done`, indexed the empty report and notified the requester — with the
+    // gateway's own sentence dropped on the floor.
+    if (synthesis.value === null) throw new Error(synthesis.error ?? 'the report came back empty')
+    const doc = synthesis.value
 
     // Keep only markers that resolve; append the mechanical Sources section.
+    //
+    // `dropped` is counted rather than only stripped. Deleting an invented
+    // citation is the right thing to save, but it also made a model that
+    // fabricates half its markers look identical to one that cites perfectly —
+    // the exact model-fitness signal this run is in the best position to
+    // report, thrown away by the line that fixed the symptom.
     const known = new Set(registry.list().map((s) => s.idx))
+    const dropped = [...doc.matchAll(/\[(\d{1,2})\]/g)].filter((m) => !known.has(Number(m[1]))).length
     const cleaned = doc
       .trim()
       .replace(/^```[a-z]*\n?|\n?```$/g, '')
       .replace(/\[(\d{1,2})\]/g, (m, n) => (known.has(Number(n)) ? m : ''))
     const cited = new Set([...cleaned.matchAll(/\[(\d{1,2})\]/g)].map((m) => Number(m[1])))
+
+    // The stat, read off the run rather than off a second guard pass. Filtered
+    // to `ungrounded_ref` because `synthesis.findings` also carries the
+    // `secret_leak` / `pii_leak` hits, and this number has one meaning on the
+    // research surface: how many links this model asserted that no search
+    // result backs. `dropped` above is its deterministic sibling — invented [n]
+    // markers — and the two are counted separately on purpose.
+    //
+    // The guard ran on the RAW reply, not on `cleaned`. That is not a widening:
+    // `ungrounded_ref` looks for URLs on policed hosts and for UUIDs, and
+    // `cleaned` only strips code fences and unresolvable [n] markers, neither of
+    // which can be either.
+    const ungrounded = synthesis.findings.filter((f) => f.check === 'ungrounded_ref').length
     const sourcesMd = registry
       .list()
       .map((s) => `${s.idx}. [${s.title ?? s.url}](${s.url})${cited.has(s.idx) ? '' : ' *(consulted)*'}`)
@@ -471,7 +524,7 @@ async function runResearch(runId: string): Promise<void> {
     }
     await sql`
       update research_runs set status = 'done', phase = null, artifact_id = ${artifact.id},
-        stats = ${sql.json({ queries: queriesRun, sources: registry.size, cited: cited.size })},
+        stats = ${sql.json({ queries: queriesRun, sources: registry.size, cited: cited.size, dropped, ungrounded })},
         updated_at = now(), completed_at = now()
       where id = ${runId}
     `

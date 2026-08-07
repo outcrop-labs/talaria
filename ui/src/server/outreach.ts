@@ -12,23 +12,33 @@
 //     message_user), so everything stays attributed, board-policy-gated, and
 //     guard-visible; Talaria only delivers the nudge + signals.
 //
+// "GUARD-VISIBLE" was half true until agent-writes.ts existed, and the half that
+// was false is the half a person reads: the check-in's REPORT line came back
+// through `runHarness` and was scanned and redacted, while the DM the agent sent
+// during that same turn went straight into a human's chat and inbox. Every one
+// of those three tools now goes through `guardAgentWrite` at its write path —
+// `message_user`'s is `agentMessageUser` below.
+//
 // Everything is opt-in twice over: a master switch (off by default) AND a
 // per-agent `proactive` flag. outreach_events is the memory: it powers the
 // daily caps, the "don't repeat yourself" context, and admin visibility.
 import { db } from './db/pg'
 import { getSetting, setSetting } from './audit'
+import { guardAgentWrite } from './agent-writes'
+import { needsRedaction, redactSecrets } from './guardrails'
 import {
   createConversation,
   insertStreamingAssistant,
   nextSeq,
+  setMessageGuard,
   touchConversation,
   updateAssistant,
 } from './conversations'
 import { addNotification } from './notifications'
-import { describeAgent, proxyChat } from './gateway'
-import { parseAgentStream } from '@/lib/sse-parse'
+import { describeAgent } from './gateway'
+import { NOTHING_TO_SURFACE as NOTHING, outreachCheckInHarness } from './harness/defs/outreach'
+import { runHarness } from './harness/run'
 import { registerJob } from './scheduler'
-import { estimateTokens, recordUsage } from './usage'
 
 export interface OutreachConfig {
   /** Master switch for the periodic sweep. message_user works regardless —
@@ -118,19 +128,45 @@ export async function agentMessageUser(agentModel: string, to: string, message: 
   const label = agent.displayName || describeAgent(agentModel).label
   const convId = existing[0]?.id ?? (await createConversation(target.id, agentModel, `${label} reached out`))
 
+  // THE GUARD ON THE DM ITSELF, and the asymmetry it ends: the check-in turn's
+  // REPORT line goes through `runHarness` and is scanned and redacted, while the
+  // DM the agent actually sent during that same turn — the thing a person
+  // reads — used to be persisted and notified untouched. `mcp message_user`
+  // arrives here as a tool ARGUMENT; nothing else on this path ever looked at
+  // it. See agent-writes.ts for why a credential is redacted rather than
+  // blocked: refusing a DM silently is how a teammate never hears about the
+  // thing that needed them.
+  const guarded = await guardAgentWrite('direct-message', { agent: agentModel }, message)
+  const body = guarded.text
+
   const seq = await nextSeq(convId)
   const msgId = await insertStreamingAssistant(convId, seq)
-  await updateAssistant(msgId, { content: message, reasoning: '', tools: [], status: 'complete' })
+  await updateAssistant(msgId, { content: body, reasoning: '', tools: [], status: 'complete' })
+  // annotate/strict pin the findings onto the message as metadata the UI renders
+  // as a caveat — chat-persist.ts's exact precedent, and safe for the same
+  // reason it is there: `setMessageGuard` writes a column no transcript builder
+  // reads, so the snippet never travels back into a model's context.
+  if (guarded.findings.length && (guarded.mode === 'annotate' || guarded.mode === 'strict')) {
+    await setMessageGuard(msgId, guarded.findings).catch(() => {})
+  }
   await touchConversation(convId)
 
   await addNotification(target.id, {
     kind: 'agent-outreach',
     title: `${label} reached out`,
-    body: message.length > 140 ? `${message.slice(0, 140)}…` : message,
+    body: body.length > 140 ? `${body.slice(0, 140)}…` : body,
     href: `/comms?a=${encodeURIComponent(agentModel)}&x=${convId}`,
   }).catch(() => {})
 
-  await logEvent(agentModel, 'dm', { userId: target.id, conversationId: convId, note: message })
+  // THE EVENT NOTE IS NOT JUST AUDIT — `checkInTurn` reads recent notes back
+  // into the agent's next check-in prompt ("don't repeat yourself"), so this row
+  // is a path from a flagged DM into a model's context, which guardrails.ts
+  // forbids in every mode and not only in strict. Hence the second scrub: strict
+  // already redacted `body`, and observe/annotate deliberately did not — but
+  // what goes into the note has to be clean either way. `redactSecrets` on
+  // already-redacted text is a no-op.
+  const note = needsRedaction(guarded.findings) ? redactSecrets(body).text : body
+  await logEvent(agentModel, 'dm', { userId: target.id, conversationId: convId, note })
   return { ok: true, conversationId: convId }
 }
 
@@ -227,8 +263,6 @@ registerJob({
   },
 })
 
-const NOTHING = 'NOTHING_TO_SURFACE'
-
 /** The signals + rules for one agent's check-in, sent through its own persona
  *  gateway so any action it takes uses its normal, governed MCP tools. */
 async function checkInTurn(agent: SweepAgent): Promise<string> {
@@ -263,46 +297,26 @@ async function checkInTurn(agent: SweepAgent): Promise<string> {
     order by created_at desc limit 10
   `) as unknown as Array<{ kind: string; note: string; createdAt: string }>
 
-  const workLines = work.length
-    ? work.map((t) => `- [${t.status}] "${t.title}" (board ${t.board}, ticket ${t.id}, idle ${t.idleHours}h)`).join('\n')
-    : '(no assigned tickets)'
-  const recentLines = recent.length
-    ? recent.map((r) => `- ${r.kind}: ${r.note}`).join('\n')
-    : '(none)'
-
-  const prompt =
-    `[Automated periodic check-in — no human sent this message.]\n\n` +
-    `This is your chance to be proactive: look at your current work and surface anything a teammate genuinely needs to know. ` +
-    `Act through your talaria tools — \`comment\` on a ticket, \`post_to_channel\`, or \`message_user\` to reach someone directly. ` +
-    `Then reply with ONE short line saying what you did and why.\n\n` +
-    `Your assigned tickets:\n${workLines}\n\n` +
-    `Your recent outreach (do NOT repeat any of this):\n${recentLines}\n\n` +
-    `Rules:\n` +
-    `- At most 2 actions. Zero is the right number most of the time.\n` +
-    `- Only surface things that are real and current: work stuck or blocked with a reason a human should hear, something you noticed that needs a decision, a promise about to slip.\n` +
-    `- Never invent tickets, findings, or urgency. Never nag about the same thing twice.\n` +
-    `- If nothing genuinely warrants outreach, do nothing and reply exactly: ${NOTHING}`
-
-  const messages = [{ role: 'user', content: prompt }]
-  const upstream = await proxyChat({ model: agent.model, messages }, { waitMs: 30_000 })
-  if (!upstream.ok || !upstream.body) throw new Error(`gateway error ${upstream.status}`)
-
-  let text = ''
-  let usage: { promptTokens: number; completionTokens: number } | null = null
-  for await (const ev of parseAgentStream(upstream.body)) {
-    if (ev.type === 'content') text += ev.text
-    else if (ev.type === 'usage') usage = ev
-  }
-  void recordUsage({
-    agentModel: agent.model,
-    source: 'chat',
-    refId: null,
-    tier: null,
-    promptTokens: usage?.promptTokens ?? estimateTokens(prompt.length),
-    completionTokens: usage?.completionTokens ?? estimateTokens(text.length),
-    estimated: !usage,
-  })
-  return text.trim() || NOTHING
+  // The prompt, the rules block and the NOTHING_TO_SURFACE contract live in
+  // harness/defs/outreach.ts now; this function's job is the two signal queries
+  // above. The model is the AGENT'S OWN — there is no platform-agent slot for
+  // outreach and there should not be one, so the harness declares no chain and
+  // takes the model from here.
+  //
+  // NO TRANSPORT, and that is the whole of what changed. `personaTurnWithOwnTools`
+  // lived here to keep the agent's MCP tools live and to meter the turn; the
+  // harness declares `tools: 'own'` and `holdMs` now, and `meterPersonaTurn`
+  // writes the same ledger row the shim did (`source: 'chat'`, no refId — a
+  // check-in belongs to no conversation). Nothing is attributed here because
+  // there is nothing to attribute it to.
+  const run = await runHarness(outreachCheckInHarness, { work, recent }, { caller: `outreach:${agent.model}`, model: agent.model })
+  // A silent turn is not a failure — the harness's declared fallback IS the
+  // NOTHING token, so `text.trim() || NOTHING` is preserved without this file
+  // restating it. A null value means the turn never completed (the gateway was
+  // down, the stream died), which is what `sweepOutreach` already catches and
+  // records as `error: …` on the event row.
+  if (run.value === null) throw new Error(run.error ?? 'the check-in turn produced no reply')
+  return run.value
 }
 
 // ── admin visibility ─────────────────────────────────────────────────────────

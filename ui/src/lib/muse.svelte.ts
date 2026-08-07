@@ -1,4 +1,19 @@
 // Client for the drafting muse + model preferences.
+//
+// THE MUSE ANSWERS TWO WAYS, and this file is where that shows.
+//
+//   `streamMuse` — the six PROSE kinds. Tokens arrive as they are generated and
+//   land in the editor. Unchanged.
+//
+//   `draftCron` / `draftAgent` / `draftTicketPatch` — the three JSON kinds. They
+//   used to stream too, and this file parsed the result with three greedy
+//   `/\{[\s\S]*\}/` regexes that returned `null` on anything a model wrapped in
+//   prose (audit 1.1). The browser is the worst possible place for that parse:
+//   the tokens are already spent, so there is no repair turn; no guardrail can
+//   run on a value that never passed through the server; and a `null` is a
+//   button that silently does nothing. The parse, the schema, the identifier
+//   coercion and the ticket field allowlist all live in
+//   `server/harness/defs/muse.ts` now. What is left here is a fetch.
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 
@@ -13,7 +28,10 @@ export interface MuseRequest {
 }
 
 /** Stream a muse draft; onChunk receives text pieces as they arrive.
- *  Returns the full text. Throws with the server's message on failure. */
+ *  Returns the full text. Throws with the server's message on failure.
+ *
+ *  PROSE KINDS ONLY. The three structured kinds answer with JSON and would
+ *  arrive here as one lump; use the `draft*` helpers below. */
 export async function streamMuse(input: MuseRequest, onChunk: (piece: string) => void, signal?: AbortSignal): Promise<string> {
   const r = await fetch('/api/muse', {
     method: 'POST',
@@ -37,6 +55,26 @@ export async function streamMuse(input: MuseRequest, onChunk: (piece: string) =>
     onChunk(piece)
   }
   return full
+}
+
+/** One structured draft, already validated against its schema on the server.
+ *
+ *  THROWS on every failure, with a sentence written for the person reading it —
+ *  which is why no caller carries its own "could not turn that into a job"
+ *  string any more. There is no `null` return: the difference between "the model
+ *  produced nothing usable" and "the gateway has no model" is a real difference,
+ *  and both of them are things to say out loud rather than states to swallow. */
+async function draft<T>(input: MuseRequest, signal?: AbortSignal): Promise<T> {
+  const r = await fetch('/api/muse', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+    ...(signal ? { signal } : {}),
+  })
+  const j = (await r.json().catch(() => null)) as { value?: T; error?: string } | null
+  if (!r.ok || !j || j.value === undefined) throw new Error(j?.error ?? `muse failed (${r.status})`)
+  return j.value
 }
 
 export interface GatewayModel {
@@ -82,17 +120,19 @@ export async function savePreferredModel(model: string | null): Promise<{ error?
   return {}
 }
 
-/** Parse the muse's cron JSON (tolerates stray fences/prose around it). */
-export function parseCronDraft(text: string): { name: string; schedule: string; prompt: string } | null {
-  const m = /\{[\s\S]*\}/.exec(text)
-  if (!m) return null
-  try {
-    const j = JSON.parse(m[0]) as { name?: string; schedule?: string; prompt?: string }
-    if (!j.name || !j.schedule || !j.prompt) return null
-    return { name: String(j.name), schedule: String(j.schedule), prompt: String(j.prompt) }
-  } catch {
-    return null
-  }
+// ── The three structured drafts ──────────────────────────────────────────────
+//
+// The interfaces below MIRROR the zod schemas in `server/harness/defs/muse.ts`,
+// the same way `GatewayModel` above mirrors the gateway's own type. The server
+// is the authority: it validates, it coerces the identifiers, it drops the
+// fields outside the allowlist. Nothing on this side re-checks any of that —
+// re-checking would be a second, drifting copy of a contract, which is the
+// arrangement this whole port exists to end.
+
+export interface CronDraft {
+  name: string
+  schedule: string
+  prompt: string
 }
 
 export interface AgentDraft {
@@ -104,42 +144,9 @@ export interface AgentDraft {
   skills: Array<{ name: string; content: string }>
 }
 
-/** Parse + sanitize a drafted agent design: handles/departments are coerced
- *  into their identifier alphabets, skills into kebab names; soul required. */
-export function parseAgentDraft(text: string): AgentDraft | null {
-  const m = /\{[\s\S]*\}/.exec(text)
-  if (!m) return null
-  try {
-    const j = JSON.parse(m[0]) as Partial<AgentDraft> & { skills?: Array<{ name?: string; content?: string }> }
-    if (!j.name || !j.soul) return null
-    const ident = (v: string, allowDash: boolean) =>
-      v
-        .toLowerCase()
-        .replace(allowDash ? /[^a-z0-9-]/g : /[^a-z0-9]/g, '')
-        .replace(/^[^a-z]+/, '')
-        .slice(0, 30)
-    const handle = ident(String(j.handle ?? j.name), false)
-    const department = ident(String(j.department ?? handle), true) || handle
-    if (handle.length < 2) return null
-    return {
-      name: String(j.name).slice(0, 60),
-      handle,
-      department,
-      role: String(j.role ?? '').slice(0, 80),
-      soul: String(j.soul),
-      skills: (j.skills ?? [])
-        .filter((s) => s?.name && s?.content)
-        .slice(0, 5)
-        .map((s) => ({ name: ident(String(s.name), true).replace(/^-+|-+$/g, ''), content: String(s.content) }))
-        .filter((s) => s.name.length >= 2),
-    }
-  } catch {
-    return null
-  }
-}
-
-/** Muse ticket mode returns a JSON patch — tolerant extraction of the first
- *  {...} block (models sometimes wrap in fences despite instructions). */
+/** A previewable patch on one ticket, or `{ error }` when the instruction asked
+ *  for something outside the fields the Muse may change (an assignee, a board
+ *  move, a question). The two never arrive together. */
 export interface TicketMusePatch {
   title?: string
   description?: string
@@ -154,25 +161,11 @@ export interface TicketMusePatch {
   error?: string
 }
 
-export function parseTicketPatch(text: string): TicketMusePatch | null {
-  const m = /\{[\s\S]*\}/.exec(text)
-  if (!m) return null
-  try {
-    const j = JSON.parse(m[0]) as Record<string, unknown>
-    const out: TicketMusePatch = {}
-    if (typeof j.error === 'string') return { error: j.error }
-    if (typeof j.title === 'string') out.title = j.title
-    if (typeof j.description === 'string') out.description = j.description
-    if (typeof j.priority === 'string') out.priority = j.priority
-    if (typeof j.effort === 'string' || j.effort === null) out.effort = j.effort as string | null
-    if (typeof j.estimatedHours === 'number' || j.estimatedHours === null) out.estimatedHours = j.estimatedHours as number | null
-    if (typeof j.dueDate === 'string' || j.dueDate === null) out.dueDate = j.dueDate as string | null
-    if (typeof j.startDate === 'string' || j.startDate === null) out.startDate = j.startDate as string | null
-    if (typeof j.color === 'string' || j.color === null) out.color = j.color as string | null
-    if (Array.isArray(j.tags)) out.tags = j.tags.filter((t): t is string => typeof t === 'string')
-    if (typeof j.status === 'string') out.status = j.status
-    return Object.keys(out).length ? out : null
-  } catch {
-    return null
-  }
-}
+export const draftCron = (input: Omit<MuseRequest, 'kind'>, signal?: AbortSignal): Promise<CronDraft> =>
+  draft<CronDraft>({ ...input, kind: 'cron' }, signal)
+
+export const draftAgent = (input: Omit<MuseRequest, 'kind'>, signal?: AbortSignal): Promise<AgentDraft> =>
+  draft<AgentDraft>({ ...input, kind: 'agent' }, signal)
+
+export const draftTicketPatch = (input: Omit<MuseRequest, 'kind'>, signal?: AbortSignal): Promise<TicketMusePatch> =>
+  draft<TicketMusePatch>({ ...input, kind: 'ticket' }, signal)
