@@ -228,6 +228,115 @@ export async function syncAppMcpServers(): Promise<void> {
 
 /** Ask the upstream for its tool catalog (initialize + tools/list) and cache
  *  it. MCP streamable-HTTP: some servers answer JSON, some SSE-frame it. */
+/** ONE JSON-RPC CONVERSATION WITH A SERVER, AS THE ORG.
+ *
+ *  Factored out of `refreshMcpTools` when `callMcpTool` needed the identical
+ *  five lines of header assembly and session handling. Both callers are
+ *  PLATFORM-INITIATED — Talaria asking a server something on the org's behalf,
+ *  not an agent acting for a person — which is why the org bearer is right here
+ *  and why nothing in this helper takes a user.
+ *
+ *  A per-user server has no org identity to act as, so a platform caller must
+ *  not silently fall back to shared credentials: `callMcpTool` refuses those
+ *  outright rather than acting as nobody in particular. */
+async function orgSession(server: McpServer): Promise<{ call: (body: unknown, sessionId?: string | null) => Promise<{ json: unknown; session: string | null; status: number }> }> {
+  // OAuth servers authenticate with the org connection when one exists; the
+  // builtin toolkit authenticates with the fleet key as Talaria itself.
+  const bearer = server.oauthEnabled ? await oauthTokenFor(server.id, 'org') : null
+  const builtinHeaders: Record<string, string> = server.builtin ? { 'X-Agent-Name': 'talaria', 'X-Api-Key': process.env.TALARIA_AGENT_KEY ?? '' } : {}
+  const call = async (body: unknown, sessionId?: string | null) => {
+    const r = await fetch(server.url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        ...server.headers,
+        ...builtinHeaders,
+        ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+        ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout((server.timeoutSecs ?? 30) * 1000),
+    })
+    const session = r.headers.get('mcp-session-id')
+    const text = await r.text()
+    return { json: parseMcpResponse(text), session, status: r.status }
+  }
+  return { call }
+}
+
+/** One tool result, flattened to the two things a caller needs: the text the
+ *  model should see, and whatever structured payload the server also returned. */
+export interface McpToolResult {
+  /** Every text content block, joined. Empty when the server returned none. */
+  text: string
+  /** `structuredContent`, verbatim, when the server sent it. */
+  structured: unknown
+  isError: boolean
+}
+
+/** CALL ONE TOOL ON A REGISTERED SERVER, AS THE ORG.
+ *
+ *  This is the platform's own door to MCP, and it is deliberately NOT the
+ *  agent-facing one. Agents reach tools through `/api/mcp/gw/<server>`, which
+ *  resolves the acting agent, intersects its assignment with the owner's
+ *  allowance, and injects per-user credentials — none of which applies to a
+ *  platform stage like the research search step, where there is no agent and no
+ *  acting human, only Talaria doing a job the org configured it to do.
+ *
+ *  REFUSES PER-USER SERVERS, and that refusal is the security-relevant line in
+ *  this function. On `auth_mode: 'per-user'` the credentials belong to a HUMAN;
+ *  a platform caller has no such human, and quietly using the org headers
+ *  instead would act as a shared identity on a server explicitly configured to
+ *  never be one. Better to fail and say so. */
+export async function callMcpTool(serverName: string, tool: string, args: Record<string, unknown>): Promise<McpToolResult> {
+  const server = await getMcpServer(serverName)
+  if (!server) throw new Error(`MCP server "${serverName}" is not registered`)
+  if (!server.enabled) throw new Error(`MCP server "${serverName}" is disabled`)
+  if (server.authMode === 'per-user') {
+    throw new Error(`MCP server "${serverName}" authenticates per user, so a platform stage cannot call it — register an org-authenticated server for this`)
+  }
+  if (server.appSlug) {
+    // App servers dispatch IN PROCESS — no socket, no headers. `allowed: null`
+    // is the org's own call rather than an agent's, and the same "as Talaria"
+    // identity `refreshMcpTools` uses for the builtin toolkit.
+    const { dispatchAppMcp } = await import('./app-mcp')
+    const out = await dispatchAppMcp(server.appSlug, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } }, 'talaria', null)
+    return readToolResult(out.body, serverName, tool)
+  }
+
+  const { call } = await orgSession(server)
+  const init = await call({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'talaria', version: '1.0' } },
+  })
+  if (init.status >= 400) throw new Error(`MCP server "${serverName}" answered ${init.status}`)
+  const res = await call({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: tool, arguments: args } }, init.session)
+  if (res.status >= 400) throw new Error(`MCP tool "${serverName}.${tool}" answered ${res.status}`)
+
+  return readToolResult(res.json, serverName, tool)
+}
+
+/** The MCP `tools/call` result shape, flattened. One reader for both the socket
+ *  path and the in-process app path, so the two cannot disagree about what a
+ *  tool returned. */
+function readToolResult(raw: unknown, serverName: string, tool: string): McpToolResult {
+  const body = raw as { result?: { content?: Array<{ type?: string; text?: string }>; structuredContent?: unknown; isError?: boolean }; error?: { message?: string } }
+  if (body?.error) throw new Error(`MCP tool "${serverName}.${tool}" failed: ${body.error.message ?? 'unknown error'}`)
+  const content = body?.result?.content ?? []
+  return {
+    text: content
+      .filter((c) => c.type === 'text' && typeof c.text === 'string')
+      .map((c) => c.text!)
+      .join('\n')
+      .trim(),
+    structured: body?.result?.structuredContent ?? null,
+    isError: body?.result?.isError === true,
+  }
+}
+
 export async function refreshMcpTools(id: string): Promise<{ tools: Array<{ name: string; description?: string }> } | { error: string }> {
   const server = await getMcpServer(id)
   if (!server) return { error: 'not found' }
@@ -240,30 +349,7 @@ export async function refreshMcpTools(id: string): Promise<{ tools: Array<{ name
     return { tools }
   }
   try {
-    // OAuth servers list tools with the org connection when one exists; the
-    // builtin toolkit authenticates with the fleet key as Talaria itself.
-    const bearer = server.oauthEnabled ? await oauthTokenFor(server.id, 'org') : null
-    const builtinHeaders: Record<string, string> = server.builtin
-      ? { 'X-Agent-Name': 'talaria', 'X-Api-Key': process.env.TALARIA_AGENT_KEY ?? '' }
-      : {}
-    const call = async (body: unknown, sessionId?: string | null) => {
-      const r = await fetch(server.url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          accept: 'application/json, text/event-stream',
-          ...server.headers,
-          ...builtinHeaders,
-          ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
-          ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout((server.timeoutSecs ?? 30) * 1000),
-      })
-      const session = r.headers.get('mcp-session-id')
-      const text = await r.text()
-      return { json: parseMcpResponse(text), session, status: r.status }
-    }
+    const { call } = await orgSession(server)
     const init = await call({
       jsonrpc: '2.0',
       id: 1,

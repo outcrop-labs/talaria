@@ -196,6 +196,7 @@ export const blurbWriterHarness = defineHarness<BlurbBatch, BlurbMap>({
   evals: [
     {
       name: 'a full batch of three',
+      band: 'easy',
       input: {
         orgName: 'Outcrop Labs',
         models: [
@@ -211,6 +212,7 @@ export const blurbWriterHarness = defineHarness<BlurbBatch, BlurbMap>({
       // entirely and answers with a bare sentence, or with
       // `{"description": "..."}` — the key it was told to use is the assertion.
       name: 'a batch of one still comes back keyed by id',
+      band: 'easy',
       input: {
         orgName: 'Outcrop Labs',
         models: [{ id: 'pl-vision', name: 'Qwen: Qwen2.5 VL 7B', description: 'A vision-language model that reads images and documents.' }],
@@ -222,6 +224,7 @@ export const blurbWriterHarness = defineHarness<BlurbBatch, BlurbMap>({
       // keys the caller will never look up, and the failure is invisible without
       // this case.
       name: 'ids with punctuation survive verbatim',
+      band: 'standard',
       input: {
         orgName: 'Outcrop Labs',
         models: [
@@ -230,6 +233,117 @@ export const blurbWriterHarness = defineHarness<BlurbBatch, BlurbMap>({
         ],
       },
       check: (value) => checkBatch(['llama-3.1-8b', 'mixtral-8x7b-v0.1'], value),
+    },
+    {
+      name: 'a batch of eight — the size a real sweep hands it',
+      band: 'standard',
+      // THE SIZE IS THE TEST. Three keys is a shape a small model can hold; a
+      // real catalog sweep batches more, and the failure mode at scale is
+      // describing the first few and quietly dropping the rest — which
+      // `keyIssue` catches and a three-key fixture never provokes.
+      input: {
+        orgName: 'Outcrop Labs',
+        models: [
+          { id: 'pl-main', name: 'Qwen: Qwen3 14B', description: 'A general-purpose model with strong reasoning for its size.' },
+          { id: 'pl-fast', name: 'Meta: Llama 3.1 8B Instruct', description: 'A small, fast instruction-tuned model.' },
+          { id: 'pl-code', name: 'Qwen: Qwen2.5 Coder 32B', description: 'A code-specialized model for completion and review.' },
+          { id: 'pl-vision', name: 'Qwen: Qwen2.5 VL 7B', description: 'A vision-language model that reads images and documents.' },
+          { id: 'pl-embed', name: 'BAAI: bge-m3', description: 'A multilingual embedding model.' },
+          { id: 'pl-rerank', name: 'BAAI: bge-reranker-v2', description: 'A cross-encoder reranker.' },
+          { id: 'pl-search', name: 'Perplexity: Sonar', description: 'A model with live web search built in.' },
+          { id: 'pl-tiny', name: 'Qwen: Qwen3 1.7B', description: 'A very small model for classification and routing.' },
+        ],
+      },
+      check: (value) => checkBatch(['pl-main', 'pl-fast', 'pl-code', 'pl-vision', 'pl-embed', 'pl-rerank', 'pl-search', 'pl-tiny'], value),
+    },
+    {
+      name: 'a model with no vendor description still gets a line',
+      band: 'standard',
+      // A self-hosted model often arrives with nothing but an id and a name —
+      // an empty `description` is how "the vendor published none" reaches this
+      // harness. The blurb has to be written from the NAME, and the failure is
+      // skipping the key, which leaves that model wearing its raw id in the
+      // picker forever.
+      input: {
+        orgName: 'Outcrop Labs',
+        models: [
+          { id: 'local-mistral', name: 'Mistral 7B Instruct v0.3', description: '' },
+          { id: 'pl-main', name: 'Qwen: Qwen3 14B', description: 'A general-purpose model with strong reasoning for its size.' },
+        ],
+      },
+      check: (value) => checkBatch(['local-mistral', 'pl-main'], value),
+    },
+    {
+      name: 'two models that differ only in size get told apart',
+      band: 'standard',
+      // The picker exists to help someone choose. Two identical blurbs are
+      // formally valid and useless, and this is the one assertion that can see
+      // it.
+      input: {
+        orgName: 'Outcrop Labs',
+        models: [
+          { id: 'qwen-7b', name: 'Qwen: Qwen3 7B', description: 'A small general-purpose model.' },
+          { id: 'qwen-72b', name: 'Qwen: Qwen3 72B', description: 'A large general-purpose model.' },
+        ],
+      },
+      check: (value) => {
+        const problem = checkBatch(['qwen-7b', 'qwen-72b'], value)
+        if (problem) return problem
+        const a = (value['qwen-7b'] ?? '').trim().toLowerCase()
+        const b = (value['qwen-72b'] ?? '').trim().toLowerCase()
+        return a === b ? 'wrote the same line for both models, so the picker cannot tell them apart' : null
+      },
+    },
+    // ── hard ────────────────────────────────────────────────────────────────
+    {
+      name: 'an id that looks like a sentence is still returned verbatim',
+      band: 'hard',
+      // The tidy-up instinct that produced audit finding 1.1: a model that
+      // "helpfully" cleans an id writes keys the caller will never look up, the
+      // schema passes, and the sweep re-burns the identical batch every ten
+      // minutes forever.
+      input: {
+        orgName: 'Outcrop Labs',
+        models: [
+          { id: 'accounts/fireworks/models/llama-v3p1-8b-instruct', name: 'Fireworks: Llama 3.1 8B', description: 'A hosted Llama.' },
+          { id: 'openai/gpt-4o-mini:batch', name: 'OpenAI: GPT-4o mini (batch)', description: 'The batch endpoint.' },
+        ],
+      },
+      check: (value) => checkBatch(['accounts/fireworks/models/llama-v3p1-8b-instruct', 'openai/gpt-4o-mini:batch'], value),
+    },
+    {
+      name: 'a vendor description that is marketing copy comes back as plain language',
+      band: 'hard',
+      // The job is "keeps the model catalog HUMAN". Echoing the vendor's
+      // superlatives back is the easy answer and defeats the point of the
+      // harness.
+      input: {
+        orgName: 'Outcrop Labs',
+        models: [
+          {
+            id: 'pl-hype',
+            name: 'Acme: Nova Ultra',
+            description: 'The world’s most advanced frontier model, delivering unparalleled, best-in-class, revolutionary intelligence for every enterprise workload.',
+          },
+        ],
+      },
+      check: (value) => {
+        const problem = checkBatch(['pl-hype'], value)
+        if (problem) return problem
+        const hype = ['unparalleled', 'best-in-class', 'revolutionary', "world's most", 'world’s most'].filter((w) => (value['pl-hype'] ?? '').toLowerCase().includes(w))
+        return hype.length ? `echoed the vendor's marketing copy back (${hype.join(', ')}) instead of describing the model plainly` : null
+      },
+    },
+    {
+      name: 'a description mentioning another id does not become a key',
+      band: 'hard',
+      // A stray id in prose is exactly what a loose extractor picks up as a key.
+      // `keyIssue` is the defence; this is the case that exercises it.
+      input: {
+        orgName: 'Outcrop Labs',
+        models: [{ id: 'pl-router', name: 'Acme: Router', description: 'Routes between pl-main and pl-fast depending on load.' }],
+      },
+      check: (value) => checkBatch(['pl-router'], value),
     },
   ],
 })

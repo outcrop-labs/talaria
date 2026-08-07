@@ -642,3 +642,22 @@ export const defaultTransport: Transport = async (req) => (await pickTransport(r
  *  throw instead would score as `errored` — which by the probe suite's own rule
  *  2 means "the deployment failed", and a persona is not a broken deployment. */
 export const offersToolDefinitions = async (model: string): Promise<boolean> => (await pickTransport(model)) === gatewayTransport
+
+/** CAN this model run a turn with ITS OWN tool loop — asked BEFORE a call is
+ *  made, and, like `offersToolDefinitions`, derived from `pickTransport` rather
+ *  than restated, so it can never disagree with the transport that would
+ *  actually refuse.
+ *
+ *  IT IS THE EXACT COMPLEMENT of the question above, and the pair is the whole
+ *  transport rule read from both ends: a persona has a tool loop and cannot be
+ *  handed tool definitions; the gateway can be handed definitions and has no
+ *  loop. Neither transport does both.
+ *
+ *  THE FITNESS SWEEP ASKS THIS, and until it did, three harnesses whose whole
+ *  feature is the tool loop (`work-session`, `outreach:check-in`,
+ *  `briefer:chat`) were replayed against every ORG GATEWAY candidate, refused by
+ *  `gatewayToolsRefusal` before a single token was spent, and recorded as 0%
+ *  first-pass. A model that was never called scoring zero is the same class of
+ *  confidently-wrong number the probe suite's `skipped` outcome exists to
+ *  prevent — see `evals.ts` `harnessSkipReason`. */
+export const runsOwnToolLoop = async (model: string): Promise<boolean> => (await pickTransport(model)) === fleetTransport

@@ -45,10 +45,12 @@ import {
   researchSearchHarness,
   researchSynthesisHarness,
   searchTransport,
+  toolSearchTransport,
   type ResearchDepth,
   type SearchSource,
 } from './harness/defs/research'
-import { runHarness } from './harness/run'
+import { capabilityKeysFor, runHarness } from './harness/run'
+import { reachFor, type Reach } from './capability-reach'
 import { gatewayModels } from './llm-gateway'
 import { resolveRoleModel } from './model-roles'
 import { addNotification } from './notifications'
@@ -167,19 +169,59 @@ function adaptBudget(budget: ReturnType<typeof budgetFor>, searchModel: string) 
  *  ends with no citable sources — which the pipeline already treats as a hard
  *  error.
  *
- *  What is new is the capability floor. The harness declares `requires:
+ *  The capability floor is what keeps it honest. The harness declares `requires:
  *  ['search']` and refuses below it, so a model an admin assigned to a
- *  `research-*` role that is KNOWN not to search now fails loudly here instead
- *  of answering fluently from training data and handing the synthesis stage an
- *  uncited brief to write up (audit 1.6). The sources still come off the
- *  provider's own `search_results`/`citations` fields, which the transport
- *  captures — see `searchTransport`. */
-async function searchStage(model: string, query: string, runId: string): Promise<SearchHit> {
+ *  `research-*` role that CANNOT REACH search fails loudly here instead of
+ *  answering fluently from training data and handing the synthesis stage an
+ *  uncited brief to write up (audit 1.6).
+ *
+ *  TWO WAYS TO REACH IT, and this stage picks between them:
+ *
+ *    natively   the model browses. Sources come off the provider's own
+ *               `search_results`/`citations` fields — `searchTransport`.
+ *    by tool    the model does not browse, but this org has registered a
+ *               web-search MCP server and the model calls tools. Sources come
+ *               off the tool's payload — `toolSearchTransport`.
+ *
+ *  Native wins when both are available: it is one round trip rather than three,
+ *  the provider has already done the ranking, and it is what an admin who
+ *  assigned a sonar model asked for. The stage's OUTPUT is identical either way
+ *  — prose findings plus a source list — which is what makes the tool path a
+ *  real alternative rather than a downgrade, and why nothing downstream branches
+ *  on which one ran. */
+/** WHICH SEARCH PATH THIS RUN TAKES, asked ONCE per run.
+ *
+ *  Asked from `capability-reach.ts` — the same module the floor asks — so the
+ *  stage and the refusal that guards it can never disagree about whether search
+ *  is reachable. Two spellings of that question is how a stage comes to run a
+ *  transport the floor was about to refuse.
+ *
+ *  ONCE PER RUN, not once per query: the answer is a property of the model and
+ *  the org's registry, neither of which changes inside a run, and an expedition
+ *  issues up to twelve queries. A registry read per query would be eleven reads
+ *  for one answer.
+ *
+ *  A FAILURE HERE CHOOSES THE NATIVE PATH, which is the safe default in the
+ *  precise sense that matters: it is the path the floor understands. If search
+ *  is genuinely unreachable, the native transport runs, the floor refuses it,
+ *  and the run reports the real problem — rather than this function inventing a
+ *  tool path out of a failed lookup. */
+async function searchPathFor(model: string): Promise<{ server: string; tool: string } | null> {
+  const keys = await capabilityKeysFor(model).catch((): string[] => [])
+  const reach = await reachFor(keys, ['search']).catch((): Record<string, Reach> => ({}))
+  return reach['search']?.via === 'tool' ? reach['search'].supplier : null
+}
+
+async function searchStage(model: string, query: string, runId: string, viaTool: { server: string; tool: string } | null): Promise<SearchHit> {
   const sources: SearchSource[] = []
   const run = await runHarness(
     researchSearchHarness,
     { query },
-    { caller: `research:${runId}`, model, deps: { transport: searchTransport(runId, sources) } },
+    {
+      caller: `research:${runId}`,
+      model,
+      deps: { transport: viaTool ? toolSearchTransport(runId, sources, viaTool) : searchTransport(runId, sources) },
+    },
   )
   // `researchSearchHarness` declares `onFailure: 'throw'` and `runHarness` now
   // honors it on every path that fails to produce a value — the transport and
@@ -398,6 +440,8 @@ async function runResearch(runId: string): Promise<void> {
     const { question, mode, agentModel, ownerUserId, requestedBy } = got.run
     const searchModel = (await searchModelFor(mode))!
     const budget = adaptBudget(budgetFor(mode), searchModel)
+    // Which search path this run takes — resolved once, before the first query.
+    const searchTool = await searchPathFor(searchModel)
     const agentLabel = describeAgent(agentModel).label
     const registry = new SourceRegistry()
     const notes: string[] = []
@@ -417,7 +461,7 @@ async function runResearch(runId: string): Promise<void> {
         queriesRun++
         await setPhase(runId, `searching (${queriesRun}): ${q.slice(0, 80)}`)
         try {
-          const hit = await searchStage(searchModel, q, runId)
+          const hit = await searchStage(searchModel, q, runId, searchTool)
           notes.push(`### Query: ${q}\n${registry.renumber(hit)}`)
         } catch (e) {
           searchFailed = true

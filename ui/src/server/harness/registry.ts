@@ -63,8 +63,9 @@
 // registered none of them, because `registry.ts` was read-only to every agent
 // that wrote one. Registering is the last step of a port, not a follow-up.
 import type { Capability } from './capability'
-import type { HarnessDefinition, RoleFloor } from './define'
+import type { EvalBand, HarnessDefinition, RoleFloor } from './define'
 import type { ModelSpec } from './model'
+import type { ToolPolicy } from './transport'
 import type { PlatformAgentId } from '../platform-agents'
 
 import { blurbWriterHarness } from './defs/blurb-writer'
@@ -82,6 +83,7 @@ import { researchQueriesHarness, researchSearchHarness, researchSynthesisHarness
 import { summarizerHarness } from './defs/summarizer'
 import { titlerHarness } from './defs/titler'
 import { workSessionHarness } from './defs/work-session'
+import { workbenchHeavyHarness, workbenchLightHarness, workbenchStandardHarness } from './defs/workbench'
 
 export type HarnessSource = 'builtin' | `app:${string}` | 'custom'
 
@@ -104,11 +106,22 @@ export interface RegisteredHarness {
   floor: RoleFloor
   model: ModelSpec
   outputKind: 'text' | 'json'
+  /** `HarnessDefinition.tools`, defaulted the way `runHarness` defaults it. Read
+   *  by the fitness sweep, which has to know BEFORE it calls whether a candidate
+   *  can serve this harness at all — a gateway model has no tool loop, and
+   *  replaying a `tools: 'own'` harness against one buys a refusal, not a
+   *  measurement. See `runsOwnToolLoop` in transport.ts. */
+  tools: ToolPolicy
   widen: { requires: Capability[]; note: string } | null
   guard: { rules?: string[]; redact?: boolean } | null
   temperature: number | null
   /** Fixture names only — the inputs are typed and stay behind `use`. */
   evalNames: string[]
+  /** Each fixture's difficulty band, by name. Read by the fitness sweep when it
+   *  records a fixture it did not run: a skipped case still belongs to a band,
+   *  and the alternative was defaulting every skip to 'standard' and quietly
+   *  mis-reporting which half of a suite went unmeasured. */
+  bandOf: Record<string, EvalBand>
   /** Apply `fn` to the definition with its input and output types intact.
    *
    *      harness.use((def) => runHarness(def, def.evals![0]!.input, ctx))
@@ -127,10 +140,12 @@ function register<I, O>(def: HarnessDefinition<I, O>, source: HarnessSource): Re
     floor: def.floor,
     model: def.model,
     outputKind: def.output.kind,
+    tools: def.tools ?? 'none',
     widen: def.widen ?? null,
     guard: def.guard ?? null,
     temperature: def.temperature ?? null,
     evalNames: (def.evals ?? []).map((e) => e.name),
+    bandOf: Object.fromEntries((def.evals ?? []).map((e) => [e.name, e.band ?? 'standard'])),
     use: (fn) => fn(def),
   }
 }
@@ -164,6 +179,11 @@ const BUILTINS: RegisteredHarness[] = [
   // The agent assigned to the ticket, the channel or the plan — including a
   // TIER of it, which the Plan modal lets a user pick per draft.
   register(workSessionHarness, 'builtin'),
+  // The three coding harnesses, one per Workbench effort slot — the columns
+  // that used to read "No harness in this install is bound to this".
+  register(workbenchLightHarness, 'builtin'),
+  register(workbenchStandardHarness, 'builtin'),
+  register(workbenchHeavyHarness, 'builtin'),
   register(channelPlanHarness, 'builtin'),
   register(planDocHarness, 'builtin'),
   register(outreachCheckInHarness, 'builtin'),

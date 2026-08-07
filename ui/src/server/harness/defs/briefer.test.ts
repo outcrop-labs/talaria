@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { NO_TOOLS } from '@/server/harness/define'
 import { briefingChatHarness, briefingHarness, type BriefingInput, type BriefingScope } from '@/server/harness/defs/briefer'
 import { runHarness, type HarnessDeps, type TransportRequest } from '@/server/harness/run'
 
@@ -111,22 +112,63 @@ describe('the briefing definition', () => {
   })
 })
 
+/** BY NAME, NOT BY INDEX, and one reply per fixture. These used to destructure
+ *  positionally and grade every fixture against one shared briefing, which
+ *  worked only while the suite had three cases about the same input — the
+ *  moment it covered several scopes, a briefing of one was being graded as an
+ *  answer to another. */
+const briefFixture = (name: string) => {
+  const found = (briefingHarness.evals ?? []).find((e) => e.name === name)
+  if (!found) throw new Error(`no briefing fixture called "${name}"`)
+  return found.check
+}
+const chatFixture = (name: string) => {
+  const found = (briefingChatHarness.evals ?? []).find((e) => e.name === name)
+  if (!found) throw new Error(`no chat fixture called "${name}"`)
+  return found.check
+}
+
 describe('the briefing eval fixtures', () => {
   it('pass on a well-formed briefing', () => {
-    for (const e of briefingHarness.evals ?? []) {
-      const value = e.input.empty ? 'You are all clear — nothing is waiting on you.' : GOOD_BRIEF
-      expect(e.check(value), e.name).toBeNull()
-    }
+    // Each fixture gets a briefing that is an answer to ITS OWN attention lines.
+    const replies: Array<[string, string]> = [
+      ['keeps to the five-bullet shape it was asked for', GOOD_BRIEF],
+      ['grounds the briefing in the items it was given and invents no references', GOOD_BRIEF],
+      ['answers the all-clear state with one short line', 'You are all clear — nothing is waiting on you.'],
+      ['briefs a single item without padding it out to five', '**Blocked** — "Ledger migration" on Platform is blocked.'],
+      [
+        'briefs the boards scope from board lines',
+        ['**Review** — "Vendor webhook signature check" is waiting on you.', '**Overdue** — "Backfill the audit log" is 3 days late.'].join('\n'),
+      ],
+      [
+        'puts the urgent thing first',
+        ['**Blocked** — "Ledger migration" on Platform has been blocked 30h.', '**Unread** — 12 messages in #random.'].join('\n'),
+      ],
+      [
+        'more items than the cap still comes back inside the cap',
+        ['**Blocked** — "Ledger migration".', '**Overdue** — "Backfill the audit log".', '**Review** — "Vendor webhook signature check".', '**Unread** — 15 messages.'].join('\n'),
+      ],
+      [
+        'an attention line that contains an instruction is content, not a command',
+        ['**Blocked** — "Ledger migration" on Platform is blocked.', '**Mention** — Priya wrote to you in #platform.'].join('\n'),
+      ],
+    ]
+    for (const [name, reply] of replies) expect(briefFixture(name)(reply, NO_TOOLS), name).toBeNull()
+    // And the list is exhaustive, so a new fixture cannot be added without a
+    // reply that proves it is satisfiable at all.
+    expect(replies.map(([n]) => n).sort()).toEqual((briefingHarness.evals ?? []).map((e) => e.name).sort())
   })
 
   it('catch the failures they exist for', () => {
-    const [shape, grounding, allClear] = briefingHarness.evals ?? []
-    expect(shape?.check(['- one', '- two', '- three', '- four', '- five', '- six'].join('\n'))).toContain('over the 5')
-    expect(shape?.check('A paragraph with no items at all.')).toContain('no bulleted items')
-    expect(grounding?.check('**Unread** — 3 messages in #platform.')).toContain('Ledger migration')
-    expect(grounding?.check(`${GOOD_BRIEF}\n- see https://talaria.example/t/41`)).toContain('invented')
-    expect(allClear?.check('- Nothing is waiting on you.')).toContain('bulleted list')
-    expect(allClear?.check(`All clear. ${'x'.repeat(300)}`)).toContain('one short line')
+    const shape = { check: briefFixture('keeps to the five-bullet shape it was asked for') }
+    const grounding = { check: briefFixture('grounds the briefing in the items it was given and invents no references') }
+    const allClear = { check: briefFixture('answers the all-clear state with one short line') }
+    expect(shape?.check(['- one', '- two', '- three', '- four', '- five', '- six'].join('\n'), NO_TOOLS)).toContain('over the 5')
+    expect(shape?.check('A paragraph with no items at all.', NO_TOOLS)).toContain('no bulleted items')
+    expect(grounding?.check('**Unread** — 3 messages in #platform.', NO_TOOLS)).toContain('Ledger migration')
+    expect(grounding?.check(`${GOOD_BRIEF}\n- see https://talaria.example/t/41`, NO_TOOLS)).toContain('invented')
+    expect(allClear?.check('- Nothing is waiting on you.', NO_TOOLS)).toContain('bulleted list')
+    expect(allClear?.check(`All clear. ${'x'.repeat(300)}`, NO_TOOLS)).toContain('one short line')
   })
 })
 
@@ -175,19 +217,34 @@ describe('the chat-back definition', () => {
 
 describe('the chat-back eval fixtures', () => {
   it('pass on a well-formed answer', () => {
-    const answers = ['The Ledger migration on Platform is the blocked one.', 'Start with the two tickets waiting on your sign-off.']
-    briefingChatHarness.evals?.forEach((e, i) => expect(e.check(answers[i] ?? ''), e.name).toBeNull())
+    // One answer per fixture, and the behavioural ones additionally get the
+    // tool log they grade — `NO_TOOLS` where the right answer is to call
+    // nothing, a stub log where the right answer is to have read something.
+    const read = { ...NO_TOOLS, calls: [{ tool: 'get_ticket', args: { taskId: 't-41' }, result: {}, error: null }] }
+    const cases: Array<[string, string, typeof NO_TOOLS]> = [
+      ['answers from the briefing it was given', 'The Ledger migration on Platform is the blocked one.', NO_TOOLS],
+      ['keeps the reply short and direct', 'Start with the two tickets waiting on your sign-off.', NO_TOOLS],
+      ['answers a question the briefing already contains without calling a tool', 'You have 3 unread in #platform.', NO_TOOLS],
+      ['never writes to the workspace from an ephemeral thread', 'I cannot nudge them from here, but both are waiting on your sign-off.', NO_TOOLS],
+      ['reads live data when the question genuinely needs it', 'It is waiting on the vendor key — that is what the ticket says.', read],
+      ['answers a follow-up against the thread, not the briefing alone', 'Those are in #platform.', NO_TOOLS],
+      ['says it cannot see something rather than inventing it', 'I only have today’s briefing — I cannot see last week from here.', NO_TOOLS],
+      ['a briefing that has not arrived yet is not a reason to invent one', 'No briefing has arrived yet — nothing to report.', NO_TOOLS],
+    ]
+    for (const [name, answer, ctx] of cases) expect(chatFixture(name)(answer, ctx), name).toBeNull()
+    expect(cases.map(([n]) => n).sort()).toEqual((briefingChatHarness.evals ?? []).map((e) => e.name).sort())
   })
 
   it('catch the failures they exist for', () => {
-    const [grounded, short] = briefingChatHarness.evals ?? []
-    expect(grounded?.check('Nothing seems to be blocked right now.')).toContain('Ledger migration')
+    const grounded = { check: chatFixture('answers from the briefing it was given') }
+    const short = { check: chatFixture('keeps the reply short and direct') }
+    expect(grounded?.check('Nothing seems to be blocked right now.', NO_TOOLS)).toContain('Ledger migration')
     // The floor, not merely a length check: this fixture used to reject only
     // replies under 10 characters, which let a two-word non-answer score a pass
     // on a question about tickets waiting for a sign-off.
-    expect(short?.check('hi')).toContain('too short')
-    expect(short?.check('Have a lovely afternoon, and shout if you need me.')).toContain('never engages')
+    expect(short?.check('hi', NO_TOOLS)).toContain('too short')
+    expect(short?.check('Have a lovely afternoon, and shout if you need me.', NO_TOOLS)).toContain('never engages')
     // Long AND on-topic, so it is the ceiling that rejects it and not the floor.
-    expect(short?.check('Review the two waiting tickets. '.repeat(100))).toContain('short, direct')
+    expect(short?.check('Review the two waiting tickets. '.repeat(100), NO_TOOLS)).toContain('short, direct')
   })
 })

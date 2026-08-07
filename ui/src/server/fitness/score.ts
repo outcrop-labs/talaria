@@ -64,6 +64,7 @@ import { resolveHarnessModelWith, type ModelSpec } from '../harness/model'
 import { MODEL_ROLES, type ModelRole } from '../model-roles'
 import { PLATFORM_AGENTS, type PlatformAgentId } from '../platform-agents'
 import type { Capability, CapabilityFact } from '../harness/capability'
+import type { Reach } from '../capability-reach'
 import type { EvalCaseScore, EvalSweep, HarnessScore } from './evals'
 
 // ── Slots ────────────────────────────────────────────────────────────────────
@@ -272,6 +273,18 @@ export type ReasonKind =
   | 'no-fixtures'
   /** Bound and fixtured, but this sweep did not run it (`only:`, or stopped). */
   | 'not-swept'
+  /** THE SWEEP DECLINED TO RUN IT AGAINST THIS CANDIDATE, because the harness
+   *  declares a request the candidate's transport is documented to refuse — a
+   *  tool-loop harness against an org-gateway model. Distinct from `not-swept`
+   *  ("nobody has run this yet", fixable by pressing Test) because pressing Test
+   *  again changes nothing: what has to change is the deployment. Caps at
+   *  `untested`, exactly like the other two, because a skip is emphatically not
+   *  a pass. See `harnessSkipReason` in evals.ts. */
+  | 'not-runnable'
+  /** A required capability the MODEL lacks and a registered TOOL supplies. Band
+   *  `ready` — it is a fact worth stating, never a demerit. See
+   *  `capability-reach.ts`. */
+  | 'supplied-capability'
   /** Nothing answered — a refused floor or a dead gateway, not a bad model. */
   | 'no-answer'
   /** No harness reaches this slot at all. */
@@ -289,6 +302,14 @@ export interface FitnessReason {
    *  documented to write it for the admin reading this drill-down. Null when
    *  what failed was not a fixture assertion. */
   assertion: string | null
+  /** THE CAPABILITY THIS REASON IS ABOUT, for the two kinds that have one
+   *  (`missing-capability`, `unmeasured-capability`); null for every other kind.
+   *
+   *  Carried so the slot rollup can tell "the slot and one of its harnesses are
+   *  reporting the same missing capability" from "they are reporting two
+   *  different ones" WITHOUT reading `detail`, which is prose written for an
+   *  admin and must stay free to be rewritten. */
+  capability: Capability | null
   /** The band this reason forces. A reason is never decoration. */
   band: FitnessBand
   detail: string
@@ -361,6 +382,20 @@ export interface FitnessInput {
    *  probed `endpoint:model` key. Empty is the normal state of a fresh
    *  self-host and produces `unmeasured-capability`, never `unfit`. */
   capabilities: Partial<Record<Capability, CapabilityFact>>
+  /** WHAT THE DEPLOYMENT CAN REACH, from `capability-reach.ts` — natively, or
+   *  through a tool this install has registered.
+   *
+   *  IT OUTRANKS `capabilities` FOR THE VERDICT, and that is the whole point of
+   *  it. `capabilities` answers "what did we measure about the model", which is
+   *  the right question for the probe panel and the wrong one for a slot: a
+   *  model recorded `search: false` that calls a registered web-search tool can
+   *  hold the Research slot, and reporting it Not-a-fit was a true statement
+   *  about the weights and a false one about the thing an admin is choosing.
+   *
+   *  Absent (the pre-reach shape, and every caller that has no registry to ask)
+   *  means every verdict falls back to the raw capability fact, which is exactly
+   *  what it did before. */
+  reach?: Record<string, Reach>
   /** Production findings/run per HARNESS, from observed.ts. Absent entries are
    *  compared against zero. */
   guardBaseline?: Record<string, number>
@@ -389,10 +424,11 @@ function harnessVerdict(args: {
   cases: EvalCaseScore[]
   floor: number
   capabilities: Partial<Record<Capability, CapabilityFact>>
+  reach: Record<string, Reach>
   guarded: boolean
   baseline: number | null
 }): HarnessVerdict {
-  const { harness, score, cases, floor, capabilities, guarded, baseline } = args
+  const { harness, score, cases, floor, capabilities, reach, guarded, baseline } = args
   const reasons: FitnessReason[] = []
   const base = {
     harness: harness.id,
@@ -409,34 +445,77 @@ function harnessVerdict(args: {
   // A capability recorded FALSE is unfit whatever the fixtures did — and it can
   // be the reason the fixtures look fine, since `runHarness` refuses below a
   // floor with `refuseBelow` rather than producing a bad answer.
-  const missing = harness.requires.filter((cap) => capabilities[cap]?.value === false)
+  //
+  // UNLESS THE DEPLOYMENT REACHES IT ANYWAY, which is the correction this whole
+  // pass is about. `search: false` on a model that calls a registered web-search
+  // tool is a true fact about the weights and the wrong basis for a verdict
+  // about a SLOT: the thing an admin assigns is a model running inside Talaria,
+  // with the tools this org registered. So a reached capability is reported as
+  // reached — with the supplier named, because "it works, through this tool" is
+  // a materially different thing to know than "it works" — and only a capability
+  // NOTHING reaches is unfit.
+  const missing = harness.requires.filter((cap) => capabilities[cap]?.value === false && reach[cap]?.reached !== true)
   for (const cap of missing) {
     reasons.push({
       kind: 'missing-capability',
       harness: harness.id,
+      capability: cap,
       assertion: null,
       band: 'unfit',
-      detail: `${harness.label} needs '${cap}' and this model is recorded as not supporting it${capabilities[cap]?.detail ? ` (${capabilities[cap]?.detail})` : ''}.`,
+      detail: `${harness.label} needs '${cap}' and this deployment cannot reach it${reach[cap]?.detail ? ` — ${reach[cap]?.detail}` : capabilities[cap]?.detail ? ` (the model is recorded as not supporting it: ${capabilities[cap]?.detail})` : ''}.`,
     })
+  }
+
+  // SUPPLIED, AND SAID SO. Not a demerit and not silence: an admin reading a
+  // green Research cell deserves to know the model is not doing the searching,
+  // because if that server is ever removed the cell changes and this is the
+  // sentence that explains why.
+  for (const cap of harness.requires) {
+    const r = reach[cap]
+    if (r?.reached && r.via === 'tool' && r.supplier) {
+      reasons.push({
+        kind: 'supplied-capability',
+        harness: harness.id,
+        capability: cap,
+        assertion: null,
+        band: 'ready',
+        detail: `${harness.label} needs '${cap}', which this model does not do itself — it is supplied by the '${r.supplier.server}.${r.supplier.tool}' tool. Remove that server and this slot stops working.`,
+      })
+    }
   }
 
   if (!score || score.cases === 0) {
     reasons.push(
-      harness.evalNames.length === 0
+      // A SKIP IS ITS OWN ANSWER and it is checked first, because the other two
+      // sentences are both wrong here: this harness DOES declare fixtures, and
+      // the sweep did not merely fail to reach them — it reached them and
+      // declined, for a reason that pressing Test again will not change.
+      score?.skipReason
         ? {
-            kind: 'no-fixtures',
+            kind: 'not-runnable',
             harness: harness.id,
+            capability: null,
             assertion: null,
             band: 'untested',
-            detail: `${harness.label} declares no eval fixtures, so tier 2 cannot say anything about it — not passing, not failing.`,
+            detail: score.skipReason,
           }
-        : {
-            kind: 'not-swept',
-            harness: harness.id,
-            assertion: null,
-            band: 'untested',
-            detail: `${harness.label} has ${harness.evalNames.length} fixture(s) that this sweep did not run.`,
-          },
+        : harness.evalNames.length === 0
+          ? {
+              kind: 'no-fixtures',
+              harness: harness.id,
+              capability: null,
+              assertion: null,
+              band: 'untested',
+              detail: `${harness.label} declares no eval fixtures, so tier 2 cannot say anything about it — not passing, not failing.`,
+            }
+          : {
+              kind: 'not-swept',
+              harness: harness.id,
+              capability: null,
+              assertion: null,
+              band: 'untested',
+              detail: `${harness.label} has ${harness.evalNames.length} fixture(s) that this sweep did not run.`,
+            },
     )
     return { ...base, band: missing.length ? 'unfit' : 'untested', reasons }
   }
@@ -445,16 +524,28 @@ function harnessVerdict(args: {
   // chain that routed nothing, or a gateway that died mid-sweep — and calling
   // any of those 'unfit' would blame a candidate for the deployment. The
   // runner's own sentence is carried through so the drill-down can say which.
+  //
+  // UNLESS A CAPABILITY ABOVE ALREADY SAID IT, in which case this reason is the
+  // SAME FACT a second time and strictly the worse telling of it. When the floor
+  // refuses a model for a missing capability, `missing-capability` names the
+  // capability, the evidence and the admin's next move in one line, while this
+  // one repeats the runner's whole refusal sentence — including the harness
+  // author's paragraph about why the job needs it — once per bound slot. Three
+  // research slots, two harnesses each, printed that paragraph six times and
+  // buried every other reason on the page. The band is identical either way, so
+  // dropping it costs no verdict and no evidence.
   if (score.answeredRate === 0) {
+    if (missing.length) return { ...base, band: 'unfit', reasons }
     const why = cases.find((c) => c.error)?.error ?? null
     reasons.push({
       kind: 'no-answer',
       harness: harness.id,
+      capability: null,
       assertion: why,
       band: 'untested',
       detail: `${harness.label} produced no reply on any of its ${score.cases} fixture(s)${why ? `: ${why}` : ''}. That is the run, not the model — unless a capability above says otherwise.`,
     })
-    return { ...base, band: missing.length ? 'unfit' : 'untested', reasons }
+    return { ...base, band: 'untested', reasons }
   }
 
   const contractFailure = cases.find((c) => !c.contractHeld && c.error)?.error ?? null
@@ -468,6 +559,7 @@ function harnessVerdict(args: {
     reasons.push({
       kind: 'contract',
       harness: harness.id,
+      capability: null,
       assertion: contractFailure,
       band: 'unfit',
       detail: `${harness.label} held its output contract on ${pct(score.contractRate)} of ${score.cases} fixture(s)${score.repairable ? ` (${pct(score.repairRate)} after a repair turn)` : ''}, below the ${pct(CONTRACT_UNFIT)} floor.`,
@@ -486,6 +578,7 @@ function harnessVerdict(args: {
     reasons.push({
       kind: 'safety',
       harness: harness.id,
+      capability: null,
       assertion: found ? `fixture '${found.case}' produced ${found.findings} guard finding(s)` : null,
       band: 'unfit',
       detail: `${harness.label} produced ${per(score.guardRate)} guard finding(s) per run against a production baseline of ${per(bar)}${baseline === null ? ' (nothing filed for this harness yet, so the baseline is zero)' : ''}.`,
@@ -497,6 +590,7 @@ function harnessVerdict(args: {
     reasons.push({
       kind: 'unmeasured-capability',
       harness: harness.id,
+      capability: cap,
       assertion: null,
       band: 'workable',
       detail: `${harness.label} leans on '${cap}' and nothing has measured it on this model. Run the probes to reach Ready.`,
@@ -507,6 +601,7 @@ function harnessVerdict(args: {
     reasons.push({
       kind: 'guard-off',
       harness: harness.id,
+      capability: null,
       assertion: null,
       band: 'workable',
       detail: 'Guardrails were off for this sweep, so a guard rate of zero says nothing. Turn them on and re-run to reach Ready.',
@@ -522,6 +617,7 @@ function harnessVerdict(args: {
     reasons.push({
       kind: 'repair-carried',
       harness: harness.id,
+      capability: null,
       assertion: null,
       band: 'workable',
       detail: `${harness.label} holds its contract ${pct(score.contractRate)} of the time first try and ${pct(score.repairRate)} after one repair — usable, but it is the repair turn carrying it.`,
@@ -530,6 +626,7 @@ function harnessVerdict(args: {
     reasons.push({
       kind: 'contract',
       harness: harness.id,
+      capability: null,
       assertion: contractFailure,
       band: 'workable',
       detail: `${harness.label} held its output contract on ${pct(score.contractRate)} of ${score.cases} fixture(s); Ready needs ${pct(CONTRACT_READY)}.`,
@@ -541,6 +638,7 @@ function harnessVerdict(args: {
     reasons.push({
       kind: 'task',
       harness: harness.id,
+      capability: null,
       assertion: null,
       band: 'workable',
       detail: `No fixture of ${harness.label} produced a value its check could grade, so there is no task score to compare against the ${pct(floor)} floor.`,
@@ -549,6 +647,7 @@ function harnessVerdict(args: {
     reasons.push({
       kind: 'task',
       harness: harness.id,
+      capability: null,
       assertion: failed?.taskError ?? null,
       band: 'unfit',
       detail: `${harness.label} passed ${pct(score.taskScore)} of its fixture checks, more than 10% below the ${pct(floor)} floor for this slot.`,
@@ -557,6 +656,7 @@ function harnessVerdict(args: {
     reasons.push({
       kind: 'task',
       harness: harness.id,
+      capability: null,
       assertion: failed?.taskError ?? null,
       band: 'workable',
       detail: `${harness.label} passed ${pct(score.taskScore)} of its fixture checks, within 10% of the ${pct(floor)} floor but not at it.`,
@@ -592,6 +692,7 @@ function weighted(cases: EvalCaseScore[], harnesses: number, of: (c: EvalCaseSco
  *  without a gateway, a database or a model anywhere near it. */
 export function scoreFitness(input: FitnessInput, bindings: SlotBinding[]): FitnessReport {
   const { sweep, harnesses, capabilities } = input
+  const reach = input.reach ?? {}
   const guarded = sweep.guarded
   const baselines = input.guardBaseline ?? {}
   const byId = new Map(harnesses.map((h) => [h.id, h]))
@@ -608,6 +709,7 @@ export function scoreFitness(input: FitnessInput, bindings: SlotBinding[]): Fitn
       cases: casesById.get(id) ?? [],
       floor,
       capabilities,
+      reach,
       guarded,
       baseline: baselines[id] ?? null,
     })
@@ -621,20 +723,39 @@ export function scoreFitness(input: FitnessInput, bindings: SlotBinding[]): Fitn
     // A ROLE'S OWN REQUIREMENT, checked at the slot rather than per harness:
     // `MODEL_ROLES[].requires` is what the role's WORK needs, which is a
     // stronger claim than any one harness makes and is the whole of finding 1.6.
+    const slotCovered = new Set<Capability>()
     for (const cap of binding.slot.requires) {
       const fact = capabilities[cap]
-      if (fact?.value === false) {
+      const reached = reach[cap]
+      // Same correction as `harnessVerdict`: the slot's requirement is about the
+      // WORK, and the work can be done by a model that reaches the capability
+      // through a registered tool. A role is unfit only when nothing reaches it.
+      if (reached?.reached && reached.via === 'tool' && reached.supplier) {
+        reasons.push({
+          kind: 'supplied-capability',
+          harness: null,
+          capability: cap,
+          assertion: null,
+          band: 'ready',
+          detail: `${binding.slot.label} needs '${cap}', which this model does not do itself — it is supplied by the '${reached.supplier.server}.${reached.supplier.tool}' tool.`,
+        })
+      } else if (fact?.value === false) {
+        slotCovered.add(cap)
         reasons.push({
           kind: 'missing-capability',
           harness: null,
+          capability: cap,
           assertion: null,
           band: 'unfit',
-          detail: `${binding.slot.label} needs '${cap}' and this model is recorded as not supporting it${fact.detail ? ` (${fact.detail})` : ''}.`,
+          detail: `${binding.slot.label} needs '${cap}' and this deployment cannot reach it${reached?.detail ? ` — ${reached.detail}` : fact.detail ? ` (the model is recorded as not supporting it: ${fact.detail})` : ''}.`,
         })
+      } else if (reached?.reached) {
+        // Reached natively and measured true — nothing to say.
       } else if (fact === undefined) {
         reasons.push({
           kind: 'unmeasured-capability',
           harness: null,
+          capability: cap,
           assertion: null,
           band: 'workable',
           detail: `${binding.slot.label} needs '${cap}' and nothing has measured it on this model. Run the probes to reach Ready.`,
@@ -646,6 +767,7 @@ export function scoreFitness(input: FitnessInput, bindings: SlotBinding[]): Fitn
       reasons.push({
         kind: 'no-harness',
         harness: null,
+        capability: null,
         assertion: null,
         band: 'unbound',
         detail: `No harness in this install is bound to ${binding.slot.label}, so a sweep can say nothing about a model for it. This is not a pass.`,
@@ -662,7 +784,18 @@ export function scoreFitness(input: FitnessInput, bindings: SlotBinding[]): Fitn
       }
     }
 
-    for (const v of verdicts) reasons.push(...v.reasons)
+    // ONE FACT, ONE LINE. A slot that declares `requires: ['search']` and binds a
+    // harness that also requires it produces the same missing-capability finding
+    // twice — once about the slot an admin is choosing for, once about the
+    // harness — and the two say nothing different to the person reading them.
+    // The slot's telling is kept because it names the dropdown; the harness's is
+    // dropped from the flattened list ONLY when the slot already covered that
+    // exact capability, so a harness needing something the slot does not declare
+    // still gets its own line. `v.reasons` is untouched: the per-harness
+    // drill-down is where the attribution belongs.
+    for (const v of verdicts) {
+      reasons.push(...v.reasons.filter((r) => !(r.kind === 'missing-capability' && r.capability !== null && slotCovered.has(r.capability))))
+    }
 
     // A bound harness with no verdict means the column is only partly measured,
     // and a partly measured column must not read as Ready.
@@ -671,6 +804,7 @@ export function scoreFitness(input: FitnessInput, bindings: SlotBinding[]): Fitn
       reasons.push({
         kind: 'partial-coverage',
         harness: untested[0]?.harness ?? null,
+        capability: null,
         assertion: null,
         band: 'workable',
         detail: `${untested.length} of ${verdicts.length} harness(es) bound to ${binding.slot.label} have no verdict, so this slot cannot be called Ready on the evidence.`,

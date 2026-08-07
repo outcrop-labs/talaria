@@ -203,6 +203,7 @@ export const librarianHarness = defineHarness<LibrarianInput, LibrarianOkf>({
   evals: [
     {
       name: 'ordinary reference document',
+      band: 'standard',
       input: {
         title: 'Release train',
         body: [
@@ -215,10 +216,14 @@ export const librarianHarness = defineHarness<LibrarianInput, LibrarianOkf>({
           'Rollback target is 15 minutes from the decision to the previous build being live. We have hit that on four of the last five rollbacks; the miss was a database migration that could not be reversed in place, which is why migrations now ship one train ahead of the code that reads them.',
         ].join('\n'),
       },
-      check: checkOkf,
+      // The floor terms are the load-bearing nouns of THIS document: `checkOkf`
+      // is entirely structural, and a Key facts section about nothing satisfies
+      // every line of it.
+      check: (value) => checkOkf(value) ?? checkMentions(value, ['release', 'train', 'thursday', 'rollback', 'rota']),
     },
     {
       name: 'document that talks about itself',
+      band: 'standard',
       input: {
         title: 'Incident severity levels',
         body: [
@@ -234,7 +239,133 @@ export const librarianHarness = defineHarness<LibrarianInput, LibrarianOkf>({
       // Same contract, plus the instruction the prompt spends a whole sentence
       // on: the lifecycle chatter at the top of the document is the PLATFORM's
       // business and must not end up in the summary agents read.
-      check: (value) => checkOkf(value) ?? checkNoMetaCommentary(value),
+      check: (value) => checkOkf(value) ?? checkNoMetaCommentary(value) ?? checkMentions(value, ['sev', 'severity', 'postmortem', 'page']),
+    },
+    {
+      name: 'a two-line document with almost nothing in it',
+      band: 'easy',
+      // The floor: a document this short still needs a Key facts section and
+      // real tags. A model that shrugs here fails everything above it.
+      input: { title: 'Office wifi', body: 'The guest network password rotates on the first of the month. Ask Facilities, not IT.' },
+      check: (value) => checkOkf(value) ?? checkMentions(value, ['wifi', 'network', 'password', 'guest', 'facilities']),
+    },
+    {
+      name: 'a document whose subject is one clear procedure',
+      band: 'easy',
+      input: {
+        title: 'Expense approval',
+        body: [
+          'Anything under 200 EUR is auto-approved once you attach a receipt.',
+          'Between 200 and 2000 needs your manager. Above 2000 needs Finance as well.',
+          'Receipts older than 60 days are refused by the system and need a manual claim.',
+        ].join('\n'),
+      },
+      check: (value) => checkOkf(value) ?? checkMentions(value, ['expense', 'approv', 'receipt', 'finance', 'manager']),
+    },
+    {
+      name: 'a document with named owners the summary must keep',
+      band: 'standard',
+      // Names and numbers are what an agent later retrieves this for. A summary
+      // that keeps the shape and loses the owner is a summary nobody can act on.
+      input: {
+        title: 'Data retention',
+        body: [
+          'Support transcripts are kept for 24 months, then purged automatically.',
+          'Billing records are kept for 7 years for tax reasons and are never purged by the sweep.',
+          'Marta owns the retention policy; changes go through Legal.',
+          'The purge job runs on the first Sunday of each month at 02:00 UTC.',
+        ].join('\n'),
+      },
+      check: (value) => checkOkf(value) ?? checkMentions(value, ['retention', 'purge', 'billing', 'transcript']),
+    },
+    {
+      name: 'a document that is mostly a list of exceptions',
+      band: 'standard',
+      input: {
+        title: 'Deploy freeze',
+        body: [
+          'No production deploys between 20 December and 2 January.',
+          'Exceptions: SEV1 fixes, security patches with a CVE, and anything the on-call VP signs off in writing.',
+          'A frozen deploy still needs its normal review — the freeze removes the schedule, not the process.',
+          'The freeze does not apply to staging or to documentation sites.',
+        ].join('\n'),
+      },
+      check: (value) => checkOkf(value) ?? checkMentions(value, ['freeze', 'deploy', 'exception', 'december']),
+    },
+    {
+      name: 'a long document that has to be cut to a summary',
+      band: 'standard',
+      input: {
+        title: 'Vendor onboarding',
+        body: [
+          'Every new vendor goes through security review before a contract is signed. The review is a questionnaire plus evidence: SOC 2 or ISO 27001, a pen test summary from the last twelve months, and a named security contact.',
+          '',
+          'Procurement opens the file. Security reviews it. Legal reviews the contract. Finance sets up payment. None of these can be skipped and they mostly run in parallel, except that Legal will not start until Security has signed off.',
+          '',
+          'A vendor handling customer data additionally needs a DPA and a sub-processor list. A vendor handling no customer data can use the light review, which is the questionnaire alone.',
+          '',
+          'Renewals repeat the security review annually. A vendor that misses two consecutive renewals is off-boarded automatically.',
+          '',
+          'Historical note: we used to run this through a spreadsheet. It is a board now. The spreadsheet is gone and should not be looked for.',
+        ].join('\n'),
+      },
+      check: (value) => checkOkf(value) ?? checkMentions(value, ['vendor', 'security', 'review', 'procure', 'contract']),
+    },
+    // ── hard ────────────────────────────────────────────────────────────────
+    {
+      name: 'a document whose lifecycle chatter is spread through it, not just at the top',
+      band: 'hard',
+      // The existing meta fixture puts the chatter in one block at the top,
+      // which a model can drop by position. Here it is interleaved, so dropping
+      // it takes actually reading.
+      input: {
+        title: 'On-call handover',
+        body: [
+          'The outgoing on-call writes a handover note before 09:00.',
+          'TODO: we should probably template this — raise it at the next retro.',
+          'The note covers: anything still burning, anything silenced, and anything the next shift should watch.',
+          'This page is a work in progress and will be reviewed by the end of the quarter.',
+          'Silenced alerts must be listed explicitly, with the reason and an expiry.',
+        ].join('\n'),
+      },
+      check: (value) => checkOkf(value) ?? checkNoMetaCommentary(value) ?? checkMentions(value, ['on-call', 'handover', 'shift', 'alert', 'silenc']),
+    },
+    {
+      name: 'a document that contradicts its own title',
+      band: 'hard',
+      input: {
+        title: 'Slack conventions',
+        body: [
+          'We do not use Slack. This page is kept because people keep looking for it.',
+          'Team communication happens in Talaria channels. Direct messages are for things that genuinely need one person.',
+          'Anything that should outlive the conversation goes in a knowledge doc, not a channel.',
+        ].join('\n'),
+      },
+      check: (value) => {
+        const problem = checkOkf(value)
+        if (problem) return problem
+        // Summarizing the title rather than the body is the failure here.
+        if (/\bslack\b/i.test(value.body) && !/do not use|no longer|not use slack/i.test(value.body)) {
+          return 'summarized the title — the document says the org does not use Slack at all'
+        }
+        return checkMentions(value, ['channel', 'talaria', 'communicat', 'knowledge'])
+      },
+    },
+    {
+      name: 'a document with a plausible tag trap in its prose',
+      band: 'hard',
+      // "tags:" appears in the BODY as subject matter. A model that treats it as
+      // the TAGS line emits the document's own words as topic tags — the exact
+      // parse failure `splitTagsLine` exists to survive.
+      input: {
+        title: 'Ticket labelling',
+        body: [
+          'Every ticket carries labels. The convention is one area label (billing, platform, growth) and at most one state label.',
+          'A ticket with tags: billing, urgent is over-labelled — urgent is a priority, not a label.',
+          'Labels are for routing. Priority, effort and due date are fields, and putting them in labels breaks the board filters.',
+        ].join('\n'),
+      },
+      check: (value) => checkOkf(value) ?? checkMentions(value, ['label', 'ticket', 'rout', 'convention']),
     },
   ],
 })
@@ -266,4 +397,15 @@ const META = /\b(draft|not yet official|review by|refresh this page|work in prog
 function checkNoMetaCommentary(value: LibrarianOkf): string | null {
   const hit = META.exec(value.body)
   return hit ? `the summary repeats the document’s own lifecycle commentary ("${hit[0]}") instead of its subject matter` : null
+}
+
+/** THE FLOOR EVERY OKF FIXTURE NEEDS. `checkOkf` is entirely structural — a
+ *  Key facts heading, some tags, a length bound — and every one of those is
+ *  satisfied by a summary about nothing at all. This is the half that asks
+ *  whether the summary is about the document it was given, in the same shape
+ *  `belowAnswerFloor` uses for the text harnesses. */
+function checkMentions(value: LibrarianOkf, terms: readonly string[]): string | null {
+  const lower = value.body.toLowerCase()
+  if (terms.some((t) => lower.includes(t.toLowerCase()))) return null
+  return `the summary never engages with the document — it mentions none of ${JSON.stringify([...terms])}`
 }

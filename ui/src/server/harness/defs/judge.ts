@@ -167,6 +167,7 @@ const evals = [
   // ── Satisfied: the outcome answers the ticket. Expect "pass". ─────────────
   {
     name: 'satisfied: a concrete fix with the verification named',
+    band: 'easy' as const,
     input: {
       title: 'Fix the timezone drift on the weekly digest',
       description: 'The Monday digest goes out at 09:00 UTC regardless of the org timezone. It should send at 09:00 local. Add a test.',
@@ -177,6 +178,7 @@ const evals = [
   },
   {
     name: 'satisfied: every listed requirement is addressed in turn',
+    band: 'standard' as const,
     input: {
       title: 'Add CSV export to the usage page',
       description: 'Export the current filtered view. Include the date range in the filename. Admins only.',
@@ -187,6 +189,7 @@ const evals = [
   },
   {
     name: 'satisfied: a small ticket with a short but complete outcome',
+    band: 'easy' as const,
     input: {
       title: 'Rename the "Archive" button to "Close"',
       description: 'On the ticket detail toolbar only. Keep the keyboard shortcut.',
@@ -196,6 +199,7 @@ const evals = [
   },
   {
     name: 'satisfied: template sections are each answered',
+    band: 'standard' as const,
     input: {
       title: 'Retry failed webhook deliveries',
       description: 'Deliveries that fail should be retried with backoff.',
@@ -210,6 +214,7 @@ const evals = [
   },
   {
     name: 'satisfied: the agent explains why one requirement is genuinely n/a',
+    band: 'standard' as const,
     input: {
       title: 'Add pagination to the audit log',
       description: 'Page the audit log at 50 rows. Add an index if the query needs one.',
@@ -223,6 +228,7 @@ const evals = [
   //    or contradicted by the outcome. Expect "revise", with the gap named. ──
   {
     name: 'gap: a required deliverable is silently skipped',
+    band: 'standard' as const,
     input: {
       title: 'Fix the timezone drift on the weekly digest',
       description: 'The Monday digest goes out at 09:00 UTC regardless of the org timezone. It should send at 09:00 local. Add a test.',
@@ -232,6 +238,7 @@ const evals = [
   },
   {
     name: 'gap: the outcome asserts completion with nothing to check',
+    band: 'standard' as const,
     input: {
       title: 'Speed up the board query',
       description: 'The board view takes over 2s on large boards. Get it under 500ms and say how you measured.',
@@ -241,6 +248,7 @@ const evals = [
   },
   {
     name: 'gap: the outcome contradicts a stated requirement',
+    band: 'standard' as const,
     input: {
       title: 'Add CSV export to the usage page',
       description: 'Export the current filtered view. Include the date range in the filename. Admins only.',
@@ -250,6 +258,7 @@ const evals = [
   },
   {
     name: 'gap: a template section is left as skeleton text',
+    band: 'standard' as const,
     input: {
       title: 'Retry failed webhook deliveries',
       description: 'Deliveries that fail should be retried with backoff.',
@@ -261,6 +270,7 @@ const evals = [
   },
   {
     name: 'gap: the pre-check evidence contradicts a clean-sounding outcome',
+    band: 'standard' as const,
     input: {
       title: 'Wire the deploy webhook to the status channel',
       description: 'Post deploy results to #status. Read the signing secret from the environment.',
@@ -274,6 +284,7 @@ const evals = [
   //    "pass" is the failure; "revise" and "escalate" are both defensible. ───
   {
     name: 'ambiguous: the requirements contradict each other',
+    band: 'hard' as const,
     input: {
       title: 'Make the export synchronous',
       description: 'Exports must complete within the request so the user gets the file immediately. Exports must also cover the full 24-month history, which takes several minutes to assemble.',
@@ -283,6 +294,7 @@ const evals = [
   },
   {
     name: 'ambiguous: the work is done and an irreversible side effect was taken on the way',
+    band: 'hard' as const,
     input: {
       title: 'Drop the unused sessions_old table',
       description: 'It has not been written to since the auth migration. Remove it.',

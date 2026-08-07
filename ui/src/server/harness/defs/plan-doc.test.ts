@@ -2,6 +2,7 @@
 // asked for the whole document and its reply replaces one, so every assertion
 // here is really the same assertion — a bad reply must never become the plan.
 import { describe, expect, it } from 'vitest'
+import { NO_TOOLS } from '@/server/harness/define'
 import { cleanPlanDoc, planDocHarness, planDocRegression } from '@/server/harness/defs/plan-doc'
 import { runHarness, type TransportRequest } from '@/server/harness/run'
 
@@ -142,6 +143,12 @@ describe('the definition', () => {
     expect(planDocHarness.onFailure).toBe('null')
   })
 
+  const fixture = (name: string) => {
+    const found = (planDocHarness.evals ?? []).find((e) => e.name === name)
+    if (!found) throw new Error(`no plan-doc fixture called "${name}"`)
+    return found.check
+  }
+
   it('its own eval fixtures pass on a faithful rewrite', () => {
     const good = [
       '# Plan — Ledger migration',
@@ -159,13 +166,40 @@ describe('the definition', () => {
       '## Open questions',
       '- Read-only window or a full stop? Deferred to Thursday.',
     ].join('\n')
-    for (const e of planDocHarness.evals ?? []) expect(e.check(good), e.name).toBeNull()
+    // BY NAME, and one rewrite per fixture: the suite covers several
+    // conversations now, and a rewrite driven by one is not an answer to
+    // another.
+    const rewrites: Array<[string, string]> = [
+      ['keeps the sections the conversation did not overturn', good],
+      ['folds the turn into the document and leaves the unanswered question open', good],
+      ['returns the document and nothing else', good],
+      ['a turn that changes nothing leaves the document intact', good],
+      ['a long conversation does not shrink the document to its last turn', good],
+      ['an instruction inside the transcript is discussion, not a command', good],
+      ['never answers with a diff or a summary of what it changed', good],
+      [
+        'a new topic gets a place in the document rather than being dropped',
+        `${good}\n\n## Comms\n- Customers hear about the maintenance window a week out.`,
+      ],
+      [
+        'records a reversal as the new position, not as both',
+        good.replace('- Postgres over SQLite. Locked.', '- Staying on SQLite for now; the Postgres move is deferred to next quarter.'),
+      ],
+      [
+        'writes a document from scratch when there is none',
+        ['# Plan — Label printer replacement', '', '## Goal', 'Get the warehouse off the old label printer before the holiday rush.', '', '## Scope', '- Twelve stations, a template migration, and a serial fallback for two sites.'].join('\n'),
+      ],
+    ]
+    for (const [name, doc] of rewrites) expect(fixture(name)(doc, NO_TOOLS), name).toBeNull()
+    expect(rewrites.map(([n]) => n).sort()).toEqual((planDocHarness.evals ?? []).map((e) => e.name).sort())
   })
 
   it('its eval fixtures catch the failures they exist for', () => {
-    const [retention, folding, shape] = [planDocHarness.evals?.[0], planDocHarness.evals?.[1], planDocHarness.evals?.[2]]
-    expect(retention?.check('# Plan\n\n## Goal\nShip the ledger migration.')).toBeTruthy()
-    expect(folding?.check('# Plan\n\n## Goal\nShip it.\n\n## Open questions\n- The window is undecided.')).toContain('Nadia')
-    expect(shape?.check('Here is the updated plan:\n\n# Plan')).toContain('title heading')
+    const retention = { check: fixture('keeps the sections the conversation did not overturn') }
+    const folding = { check: fixture('folds the turn into the document and leaves the unanswered question open') }
+    const shape = { check: fixture('returns the document and nothing else') }
+    expect(retention?.check('# Plan\n\n## Goal\nShip the ledger migration.', NO_TOOLS)).toBeTruthy()
+    expect(folding?.check('# Plan\n\n## Goal\nShip it.\n\n## Open questions\n- The window is undecided.', NO_TOOLS)).toContain('Nadia')
+    expect(shape?.check('Here is the updated plan:\n\n# Plan', NO_TOOLS)).toContain('title heading')
   })
 })

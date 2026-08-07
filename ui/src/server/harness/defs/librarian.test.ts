@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { NO_TOOLS } from '@/server/harness/define'
 import { librarianHarness, type LibrarianOkf } from '@/server/harness/defs/librarian'
 import { runHarness, type TransportRequest } from '@/server/harness/run'
 
@@ -78,16 +79,42 @@ describe('the definition', () => {
     expect(requests.at(-1)?.messages[1]?.content).not.toContain('truncated')
   })
 
+  // BY NAME, NOT BY INDEX, and only the fixtures this reply is an answer TO.
+  // The suite covers eight documents now, and a summary of the release train is
+  // not a summary of the expense policy — every fixture carries its own floor
+  // terms, so "passes every fixture" stopped being a meaningful thing to assert.
+  const named = (name: string) => {
+    const found = (librarianHarness.evals ?? []).find((e) => e.name === name)
+    if (!found) throw new Error(`no librarian fixture called "${name}"`)
+    return found.check
+  }
+  const ordinary = () => named('ordinary reference document')
+  const meta = () => named('document that talks about itself')
+
   it('its own eval fixtures pass on a well-formed reply', () => {
-    const good: LibrarianOkf = { body: `${BODY}\n- Ana owns the rota.`, tags: ['release', 'ops'] }
-    for (const e of librarianHarness.evals ?? []) expect(e.check(good)).toBeNull()
+    // ONE REPLY PER FIXTURE, because each fixture is about a different document
+    // and now says so: a summary of the release train is not an answer to the
+    // severity-levels page, and the floor terms are what make that true.
+    expect(ordinary()({ body: `${BODY}\n- Ana owns the rota.`, tags: ['release', 'ops'] }, NO_TOOLS)).toBeNull()
+    expect(
+      meta()(
+        { body: '## Key facts\n- SEV1 is a full outage and pages immediately.\n- A SEV1 needs a postmortem within five working days.', tags: ['incidents', 'severity'] },
+        NO_TOOLS,
+      ),
+    ).toBeNull()
   })
 
   it('its eval fixtures catch the failures they exist for', () => {
-    const first = librarianHarness.evals?.[0]
-    const second = librarianHarness.evals?.[1]
-    expect(first?.check({ body: 'Just prose.', tags: ['a'] })).toContain('Key facts')
-    expect(first?.check({ body: BODY, tags: [] })).toContain('no TAGS line')
-    expect(second?.check({ body: `${BODY}\n- This page is a DRAFT.`, tags: ['a'] })).toContain('lifecycle commentary')
+    expect(ordinary()({ body: 'Just prose.', tags: ['a'] }, NO_TOOLS)).toContain('Key facts')
+    expect(ordinary()({ body: BODY, tags: [] }, NO_TOOLS)).toContain('no TAGS line')
+    expect(meta()({ body: '## Key facts\n- SEV1 pages immediately.\n- This page is a DRAFT.', tags: ['a'] }, NO_TOOLS)).toContain('lifecycle commentary')
+  })
+
+  it('every fixture rejects a summary about nothing at all', () => {
+    // The garbage floor, asserted here as well as in the sweep's own census: a
+    // structurally perfect OKF that engages with no document must fail every
+    // fixture in the suite, whichever document that fixture is about.
+    const empty: LibrarianOkf = { body: '## Key facts\n- Nothing of note.', tags: ['misc'] }
+    for (const e of librarianHarness.evals ?? []) expect(e.check(empty, NO_TOOLS)).not.toBeNull()
   })
 })

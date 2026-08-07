@@ -6,11 +6,13 @@ import {
   evictArchive,
   forgetModel,
   indexEntryOf,
+  INDEX_KEY,
   keysFor,
   mergeFact,
   modelRows,
   priceOf,
   POOLED_DISAGREEMENT,
+  recordKey,
   startFitnessRun,
   usdOf,
   type FitnessIndex,
@@ -55,6 +57,8 @@ function reg<I, O>(def: HarnessDefinition<I, O>, source: HarnessSource = 'builti
     floor: def.floor,
     model: def.model,
     outputKind: def.output.kind,
+    tools: def.tools ?? 'none',
+    bandOf: Object.fromEntries((def.evals ?? []).map((e) => [e.name, e.band ?? ('standard' as const)])),
     widen: def.widen ?? null,
     guard: def.guard ?? null,
     temperature: def.temperature ?? null,
@@ -155,6 +159,8 @@ function estimateDeps(over: Partial<SurfaceDeps>): Partial<SurfaceDeps> {
 const evalCase = (over: Partial<EvalCaseScore> = {}): EvalCaseScore => ({
   harness: 'h',
   case: 'c',
+  band: 'standard',
+  skipped: null,
   contractHeld: true,
   firstPass: true,
   repairs: 0,
@@ -668,11 +674,15 @@ describe('startFitnessRun rejections', () => {
 })
 
 describe('forgetModel', () => {
-  const deps = (forgotten: string[]): Partial<SurfaceDeps> => ({
+  const deps = (forgotten: string[], store: Record<string, unknown> = {}): Partial<SurfaceDeps> => ({
     models: async () => [{ id: 'qwen3-14b', endpoints: ['spark', 'local'], qualified: false }],
     capabilities: async () => ({}),
     forget: async (key) => {
       forgotten.push(key)
+    },
+    readSetting: async <T,>(key: string, fallback: T): Promise<T> => (key in store ? (store[key] as T) : fallback),
+    writeSetting: async (key, value) => {
+      store[key] = value
     },
   })
 
@@ -684,6 +694,32 @@ describe('forgetModel', () => {
     expect(out.ok).toBe(true)
     expect(forgotten).toEqual(['spark:qwen3-14b', 'local:qwen3-14b'])
     expect(out.ok && out.keys).toEqual(['spark:qwen3-14b', 'local:qwen3-14b'])
+  })
+
+  it('deletes the archived report and its index entry, not only the capability facts', async () => {
+    // THE REASON THE BUTTON LOOKED BROKEN. Talaria records what it knows about
+    // a model in two places and this cleared one, so an admin pressed Forget,
+    // the panel refetched, and every probe verdict they had just been told was
+    // deleted was still on the screen.
+    const store: Record<string, unknown> = {
+      [recordKey('qwen3-14b')]: { model: 'qwen3-14b' },
+      [INDEX_KEY]: { 'qwen3-14b': { model: 'qwen3-14b', at: 'x' }, 'other-model': { model: 'other-model', at: 'y' } },
+    }
+    const out = await forgetModel('qwen3-14b', deps([], store))
+
+    expect(out).toMatchObject({ ok: true, report: true })
+    expect(store[recordKey('qwen3-14b')]).toBeNull()
+    // Only this model leaves the index; every other verdict on the page stays.
+    expect(Object.keys(store[INDEX_KEY] as object)).toEqual(['other-model'])
+  })
+
+  it('is idempotent on a model nobody has swept', async () => {
+    const forgotten: string[] = []
+    const out = await forgetModel('qwen3-14b', deps(forgotten))
+    // The facts still go; there was simply no report to go with them, which is
+    // a thing to report rather than a thing to fail on.
+    expect(out).toMatchObject({ ok: true, report: false })
+    expect(forgotten).toEqual(['spark:qwen3-14b', 'local:qwen3-14b'])
   })
 
   it('refuses an id the gateway does not serve, and forgets nothing', async () => {

@@ -33,6 +33,9 @@ describe('the registry', () => {
       'briefer:brief',
       'briefer:chat',
       'work-session',
+      'workbench:light',
+      'workbench:standard',
+      'workbench:heavy',
       'channel-plan',
       'plan-doc',
       'outreach:check-in',
@@ -237,7 +240,18 @@ describe('the PLATFORM_AGENTS cross-check', () => {
     //
     // This list growing is how a harness that should have declared a pin gets
     // caught: adding an id here is a claim that no admin slot names its model.
-    expect(harnesses.filter((h) => agentOf.get(h.id) === null).map((h) => h.id)).toEqual([
+    //
+    // THERE ARE THREE KINDS, not two, and the third arrived with the Workbench
+    // harnesses. A harness's model comes from a PLATFORM AGENT (an admin
+    // assigns it on Models → Platform), from a MODEL ROLE (an admin assigns it
+    // on the same page, under a different registry — `MODEL_ROLES`), or from the
+    // SUBJECT of the call (the agent on the ticket, in the channel, on the
+    // plan). Only the third has nothing for an admin to assign, and only the
+    // third may therefore declare no way to resolve a model.
+    const roleAssigned = harnesses.filter((h) => agentOf.get(h.id) === null && h.model.role !== undefined).map((h) => h.id)
+    expect(roleAssigned).toEqual(['workbench:light', 'workbench:standard', 'workbench:heavy'])
+
+    expect(harnesses.filter((h) => agentOf.get(h.id) === null && h.model.role === undefined).map((h) => h.id)).toEqual([
       'inbox-brief',
       'inbox-command',
       'inbox-reply',
@@ -267,7 +281,11 @@ describe('the PLATFORM_AGENTS cross-check', () => {
     // that agent's work. Empty means the runner returns "no model available for
     // harness <id>" instead — a sentence an operator can act on.
     for (const h of harnesses) {
-      if (agentOf.get(h.id) !== null) continue
+      // A ROLE-ASSIGNED harness is excluded, and it is the one legitimate
+      // exception: `workbench:*` names a `MODEL_ROLES` role, which an admin
+      // assigns exactly like a platform agent — the model is not the subject of
+      // the call, so the argument above does not apply to it.
+      if (agentOf.get(h.id) !== null || h.model.role !== undefined) continue
       expect(h.model.chain, `${h.id} declares a fallback chain, but its model comes from the subject of the call`).toEqual([])
       expect(h.model.pin, `${h.id} declares a pin it can never use`).toBeUndefined()
       expect(h.model.role, `${h.id} declares a role it can never use`).toBeUndefined()

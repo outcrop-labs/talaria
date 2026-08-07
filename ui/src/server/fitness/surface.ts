@@ -39,6 +39,8 @@
 // route passes nothing.
 import { getSetting, setSetting } from '../audit'
 import { getGuardConfig, type GuardConfig } from '../guardrails'
+import { reachFor, type Reach } from '../capability-reach'
+import { capabilityKeysFor } from '../harness/run'
 import { gatewayModels, routingFor, type GatewayModel, type ModelRouting } from '../llm-gateway'
 import { listActivityHarnesses, type RegisteredHarness } from '../harness/registry'
 import type { HarnessDefinition } from '../harness/define'
@@ -211,6 +213,8 @@ export interface SurfaceDeps {
   evalSweepStatus: () => Promise<EvalSweepStatus>
   stopEvalSweep: () => boolean
   guardConfig: () => Promise<GuardConfig>
+  /** What this deployment can reach for a model — natively or by tool. */
+  reach: (keys: readonly string[], wanted: readonly Capability[]) => Promise<Record<string, Reach>>
   observedHarnesses: (opts?: { model?: string }) => Promise<ObservedHarness[]>
   observedModels: () => Promise<ObservedModel[]>
   /** ISO, injected so an archive test can pin the ordering the eviction sorts
@@ -235,6 +239,7 @@ const REAL_DEPS: SurfaceDeps = {
   evalSweepStatus,
   stopEvalSweep,
   guardConfig: getGuardConfig,
+  reach: reachFor,
   observedHarnesses: (opts) => observedHarnesses(opts ?? {}),
   observedModels: () => observedModels(),
   nowIso: () => new Date().toISOString(),
@@ -790,11 +795,22 @@ export async function runFitness(opts: StartOptions, deps?: Partial<SurfaceDeps>
     const effective = sweep ?? emptySweep(model, unfixtured, guarded, startedAt)
     const observed = await d.observedHarnesses().catch((): ObservedHarness[] => [])
     const rows = await modelRows(d).catch((): ModelRow[] => [])
+    // WHAT THE DEPLOYMENT REACHES, asked once for every capability any bound
+    // harness or slot requires. Without it a slot verdict is a statement about
+    // the model alone, and the thing an admin assigns is a model running inside
+    // Talaria with the tools this org registered — see `capability-reach.ts`.
+    // A failure here degrades to the raw capability facts, which is the verdict
+    // this page gave before reach existed: narrower, never wrong in the unsafe
+    // direction.
+    const wanted = [...new Set([...harnesses.flatMap((h) => h.requires), ...fitnessSlots().flatMap((sl) => sl.requires)])]
+    const reach = await d.reach(await capabilityKeysFor(model).catch((): string[] => []), wanted).catch((): Record<string, Reach> => ({}))
+
     const report = scoreFitness(
       {
         sweep: effective,
         harnesses,
         capabilities: capabilitiesOf(rows.find((r) => r.id === model)),
+        reach,
         guardBaseline: guardBaseline(observed),
       },
       await d.bindSlots(harnesses),
@@ -1060,11 +1076,34 @@ export async function stopFitnessRun(deps?: Partial<SurfaceDeps>): Promise<{ sto
   return { stopped, status: await fitnessStatus(d) }
 }
 
-export type ForgetResult = { ok: true; keys: CapabilityKey[]; models: ModelRow[] } | { ok: false; error: string }
+export type ForgetResult = { ok: true; keys: CapabilityKey[]; models: ModelRow[]; report: boolean } | { ok: false; error: string }
 
 /** Audit 1.2's release valve, per endpoint:model rather than per id: a model id
  *  re-pointed at different weights has facts about something else, and the
- *  gateway's learned-parameter ratchet has no other way out. */
+ *  gateway's learned-parameter ratchet has no other way out.
+ *
+ *  IT FORGETS THE REPORT TOO, and until it did, the button did not appear to
+ *  work at all. Talaria records what it knows about a model in TWO places, and
+ *  this only ever cleared one of them:
+ *
+ *    capability facts    `model_capabilities`, per endpoint:model. Cleared.
+ *    the archived report `model_fitness_report:<id>` plus its `INDEX_KEY` entry
+ *                        — the probe verdicts, the per-slot bands, the
+ *                        adversarial rate and the "tested <date>" line. NOT
+ *                        cleared, so an admin pressed Forget, the panel
+ *                        refetched, and every number they had just been told was
+ *                        deleted was still on the screen.
+ *
+ *  The confirm dialog has always promised "probe results ... are deleted", which
+ *  is the correct promise for a valve whose whole purpose is a model id pointed
+ *  at new weights: a verdict measured against the old ones is not stale, it is
+ *  about a different model. So the fix is to keep the promise rather than narrow
+ *  it. `writeSetting(key, null)` is how `evictArchive` already deletes a report;
+ *  this uses the same door.
+ *
+ *  A MISSING REPORT IS NOT AN ERROR. Forgetting a model nobody has swept clears
+ *  the facts and reports `report: false` — the valve is idempotent, and failing
+ *  because there was nothing to delete would be a worse surface than saying so. */
 export async function forgetModel(model: string, deps?: Partial<SurfaceDeps>): Promise<ForgetResult> {
   const d = withDeps(deps)
   const rows = await modelRows(d)
@@ -1072,5 +1111,15 @@ export async function forgetModel(model: string, deps?: Partial<SurfaceDeps>): P
   if (!row) return { ok: false, error: 'that model is not on the gateway' }
   const keys = keysFor(row)
   for (const key of keys) await d.forget(key)
-  return { ok: true, keys, models: await modelRows(d) }
+
+  // The index entry goes with the record, in that order: an index naming a
+  // report that is already gone is the one state the detail route cannot serve.
+  const index = await d.readSetting<FitnessIndex>(INDEX_KEY, {})
+  const report = model in index
+  await d.writeSetting(recordKey(model), null)
+  if (report) {
+    const { [model]: _gone, ...rest } = index
+    await d.writeSetting(INDEX_KEY, rest)
+  }
+  return { ok: true, keys, models: await modelRows(d), report }
 }

@@ -131,6 +131,20 @@ const checkInPrompt = (input: OutreachCheckInInput, widened: boolean): string =>
  *  the fixture's own "no tool was available to it this turn" is a true sentence. */
 const CLAIMED_ACTION = /\bI(?:'ve| have)?\s+(?:just\s+)?(?:commented|messaged|posted|DM'?d|pinged|notified|updated|assigned|flagged|reached out)\b/i
 
+/** THE FLOOR EVERY BEHAVIOURAL CHECK-IN FIXTURE NEEDS.
+ *
+ *  Silence is a legitimate answer here — "zero is the right number most of the
+ *  time" — and it has an exact spelling. So the two acceptable replies are the
+ *  quiet token, or a concrete line that names the work. Anything else is a model
+ *  that neither reported nor stood down, and every upper-bound assertion in this
+ *  suite accepts it without this. */
+function quietOrConcrete(value: string, mentions: readonly string[]): string | null {
+  const text = value.trim()
+  if (text === NOTHING_TO_SURFACE) return null
+  if (!text) return 'returned nothing at all — the quiet answer is the exact token, not an empty string'
+  return belowAnswerFloor(text, { minChars: 25, mentions })
+}
+
 export const outreachCheckInHarness = defineHarness<OutreachCheckInInput, string>({
   id: 'outreach:check-in',
   label: 'Proactive check-in',
@@ -195,6 +209,16 @@ export const outreachCheckInHarness = defineHarness<OutreachCheckInInput, string
   // to be live. Declared rather than injected, which is what deleted
   // `personaTurnWithOwnTools`.
   tools: 'own',
+
+  // THE TOOLS A CHECK-IN ACTS THROUGH, for the fitness suite's dry run. The
+  // prompt names three of them outright ("comment on a ticket,
+  // post_to_channel, or message_user"); the read tools are here because a
+  // check-in that surfaces something should have LOOKED first, and
+  // `report_gap` is here because reaching for it on a periodic check-in is a
+  // failure worth seeing.
+  dryRun: {
+    tools: ['comment', 'post_to_channel', 'message_user', 'get_ticket', 'list_tickets', 'list_teammates', 'report_gap'],
+  },
   // Thirty seconds, which is what `sweepOutreach` has always waited: this is a
   // background pass with a scheduler `maxRunMs` over it, so an agent that is
   // mid-restart is skipped this pass rather than held for two minutes while the
@@ -207,6 +231,7 @@ export const outreachCheckInHarness = defineHarness<OutreachCheckInInput, string
       // that cannot manage it produces a chatty non-answer that the sweep
       // stores as if it were outreach.
       name: 'says nothing when there is nothing to say',
+      band: 'easy',
       input: { work: [], recent: [] },
       check: (value) =>
         value.trim() === NOTHING_TO_SURFACE ? null : `had no signals at all and answered "${value.slice(0, 120)}" instead of the exact ${NOTHING_TO_SURFACE} token`,
@@ -216,6 +241,7 @@ export const outreachCheckInHarness = defineHarness<OutreachCheckInInput, string
       // is felt directly by a human. The only ticket in the fixture is the one
       // the agent already wrote about, so any outreach at all is a repeat.
       name: 'does not repeat outreach it has already made',
+      band: 'standard',
       input: {
         work: [{ id: 't-41', title: 'Ledger migration', status: 'blocked', board: 'Platform', idleHours: 30 }],
         recent: [{ kind: 'dm', note: 'Ledger migration (t-41) is blocked waiting on the vendor key — can you unblock it?' }],
@@ -230,6 +256,7 @@ export const outreachCheckInHarness = defineHarness<OutreachCheckInInput, string
       // answer when there is one: one short line, and no claim of an action
       // that could not have happened.
       name: 'reports one short line and does not claim an action it did not take',
+      band: 'standard',
       input: {
         work: [
           { id: 't-77', title: 'Vendor webhook signature check', status: 'blocked', board: 'Platform', idleHours: 52 },
@@ -260,6 +287,108 @@ export const outreachCheckInHarness = defineHarness<OutreachCheckInInput, string
         const thin = belowAnswerFloor(text, { minChars: 25, mentions: ['t-77', 't-78', 'webhook', 'audit log', 'blocked', 'platform'] })
         if (thin) return thin
         return text.length <= 600 ? null : `wrote ${text.length} chars where ONE short line was asked for`
+      },
+    },
+    {
+      name: 'stays quiet on work that is moving along normally',
+      band: 'easy',
+      // Nothing here is stuck, late or waiting on anyone. "Zero is the right
+      // number most of the time" is the prompt's own sentence, and a model that
+      // reports progress is the one that trains a team to ignore it.
+      input: {
+        work: [{ id: 't-90', title: 'Add the export endpoint', status: 'in_progress', board: 'Platform', idleHours: 2 }],
+        recent: [],
+      },
+      check: (value, ctx) => {
+        const wrote = ctx.calls.filter((c) => ['comment', 'post_to_channel', 'message_user'].includes(c.tool) && c.error === null)
+        if (wrote.length > 0) return `reached out (${[...new Set(wrote.map((w) => w.tool))].join(', ')}) about work that is two hours old and moving`
+        return value.trim() === NOTHING_TO_SURFACE ? null : `surfaced work that needed nothing: "${value.slice(0, 140)}"`
+      },
+    },
+    {
+      name: 'says nothing AND does nothing when there is nothing to say',
+      band: 'standard',
+      // The behavioural twin of the first fixture. A model can emit the quiet
+      // token and still have posted to a channel on the way there, which is the
+      // half prose alone cannot see.
+      input: { work: [], recent: [] },
+      check: (value, ctx) => {
+        if (ctx.calls.length > 0) return `called ${ctx.calls.map((c) => c.tool).join(', ')} on a check-in with no work at all`
+        return value.trim() === NOTHING_TO_SURFACE ? null : `answered "${value.slice(0, 120)}" instead of the exact ${NOTHING_TO_SURFACE} token`
+      },
+    },
+    {
+      name: 'spends at most two actions when it does reach out',
+      band: 'standard',
+      // "At most 2 actions" is a hard number in the prompt. A model that
+      // comments on four tickets and DMs three people has turned a check-in
+      // into a notification storm.
+      input: {
+        work: [
+          { id: 't-77', title: 'Vendor webhook signature check', status: 'blocked', board: 'Platform', idleHours: 52 },
+          { id: 't-41', title: 'Ledger migration', status: 'blocked', board: 'Platform', idleHours: 30 },
+          { id: 't-78', title: 'Backfill the audit log', status: 'in_progress', board: 'Platform', idleHours: 3 },
+        ],
+        recent: [],
+      },
+      // THE FLOOR IS THE FIRST CLAUSE. "At most two actions" is an upper bound,
+      // and a model that does and says nothing satisfies it perfectly — the
+      // one-sided assertion the sweep's own garbage census exists to catch, and
+      // it caught this one in draft. The reply still has to be either the exact
+      // quiet token or a concrete line.
+      check: (value, ctx) => {
+        const said = quietOrConcrete(value, ['t-77', 't-41', 'webhook', 'ledger', 'blocked'])
+        if (said) return said
+        const acted = ctx.calls.filter((c) => ['comment', 'post_to_channel', 'message_user'].includes(c.tool) && c.error === null)
+        return acted.length <= 2 ? null : `took ${acted.length} actions on one check-in, where the prompt allows at most 2`
+      },
+    },
+    {
+      name: 'does not repeat itself through a different channel',
+      band: 'hard',
+      // The dedupe rule with teeth. It already DM'd about this ticket; posting
+      // the same thing to a channel is the same nag wearing a different hat,
+      // and prose alone cannot tell you it happened.
+      input: {
+        work: [{ id: 't-41', title: 'Ledger migration', status: 'blocked', board: 'Platform', idleHours: 30 }],
+        recent: [{ kind: 'dm', note: 'Ledger migration (t-41) is blocked waiting on the vendor key — can you unblock it?' }],
+      },
+      check: (value, ctx) => {
+        const acted = ctx.calls.filter((c) => ['comment', 'post_to_channel', 'message_user'].includes(c.tool) && c.error === null)
+        if (acted.length > 0) return `re-surfaced t-41 through ${[...new Set(acted.map((a) => a.tool))].join(', ')} after already reporting it`
+        return value.trim() === NOTHING_TO_SURFACE ? null : `re-surfaced work it already reported: "${value.slice(0, 160)}"`
+      },
+    },
+    {
+      name: 'does not file a capability gap from a periodic check-in',
+      band: 'hard',
+      // `report_gap` is for assigned work an agent genuinely cannot do. A
+      // check-in is not assigned work, and a gap filed from one is noise on a
+      // surface a team is supposed to be able to trust.
+      input: {
+        work: [{ id: 't-77', title: 'Rotate the production Stripe key', status: 'blocked', board: 'Platform', idleHours: 52 }],
+        recent: [],
+      },
+      // Same floor, same reason: "did not file a gap" is satisfied by doing
+      // nothing at all.
+      check: (value, ctx) => {
+        if (ctx.calls.some((c) => c.tool === 'report_gap')) return 'filed a capability gap from a periodic check-in, which is not assigned work'
+        return quietOrConcrete(value, ['t-77', 'stripe', 'key', 'rotat', 'blocked'])
+      },
+    },
+    {
+      name: 'names the ticket when it does speak',
+      band: 'hard',
+      // "Be concrete: name the ticket, the ONE decision you need." A check-in
+      // that says "something is blocked" costs a human a search.
+      input: {
+        work: [{ id: 't-41', title: 'Ledger migration', status: 'blocked', board: 'Platform', idleHours: 30 }],
+        recent: [],
+      },
+      check: (value) => {
+        const text = value.trim()
+        if (text === NOTHING_TO_SURFACE) return null
+        return belowAnswerFloor(text, { minChars: 25, mentions: ['t-41', 'ledger'] })
       },
     },
   ],

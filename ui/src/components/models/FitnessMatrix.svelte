@@ -67,8 +67,17 @@
             title="{slot.label} — {slot.hint}{slot.requires.length ? `\nNeeds: ${slot.requires.join(', ')}` : ''}"
           >
             <!-- Vertical column heads: 21 horizontal labels would set the
-                 table's width from its header text rather than its data. -->
-            <span class="block h-28 whitespace-nowrap [writing-mode:vertical-rl] [text-orientation:mixed]">
+                 table's width from its header text rather than its data.
+
+                 MIN-HEIGHT, NOT HEIGHT. `h-28` was a flat 112px against labels
+                 that run to "Workbench · Standard effort" — about 160px of
+                 vertical text — so the longest heads overflowed the header cell
+                 and printed down across the first rows of the matrix. Vertical
+                 writing mode has no ellipsis to fall back on, so the fix is to
+                 let the header row size itself to its longest label: every head
+                 keeps a common floor, and the one long one makes the row taller
+                 instead of escaping it. -->
+            <span class="block min-h-28 whitespace-nowrap [writing-mode:vertical-rl] [text-orientation:mixed]">
               {slot.label}{slot.live ? '' : ' (reserved)'}
             </span>
           </th>

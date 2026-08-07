@@ -42,6 +42,8 @@ function reg<I, O>(def: HarnessDefinition<I, O>, source: HarnessSource = 'builti
     floor: def.floor,
     model: def.model,
     outputKind: def.output.kind,
+    tools: def.tools ?? 'none',
+    bandOf: Object.fromEntries((def.evals ?? []).map((e) => [e.name, e.band ?? ('standard' as const)])),
     widen: def.widen ?? null,
     guard: def.guard ?? null,
     temperature: def.temperature ?? null,
@@ -90,6 +92,12 @@ interface World {
   guardMode?: GuardConfig['mode']
   /** Called with the 1-based call number, before the reply is handed back. */
   onCall?: (n: number) => void
+  /** Does the candidate's transport run the model's own tool loop? Defaults to
+   *  true (a fleet persona), which is the answer that changes nothing. */
+  ownTools?: boolean
+  /** Can it be handed tool DEFINITIONS instead — the gateway's answer, and what
+   *  lets the sweep supply the loop itself and dry-run against the sandbox. */
+  toolDefs?: boolean
 }
 
 interface Bench {
@@ -101,6 +109,8 @@ interface Bench {
     readStatus: () => Promise<EvalSweepStatus>
     writeStatus: (s: EvalSweepStatus) => Promise<void>
     price: (model: string, p: number, c: number) => Promise<number | null>
+    servesOwnTools: (model: string) => Promise<boolean>
+    acceptsToolDefinitions: (model: string) => Promise<boolean>
     now: () => number
   }
 }
@@ -149,6 +159,8 @@ function bench(harnesses: RegisteredHarness[], w: World): Bench {
         state.status = JSON.parse(JSON.stringify(s)) as EvalSweepStatus
       },
       price: async (_model, p, c) => (p + c) / 1_000_000,
+      servesOwnTools: async () => w.ownTools ?? true,
+      acceptsToolDefinitions: async () => w.toolDefs ?? false,
       now: () => 1_700_000_000_000,
     },
   }
@@ -159,13 +171,15 @@ const obj = (pick: string): string => JSON.stringify({ pick })
 
 // ── Scoring ──────────────────────────────────────────────────────────────────
 
-const META: HarnessMeta = { id: 'h', label: 'H', source: 'builtin', outputKind: 'json', requires: ['json'], verifies: true, repairable: true }
+const META: HarnessMeta = { id: 'h', label: 'H', source: 'builtin', outputKind: 'json', tools: 'none', requires: ['json'], verifies: true, repairable: true }
 
 /** A recorded case, defaulted to a clean pass so each test states only the axis
  *  it is about. */
 const score = (over: Partial<EvalCaseScore>): EvalCaseScore => ({
   harness: 'h',
   case: 'c',
+  band: 'standard',
+  skipped: null,
   contractHeld: true,
   firstPass: true,
   repairs: 0,
@@ -500,6 +514,61 @@ describe('runEvalSweep', () => {
     expect(other.model).toBe('candidate-b')
     expect(other.done).toBe(2)
     expect(other.cases.every((c) => c.contractHeld)).toBe(true)
+  })
+
+  it('records a tool-loop harness as skipped only when NOTHING can drive its loop', async () => {
+    // THE DEFECT THIS LOCKS. `work-session`, `outreach:check-in` and
+    // `briefer:chat` declare `tools: 'own'` because the tool loop IS the
+    // feature. On an org-gateway model the transport refuses them in about four
+    // milliseconds, before a token is spent — and the sweep used to record that
+    // refusal as `contractHeld: false`, so the matrix printed "0% first pass"
+    // for a model nothing had asked a question.
+    //
+    // A model that can be handed DEFINITIONS is dry-run instead (below); this is
+    // the remaining case, where neither path exists and a skip is the honest
+    // answer.
+    const looper = { ...reg(picker('looper', [{ name: 'a', want: 'a' }, { name: 'b', want: 'b' }])), tools: 'own' as const }
+    const plain = reg(picker('plain', [{ name: 'a', want: 'a' }]))
+    const b = bench([looper, plain], { replies: [obj('a')], ownTools: false, toolDefs: false })
+
+    const sweep = await runEvalSweep('gw/model', { deps: b.deps })
+
+    // ONE call, for the one harness that could run. The skipped fixtures cost
+    // nothing, which is half the point.
+    expect(b.calls).toHaveLength(1)
+
+    const skipped = sweep.cases.filter((c) => c.skipped !== null)
+    expect(skipped).toHaveLength(2)
+    expect(skipped[0]?.skipped).toContain('neither run its own nor be handed tool definitions')
+    // No transcript on a case that never ran: there is nothing to drill into.
+    expect(skipped[0]?.prompt).toBeNull()
+    expect(skipped[0]?.error).toBeNull()
+
+    const looped = sweep.harnesses.find((h) => h.id === 'looper')
+    // `cases` is the RUN denominator. Zero of them ran, so every rate is the
+    // n===0 zero and `skipped` carries the count — a consumer reading `cases`
+    // sees "no evidence", which is the truth.
+    expect(looped?.cases).toBe(0)
+    expect(looped?.skipped).toBe(2)
+    expect(looped?.skipReason).toContain('nothing here is a measurement of it')
+
+    // The harness that CAN run is untouched by any of this.
+    expect(sweep.harnesses.find((h) => h.id === 'plain')?.contractRate).toBe(1)
+    // Progress still reaches its total, so the bar completes and a resume does
+    // not re-enter the same skip.
+    expect(sweep.done).toBe(sweep.total)
+  })
+
+  it('runs a tool-loop harness normally when the candidate is a fleet persona', async () => {
+    const looper = { ...reg(picker('looper', [{ name: 'a', want: 'a' }])), tools: 'own' as const }
+    const b = bench([looper], { replies: [obj('a')], ownTools: true })
+
+    const sweep = await runEvalSweep('dex-developer', { deps: b.deps })
+
+    expect(b.calls).toHaveLength(1)
+    expect(sweep.cases[0]?.skipped).toBeNull()
+    expect(sweep.harnesses[0]?.cases).toBe(1)
+    expect(sweep.harnesses[0]?.skipped).toBe(0)
   })
 
   it('names the harnesses no fixture ever tests', async () => {

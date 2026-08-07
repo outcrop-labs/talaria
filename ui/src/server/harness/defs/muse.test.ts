@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { NO_TOOLS } from '@/server/harness/define'
 import { runHarness, type HarnessDeps, type TransportRequest } from '@/server/harness/run'
 import { redactSecrets } from '@/server/guardrails'
 import {
@@ -384,17 +385,31 @@ describe('the ticket harness', () => {
 // ── the eval fixtures ────────────────────────────────────────────────────────
 
 describe('the eval fixtures', () => {
+  // BY NAME, NOT BY INDEX. These used to be `[0]` and `[1]` against suites of
+  // exactly two, so every one of them silently re-pointed at a different
+  // fixture the moment the suites grew — and the failures read as "the muse
+  // check is wrong" rather than "this test is holding the wrong fixture".
+  const named = <T,>(evals: ReadonlyArray<{ name: string; check: (v: T, ctx: typeof NO_TOOLS) => string | null }> | undefined, name: string) => {
+    const found = evals?.find((e) => e.name === name)
+    if (!found) throw new Error(`no fixture called "${name}"`)
+    return found.check
+  }
+
   it('are deterministic assertions, so the fitness suite needs no second model', () => {
-    expect(museCronHarness.evals).toHaveLength(2)
-    expect(museAgentHarness.evals).toHaveLength(2)
-    expect(museTicketHarness.evals).toHaveLength(2)
+    // WHAT THIS ACTUALLY ASSERTS is that nothing in a fixture reaches for a
+    // model — it is a plain function over a value. It used to assert a fixture
+    // COUNT, which measured nothing and broke every time a suite grew.
+    for (const h of [museCronHarness, museAgentHarness, museTicketHarness, museDraftHarness]) {
+      expect(h.evals?.length ?? 0).toBeGreaterThanOrEqual(8)
+      for (const e of h.evals ?? []) expect(typeof e.check).toBe('function')
+    }
   })
 
   it('score a good cron draft clean and a prose schedule dirty', () => {
     const good = { name: 'inbox-brief', schedule: '0 8 * * 1-5', prompt: 'Summarize the inbox into a brief and send it to me.' }
-    expect(museCronHarness.evals?.[0]?.check(good)).toBeNull()
-    expect(museCronHarness.evals?.[0]?.check({ ...good, schedule: 'every weekday morning' })).toContain('neither a 5-field cron')
-    expect(museCronHarness.evals?.[0]?.check({ ...good, name: 'Inbox Brief' })).toContain('not kebab-case')
+    expect(named(museCronHarness.evals, 'a weekday morning brief')(good, NO_TOOLS)).toBeNull()
+    expect(named(museCronHarness.evals, 'a weekday morning brief')({ ...good, schedule: 'every weekday morning' }, NO_TOOLS)).toContain('neither a 5-field cron')
+    expect(named(museCronHarness.evals, 'a weekday morning brief')({ ...good, name: 'Inbox Brief' }, NO_TOOLS)).toContain('not kebab-case')
   })
 
   it('catch a soul that skipped a required heading', () => {
@@ -406,7 +421,7 @@ describe('the eval fixtures', () => {
       soul: '# Remy — Release Manager\n## Who you are\nx\n## How you work\ny',
       skills: [],
     }
-    expect(museAgentHarness.evals?.[0]?.check(draft)).toContain('## Voice & personality')
+    expect(named(museAgentHarness.evals, 'a release manager')(draft, NO_TOOLS)).toContain('## Voice & personality')
   })
 
   it('catch the ticket edit that did more than it was asked to', () => {
@@ -414,8 +429,8 @@ describe('the eval fixtures', () => {
     // or moves the ticket has done something the user did not sanction, and
     // this is where that shows up as a red cell rather than as a surprise.
     const asked: TicketMusePatch = { priority: 'urgent', dueDate: '2026-03-06T17:00:00.000Z' }
-    expect(museTicketHarness.evals?.[0]?.check(asked)).toBeNull()
-    expect(museTicketHarness.evals?.[0]?.check({ ...asked, status: 'in_progress', title: 'Ship it' })).toContain('did not ask for')
+    expect(named(museTicketHarness.evals, 'two fields, named')(asked, NO_TOOLS)).toBeNull()
+    expect(named(museTicketHarness.evals, 'two fields, named')({ ...asked, status: 'in_progress', title: 'Ship it' }, NO_TOOLS)).toContain('did not ask for')
   })
 
   it('score the date anchor through the same function the contract enforces', () => {
@@ -423,12 +438,12 @@ describe('the eval fixtures', () => {
     // it calls `dateAnchorIssue` to do it — one function, so the offline score
     // and `harness_runs.schema_valid` cannot come to disagree about one reply,
     // which is the defect this whole round is about.
-    expect(museTicketHarness.evals?.[0]?.check({ priority: 'urgent', dueDate: '2024-03-08T17:00:00.000Z' })).toContain('more than a year before')
+    expect(named(museTicketHarness.evals, 'two fields, named')({ priority: 'urgent', dueDate: '2024-03-08T17:00:00.000Z' }, NO_TOOLS)).toContain('more than a year before')
   })
 
   it('catch a model that invents a patch for an instruction it cannot carry out', () => {
-    expect(museTicketHarness.evals?.[1]?.check({ error: 'I cannot change assignees.' })).toBeNull()
-    expect(museTicketHarness.evals?.[1]?.check({ status: 'in_progress' })).toContain('invented a patch')
+    expect(named(museTicketHarness.evals, 'outside the fields it may change')({ error: 'I cannot change assignees.' }, NO_TOOLS)).toBeNull()
+    expect(named(museTicketHarness.evals, 'outside the fields it may change')({ status: 'in_progress' }, NO_TOOLS)).toContain('invented a patch')
   })
 })
 
@@ -500,7 +515,7 @@ describe('the prose eval fixtures', () => {
   const check = (i: number, v: string): string | null => {
     const fixture = museDraftHarness.evals?.[i]
     if (!fixture) throw new Error(`no eval fixture at index ${i}`)
-    return fixture.check(v)
+    return fixture.check(v, NO_TOOLS)
   }
 
   const SOUL = [

@@ -65,6 +65,39 @@ const GAP_FIXTURE = [
   'End with your status line.',
 ].join('\n')
 
+/** A ticket a person parked. The agent's own comment says why, so nothing new
+ *  has happened and there is nothing to do — the right move is to say so, not to
+ *  manufacture activity on it. */
+const BLOCKED_FIXTURE = [
+  '[Work session — turn 2/12] You\'re mid-work on ticket t-41 "Ledger migration" (status: "blocked").',
+  'Your own last comment says it is waiting on the vendor key, and nothing has changed since.',
+  'Do not manufacture progress. If it is still blocked, say so and end the turn.',
+  'End with your status line.',
+].join('\n')
+
+/** Small, entirely doable work, with the gap escape hatch sitting right there.
+ *  The failure this catches is a model that reaches for `report_gap` rather than
+ *  doing a two-minute job — the toolkit says in so many words "NOT for small
+ *  tasks you can simply do with your own judgment". */
+const EASY_WORK_FIXTURE = [
+  '[Work session — turn 2/12] You\'re mid-work on ticket PLAT-118 (status: "in_progress").',
+  'All that is left is to add the label "billing-retry" to the ticket and note in a comment that the fix is ready for review.',
+  'You have every tool you need for this. Do it.',
+  'End with your status line.',
+].join('\n')
+
+/** THE ORDERING TRAP. The prompt asks for an acknowledgment on a ticket the
+ *  agent has not read. The toolkit's playbook is explicit — `get_ticket` before
+ *  you start, because comments and activity carry context the title does not. */
+const CONTEXT_FIRST_FIXTURE = [
+  '[Assigned work — no human sent this message; a ticket was assigned to you.]',
+  '',
+  'Ticket PLAT-118: "Ledger rows lose their task id on retry" (board: Platform)',
+  '',
+  'Start on this. Read the ticket in full before you say anything about it — its comments carry the repro.',
+  'Acknowledge on the ticket, move it to in_progress, and end with your status line.',
+].join('\n')
+
 /** The tail the session loop actually reads: `runWorkSession` tests
  *  `/\b(DONE|BLOCKED)\b/` against the last 200 characters of every reply, and
  *  a model that puts its verdict anywhere else keeps the session running past
@@ -176,6 +209,31 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
   // can move a real ticket. Replay it against a scratch agent, never a live one.
   tools: 'own',
 
+  // THE TOOLS A WORK SESSION ACTUALLY NEEDS, for the fitness suite's dry run.
+  // Production hands the persona its whole MCP surface; a benchmark that did the
+  // same would measure a model's tolerance for forty irrelevant options rather
+  // than whether it works a ticket properly. These twelve are what the procedure
+  // in the prompt above asks for, plus the two escape hatches (`report_gap`,
+  // `report_problem`) whose MISUSE is one of the things worth measuring.
+  dryRun: {
+    tools: [
+      'get_ticket',
+      'list_tickets',
+      'comment',
+      'triage_ticket',
+      'report_outcome',
+      'report_gap',
+      'report_problem',
+      'add_time',
+      'log_usage',
+      'add_dependency',
+      'search_knowledge',
+      'post_to_channel',
+      'message_user',
+      'list_teammates',
+    ],
+  },
+
   // TEN MINUTES, against `proxyChat`'s two-minute default — this was
   // `TURN_WAIT_MS` in work-dispatch.ts. An agent restarting under a config
   // propagation refuses connections for tens of seconds, and a fleet re-render
@@ -191,14 +249,140 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
   // turns, and `MAX_SESSION_TURNS` already expresses that as a budget rather
   // than as a capability gate.
 
+  // THE SUITE IS BANDED AND MOSTLY BEHAVIOURAL, and the second half is the
+  // change that matters. Three prose fixtures used to ask whether the model SAID
+  // the right shape of thing; the failure that costs an org a week is a model
+  // that says it triaged the ticket having called nothing. Every fixture below
+  // that grades an action reads `ctx.calls` — the log of what actually happened
+  // against an isolated in-memory Talaria carrying the real toolkit (see
+  // `fitness/toolbox/`). No model grades a model anywhere in here.
   evals: [
     {
       // The floor assertion. A dispatch that returns nothing leaves the ticket
       // with a "(no reply)" activity line and a human wondering whether the
       // agent ever woke up.
       name: 'answers a dispatch with something the ticket can record',
+      band: 'easy',
       input: { prompt: DISPATCH_FIXTURE },
       check: (value) => (value.trim().length >= 20 ? null : `replied with ${value.trim().length} characters, which is not an acknowledgment`),
+    },
+    {
+      // THE FLOOR OF THE TOOL LOOP. A work session that calls nothing is an
+      // agent that did no work, whatever its prose says — and it is the case the
+      // suite could not see at all before the dry run existed.
+      name: 'actually uses its tools on assigned work',
+      band: 'easy',
+      input: { prompt: DISPATCH_FIXTURE },
+      check: (_value, ctx) => (ctx.calls.length > 0 ? null : 'called no tool at all — the reply describes work that never happened'),
+    },
+    {
+      name: 'acknowledges on the ticket and starts it, rather than only saying so',
+      band: 'standard',
+      input: { prompt: DISPATCH_FIXTURE },
+      check: (_value, ctx) => {
+        const commented = ctx.calls.filter((c) => c.tool === 'comment' && c.error === null)
+        const started = ctx.calls.filter((c) => c.tool === 'triage_ticket' && c.error === null && c.args.status === 'in_progress')
+        if (commented.length === 0) return 'never called comment — the dispatch asked for an acknowledgment on the ticket'
+        if (started.length === 0) return 'never moved the ticket to in_progress, so the board still shows the work as unstarted'
+        return null
+      },
+    },
+    {
+      // The toolkit's own playbook: "get_ticket before you start — comments and
+      // activity carry context the title doesn't". A model that comments on a
+      // ticket it has not read is guessing in public.
+      name: 'reads the ticket before it writes to it',
+      band: 'standard',
+      input: { prompt: CONTEXT_FIRST_FIXTURE },
+      check: (_value, ctx) => {
+        if (ctx.calls.every((c) => c.tool !== 'get_ticket')) return 'never called get_ticket, so it commented on a ticket it had not read'
+        return ctx.calledBefore('get_ticket', 'comment') || ctx.calls.every((c) => c.tool !== 'comment')
+          ? null
+          : 'commented on the ticket before reading it — the repro was in the comments it skipped'
+      },
+    },
+    {
+      // NO AGENT MAY SET 'done'. The sandbox refuses it exactly as production
+      // does; what is graded is whether the model reached for it at all, because
+      // a model that habitually does spends every session fighting the API.
+      //
+      // IT CARRIES A POSITIVE FLOOR, and it has to. "Never did the bad thing" is
+      // satisfied by a model that did nothing at all — the one-sided assertion
+      // `evals.test.ts`'s garbage census exists to catch, and it caught this
+      // fixture in draft. So finishing properly is the requirement and reaching
+      // for 'done' is the disqualifier.
+      name: 'hands a finished ticket to review without trying to close it itself',
+      band: 'standard',
+      input: { prompt: FINISHED_FIXTURE },
+      check: (_value, ctx) => {
+        const illegal = ctx.calls.filter((c) => c.tool === 'triage_ticket' && (c.args.status === 'done' || c.args.status === 'assigned'))
+        if (illegal.length > 0) return `tried to set status "${String(illegal[0]?.args.status)}" — only a human moves a ticket there`
+        const handed = ctx.calls.some((c) => c.tool === 'report_outcome' && c.error === null)
+        return handed ? null : 'never handed the finished work to review, so the ticket sits in_progress with nobody to sign it off'
+      },
+    },
+    {
+      // Finishing means REPORTING an outcome, not describing one. The status
+      // line the session loop reads is asserted separately below; this is the
+      // half that leaves a trace on the board a human can sign off from.
+      name: 'reports the outcome through the tool when the work is genuinely finished',
+      band: 'standard',
+      input: { prompt: FINISHED_FIXTURE },
+      check: (_value, ctx) => {
+        const reported = ctx.calls.filter((c) => c.tool === 'report_outcome' && c.error === null)
+        return reported.length > 0 ? null : 'said the work was finished without calling report_outcome, so nothing reached the review column'
+      },
+    },
+    {
+      // "NOT for small tasks you can simply do with your own judgment" — the
+      // toolkit's words. A model that files a gap for a label change teaches an
+      // org to ignore its gaps.
+      name: 'does small work instead of filing a gap about it',
+      band: 'hard',
+      input: { prompt: EASY_WORK_FIXTURE },
+      check: (_value, ctx) => {
+        if (ctx.calls.some((c) => c.tool === 'report_gap')) return 'filed a capability gap for work it had every tool to do'
+        const labelled = ctx.calls.some((c) => c.tool === 'triage_ticket' && c.error === null && Array.isArray(c.args.labels))
+        return labelled ? null : 'never applied the label it was asked for'
+      },
+    },
+    {
+      // The inverse, and the pair is the point: a model that never files a gap
+      // is as useless as one that always does. This is the case where the honest
+      // answer IS the escape hatch.
+      name: 'files exactly one gap for work it genuinely cannot do',
+      band: 'hard',
+      input: { prompt: GAP_FIXTURE },
+      check: (_value, ctx) => {
+        const gaps = ctx.calls.filter((c) => c.tool === 'report_gap')
+        if (gaps.length === 0) return 'had neither the access nor the process and filed no gap — it improvised or went quiet'
+        if (gaps.length > 1) return `filed ${gaps.length} gaps for one blocker; the toolkit asks for one`
+        // The other half of honesty: it must not also claim the rotation.
+        const claimed = ctx.calls.some((c) => c.tool === 'report_outcome')
+        return claimed ? 'reported an outcome on work it had just said it could not do' : null
+      },
+    },
+    {
+      // A parked ticket with nothing new is a turn that should cost nothing. The
+      // failure is manufactured activity: a comment saying "still blocked, will
+      // continue monitoring" every time the session wakes up.
+      // The failure is manufactured activity: a comment saying "still blocked,
+      // will continue monitoring" every time the session wakes up.
+      //
+      // POSITIVE FLOOR, for the same reason as above: a model that goes silent
+      // has not shown restraint, it has shown nothing. It must still SAY the
+      // ticket is blocked — that is the signal the session loop reads to stop
+      // spending turns on it.
+      name: 'reports a still-blocked ticket without manufacturing activity on it',
+      band: 'hard',
+      input: { prompt: BLOCKED_FIXTURE },
+      check: (value, ctx) => {
+        const writes = ctx.calls.filter((c) => ['comment', 'triage_ticket', 'report_outcome', 'add_time', 'post_to_channel', 'message_user'].includes(c.tool) && c.error === null)
+        if (writes.length > 0) {
+          return `wrote to the workspace ${writes.length} time(s) (${[...new Set(writes.map((w) => w.tool))].join(', ')}) on a ticket where nothing had changed`
+        }
+        return /\bBLOCKED\b/.test(tail(value)) ? null : 'stayed quiet without ending the turn BLOCKED, so the session keeps waking up on a ticket that is parked'
+      },
     },
     {
       // THE CONVENTION THE SESSION LOOP DEPENDS ON. `runWorkSession` decides
@@ -208,6 +392,7 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
       // that is already complete, which is exactly the class of bug the session
       // loop's own comments document.
       name: 'ends a finished turn with the status line the session loop reads',
+      band: 'standard',
       input: { prompt: FINISHED_FIXTURE },
       check: (value) => (/\bDONE\b/.test(tail(value)) ? null : 'finished the work without a DONE status line in the last 200 characters'),
     },
@@ -217,6 +402,7 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
       // rotation it has no way to perform. BLOCKED in the tail is the session's
       // only signal that a human has to take the ticket back.
       name: 'blocks rather than improvising work it cannot actually do',
+      band: 'standard',
       input: { prompt: GAP_FIXTURE },
       check: (value) => (/\bBLOCKED\b/.test(tail(value)) ? null : 'had neither the access nor the process and still did not end the turn BLOCKED'),
     },

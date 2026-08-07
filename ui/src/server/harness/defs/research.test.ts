@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { runHarness, type HarnessDeps, type TransportRequest } from '@/server/harness/run'
+import { NO_TOOLS, type EvalContext } from '@/server/harness/define'
+import { runHarness, type HarnessDeps, type Transport, type TransportRequest } from '@/server/harness/run'
 import {
   clampQueries,
   queriesFromLines,
@@ -7,7 +8,9 @@ import {
   researchSearchHarness,
   researchSynthesisHarness,
   searchTransport,
+  toolSearchTransport,
   type QueryPlanInput,
+  type SearchSource,
 } from '@/server/harness/defs/research'
 import type { Capability } from '@/server/harness/capability'
 import type { GuardConfig } from '@/server/guardrails'
@@ -25,6 +28,10 @@ const GUARD: GuardConfig = { mode: 'observe', checks: {}, minConfidence: 0.5, po
 interface World {
   replies?: string[]
   facts?: Partial<Record<Capability, boolean>>
+  /** Capabilities this deployment can REACH through a registered tool. The
+   *  floor asks this before refusing, so a model that cannot browse but can
+   *  call a search tool is not turned away — see `capability-reach.ts`. */
+  reachable?: Partial<Record<Capability, { server: string; tool: string }>>
 }
 
 function world(w: World = {}) {
@@ -42,6 +49,13 @@ function world(w: World = {}) {
     // counts as missing. Unknown is not missing.
     missingCapabilities: async (_key, required) => required.filter((c) => facts[c]?.value === false),
     capabilities: async () => facts,
+    reach: async (_keys, wanted) =>
+      Object.fromEntries(
+        wanted.map((cap) => {
+          const supplier = w.reachable?.[cap] ?? null
+          return [cap, { capability: cap, reached: supplier !== null, via: supplier ? ('tool' as const) : null, supplier, detail: '' }]
+        }),
+      ),
     transport: async (req) => {
       requests.push(req)
       return { kind: 'gateway', text: replies[Math.min(requests.length - 1, replies.length - 1)] ?? '', toolNames: [], usage: null, contractDropped: false }
@@ -175,6 +189,154 @@ describe('the research search harness', () => {
     const w = world({ replies: ['Node.js 24 reaches end of life on 2028-04-30.'] })
     await runHarness(researchSearchHarness, { query: 'node 24 end of life' }, { caller: 'research:test', deps: w.deps })
     expect(w.requests[0]?.jsonMode).toBe(false)
+  })
+
+  it('does NOT refuse a non-browsing model when a registered tool reaches search', async () => {
+    // THE CORRECTION. The floor used to ask whether the MODEL browses; a slot an
+    // admin assigns is a model running inside Talaria with the tools this org
+    // registered. A model measured `search: false` and `tools: true`, with a
+    // web-search server in the registry, does the job — and refusing it was a
+    // true statement about the weights and a false one about the deployment.
+    const run = await runHarness(
+      researchSearchHarness,
+      { query: 'node 24 end of life' },
+      {
+        caller: 'research:test',
+        deps: world({
+          replies: ['Node.js 24 reaches end of life on 2028-04-30.'],
+          facts: { search: false, tools: true },
+          reachable: { search: { server: 'exa', tool: 'web_search' } },
+        }).deps,
+      },
+    )
+    expect(run.value).toContain('2028-04-30')
+  })
+
+  it('still refuses when nothing in the install reaches search', async () => {
+    // An org with no search server and a memory-only model gets the SAME
+    // refusal it always got. Reach widens the question; it does not soften it.
+    await expect(
+      runHarness(
+        researchSearchHarness,
+        { query: 'node 24 end of life' },
+        { caller: 'research:test', deps: world({ facts: { search: false, tools: true } }).deps },
+      ),
+    ).rejects.toThrow(/known not to support search/)
+  })
+})
+
+// ── The tool-driven search path ──────────────────────────────────────────────
+
+describe('toolSearchTransport', () => {
+  const SUPPLIER = { server: 'exa', tool: 'web_search' }
+
+  /** A base transport that answers with one tool call, then with prose. */
+  const modelThatSearches = (finalText: string): { base: Transport; seen: TransportRequest[] } => {
+    const seen: TransportRequest[] = []
+    const base: Transport = async (req) => {
+      seen.push(req)
+      if (seen.length === 1) {
+        return {
+          kind: 'gateway',
+          text: '',
+          toolNames: ['web_search'],
+          toolCalls: [{ name: 'web_search', args: JSON.stringify({ query: 'node 24 eol' }) }],
+          usage: null,
+          contractDropped: false,
+        }
+      }
+      return { kind: 'gateway', text: finalText, toolNames: [], usage: null, contractDropped: false }
+    }
+    return { base, seen }
+  }
+
+  it('calls the tool, harvests its sources, and answers from what came back', async () => {
+    const sink: SearchSource[] = []
+    const { base, seen } = modelThatSearches('Node.js 24 reaches end of life on 2028-04-30.')
+    const transport = toolSearchTransport('run-1', sink, SUPPLIER, {
+      base,
+      callTool: async () => ({
+        text: 'Node 24 EOL is 2028-04-30.',
+        structured: { results: [{ url: 'https://github.com/nodejs/Release', title: 'nodejs/Release', snippet: 'Node 24 …' }] },
+      }),
+    })
+
+    const reply = await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'node 24 end of life' }], jsonMode: false, caller: 't' })
+
+    expect(reply.text).toContain('2028-04-30')
+    // The sources are the product: without them the synthesis stage has nothing
+    // to cite and `ungrounded_ref` has nothing to ground against.
+    expect(sink).toEqual([{ url: 'https://github.com/nodejs/Release', title: 'nodejs/Release', snippet: 'Node 24 …' }])
+    // The tool definition was actually offered, and the native "you ARE a search
+    // engine" framing was replaced rather than stacked on top of the new one.
+    expect(seen[0]?.toolDefs?.[0]?.name).toBe('web_search')
+    expect(seen[0]?.messages.filter((m) => m.role === 'system')).toHaveLength(1)
+    expect(seen[0]?.messages[0]?.content).toContain('web_search')
+  })
+
+  it('FAILS a model that answered without searching, rather than passing off memory as research', async () => {
+    // The precise failure the search floor exists to prevent. Prose from
+    // training data is indistinguishable from prose from the web by looking at
+    // it, so the distinction has to be made here, where it is still visible.
+    const sink: SearchSource[] = []
+    const transport = toolSearchTransport('run-1', sink, SUPPLIER, {
+      base: async () => ({ kind: 'gateway', text: 'Node 24 reaches EOL in April 2028, I believe.', toolNames: [], usage: null, contractDropped: false }),
+      callTool: async () => ({ text: '', structured: null }),
+    })
+
+    await expect(transport({ model: 'deepseek', messages: [{ role: 'user', content: 'q' }], jsonMode: false, caller: 't' })).rejects.toThrow(/without calling/)
+  })
+
+  it('finds sources in whatever envelope the server used', async () => {
+    // MCP search servers disagree about the wrapper and agree about the leaf,
+    // which is an object with a URL on it.
+    const sink: SearchSource[] = []
+    const { base } = modelThatSearches('done')
+    const transport = toolSearchTransport('run-1', sink, SUPPLIER, {
+      base,
+      callTool: async () => ({ text: '', structured: { data: { hits: [{ link: 'https://a.example/x', name: 'A' }, { href: 'https://b.example/y' }] } } }),
+    })
+    await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'q' }], jsonMode: false, caller: 't' })
+    expect(sink.map((s) => s.url)).toEqual(['https://a.example/x', 'https://b.example/y'])
+  })
+
+  it('keeps going when the tool itself fails, and says so in the transcript', async () => {
+    // One dead tool call costs one angle, not the run — the same posture the
+    // round loop takes around the whole stage.
+    const sink: SearchSource[] = []
+    const { base, seen } = modelThatSearches('The search tool was unavailable, so I could not verify this.')
+    const transport = toolSearchTransport('run-1', sink, SUPPLIER, {
+      base,
+      callTool: async () => {
+        throw new Error('upstream 503')
+      },
+    })
+    const reply = await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'q' }], jsonMode: false, caller: 't' })
+    expect(reply.text).toContain('could not verify')
+    expect(seen[1]?.messages.at(-1)?.content).toContain('upstream 503')
+    expect(sink).toEqual([])
+  })
+
+  it('supplies the stage’s own question when the model calls the tool with junk arguments', async () => {
+    const sink: SearchSource[] = []
+    let got: Record<string, unknown> = {}
+    const seen: TransportRequest[] = []
+    const base: Transport = async (req) => {
+      seen.push(req)
+      if (seen.length === 1) {
+        return { kind: 'gateway', text: '', toolNames: [], toolCalls: [{ name: 'web_search', args: 'not json at all' }], usage: null, contractDropped: false }
+      }
+      return { kind: 'gateway', text: 'ok', toolNames: [], usage: null, contractDropped: false }
+    }
+    const transport = toolSearchTransport('run-1', sink, SUPPLIER, {
+      base,
+      callTool: async (_s, _t, args) => {
+        got = args
+        return { text: '', structured: null }
+      },
+    })
+    await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'node 24 end of life' }], jsonMode: false, caller: 't' })
+    expect(got.query).toBe('node 24 end of life')
   })
 })
 
@@ -311,10 +473,13 @@ describe('the research report is grounded against its own search hits', () => {
 // passes everything scores every model identically and is worse than no eval,
 // so each one is exercised against a plausible BAD answer as well as a good one.
 
-const checkOf = <I, O>(evals: Array<{ name: string; input: I; check: (v: O) => string | null }> | undefined, name: string) => {
+const checkOf = <I, O>(evals: Array<{ name: string; input: I; check: (v: O, ctx: EvalContext) => string | null }> | undefined, name: string) => {
   const found = evals?.find((e) => e.name.startsWith(name))
   if (!found) throw new Error(`no eval fixture starting "${name}"`)
-  return found.check
+  // These fixtures are all single-shot, so the context is the empty one every
+  // non-dry-run harness receives. Bound here rather than at each of the fifteen
+  // call sites below.
+  return (v: O) => found.check(v, NO_TOOLS)
 }
 
 describe('the research eval fixtures', () => {

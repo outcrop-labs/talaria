@@ -64,7 +64,12 @@ const runHarness = vi.fn(async (def: { id: string; onFailure: unknown }, _input:
 })
 
 vi.mock('@/server/db/pg', () => ({ db: async () => sql }))
-vi.mock('@/server/harness/run', () => ({ runHarness }))
+// `capabilityKeysFor` is the runner's own key derivation, which `searchStage`
+// now asks so it can pick between the native and the tool-driven search
+// transport. Stubbed to "no keys", which lands the reach check on "nothing has
+// measured this" and therefore on the native path — the behaviour every case in
+// this file was written against.
+vi.mock('@/server/harness/run', () => ({ runHarness, capabilityKeysFor: async () => [] }))
 vi.mock('@/server/gateway', () => ({ describeAgent: (id: string) => ({ label: id }) }))
 vi.mock('@/server/scheduler', () => ({ registerJob: () => {} }))
 vi.mock('@/server/llm-gateway', () => ({
@@ -99,8 +104,29 @@ vi.mock('@/server/artifacts', () => ({
 
 const { startResearch } = await import('@/server/research')
 
+/** Wait for the detached pipeline to reach a TERMINAL write, rather than for a
+ *  fixed number of ticks.
+ *
+ *  It used to be `for (i < 20) await Promise.resolve()`, which is a bet that the
+ *  pipeline never grows an await — and it did: the search stage now asks whether
+ *  this run can reach search natively or through a tool, so it can pick the
+ *  matching transport. The count silently ran out, the assertions saw a
+ *  half-finished run, and the failure pointed at the synthesis stage rather than
+ *  at the clock. Polling for the outcome cannot go stale that way. */
+const TERMINAL = /update research_runs set status = '(?:done|error)', phase = null/
 const settle = async () => {
-  for (let i = 0; i < 20; i++) await Promise.resolve()
+  for (let i = 0; i < 200; i++) {
+    // THE PIPELINE'S OWN terminal write, `phase = null` included. Matching a
+    // bare `status = 'error'` also matches the STALE SWEEP, which runs on
+    // startup and fires before the pipeline has done anything at all — so the
+    // wait ended immediately and every assertion read a run that had not
+    // started. The test's own lookup below has always been this specific; the
+    // wait has to be too.
+    if (queries.some((q) => TERMINAL.test(q.text))) break
+    await new Promise((r) => setTimeout(r, 0))
+  }
+  // One more turn so the writes that FOLLOW the terminal one (the artifact save,
+  // the notification) have landed before anything is asserted.
   await new Promise((r) => setTimeout(r, 0))
 }
 const statusWrite = () => queries.find((q) => q.text.includes("update research_runs set status = 'done'"))

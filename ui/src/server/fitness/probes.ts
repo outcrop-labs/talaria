@@ -81,6 +81,7 @@ import { personaCapabilityKeys } from '../harness/persona'
 import type { GuardConfig } from '../guardrails'
 import { defaultTransport, offersToolDefinitions, runHarness, type HarnessDeps, type ToolCall, type ToolDefinition, type Transport } from '../harness/run'
 import { gatewayPulse, routingFor, type GatewayPulse } from '../llm-gateway'
+import { advertisedWindow } from '../model-catalog'
 import { estimateTokens } from '../usage'
 
 // ── What a probe is ──────────────────────────────────────────────────────────
@@ -861,13 +862,29 @@ async function endpointsFor(model: string): Promise<Array<{ name: string; contex
 }
 
 /** THE SMALLEST advertised window in the pool, not the largest. A bare model id
- *  can land on any member, so a claim has to hold for the worst of them. */
+ *  can land on any member, so a claim has to hold for the worst of them.
+ *
+ *  THE MODEL'S OWN NUMBER FIRST, and this is the fix for a probe that used to
+ *  skip on models the provider describes in full. `llm_endpoints.context_length`
+ *  is ONE integer per endpoint — a single number for an OpenRouter row serving
+ *  four hundred models with windows from 4k to 1M. It is written only by
+ *  `fleet-federate.ts`, and `ensureEndpoint`'s `on conflict do update` does not
+ *  refresh it, so on a normal install it is null and the long-context probe
+ *  skipped with "nothing advertises a context window for this model" about
+ *  models whose catalog entry says 1,048,576.
+ *
+ *  The endpoint row stays as the FALLBACK rather than being deleted: a federated
+ *  fleet writes it and publishes no catalog, so for those deployments it is the
+ *  only number there is. */
 async function smallestWindow(model: string): Promise<number | null> {
+  const advertised = await advertisedWindow(model).catch(() => null)
+  if (advertised !== null) return advertised
   const eps = await endpointsFor(model)
   const windows = eps.map((e) => e.contextLength).filter((n): n is number => typeof n === 'number' && n > 0)
   if (windows.length === 0) {
-    // Not a gateway model: a fleet persona records its window on the agent's
-    // config, not on an endpoint row, and nothing here can read it honestly.
+    // Not a gateway model, and no catalog entry: a fleet persona records its
+    // window on the agent's config, not on an endpoint row, and nothing here
+    // can read it honestly.
     return null
   }
   return Math.min(...windows)
