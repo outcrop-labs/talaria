@@ -44,6 +44,7 @@
   import { useSession } from '@/lib/session'
   import { useBoardStatuses, type BoardStatus } from '@/lib/statuses'
   import type { Task } from '@/lib/task-const'
+  import { isClosedStatus } from '@/components/board/field-pills'
 
   // All view state lives in the URL (deep-link convention): view, group, q, and
   // the filter facets (comma-multi within a facet: OR inside, AND across).
@@ -110,8 +111,7 @@
 
   function matchesDue(t: Task, due: BoardSearch['due'], statuses: BoardStatus[]): boolean {
     if (!due) return true
-    const closed = statuses.find((s) => s.key === t.status)?.category === 'done' || ['done', 'cancelled', 'failed'].includes(t.status)
-    const open = !closed
+    const open = !isClosedStatus(t.status, statuses)
     switch (due) {
       case 'none':
         return !t.dueDate

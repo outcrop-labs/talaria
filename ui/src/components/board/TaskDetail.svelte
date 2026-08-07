@@ -47,6 +47,7 @@
   import {
     EFFORTS,
     EFFORT_LABEL,
+    OFF_BOARD_STATUSES,
     PRIORITIES,
     PRIORITY_ICON,
     STATUS_LABEL,
@@ -70,7 +71,7 @@
   import TicketMuseBar from './TicketMuseBar.svelte'
   import WorkbenchJobsStrip from './WorkbenchJobsStrip.svelte'
 
-  const MOVE: TaskStatus[] = [...TASK_STATUSES, 'failed', 'cancelled']
+  const MOVE: TaskStatus[] = [...TASK_STATUSES, ...OFF_BOARD_STATUSES]
 
   // Linear/Plane-style ticket: content (left) + properties rail (right).
   let { taskId, board, onClose }: { taskId: string; board: Board; onClose: () => void } = $props()
@@ -391,7 +392,7 @@
               size="sm"
               class="w-full"
             >
-              {#each boardStatuses.length ? [...boardStatuses.map((st) => st.key), 'failed', 'cancelled'] : MOVE as k (k)}
+              {#each boardStatuses.length ? [...boardStatuses.map((st) => st.key), ...OFF_BOARD_STATUSES] : MOVE as k (k)}
                 <option value={k}>
                   {statusLabelOf(k, boardStatuses)}
                 </option>

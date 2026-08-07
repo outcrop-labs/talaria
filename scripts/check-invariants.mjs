@@ -62,7 +62,14 @@ const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 const SOURCE_DIRS = ['ui/src', 'mcp/src']
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.output', '.vinxi', '.tanstack'])
 const SKIP_FILES = new Set(['routeTree.gen.ts'])
-const EXTS = ['.ts', '.tsx', '.mts', '.js', '.mjs']
+// `.svelte` IS hand-written source, and leaving it out was not a small gap.
+// The React→Svelte migration moved the bulk of the UI into 384 .svelte files,
+// every rule below silently stopped covering all of them, and the census went
+// on naming .tsx paths that no longer existed — so the file both under-checked
+// the tree and reported a stale over-count, at the same time, for the same
+// reason. A rule that cannot see the majority of the code it polices is
+// decoration; this is the line that keeps it a check.
+const EXTS = ['.ts', '.tsx', '.mts', '.js', '.mjs', '.svelte']
 
 // ── Rules ────────────────────────────────────────────────────────────────────
 
@@ -311,15 +318,11 @@ const CENSUS = [
       // retires both this line and that check is one import.
       'ui/src/lib/task-const.ts': 1,
       'ui/src/server/statuses.ts': 1,
-      // ── Known debt, owned by a later round ──────────────────────────────────
-      // Each of these is a real copy and each should become an import. They are
-      // listed rather than fixed because the change that added this file was
-      // scoped to the two board views; listing them means the next hand sees
-      // them on every CI run instead of discovering them in round nine.
-      'ui/src/components/board/filter-bar.tsx': 1, // status filter options
-      'ui/src/components/board/field-pills.tsx': 1, // `['done','cancelled','failed']` — the CLIENT-side terminal predicate
-      'ui/src/components/board/task-detail.tsx': 2, // MOVE list + status picker
-      'ui/src/routes/_app/boards/$boardId.tsx': 1, // `['done','cancelled','failed']` again, same predicate, second copy
+      // The four board-view copies this census used to carry are GONE, not
+      // renamed: FilterBar and TaskDetail spread `OFF_BOARD_STATUSES`, and the
+      // two byte-identical closed predicates (field-pills + Board.svelte)
+      // collapsed into `isClosedStatus`, which Board.svelte now imports.
+      // The census shrank to the two definitions, which is what a census is for.
     },
   },
   {
