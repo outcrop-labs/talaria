@@ -4,6 +4,7 @@ import {
   extractToolRecord,
   guardRuleMeta,
   needsRedaction,
+  redactFindings,
   redactSecrets,
   runGuardrails,
   RULES,
@@ -346,6 +347,21 @@ describe('pii_leak', () => {
 // ── redaction ───────────────────────────────────────────────────────────────
 
 describe('redactSecrets', () => {
+  // A pinned finding is stored beside the message it is about, and
+  // `zero_tool_claim` quotes the offending SENTENCE verbatim — so strict mode
+  // could scrub `content` and leave the same credential in `guard` on the same
+  // row, which is what the agent read path then handed to another model.
+  it('scrubs the verbatim snippet a finding carries', () => {
+    const key = `sk-ant-${'a'.repeat(24)}`
+    const findings = runGuardrails(ctx(`I saved the doc with the key ${key} in your drafts.`), config())
+    // Both rules fire on one ordinary sentence, which is the whole problem:
+    // `secret_leak` truncates its own snippet to a vendor prefix on purpose,
+    // and `zero_tool_claim` quotes the sentence — key included — in full.
+    expect(checks(findings)).toContain('zero_tool_claim')
+    expect(findings.some((f) => f.snippet.includes(key))).toBe(true)
+    for (const f of redactFindings(findings)) expect(f.snippet).not.toContain(key)
+  })
+
   it('reports nothing redacted for clean text', () => {
     expect(redactSecrets('all clear')).toEqual({ text: 'all clear', redacted: false })
   })
@@ -360,6 +376,33 @@ describe('redactSecrets', () => {
   it('swallows an UNTERMINATED private-key block to the end of the text', () => {
     const { text } = redactSecrets('-----BEGIN PRIVATE KEY-----\nMIIB\nMIIB')
     expect(text).toBe('[redacted Private key block]')
+  })
+
+  // THE FALSE POSITIVE THAT ATE DOCUMENTS. The unterminated branch swallows to
+  // end-of-text, so a SENTENCE that merely names the header line deleted
+  // everything after it — and because `output.clean` for a text harness accepts
+  // any non-empty string, the truncation came back as a VALID value. The
+  // distiller then archived the chat behind a half-written distillation, the
+  // librarian overwrote a good OKF with an untagged fragment, and a work session
+  // lost the trailing DONE the dispatch loop parses. A line break after the
+  // header is what tells PEM from prose.
+  it('leaves a sentence that merely names the BEGIN marker alone', () => {
+    const runbook = [
+      'TLS rotation runbook',
+      '',
+      '1. Open the bundle.',
+      '2. Look for the -----BEGIN PRIVATE KEY----- line near the top.',
+      '3. Rotate, then restart the edge nodes.',
+    ].join('\n')
+    expect(redactSecrets(runbook)).toEqual({ text: runbook, redacted: false })
+    // …and it is not a finding either: naming a header is not carrying a key.
+    expect(only('secret_leak', ctx(runbook))).toEqual([])
+  })
+
+  it('still swallows a real block whose body starts on the next line', () => {
+    const { text } = redactSecrets('-----BEGIN PRIVATE KEY-----\nMIIB\nMIIB')
+    expect(text).toBe('[redacted Private key block]')
+    expect(only('secret_leak', ctx('-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBg'))).toHaveLength(1)
   })
 
   it('redacts every occurrence, not just the first', () => {

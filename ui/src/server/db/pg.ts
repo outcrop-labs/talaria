@@ -1275,6 +1275,49 @@ const MIGRATIONS: string[] = [
   // defaults live in code (NOTIFY_CLASSES.fallback), not in this column, so
   // tuning them later reaches every user who hasn't formed an opinion.
   `alter table users add column if not exists notify_prefs jsonb not null default '{}'::jsonb`,
+  // One row per model call that went through `runHarness` (server/harness/run.ts),
+  // including the ones that never reached a model — no routable model, or a
+  // refusal on a capability the harness declared it cannot work without.
+  //
+  // This is the PRODUCTION GROUND TRUTH behind model fitness. A bench score
+  // says what a model did on ten fixtures; these rows say what it is doing on
+  // your org's real work, and the two questions the model picker has to answer
+  // are both aggregates over this table:
+  //   contract rate  schema_valid, per harness per model, over time
+  //   repair rate    repairs > 0 — a model at 40% first-pass and 95% after one
+  //                  repair is USABLE; one at 40/45 is not, and nothing in
+  //                  Talaria could tell those apart before this table existed.
+  // `chain_step` carries which fallback actually won, so a subsystem quietly
+  // limping along on 'first-routable' for a month becomes visible instead of
+  // being invisible by construction. `model` is nullable because "nothing
+  // routed" is a real, and important, outcome to record.
+  `create table if not exists harness_runs (
+     id uuid primary key default gen_random_uuid(),
+     harness text not null,
+     model text,
+     chain_step text,
+     widened boolean not null default false,
+     repairs integer not null default 0,
+     schema_valid boolean not null default false,
+     latency_ms integer not null default 0,
+     findings integer not null default 0,
+     caller text not null default '',
+     created_at timestamptz not null default now()
+   )`,
+  // Every fitness query is "this harness, this model, recently" — and the
+  // matrix runs one per cell, so the ordering has to come from the index
+  // rather than from a sort over the harness's whole history.
+  `create index if not exists harness_runs_harness_model_idx
+     on harness_runs (harness, model, created_at desc)`,
+  // The sentence behind a red cell. Contract rate answers "how often does this
+  // model hold the contract"; the first question anyone asks of a bad number is
+  // "failed how?", and without this the row could not say — a refusal below the
+  // capability floor, a reply that never closed its JSON value, and a gateway
+  // 503 were all just `schema_valid = false`. The runner redacts and bounds the
+  // text before it lands here (see `runError` in harness/run.ts); the model's
+  // RAW reply deliberately stays out of the table, since it can be large and
+  // this row is kept forever.
+  `alter table harness_runs add column if not exists error text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
