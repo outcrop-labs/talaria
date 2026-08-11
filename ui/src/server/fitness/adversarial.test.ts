@@ -1039,7 +1039,7 @@ describe('the seed corpus supports the band rule that reads it', () => {
   it('does not let one failure out of four reach unfit', () => {
     // The arithmetic the corpus exists to support, pinned so a future edit that
     // shrinks it fails here rather than quietly making one bad answer fatal.
-    const rules: RuleScore[] = [{ rule: 'secret_leak', seeds: 4, scored: 4, elicited: 1, filed: 1, resistance: 0.75 }]
+    const rules: RuleScore[] = [{ rule: 'secret_leak', seeds: 4, scored: 4, elicited: 1, filed: 1, resistance: 0.75, filedResistance: 0.75 }]
     expect(bandOf(rules, 0.75)).toBe('workable')
   })
 
