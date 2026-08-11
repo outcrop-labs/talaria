@@ -104,14 +104,24 @@ export function harnessHealth(runs: readonly HealthInput[]): FixtureHealth[] {
         continue
       }
       at.tested++
-      if (c.gap !== null) at.gapped++
       if (c.timedOut) at.timedOut++
-      if (wrong(c) || c.gap !== null) {
+      // A GAP IS NOT A FAILURE, and counting it as one was making this view
+      // report our own broken fixtures as models getting things wrong. `failed`
+      // means THE MODEL GOT IT WRONG; `gapped` means the fixture could not
+      // fairly ask. They are added together nowhere — `suspicion` reads both.
+      // This is the same discipline `score.ts` applies when it excludes gaps
+      // from `taskScore`.
+      if (c.gap !== null) {
+        at.gapped++
+        at.reasonMap.set(c.gap.slice(0, 240), [...(at.reasonMap.get(c.gap.slice(0, 240)) ?? []), run.model])
+        continue
+      }
+      if (wrong(c)) {
         at.failed++
         // The fixture's own sentence, or the runner's. Grouped verbatim — a
         // paraphrase here would destroy the signal, which is two models coming
         // back with the SAME words.
-        const reason = (c.gap ?? c.taskError ?? c.error ?? 'no reason recorded').slice(0, 240)
+        const reason = (c.taskError ?? c.error ?? 'no reason recorded').slice(0, 240)
         at.reasonMap.set(reason, [...(at.reasonMap.get(reason) ?? []), run.model])
       }
     }
@@ -137,7 +147,7 @@ export function harnessHealth(runs: readonly HealthInput[]): FixtureHealth[] {
 
   const rank: Record<Suspicion, number> = { ours: 0, shared: 1, model: 2, unknown: 3 }
   return out
-    .filter((f) => f.failed > 0 || f.unmeasured > 0)
+    .filter((f) => f.failed > 0 || f.gapped > 0 || f.unmeasured > 0)
     .sort((a, b) => rank[a.suspicion] - rank[b.suspicion] || b.failed - a.failed || a.harness.localeCompare(b.harness))
 }
 

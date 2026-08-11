@@ -166,6 +166,16 @@ export interface HarnessResult<O> {
    *  a `raw` behind, so a transport failure read as a model that answered
    *  badly. */
   answered: boolean
+  /** THE HARNESS DECLINED TO ASK — the capability floor refused this model, so
+   *  no question reached it and nothing here is a fact about it.
+   *
+   *  IT NEEDS ITS OWN FIELD because `answered: false` cannot tell "we asked and
+   *  got nothing" apart from "we never asked", and the fitness sweep has to.
+   *  A refusal recorded as an error becomes a case the model FAILED: the health
+   *  view charged `research-search` five fixture failures to glm-5.2 for a floor
+   *  refusal it never saw, which is precisely the category error the floor
+   *  exists to make visible. A refusal is a SKIP — the absence of evidence. */
+  refused: boolean
   findings: Finding[]
   /** The model's last raw reply, before `clean`/parse — trimmed to a bound.
    *
@@ -662,7 +672,7 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
     return result
   }
 
-  const empty = { value: null, model: null, step: null, widened: false, repairs: 0, schemaValid: false, escalate: false, answered: false, raw: null } as const
+  const empty = { value: null, model: null, step: null, widened: false, repairs: 0, schemaValid: false, escalate: false, answered: false, refused: false, raw: null } as const
   /** What the drill-down shows. Bounded because a run row is telemetry, not an
    *  archive, and a model that answers with 200KB of prose must not be able to
    *  turn one failed run into a memory problem for whatever reads it. */
@@ -794,6 +804,9 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
         ...empty,
         model: routed,
         step,
+        // NOT AN ERROR ABOUT THE MODEL. The floor declined to ask, so the sweep
+        // records an absence rather than a failure — see `refused`.
+        refused: true,
         error: `"${routed}" cannot run harness "${def.id}": it is known not to support ${unreachable.join(', ')}. ${def.floor.note}`,
       })
     }
@@ -1161,7 +1174,7 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
       // before the throw either way - a throwing harness is precisely the one an
       // operator needs to see in the fitness data - and so there is exactly one
       // sentence in the tree for "this harness failed".
-      return fail({ value: null, model: routed, step, widened, repairs, schemaValid: false, escalate: false, answered, raw: rawOf(text), error: error ?? 'the harness produced no value' })
+      return fail({ value: null, model: routed, step, widened, repairs, schemaValid: false, escalate: false, answered, refused: false, raw: rawOf(text), error: error ?? 'the harness produced no value' })
     }
     if (typeof onFailure === 'object' && 'fallback' in onFailure) {
       // schemaValid stays FALSE. The fallback is the caller's declared safe
@@ -1178,5 +1191,5 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   // row inside completeViaGateway; the fleet transport writes one itself), so
   // all that is left here is the harness_runs row - the production ground truth
   // behind contract rate and repair rate per harness per model over time.
-  return finish({ value, model: routed, step, widened, repairs, schemaValid, escalate, answered, raw: rawOf(text), ...(error ? { error } : {}) })
+  return finish({ value, model: routed, step, widened, repairs, schemaValid, escalate, answered, refused: false, raw: rawOf(text), ...(error ? { error } : {}) })
 }

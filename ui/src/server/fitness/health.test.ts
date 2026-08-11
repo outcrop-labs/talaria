@@ -91,6 +91,29 @@ describe('harnessHealth', () => {
     expect(f).toMatchObject({ gapped: 1, suspicion: 'ours' })
   })
 
+  it('does NOT count a gap as a model failure', () => {
+    // THE BUG THIS PINS. `failed` fed the headline "133 of 643 fixture-runs
+    // failed", and gaps were in it — so our own broken fixtures were being
+    // reported as models getting things wrong, in the one view whose entire job
+    // is telling those two apart. `failed` means THE MODEL GOT IT WRONG.
+    // `gapped` means the fixture could not fairly ask. They are never added.
+    const [f] = harnessHealth([
+      run('a', [c({ gap: 'search returned nothing citable', task: 'unscored' })]),
+      run('b', [c({ task: 'fail', taskError: 'wrong answer' })]),
+    ])
+    expect(f).toMatchObject({ tested: 2, gapped: 1, failed: 1 })
+    // And the gap's sentence still reaches the reader — it is the most
+    // actionable line in the view, because it is the one we can go and fix.
+    expect(f?.reasons.some((r) => r.reason.includes('nothing citable'))).toBe(true)
+  })
+
+  it('reports a fixture that ONLY ever gapped, rather than dropping it', () => {
+    // A fixture no model could fairly be asked is the most broken thing in the
+    // registry. Filtering on `failed > 0` hid exactly those.
+    const [f] = harnessHealth([run('a', [c({ gap: 'the turn budget ran out', task: 'unscored' })]), run('b', [c({ gap: 'the turn budget ran out', task: 'unscored' })])])
+    expect(f).toMatchObject({ failed: 0, gapped: 2, suspicion: 'ours' })
+  })
+
   it('counts a case the sweep could not measure apart from one it judged', () => {
     // A skip is not a verdict. Counting it as a failure would blame a model for
     // a harness its transport cannot drive, or for a provider that was busy.

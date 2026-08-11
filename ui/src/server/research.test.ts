@@ -46,7 +46,7 @@ sql.unsafe = (text: string) => (/^\s*select/i.test(text) ? Promise.resolve([RUN]
 /** The search stages answer with one usable source; only the SYNTHESIS stage is
  *  the subject, so everything before it succeeds. */
 const runHarness = vi.fn(async (def: { id: string; onFailure: unknown }, _input: unknown, ctx: { deps?: { transport?: unknown } }): Promise<HarnessResult<unknown>> => {
-  const base = { model: 'nomad', step: 'pin' as const, widened: false, repairs: 0, schemaValid: true, answered: true, findings: [], raw: 'x', latencyMs: 1, escalate: false }
+  const base = { model: 'nomad', step: 'pin' as const, widened: false, repairs: 0, schemaValid: true, answered: true, refused: false, findings: [], raw: 'x', latencyMs: 1, escalate: false }
   if (def.id === 'research-search') {
     // The real search transport is what records sources; the adapter passes it
     // in, so calling it is how a fixture supplies one.

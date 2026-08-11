@@ -44,6 +44,7 @@ const runHarness = vi.fn(async (_def: unknown, input: unknown, ctx: { caller: st
     value: 'looks fine',
     model: 'pl-main',
     step: 'pin',
+    refused: false,
     widened: false,
     repairs: 0,
     schemaValid: true,

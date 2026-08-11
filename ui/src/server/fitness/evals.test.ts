@@ -1379,6 +1379,59 @@ describe('runEvalSweep', () => {
     expect(sweep.cases[0]?.answered).toBe(true)
   })
 
+  it('files OUR GAP when the supplied search tool finds nothing, instead of failing the model', async () => {
+    // THE INVERSION THIS FIXES. Asked what NIST 800-53 AC-2 requires, a model
+    // called the search tool four times, got back NIST's homepage and the NIST
+    // Chemistry WebBook, and then did exactly what the harness asks — refused to
+    // supply the control text from memory. The sweep scored that a task failure.
+    // The better the model behaved, the worse it scored.
+    const needsSearch = {
+      ...reg(
+        defineHarness<{ q: string }, string>({
+          id: 'searcher',
+          label: 'Searcher',
+          job: 'Answers from the live web.',
+          requires: ['search'],
+          floor: { capabilities: ['search'], refuseBelow: true, suppliable: ['search'], note: 'Needs live search.' },
+          model: { chain: [] },
+          render: () => [{ role: 'user', content: 'what does AC-2 require?' }],
+          output: { kind: 'text', clean: (raw) => raw.trim() || null },
+          onFailure: 'null',
+          evals: [{ name: 'answers with dense specifics', input: { q: 'go' }, check: (v: string) => (v.includes('AC-2 requires') ? null : 'answered with no specifics') }],
+        }),
+      ),
+    }
+    const b = bench([needsSearch], { replies: [''] })
+    let turn = 0
+    const barren = {
+      ...b.deps,
+      supplier: async () => ({ server: 'talaria', tool: 'web_search' }),
+      harnessDeps: {
+        ...b.deps.harnessDeps,
+        missingCapabilities: async () => ['search' as const],
+        reach: async () => ({ search: { capability: 'search' as const, reached: true, via: 'tool' as const, supplier: { server: 'talaria', tool: 'web_search' }, detail: 'x' } }),
+        transport: async () => {
+          turn++
+          // Calls the tool, then honestly reports that nothing came back.
+          return turn === 1
+            ? { kind: 'gateway' as const, text: '', toolNames: [], toolCalls: [{ name: 'web_search', args: JSON.stringify({ query: 'AC-2' }) }], usage: null, contractDropped: false }
+            : { kind: 'gateway' as const, text: 'The results did not answer the question and I will not supply it from memory.', toolNames: [], usage: null, contractDropped: false }
+        },
+      },
+    }
+
+    // The tool answers, and finds NOTHING citable — which is what a
+    // CAPTCHA-walled search backend looks like from in here.
+    const sweep = await runEvalSweep('candidate', { deps: { ...barren, searchTool: async () => ({ text: 'No results for that query.', structured: [] }) }, concurrency: 1 })
+
+    const one = sweep.cases[0]
+    expect(one?.gap).toContain('returned nothing citable')
+    // NOT scored against the model: a gap is unscored, and `taskError` is
+    // cleared so nothing downstream reads it as a wrong answer.
+    expect(one?.task).toBe('unscored')
+    expect(one?.taskError).toBeNull()
+  })
+
   it('does not supplement when the install has no tool for it', async () => {
     // The floor's refusal is a real tier-2 result — an org with neither a
     // searching model nor a search server genuinely cannot do research, and the
@@ -1415,6 +1468,52 @@ describe('runEvalSweep', () => {
 
     await runEvalSweep('candidate', { deps: withoutTool, concurrency: 1 })
     expect(offered[0]).toEqual([])
+  })
+
+  it('records a FLOOR REFUSAL as a skip, not as a failed fixture', async () => {
+    // THE RUN THAT FOUND THIS. The health view showed glm-5.2 failing five
+    // `research-search` fixtures on `"glm-5.2" cannot run harness
+    // "research-search"` — a refusal it never saw, recorded as five wrong
+    // answers. The capability floor exists to make "we did not ask" visible, and
+    // the code reading its verdict was turning that into "the model got it
+    // wrong", which is the exact category error the floor is built to prevent.
+    const needsSearch = {
+      ...reg(
+        defineHarness<{ q: string }, string>({
+          id: 'searcher',
+          label: 'Searcher',
+          job: 'Answers from the live web.',
+          requires: ['search'],
+          floor: { capabilities: ['search'], refuseBelow: true, note: 'Needs live search.' },
+          model: { chain: [] },
+          render: () => [{ role: 'user', content: 'what shipped?' }],
+          output: { kind: 'text', clean: (raw) => raw.trim() || null },
+          onFailure: 'null',
+          evals: [{ name: 'answers', input: { q: 'go' }, check: () => null }],
+        }),
+      ),
+    }
+    const b = bench([needsSearch], { replies: [''] })
+    const refused = {
+      ...b.deps,
+      supplier: async () => null,
+      harnessDeps: {
+        ...b.deps.harnessDeps,
+        // MEASURED unable, and nothing supplies it: the floor refuses.
+        missingCapabilities: async () => ['search' as const],
+        capabilities: async () => ({ search: { value: false, source: 'probe' as const, at: '2026-08-11T00:00:00.000Z' } }),
+      },
+    }
+
+    const sweep = await runEvalSweep('candidate', { deps: refused, concurrency: 1 })
+
+    const one = sweep.cases[0]
+    // A SKIP, which every consumer already reads as "no evidence" — not a
+    // contract failure with a sentence about the model attached.
+    expect(one?.skipped).toContain('cannot run harness')
+    expect(one?.task).toBe('unscored')
+    // And the harness's own column counts it as an absence rather than a case.
+    expect(sweep.harnesses[0]).toMatchObject({ cases: 0, skipped: 1 })
   })
 
   it('records an unreachable model as UNMEASURED, not as a failure', async () => {

@@ -68,7 +68,7 @@ import { defaultTransport, offersToolDefinitions, runsOwnToolLoop, type Transpor
 import { makeSandbox } from './toolbox/sandbox'
 import { makeWorkbench } from './toolbox/hermes-tools'
 import { sandboxTransport, turnBudget, type DryRunResult } from './toolbox/dry-run'
-import { toolSearchTransport } from '../harness/defs/research'
+import { toolSearchTransport, type SearchSource } from '../harness/defs/research'
 import { supplierFor, PROVIDERS_KEY } from '../capability-reach'
 import { platformSupply } from '../capability-platform'
 import { listMcpServers } from '../mcp-registry'
@@ -471,6 +471,14 @@ export interface EvalDeps {
    *  sweep stays runnable with no database and no MCP registry anywhere near it
    *  — and so a test can drive the supplemented path without one. */
   supplier?: (capability: Capability) => Promise<{ server: string; tool: string } | null>
+  /** HOW A SUPPLIED TOOL IS ACTUALLY CALLED. Defaults to the same dispatcher
+   *  production uses (registry or platform, see `toolSearchTransport`).
+   *
+   *  Injected so a sweep test can decide what search RETURNS. Without this seam
+   *  the only way to exercise the empty-search gap was to let a unit test reach
+   *  a live SearXNG over the network and hope it found nothing — a test whose
+   *  verdict depends on the internet is not a test. */
+  searchTool?: (server: string, tool: string, args: Record<string, unknown>) => Promise<{ text: string; structured: unknown }>
   /** Passed through to `runHarness` as `ctx.deps`. The sweep adds its own
    *  transport wrapper, `recordRun` and `recordFindings` on top (see the file
    *  header for why the last two are suppressed); everything else — model
@@ -1464,6 +1472,10 @@ async function runOneCase<I, O>(
   // inside Talaria with the tools this org registered — rather than the bare
   // weights. A model with no native search and a search tool available is a
   // model that can do research here, and the matrix should say so.
+  /** WHAT THE SUPPLIED SEARCH TOOL ACTUALLY RETURNED, across every call this
+   *  case made. Empty after a run that called the tool means our search found
+   *  nothing — our gap, not the model's failure. */
+  const sources: SearchSource[] = []
   const suppliable = def.floor.suppliable ?? []
   const supplier = suppliable.length > 0 && deps.supplier ? await deps.supplier(suppliable[0]!).catch(() => null) : null
 
@@ -1486,10 +1498,13 @@ async function runOneCase<I, O>(
       sandbox
         ? sandboxTransport(sandbox, base, dry, turnBudget(def.dryRun?.maxTurns))
         : supplier
-          ? // The same transport production uses, driving the same tool. The sink
-            // is a throwaway: the sweep grades the harness's own value, and the
-            // source list is `research.ts`'s concern rather than the benchmark's.
-            toolSearchTransport(`fitness:${def.id}`, [], supplier, { base })
+          ? // The same transport production uses, driving the same tool. THE SINK
+            // IS KEPT, not thrown away: it is the only evidence of whether the
+            // deployment's search actually FOUND anything, and that is the
+            // difference between a model that answered badly and a search
+            // backend that returned nothing for it to answer from. See the gap
+            // rule below.
+            toolSearchTransport(`fitness:${def.id}`, sources, supplier, { base, ...(deps.searchTool ? { callTool: deps.searchTool } : {}) })
           : base,
       capture,
       live,
@@ -1602,11 +1617,45 @@ async function runOneCase<I, O>(
     // The gap is reported to US, which is the point: it says either the budget
     // is too small for the job or the harness is asking for more than the job
     // needs, and both are ours to fix.
+    // OUR SEARCH FOUND NOTHING, so the fixture could not fairly ask its question.
+    //
+    // WHAT THIS COSTS WHEN IT IS MISSING. Asked what NIST 800-53 AC-2 requires,
+    // a model called the search tool four times and got back NIST's homepage,
+    // the NIST Chemistry WebBook and a Wikipedia article. It then did exactly
+    // what the harness asks — "I cannot state from these results what AC-2
+    // requires, and I will not supply the content from memory" — and the sweep
+    // recorded a task failure against the model for it. The better the model
+    // behaves here, the worse it scores, which inverts the whole benchmark.
+    //
+    // THE SIGNAL IS THE SINK, not the prose. `toolSearchTransport` throws when
+    // the model never called the tool at all (that IS a model failure, and a
+    // serious one), so reaching here with an empty sink means the tool was
+    // called and returned nothing citable. Reported to US: it says the search
+    // backend cannot answer this fixture, which is either an engine to fix or a
+    // fixture to rewrite, and both are ours.
+    if (gap === null && taskError !== null && supplier !== null && sources.length === 0) {
+      gap = `the model called "${supplier.tool}" and this deployment's search returned nothing citable, so the fixture judged an answer written from no sources ("${taskError}"). Fix the search backend or ask this fixture something the installed engines can find.`
+      taskError = null
+    }
     if (gap === null && taskError !== null && evalContext.exhausted) {
       gap = `the model was still working when the loop's ${turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun)}-turn budget ran out, and the assertion then judged unfinished work ("${taskError}"). Raise this harness's dryRun.maxTurns or ask the fixture something a bounded loop can answer.`
       taskError = null
     }
     task = gap !== null ? 'unscored' : taskError === null ? 'pass' : 'fail'
+  }
+
+  // THE FLOOR DECLINED TO ASK — no question reached the model, so nothing here
+  // is a fact about it. Recorded as a SKIP, exactly like a harness this
+  // candidate's transport cannot drive.
+  //
+  // IT USED TO BE A FAILURE, and it was charged to the candidate. The health
+  // view showed glm-5.2 failing five `research-search` fixtures on
+  // `"glm-5.2" cannot run harness "research-search"` — a refusal it never saw,
+  // recorded as five wrong answers. That is the exact category error the
+  // capability floor exists to make visible, committed by the code that reads
+  // the floor's own verdict.
+  if (result?.refused) {
+    return skippedCase(def.id, fixture.name, fixture.band ?? 'standard', result.error ?? 'the capability floor refused this model, so the fixture was never asked')
   }
 
   const clean = outcome.done && contractHeld && task !== 'fail'
