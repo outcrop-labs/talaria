@@ -157,18 +157,17 @@
   /** Whether the live console is expanded. Local rather than in the URL: it is a
    *  reading preference for the minute you are watching a run, not a selection
    *  worth linking to. */
-  // CLOSED BY DEFAULT NOW THAT IT IS GLOBAL. It used to open with the Live pane,
-  // where opening it WAS the reason you were there; from every other pane an
-  // uninvited console is a third of the dialog somebody has to dismiss.
+  // CLOSED ON OPEN, ALWAYS — including while a run is in flight.
   //
-  // A RUN IN FLIGHT IS THE EXCEPTION, and the one case where the console is what
-  // somebody came for. Opening it when one appears — rather than defaulting it
-  // open — means a run that starts while the dialog is already open still shows
-  // itself, and an archived one still opens quiet.
+  // It briefly auto-opened for a live run, on the theory that watching a sweep is
+  // the one case where the console is what somebody came for. That theory is
+  // wrong in the situation it fires in: anyone who tests models has runs going
+  // most of the time, so "the exception" was every time they opened the dialog,
+  // and the thing they had actually clicked in to read started a third of the way
+  // down the pane. A button carrying its own line count is discoverable enough;
+  // opening a panel nobody asked for is not a shortcut, it is a decision made on
+  // somebody's behalf.
   let consoleOpen = $state(false)
-  $effect(() => {
-    if (live) consoleOpen = true
-  })
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
