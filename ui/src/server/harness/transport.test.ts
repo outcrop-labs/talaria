@@ -249,6 +249,28 @@ describe('offering tool definitions', () => {
     expect(built[0]?.body.response_format).toEqual({ type: 'json_object' })
   })
 
+  it('tells the provider to switch reasoning effort off when it offers tools', async () => {
+    // THE RUN THAT FOUND THIS. gpt-5.6-terra refused every tool turn with
+    // "Function tools with reasoning_effort are not supported ... or set
+    // reasoning_effort to 'none'", and 27 cases across four tool-loop harnesses
+    // were filed as "could not reach this model". We were not SENDING the
+    // parameter — the model's own default effort is what conflicts — so the
+    // strip-and-retry ratchet had nothing to remove and bailed.
+    drops = []
+    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    await gatewayTransport(toolRequest)
+    expect(built[0]?.body.reasoning_effort).toBe('none')
+  })
+
+  it('does not send it on a turn that offers no tools', async () => {
+    // The incompatibility is with FUNCTION TOOLS. A plain completion has no
+    // reason to touch the model's reasoning, and quietly turning it off
+    // everywhere would be a capability change smuggled in as a bug fix.
+    completeViaGateway.mockResolvedValue({ text: 'a title', contractDrops: [] })
+    await gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 't' })
+    expect(built.some((b) => 'reasoning_effort' in b.body)).toBe(false)
+  })
+
   it('does NOT ask for json_object when the contract is rooted at an ARRAY', async () => {
     // WHAT THIS COST. `json_object` is not "reply in JSON" — it is "return a JSON
     // OBJECT", enforced by constrained decoding. `channel-plan` returns a

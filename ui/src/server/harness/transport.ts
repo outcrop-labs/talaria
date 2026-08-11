@@ -439,6 +439,26 @@ async function gatewayToolTurn(req: TransportRequest, defs: ToolDefinition[]): P
     tool_choice: 'auto',
   }
   if (req.temperature !== undefined) body.temperature = req.temperature
+  // FUNCTION TOOLS AND A REASONING EFFORT ARE INCOMPATIBLE ON /v1/chat/completions,
+  // and the provider says so in the sentence it refuses with:
+  //
+  //   Function tools with reasoning_effort are not supported for gpt-5.6-terra in
+  //   /v1/chat/completions. To use function tools, use /v1/responses or set
+  //   reasoning_effort to 'none'.
+  //
+  // WE WERE NOT SENDING IT. The model's OWN default effort is what conflicts, so
+  // there was nothing for the strip-and-retry ratchet to remove — it bails when
+  // the named parameter is not in the body — and a sweep of that model filed 27
+  // cases across four tool-loop harnesses as "could not reach this model" on an
+  // endpoint that was answering everything else fine.
+  //
+  // So the tool turn says the one thing that makes tools work. It is sent to
+  // EVERY provider rather than gated on a vendor check, because a table of which
+  // providers accept which parameters is the thing this file refuses to maintain:
+  // an endpoint that does not know the field answers 400 naming it, it IS in the
+  // body, and the existing ratchet strips it for good on the retry. The quirk
+  // costs one 400 once, on providers that have it, and nothing thereafter.
+  body.reasoning_effort = 'none'
   const toolFormat = responseFormatOf(req)
   if (toolFormat) body.response_format = toolFormat
   const call = await buildUpstream(route, body)

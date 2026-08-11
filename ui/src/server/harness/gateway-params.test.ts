@@ -79,6 +79,32 @@ describe('rejectedParam', () => {
     expect(rejectedParam('{"error":{"message":"\'seed\' is not supported by this model"}}')).toBe('seed')
   })
 
+  it('prefers the provider’s own `param` field over any reading of its prose', () => {
+    // VERBATIM FROM THE RUN THAT FOUND IT. The message names `reasoning_effort`
+    // three times and quotes it none of them, so every prose pattern in the
+    // function misses it — and 28 cases across four harnesses were filed as
+    // "could not reach this model" on an endpoint that was answering fine.
+    const body = JSON.stringify({
+      error: {
+        message:
+          "Function tools with reasoning_effort are not supported for gpt-5.6-terra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.",
+        type: 'invalid_request_error',
+        param: 'reasoning_effort',
+        code: null,
+      },
+    })
+    expect(rejectedParam(body)).toBe('reasoning_effort')
+    expect(classifyParam('reasoning_effort')).toBe('cosmetic')
+  })
+
+  it('reduces a dotted `param` path to the thing we can stop sending', () => {
+    expect(rejectedParam('{"error":{"param":"response_format.json_schema.strict"}}')).toBe('response_format')
+  })
+
+  it('still refuses to strip a load-bearing parameter the provider names', () => {
+    expect(classifyParam(rejectedParam('{"error":{"param":"messages"}}') ?? '')).toBe('protected')
+  })
+
   it('names the parameter in OpenAI’s two unquoted phrasings', () => {
     // A PARAMETER THE RATCHET CANNOT NAME IS ONE IT NEVER STOPS SENDING, so the
     // endpoint 400s on every call for as long as the default is configured.
