@@ -1318,6 +1318,88 @@ const MIGRATIONS: string[] = [
   // RAW reply deliberately stays out of the table, since it can be large and
   // this row is kept forever.
   `alter table harness_runs add column if not exists error text`,
+  // Agent filing cabinets moved from the root into one "Agents" folder
+  // (see agentCategoryFolder). Existing installs already have one root folder
+  // per agent, which is exactly the wall of names the move exists to clear, so
+  // reparent them rather than leaving old fleets looking different from new.
+  //
+  // A cabinet is a ROOT folder that is either named after a live agent, or —
+  // for agents since retired, whose display name is gone from agent_defs —
+  // carries the category folders only agentCategoryFolder ever writes, filed by
+  // the same creator, with no loose artifacts of its own (a cabinet holds
+  // category folders, never files directly).
+  //
+  // `created_by` deliberately does NOT discriminate here: it records whoever
+  // TRIGGERED the filing, so a cabinet built by a research run carries the
+  // requesting human's email, not the agent's name.
+  //
+  // Two statements, because the root has to exist before anything can point at
+  // it. Both are no-ops once no root cabinets remain.
+  `insert into artifact_folders (name, created_by)
+   select 'Agents', 'system'
+   where not exists (select 1 from artifact_folders where parent_id is null and name = 'Agents')
+     and exists (
+       select 1 from artifact_folders f
+       where f.parent_id is null
+         and f.name <> 'Agents'
+         and (
+           exists (select 1 from agent_defs d where d.display_name = f.name)
+           or (
+             exists (
+               select 1 from artifact_folders c
+               where c.parent_id = f.id
+                 and c.name in ('Documents', 'Media', 'Chat summaries', 'Plans', 'Research')
+                 and c.created_by is not distinct from f.created_by
+             )
+             and not exists (select 1 from artifacts a where a.folder_id = f.id)
+           )
+         )
+     )`,
+  `update artifact_folders f
+   set parent_id = (select id from artifact_folders where parent_id is null and name = 'Agents' order by created_at asc limit 1)
+   where f.parent_id is null
+     and f.name <> 'Agents'
+     and exists (select 1 from artifact_folders where parent_id is null and name = 'Agents')
+     and (
+       exists (select 1 from agent_defs d where d.display_name = f.name)
+       or (
+         exists (
+           select 1 from artifact_folders c
+           where c.parent_id = f.id
+             and c.name in ('Documents', 'Media', 'Chat summaries', 'Plans', 'Research')
+             and c.created_by is not distinct from f.created_by
+         )
+         and not exists (select 1 from artifacts a where a.folder_id = f.id)
+       )
+     )`,
+  // Folders became shareable. They were org-wide containers with no access of
+  // their own, which made "share this folder with the team" — the commonest
+  // thing a non-technical person does in a file browser — impossible to express.
+  // Same three columns, same vocabulary, same kb_editors grants as docs, spaces
+  // and artifacts, so folder access means exactly what it already means
+  // everywhere else.
+  //
+  // Defaults are deliberately 'org': every folder that exists today is visible
+  // to the whole workspace, and a migration must not make anyone's folders
+  // vanish from anyone else's browser.
+  `alter table artifact_folders add column if not exists visibility text not null default 'org'`,
+  `alter table artifact_folders add column if not exists edit_policy text not null default 'org'`,
+  `alter table artifact_folders add column if not exists owner_user_id uuid references users(id) on delete set null`,
+  `create index if not exists artifact_folders_owner_idx on artifact_folders(owner_user_id)`,
+  // Give the existing folders an owner, resolved from the `created_by` string
+  // they already carry. Without this, every pre-existing human folder is
+  // ownerless and only an admin could ever re-share it. Agent-created folders
+  // (the Agents/ cabinets) match no user and stay ownerless on purpose — those
+  // belong to the workspace, and canGovern already knows how to handle them.
+  `update artifact_folders f
+   set owner_user_id = (
+     select u.id from users u
+     where u.email = f.created_by or u.name = f.created_by
+     order by u.id limit 1
+   )
+   where f.owner_user_id is null
+     and f.created_by is not null
+     and exists (select 1 from users u where u.email = f.created_by or u.name = f.created_by)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

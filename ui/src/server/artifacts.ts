@@ -108,19 +108,31 @@ export async function namedRootFolder(name: string, createdBy: string): Promise<
   }
 }
 
-/** The agent's filing cabinet: "<Agent label>/<Category>", created on demand.
- *  Auto-created artifacts (plan docs, research reports, agent documents,
- *  media saves, chat summaries) file here instead of piling up at the root.
- *  Never throws — filing must not be able to kill the flow that creates the
- *  artifact; a null just means "root". */
+/** The single root every agent cabinet hangs under. One folder per agent at the
+ *  ROOT buried the user's own work under a wall of agent names the moment the
+ *  fleet grew; the Files browser now opens on your folders, with the whole
+ *  fleet's output one click away. */
+export const AGENTS_ROOT = 'Agents'
+
+/** The agent's filing cabinet: "Agents/<Agent label>/<Category>", created on
+ *  demand. Auto-created artifacts (plan docs, research reports, agent
+ *  documents, media saves, chat summaries) file here instead of piling up at
+ *  the root. Never throws — filing must not be able to kill the flow that
+ *  creates the artifact; a null just means "root". */
 export async function agentCategoryFolder(agentLabel: string, category: string, createdBy: string): Promise<string | null> {
   try {
-    const top = await findOrCreateFolder(agentLabel, null, createdBy)
+    const root = await findOrCreateFolder(AGENTS_ROOT, null, createdBy)
+    const top = await findOrCreateFolder(agentLabel, root, createdBy)
     return await findOrCreateFolder(category, top, createdBy)
   } catch {
     return null
   }
 }
+
+/** The category folders `agentCategoryFolder` writes. Exported because the
+ *  migration that reparented pre-existing cabinets matches on them, and the
+ *  browser marks the Agents root as fleet-owned rather than yours. */
+export const AGENT_CATEGORIES = ['Documents', 'Media', 'Chat summaries', 'Plans', 'Research'] as const
 
 export async function saveArtifact(
   id: string,
@@ -164,28 +176,57 @@ export interface ArtifactFolder {
   name: string
   icon: string | null
   parentId: string | null
+  visibility: Visibility
+  editPolicy: EditPolicy
+  ownerUserId: string | null
   createdBy: string | null
   createdAt: string
 }
-const FOLDER_COLS = `id, name, icon, parent_id as "parentId", created_by as "createdBy", created_at as "createdAt"`
+const FOLDER_COLS = `id, name, icon, parent_id as "parentId", visibility, edit_policy as "editPolicy", owner_user_id as "ownerUserId", created_by as "createdBy", created_at as "createdAt"`
+
+/** A folder in the shape the permission checks want. Folders carry the same
+ *  three access columns as docs, spaces and artifacts, so the same functions
+ *  answer "can this person read it / re-share it" for all four. */
+export function guardedFolder(f: ArtifactFolder): Guarded {
+  return { ownerUserId: f.ownerUserId, createdBy: f.createdBy, visibility: f.visibility, editPolicy: f.editPolicy }
+}
 
 export async function listFolders(): Promise<ArtifactFolder[]> {
   const sql = await db()
   return (await sql.unsafe(`select ${FOLDER_COLS} from artifact_folders order by name asc`)) as unknown as ArtifactFolder[]
 }
 
-export async function createFolder(input: { name: string; parentId?: string | null; createdBy: string }): Promise<ArtifactFolder> {
+export async function getFolder(id: string): Promise<ArtifactFolder | null> {
+  const sql = await db()
+  const rows = (await sql.unsafe(`select ${FOLDER_COLS} from artifact_folders where id = $1`, [id])) as unknown as ArtifactFolder[]
+  return rows[0] ?? null
+}
+
+/** `ownerUserId` is what separates a person's folder from the workspace's.
+ *  A human making a folder owns it; the find-or-create path agents use passes
+ *  nothing, so agent cabinets stay ownerless and org-visible — the workspace's,
+ *  which is exactly what they are. */
+export async function createFolder(input: {
+  name: string
+  parentId?: string | null
+  createdBy: string
+  ownerUserId?: string | null
+  visibility?: Visibility
+}): Promise<ArtifactFolder> {
   const sql = await db()
   const rows = (await sql`
-    insert into artifact_folders (name, parent_id, created_by)
-    values (${input.name}, ${input.parentId ?? null}, ${input.createdBy})
+    insert into artifact_folders (name, parent_id, created_by, owner_user_id, visibility)
+    values (${input.name}, ${input.parentId ?? null}, ${input.createdBy}, ${input.ownerUserId ?? null}, ${input.visibility ?? 'org'})
     returning ${sql.unsafe(FOLDER_COLS)}
   `) as unknown as ArtifactFolder[]
   return rows[0]!
 }
 
-/** Rename / set icon / reparent a folder. Rejects parent cycles. */
-export async function updateFolder(id: string, patch: { name?: string; icon?: string | null; parentId?: string | null }): Promise<ArtifactFolder | null> {
+/** Rename / set icon / reparent / re-share a folder. Rejects parent cycles. */
+export async function updateFolder(
+  id: string,
+  patch: { name?: string; icon?: string | null; parentId?: string | null; visibility?: Visibility; editPolicy?: EditPolicy },
+): Promise<ArtifactFolder | null> {
   const sql = await db()
   if (patch.parentId !== undefined && patch.parentId) {
     if (patch.parentId === id) return null
@@ -199,6 +240,8 @@ export async function updateFolder(id: string, patch: { name?: string; icon?: st
   if (patch.name !== undefined) await sql`update artifact_folders set name = ${patch.name} where id = ${id}`
   if (patch.icon !== undefined) await sql`update artifact_folders set icon = ${patch.icon} where id = ${id}`
   if (patch.parentId !== undefined) await sql`update artifact_folders set parent_id = ${patch.parentId} where id = ${id}`
+  if (patch.visibility !== undefined) await sql`update artifact_folders set visibility = ${patch.visibility} where id = ${id}`
+  if (patch.editPolicy !== undefined) await sql`update artifact_folders set edit_policy = ${patch.editPolicy} where id = ${id}`
   const rows = (await sql.unsafe(`select ${FOLDER_COLS} from artifact_folders where id = $1`, [id])) as unknown as ArtifactFolder[]
   return rows[0] ?? null
 }

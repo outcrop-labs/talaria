@@ -7,7 +7,7 @@ import { agentCaller } from '@/server/agent-auth'
 import { deleteArtifact, getArtifact, guarded, saveArtifact, setArtifactOfficial, setArtifactRouting, targetsForArtifact } from '@/server/artifacts'
 import { applyArtifactRouting } from '@/server/retrieval/artifact-routing'
 import { indexPlanDoc } from '@/server/plan-doc'
-import { canEditAgent, canEditHuman, canRead, isOwner, listEditors, setEditors } from '@/server/kb-perms'
+import { canEditAgent, canEditHuman, canGovern, canRead, listEditors, setEditors } from '@/server/kb-perms'
 import { isElevatedAssistant } from '@/server/users'
 import { logAudit } from '@/server/audit'
 
@@ -78,12 +78,19 @@ export const Route = defineApi('/api/artifacts/$id', {
       const user = gate
       if (!canEditHuman(g, user.id, user.email ?? user.name, editors)) return json({ error: 'forbidden' }, { status: 403 })
       actor = actorOf(user)
-      owner = isOwner(g, user.id, user.email ?? user.name)
+      // `canGovern`, not `isOwner` — the same rule kb.docs.$id.ts already uses,
+      // and the reason canGovern exists. An org agent's artifact is OWNERLESS
+      // on purpose, so strict ownership left every workspace file an orphan
+      // whose sharing literally nobody could change: the owner check could
+      // never pass, and the surface offered a Share dialog that always 403'd.
+      // canGovern hands those to admins and to whoever may use the agent that
+      // wrote them, while human-owned artifacts stay owner-only exactly as before.
+      owner = await canGovern(g, user)
       if (body.visibility === 'public' && !(await hasPerm(user, 'artifacts.publish'))) {
         return json({ error: 'no permission to publish to the web' }, { status: 403 })
       }
       const sharing = body.visibility !== undefined || body.editPolicy !== undefined || body.editors !== undefined
-      if (!owner && sharing) return json({ error: 'only the owner can change sharing' }, { status: 403 })
+      if (!owner && sharing) return json({ error: 'not allowed to change sharing' }, { status: 403 })
       // Routing decides which brain retrieves the content — owner's call.
       if (!owner && body.ragRouting !== undefined) {
         return json({ error: 'only the owner can change brain routing' }, { status: 403 })

@@ -12,7 +12,7 @@
   import { listQuery } from '@/components/ui/query-state'
   import { useUsers } from '@/lib/users'
   import { useAgents } from '@/lib/agents'
-  import { useEditors, type EditPolicy, type GrantRole, type KbEditor, type Visibility } from '@/lib/kb'
+  import { useEditors, type EditPolicy, type GrantRole, type KbEditor, type PermKind, type Visibility } from '@/lib/kb'
   import { cn } from '@/lib/cn'
   import { listStagger } from '@/lib/motion'
 
@@ -47,7 +47,7 @@
   }: {
     open: boolean
     onClose: () => void
-    kind: 'docs' | 'spaces' | 'artifacts'
+    kind: PermKind
     id: string
     label: string
     visibility: Visibility

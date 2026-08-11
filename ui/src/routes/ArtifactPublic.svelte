@@ -123,7 +123,7 @@
         ⬇ Download {loadState.a.title}
       </a>
     {:else}
-      <p class="text-sm text-muted">This artifact type isn’t viewable here yet.</p>
+      <p class="text-sm text-muted">This file type isn’t viewable here yet.</p>
     {/if}
   </PublicShell>
 {/if}

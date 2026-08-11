@@ -74,7 +74,7 @@
             await refresh()
           }
         }}
-        placeholder="Attach an artifact"
+        placeholder="Attach a file"
         size="sm"
         class="max-w-xs"
       />
