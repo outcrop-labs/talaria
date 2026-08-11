@@ -92,7 +92,18 @@ vi.mock('@/server/model-roles', () => ({ resolveRoleModel: async () => 'sonar' }
 // `reachFor` asks the platform what IT can supply, and the real answer probes
 // SearXNG over HTTP. This file is about the synthesis stage; it must not depend
 // on a container being up, and it must not pay a network round trip to find out.
-vi.mock('@/server/capability-platform', () => ({ platformSupply: async () => [], forgetPlatformSupply: () => {}, PLATFORM_SERVER: 'talaria' }))
+// EVERY EXPORT THE GRAPH USES, not just the ones this file cares about. A
+// partial `vi.mock` is not a partial mock — the missing names fail at import and
+// take the module graph with them, which surfaces here as the pipeline never
+// reaching its terminal write. `defs/research.ts` pulls `callPlatformTool` and
+// `isPlatformServer` for the supplement path.
+vi.mock('@/server/capability-platform', () => ({
+  platformSupply: async () => [],
+  forgetPlatformSupply: () => {},
+  PLATFORM_SERVER: 'talaria',
+  isPlatformServer: (s: string) => s === 'talaria',
+  callPlatformTool: async () => ({ text: '', structured: null }),
+}))
 vi.mock('@/server/notifications', () => ({ addNotification: async () => {} }))
 vi.mock('@/server/retrieval/sources', () => ({ indexActivity: async () => {}, indexPersonal: async () => {} }))
 vi.mock('@/server/titler', () => ({ generateTitle: async () => 'A title' }))

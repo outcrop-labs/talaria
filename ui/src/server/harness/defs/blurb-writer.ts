@@ -143,7 +143,7 @@ export const blurbWriterHarness = defineHarness<BlurbBatch, BlurbMap>({
         content:
           `You write one-line model descriptions for ${input.orgName || 'a team'}'s workspace pickers. ` +
           'Each line tells a non-technical teammate what the model is good at and when to pick it — plain, confident, concrete. ' +
-          'No parameter counts, no version trivia, no vendor marketing. 110 characters max each. ' +
+          'No parameter counts, no version trivia, no vendor marketing. When two models in a batch are close, say what actually separates them — two interchangeable lines help nobody choose. 110 characters max each. ' +
           'Reply with ONLY a JSON object mapping each model id to its one-line description.',
       },
       {
