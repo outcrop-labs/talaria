@@ -41,3 +41,7 @@ export const UNTRUSTED_INPUT =
  *  an untested prompt change to three working harnesses in the same commit that
  *  fixes a live one. They are the next round, not an oversight. */
 export const STATES_THE_BOUNDARY = ['summarizer', 'channel-plan', 'plan-doc'] as const
+
+/** `muse:draft` states it too, through `SYSTEM.document` in muse.ts, but its
+ *  system prompt is chosen per KIND at render time — so the test below cannot
+ *  reach it from a single fixture and `muse-prompt.test.ts` asserts it instead. */
