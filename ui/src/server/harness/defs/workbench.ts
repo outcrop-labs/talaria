@@ -29,6 +29,25 @@
 // fills the row — and it is honest besides: the three slots are three different
 // purchases, and an admin comparing them wants the same task run against each.
 //
+// WHAT THIS IS A PROXY FOR, AND WHAT IT IS NOT A REPLAY OF. Read this before
+// trusting a `Workbench · X effort` cell to predict a production run.
+//
+// Production does NOT run this loop. A Workbench run hands the model to an
+// EXTERNAL CODING AGENT — claude-code, opencode, whatever the agent's harness
+// slug resolves to — running in a container with ITS OWN prompt, its own tool
+// surface and its own turn budget (see `workbench-harnesses.ts`, a completely
+// different contract that until a rename shared the spelling `defineHarness`).
+// Talaria chooses the MODEL through the `code-*` roles and controls nothing
+// else about that loop.
+//
+// So what these three harnesses measure is the model's own coding behaviour on a
+// surface Talaria drives: locate the defect, edit the right file, check the
+// work. That is genuinely predictive — a model that patches the wrong file here
+// will patch the wrong file there — and it is NOT the same claim as "this model
+// works under claude-code". A green cell is evidence about the model, not a
+// rehearsal of the production path, and no fixture below should ever be written
+// as though it were.
+//
 // THE TASKS ARE THE SAME ACROSS ALL THREE, deliberately. The efforts differ in
 // what an admin SPENDS, not in what the job is; running a harder suite against
 // the heavy slot would make the three columns incomparable, which is the one
