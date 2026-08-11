@@ -1445,6 +1445,52 @@ const MIGRATIONS: string[] = [
   `alter table fitness_transcripts
      add column if not exists started_at timestamptz,
      add column if not exists wall_ms integer not null default 0`,
+  // WORKSPACE SECRETS — the credentials an agent may USE without ever reading.
+  //
+  // A DOC, NOT A ROW, because that is how they actually arrive. A deploy needs a
+  // PAT, a registry password and a signing key together; making somebody create
+  // three unrelated secrets and remember which three go together is how the
+  // wrong one gets used. One doc holds one or more entries, and a single secret
+  // is simply a doc with one — so there is one shape to grant, audit and revoke
+  // rather than two.
+  //
+  // `kind` separates the two lifetimes. A 'vault' doc is durable and belongs to
+  // the workspace. A 'relay' is a ONE-SHOT: somebody pastes a credential into
+  // chat so an agent can do one thing with it, and it is consumed on first
+  // resolve and never persisted anywhere a model can reach.
+  `create table if not exists workspace_secrets (
+     id uuid primary key default gen_random_uuid(),
+     name text unique not null,
+     title text not null,
+     kind text not null default 'vault',
+     note text,
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now(),
+     expires_at timestamptz,
+     uses_remaining integer,
+     last_used_at timestamptz
+   )`,
+  // The entries. `value_cipher` is sealed with the same envelope
+  // `llm_endpoints.api_key_cipher` uses (secretbox.ts), so a database dump is not
+  // a credential dump and one key rotation covers both. Nothing else in the row
+  // is sensitive: the KEY is what a model sees.
+  `create table if not exists workspace_secret_entries (
+     secret_id uuid not null references workspace_secrets(id) on delete cascade,
+     key text not null,
+     label text not null,
+     value_cipher text not null,
+     primary key (secret_id, key)
+   )`,
+  // WHO MAY RESOLVE IT. No grant means nobody — a secret somebody creates and
+  // forgets is inert, which is the safe direction for this table to fail in.
+  `create table if not exists workspace_secret_grants (
+     secret_id uuid not null references workspace_secrets(id) on delete cascade,
+     agent_model text not null,
+     granted_by text,
+     granted_at timestamptz not null default now(),
+     primary key (secret_id, agent_model)
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
