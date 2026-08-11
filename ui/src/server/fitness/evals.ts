@@ -1658,7 +1658,13 @@ async function runOneCase<I, O>(
     return skippedCase(def.id, fixture.name, fixture.band ?? 'standard', result.error ?? 'the capability floor refused this model, so the fixture was never asked')
   }
 
-  const clean = outcome.done && contractHeld && task !== 'fail'
+  // A GAP IS NOT CLEAN. `clean` decides whether the drill-down (the prompt, the
+  // raw reply, the transcript) is kept or dropped, and a gap is exactly the case
+  // where it matters most: the fixture is telling US it could not fairly ask its
+  // question, and the first thing whoever owns that fixture needs is what was
+  // actually sent and what came back. Dropping it because `task !== 'fail'` made
+  // our own bugs the only failures in the suite with no evidence attached.
+  const clean = outcome.done && contractHeld && task !== 'fail' && gap === null
   const costUsd =
     capture.promptTokens + capture.completionTokens > 0 ? await deps.price(model, capture.promptTokens, capture.completionTokens).catch(() => null) : null
 

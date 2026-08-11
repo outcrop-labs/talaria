@@ -83,6 +83,7 @@ import { researchQueriesHarness, researchSearchHarness, researchSynthesisHarness
 import { summarizerHarness } from './defs/summarizer'
 import { titlerHarness } from './defs/titler'
 import { workSessionHarness } from './defs/work-session'
+import { hermesKnowledgeHarness } from './defs/hermes-knowledge'
 import { workbenchHeavyHarness, workbenchLightHarness, workbenchStandardHarness } from './defs/workbench'
 
 export type HarnessSource = 'builtin' | `app:${string}` | 'custom'
@@ -179,6 +180,12 @@ const BUILTINS: RegisteredHarness[] = [
   // The agent assigned to the ticket, the channel or the plan — including a
   // TIER of it, which the Plan modal lets a user pick per draft.
   register(workSessionHarness, 'builtin'),
+  // THE HERMES FAMILY — "can this model be a workspace agent", as opposed to
+  // "can it run one of Talaria's own features". Every other harness here
+  // measures a platform feature; a fleet persona is handed the toolkit and a
+  // sentence of English, and what it does next is the job. See
+  // `defs/hermes-knowledge.ts` for why that needed its own family.
+  register(hermesKnowledgeHarness, 'builtin'),
   // The three coding harnesses, one per Workbench effort slot — the columns
   // that used to read "No harness in this install is bound to this".
   register(workbenchLightHarness, 'builtin'),

@@ -93,6 +93,8 @@ import {
 import { gatewayPulse, routingFor, type GatewayPulse } from '../llm-gateway'
 import { advertisedWindow } from '../model-catalog'
 import { estimateTokens } from '../usage'
+import { noteLive, startLiveFeed } from './live-feed'
+import type { EvalLogLine } from './surface'
 
 // ── What a probe is ──────────────────────────────────────────────────────────
 
@@ -1626,6 +1628,27 @@ export interface ProbeResult {
   outcome: ProbeOutcome
 }
 
+/** ONE PROBE, AS A CONSOLE LINE. The vocabulary is the terminal's, so a probe
+ *  and a fixture colour the same way and a watcher does not have to learn two.
+ *
+ *  `known` is a SKIP rather than a pass: no call was made, so nothing was
+ *  measured on this run, and painting it green would tell a watcher the model
+ *  just demonstrated something it did not. */
+export function probeLine(r: ProbeResult, ms: number): EvalLogLine {
+  const o = r.outcome
+  const verdict: EvalLogLine['verdict'] =
+    o.kind === 'skipped' ? 'skip' : o.kind === 'known' ? 'skip' : o.kind === 'errored' ? 'error' : o.verdict.value ? 'pass' : 'fail'
+  const note =
+    o.kind === 'skipped'
+      ? o.reason
+      : o.kind === 'known'
+        ? `already measured (${o.verdict.value ? 'yes' : 'no'}) — no call made`
+        : o.kind === 'errored'
+          ? o.reason
+          : o.verdict.detail
+  return { harness: 'probes', case: r.label, verdict, ms, tokens: 0, calls: 0, up: null, note: note?.slice(0, 200) ?? null }
+}
+
 export interface ProbeReport {
   model: string
   /** The keys the facts were written under. Empty when nothing was written. */
@@ -1666,6 +1689,13 @@ export async function runProbes(
   const chosen = PROBES.filter((p) => !opts.ids || opts.ids.includes(p.id))
 
   const results: ProbeResult[] = []
+  // THE LIVE CONSOLE. Probes are units of work that pass or fail like fixtures,
+  // and before this the terminal sat blank through the whole of tier 1 — which
+  // reads as a wedged run at exactly the moment the run is establishing what the
+  // model can do at all. See `live-feed.ts`.
+  startLiveFeed(model)
+  const started = Date.now()
+  let mark = started
   for (const probe of chosen) {
     // ALREADY MEASURED — report the standing fact and make no call. This is the
     // single biggest saving available on a re-test: nine probes on a model
@@ -1676,11 +1706,13 @@ export async function runProbes(
     // it is not.
     const had = opts.reprobe ? null : await deps.measured(probe.id).catch(() => null)
     if (had) {
-      results.push({
+      const known: ProbeResult = {
         id: probe.id,
         label: probe.label,
         outcome: { kind: 'known', at: had.at, trials: [], verdict: { value: had.value, score: had.score ?? (had.value ? 1 : 0), detail: had.detail ?? 'measured by an earlier run' } },
-      })
+      }
+      results.push(known)
+      noteLive(model, probeLine(known, 0))
       continue
     }
     // A probe that THROWS is a probe that errored, which by rule 2 writes
@@ -1700,7 +1732,11 @@ export async function runProbes(
       probe.run(deps).catch((err: unknown) => errored(messageOf(err))),
       new Promise<ProbeOutcome>((resolve) => setTimeout(() => resolve(errored(`the probe did not finish inside ${budget}ms`)), budget)),
     ])
-    results.push({ id: probe.id, label: probe.label, outcome })
+    const one: ProbeResult = { id: probe.id, label: probe.label, outcome }
+    results.push(one)
+    const now = Date.now()
+    noteLive(model, probeLine(one, now - mark))
+    mark = now
   }
 
   const estimate = await estimateProbes(model, opts).catch(() => null)

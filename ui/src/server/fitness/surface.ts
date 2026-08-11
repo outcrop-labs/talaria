@@ -58,6 +58,7 @@ import { estimateProbes, runProbes, type ProbeEstimate, type ProbeReport } from 
 import { clearTranscripts, pruneTranscripts, readTranscripts, recordTranscript, transcriptRuns, type Transcript } from './transcripts'
 import { summarize, type HealthInput, type HealthSummary } from './health'
 import { listMcpServers, type McpServer } from '../mcp-registry'
+import { clearLiveFeed, liveFeedFor } from './live-feed'
 import {
   clearEvalStatus,
   evalSweepStatuses,
@@ -1387,6 +1388,11 @@ export async function runFitness(opts: StartOptions, deps?: Partial<SurfaceDeps>
     }).catch(() => {})
   } finally {
     runs.delete(model)
+    // The live console's tier-1/tier-3 lines belong to THIS run. Left behind,
+    // they would appear above the next run's first probe — a console showing
+    // results from a run that already finished, which is worse than a blank one.
+    // The archived record carries the durable version of both tiers.
+    clearLiveFeed(model)
     // The request is spent once the run is over; leaving it would stop the next
     // Start before it began.
     await clearStopRequest(model, d).catch(() => {})
@@ -1722,7 +1728,13 @@ export async function readFitness(query: FitnessQuery, deps?: Partial<SurfaceDep
     let live: LiveRun | null = null
     if (running) {
       const sweep = await d.evalSweepStatuses([model]).catch((): Record<string, EvalSweepStatus> => ({}))
-      const cases = sweep[model]?.cases ?? []
+      // ONLY WHEN THIS RUN IS ACTUALLY SWEEPING — the same rule `fitnessRuns`
+      // applies to the counter, and the console had the same bug. The sweep
+      // checkpoint is per model and OUTLIVES the run that wrote it, so a
+      // probes-only run on a model swept earlier opened its console with two
+      // hundred and forty-seven fixture lines from a run that finished hours
+      // ago, above the probes it was actually running.
+      const cases = running.tiers.includes('evals') ? (sweep[model]?.cases ?? []) : []
       const kept = liveCases(cases)
       live = {
         state: running.state,
@@ -1732,7 +1744,13 @@ export async function readFitness(query: FitnessQuery, deps?: Partial<SurfaceDep
         harness: running.harness,
         cases: kept.kept,
         dropped: kept.dropped,
-        log: liveLog(cases),
+        // TIERS 1 AND 3 RIDE THE SAME FEED, in completion order after the
+        // sweep's own lines. Without this the console showed tier 2 and nothing
+        // else: a run with probes and adversarial selected sat blank for
+        // minutes, printed two hundred fixtures, then went blank again — which
+        // reads as a run that hung twice, at exactly the moments it was doing
+        // the work an admin most wants to watch.
+        log: [...liveLog(cases), ...liveFeedFor(model)],
         current: inFlightFor(model),
       }
     }
