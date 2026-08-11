@@ -136,6 +136,34 @@ describe('says a conversation held nothing durable', () => {
     expect(grade('Nothing durable — the conversation was scheduling and small talk.')).toBeNull()
   })
 
+  it('accepts a full, faithful, PARAPHRASED distillation — verbatim from a sweep', () => {
+    // THE SECOND WAY THIS FIXTURE GOT IT WRONG, and the reason the check is no
+    // longer about vocabulary. This reply was failed for the words "tasks",
+    // "deferred", "commitments" and "approximately" — paraphrases of "nothing to
+    // hold", "it can wait", "back to back" and "about three". Every one of them
+    // is the distiller doing its job; a distillation that reuses only the words
+    // it was given is a copy.
+    const real = [
+      '## Decisions',
+      '- User will ping Nomad when available after ~3 PM.',
+      '- Nomad will not hold any tasks until then.',
+      '- Meeting-related message will be deferred.',
+      '',
+      '## Facts',
+      '- User has back-to-back commitments until approximately 3 PM.',
+      '- Nomad has no queued tasks from overnight.',
+      "- Nomad received User's message about a meeting yesterday after User departed.",
+      '',
+      '## Preferences',
+      '- User prefers to be contacted only when surfacing from meetings.',
+      '- User considers the meeting message non-urgent.',
+      '',
+      '## Open',
+      '- Meeting message details to be addressed when User is available.',
+    ].join('\n')
+    expect(grade(real)).toBeNull()
+  })
+
   it('accepts FAITHFUL COMPRESSION, which is what it used to fail', () => {
     // Verbatim from the sweep. Three of eleven models were scored here for
     // these, and every line traces to the transcript: "no, nothing to hold",
@@ -164,6 +192,6 @@ describe('says a conversation held nothing durable', () => {
     // Padding a chatter transcript back out to its own length is the other way
     // to get this wrong, and it is not invention — so it gets its own sentence.
     const padded = grade(`## Facts\n${'- the user will ping Nomad after three when they surface\n'.repeat(14)}`)
-    expect(padded).toContain('characters about a')
+    expect(padded).toContain('longer than the transcript')
   })
 })

@@ -253,6 +253,29 @@ const FILLER = new Set([
   'available',
 ])
 
+/** Capitalised words that are NOT sentence-initial — the shape a name, a
+ *  product or a system takes in prose. Anything after a line start, a bullet or
+ *  a sentence end is ordinary sentence case and says nothing about invention. */
+function properNouns(text: string): string[] {
+  const out: string[] = []
+  for (const line of text.split('\n')) {
+    // Drop the bullet/heading marker, then take everything after the first word.
+    const body = line.replace(/^\s*(?:[-*+]|#{1,6})\s*/, '')
+    const words = body.split(/\s+/)
+    for (let i = 1; i < words.length; i++) {
+      // POSSESSIVES AND PUNCTUATION FIRST. "User's" is the word "User" wearing
+      // an apostrophe, and treating it as a distinct token flagged a model for
+      // naming a speaker the transcript names on every line.
+      const w = (words[i] ?? '').replace(/['\u2019]s\b/i, '').replace(/[^A-Za-z]/g, '')
+      // A capital straight after sentence-ending punctuation is sentence case.
+      const prev = words[i - 1] ?? ''
+      if (/[.!?:]$/.test(prev)) continue
+      if (w.length >= 4 && /^[A-Z][a-z]/.test(w)) out.push(w)
+    }
+  }
+  return out
+}
+
 const ALL_PROCESS_CHAT = [
   'User: morning!',
   'Nomad: morning — anything you need?',
@@ -565,12 +588,24 @@ export const distillerHarness = defineHarness<DistillInput, string>({
         // call this fixture has no business making on the model's behalf.
         const source = new Set(ALL_PROCESS_CHAT.toLowerCase().match(/[a-z]{4,}/g) ?? [])
         const words = [...new Set(v.match(/[a-z]{4,}/g) ?? [])].filter((w) => !FILLER.has(w))
-        // INVENTION FIRST, because it is the more specific diagnosis: a reply
-        // full of material this conversation never contained is the failure this
-        // fixture is named for, and saying "does not engage" about it would bury
-        // the actual problem.
-        const invented = words.filter((w) => !source.has(w))
-        if (invented.length > 2) return `wrote about things the conversation never mentioned: ${invented.slice(0, 5).join(', ')}`
+        // INVENTION IS MEASURED IN PROPER NOUNS, NOT IN VOCABULARY — and the
+        // first version of this check got that wrong in the other direction.
+        //
+        // It compared every word against the transcript, so it failed a model
+        // for PARAPHRASING: "tasks" for "nothing to hold", "deferred" for "it
+        // can wait", "commitments" for "back to back", "approximately" for
+        // "about three". Those are the distiller doing its job. A distillation
+        // that reuses only the words it was given is a copy, not a distillation,
+        // and a check that demands one has inverted the harness.
+        //
+        // What actually poisons an org brain is a SPECIFIC the conversation
+        // never contained — a system, a person, a product. Those arrive as
+        // proper nouns, and a proper noun mid-sentence is the one lexical signal
+        // that separates "the team agreed to migrate to Postgres" from a
+        // synonym. Line-initial capitals are skipped: they are sentence case,
+        // not names.
+        const invented = [...new Set(properNouns(value))].filter((w) => !source.has(w.toLowerCase()))
+        if (invented.length > 0) return `wrote about things the conversation never mentioned: ${invented.slice(0, 5).join(', ')}`
         // A REPLY THAT ENGAGES WITH NOTHING IS NOT AN ABSTENTION. Caught by the
         // registry-wide `{"nope": true}` census the moment this check was
         // loosened: that string invents only two words, is fourteen characters
@@ -579,10 +614,19 @@ export const distillerHarness = defineHarness<DistillInput, string>({
         if (words.length > 0 && !words.some((w) => source.has(w))) {
           return `does not engage with the conversation at all: "${value.trim().slice(0, 60)}"`
         }
-        // A transcript of pure chatter cannot honestly produce a long summary.
-        // Generous — the point is to catch padding, not to police length.
-        if (value.trim().length > ALL_PROCESS_CHAT.length / 2) {
-          return `wrote ${value.trim().length} characters about a ${ALL_PROCESS_CHAT.length}-character conversation that decided nothing`
+        // LONGER THAN ITS SOURCE IS NOT A DISTILLATION, and that is the only
+        // length claim this fixture can honestly make.
+        //
+        // It used to fail anything over HALF the transcript, which failed a
+        // correct answer: a faithful five-heading distillation of a 709-character
+        // chat came to 552, because the prompt's own structure — five headings,
+        // terse bullets under each — costs characters a short source does not
+        // have. COMPRESSION IS ALREADY MEASURED, by `is shorter than the
+        // conversation it distills`, which asks it as a ratio and abstains when
+        // the transcript is too short for the question to be fair. Asking it
+        // again here, worse, was redundancy that only ever produced noise.
+        if (value.trim().length > ALL_PROCESS_CHAT.length) {
+          return `wrote ${value.trim().length} characters about a ${ALL_PROCESS_CHAT.length}-character conversation — that is longer than the transcript, not a distillation of it`
         }
         return null
       },
