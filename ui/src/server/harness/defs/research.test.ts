@@ -306,6 +306,41 @@ describe('toolSearchTransport', () => {
     expect(result?.content).toContain('EOL 2028-04-30')
   })
 
+  it('spends another round on an EMPTY turn rather than concluding from it', async () => {
+    // THE MOST MISLEADING ERROR IN THE SUITE, now that it is gone. A model that
+    // returned no text and no tool call used to break the loop and throw
+    // "answered the search query without calling web_search" — accusing it of
+    // answering from memory, which is the opposite of what happened — and
+    // `runHarness` wrapped that as "could not reach", which reads as a
+    // connection error. Three wrong statements about one empty reply, and the
+    // reason five research-search cases looked like a network fault.
+    let turn = 0
+    const base: Transport = async () => {
+      turn++
+      // Nothing at all on the first turn; then it works normally.
+      if (turn === 1) return { kind: 'gateway', text: '', toolNames: [], toolCalls: [], usage: null, contractDropped: false }
+      if (turn === 2) {
+        return { kind: 'gateway', text: '', toolNames: ['web_search'], toolCalls: [{ name: 'web_search', args: '{}', id: 'c1' }], usage: null, contractDropped: false }
+      }
+      return { kind: 'gateway', text: 'Node.js 24 reaches end of life on 2028-04-30.', toolNames: [], usage: null, contractDropped: false }
+    }
+    const transport = toolSearchTransport('run-1', [], SUPPLIER, { base, callTool: async () => ({ text: 'EOL 2028-04-30', structured: null }) })
+    const reply = await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'node 24 eol' }], jsonMode: false, caller: 't' })
+    expect(reply.text).toContain('2028-04-30')
+  })
+
+  it('says the DEPLOYMENT failed when every round comes back empty', async () => {
+    // The other half: a model that never answers and never searches has told us
+    // nothing about its research, and the sentence has to say so rather than
+    // blame its judgement — that is the difference between a red cell an admin
+    // should act on and one they should ignore.
+    const base: Transport = async () => ({ kind: 'gateway', text: '', toolNames: [], toolCalls: [], usage: null, contractDropped: false })
+    const transport = toolSearchTransport('run-1', [], SUPPLIER, { base, callTool: async () => ({ text: '', structured: null }) })
+    await expect(
+      transport({ model: 'deepseek', messages: [{ role: 'user', content: 'node 24 eol' }], jsonMode: false, caller: 't' }),
+    ).rejects.toThrow(/empty turn every round.*This is the deployment, not the model/s)
+  })
+
   it('ASKS FOR AN ANSWER when the round budget runs out mid-search', async () => {
     // THE BUG THIS PINS. A model still searching when the rounds ran out had its
     // INTERSTITIAL turn recorded as its finding. A live sweep of

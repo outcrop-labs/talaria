@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isGap } from '../define'
+import { isGap, NO_TOOLS } from '../define'
 import { distillerHarness } from './distiller'
 
 // THE DISTILLER'S OWN ASSERTIONS, held to the standard they hold models to.
@@ -119,5 +119,51 @@ describe('the seat-cap fixture wants the number that was decided, not the one ar
 
   it('fails a distillation that records the cap without the number', () => {
     expect(str(check('- The free tier seat cap was discussed and settled at the lower option.'))).toContain('three')
+  })
+})
+
+// ── The "nothing durable" fixture, calibrated against what models really sent ─
+
+describe('says a conversation held nothing durable', () => {
+  const fixture = (distillerHarness.evals ?? []).find((e) => e.name.startsWith('says a conversation held nothing durable'))!
+  const grade = (v: string) => fixture.check(v, NO_TOOLS)
+
+  it('accepts the prompt’s own correct answer — headings with nothing under them', () => {
+    expect(grade('## Decisions\n\n## Facts\n\n## Open\n')).toBeNull()
+  })
+
+  it('accepts saying it plainly', () => {
+    expect(grade('Nothing durable — the conversation was scheduling and small talk.')).toBeNull()
+  })
+
+  it('accepts FAITHFUL COMPRESSION, which is what it used to fail', () => {
+    // Verbatim from the sweep. Three of eleven models were scored here for
+    // these, and every line traces to the transcript: "no, nothing to hold",
+    // "it can wait, it was not urgent", "I will ping you when I surface".
+    // Nothing was invented, and invention is what this fixture is named for.
+    expect(grade('## Decisions\n- User will not hold tasks until ~3 PM\n- Meeting message can wait\n')).toBeNull()
+    expect(grade('## Decisions\n- User will ping Nomad when available after ~3 PM\n')).toBeNull()
+  })
+
+  it('cannot be passed by a reply that engages with nothing', () => {
+    // THE REGISTRY-WIDE CENSUS CAUGHT THIS, which is the whole reason it exists:
+    // when this check was first loosened, replaying the literal string
+    // `{"nope": true}` scored a PASS here — two invented words and fourteen
+    // characters slipped under both thresholds. "There was nothing durable" is a
+    // claim ABOUT this conversation and has to touch it.
+    expect(grade('{"nope": true}')).toContain('does not engage')
+  })
+
+  it('still fails REAL invention — the thing it exists to catch', () => {
+    // Nothing in this conversation is about Postgres, migrations or headcount.
+    const invented = grade('## Decisions\n- The team agreed to migrate the ledger to Postgres\n- Hiring is frozen until the migration completes\n')
+    expect(invented).toContain('never mentioned')
+  })
+
+  it('still fails a "distillation" that is not one', () => {
+    // Padding a chatter transcript back out to its own length is the other way
+    // to get this wrong, and it is not invention — so it gets its own sentence.
+    const padded = grade(`## Facts\n${'- the user will ping Nomad after three when they surface\n'.repeat(14)}`)
+    expect(padded).toContain('characters about a')
   })
 })

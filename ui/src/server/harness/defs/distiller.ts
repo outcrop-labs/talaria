@@ -214,6 +214,45 @@ const RATE_LIMIT_CHAT = [
  *  The right distillation says so; the failure is inventing a decision to have
  *  something to write down, and a chat this long is much more tempting to invent
  *  from than a four-line greeting was. */
+/** Words a distillation legitimately adds that are not in the transcript: the
+ *  prompt's own headings, and the connective tissue of any English sentence. A
+ *  traceability check that counted these would fail every correct answer. */
+const FILLER = new Set([
+  'decisions',
+  'facts',
+  'preferences',
+  'outcomes',
+  'open',
+  'none',
+  'nothing',
+  'durable',
+  'user',
+  'conversation',
+  'discussed',
+  'decided',
+  'items',
+  'notes',
+  'summary',
+  'until',
+  'when',
+  'this',
+  'that',
+  'with',
+  'from',
+  'they',
+  'them',
+  'will',
+  'their',
+  'there',
+  'about',
+  'after',
+  'before',
+  'later',
+  'today',
+  'tomorrow',
+  'available',
+])
+
 const ALL_PROCESS_CHAT = [
   'User: morning!',
   'Nomad: morning — anything you need?',
@@ -504,11 +543,48 @@ export const distillerHarness = defineHarness<DistillInput, string>({
         const saysNothing = /nothing|no decision|no durable|none|small talk|pleasantr|greeting|nothing was decided|no action/.test(v)
         if (saysNothing) return null
 
-        // Left over: real content about a transcript that held none. Say what is
-        // actually wrong with it — the old sentence accused the model of
-        // invention when what it did was record small talk as though it were
-        // durable, which is a different and much milder mistake.
-        return `recorded small talk as durable material: "${value.trim().slice(0, 90)}"`
+        // THIS FIXTURE IS ABOUT INVENTION, and it used to fail models that
+        // invented nothing.
+        //
+        // Its own name is "rather than inventing something", and its comment
+        // above calls over-recording "a different and much milder mistake" —
+        // and then failed it at full weight anyway. Three of eleven models were
+        // scored here for faithful compression: "User will not hold tasks until
+        // ~3 PM", "Meeting message can wait", "User will ping Nomad when
+        // available". Every one of those traces to a line of the transcript
+        // ("no, nothing to hold"; "it can wait, it was not urgent"; "I will ping
+        // you when I surface"). Nothing was invented. The models read a
+        // conversation with a deferred message in it and filed the deferral,
+        // which is a defensible reading of "durable" and not the failure this
+        // fixture exists to catch.
+        //
+        // SO IT NOW ASKS ITS OWN QUESTION. Two things fail: content that is NOT
+        // in the transcript (the real invention — "the team agreed to migrate to
+        // Postgres" out of a conversation about being busy), and a distillation
+        // that is not actually a distillation. Everything else is a judgement
+        // call this fixture has no business making on the model's behalf.
+        const source = new Set(ALL_PROCESS_CHAT.toLowerCase().match(/[a-z]{4,}/g) ?? [])
+        const words = [...new Set(v.match(/[a-z]{4,}/g) ?? [])].filter((w) => !FILLER.has(w))
+        // INVENTION FIRST, because it is the more specific diagnosis: a reply
+        // full of material this conversation never contained is the failure this
+        // fixture is named for, and saying "does not engage" about it would bury
+        // the actual problem.
+        const invented = words.filter((w) => !source.has(w))
+        if (invented.length > 2) return `wrote about things the conversation never mentioned: ${invented.slice(0, 5).join(', ')}`
+        // A REPLY THAT ENGAGES WITH NOTHING IS NOT AN ABSTENTION. Caught by the
+        // registry-wide `{"nope": true}` census the moment this check was
+        // loosened: that string invents only two words, is fourteen characters
+        // long, and sailed through both tests below. "There was nothing durable"
+        // is a claim ABOUT this conversation and has to touch it.
+        if (words.length > 0 && !words.some((w) => source.has(w))) {
+          return `does not engage with the conversation at all: "${value.trim().slice(0, 60)}"`
+        }
+        // A transcript of pure chatter cannot honestly produce a long summary.
+        // Generous — the point is to catch padding, not to police length.
+        if (value.trim().length > ALL_PROCESS_CHAT.length / 2) {
+          return `wrote ${value.trim().length} characters about a ${ALL_PROCESS_CHAT.length}-character conversation that decided nothing`
+        }
+        return null
       },
     },
   ],

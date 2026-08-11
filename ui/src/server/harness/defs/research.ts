@@ -622,6 +622,20 @@ export function toolSearchTransport(
       // a tool is the model saying "not yet" — its prose is a preamble, not an
       // answer — and recording it as the finding is the bug below.
       if (calls.length === 0) {
+        // AN EMPTY TURN IS NOT AN ANSWER, and treating it as one produced the
+        // single most misleading error in the suite. A model that returns no
+        // text AND no tool call has said nothing; the loop used to break here
+        // and then throw "answered the search query without calling web_search",
+        // which accuses it of answering from memory — the opposite of what
+        // happened — and `runHarness` then wrapped that as "could not reach",
+        // which reads as a connection error. Three separate wrong statements
+        // about one empty reply.
+        //
+        // MEASURED, not assumed: three identical turns to deepseek-v4-flash with
+        // this tool offered came back with two `web_search` calls every time.
+        // An empty turn from that model is a wasted turn, so the right response
+        // is to use another one of the budget rather than to conclude anything.
+        if (!reply.text.trim() && round < MAX_TOOL_ROUNDS - 1) continue
         text = reply.text
         break
       }
@@ -664,7 +678,18 @@ export function toolSearchTransport(
     // precise failure the search floor exists to prevent — an uncited brief in a
     // confident voice. It fails here rather than being passed on, because a
     // caller cannot tell the difference by looking at the prose.
-    if (called === 0) throw new Error(`"${req.model}" answered the search query without calling "${supplier.tool}" — the finding would have no sources behind it`)
+    if (called === 0) {
+      // TWO DIFFERENT FAILURES, and only one of them is about the model's
+      // judgement. Answering from memory is the thing the search floor exists to
+      // catch. Returning nothing, every round, is a fact about the deployment —
+      // and saying so in those words is what stops it being read as the other.
+      if (!text.trim()) {
+        throw new Error(
+          `"${req.model}" returned an empty turn every round with "${supplier.tool}" offered — it never answered and never searched, so nothing here measures its research. This is the deployment, not the model's judgement.`,
+        )
+      }
+      throw new Error(`"${req.model}" answered the search query without calling "${supplier.tool}" — the finding would have no sources behind it`)
+    }
 
     // ONE TURN TO ACTUALLY ANSWER, and its absence failed this harness on every
     // fixture of a model that was doing exactly the right thing.
