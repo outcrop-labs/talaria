@@ -27,9 +27,12 @@
   <button
     type="button"
     onclick={() => (open = !open)}
-    class="flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg"
+    class="group/disc flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] tracking-[0.05em] text-muted transition-colors hover:bg-hover hover:text-fg"
   >
-    <span class={cn('text-[10px] transition-transform duration-150', open && 'rotate-90')}>▶</span>
+    <!-- The chevron is the affordance, so it gets brighter on hover rather than
+         staying the same dim glyph the row's own text is. A row that expands and
+         a row that does nothing looked identical until the pointer was on it. -->
+    <span class={cn('text-[10px] transition-all duration-150 group-hover/disc:text-accent', open && 'rotate-90')}>▶</span>
     {@render icon?.()}
     <span class="min-w-0 flex-1 truncate">
       {#if typeof title === 'string'}{title}{:else}{@render title()}{/if}

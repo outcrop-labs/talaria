@@ -111,9 +111,50 @@ services:
   #     - '${TALARIA_RERANK_PORT:-8056}:80'
   #   volumes:
   #     - tei-cache:/data
+  # LIVE WEB SEARCH — SearXNG, a metasearch aggregator that fans one query
+  # across dozens of engines. No API key, no per-query bill, and no query leaves
+  # this machine. Talaria's own `web_search` tool talks to its JSON API; see
+  # ui/src/server/search.ts for why the client is ours rather than a third-party
+  # MCP bridge.
+  #
+  # ITS OWN CONTAINER, AND THAT IS A LICENCE DECISION. Talaria is MIT; SearXNG is
+  # AGPL-3.0. Vendoring AGPL source into an MIT codebase propagates the terms, so
+  # it runs as a separate process reached over HTTP — the same arrangement as the
+  # fleet MCP service. DO NOT PATCH IT: unmodified upstream means AGPL §13's
+  # source-offer obligation is satisfied by pointing at the upstream repository.
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: ${TALARIA_SEARCH_CONTAINER:-talaria-searxng-dev}
+    restart: unless-stopped
+    ports:
+      # LOOPBACK ONLY, like minio. This instance has no authentication of any
+      # kind — that is the point of an internal metasearch — so the control that
+      # matters is that nothing off this machine can reach it. Publishing it on
+      # 0.0.0.0 would hand the network a free, unlogged search proxy.
+      - '127.0.0.1:${TALARIA_SEARCH_PORT:-8888}:8080'
+    environment:
+      # SearXNG builds absolute URLs from this; it must match how Talaria
+      # reaches it or the JSON payload carries links nobody can follow.
+      SEARXNG_BASE_URL: http://localhost:${TALARIA_SEARCH_PORT:-8888}/
+    volumes:
+      # SETTINGS COME FROM A MOUNTED FILE, not from environment variables, and
+      # that was learned the hard way: SearXNG honours env only for a short
+      # allow-list (base URL, secret), so `SEARXNG_SEARCH_FORMATS` was silently
+      # ignored and the JSON API kept answering 403. Everything this instance
+      # needs — the JSON format above all — is in docker/searxng/settings.yml.
+      # The RENDERED file (settings.local.yml), not the template: the secret is
+      # generated per install and substituted by scripts/dev.sh.
+      - ../docker/searxng/settings.local.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
 volumes:
   pg-data:
   redis-data:
   qdrant-data:
   tei-cache:
   minio-data:
+  searxng-data:

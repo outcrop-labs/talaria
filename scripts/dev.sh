@@ -28,6 +28,27 @@ done
 echo "▸ infra (postgres + redis + qdrant + minio)"
 docker compose -f docker/dev-compose.yml up -d postgres redis qdrant minio
 
+# Search started separately, and non-fatally, for the same reason embeddings is:
+# one unpullable image must not abort the services the app cannot boot without.
+# Talaria runs fine with search down — `web_search` reports that live search is
+# unavailable and models are told to say so rather than answer from memory.
+# SearXNG reads its secret from settings.yml, not the environment, and the
+# image's own substitution needs a writable file — which would mean the
+# container rewriting a tracked file. So the template is rendered here instead,
+# with the per-install key from ui/.env, into a gitignored file compose mounts.
+SEARXNG_SECRET=$(grep '^SEARXNG_SECRET=' ui/.env 2>/dev/null | head -1 | cut -d= -f2- || true)
+[ -n "$SEARXNG_SECRET" ] || SEARXNG_SECRET="talaria-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+if [ ! -f docker/searxng/settings.local.yml ] || [ docker/searxng/settings.template.yml -nt docker/searxng/settings.local.yml ]; then
+  sed "s|__SEARXNG_SECRET__|${SEARXNG_SECRET}|" docker/searxng/settings.template.yml > docker/searxng/settings.local.yml
+  echo "▸ rendered docker/searxng/settings.local.yml"
+fi
+
+echo "▸ web search (SearXNG)"
+docker compose -f docker/dev-compose.yml up -d searxng || {
+  echo "⚠ search service failed to start — web_search will report itself unavailable." >&2
+  echo "  Continuing without it; see docker/searxng/settings.yml." >&2
+}
+
 # Embeddings started separately: a single `up` resolves every image before
 # creating any container, so one unpullable/broken image (e.g. #151) would
 # abort postgres/redis/qdrant too. The app boots without embeddings —

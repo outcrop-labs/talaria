@@ -17,7 +17,7 @@
 // worse product than a slightly clumsy name. `requires` still says what the job
 // actually leans on — following "reply with ONLY the title" — so the fitness
 // suite can score it and an admin can see the weakness, but nothing here blocks.
-import { defineHarness, type EvalCase, type Message } from '../define'
+import { belowAnswerFloor, countProblem, defineHarness, type EvalCase, type Message } from '../define'
 import { firstMeaningfulLine } from '../text'
 
 export type TitleKind = 'chat' | 'plan' | 'research'
@@ -109,10 +109,26 @@ function restatesInput(title: string, text: string): boolean {
 /** One line naming what is wrong with this title, or null. This is what an
  *  admin reads in the fitness drill-down, so it says the observed fact rather
  *  than the rule id. */
-export function titleProblem(title: string, input: TitlerInput): string | null {
+export function titleProblem(title: string, input: TitlerInput, mentions: readonly string[] = []): string | null {
+  // THE ANSWER FLOOR, and it is here because the word MINIMUM used to be doing
+  // this job by accident. `{"nope": true}` is two words, so `n < 3` rejected it
+  // — and the moment the count was given a margin (below), all ten titler
+  // fixtures started passing on that literal string. The garbage census caught
+  // it, which is exactly what it is for.
+  //
+  // A floor and a count are different assertions and now say so separately: this
+  // one is "is this an answer at all", the one below is "is it title-shaped".
+  const thin = belowAnswerFloor(title, { minChars: 8, ...(mentions.length ? { mentions } : {}) })
+  if (thin) return thin
   if (title.length > 90) return `${title.length} characters — a title has to fit one sidebar row`
+  // A MARGIN, because "3–7 words" is a stated preference and the sidebar row is
+  // the only hard edge — and that is a CHARACTER clamp (`cleanTitle` truncates
+  // at 90 with an ellipsis), not a word count. An eight-word title renders
+  // exactly as well as a seven-word one, and failing it measured how literally
+  // the model read a range rather than whether it can name a conversation.
   const n = words(title).length
-  if (n < 3 || n > 7) return `${n} word${n === 1 ? '' : 's'} — the prompt asks for 3-7`
+  const over = countProblem(n, { min: 3, max: 7, unit: 'word', asked: '3-7' })
+  if (over) return over
   if (/^["'“‘]|["'”’]$/.test(title)) return 'wrapped in quotes'
   if (/[.。!?]$/.test(title)) return 'ends in punctuation'
   if (GENERIC_LEAD_IN.test(title)) return 'opens with a generic filler ("Chat about", "Discussion of")'
@@ -123,12 +139,23 @@ export function titleProblem(title: string, input: TitlerInput): string | null {
 
 /** One fixture. The check closes over the SAME input the model was given, so
  *  the restatement assertion is measured against the real transcript rather
- *  than a copy that can drift away from it. */
-const titleCase = (name: string, band: EvalCase<TitlerInput, string>['band'], input: TitlerInput): EvalCase<TitlerInput, string> => ({
+ *  than a copy that can drift away from it.
+ *
+ *  `mentions` is the floor half, and it is per fixture because only the fixture
+ *  knows what its transcript is unmistakably ABOUT. It is a set of alternatives,
+ *  never a phrase: it has to reject a non-answer without scoring the model's
+ *  word choice, and a fixture only one wording can pass measures our prompt
+ *  rather than the model. See `belowAnswerFloor`. */
+const titleCase = (
+  name: string,
+  band: EvalCase<TitlerInput, string>['band'],
+  input: TitlerInput,
+  mentions: readonly string[] = [],
+): EvalCase<TitlerInput, string> => ({
   name,
   band,
   input,
-  check: (value) => titleProblem(value, input),
+  check: (value) => titleProblem(value, input, mentions),
 })
 
 export const titlerHarness = defineHarness<TitlerInput, string>({
@@ -194,43 +221,43 @@ export const titlerHarness = defineHarness<TitlerInput, string>({
         'user: the nightly backup job has been failing since Tuesday',
         'assistant: the target volume filled up — the retention sweep stopped running when the cron user lost write access.',
       ].join('\n'),
-    }),
+    }, ['backup', 'retention', 'volume', 'cron', 'disk']),
     titleCase('research — one plain subject, stated outright', 'easy', {
       kind: 'research',
       text: 'How do European data residency rules apply to customer support transcripts?',
-    }),
+    }, ['residency', 'data', 'transcript', 'support', 'europe', 'gdpr']),
     titleCase('plan — one plain deliverable, stated outright', 'easy', {
       kind: 'plan',
       text: [
         'user: we need SSO working for the enterprise trial next month',
         'assistant: that is SAML for two identity providers plus a group-to-role mapping.',
       ].join('\n'),
-    }),
+    }, ['sso', 'saml', 'identity', 'sign-on', 'login']),
     titleCase('chat — names the subject, not the activity', 'standard', {
       kind: 'chat',
       text: [
         'user: our checkout page takes about nine seconds to load on mobile and people are dropping off at payment',
         'assistant: the largest contentful paint is dominated by the payment iframe — it blocks render until the provider script resolves.',
       ].join('\n'),
-    }),
+    }, ['checkout', 'payment', 'mobile', 'load', 'paint', 'latency', 'performance']),
     titleCase('chat — does not adopt a quoted phrase from the transcript', 'standard', {
       kind: 'chat',
       text: [
         'user: someone filed a ticket called "URGENT!!! everything is broken." can we work out what they actually mean',
         'assistant: the attached log shows a single failing migration on the reporting replica.',
       ].join('\n'),
-    }),
+    }, ['migration', 'replica', 'reporting', 'ticket', 'log']),
     titleCase('plan — names the outcome, not the conversation', 'standard', {
       kind: 'plan',
       text: [
         'user: we need to get the warehouse off the old label printer before the holiday rush',
         'assistant: that means new firmware on twelve stations, a template migration, and a fallback for the two sites still on serial.',
       ].join('\n'),
-    }),
+    }, ['printer', 'label', 'warehouse', 'firmware', 'station']),
     titleCase('research — names the subject without restating the question', 'standard', {
       kind: 'research',
       text: 'What are the practical tradeoffs between Postgres logical replication and Debezium for feeding a warehouse in near real time?',
-    }),
+    }, ['replication', 'debezium', 'postgres', 'warehouse', 'cdc']),
     // THE BURIED SUBJECT. The loudest line is the opening complaint and it is
     // not what the conversation turns out to be about. A weaker model titles the
     // first sentence it read.
@@ -242,14 +269,14 @@ export const titlerHarness = defineHarness<TitlerInput, string>({
         'user: honestly the pipeline is fine. what keeps biting me is that staging and production have different Postgres extensions installed, so migrations pass in one and fail in the other.',
         'assistant: so the real problem is extension drift between environments.',
       ].join('\n'),
-    }),
+    }, ['extension', 'drift', 'postgres', 'migration', 'staging', 'environment']),
     // A QUESTION SHORT ENOUGH TO HAND BACK. The prompt says "do not restate it
     // as a question"; the cheap move is to strip the question mark and return
     // the same words, which `restatesInput` catches.
     titleCase('research — a short question it must not simply hand back', 'hard', {
       kind: 'research',
       text: 'Is Redis Streams a good fit for our job queue?',
-    }),
+    }, ['redis', 'stream', 'queue', 'job']),
     // A CONVERSATION ABOUT CONVERSATIONS. Every generic filler the prompt bans
     // is sitting right there in the transcript for the taking.
     titleCase('chat — a meta subject, with every filler word available to steal', 'hard', {
@@ -259,6 +286,6 @@ export const titlerHarness = defineHarness<TitlerInput, string>({
         'assistant: what usually derails it?',
         'user: nobody writes down the decision, so the next meeting relitigates it. we need a decision log.',
       ].join('\n'),
-    }),
+    }, ['decision', 'log', 'meeting', 'record']),
   ],
 })

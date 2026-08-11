@@ -118,3 +118,38 @@ describe('the definition', () => {
     for (const e of librarianHarness.evals ?? []) expect(e.check(empty, NO_TOOLS)).not.toBeNull()
   })
 })
+
+describe('the contradictory-title fixture', () => {
+  const fixture = librarianHarness.evals?.find((e) => e.name === 'a document that contradicts its own title')
+  const okf = (over: Record<string, unknown> = {}) => ({
+    summary: 'This page records how the team communicates and where durable information belongs.',
+    body: [
+      'This page records how the team communicates and where durable information belongs.',
+      '',
+      '## Key facts',
+      '* Team communication happens in Talaria channels',
+      '* Direct messages are for things that need one person',
+      '* Anything durable goes in a knowledge doc',
+    ].join('\n'),
+    tags: ['communication', 'talaria'],
+    ...over,
+  })
+
+  it('accepts a negation the fixture author did not think to list', () => {
+    // THE BUG. The check listed three phrasings — `do not use|no longer|not use
+    // slack` — and gemma answered "Slack is not used": correct, engaged with the
+    // body, matching none of the three. It was told it had summarized the title.
+    // A fixture only certain wordings can pass measures our prompt, not the
+    // model.
+    for (const phrasing of ['Slack is not used.', 'The org no longer uses Slack.', 'Slack was retired.', 'They do not use Slack.']) {
+      expect(fixture?.check(okf({ body: `${okf().body}\n* ${phrasing}` }) as never, NO_TOOLS), phrasing).toBeNull()
+    }
+  })
+
+  it('still catches a summary that reads the heading instead of the page', () => {
+    // The real failure this fixture exists for: presenting Slack as the tool in
+    // use, which is what the title says and what the body denies.
+    const verdict = fixture?.check(okf({ body: `${okf().body}\n* The team coordinates in Slack channels` }) as never, NO_TOOLS)
+    expect(verdict).toContain('presented Slack as the tool in use')
+  })
+})

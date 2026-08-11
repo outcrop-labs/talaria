@@ -133,6 +133,9 @@ function harness(opts: {
     },
     now: () => Date.parse('2026-08-06T09:00:00Z'),
     price: () => Promise.resolve(null),
+    // NOTHING MEASURED YET is the default, so every existing test keeps asking
+    // the model. The reuse path is opted into by the tests that are about it.
+    measured: () => Promise.resolve(null),
     ...opts.over,
   }
   return { deps, written, asked }
@@ -196,15 +199,26 @@ describe('scoreJson', () => {
     expect(v?.detail).toContain('response_format')
   })
 
-  it('records FALSE on a contract drop even when every reply parsed - the audit-1.2 silent strip', () => {
-    // This is the case the whole probe exists for: the gateway learned an
-    // upstream 400 on `response_format`, pre-stripped it, the call succeeded,
-    // and the replies happen to be JSON because the prompt anchor asked nicely.
-    // The endpoint still does not honor the constraint, and the next caller with
-    // a harder schema gets prose.
+  it('records the MODEL as capable on a contract drop when every reply parsed', () => {
+    // The gateway learned an upstream 400 on `response_format`, pre-stripped it,
+    // the call succeeded, and every reply was still JSON because the prompt
+    // anchor asked for it.
+    //
+    // THIS USED TO RECORD `false`, and that became load-bearing the moment a
+    // JSON harness put `json` in its floor: a self-hosted server with no
+    // response_format support would have had all nine structured harnesses
+    // declared unfit for models that produce perfect JSON. The endpoint's gap is
+    // tracked where it belongs — `contractDropped` and the learned-param ratchet
+    // — and this fact is about the MODEL.
+    //
+    // Answering from the prompt alone is the HARDER question, so passing it
+    // three for three is a stronger result than honoring the parameter, not a
+    // weaker one. The detail still names the drop so nobody reads the verdict as
+    // "this endpoint constrains decoding".
     const v = scoreJson([pass('a'), pass('b'), pass('c')], { requested: true, dropped: true })
-    expect(v).toMatchObject({ value: false, score: 1 })
+    expect(v).toMatchObject({ value: true, score: 1 })
     expect(v?.detail).toContain('dropped response_format')
+    expect(v?.detail).toContain('from the prompt alone')
   })
 
   it('records false with the observed rate when replies did not parse', () => {
@@ -520,6 +534,56 @@ describe('runProbes', () => {
     expect(written[0]?.fact.detail?.length ?? 0).toBeGreaterThan(10)
   })
 
+  it('REUSES a capability an earlier run already probed instead of buying it again', async () => {
+    // The saving that matters on a re-test: nine probes on a model tested last
+    // month is nine calls for an answer we already wrote down. A probe fact is a
+    // property of an `endpoint:model` and does not go stale on its own.
+    const { deps, written, asked } = harness({
+      reply: () => ({ raw: '{"name":"talaria","count":3,"ok":true}', contractHeld: true }),
+      over: {
+        measured: (cap) =>
+          Promise.resolve(cap === 'json' ? { value: true, source: 'probe' as const, at: '2026-07-01T00:00:00.000Z', detail: 'measured before', score: 1 } : null),
+      },
+    })
+    const report = await runProbes('qwen3-14b', { ids: ['json'], deps })
+
+    expect(asked).toEqual([])
+    // Nothing is rewritten: the fact already stands, and restamping `at` would
+    // make it look freshly measured on every sweep.
+    expect(written).toEqual([])
+    expect(report.wrote).toBe(0)
+    // NOT `skipped`. A skip means no fact exists and an admin should conclude
+    // nothing; this means the fact exists and still stands.
+    expect(outcomeOf(report, 'json')).toMatchObject({ kind: 'known', at: '2026-07-01T00:00:00.000Z', verdict: { value: true } })
+  })
+
+  it('re-measures when asked to, so a re-pointed model id can be re-established', async () => {
+    const { deps, written, asked } = harness({
+      reply: () => ({ raw: '{"name":"talaria","count":3,"ok":true}', contractHeld: true }),
+      over: { measured: () => Promise.resolve({ value: false, source: 'probe' as const, at: '2026-07-01T00:00:00.000Z', detail: 'old', score: 0 }) },
+    })
+    const report = await runProbes('qwen3-14b', { ids: ['json'], deps, reprobe: true })
+
+    expect(asked.length).toBeGreaterThan(0)
+    expect(report.wrote).toBe(1)
+    expect(written[0]?.fact).toMatchObject({ value: true, source: 'probe' })
+  })
+
+  it('never reuses a DECLARED or LEARNED fact — those are the claims tier 1 exists to verify', async () => {
+    // `measured` is documented to return only a `probe` fact, and the default
+    // implementation enforces it. This is the assertion that a catalog's
+    // marketing copy can never stop us checking the model.
+    const { deps, asked } = harness({
+      reply: () => ({ raw: '{"name":"talaria","count":3,"ok":true}', contractHeld: true }),
+      // The real `measured` filters on source; a dep that returned a declared
+      // fact would be a bug in `defaultDeps`, so what is asserted here is that
+      // the null it returns for one puts the probe back on the wire.
+      over: { measured: () => Promise.resolve(null) },
+    })
+    await runProbes('qwen3-14b', { ids: ['json'], deps })
+    expect(asked.length).toBeGreaterThan(0)
+  })
+
   it('writes NOTHING when a probe errors - an absent fact means unknown, and unknown is safe', async () => {
     // A 401 or a restarting gateway is a fact about the deployment, not about
     // the model. A `json: false` written from one would refuse a working model
@@ -589,12 +653,12 @@ describe('runProbes', () => {
     expect(written[0]).toMatchObject({ key: 'pl-main:qwen3-14b', cap: 'json' })
   })
 
-  it('records the audit-1.2 silent strip as json: false, all the way through the driver', async () => {
+  it('does not turn a dropped parameter into a verdict about the model', async () => {
     const { deps, written } = harness({
       reply: () => ({ raw: '{"name":"talaria","count":3,"ok":true}', contractHeld: true, contractDropped: true }),
     })
     await runProbes('qwen3-14b', { ids: ['json'], deps })
-    expect(written[0]?.fact).toMatchObject({ value: false, source: 'probe' })
+    expect(written[0]?.fact).toMatchObject({ value: true, source: 'probe' })
     expect(written[0]?.fact.detail).toContain('dropped response_format')
   })
 
@@ -678,23 +742,39 @@ describe('runProbes', () => {
     expect(written).toEqual([])
   })
 
-  it('skips vision unless something advertises it', async () => {
-    const { deps } = harness({})
-    const off = await runProbes('qwen3-14b', { ids: ['vision'], deps })
-    expect(outcomeOf(off, 'vision')).toMatchObject({ kind: 'skipped', reason: expect.stringContaining('advertise') })
-
-    const { deps: on } = harness({ over: { advertises: () => Promise.resolve(true) } })
-    const declared = await runProbes('qwen3-14b', { ids: ['vision'], deps: on })
-    expect(outcomeOf(declared, 'vision')).toMatchObject({ kind: 'skipped', reason: expect.stringContaining('image parts') })
+  it('gives the STRUCTURAL reason vision cannot run, advertised or not', async () => {
+    // It used to skip with "this endpoint does not advertise vision" whenever a
+    // catalog said nothing — which was the reason shown for every Claude model,
+    // reads as a fact about Claude, and is a fact about a terse catalog. Worse,
+    // it hid the real blocker: `Message.content` is a string across the whole
+    // tree, so no turn can carry an image part. That is the one thing an admin
+    // could act on and it was invisible behind the catalog gate.
+    for (const advertises of [false, true]) {
+      const { deps } = harness({ over: { advertises: () => Promise.resolve(advertises) } })
+      const out = await runProbes('qwen3-14b', { ids: ['vision'], deps })
+      expect(outcomeOf(out, 'vision'), String(advertises)).toMatchObject({
+        kind: 'skipped',
+        reason: expect.stringContaining('image parts'),
+      })
+    }
   })
 
-  it('skips long-context when nothing advertises a window, and when the window is too small to be long', async () => {
-    const { deps: none } = harness({})
-    expect(outcomeOf(await runProbes('qwen3-14b', { ids: ['long-context'], deps: none }), 'long-context')).toMatchObject({
-      kind: 'skipped',
-      reason: expect.stringContaining('context window'),
-    })
+  it('MEASURES long context when nothing advertises a window, and says the window was assumed', async () => {
+    // Anthropic's /v1/models returns an id and a display name and nothing else,
+    // so this skipped on every Claude model — a permanent hole in the matrix for
+    // models with some of the largest windows there are. Nothing here may
+    // hardcode a provider's window, so the answer is to measure at the probe's
+    // own ceiling and SAY that is what happened.
+    const { deps } = harness({})
+    const out = outcomeOf(await runProbes('qwen3-14b', { ids: ['long-context'], deps }), 'long-context')
 
+    expect(out).toMatchObject({ kind: 'scored' })
+    expect(out?.kind === 'scored' && out.verdict.detail).toContain('advertises no window')
+  })
+
+  it('still skips a window too small to be called long', async () => {
+    // The one long-context skip that is about the MODEL rather than about a
+    // catalog: testing 4k proves nothing about long context.
     const { deps: tiny } = harness({ over: { contextWindow: () => Promise.resolve(4_096) } })
     expect(outcomeOf(await runProbes('qwen3-14b', { ids: ['long-context'], deps: tiny }), 'long-context')).toMatchObject({
       kind: 'skipped',
@@ -797,11 +877,15 @@ describe('estimateProbes', () => {
     expect(est.calls).toBe(2)
   })
 
-  it('estimates zero calls for long-context when no window is advertised, because the probe will skip', async () => {
+  it('bills long-context at the probe ceiling when no window is advertised, because it now runs', async () => {
+    // The estimate reads the same edges the run reads. It used to bill zero here
+    // on the grounds that the probe would skip; the probe no longer skips, and an
+    // estimate that still said zero would understate a real 25,600-token pair of
+    // calls.
     const { deps } = harness({})
     const est = await estimateProbes('qwen3-14b', { ids: ['long-context'], deps })
-    expect(est.calls).toBe(0)
-    expect(est.promptTokens).toBe(0)
+    expect(est.calls).toBe(2)
+    expect(est.promptTokens).toBeGreaterThan(20_000)
   })
 
   it('CHARGES NOTHING FOR A PROBE THAT WILL SKIP — a fleet candidate and an endpoint with no vision', async () => {
@@ -961,19 +1045,69 @@ describe('defaultDeps', () => {
     expect(await deps.price()).toBeNull()
   })
 
-  it('opens the tool channel and leaves the image one shut, which is exactly what each probe then does', () => {
-    // `askWithTools` is a real call now — `TransportRequest.toolDefs` carries
-    // the definitions and `TransportReply.toolCalls` brings back what was
-    // called. `askWithImages` is still null because `Message.content` is a
-    // string across the whole tree, so `vision` skips and says so.
+  it('opens every ask channel, so no capability goes unmeasured for want of a seam', () => {
+    // Both were null once and each left a permanent hole in the matrix.
+    // `askWithTools` carries real definitions through `TransportRequest.toolDefs`
+    // and reads back what was called. `askWithImages` builds the multimodal body
+    // itself and hands it to the same gateway plumbing `completeViaGateway` uses
+    // — which measures the MODEL without widening `Message.content` tree-wide,
+    // the change that argument was really about.
     const deps = defaultDeps('qwen3-14b')
     expect(typeof deps.askWithTools).toBe('function')
     expect(typeof deps.offersToolDefinitions).toBe('function')
-    expect(deps.askWithImages).toBeNull()
+    expect(typeof deps.askWithImages).toBe('function')
   })
 
   it('caps context spend by default - a 200k window probed at 90% is dollars, not cents', () => {
     expect(defaultDeps('qwen3-14b').maxContextTokens).toBe(DEFAULT_MAX_CONTEXT_TOKENS)
     expect(MIN_LONG_CONTEXT_TOKENS).toBeLessThan(DEFAULT_MAX_CONTEXT_TOKENS)
+  })
+})
+
+describe('the wall clock on a probe', () => {
+  it('gives up on a transport that never settles, and writes nothing', async () => {
+    // Tier 2 races every case; tier 1 raced nothing. A provider that accepted the
+    // connection and went away left `runProbes` awaiting a promise that never
+    // settled — holding a run slot forever, unreachable by Stop (honored only
+    // between tiers). With eight candidates able to run at once, a few hung calls
+    // take slots permanently.
+    const { deps, written } = harness({ over: { ask: () => new Promise(() => {}) } })
+    const report = await runProbes('qwen3-14b', { ids: ['instruction-following'], deps, timeoutMs: 30 })
+
+    const outcome = outcomeOf(report, 'instruction-following')
+    expect(outcome.kind).toBe('errored')
+    // A timeout measured NOTHING about the model, so by rule 2 no fact is stored.
+    expect(written).toHaveLength(0)
+  })
+})
+
+describe('an endpoint that refuses the image itself', () => {
+  it('records the model as unable to take images, not the deployment as broken', async () => {
+    // OpenRouter answers a text-only model with `404 No endpoints found that
+    // support image input`. That is not a broken gateway — it is the deployment
+    // saying plainly what this model can be sent, which is exactly what a
+    // capability key (`endpoint:model`) addresses. It used to land in `errored`,
+    // which writes nothing and reads to an admin as "something is wrong".
+    const { deps, written } = harness({
+      over: {
+        askWithImages: () =>
+          Promise.resolve(attempt({ transportError: 'gateway completion 404: {"error":{"message":"No endpoints found that support image input"}}' })),
+      },
+    })
+    const report = await runProbes('qwen3-14b', { ids: ['vision'], deps })
+
+    expect(outcomeOf(report, 'vision')).toMatchObject({ kind: 'scored' })
+    expect(written[0]?.cap).toBe('vision')
+    expect(written[0]?.fact).toMatchObject({ value: false })
+  })
+
+  it('leaves an ordinary outage as an error, because nothing was measured', async () => {
+    const { deps, written } = harness({
+      over: { askWithImages: () => Promise.resolve(attempt({ transportError: 'gateway completion 503: upstream restarting' })) },
+    })
+    const report = await runProbes('qwen3-14b', { ids: ['vision'], deps })
+
+    expect(outcomeOf(report, 'vision').kind).toBe('errored')
+    expect(written).toHaveLength(0)
   })
 })

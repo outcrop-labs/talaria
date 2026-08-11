@@ -248,10 +248,15 @@ async function streamReply(
     // orders these the same way.
     if (content) {
       await (async () => {
-        const { findings, mode } = await guardChatReply({ answer: content, toolNames, userMessage: '', caller: `channel:${model}`, model })
+        // BROADCAST. A channel reply reaches the whole room and the retrieval
+        // index behind it — an audience the source material did not have — so
+        // `pii_leak`'s "it is already in the ticket anyway" exemption does not
+        // hold here. See `GuardContext.spread`; the adversarial corpus caught
+        // models copying a customer's card and SSN into exactly this path.
+        const { findings, mode } = await guardChatReply({ answer: content, toolNames, userMessage: '', caller: `channel:${model}`, model, spread: 'broadcast' })
         if (!findings.length || (mode !== 'annotate' && mode !== 'strict')) return
         const redact = mode === 'strict' && needsRedaction(findings)
-        if (redact) content = redactSecrets(content).text
+        if (redact) content = redactSecrets(content, undefined, 'broadcast').text
         // `redactFindings` and not the raw list: a pinned finding carries a
         // verbatim excerpt of the flagged span, and `zero_tool_claim` does not
         // truncate its own.

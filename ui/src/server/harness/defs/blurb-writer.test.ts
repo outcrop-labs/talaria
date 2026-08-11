@@ -14,7 +14,7 @@
 // model had not answered the question — no repair, no record, no fitness signal.
 // That pass is gone; these cases are what replaced it.
 import { describe, expect, it } from 'vitest'
-import { NO_TOOLS } from '@/server/harness/define'
+import { NO_TOOLS, type CheckResult } from '@/server/harness/define'
 import { blurbWriterHarness, type BlurbBatch, type BlurbMap } from '@/server/harness/defs/blurb-writer'
 import { runHarness, type HarnessDeps, type HarnessRunRow, type TransportRequest } from '@/server/harness/run'
 import type { GuardConfig } from '@/server/guardrails'
@@ -128,7 +128,7 @@ describe('the key contract', () => {
 })
 
 describe('the eval fixtures', () => {
-  const check = (i: number, v: BlurbMap): string | null => {
+  const check = (i: number, v: BlurbMap): CheckResult => {
     const fixture = blurbWriterHarness.evals?.[i]
     if (!fixture) throw new Error(`no eval fixture at index ${i}`)
     return fixture.check(v, NO_TOOLS)

@@ -34,24 +34,46 @@ it('census', () => {
     harnesses: 26,
     fixtures: 247,
     widens: 12,
-    refuses: ['judge', 'research-search'],
+    // EVERY JSON HARNESS REFUSES, derived rather than declared — see
+    // `withJsonFloor` in define.ts. A harness whose output contract is a schema
+    // needs structured output by construction, so a model MEASURED unable to
+    // produce a parseable object is unfit for it, and sending prose to a parser
+    // and recording the wreckage as the model's failure is the behaviour this
+    // replaced. The two text harnesses that already refused keep their own
+    // reasons.
+    refuses: [
+      'blurb-writer',
+      'muse:cron',
+      'muse:agent',
+      'muse:ticket',
+      'judge',
+      'inbox-brief',
+      'inbox-command',
+      'channel-plan',
+      'research-queries',
+      'research-search',
+    ],
     roles: 11,
     platformAgents: 9,
   })
 })
 
 // The tier-1 bill, which is the number an admin decides on before spending
-// money — and the number the arming round moved, because `tools` and
-// `tool-select` used to skip on every model and now make five calls on any
-// gateway-served one.
+// money. It moved twice: once when `tools` and `tool-select` were armed, and
+// again when `vision` stopped skipping — the image channel now builds its own
+// multimodal body (`runnerImageAsk`) instead of waiting on a tree-wide
+// `Message.content` widening, and its fixture went from one degenerate 1x1 to
+// three real colour fields.
 it('probe calls', () => {
   const total = PROBES.reduce((n, p) => n + p.calls, 0)
-  // `vision` is the only probe that skips everywhere (Message.content is a
-  // string), so a gateway candidate is billed for everything else.
-  const gateway = PROBES.filter((p) => p.id !== 'vision').reduce((n, p) => n + p.calls, 0)
-  // A fleet persona additionally skips both tool probes: its tool loop runs
-  // inside the agent container, where Talaria can neither place a definition nor
-  // observe a call.
+  // NOTHING SKIPS ON A GATEWAY CANDIDATE ANY MORE. Every capability in the union
+  // is measurable there, which is the point of the tier: a blank tag should mean
+  // "nobody has run this yet", never "Talaria has no way to ask".
+  const gateway = total
+  // A fleet persona still skips the three that need a seam its container does
+  // not give us: both tool probes (its loop runs inside the agent, where we can
+  // neither place a definition nor observe a call) and vision (its turn is
+  // rendered in there too, so there is no raw body to attach an image to).
   const persona = PROBES.filter((p) => !['vision', 'tools', 'tool-select'].includes(p.id)).reduce((n, p) => n + p.calls, 0)
-  expect({ probes: PROBES.length, total, gateway, persona }).toEqual({ probes: 9, total: 23, gateway: 22, persona: 17 })
+  expect({ probes: PROBES.length, total, gateway, persona }).toEqual({ probes: 9, total: 25, gateway: 25, persona: 17 })
 })

@@ -23,6 +23,10 @@
   }: { row: ModelRow | undefined; negativeOnly?: boolean; class?: string } = $props()
 
   const tags = $derived(visibleTags(row))
+  // `negativeOnly` is "what will break here", so a capability the DEPLOYMENT
+  // supplies is not in it — that is the opposite of broken. It is exactly the
+  // case a dense row would otherwise print as a red "no vision" on an install
+  // where vision demonstrably works.
   const shown = $derived(negativeOnly ? tags.measured.filter((c) => c.state === 'no') : tags.measured)
 </script>
 
@@ -43,7 +47,7 @@
     {:else}
       {#each shown as c (c.cap)}
         <Chip tone={TAG_TONE[c.state]} title={tagTitle(c)}>
-          {c.state === 'no' ? 'no ' : ''}{CAPABILITY_WORDS[c.cap].short}
+          {c.state === 'no' ? 'no ' : ''}{CAPABILITY_WORDS[c.cap].short}{c.state === 'supplied' ? ' ↗' : ''}
         </Chip>
       {/each}
     {/if}

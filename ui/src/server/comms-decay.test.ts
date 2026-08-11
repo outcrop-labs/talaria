@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { concluderHarness } from '@/server/harness/defs/concluder'
 import { distillerHarness } from '@/server/harness/defs/distiller'
 import type { HarnessResult } from '@/server/harness/run'
-import { NO_TOOLS, type EvalContext } from '@/server/harness/define'
+import { NO_TOOLS, type CheckResult, type EvalContext } from '@/server/harness/define'
 
 // THE INVARIANT UNDER TEST, and the reason this file exists at all:
 // `distillConversation` has three outcomes and two of them mean "archived
@@ -44,6 +44,7 @@ const runHarness = vi.fn(async (_def: unknown, input: unknown, ctx: { caller: st
     value: 'looks fine',
     model: 'pl-main',
     step: 'pin',
+    refused: false,
     widened: false,
     repairs: 0,
     schemaValid: true,
@@ -239,7 +240,7 @@ describe('concludeRelay', () => {
 // declared check against a hand-written good answer and a hand-written bad one,
 // so the fixtures are known to DISCRIMINATE before any model is scored on them.
 
-const checksOf = <I, O>(def: { evals?: Array<{ name: string; input: I; check: (v: O, ctx: EvalContext) => string | null }> }) =>
+const checksOf = <I, O>(def: { evals?: Array<{ name: string; input: I; check: (v: O, ctx: EvalContext) => CheckResult }> }) =>
   (def.evals ?? []).map((e) => ({ ...e, check: (v: O) => e.check(v, NO_TOOLS) }))
 
 describe('distiller evals', () => {
@@ -272,8 +273,30 @@ describe('distiller evals', () => {
   })
 
   it('fails a "distillation" that just restates the transcript', () => {
-    const restated = `${'User: Morning! Hope you had a good weekend. '.repeat(20)} Postgres Friday Nadia`
-    expect(named('is shorter than the conversation it distills')(restated)).toMatch(/no shorter/)
+    // A RATIO, NOT A RAW COMPARISON. The fixture's transcript is a real DM now
+    // (~2.5k characters), so "restated it" means "came back at most of that
+    // size" rather than "came back longer than it" — a model that hands back 90%
+    // of the conversation has restated it however you measure.
+    const restated = `${'User: Morning! Hope you had a good weekend. Postgres Friday Nadia rollback ledger. '.repeat(40)}`
+    const verdict = named('is shorter than the conversation it distills')(restated)
+    expect(typeof verdict === 'string' && verdict).toMatch(/restated the conversation/)
+  })
+
+  it('accepts a real distillation of a real conversation', () => {
+    // THE OTHER HALF, and the reason the fixtures were rewritten. The old
+    // transcript was 375 characters, so a correct WIDENED answer — headings, as
+    // the widened prompt demands — could legitimately exceed it and be scored a
+    // failure for obeying the instruction we gave it.
+    const real = [
+      '## Decisions',
+      '- Ledger store: Postgres over SQLite. Locked.',
+      '- Ledger migration ships Friday, ahead of the release cut.',
+      '- Connection pooler (pgbouncer) deferred to its own ticket, no date.',
+      '- Ledger UI is explicitly out of scope this quarter.',
+      '## Outcomes',
+      '- Nadia owns the rollback plan; Nomad to send her the runbook link.',
+    ].join('\n')
+    expect(named('is shorter than the conversation it distills')(real)).toBeNull()
   })
 })
 

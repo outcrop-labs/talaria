@@ -126,3 +126,31 @@ describe('the work-session turn, guarded at last', () => {
     expect(workSessionHarness.floor.capabilities).toEqual([])
   })
 })
+
+
+// ── The status-line convention ───────────────────────────────────────────────
+
+describe('every fixture tells the model the convention it is scored on', () => {
+  // WHAT BROKE. `work-dispatch.ts` states the DONE/BLOCKED convention in the
+  // dispatch brief — turn one — and its continuation prompts then say only "End
+  // with your status line", because the conversation carries it. A fixture is a
+  // STANDALONE conversation, so the continuation fixtures asked for a convention
+  // they had never explained and then failed models for not emitting a literal
+  // DONE. Both models swept failed it, which is the signature of our gap.
+  it('names DONE / BLOCKED in every prompt whose fixture asserts on it', () => {
+    const asserted = (workSessionHarness.evals ?? []).filter((c) => /DONE|BLOCKED/.test(c.check.toString()))
+    expect(asserted.length).toBeGreaterThan(0)
+    for (const c of asserted) {
+      expect(c.input.prompt, `${c.name} is scored on a token its prompt never mentions`).toMatch(/DONE \/ BLOCKED/)
+    }
+  })
+
+  it('matches production\'s own wording, so the two cannot drift', () => {
+    // The fixture is only fair if it asks for what production asks for. A
+    // paraphrase here would measure a convention this product does not have.
+    for (const c of workSessionHarness.evals ?? []) {
+      if (!/DONE \/ BLOCKED/.test(c.input.prompt)) continue
+      expect(c.input.prompt).toContain("End each reply with a short status line: what you just did and what you'll do next (or DONE / BLOCKED).")
+    }
+  })
+})

@@ -613,13 +613,51 @@ model that says so having called nothing.
 A harness declares `dryRun` and the fitness suite supplies the loop, against an isolated in-memory
 world (`server/fitness/toolbox/`):
 
-| Surface | Tools | World |
-| --- | --- | --- |
-| `dryRun.tools` | Talaria's real MCP toolkit — names and descriptions **copied from `mcp/src/index.ts`** and locked by `talaria-tools.sync.test.ts` | tickets, channels, teammates |
-| `dryRun.workspace` | the base coding surface: `list_files`, `read_file`, `search`, `write_file`, `run_tests` | a small repository, per fixture, with the fixture's own pass oracle |
+| Surface | Caller | Tools | World |
+| --- | --- | --- | --- |
+| `dryRun.tools` (`toolbox/talaria-tools.ts`) | **Hermes agents**, over MCP | Talaria's real MCP toolkit — all 44, names, descriptions **and argument names copied from `mcp/src/index.ts`** and locked by `talaria-tools.sync.test.ts` | boards, tickets, attachments, channels, teammates, the knowledgebase, documents, Google, research runs, board governance |
+| `dryRun.workspace` (`toolbox/hermes-tools.ts`) | **Hermes coding harnesses** (Claude Code, Codex, Aider …) | the base coding surface: `list_files`, `read_file`, `search`, `write_file`, `run_tests` | a small repository, per fixture, with the fixture's own pass oracle |
+| `def.toolDefs` (`toolbox/native-tools.ts`) | **native platform agents** — a harness in this repo, loop run in-process | whatever the harness puts on the request. Today: one web-search tool, supplied by the org's MCP registry | the live web, through the registered supplier |
+
+**Know which surface a verdict is about.** The first two are the *Hermes* surface: a containerized
+persona holding forty-four workspace verbs, whose loop Talaria never sees. The third is what *Talaria
+itself* hands a model, and it is one tool long — that shortness is a finding, not a gap in the docs. A
+deployment can be good at one and useless at the other: a gateway that strips `tools` from a request
+kills every native harness and leaves every persona untouched, because the persona's loop never
+travels through that gateway.
 
 Fixtures then assert over `ctx.calls` — the log of what actually happened. `NO_TOOLS` is what every
 single-shot harness's fixture receives, so a check reaching for `ctx.calls` sees an honest empty list.
+
+### Every tool must be simulated and exercised — enforced
+
+`scripts/check-invariants.mjs` fails the build when a tool registered in `mcp/src/index.ts` is not
+
+1. **modelled** in `fitness/toolbox/talaria-tools.ts` (real description, real argument names),
+2. **backed** by a handler in `fitness/toolbox/sandbox.ts` over the in-memory world, and
+3. **exercised** by a sandbox test or a harness's `dryRun.tools` surface.
+
+This is not a style rule. The toolkit reached forty-four tools while the simulator modelled sixteen —
+no single commit was wrong, and the result was twenty-eight verbs an org depends on with no simulated
+backend, no fixture, and a fitness page reporting confident scores over the third of the surface that
+happened to be covered. Eight of those sixteen also carried *invented argument names*
+(`comment(body)` for the real `comment(content)`, `add_time(minutes)` for `add_time(seconds)`), so a
+model that "called them correctly" in the benchmark got a 400 in production and the benchmark called
+it competent.
+
+**Simulate the refusals, not only the happy path.** "Personal assistants only", "no Google account
+connected", "that ticket is off the table", "that channel id does not exist" — the failures worth
+catching are a model reaching for a tool its identity does not carry, and a model narrating a result
+it was refused. A sandbox that only ever says yes measures nothing.
+
+**Offer the discovery tool with the reader.** `list_tickets` takes a `boardId` and `read_channel`
+takes a `channelId`; production 404s on a name. A `dryRun.tools` surface with the writer but not the
+lister makes a model guess an id and then scores the guess — our gap, charged to the model. This is
+the single most common way a fixture ends up measuring the harness instead of the candidate.
+
+The same bar applies to plugin harnesses: a plugin that ships tools ships their simulated backends and
+their fixtures. The platform is held to it first, in CI, because a rule the platform exempts itself
+from is a rule nobody follows.
 
 Two things are deliberately *not* claimed. The loop is **ours**, not the persona's (production runs
 Hermes's), so what it measures is the decision — given these tools and this situation, what did the
@@ -712,6 +750,16 @@ model for, and Talaria has exactly two kinds: the 11 `MODEL_ROLES` assignments a
 resolution chain over instrumented dependencies and records which roles it asked for, rather than
 copying the step order into a file where it would become an eighth spelling of the same policy.
 
+A verdict is produced for **all twenty**; the matrix draws a **column for the fifteen a harness can
+reach** (`slotViews`). The five it drops are `unbound` for every model forever, and they were dead for
+two different reasons that the one "reserved" chip flattened: four are reserved *roles* whose surfaces
+do not exist yet (vision, image-generation, embedding, reranker), and the fifth is the **briefer**,
+which is not reserved at all — it ships, it runs every Inbox and console briefing, and its model is
+fixed by design because a briefing reads one person's own views and answers in their own assistant's
+voice. Its harnesses take their model from the subject of the call, so they are scored under
+`FitnessReport.unbound` and shown there in the model's report. Scoring is unchanged and
+`roleAssignmentIssues` still warns an admin who points a blind model at the reserved vision role.
+
 `ready` / `workable` / `unfit`, plus `untested` (nothing measured this) and `unbound` (no harness
 reaches this slot — which must read as "no evidence", never as an empty green cell). `unfit` always
 names the harness and, where a fixture failed, the fixture's own sentence verbatim. A slot's band is
@@ -722,6 +770,82 @@ the **worst of its harnesses' bands**, decided per harness.
 been *measured*, so an unmeasured required capability, or a sweep with the guard switched off, caps a
 slot at `workable` with a reason naming the button to press. Neither ever pushes a slot to `unfit`:
 absence of evidence is not evidence of absence in that direction either.
+
+### Price against performance (`fitness/value.ts`)
+
+A band says whether a model *can* hold a slot. It does not say what holding it costs, and it weighs the
+harness a fleet runs four thousand times a day exactly like the one that runs on Sundays. So the Cost &
+value tab asks the two questions an admin actually decides on, **weighted by the same runs-per-day
+vector**:
+
+- **Cost** is not `$/MTok`. Harnesses differ enormously in shape — the concluder reads a session and
+  writes four lines, the blurb writer reads a sentence and writes a paragraph — so a sticker price is
+  not comparable across models. Cost here is *what a day of your measured workload costs on this
+  model*: production's own runs per harness (from `harness_runs` over the telemetry window) × the
+  per-case tokens a sweep measured × that model's price.
+- **Performance** is not an average of contract rates. `score.ts` refuses to mint one and it is right —
+  four harnesses' rates averaged into a scalar is a number with no referent. What has a referent is
+  **coverage**: the share of your daily runs the model tested `ready` for, with the `workable`, `unfit`
+  and never-measured shares beside it. Nothing is imputed.
+
+`usdPerReadyRun` is the two divided: dollars per run the model is actually trusted with. A cheap model
+that can carry a tenth of your day is not cheap.
+
+Three rules keep the numbers honest, and each one exists because the live data broke it first:
+
+- **A price with nothing to price is not `$0`.** A model whose sweep failed every case before a token
+  moved has a perfectly good `$/MTok` and no measurement; it reports no figure rather than landing at
+  the cheap end of the chart.
+- **Zero tokens is not a measurement of zero.** A sweep against a model id the gateway could not reach
+  ran all 70 cases, failed every one, and overwrote 26 harnesses' good token budgets with `0` — which
+  made every dollar figure on the page read `$0.00`. `nextBudget` now leaves a previous measurement
+  alone when a run measured nothing.
+- **No production rows is said out loud.** A fresh install falls back to one run of every harness and
+  the payload reports `basis: 'uniform'`, because "we assumed your traffic is flat" is a materially
+  different claim from "this is your traffic".
+
+Reports archived before the index carried its per-harness half are **backfilled** from the full record
+rather than being asked to re-test — the measurement is real and already paid for.
+
+### Running several candidates (`MAX_CONCURRENT_RUNS`)
+
+Up to **eight** candidates are tested at once, because comparing a shortlist is the actual job and
+one-at-a-time turns a fifteen-minute sweep into an afternoon.
+
+The old ceiling of three was never about the provider — each run is strictly sequential inside itself
+(one harness, then one case), so N runs are N concurrent requests and eight of those is nothing. It was
+about *us*: the resume checkpoint lived in one settings row holding every running candidate's cases, so
+each per-case write was a read-modify-write of every sibling's work too. Write traffic went as
+O(N² × cases²) — ~400 MB at three candidates, ~4.6 GB at ten — and every write was a synchronous JSON
+parse/stringify of a multi-megabyte blob **on the event loop serving the UI**. One row per candidate
+(`harness_eval_run:<model>`) takes N out of the cost entirely: a write is proportional to one
+candidate's own cases and touches nothing else, so eight concurrent sweeps write exactly what eight
+sequential ones would.
+
+What binds now is the provider — about 16k tokens a minute per run, so eight is ~130k TPM against a
+single key. Candidates spread across endpoints don't share that budget at all.
+
+Everything below the run was already per-candidate — the checkpoint, the archived report, the
+capability keys. Only the in-process flag and the status row were global, and both are now maps keyed
+by model (`model_fitness_runs`, `harness_eval_runs`). A second sweep of the *same* candidate is still
+refused: two sweeps interleaving one checkpoint is what the original boolean was protecting against.
+Stop is per run, so dropping a hopeless candidate does not cost the other two.
+
+### One spelling per model (`canonicalModelId`)
+
+`gatewayModels()` offers each model **once**, as `<endpoint>/<model>`. It used to offer both spellings,
+which put `claude-opus-5` and `anthropic/claude-opus-5` on consecutive rows of every picker and of the
+matrix — one deployment, one capability key, two entries. The qualified form is canonical because it
+names *where* the model runs, which is the thing capability is measured about (`capabilityKey` is
+`endpoint:model`, never a bare name), and it reads correctly for both kinds of provider without a
+special case: a router gives `openrouter/deepseek/deepseek-v4-flash`, a direct vendor gives
+`anthropic/claude-opus-5`.
+
+A bare id survives only where it means something else — served by more than one endpoint it is the
+round-robin **pool**, a routing target no qualified id can express. Bare ids stay callable regardless:
+`routingFor` is untouched, so every stored assignment keeps working, and `canonicalModelId` maps a
+stored spelling onto the offered one so a role assignment and an archived report still line up with the
+row an admin is looking at.
 
 ### Tested vs observed (`fitness/observed.ts`)
 

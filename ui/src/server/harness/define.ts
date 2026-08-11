@@ -27,7 +27,7 @@
 import type { z } from 'zod'
 import type { Capability } from './capability'
 import type { ModelSpec } from './model'
-import type { ToolDefinition, ToolPolicy } from './transport'
+import type { ToolCall, ToolDefinition, ToolPolicy } from './transport'
 
 /** One chat turn as every transport in Talaria spells it. Deliberately
  *  text-only: a harness that needs image parts is a different contract, and
@@ -45,16 +45,36 @@ import type { ToolDefinition, ToolPolicy } from './transport'
  *  harness `render`s. A union that only the persona payload honored would report
  *  `[object Object]` into the ledger and ground the guard against nothing.
  *
- *  So `vision` skips, and probes.ts says so in the skip reason rather than
- *  quietly recording a fact it could not measure. Widening is a whole change of
- *  its own: `Message` first, then the two payload builders, then the four
- *  readers above, with the token estimate and the grounding text proved on parts
- *  before any transport is allowed to send one. Note also that the probe is
- *  gated behind an endpoint that DECLARES vision, and nothing in Talaria writes
- *  that fact yet — so widening the union alone would still run zero probes. */
+ *  So `content` stays a string, and `vision` is measured through a seam that
+ *  does not need it (`gatewayImageTurn` / `personaProbeTurn` build their own
+ *  multimodal body). What DID land here is the TOOL channel below, which is a
+ *  different question: two optional fields, no change to `content`, and every
+ *  reader listed above keeps working untouched. */
 export interface Message {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /** THE TOOL CHANNEL, and it is additive on purpose.
+   *
+   *  `content` stays a string — the content-parts union this file warns about
+   *  elsewhere is a genuinely tree-wide change and this is not it. These two
+   *  optional fields carry what an assistant turn and a tool result ARE on the
+   *  wire, so a loop that replays a tool conversation can send the shape every
+   *  provider already speaks.
+   *
+   *  WHY IT HAD TO EXIST. The dry-run sandbox had nowhere to put a tool call, so
+   *  it wrote one into the assistant's TEXT: first `[tool] write_file({...})`,
+   *  then `(called write_file)`. Models imitated whichever string they were
+   *  shown — 34 replies in one sweep contained our own narration verbatim, then
+   *  the arguments as prose — so `reply.toolCalls` came back empty, the loop
+   *  broke, and fixtures reported "read the repository and never wrote a file"
+   *  about models that had written it. Changing the wording moved the imitation;
+   *  only giving the calls their own channel ends it.
+   *
+   *  Renderers never set either: a harness `render` produces system and user
+   *  turns. Transports that cannot express them fall back to `content`. */
+  toolCalls?: ToolCall[]
+  /** Set with `role: 'tool'` — which call this message is the result of. */
+  toolCallId?: string
 }
 
 /** What `render` is told about the call it is rendering for.
@@ -152,7 +172,9 @@ export interface EvalCase<I, O> {
    *  value and is the wrong question; "did it call triage_ticket before claiming
    *  to have started" is answerable only from here, and is the failure that
    *  costs an org a week. */
-  check: (value: O, ctx: EvalContext) => string | null
+  /** See `CheckResult`: null passes, a string fails the MODEL, and `{ gap }`
+   *  reports that this fixture could not fairly ask the question. */
+  check: (value: O, ctx: EvalContext) => CheckResult
   /** Which difficulty band this fixture belongs to. Bands are reported
    *  separately, so "solid on standard, fails the hard band" is sayable instead
    *  of collapsing into one rate that hides which half a model can do.
@@ -219,6 +241,63 @@ export const NO_TOOLS: EvalContext = { calls: [], calledBefore: () => false, wor
  *  measures our prompt rather than the model.
  *
  *  Returns the admin-facing sentence, or null when the answer clears the floor. */
+/** A COUNT LIMIT, WITH THE MARGIN A HUMAN WOULD GIVE IT.
+ *
+ *  A prompt that asks for "3-7 words" is an instruction, not a schema. Scored as
+ *  a hard boundary it failed three capable models for an EIGHT-word title — one
+ *  word over, on a title the product then clamps to 90 characters anyway, so
+ *  nothing anywhere was harmed by the extra word. That is not a measurement of
+ *  the model; it is a measurement of how literally it read a range.
+ *
+ *  So a count fails when the overshoot is MATERIAL. The default margin is a
+ *  quarter, floored at one unit, which lets 3-7 accept 2-8 and rejects the
+ *  one-word title and the paragraph alike — the two answers that are actually a
+ *  different kind of thing from the one asked for.
+ *
+ *  USE IT FOR A STATED PREFERENCE, NOT FOR A HARD EDGE. Where exceeding the
+ *  number breaks something — a card that clips, an action taken one time too
+ *  many, a batch that creates an eleventh ticket — assert the real limit
+ *  directly and say what breaks. `tolerance: 0` is available for the cases in
+ *  between, and reads as the deliberate choice it is. */
+/** WHAT A FIXTURE'S `check` MAY CONCLUDE.
+ *
+ *  `null`      the model did the job.
+ *  `string`    the model did not, and this sentence says how. A FAILURE.
+ *  `{ gap }`   THE HARNESS DID NOT GIVE THE MODEL WHAT THE JOB NEEDED, so the
+ *              answer cannot be scored. NOT a failure, and never attributed to
+ *              the model.
+ *
+ *  THE THIRD CASE IS THE ONE WORTH EXPLAINING. A fixture asserts that a coding
+ *  run ran the tests, or that a session filed a capability gap, or that a brief
+ *  named the one blocked item — and every one of those is only a fair question
+ *  if the run was actually given a test runner, a gap tool, and a briefing that
+ *  contained the item. When it was not, the model can do everything right and
+ *  still miss the assertion, and scoring that as a model failure is measuring
+ *  our own fixture and calling it a capability.
+ *
+ *  This is the same distinction `EvalCaseScore.skipped` already draws one level
+ *  up — "we never asked" is not "it answered badly" — pushed down to where the
+ *  fixture can see what it actually handed over. A gap is reported to US: it
+ *  lands in the run's own list of things to fix, not in the model's score.
+ *
+ *  Return one when the ASSERTION IS UNANSWERABLE as posed. Do not return one for
+ *  a hard task — difficulty is what a band is for. */
+export type CheckResult = string | null | { gap: string }
+
+/** Narrowing helper, so consumers never test the shape by hand. */
+export const isGap = (r: CheckResult): r is { gap: string } => typeof r === 'object' && r !== null && 'gap' in r
+
+export function countProblem(
+  actual: number,
+  limit: { min?: number; max?: number; unit: string; asked: string; tolerance?: number },
+): string | null {
+  const slack = (n: number): number => Math.max(1, Math.round(n * (limit.tolerance ?? 0.25)))
+  const plural = (n: number): string => `${n} ${limit.unit}${n === 1 ? '' : 's'}`
+  if (limit.min !== undefined && actual < limit.min - slack(limit.min)) return `${plural(actual)} — the prompt asks for ${limit.asked}`
+  if (limit.max !== undefined && actual > limit.max + slack(limit.max)) return `${plural(actual)} — the prompt asks for ${limit.asked}`
+  return null
+}
+
 export function belowAnswerFloor(value: string, floor: { minChars: number; mentions?: readonly string[] }): string | null {
   const text = value.trim()
   if (text.length < floor.minChars) {
@@ -477,6 +556,16 @@ export interface HarnessDefinition<I, O> {
     /** Which Talaria toolkit tools to offer. Omit when `workspace` is set —
      *  those two are different surfaces and a harness has one. */
     tools?: string[]
+    /** MODEL TURNS THIS HARNESS'S LOOP MAY TAKE, when the default six is not
+     *  what production gives it. Declare it to match the real job: benching a
+     *  twelve-turn work session at six measures a shorter job than the one the
+     *  harness does, and then judges the model on work it was cut off in the
+     *  middle of. Capped by `MAX_TURN_CEILING`.
+     *
+     *  IT ALSO WIDENS THE CASE CLOCK: `turnsPerCase` reads it, so a longer loop
+     *  gets proportionally longer to run in rather than timing out at a budget
+     *  sized for a shorter one. */
+    maxTurns?: number
     /** Overrides on the sandbox's standard world — a ticket in a particular
      *  state, a gap already filed, a DM already sent. Typed loosely here so this
      *  module stays free of the fitness suite's imports; the suite narrows it. */
@@ -525,8 +614,37 @@ export interface HarnessDefinition<I, O> {
   evals?: EvalCase<I, O>[]
 }
 
-/** Identity, for the inference. Written as a function rather than a bare
- *  `satisfies` so that `render`'s input and `schema`'s output are checked
- *  against each other at the definition site — the one place a harness author
- *  can get the pair wrong and the last place anyone would look for it. */
-export const defineHarness = <I, O>(h: HarnessDefinition<I, O>): HarnessDefinition<I, O> => h
+/** A JSON HARNESS REQUIRES JSON, DERIVED RATHER THAN DECLARED.
+ *
+ *  A harness with `output.kind === 'json'` needs structured output by
+ *  construction — the platform sends its schema at the protocol level and parses
+ *  the reply against it. That makes it a FLOOR: a model measured unable to
+ *  produce structured output is unfit for the task, and asking it anyway means
+ *  handing prose to a parser and recording the wreckage as the model's failure.
+ *
+ *  DERIVED because the rule is mechanical and the alternative is nine copies of
+ *  it that drift. Restating a floor per harness is how one of them comes to omit
+ *  it and quietly go back to the old behaviour. `registry.test.ts` asserts every
+ *  JSON harness carries it, so the derivation cannot be silently bypassed.
+ *
+ *  WHAT "UNFIT" MEANS HERE IS NARROW, and deliberately so. `run.ts` refuses only
+ *  on a capability MEASURED false by a probe or declared false by a human — never
+ *  on an unknown, never on a single upstream 400, never on a catalog spec sheet.
+ *  A fresh self-host that has probed nothing still runs every JSON harness. The
+ *  floor bites exactly when Talaria has real evidence the model cannot do the
+ *  thing the task is made of.
+ *
+ *  `refuseBelow` is forced true for the same reason: a floor that names the
+ *  capability but declines to act on it is a comment, not a floor. An author can
+ *  still add capabilities and their own note; neither is overwritten. */
+const withJsonFloor = <I, O>(h: HarnessDefinition<I, O>): HarnessDefinition<I, O> =>
+  h.output.kind !== 'json' || h.floor.capabilities.includes('json')
+    ? h
+    : { ...h, floor: { ...h.floor, capabilities: [...h.floor.capabilities, 'json'], refuseBelow: true } }
+
+/** Identity, for the inference — plus the one derived floor above. Written as a
+ *  function rather than a bare `satisfies` so that `render`'s input and
+ *  `schema`'s output are checked against each other at the definition site — the
+ *  one place a harness author can get the pair wrong and the last place anyone
+ *  would look for it. */
+export const defineHarness = <I, O>(h: HarnessDefinition<I, O>): HarnessDefinition<I, O> => withJsonFloor(h)

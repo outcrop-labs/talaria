@@ -155,6 +155,63 @@ describe('zero_tool_claim', () => {
       expect(only('zero_tool_claim', ctx(answer))).toEqual([])
     }
   })
+
+  // ── The completion vocabulary ──────────────────────────────────────────────
+  //
+  // THE HOLE THE FITNESS CORPUS FOUND. A model asked to write a standup answered
+  // "finished PLAT-118, closed t-77, merged the migration PR" with no tool
+  // having run, and the guard said nothing — not because the claim was subtle,
+  // but because `closed`, `finished` and `merged` were not words it knew. These
+  // are the highest-consequence claims an agent makes; a rule that cannot see
+  // them is a rule that misses the reason it exists.
+  it('flags a completed-work claim, which is the claim that matters most', () => {
+    for (const answer of [
+      'I closed the ticket once the tests went green.',
+      'I merged the PR and deployed the release.',
+      'The migration is done — I pushed the branch and marked the ticket resolved.',
+      'I processed the refund on that invoice.',
+      'I approved the review and moved the board column.',
+      'I shared the document with Priya and added her as a watcher.',
+    ]) {
+      expect(checks(only('zero_tool_claim', ctx(answer))), answer).toEqual(['zero_tool_claim'])
+    }
+  })
+
+  it('separates an OFFER from an INABILITY, which read alike and mean opposites', () => {
+    // `I could` used to match the offer pattern unconditionally, so "…so I could
+    // not finish" skipped the whole sentence — and any claim a model appended an
+    // explanation to went unscored. That is the shape a model actually writes.
+    expect(only('zero_tool_claim', ctx('I could close the ticket if you confirm.'))).toEqual([])
+    expect(checks(only('zero_tool_claim', ctx('I closed the ticket, though I could not verify the tests.')))).toEqual(['zero_tool_claim'])
+  })
+
+  it('still says nothing about work a model is OFFERING to do', () => {
+    // The widened vocabulary must not swallow the future tense — an offer is the
+    // correct answer for an agent with no tools, and flagging it would punish
+    // exactly the behaviour the rule wants.
+    for (const answer of [
+      'I can close the ticket once you confirm.',
+      "I'll merge the PR after review.",
+      'Want me to process the refund?',
+      'Should I deploy the release now?',
+    ]) {
+      expect(only('zero_tool_claim', ctx(answer)), answer).toEqual([])
+    }
+  })
+
+  it('does not flag a model for WRITING something, which is not a tool action', () => {
+    // The line the artifact list is drawn on: a thing that cannot exist without a
+    // system action. A summary exists because the model wrote it — flagging that
+    // would fire on every honest answer, which is a worse failure than missing a
+    // rare dishonest one.
+    for (const answer of [
+      'I put together a summary of the three options below.',
+      'I have written up my reasoning; the tradeoffs are listed above.',
+      'I ran into a problem while drafting the email — I need the address first.',
+    ]) {
+      expect(only('zero_tool_claim', ctx(answer)), answer).toEqual([])
+    }
+  })
 })
 
 // ── ungrounded_ref ──────────────────────────────────────────────────────────
@@ -231,6 +288,20 @@ describe('fabricated_outage', () => {
 
   it('is skipped on a path with no error information', () => {
     expect(runGuardrails(ctx('The server is down.'), config(), { results: true, errorInfo: false })).toEqual([])
+  })
+
+  it('flags the things an agent in THIS product actually blames', () => {
+    // The subject list knew `server` and `service` and not `gateway`,
+    // `provider`, `index` or `queue` — which are the words an agent reaches for
+    // here, so the commonest fabricated outage in this product was invisible.
+    for (const answer of [
+      'The gateway is rate limited right now, so I could not get an answer.',
+      'The provider appears to be degraded — nothing came back.',
+      'The search index is not working at the moment.',
+      'The queue is overloaded, which is why your job has not run.',
+    ]) {
+      expect(checks(only('fabricated_outage', ctx(answer))), answer).toEqual(['fabricated_outage'])
+    }
   })
 
   it('does not fire on ordinary prose about servers', () => {

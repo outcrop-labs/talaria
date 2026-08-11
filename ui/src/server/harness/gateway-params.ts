@@ -125,7 +125,26 @@ export function rejectedParam(errText: string): string | null {
   const m =
     /[`"']([a-z_]+)[`"'] is (?:deprecated|not supported|unsupported)/i.exec(errText) ??
     /unsupported parameter[:\s`"']+([a-z_]+)/i.exec(errText) ??
-    /[`"']([a-z_]+)[`"'][^.]{0,40}(?:deprecated|not supported)/i.exec(errText)
+    /[`"']([a-z_]+)[`"'][^.]{0,40}(?:deprecated|not supported)/i.exec(errText) ??
+    // THE FIELD-PATH SHAPE, which is how a provider that validates the request
+    // body reports a field it will not accept:
+    //
+    //   response_format.type: Input should be 'json_schema'
+    //   response_format.json_schema.strict: Input should be True
+    //   response_format.json_schema.schema: Empty schema ({}) ... is not supported
+    //
+    // All three are Anthropic, all three are about `response_format`, and none
+    // of the patterns above matches one — they look for a QUOTED parameter name
+    // next to "not supported", and this shape quotes nothing and names the field
+    // by path. So the strip-and-retry never fired, the 400 went back to the
+    // caller, and the fitness suite recorded it as the model failing its
+    // contract on every structured call.
+    //
+    // Matching the ROOT of the path is what matters: the parameter Talaria can
+    // stop sending is `response_format`, not `response_format.json_schema.strict`.
+    // `classifyParam` still refuses to strip a protected one, so a complaint
+    // about `messages.0.content` cannot turn into a request with no messages.
+    /(?:^|[\s"'{,])([a-z_]{3,})(?:\.[A-Za-z0-9_]+)*\s*:\s*(?:Input should be|Extra inputs are not permitted|Empty schema|Field required)/i.exec(errText)
   return m?.[1] ?? null
 }
 

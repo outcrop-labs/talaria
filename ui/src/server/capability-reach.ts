@@ -29,13 +29,15 @@
 //                   asking when they pick a model from a dropdown.
 //
 // WHAT IT DOES NOT DO: invent reach. A tool path counts only when the tool is
-// REGISTERED AND ENABLED in this install and the model can actually call tools.
-// An org with no search server gets the same "not a fit" it got before — with a
-// materially better sentence, naming the thing to go and install rather than
-// blaming the model.
+// REALLY THERE — registered and enabled in this install, or supplied by Talaria
+// itself and CHECKED to be working (see `capability-platform.ts`) — and the
+// model can actually call tools. An org with neither gets the same "not a fit"
+// it got before, with a materially better sentence naming the thing to go and
+// install rather than blaming the model.
 import { getSetting } from './audit'
 import { listMcpServers, type McpServer } from './mcp-registry'
 import { getCapabilities, type Capability, type CapabilityFact } from './harness/capability'
+import { platformSupply } from './capability-platform'
 
 /** How a capability is satisfied for one run. */
 export type ReachVia = 'native' | 'tool'
@@ -90,6 +92,16 @@ const TOOL_REACHABLE: ReadonlyArray<{
     names: ['web_search', 'websearch', 'search_web', 'brave_web_search', 'tavily_search', 'exa_search', 'google_search', 'perplexity_search', 'serper_search'],
     hints: ['web', 'internet', 'live', 'browse', 'online'],
   },
+  {
+    // A MODEL THAT CANNOT SEE CAN STILL CALL A TOOL. Talaria's own
+    // `describe_image` reads an image with whatever model the org assigned to
+    // the `vision` role, so a deployment reaches `vision` even when the model
+    // assigned to a slot does not have it — which is the difference between a
+    // red cell and an honest `supplied` one.
+    capability: 'vision',
+    names: ['describe_image', 'read_image', 'analyze_image', 'image_describe', 'vision', 'ocr'],
+    hints: ['image', 'screenshot', 'photo', 'picture', 'visual', 'chart', 'scan'],
+  },
 ]
 
 /** An ADMIN'S OWN WIRING, which always wins over the heuristic below.
@@ -102,16 +114,48 @@ const TOOL_REACHABLE: ReadonlyArray<{
 export type CapabilityProviders = Partial<Record<Capability, { server: string; tool: string } | null>>
 export const PROVIDERS_KEY = 'capability_providers'
 
+/** A TOOL TALARIA ITSELF SUPPLIES, which is in nobody's MCP registry.
+ *
+ *  THE GAP THIS CLOSES. `supplierFor` read the org's registered MCP servers and
+ *  nothing else, so on an install with an empty registry — the default, and what
+ *  every fresh deployment looks like — it answered `null` for `search` while
+ *  SearXNG was running and answering queries on the same box. The consequence
+ *  was not cosmetic: `research-search` declares `suppliable: ['search']`, the
+ *  sweep asked for a supplier, got null, and handed the model no search tool at
+ *  all. The harness that exists to measure tool-driven research measured a model
+ *  answering from memory, and the matrix reported models as unable to search on
+ *  a deployment that demonstrably can.
+ *
+ *  IT IS A LAST RESORT, NOT A DEFAULT. The registry is consulted first, because
+ *  an org that installed Exa or Tavily chose it and an admin pin beats both.
+ *  Talaria's own tool is the floor under that choice, not a competitor to it.
+ *
+ *  AND IT IS CHECKED, NOT ASSUMED. Every entry is supplied by a caller that has
+ *  confirmed the thing actually works here — SearXNG reachable, a model assigned
+ *  to the vision role. Claiming reach through a tool that 503s would be a worse
+ *  lie than the `null` it replaced, because it converts a red cell an admin can
+ *  act on into a green one they cannot. */
+export interface PlatformSupply {
+  capability: Capability
+  server: string
+  tool: string
+}
+
 export interface ReachDeps {
   servers: () => Promise<McpServer[]>
   providers: () => Promise<CapabilityProviders>
   capabilities: (key: string) => Promise<Partial<Record<Capability, CapabilityFact>>>
+  /** Talaria's own tools, already checked — see `capability-platform.ts`. The
+   *  floor under the registry, so an install that has registered nothing still
+   *  reaches what this deployment can actually do. */
+  platform: () => Promise<PlatformSupply[]>
 }
 
 const REAL: ReachDeps = {
   servers: listMcpServers,
   providers: () => getSetting<CapabilityProviders>(PROVIDERS_KEY, {}),
   capabilities: getCapabilities,
+  platform: platformSupply,
 }
 
 const withDeps = (over?: Partial<ReachDeps>): ReachDeps => ({ ...REAL, ...over })
@@ -126,14 +170,24 @@ const nameMatches = (toolName: string, names: readonly string[]): boolean => {
  *
  *  Pure over the server list so the whole rule can be tested without a database
  *  and without an MCP server anywhere near it. */
-export function supplierFor(capability: Capability, servers: readonly McpServer[], providers: CapabilityProviders = {}): { server: string; tool: string } | null {
+export function supplierFor(
+  capability: Capability,
+  servers: readonly McpServer[],
+  providers: CapabilityProviders = {},
+  platform: readonly PlatformSupply[] = [],
+): { server: string; tool: string } | null {
   const pinned = providers[capability]
   // An explicit `null` is an admin saying "nothing supplies this here" — a
-  // deliberate answer, and not the same as having said nothing.
+  // deliberate answer, and not the same as having said nothing. It silences the
+  // platform's own tool too: "nothing supplies this here" means nothing.
   if (pinned === null) return null
   if (pinned) {
     const srv = servers.find((s) => s.name === pinned.server && s.enabled)
-    return srv?.tools.some((t) => t.name === pinned.tool) ? pinned : null
+    if (srv?.tools.some((t) => t.name === pinned.tool)) return pinned
+    // A pin whose server has gone away falls through to the platform's own tool
+    // rather than to nothing: the admin's answer to "which supplier" is stale,
+    // but their answer to "should this be supplied" was yes.
+    return platformFor(capability, platform)
   }
 
   const rule = TOOL_REACHABLE.find((r) => r.capability === capability)
@@ -150,7 +204,13 @@ export function supplierFor(capability: Capability, servers: readonly McpServer[
       return { server: srv.name, tool: tool.name }
     }
   }
-  return null
+  // Nothing registered offers it. Talaria's own surface is the floor.
+  return platformFor(capability, platform)
+}
+
+const platformFor = (capability: Capability, platform: readonly PlatformSupply[]): { server: string; tool: string } | null => {
+  const own = platform.find((p) => p.capability === capability)
+  return own ? { server: own.server, tool: own.tool } : null
 }
 
 /** CAN THIS RUN REACH THESE CAPABILITIES, and how.
@@ -173,9 +233,13 @@ export async function reachFor(keys: readonly string[], wanted: readonly Capabil
   // Only read the registry if something might need a tool. An install with no
   // tool-reachable requirement should not pay for the query.
   const needsTools = wanted.some((c) => TOOL_REACHABLE.some((r) => r.capability === c))
-  const [servers, providers] = needsTools
-    ? await Promise.all([d.servers().catch((): McpServer[] => []), d.providers().catch((): CapabilityProviders => ({}))])
-    : [[] as McpServer[], {} as CapabilityProviders]
+  const [servers, providers, platform] = needsTools
+    ? await Promise.all([
+        d.servers().catch((): McpServer[] => []),
+        d.providers().catch((): CapabilityProviders => ({})),
+        d.platform().catch((): PlatformSupply[] => []),
+      ])
+    : [[] as McpServer[], {} as CapabilityProviders, [] as PlatformSupply[]]
 
   for (const cap of wanted) {
     if (nativeYes(cap)) {
@@ -183,7 +247,7 @@ export async function reachFor(keys: readonly string[], wanted: readonly Capabil
       continue
     }
 
-    const supplier = supplierFor(cap, servers, providers)
+    const supplier = supplierFor(cap, servers, providers, platform)
     if (supplier) {
       // THE MODEL STILL HAS TO BE ABLE TO CALL THE TOOL. A search server in
       // front of a model that cannot hold a tool call is not reach — it is a

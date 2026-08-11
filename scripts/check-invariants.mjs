@@ -940,6 +940,161 @@ for (const rule of CENSUS) {
   }
 }
 
+// EVERY TOOL AN AGENT CAN CALL MUST BE SIMULATED AND EXERCISED.
+//
+// THE RULE. A tool registered in `mcp/src/index.ts` is a verb Talaria hands to
+// every fleet agent in the workspace. Three things must then be true of it, and
+// this check fails the build when any of them is not:
+//
+//   MODELLED   it appears in fitness/toolbox/talaria-tools.ts with the real
+//              description and the real argument names (the sync test holds it
+//              to those; this holds it to existing at all)
+//   BACKED     it has a handler in fitness/toolbox/sandbox.ts, so a model in the
+//              eval sweep can actually call it against simulated state
+//   EXERCISED  something drives it — a sandbox test, or a harness's
+//              `dryRun.tools` surface. A backend nobody calls is a backend
+//              nobody has checked.
+//
+// WHY IT IS AN INVARIANT AND NOT A CONVENTION. The toolkit reached forty-four
+// tools while the simulator modelled sixteen. Nothing was wrong with any one
+// commit — each new tool was reviewed on its own, and "add an eval" is the kind
+// of follow-up that never has an owner. The result was that twenty-eight verbs
+// an org depends on had no simulated backend and no fixture, and the model
+// fitness page reported confident scores over the third of the surface that
+// happened to be covered.
+//
+// THIS IS ALSO THE PATTERN WE ASK OF SDK AUTHORS. A plugin's harness is required
+// to ship evals (docs/HARNESSES.md); a rule the platform exempts itself from is
+// a rule nobody follows. So the platform's own toolkit is held to it first, in
+// CI, with the worklist printed rather than described.
+{
+  const MCP = sources.get('mcp/src/index.ts') ?? ''
+  const MODEL = sources.get('ui/src/server/fitness/toolbox/talaria-tools.ts') ?? ''
+  const SANDBOX = sources.get('ui/src/server/fitness/toolbox/sandbox.ts') ?? ''
+
+  const registered = [...MCP.matchAll(/server\.registerTool\(\s*'([a-z_]+)'/g)].map((m) => m[1])
+  // The guard on the guard: a renamed `registerTool` would leave this rule
+  // asserting over an empty list and passing forever.
+  if (registered.length < 30) {
+    failures.push({
+      id: 'toolkit-coverage-cannot-read-the-toolkit',
+      what: `found ${registered.length} tool registrations in mcp/src/index.ts, which cannot be right`,
+      fix: [
+        'The scanner looks for `server.registerTool(\'name\'`. If registration was renamed or wrapped,',
+        'update the pattern in scripts/check-invariants.mjs — do NOT delete the rule. A coverage check',
+        'that silently matches nothing is worse than no coverage check: it reports "all clean".',
+      ],
+      found: [],
+    })
+  }
+
+  // Handlers only: the top-level `name: (args, world) =>` keys of the HANDLERS
+  // object. Matching the whole file would count `research:` on the world
+  // interface as a backend, which is exactly the false pass to avoid.
+  const from = SANDBOX.indexOf('const HANDLERS')
+  const to = SANDBOX.indexOf('export const backedToolNames')
+  const backed = new Set([...SANDBOX.slice(from === -1 ? 0 : from, to === -1 ? undefined : to).matchAll(/^ {2}([a-z_]+): \(/gm)].map((m) => m[1]))
+
+  // Anything that drives a tool by name: the sandbox's own tests, and the
+  // `dryRun.tools` surfaces harnesses declare.
+  const drivers = [...sources].filter(([p]) => p.startsWith('ui/src/server/fitness/toolbox/') || p.startsWith('ui/src/server/harness/defs/')).map(([, src]) => src)
+
+  const unmodelled = registered.filter((n) => !new RegExp(`name: '${n}'`).test(MODEL))
+  const unbacked = registered.filter((n) => !backed.has(n))
+  const unexercised = registered.filter((n) => !drivers.some((src) => src.includes(`'${n}'`)))
+
+  for (const [id, names, what, fix] of [
+    [
+      'mcp-tool-not-modelled',
+      unmodelled,
+      'a tool the fleet can call that the fitness suite does not model',
+      [
+        'Add it to ui/src/server/fitness/toolbox/talaria-tools.ts: the name, the DESCRIPTION COPIED',
+        'VERBATIM from mcp/src/index.ts, the real argument names, and a `group`. The sync test',
+        'compares all three against the real registration and will tell you which part drifted.',
+      ],
+    ],
+    [
+      'mcp-tool-not-simulated',
+      unbacked,
+      'a tool the fitness suite offers with no simulated backend behind it',
+      [
+        'Add a handler to HANDLERS in ui/src/server/fitness/toolbox/sandbox.ts, over the in-memory',
+        'world. Simulate the REFUSALS as well as the happy path — "personal assistants only", "no',
+        'Google account connected", "that ticket is off the table". A sandbox that only ever says yes',
+        'measures nothing: the failures worth catching are a model reaching for a tool its identity',
+        'does not carry, and a model narrating a result it was refused.',
+      ],
+    ],
+    [
+      'mcp-tool-never-exercised',
+      unexercised,
+      'a simulated tool that nothing ever calls',
+      [
+        'Drive it: a case in ui/src/server/fitness/toolbox/sandbox.test.ts asserting the rule that makes',
+        'the tool worth simulating, and — where the tool is part of a job a model does — the harness',
+        "surface that offers it (`dryRun.tools` on a definition in ui/src/server/harness/defs/).",
+        '',
+        'THIS IS THE STEP THAT IS ALWAYS SKIPPED, and it is the one that finds things. A backend written',
+        'from the tool description and never called is a guess about production with a test-shaped',
+        'wrapper around it.',
+      ],
+    ],
+  ]) {
+    if (!names.length) continue
+    failures.push({ id, what, fix: [...fix, '', 'TOOLS:', ...names.map((n) => `  ${n}`)], found: [] })
+  }
+
+  if (!unmodelled.length && !unbacked.length && !unexercised.length) {
+    notes.push(
+      `all ${registered.length} tools in Talaria's MCP toolkit are modelled, simulated against in-memory state, and exercised ` +
+        '(fitness/toolbox/). This is the coverage bar docs/HARNESSES.md asks of SDK plugin authors, held by the platform first.',
+    )
+  }
+}
+
+// A BROWSER MODULE MAY NAME A SERVER TYPE. IT MAY NOT IMPORT SERVER CODE.
+//
+// `import type { EvalCaseScore } from '@/server/fitness/evals'` is erased at
+// build time and is how the payload contract stays a contract. Drop the `type`
+// and the same line pulls the sweep driver — and transitively the database
+// pool, the harness runner and the guard registry — into the browser bundle.
+//
+// THIS SHIPPED. One value import of a single number constant took the whole
+// Models route down; `components/models/fitness.ts` even carries a header
+// saying it is runtime-dependency-free on purpose, and the header did not stop
+// it. The constant is a literal now with a test holding the two in step, which
+// is the right shape for the handful of cases that genuinely need a value.
+//
+// Tests are exempt: they run in node and importing the real module is how a
+// copy is held to its original.
+{
+  const IMPORT_FROM_SERVER = /\bimport\s+(?!type\b)[^;]*?\sfrom\s*['"]@\/server\/[^'"]+['"]/g
+  const found = []
+  for (const [path, src] of sources) {
+    if (!path.startsWith('ui/src/components/') && !path.startsWith('ui/src/routes/app/')) continue
+    if (path.endsWith('.test.ts')) continue
+    for (const hit of matches(src, IMPORT_FROM_SERVER)) found.push({ path, ...hit })
+  }
+  if (found.length) {
+    failures.push({
+      id: 'server-value-import-in-a-browser-module',
+      what: 'a browser module imports server CODE, not just server types',
+      fix: [
+        "Make it `import type { … } from '@/server/…'`. A type import is erased; a value import is a",
+        'module graph, and the graph under `@/server/` reaches the database pool, the harness runner',
+        'and the guard registry. The route stops loading.',
+        '',
+        'IF YOU GENUINELY NEED A VALUE — a shared constant, an enum — declare it in the browser module',
+        'and add a test that imports the server module and asserts the two agree. A test runs in node',
+        'and may import anything; the browser may not. `components/models/fitness.ts` does exactly',
+        'this for DEFAULT_CONCURRENCY.',
+      ],
+      found,
+    })
+  }
+}
+
 // The two OFF_BOARD_STATUSES declarations must agree, until there is only one.
 {
   const lists = OFF_BOARD_SOURCES.map((p) => [p, offBoardListIn(sources.get(p) ?? '')]).filter(([, l]) => l !== null)

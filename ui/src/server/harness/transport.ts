@@ -46,7 +46,8 @@
 // transport that genuinely CANNOT honor a field says so by throwing
 // (`gatewayTransport` and `tools: 'own'`) rather than by ignoring it.
 import { parseAgentStream } from '@/lib/sse-parse'
-import { buildUpstream, completeViaGateway, contractDropsOf, fetchUpstream, gatewayModels, recordGatewayUsage, resolveRoute } from '../llm-gateway'
+import { buildUpstream, completeViaGateway, contractDropsOf, fetchUpstream, gatewayModels, recordGatewayUsage, resolveRoute, type ResponseFormat } from '../llm-gateway'
+import type { WireSchema } from './json-schema'
 import { CANNED_STREAM_HEADER, listAgents, proxyChat } from '../gateway'
 import { estimateTokens, recordUsage } from '../usage'
 import type { Message } from './define'
@@ -88,6 +89,12 @@ export interface ToolDefinition {
 /** A tool call the model MADE, as the provider reported it. */
 export interface ToolCall {
   name: string
+  /** THE PROVIDER'S OWN ID FOR THIS CALL, when it gave one. A tool RESULT has to
+   *  name the call it answers (`tool_call_id`), and a loop that invents an id —
+   *  or reuses the tool name — desynchronises the moment a model calls the same
+   *  tool twice in one turn. Optional because not every provider emits one and a
+   *  missing id is better than a fabricated one. */
+  id?: string
   /** The raw JSON arguments string, verbatim. Kept unparsed because "the model
    *  called the right tool with arguments that are not JSON" is a distinct and
    *  real observation, and parsing here would turn it into a throw. */
@@ -129,10 +136,20 @@ export interface TransportRequest {
   model: string
   messages: Message[]
   temperature?: number
-  /** Ask for a JSON object at the PROTOCOL level (response_format). False
+  /** Ask for structured output at the PROTOCOL level (response_format). False
    *  means the runner has already anchored the instruction in the prompt
    *  instead - see `anchorJson`. */
   jsonMode: boolean
+  /** THE HARNESS'S OWN SCHEMA, when this build could render one. Present, the
+   *  request carries `response_format: { type: 'json_schema', ... }` and the
+   *  provider constrains decoding to the shape; absent, it falls back to the
+   *  loose `{ type: 'json_object' }`.
+   *
+   *  Only the fallback is optional — every JSON harness Talaria ships renders a
+   *  schema (`json-schema.test.ts` asserts it), so the loose form is reserved
+   *  for a definition this build cannot express. It matters because the loose
+   *  form is not merely weaker: Anthropic's compat layer REJECTS it. */
+  jsonSchema?: WireSchema
   /** Absent means 'none'. Read it through `toolPolicyOf`, never by hand. */
   tools?: ToolPolicy
   /** Tool DEFINITIONS this turn offers the model — OURS, not its own. See the
@@ -381,6 +398,7 @@ const toolWireShape = (def: ToolDefinition): Record<string, unknown> => ({
 })
 
 interface WireToolCall {
+  id?: string
   function?: { name?: string; arguments?: string }
 }
 
@@ -388,7 +406,7 @@ interface WireToolCall {
  *  call we can score or guard on, so it is dropped rather than carried as an
  *  empty string that every reader then has to defend against. */
 const readToolCalls = (raw: WireToolCall[] | undefined): ToolCall[] =>
-  (raw ?? []).flatMap((tc) => (tc.function?.name ? [{ name: tc.function.name, args: tc.function.arguments ?? '' }] : []))
+  (raw ?? []).flatMap((tc) => (tc.function?.name ? [{ name: tc.function.name, args: tc.function.arguments ?? '', ...(tc.id ? { id: tc.id } : {}) }] : []))
 
 /** The gateway call that OFFERS TOOLS, and the reason it is not
  *  `completeViaGateway`: that helper's signature has no slot for tool
@@ -407,13 +425,22 @@ async function gatewayToolTurn(req: TransportRequest, defs: ToolDefinition[]): P
   if (!route) throw new Error(`model "${req.model}" is not on the gateway`)
   const body: Record<string, unknown> = {
     model: req.model,
-    messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
+    // `toolWireMessage`, NOT a flatten to `{role, content}`. THIS IS THE TURN
+    // THAT OFFERS TOOLS, so it is the one turn guaranteed to be replaying a
+    // conversation that CONTAINS tool calls — and flattening dropped
+    // `toolCalls`/`toolCallId` on the floor, leaving a caller no way to show the
+    // model what it had already called except by narrating it into prose. Models
+    // imitate whatever the transcript shows them: `research-search` narrated
+    // `Called web_search({...})` and got that string back as the model's final
+    // answer on a live sweep. See the note on `Message.toolCalls`.
+    messages: req.messages.map(toolWireMessage),
     stream: false,
     tools: defs.map(toolWireShape),
     tool_choice: 'auto',
   }
   if (req.temperature !== undefined) body.temperature = req.temperature
-  if (req.jsonMode) body.response_format = { type: 'json_object' }
+  const toolFormat = responseFormatOf(req)
+  if (toolFormat) body.response_format = toolFormat
   const call = await buildUpstream(route, body)
   const res = await fetchUpstream(call, route)
   if (!res.ok) throw new Error(`gateway completion ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)
@@ -458,11 +485,192 @@ export const gatewayTransport: Transport = async (req) => {
   const res = await completeViaGateway(req.model, req.messages, {
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     caller: req.caller,
-    ...(req.jsonMode ? { responseFormat: 'json_object' as const } : {}),
+    ...(responseFormatOf(req) ? { responseFormat: responseFormatOf(req)! } : {}),
     guard: false,
   })
   const droppedJson = res.contractDrops.some((d) => d.capability === 'json')
   return { kind: 'gateway', text: res.text, toolNames: [], usage: null, contractDropped: droppedJson }
+}
+
+/** The `response_format` this request should carry, prefering the harness's
+ *  schema over the loose object form. One definition, four call sites — the
+ *  four used to each hardcode `{ type: 'json_object' }`, which is how every
+ *  structured call to Anthropic came to 400. */
+export const responseFormatOf = (req: TransportRequest): ResponseFormat | null => {
+  if (!req.jsonMode) return null
+  // STRICT OR NOTHING, and this is the second thing a live run taught that no
+  // amount of local testing would have. `strict: false` is not a weaker request
+  // every provider accepts — Anthropic rejects it outright ("json_schema.strict:
+  // Input should be True"), so a schema that cannot be sent strictly cannot be
+  // sent to Anthropic AT ALL. Sending it anyway 400'd three harnesses on every
+  // call, and the fitness suite scored that as the model failing its contract.
+  //
+  // So a non-strict-eligible schema falls back to `json_object` rather than
+  // going out as a request some providers refuse. On a provider that also
+  // refuses `json_object` the run still succeeds — `run.ts` carries the JSON
+  // anchor in the prompt on every structured call, and the gateway's learned
+  // parameter ratchet drops the format after the first refusal.
+  if (req.jsonSchema?.strict) {
+    return { type: 'json_schema', json_schema: { name: req.jsonSchema.name, schema: req.jsonSchema.schema, strict: true } }
+  }
+  // AN ARRAY CONTRACT MUST NOT ASK FOR `json_object`, and this cost a harness.
+  //
+  // `json_object` is not "reply in JSON" — it is defined as "the model MUST
+  // return a JSON OBJECT", and providers constrain decoding to enforce it. Send
+  // it alongside a schema rooted at an array and the request is self-defeating:
+  // the wire format forbids the only answer the contract accepts.
+  //
+  // `channel-plan` is that harness — a top-level `[{...}, ...]` of ticket
+  // proposals, non-strict (nullable enums, a nested array), so it took this
+  // fallback on every call. A sweep of deepseek-v4-flash failed five of its
+  // fixtures with `expected array, got object`, INCLUDING after the repair turn,
+  // and every one of those was scored against the model. The model was right and
+  // did what we asked; the request was wrong.
+  //
+  // So an array root sends NO `response_format` at all. That is not a downgrade
+  // from a working state — it is the removal of an instruction that could only
+  // ever produce a contract violation. `run.ts` anchors the JSON instruction in
+  // the prompt on every structured call (`anchorJson`) and the harness parses
+  // and repairs, which is exactly the path a provider that refuses the format
+  // outright already takes.
+  if (req.jsonSchema && rootType(req.jsonSchema.schema) !== 'object') return null
+  return { type: 'json_object' }
+}
+
+/** The declared top-level type of a wire schema, when it declares one. Only
+ *  'object' may be asked for as `json_object`; everything else — an array root
+ *  today, a `oneOf` root tomorrow — is a shape that mode cannot express. */
+const rootType = (schema: unknown): string | null => {
+  if (typeof schema !== 'object' || schema === null) return null
+  const t = (schema as { type?: unknown }).type
+  return typeof t === 'string' ? t : null
+}
+
+/** ONE MESSAGE, on the wire, INCLUDING its tool channel.
+ *
+ *  An assistant turn that called tools carries `tool_calls`; a result carries
+ *  `role: 'tool'` and the id it answers. This is the shape every OpenAI-compatible
+ *  provider speaks and, more to the point, the shape models are TRAINED on — a
+ *  tool conversation replayed as prose is a conversation they will answer in
+ *  prose. See the note on `Message.toolCalls`: 34 replies in one sweep came back
+ *  containing Talaria's own narration of a call, because that is what the
+ *  transcript had shown them.
+ *
+ *  A message with neither field renders exactly as before. */
+export const toolWireMessage = (m: Message): Record<string, unknown> => {
+  if (m.role === 'tool') return { role: 'tool', content: m.content, tool_call_id: m.toolCallId ?? '' }
+  if (!m.toolCalls?.length) return { role: m.role, content: m.content }
+  return {
+    role: m.role,
+    content: m.content,
+    tool_calls: m.toolCalls.map((c, i) => ({
+      id: c.id ?? `call_${i}`,
+      type: 'function',
+      function: { name: c.name, arguments: c.args },
+    })),
+  }
+}
+
+/** ONE TURN THAT CARRIES AN IMAGE, which the ordinary transports cannot.
+ *
+ *  `Message.content` is a string by construction (see the note in define.ts), so
+ *  there is nowhere in a `TransportRequest` to put image bytes. Rather than widen
+ *  every message in the tree into a content-parts union for one caller, the image
+ *  rides its own function: the runner still resolves the model, applies the
+ *  capability floor and meters the call, and this sends the one payload shape
+ *  that carries pixels.
+ *
+ *  Used by `vision.ts` — see that file for why describing an image is a harness
+ *  rather than a raw call. */
+export async function gatewayImageTurn(
+  model: string,
+  messages: Message[],
+  images: readonly string[],
+  caller: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<string> {
+  const route = await resolveRoute(model)
+  if (!route) throw new Error(`model "${model}" is not on the gateway`)
+  // The LAST user turn carries the image, because that is the turn the question
+  // is in — a system prompt with pictures attached is a shape providers accept
+  // and models ignore.
+  const wire = messages.map((m) => ({ role: m.role, content: m.content as unknown }))
+  const lastUser = wire.map((m) => m.role).lastIndexOf('user')
+  const target = lastUser >= 0 ? lastUser : wire.length - 1
+  if (target >= 0 && wire[target]) {
+    wire[target] = {
+      role: wire[target]!.role,
+      content: [
+        { type: 'text', text: String(wire[target]!.content ?? '') },
+        ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+      ],
+    }
+  }
+  const call = {
+    ...(await buildUpstream(route, { model, messages: wire, stream: false })),
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+  }
+  const res = await fetchUpstream(call, route)
+  if (!res.ok) throw new Error(`gateway completion ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)
+  const j = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>
+    usage?: { prompt_tokens?: number; completion_tokens?: number }
+  }
+  const text = j.choices?.[0]?.message?.content ?? ''
+  await recordGatewayUsage({
+    caller,
+    endpoint: route.endpoint,
+    upstreamModel: route.upstreamModel,
+    promptTokens: j.usage?.prompt_tokens ?? estimateTokens(messages.reduce((n, m) => n + m.content.length, 0)),
+    completionTokens: j.usage?.completion_tokens ?? estimateTokens(text.length),
+    estimated: !j.usage,
+  }).catch(() => {})
+  return text
+}
+
+/** A PERSONA TURN THE PROBE SUITE CAN DRIVE — one blocking round trip against a
+ *  fleet agent, returning the assembled turn rather than a stream.
+ *
+ *  WHY IT IS NOT `fleetTransport`. Two reasons, and the second is the load-bearing
+ *  one. A probe wants the raw turn — text AND the tool names the persona reported
+ *  — without a harness's contract wrapped around it. And a probe may carry an
+ *  IMAGE, which a `TransportRequest` has nowhere to put (`Message.content` is a
+ *  string by construction; see the note in define.ts). So this takes messages and
+ *  images directly, exactly as `gatewayImageTurn` does on the other side of the
+ *  `offersToolDefinitions` fork, and the vision probe can be asked of a persona
+ *  and a gateway model with the same call shape. */
+export async function personaProbeTurn(
+  model: string,
+  messages: Message[],
+  opts: { images?: readonly string[]; caller: string; timeoutMs?: number } = { caller: 'probe' },
+): Promise<PersonaTurn> {
+  const images = opts.images ?? []
+  const wire: Array<{ role: string; content: unknown }> = messages.map((m) => ({ role: m.role, content: m.content }))
+  if (images.length > 0) {
+    // The last user turn carries the image: it is the turn the question is in,
+    // and a system prompt with pictures attached is a shape providers accept and
+    // models ignore.
+    const lastUser = wire.map((m) => m.role).lastIndexOf('user')
+    const target = lastUser >= 0 ? lastUser : wire.length - 1
+    const at = wire[target]
+    if (at) {
+      wire[target] = {
+        role: at.role,
+        content: [{ type: 'text', text: String(at.content ?? '') }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))],
+      }
+    }
+  }
+  const upstream = await proxyChat(
+    { model, messages: wire } as unknown as Parameters<typeof proxyChat>[0],
+    opts.timeoutMs !== undefined ? { waitMs: opts.timeoutMs } : {},
+  )
+  if (!upstream.ok || !upstream.body) throw new Error(`persona gateway ${upstream.status}`)
+  const canned = upstream.headers.get(CANNED_STREAM_HEADER)
+  if (canned) {
+    await upstream.body.cancel().catch(() => {})
+    throw new Error(`"${model}" is not a rendered agent (the fleet answered in mock mode)`)
+  }
+  return pumpPersonaStream(upstream.body)
 }
 
 /** The gateway transport, STREAMED — the sibling of `fleetStream`, and the piece
@@ -495,7 +703,8 @@ export const gatewayStream: StreamingTransport = async (req, emit) => {
     stream: true,
   }
   if (req.temperature !== undefined) body.temperature = req.temperature
-  if (req.jsonMode) body.response_format = { type: 'json_object' }
+  const toolFormat = responseFormatOf(req)
+  if (toolFormat) body.response_format = toolFormat
   const call = await buildUpstream(route, body)
   const res = await fetchUpstream(call, route)
   if (!res.ok || !res.body) throw new Error(`gateway completion ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)

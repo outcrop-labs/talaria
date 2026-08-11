@@ -44,3 +44,7 @@ ui/.vite/
 # OMC agent state (never commit)
 .omc/
 ui/.omc/
+
+# Rendered per install from docker/searxng/settings.template.yml (holds the
+# generated SEARXNG_SECRET).
+docker/searxng/settings.local.yml

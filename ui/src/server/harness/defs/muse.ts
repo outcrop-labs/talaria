@@ -45,7 +45,7 @@
 //                "that asks for something I cannot change".
 import { z } from 'zod'
 import { PRIORITIES, EFFORTS, TASK_STATUSES, TICKET_COLORS } from '@/lib/task-const'
-import { defineHarness } from '../define'
+import { countProblem, defineHarness } from '../define'
 import { buildMuseMessages, MUSE_MODEL, type MuseInput, type MuseJsonKind, type MuseKind } from '../../muse'
 
 /** Everything a Muse call carries except the kind, which each harness owns. */
@@ -881,14 +881,28 @@ const HEADING_LINE = /^(#{1,6})\s/
  *  breaks first — asked for a template it writes the document. */
 const templateIssue = (v: string): string | null => {
   const lines = v.trim().split('\n')
-  if (lines.length >= 25) return `${lines.length} lines — a template must be under 25, so this is a document rather than a skeleton`
+  // COUNT WHAT MAKES IT A DOCUMENT, not what makes it a skeleton.
+  //
+  // The rule exists to catch a model that writes the runbook when it was asked
+  // for its shape — so it has to count CONTENT. Counting raw lines put the
+  // fixture in contradiction with the prompt beside it, which says: "If the
+  // request describes a big process, capture it as section NAMES, not content."
+  // gemma did exactly that for an incident runbook — five section names, a
+  // one-line description each, empty bullets for the author to fill — and the
+  // result is 26 lines of which barely half carry anything. It was told it had
+  // written a document rather than a skeleton, for producing the skeleton.
+  //
+  // Blank lines and empty bullets are the skeleton. They are not the document.
+  const filled = lines.filter((l) => l.trim().replace(/^[-*+]\s*$/, '').length > 0)
+  if (filled.length >= 25) return `${filled.length} lines of content — a template must be under 25, so this is a document rather than a skeleton`
   const levels = lines.flatMap((l) => {
     const m = HEADING_LINE.exec(l)
     return m?.[1] ? [m[1].length] : []
   })
   const wrong = levels.filter((n) => n !== 2)
   if (wrong.length) return `uses ${[...new Set(wrong)].map((n) => '#'.repeat(n)).join(' and ')} headings — a template is "##" only`
-  if (levels.length < 3 || levels.length > 6) return `${levels.length} sections — a template has 3 to 6`
+  const sections = countProblem(levels.length, { min: 3, max: 6, unit: 'section', asked: '3 to 6' })
+  if (sections) return sections
   return null
 }
 
