@@ -15,7 +15,7 @@
   import FitnessObserved from './FitnessObserved.svelte'
   import FitnessOverview from './FitnessOverview.svelte'
   import FitnessTerminal from './FitnessTerminal.svelte'
-  import { BAND_META, BAND_SEVERITY, BAND_TEXT, pct, type DetailPayload, type ModelRow } from './fitness'
+  import { SAFETY_META, BAND_META, BAND_SEVERITY, BAND_TEXT, pct, type DetailPayload, type ModelRow } from './fitness'
 
   // One model, in full: what the run established, where it broke, and what
   // production says about the same model on the same definitions.
@@ -139,7 +139,7 @@
     if (record) out.push({ id: 'verdicts', label: `Verdicts ${slots.length}` })
     if (record?.probes) out.push({ id: 'capabilities', label: `Capabilities ${record.probes.results.length}` })
     if (record) out.push({ id: 'fixtures', label: failingCases > 0 ? `Fixtures ${failingCases}✕` : `Fixtures ${record.cases.length}` })
-    if (record?.adversarial) out.push({ id: 'adversarial', label: `Adversarial ${BAND_META[record.adversarial.band].label}` })
+    if (record?.adversarial) out.push({ id: 'adversarial', label: `Safety ${SAFETY_META[record.adversarial.band].label}` })
     out.push({ id: 'observed', label: 'Vs production' })
     return out
   })
@@ -416,15 +416,19 @@
         {@const adv = record.adversarial}
         <SectionHeader
           title="Adversarial"
-          info="Tier 3 — safety provocations scored with the production guard rules, so the numbers are directly comparable to what the guard files in production. Stricter than the other tiers: there is no repair turn for a fabricated outage, it has already been read."
+          info="Tier 3 — safety provocations, scored TWICE. `resistance` is the model on its own, with the guard's grounding deliberately omitted; `after guardrails` is what production would actually have filed, because Talaria runs guardrails.ts over every harness that declares them. The seeds are built to be hard and strong models land in the eighties on the first number — the gap between the two is the layer the platform adds."
         />
         <div class="mb-3 flex flex-wrap items-center gap-2">
           <!-- Tier 3 bands are a SUBSET of the matrix's bands, not a second
                vocabulary, so this chip reads out of the same table as every
                other band on the page. -->
-          <Chip tone={BAND_META[adv.band].tone}>{BAND_META[adv.band].label}</Chip>
+          <Chip tone={SAFETY_META[adv.band].tone}>{SAFETY_META[adv.band].label}</Chip>
           <span class="font-mono text-[11px] text-muted">
-            resistance {adv.resistance === null ? 'unscorable' : pct(adv.resistance)} · {adv.silent} silent · {adv.errored} voided
+            model alone {adv.resistance === null ? 'unscorable' : pct(adv.resistance)}
+            {#if adv.guardedResistance !== null}
+              · <span class="text-success">after guardrails {pct(adv.guardedResistance)}</span>
+            {/if}
+            · {adv.silent} silent · {adv.errored} voided
           </span>
           {#if adv.escalation.adversary}
             <span class="font-mono text-[11px] text-muted">
@@ -434,12 +438,21 @@
             <span class="font-sans text-xs text-muted">Seed corpus only — no escalation round ran.</span>
           {/if}
         </div>
+        <!-- SAID IN WORDS, ONCE, because the two percentages above are the whole
+             point of this pane and a reader who takes the first for the answer
+             comes away with the wrong conclusion about every model on the page. -->
+        <p class="mb-3 max-w-prose font-sans text-xs text-muted">
+          {SAFETY_META[adv.band].blurb} These provocations score the MODEL, with the guard's grounding deliberately off — it is what the weights do with nothing behind them.
+          <strong class="text-fg">After guardrails</strong> is the same run as production would have recorded it, and it moves in both directions: grounding drops a hit where the
+          provocation planted the span in the prompt, and adds one where a claim is ungrounded against real sources. Neither number is the other's correction — the first is about
+          the model, the second is about this deployment.
+        </p>
         <ul class="space-y-1">
           {#each adv.rules as r (r.rule)}
             <li class="flex flex-wrap items-baseline gap-2 font-mono text-[11px]">
               <span class="w-40 shrink-0 text-fg">{r.rule}</span>
               <span class={r.elicited > 0 ? 'text-danger' : 'text-muted'}>{r.elicited}/{r.scored} elicited</span>
-              <span class="text-muted">· {r.filed} would have been filed in production</span>
+              <span class="text-muted">· {r.filed} filed in production{r.filed !== r.elicited ? ` (${r.filed < r.elicited ? 'grounding dropped' : 'grounding added'} ${Math.abs(r.elicited - r.filed)})` : ''}</span>
             </li>
           {/each}
         </ul>
