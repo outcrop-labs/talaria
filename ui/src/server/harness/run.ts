@@ -72,6 +72,7 @@ import { routingFor } from '../llm-gateway'
 import { reachFor, type Reach } from '../capability-reach'
 import { db } from '../db/pg'
 import { capabilityKey, missingCapabilities, getCapabilities, type Capability, type CapabilitySource } from './capability'
+import { promptShape, wireSchemaOf, type WireSchema } from './json-schema'
 import { personaCapabilityKeys } from './persona'
 import { parseJson, repairPrompt } from './json'
 import { resolveHarnessModel, type ModelChainStep, type ModelSpec } from './model'
@@ -88,17 +89,20 @@ export {
   defaultTransport,
   fleetStream,
   fleetTransport,
+  gatewayImageTurn,
   gatewayStream,
   gatewayTransport,
   ledgerOf,
   meterPersonaTurn,
   personaPayload,
+  personaProbeTurn,
   offersToolDefinitions,
   pickTransport,
   pumpPersonaStream,
   toolDefsOf,
   toolNamesOf,
   toolPolicyOf,
+  toolWireMessage,
 } from './transport'
 export type {
   LedgerAttribution,
@@ -162,6 +166,16 @@ export interface HarnessResult<O> {
    *  a `raw` behind, so a transport failure read as a model that answered
    *  badly. */
   answered: boolean
+  /** THE HARNESS DECLINED TO ASK — the capability floor refused this model, so
+   *  no question reached it and nothing here is a fact about it.
+   *
+   *  IT NEEDS ITS OWN FIELD because `answered: false` cannot tell "we asked and
+   *  got nothing" apart from "we never asked", and the fitness sweep has to.
+   *  A refusal recorded as an error becomes a case the model FAILED: the health
+   *  view charged `research-search` five fixture failures to glm-5.2 for a floor
+   *  refusal it never saw, which is precisely the category error the floor
+   *  exists to make visible. A refusal is a SKIP — the absence of evidence. */
+  refused: boolean
   findings: Finding[]
   /** The model's last raw reply, before `clean`/parse — trimmed to a bound.
    *
@@ -365,11 +379,28 @@ export interface StreamOptions {
  *  across every harness at once. */
 const JSON_ANCHOR = 'Reply with exactly one JSON value and nothing else - no explanation before or after it, and no markdown code fence.'
 
+/** The anchor, plus THE SHAPE when this build can render one.
+ *
+ *  The anchor alone said "reply with JSON" and never said WHAT JSON, while the
+ *  harness sitting one line away held the schema. A frontier model infers the
+ *  shape from the surrounding prose and looks fine — which is exactly why it went
+ *  unnoticed — and a 7-14B model does not. This layer exists so that difference
+ *  is engineered away rather than left to the model, and telling it the shape is
+ *  the cheapest possible way to do that: one line of prompt, no extra call.
+ *
+ *  Sent even when `response_format` carries the schema at the protocol level,
+ *  for the reason the anchor itself is: a provider can drop the parameter, and
+ *  the prompt survives it. */
+const jsonAnchorFor = (wire: WireSchema | null): string => {
+  const shape = wire ? promptShape(wire.schema) : null
+  return shape ? `${JSON_ANCHOR}\n\nIt must match this shape exactly:\n${shape}` : JSON_ANCHOR
+}
+
 /** Appended to the LAST USER TURN rather than sent as a new message: a small
  *  model weights the end of its prompt most heavily, and a trailing standalone
  *  instruction reads as something to acknowledge ("Understood - I'll return
  *  JSON.") instead of as a constraint on the answer. */
-function anchorJson(messages: Message[]): Message[] {
+function anchorJson(messages: Message[], anchor: string = JSON_ANCHOR): Message[] {
   let last = -1
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]?.role === 'user') {
@@ -377,8 +408,8 @@ function anchorJson(messages: Message[]): Message[] {
       break
     }
   }
-  if (last === -1) return [...messages, { role: 'user', content: JSON_ANCHOR }]
-  return messages.map((m, i) => (i === last ? { ...m, content: `${m.content}\n\n${JSON_ANCHOR}` } : m))
+  if (last === -1) return [...messages, { role: 'user', content: anchor }]
+  return messages.map((m, i) => (i === last ? { ...m, content: `${m.content}\n\n${anchor}` } : m))
 }
 
 const lastUserMessage = (messages: Message[]): string => {
@@ -641,7 +672,7 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
     return result
   }
 
-  const empty = { value: null, model: null, step: null, widened: false, repairs: 0, schemaValid: false, escalate: false, answered: false, raw: null } as const
+  const empty = { value: null, model: null, step: null, widened: false, repairs: 0, schemaValid: false, escalate: false, answered: false, refused: false, raw: null } as const
   /** What the drill-down shows. Bounded because a run row is telemetry, not an
    *  archive, and a model that answers with 200KB of prose must not be able to
    *  turn one failed run into a memory problem for whatever reads it. */
@@ -773,6 +804,9 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
         ...empty,
         model: routed,
         step,
+        // NOT AN ERROR ABOUT THE MODEL. The floor declined to ask, so the sweep
+        // records an absence rather than a failure — see `refused`.
+        refused: true,
         error: `"${routed}" cannot run harness "${def.id}": it is known not to support ${unreachable.join(', ')}. ${def.floor.note}`,
       })
     }
@@ -865,15 +899,27 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   // wording in json.ts first, not a branch here.
   const maxRepairs = streaming || def.output.kind !== 'json' ? 0 : Math.max(0, def.output.repair ?? 1)
   // ONE structured-output strategy, applied identically on both transports:
-  // anchor the instruction in the prompt ALWAYS, and additionally constrain at
-  // the protocol level whenever the model is not KNOWN to refuse it. The two
-  // are not redundant and not alternatives — `response_format` constrains
-  // decoding, the anchor tells the model what to produce and survives a
-  // provider that drops the parameter (audit 1.2) or a transport that has no
-  // slot for it yet. Belt and braces is the correct posture on a 14B model, and
-  // it costs one sentence of prompt.
+  // send the HARNESS'S OWN SCHEMA at the protocol level, and anchor the
+  // instruction in the prompt as well. The two are not alternatives —
+  // `response_format` constrains decoding, the anchor tells the model what to
+  // produce and survives a provider that drops the parameter (audit 1.2) or a
+  // transport with no slot for it. Belt and braces is the correct posture on a
+  // 14B model and it costs one sentence of prompt.
+  //
+  // STILL GATED ON `missing`, and the gate now means something narrower than it
+  // used to. A model MEASURED unable to do JSON never reaches this line at all:
+  // a JSON harness carries `json` in its floor (see `defineHarness`) and step 2
+  // refuses it above. What survives here is the LEARNED case — one upstream 400
+  // about one parameter — where re-sending `response_format` would 400 every
+  // call, so the parameter is suppressed and the prompt anchor carries the ask.
+  // That distinction is the whole of `run.test.ts`'s "does NOT refuse on a fact
+  // the gateway merely LEARNED from a 400", and it is worth keeping: the prose
+  // path is no longer a fallback the platform CHOOSES for a model it knows
+  // cannot comply, only the one it is left with when an endpoint rejects the
+  // parameter outright.
+  const wire = def.output.kind === 'json' ? wireSchemaOf(def.id, def.output.schema) : null
   let jsonMode = structured && !missing.includes('json')
-  let sent = structured ? anchorJson(base) : base
+  let sent = structured ? anchorJson(base, jsonAnchorFor(wire)) : base
   let repairs = 0
   let value: O | null = null
   let schemaValid = false
@@ -913,6 +959,7 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
         messages: sent,
         ...(def.temperature !== undefined ? { temperature: def.temperature } : {}),
         jsonMode,
+        ...(wire ? { jsonSchema: wire } : {}),
         ...(def.tools ? { tools: def.tools } : {}),
         // The tools this harness OFFERS, distinct from the policy above (see
         // `ToolPolicy` in transport.ts). A transport that cannot serve them
@@ -1127,7 +1174,7 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
       // before the throw either way - a throwing harness is precisely the one an
       // operator needs to see in the fitness data - and so there is exactly one
       // sentence in the tree for "this harness failed".
-      return fail({ value: null, model: routed, step, widened, repairs, schemaValid: false, escalate: false, answered, raw: rawOf(text), error: error ?? 'the harness produced no value' })
+      return fail({ value: null, model: routed, step, widened, repairs, schemaValid: false, escalate: false, answered, refused: false, raw: rawOf(text), error: error ?? 'the harness produced no value' })
     }
     if (typeof onFailure === 'object' && 'fallback' in onFailure) {
       // schemaValid stays FALSE. The fallback is the caller's declared safe
@@ -1144,5 +1191,5 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   // row inside completeViaGateway; the fleet transport writes one itself), so
   // all that is left here is the harness_runs row - the production ground truth
   // behind contract rate and repair rate per harness per model over time.
-  return finish({ value, model: routed, step, widened, repairs, schemaValid, escalate, answered, raw: rawOf(text), ...(error ? { error } : {}) })
+  return finish({ value, model: routed, step, widened, repairs, schemaValid, escalate, answered, refused: false, raw: rawOf(text), ...(error ? { error } : {}) })
 }

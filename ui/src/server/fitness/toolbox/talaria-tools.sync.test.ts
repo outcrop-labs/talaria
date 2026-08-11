@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TALARIA_TOOLS } from './talaria-tools'
+import { backedToolNames } from './sandbox'
 
 // THE LOCK ON THE COPY.
 //
@@ -84,9 +85,76 @@ function readStringExpression(source: string, from: number): string | null {
   return out.length > 0 ? out : null
 }
 
+/** Every `server.registerTool('name', { … inputSchema: { a: …, b: … } … })`'s
+ *  ARGUMENT KEYS, and which of them are required.
+ *
+ *  WHY THE NAMES AND NOT THE TYPES. A zod schema in another package cannot be
+ *  evaluated here (that module boots an MCP server on import), and the parts of
+ *  it a static reader can get exactly right are the keys and whether
+ *  `.optional()` appears before the next key. That is also the part that was
+ *  wrong: eight of sixteen tools carried invented argument names, so a model
+ *  graded here learned a call production answers with a 400.
+ *
+ *  The scan is deliberately shallow — top-level keys of the `inputSchema` object
+ *  literal, at brace depth 1 — because that is what an MCP input schema is. */
+function realParameters(source: string): Map<string, { keys: string[]; required: string[] }> {
+  const out = new Map<string, { keys: string[]; required: string[] }>()
+  const re = /server\.registerTool\(\s*'([a-z_]+)',\s*\{/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(source))) {
+    const at = source.indexOf('inputSchema:', m.index)
+    // `inputSchema` must belong to THIS registration, not the next one's.
+    const nextReg = source.indexOf('server.registerTool(', m.index + 1)
+    if (at === -1 || (nextReg !== -1 && at > nextReg)) continue
+    const open = source.indexOf('{', at)
+    if (open === -1) continue
+    const keys: string[] = []
+    const required: string[] = []
+    let depth = 0
+    let i = open
+    for (; i < source.length; i++) {
+      const ch = source[i]!
+      if (ch === '{' || ch === '[' || ch === '(') depth++
+      else if (ch === '}' || ch === ']' || ch === ')') {
+        depth--
+        if (depth === 0) break
+      } else if (depth === 1) {
+        // A key at the top level of the schema object: `name: z.…`
+        const key = /^([A-Za-z_$][\w$]*)\s*:/.exec(source.slice(i, i + 40))
+        const prev = source.slice(0, i).trimEnd().slice(-1)
+        if (key && (prev === '{' || prev === ',')) {
+          keys.push(key[1]!)
+          i += key[0].length - 1
+          // Everything up to the next top-level comma is this key's expression.
+          let j = i + 1
+          let d = 0
+          for (; j < source.length; j++) {
+            const c = source[j]!
+            if (c === '{' || c === '[' || c === '(') d++
+            else if (c === '}' || c === ']' || c === ')') {
+              if (d === 0) break
+              d--
+            } else if (c === ',' && d === 0) break
+          }
+          if (!source.slice(i, j).includes('.optional()')) required.push(key[1]!)
+          i = j - 1
+        }
+      }
+    }
+    out.set(m[1]!, { keys, required })
+  }
+  return out
+}
+
+const paramsOf = (tool: (typeof TALARIA_TOOLS)[number]): { keys: string[]; required: string[] } => {
+  const p = tool.parameters as { properties?: Record<string, unknown>; required?: string[] }
+  return { keys: Object.keys(p.properties ?? {}), required: [...(p.required ?? [])] }
+}
+
 describe('the sandbox toolkit is a faithful copy of the real one', () => {
   const source = readFileSync(MCP_SOURCE, 'utf8')
   const real = realDescriptions(source)
+  const realArgs = realParameters(source)
 
   it('reads the real registrations at all — a parser that matched nothing would pass everything', () => {
     // The guard on the guard. If `registerTool` is ever spelled differently this
@@ -111,5 +179,57 @@ describe('the sandbox toolkit is a faithful copy of the real one', () => {
       if (!tool.description.startsWith(want)) drifted.push(tool.name)
     }
     expect(drifted).toEqual([])
+  })
+
+  it('reads the real input schemas at all — the same guard, on the parameter scan', () => {
+    expect(realArgs.size).toBeGreaterThan(30)
+    expect(realArgs.get('add_time')?.keys).toEqual(['taskId', 'seconds'])
+    expect(realArgs.get('message_user')?.keys).toEqual(['to', 'message'])
+    // A tool with no arguments must read as none rather than as unparsed.
+    expect(realArgs.get('list_boards')?.keys).toEqual([])
+  })
+
+  it('names every argument exactly as the toolkit does', () => {
+    // THE FLATTERY THIS CLOSES. `comment(body)`, `add_time(minutes)`,
+    // `read_channel(channel)`, `message_user(user, body)` — four of the eight
+    // invented names the sandbox used to carry. A model that called them
+    // "correctly" in the benchmark got a 400 in production, and the benchmark
+    // called it competent. Never loosen this to make a tool pass: the fix is to
+    // rename the sandbox's argument.
+    const drifted: string[] = []
+    for (const tool of TALARIA_TOOLS) {
+      const want = realArgs.get(tool.name)
+      if (!want) continue
+      const got = paramsOf(tool)
+      if (got.keys.join(',') !== want.keys.join(',')) drifted.push(`${tool.name}: sandbox has [${got.keys.join(', ')}], toolkit has [${want.keys.join(', ')}]`)
+    }
+    expect(drifted).toEqual([])
+  })
+
+  it('requires exactly what the toolkit requires', () => {
+    // A sandbox that demands MORE fails a model for a call production accepts;
+    // one that demands FEWER lets a model omit an argument the API rejects.
+    const drifted: string[] = []
+    for (const tool of TALARIA_TOOLS) {
+      const want = realArgs.get(tool.name)
+      if (!want) continue
+      const got = paramsOf(tool)
+      if ([...got.required].sort().join(',') !== [...want.required].sort().join(',')) {
+        drifted.push(`${tool.name}: sandbox requires [${got.required.join(', ')}], toolkit requires [${want.required.join(', ')}]`)
+      }
+    }
+    expect(drifted).toEqual([])
+  })
+
+  it('models EVERY tool the toolkit registers, and backs every one it models', () => {
+    // COVERAGE IS THE POINT, and it used to be sixteen of forty-four. Twenty-
+    // eight tools an org's agents use every day had no simulated backend, no
+    // fixture, and no way for anyone to notice. `scripts/check-invariants.mjs`
+    // enforces the same thing in CI; this is the unit-level statement of it, so
+    // a new registration fails in the suite a developer runs first.
+    const unmodelled = [...real.keys()].filter((n) => !TALARIA_TOOLS.some((t) => t.name === n))
+    expect(unmodelled).toEqual([])
+    const unbacked = TALARIA_TOOLS.map((t) => t.name).filter((n) => !backedToolNames().includes(n))
+    expect(unbacked).toEqual([])
   })
 })

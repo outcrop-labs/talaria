@@ -1,0 +1,19 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`every JSON harness Talaria ships > records WHICH harnesses can be sent strict, so a schema change is visible here 1`] = `
+{
+  "loose": [
+    "blurb-writer",
+    "channel-plan",
+    "inbox-brief",
+    "inbox-command",
+    "judge",
+    "muse:agent",
+    "muse:ticket",
+  ],
+  "strict": [
+    "muse:cron",
+    "research-queries",
+  ],
+}
+`;

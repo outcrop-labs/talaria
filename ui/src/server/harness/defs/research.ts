@@ -44,6 +44,8 @@
 import { z } from 'zod'
 import { defineHarness, type Message } from '../define'
 import { gatewayToolsRefusal, gatewayTransport, toolPolicyOf, type Transport } from '../transport'
+import { callPlatformTool, isPlatformServer } from '../../capability-platform'
+import { resultsFromPayload } from '../../web-search'
 import { callMcpTool } from '../../mcp-registry'
 import { buildUpstream, fetchUpstream, recordGatewayUsage, resolveRoute } from '../../llm-gateway'
 
@@ -531,11 +533,16 @@ export function searchTransport(runId: string, sink: SearchSource[]): Transport 
  *  is not asking the model to master a vendor's parameter surface, only to say
  *  what it wants to look up. Everything else about the call (which server, which
  *  credentials, how many results) is the org's configuration. */
-const SEARCH_TOOL_SCHEMA = {
+export const SEARCH_TOOL_SCHEMA = {
   type: 'object',
   properties: { query: { type: 'string', description: 'What to look up on the live web.' } },
   required: ['query'],
 } as const
+
+/** Exported for the same reason the schema is: `fitness/toolbox/native-tools.ts`
+ *  enumerates the platform's own tool surface, and a surface nothing can
+ *  enumerate is a surface nobody can test. */
+export const SEARCH_TOOL_DESCRIPTION = 'Search the live web and return passages with their source URLs.'
 
 /** Anything in a tool payload that looks like a source. MCP search servers
  *  disagree about the envelope — `results`, `data`, a bare array — and agree
@@ -543,27 +550,12 @@ const SEARCH_TOOL_SCHEMA = {
  *  structure rather than pattern-matching one vendor's shape, and takes the
  *  first URL-bearing objects it finds. */
 function sourcesFromPayload(payload: unknown, cap = 12): SearchSource[] {
-  const out: SearchSource[] = []
-  const seen = new Set<string>()
-  const walk = (node: unknown, depth: number): void => {
-    if (out.length >= cap || depth > 6 || !node) return
-    if (Array.isArray(node)) {
-      for (const item of node) walk(item, depth + 1)
-      return
-    }
-    if (typeof node !== 'object') return
-    const o = node as Record<string, unknown>
-    const url = [o.url, o.link, o.href, o.source].find((v) => typeof v === 'string' && /^https?:\/\//i.test(v)) as string | undefined
-    if (url && !seen.has(url)) {
-      seen.add(url)
-      const title = [o.title, o.name, o.heading].find((v) => typeof v === 'string') as string | undefined
-      const snippet = [o.snippet, o.description, o.text, o.content, o.summary].find((v) => typeof v === 'string') as string | undefined
-      out.push({ url, title: title ?? null, snippet: snippet ? snippet.slice(0, 600) : null })
-    }
-    for (const v of Object.values(o)) walk(v, depth + 1)
-  }
-  walk(payload, 0)
-  return out
+  // ONE WALKER, IN `web-search.ts`. This used to be a second copy of the same
+  // shape-agnostic tree walk, and two copies of "what counts as a result" is
+  // how a provider that works for an agent silently returns nothing for a
+  // research run. `SearchSource` is the same three fields under different
+  // names, so this is a projection rather than a parser.
+  return resultsFromPayload(payload, 'tool', cap).map((r) => ({ url: r.url, title: r.title || null, snippet: r.snippet || null }))
 }
 
 /** THE TOOL-DRIVEN SEARCH TRANSPORT — the same job as `searchTransport` above,
@@ -600,7 +592,13 @@ export function toolSearchTransport(
     base?: Transport
   },
 ): Transport {
-  const callTool = deps?.callTool ?? ((server, tool, args) => callMcpTool(server, tool, args))
+  // TWO PLACES A TOOL CALL CAN GO, and sending one to the other is silent.
+  // `callMcpTool` looks the server up in the org's MCP registry; Talaria's own
+  // tools are in no registry, so a platform supplier sent there comes back
+  // `MCP server "talaria" is not registered` — caught below, handed to the model
+  // as the tool RESULT, and answered from memory with no sources.
+  const callTool =
+    deps?.callTool ?? ((server, tool, args) => (isPlatformServer(server) ? callPlatformTool(tool, args) : callMcpTool(server, tool, args)))
   const base = deps?.base ?? gatewayTransport
   return async (req) => {
     if (toolPolicyOf(req) === 'own') throw new Error(gatewayToolsRefusal(req.model))
@@ -612,16 +610,21 @@ export function toolSearchTransport(
     // The stage is one question, and this is it — used as the tool argument when
     // the model calls the tool without a usable one.
     const query = asked.map((m) => m.content).join('\n').trim()
-    const toolDefs = [{ name: supplier.tool, description: 'Search the live web and return passages with their source URLs.', parameters: SEARCH_TOOL_SCHEMA as unknown as Record<string, unknown> }]
+    const toolDefs = [{ name: supplier.tool, description: SEARCH_TOOL_DESCRIPTION, parameters: SEARCH_TOOL_SCHEMA as unknown as Record<string, unknown> }]
 
     let text = ''
     let called = 0
     const convo: Message[] = [{ role: 'system', content: TOOL_SEARCH_SYSTEM(supplier.tool) }, ...asked]
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const reply = await base({ ...req, messages: convo, toolDefs, caller: `research:${runId}` })
-      text = reply.text
       const calls = reply.toolCalls ?? []
-      if (calls.length === 0) break
+      // TEXT IS ONLY TAKEN FROM A TURN THAT STOPPED SEARCHING. A turn that called
+      // a tool is the model saying "not yet" — its prose is a preamble, not an
+      // answer — and recording it as the finding is the bug below.
+      if (calls.length === 0) {
+        text = reply.text
+        break
+      }
 
       for (const c of calls.slice(0, MAX_TOOL_CALLS_PER_ROUND)) {
         called++
@@ -641,7 +644,19 @@ export function toolSearchTransport(
           structured: null,
         }))
         for (const s of sourcesFromPayload(out.structured ?? out.text)) sink.push(s)
-        convo.push({ role: 'assistant', content: `Called ${c.name}(${JSON.stringify(args)})` }, { role: 'user', content: `Results from ${c.name}:\n${out.text.slice(0, 12_000)}` })
+        // THE TOOL CHANNEL, NOT PROSE ABOUT IT. This used to push
+        // `Called web_search({...})` as ASSISTANT TEXT and the results as a USER
+        // turn, and models imitated the transcript they were shown: a live sweep
+        // of deepseek-v4-flash came back with `Called web_search({"query":"AC-2
+        // Account Management NIST 800-53 Rev 5 site:csrc.nist.gov"})` as its
+        // FINAL ANSWER, on fixture after fixture. It is the same failure the
+        // dry-run sandbox hit — see the note on `Message.toolCalls` in define.ts:
+        // changing the wording only moves the imitation, and only giving the
+        // calls their own channel ends it.
+        convo.push(
+          { role: 'assistant', content: '', toolCalls: [{ ...c, args: JSON.stringify(args) }] },
+          { role: 'tool', content: out.text.slice(0, 12_000), toolCallId: c.id ?? c.name },
+        )
       }
     }
 
@@ -651,12 +666,43 @@ export function toolSearchTransport(
     // caller cannot tell the difference by looking at the prose.
     if (called === 0) throw new Error(`"${req.model}" answered the search query without calling "${supplier.tool}" — the finding would have no sources behind it`)
 
+    // ONE TURN TO ACTUALLY ANSWER, and its absence failed this harness on every
+    // fixture of a model that was doing exactly the right thing.
+    //
+    // WHAT WENT WRONG. The loop took `text` from whatever the last round
+    // returned. A model that was still searching when the round budget ran out
+    // therefore had its INTERSTITIAL turn recorded as its finding — a live sweep
+    // of deepseek-v4-flash scored nine of nine fixtures on gems like "The
+    // searches so far have returned mostly generic EU pages rather than the
+    // specific AI Act GPAI content. Let me try more targeted queries." Three
+    // more came back "the model returned nothing", which is the same bug with an
+    // empty preamble: a turn that is pure tool calls has no content at all.
+    //
+    // The model gathered evidence and was never asked to use it. So the budget
+    // running out now means "stop searching and answer", which is what it always
+    // should have meant, and NO TOOLS ARE OFFERED on this turn — leaving them on
+    // the request is an invitation to spend the turn on a fourth search and
+    // arrive back here with nothing again.
+    if (!text.trim()) {
+      const closing = await base({ ...req, messages: [...convo, { role: 'user', content: FINAL_ANSWER_ASK }], caller: `research:${runId}` })
+      text = closing.text
+    }
+
     return { kind: 'gateway', text, toolNames: [supplier.tool], usage: null, contractDropped: false }
   }
 }
 
 const MAX_TOOL_ROUNDS = 3
 const MAX_TOOL_CALLS_PER_ROUND = 3
+
+/** THE TURN THAT TURNS SEARCHING INTO AN ANSWER. Written to be usable by a model
+ *  that wanted to keep going: it says the budget is spent, that partial evidence
+ *  is a legitimate answer, and — the part that matters for `ungrounded_ref` —
+ *  that filling the gap from memory is not. */
+const FINAL_ANSWER_ASK =
+  'That is all the searching there is time for. Write your findings NOW from the results above — do not search again.\n' +
+  'Be specific: dates, numbers, names and versions exactly as the results gave them, and attribute every claim to something above.\n' +
+  'If the results only partly answer the question, say what they did and did not establish. Do not fill any gap from memory.'
 
 const TOOL_SEARCH_SYSTEM = (tool: string): string =>
   `You research one question using the \`${tool}\` tool, which searches the live web.\n` +

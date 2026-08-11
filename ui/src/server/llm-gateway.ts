@@ -28,6 +28,19 @@ import {
 
 export type { ContractDrop } from './harness/gateway-params'
 
+/** THE STRUCTURED-OUTPUT SLOT, as the wire wants it.
+ *
+ *  `json_schema` WHEREVER WE HAVE A SCHEMA, and every JSON harness has one. The
+ *  loose `{ type: 'json_object' }` this used to be hardcoded to is not merely
+ *  weaker — Anthropic's OpenAI-compatible layer REJECTS it outright
+ *  (`response_format.type: Input should be 'json_schema'`), so every structured
+ *  call to a Claude model 400'd and the fitness suite scored it as the model
+ *  failing to hold a contract. It survives only as the fallback for an endpoint
+ *  whose schema we could not render. */
+export type ResponseFormat =
+  | { type: 'json_object' }
+  | { type: 'json_schema'; json_schema: { name: string; schema: Record<string, unknown>; strict: boolean } }
+
 export interface GatewayModel {
   id: string
   endpoints: string[]
@@ -36,7 +49,35 @@ export interface GatewayModel {
   qualified: boolean
 }
 
-/** All callable model ids: bare names + endpoint-qualified names. */
+/** EVERY MODEL, SPELLED ONE WAY: `<endpoint>/<model>`.
+ *
+ *  WHY THIS IS NOT "bare + qualified for everything", which it was. This list
+ *  is what every picker and the fitness matrix draw from, and emitting both
+ *  spellings of each model put `claude-opus-5` and `anthropic/claude-opus-5` on
+ *  consecutive rows — two entries for one deployment, routing to the same
+ *  endpoint under the same capability key, differing only in how they are
+ *  written. On a two-endpoint install that is 26 rows for 13 models, and an
+ *  admin comparing them has no way to tell that the pair is one thing.
+ *
+ *  THE QUALIFIED FORM IS THE CANONICAL ONE because it is the one that names
+ *  where the model runs — which is the thing Talaria actually measures
+ *  capability about (`capabilityKey` is `endpoint:model`, never a bare name).
+ *  It also reads correctly for both kinds of provider without a special case:
+ *  a router endpoint gives `openrouter/deepseek/deepseek-v4-flash`
+ *  (provider/brand/model) and a direct vendor gives `anthropic/claude-opus-5`
+ *  (brand/model), because the endpoint name IS the provider in one and the
+ *  brand in the other.
+ *
+ *  A BARE ID SURVIVES ONLY WHERE IT MEANS SOMETHING ELSE: served by more than
+ *  one endpoint, it is the round-robin POOL, a distinct routing target that no
+ *  single qualified id can express. `ModelRow.pooled` is what the UI labels it
+ *  with. One endpoint, and the bare name is not a second target — it is a
+ *  second name for the first.
+ *
+ *  BARE IDS STAY CALLABLE regardless: `routingFor` and `resolveRoute` are
+ *  untouched, so every stored assignment, agent config and API caller that
+ *  spells a model bare keeps working. This function answers "what should we
+ *  OFFER", not "what will we accept". */
 export async function gatewayModels(): Promise<GatewayModel[]> {
   const eps = await listEndpoints()
   const bare = new Map<string, string[]>()
@@ -47,8 +88,31 @@ export async function gatewayModels(): Promise<GatewayModel[]> {
       bare.set(m, [...(bare.get(m) ?? []), ep.name])
     }
   }
-  for (const [id, endpoints] of bare) out.push({ id, endpoints, qualified: false })
+  for (const [id, endpoints] of bare) if (endpoints.length > 1) out.push({ id, endpoints, qualified: false })
   return out.sort((a, b) => a.id.localeCompare(b.id))
+}
+
+/** THE CANONICAL SPELLING of a model id, against a catalog.
+ *
+ *  Everything Talaria has already stored — role assignments, platform-agent
+ *  pins, an archived fitness report, a member allowlist — was written when both
+ *  spellings were offered, so plenty of it is bare. Those values keep routing;
+ *  what they must not do is fail to LINE UP with the canonical row, or an admin
+ *  sees a role assigned to a model that appears nowhere in the list and a paid
+ *  run whose verdict lights up no cell.
+ *
+ *  So this maps a stored spelling onto the offered one instead of rewriting the
+ *  database: cheaper than a migration, correct for values written after it, and
+ *  it cannot corrupt anything if the catalog is momentarily wrong. Unresolvable
+ *  ids come back unchanged — an id nothing serves is a fact to show, not one to
+ *  guess at. */
+export function canonicalModelId(id: string, catalog: readonly GatewayModel[]): string {
+  if (catalog.some((m) => m.id === id)) return id
+  const pins = catalog.filter((m) => m.qualified && m.id.endsWith(`/${id}`))
+  // Exactly one, or it is genuinely ambiguous — two endpoints serving the same
+  // model is the pooled case, and picking one of them would silently reassign
+  // a role to half of what it had.
+  return pins.length === 1 ? pins[0]!.id : id
 }
 
 // Round-robin cursor per bare model name (module-level; resets on reload).
@@ -119,6 +183,30 @@ export interface UpstreamCall {
    *  meter, and none of them had to change to gain the signal. Read it AFTER the
    *  fetch resolves. */
   contractDrops?: ContractDrop[]
+  /** THE CALLER'S CANCELLATION, honored all the way down to the socket.
+   *
+   *  WHY THIS EXISTS, and it is a bug report rather than a feature. `fetchUpstream`
+   *  used to hardcode `AbortSignal.timeout(600_000)` and accept no signal at all,
+   *  so a caller that gave up — a fitness case that blew its budget, a request
+   *  whose client disconnected — left the HTTP request running for up to ten
+   *  minutes with nobody waiting for it. The eval sweep aborts an
+   *  `AbortController` on every case timeout and nothing downstream was listening
+   *  to it.
+   *
+   *  That turns one slow reply into a cascade rather than one failure: the sweep
+   *  moves on and issues the next call while the abandoned one still holds its
+   *  socket, up to eight candidate sweeps do it at once, and the provider starts
+   *  queueing — so calls that would have been fast now sit behind the abandoned
+   *  ones and blow their budgets too. The symptom is timeouts on a model that is
+   *  demonstrably fine, which is exactly the shape of the report that found it.
+   *
+   *  Pass it. A caller that cannot be cancelled is a caller that can only be
+   *  waited out. */
+  signal?: AbortSignal
+  /** Hard ceiling for this one call, defaulting to `UPSTREAM_TIMEOUT_MS`. Set it
+   *  from the caller's own budget so the socket dies WITH the caller rather than
+   *  ten minutes after it. */
+  timeoutMs?: number
 }
 
 /** Contract parameters this call lost, for a caller that would rather not think
@@ -279,13 +367,29 @@ export async function fetchUpstream(call: UpstreamCall, route?: ResolvedRoute): 
   }
 }
 
+/** The ceiling on ONE upstream call when the caller names no budget of its own.
+ *  Ten minutes is right for a long completion a human is waiting on and far too
+ *  long for anything with a deadline — which is why `UpstreamCall.timeoutMs`
+ *  exists and why every harness call now sets it. */
+export const UPSTREAM_TIMEOUT_MS = 600_000
+
+/** The caller's cancellation AND the wall clock, whichever fires first. A call
+ *  with neither still gets the default ceiling, so no path is unbounded. */
+const abortFor = (call: UpstreamCall): AbortSignal => {
+  const timeout = AbortSignal.timeout(call.timeoutMs ?? UPSTREAM_TIMEOUT_MS)
+  return call.signal ? AbortSignal.any([call.signal, timeout]) : timeout
+}
+
 async function fetchUpstreamInner(call: UpstreamCall, route?: ResolvedRoute): Promise<Response> {
   const send = async (): Promise<Response> => {
     const init = () => ({
       method: 'POST' as const,
       headers: call.headers,
       body: JSON.stringify(call.body),
-      signal: AbortSignal.timeout(600_000),
+      // A FRESH SIGNAL PER ATTEMPT, and per hostname fallback: reusing one
+      // already-fired signal across the retry loop would abort the retry the
+      // instant it started, which is a stranger bug than the one this replaced.
+      signal: abortFor(call),
     })
     try {
       return await fetch(call.url, init())
@@ -410,16 +514,22 @@ export function gatewayPulse(): GatewayPulse {
 export async function completeViaGateway(
   model: string,
   messages: Array<{ role: string; content: string }>,
-  opts: { temperature?: number; caller: string; responseFormat?: 'json_object'; guard?: boolean },
+  opts: { temperature?: number; caller: string; responseFormat?: ResponseFormat; guard?: boolean; signal?: AbortSignal; timeoutMs?: number },
 ): Promise<{ text: string; contractDrops: ContractDrop[] }> {
   const route = await resolveRoute(model)
   if (!route) throw new Error(`model "${model}" is not on the gateway`)
   const clientBody: Record<string, unknown> = { model, messages, stream: false }
   if (opts.temperature !== undefined) clientBody.temperature = opts.temperature
-  if (opts.responseFormat) clientBody.response_format = { type: opts.responseFormat }
+  if (opts.responseFormat) clientBody.response_format = opts.responseFormat
   const call = await buildUpstream(route, clientBody)
+  if (opts.signal) call.signal = opts.signal
+  if (opts.timeoutMs !== undefined) call.timeoutMs = opts.timeoutMs
   const res = await fetchUpstream(call, route)
-  if (!res.ok) throw new Error(`gateway completion ${res.status}: ${await res.text()}`)
+  // THE STATUS AND THE BODY, BOTH. A bare "gateway completion 429" tells an
+  // admin reading a red cell nothing about whether they are rate-limited, out of
+  // credit or sending something the provider rejects — and those are the three
+  // answers worth having when a sweep starts timing out.
+  if (!res.ok) throw new Error(`gateway completion ${res.status}: ${(await res.text().catch(() => '')).slice(0, 400)}`)
   const j = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>
     usage?: { prompt_tokens?: number; completion_tokens?: number }

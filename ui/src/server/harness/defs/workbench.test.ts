@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NO_TOOLS, type EvalContext } from '@/server/harness/define'
+import { NO_TOOLS, type EvalContext, isGap, type CheckResult } from '@/server/harness/define'
 import { workbenchHeavyHarness, workbenchLightHarness, workbenchStandardHarness } from '@/server/harness/defs/workbench'
 import { makeWorkbench, type WorkspaceFile } from '@/server/fitness/toolbox/hermes-tools'
 
@@ -211,5 +211,78 @@ describe('the workspace sandbox', () => {
     expect(a.green()).toBe(true)
     expect(b.green()).toBe(false)
     expect(workspace.files[0]?.content).toBe('let x = 1\n')
+  })
+})
+
+describe('a run that never got its tool loop', () => {
+  const first = workbenchLightHarness.evals?.[0]
+  const ctx = (calls: EvalContext['calls']): EvalContext => ({ ...NO_TOOLS, calls })
+
+  it('reports OUR gap when the model named a tool we never received a call for', () => {
+    // THE FAILURE MODE THIS EXISTS FOR, twice over. `[tool] write_file({...})`
+    // and then `(called write_file)` were both written into the assistant's own
+    // prose because `Message` had no tool channel, and models reproduced
+    // whichever they were shown instead of emitting a structured call. 34 replies
+    // in one sweep contained our narration verbatim — every one scored as a model
+    // that "read the repository and never wrote a file".
+    //
+    // A reply that NAMES a tool we offered, with no call recorded, is our defect.
+    const verdict = first?.check('Fixing it now.\n(called write_file)\n{"path":"src/paginate.js"}', ctx([]))
+
+    expect(isGap(verdict as CheckResult)).toBe(true)
+    expect((verdict as { gap: string }).gap).toContain('a syntax this build does not parse')
+  })
+
+  it('still fails a model that answered a coding task in prose', () => {
+    // The gap branch must not launder a real failure. A model that never
+    // intended to call anything does not name a tool, and changes nothing in
+    // the repository.
+    const verdict = first?.check('The bug is an off-by-one; you should subtract one from the page number.', ctx([]))
+
+    expect(typeof verdict).toBe('string')
+    expect(verdict).toContain('answered a coding task in prose')
+  })
+})
+
+describe('a run the harness cut short or could not parse', () => {
+  const first = workbenchLightHarness.evals?.[0]
+  const verify = workbenchLightHarness.evals?.find((e) => e.name.includes('runs the tests'))
+  const ctx = (over: Partial<EvalContext> = {}): EvalContext => ({ ...NO_TOOLS, ...over })
+
+  it('reports a FOREIGN call syntax as our gap, not the model calling nothing', () => {
+    // gemma emitted `call:file_control:list_files{path: "."}` — its own invented
+    // format, on turn one, imitating nothing of ours. The loop cannot parse it,
+    // so the call never happened as far as the sandbox knows. The model tried to
+    // use the tool channel and this build could not receive it.
+    const verdict = first?.check('I will investigate.\ncall:file_control:list_files{path: "."}', ctx())
+
+    expect(isGap(verdict as CheckResult)).toBe(true)
+    expect((verdict as { gap: string }).gap).toContain('a syntax this build does not parse')
+  })
+
+  it('does not mistake prose ABOUT a tool for a call', () => {
+    // A model explaining that it would run the tests has not called anything,
+    // and that is a real failure — the gap branch must not launder it.
+    const verdict = first?.check('You should run_tests after fixing the off-by-one in paginate.', ctx())
+    expect(typeof verdict).toBe('string')
+  })
+
+  it('reports an EXHAUSTED run as our budget, not as bad sequencing', () => {
+    // "Did it re-run the tests after its last edit" has no answer for a run that
+    // was still working when the turn budget ended — the sequence it would have
+    // finished with never happened. Scoring it said the model verified a state
+    // it then changed, which describes something that did not occur.
+    const calls = [
+      { tool: 'write_file', args: {}, error: null },
+      { tool: 'run_tests', args: {}, error: null },
+      { tool: 'write_file', args: {}, error: null },
+    ] as unknown as EvalContext['calls']
+    const verdict = verify?.check('Still working on it.', ctx({ calls, exhausted: true }))
+
+    expect(isGap(verdict as CheckResult)).toBe(true)
+    expect((verdict as { gap: string }).gap).toContain('turn budget ran out')
+
+    // The same call order on a run that FINISHED is a real failure.
+    expect(verify?.check('Done.', ctx({ calls, exhausted: false }))).toContain('without re-running them')
   })
 })

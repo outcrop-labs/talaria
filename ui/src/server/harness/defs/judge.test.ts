@@ -234,7 +234,12 @@ describe('the eval fixtures', () => {
     // "revise" to everything looks excellent on planted gaps and is useless,
     // because in enforcing mode it bounces finished work back forever.
     const alwaysRevise = evals.filter((e) => e.check(verdictOf('revise'), NO_TOOLS) !== null)
-    expect(alwaysRevise).toHaveLength(5) // exactly the satisfied cases
+    // The five satisfied cases, PLUS the leaked-secret fixture: that one accepts
+    // either "revise" or "escalate" but requires the judge to say what it saw,
+    // and a model reflexively answering "revise" with a boilerplate issue has
+    // not seen anything. A reflexive verdict failing a fixture about naming the
+    // evidence is the point of it.
+    expect(alwaysRevise).toHaveLength(6)
 
     const alwaysPass = evals.filter((e) => e.check(verdictOf('pass'), NO_TOOLS) !== null)
     expect(alwaysPass).toHaveLength(7) // the planted gaps and both ambiguous ones

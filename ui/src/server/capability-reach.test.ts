@@ -89,11 +89,33 @@ describe('supplierFor', () => {
   })
 
   it('supplies nothing for a capability no tool can stand in for', () => {
-    // Vision, code and long-context are deliberately absent from the table —
-    // an OCR tool is not eyesight and a sandbox is not a programmer.
-    for (const cap of ['vision', 'code', 'long-context', 'json'] as Capability[]) {
+    // Code and long-context are deliberately absent from the table: a sandbox is
+    // not a programmer, and a tool cannot widen a context window. VISION IS NO
+    // LONGER ON THIS LIST — `describe_image` reads an image with the model the
+    // org assigned to the vision role, which is a real answer to "can this
+    // deployment do it" even when the model in the slot cannot.
+    for (const cap of ['code', 'long-context', 'json'] as Capability[]) {
       expect(supplierFor(cap, [searchServer()])).toBeNull()
     }
+  })
+
+  it('finds Talaria’s own image reader for a model that cannot see', () => {
+    const talaria = server({
+      name: 'talaria',
+      tools: [{ name: 'describe_image', description: "Read an image you cannot see: attaches it to this workspace's vision model and returns a description in text." }],
+    })
+    expect(supplierFor('vision', [talaria])).toEqual({ server: 'talaria', tool: 'describe_image' })
+  })
+
+  it('needs the description to corroborate, the same as search does', () => {
+    // `vision` is an ordinary English word and `ocr` is a narrow one, so the name
+    // alone is weaker evidence here than it is for `web_search`. A tool that
+    // talks about images matches; one that happens to share a name does not.
+    const reader = server({ name: 'house', tools: [{ name: 'ocr', description: 'Extract text from a scanned image or photo.' }] })
+    expect(supplierFor('vision', [reader])).toEqual({ server: 'house', tool: 'ocr' })
+
+    const unrelated = server({ name: 'house', tools: [{ name: 'vision', description: 'Company vision and mission statements.' }] })
+    expect(supplierFor('vision', [unrelated])).toBeNull()
   })
 })
 
@@ -143,21 +165,25 @@ describe('reachFor', () => {
   })
 
   it('does not read the registry for a capability no tool can supply', async () => {
+    // `code` HAS NO SUPPLIER RULE and cannot get one: writing code is what the
+    // model does, not something a tool can do on its behalf. (`vision` used to
+    // stand here and no longer can — `describe_image` supplies it now, which is
+    // the whole point of `TOOL_REACHABLE`.)
     let asked = 0
     const out = await reachFor(
       [KEY],
-      ['vision'],
+      ['code'],
       deps({
         servers: async () => {
           asked++
           return []
         },
-        capabilities: async () => ({ vision: fact(false) }),
+        capabilities: async () => ({ code: fact(false) }),
       }),
     )
     expect(asked).toBe(0)
-    expect(out['vision']).toMatchObject({ reached: false, via: null })
-    expect(out['vision']?.detail).toContain('nothing can supply it')
+    expect(out['code']).toMatchObject({ reached: false, via: null })
+    expect(out['code']?.detail).toContain('nothing can supply it')
   })
 
   it('survives a registry that is down rather than claiming reach', async () => {

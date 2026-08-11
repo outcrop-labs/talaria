@@ -193,3 +193,33 @@ describe('activeLearnedParams', () => {
     expect(activeLearnedParams(byKey, 'openrouter:qwen3-14b', NOW).params).toEqual([])
   })
 })
+
+describe('a provider that reports a field path instead of a quoted name', () => {
+  // Every one of these is a real Anthropic 400 from a live sweep, and not one of
+  // them matched the original patterns — so `response_format` was never stripped,
+  // the call was never retried, and the fitness suite scored the 400 as the
+  // MODEL failing its contract on every structured harness.
+  const real = [
+    `{"error":{"code":"invalid_request_error","message":"response_format.type: Input should be 'json_schema'","type":"invalid_request_error"}}`,
+    `{"error":{"message":"response_format.json_schema.strict: Input should be True"}}`,
+    `{"error":{"message":"response_format.json_schema.schema: Empty schema ({}) that accepts any JSON value is not supported. Please specify a concrete type."}}`,
+  ]
+
+  it('names the ROOT parameter, which is the one we can stop sending', () => {
+    // Not `response_format.json_schema.strict` — that is a field inside a
+    // parameter, and the thing a retry can drop is the parameter.
+    for (const text of real) expect(rejectedParam(text), text.slice(0, 60)).toBe('response_format')
+  })
+
+  it('still refuses to strip a protected parameter reported the same way', () => {
+    // A complaint about the message list must never become a request with no
+    // messages. `classifyParam` is what holds that, and this is the shape that
+    // would have reached it.
+    expect(classifyParam(rejectedParam(`{"error":{"message":"messages.0.content: Field required"}}`) ?? '')).toBe('protected')
+  })
+
+  it('does not fire on ordinary prose that happens to contain a colon', () => {
+    expect(rejectedParam('Rate limited: please retry after 20 seconds')).toBeNull()
+    expect(rejectedParam('{"error":{"message":"Internal server error"}}')).toBeNull()
+  })
+})

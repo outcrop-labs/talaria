@@ -77,7 +77,17 @@ export function summaryProblem(value: string, mentions: readonly string[], minCh
   const thin = belowAnswerFloor(value, { minChars, mentions })
   if (thin) return thin
   if (value.includes('\n')) return 'the summary is more than one line'
-  if (value.length > 140) return `the summary is ${value.length} characters; the prompt asks for 140 or fewer`
+  // MAX_SUMMARY, NOT THE PROMPT'S 140, and the difference is the whole point of
+  // the two numbers. The prompt asks for 140 to leave headroom; `MAX_SUMMARY` is
+  // the width the Studio can actually render, and its own comment says it is
+  // "deliberately LOOSER than the prompt so that a model which overshoots by a
+  // few words still produces a usable summary instead of nothing".
+  //
+  // Asserting 140 made the fixture stricter than the product it tests: a
+  // 143-character summary is stored, rendered and perfectly usable, and was
+  // scored a failure. Two capable models lost points to it. A fixture must hold
+  // the contract, not the aspiration.
+  if (value.length > MAX_SUMMARY) return `the summary is ${value.length} characters; the slot renders ${MAX_SUMMARY} or fewer`
   if (!noMarkdown(value)) return 'the summary carried markdown out of the document'
   if (value.trim().endsWith('?')) return 'the summary is a question rather than a summary'
   if (/^this skill\b/i.test(value)) return 'the summary opens with the "This skill…" lead-in the prompt forbids'

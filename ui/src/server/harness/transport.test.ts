@@ -56,7 +56,9 @@ vi.mock('@/server/gateway', () => ({
 }))
 vi.mock('@/server/usage', () => ({ estimateTokens: () => 0, recordUsage: async () => {} }))
 
-const { fleetTransport, fleetStream, gatewayStream, gatewayTransport, offersToolDefinitions, pickTransport } = await import('@/server/harness/run')
+const { fleetTransport, fleetStream, gatewayStream, gatewayTransport, offersToolDefinitions, pickTransport, toolWireMessage } = await import(
+  '@/server/harness/run'
+)
 
 /** A rendered fleet: base ids only, which is what `listAgents` returns. */
 const rendered = (...ids: string[]) => ({ agents: ids.map((id) => ({ id, label: id, role: '' })), source: 'gateway' as const })
@@ -208,7 +210,10 @@ describe('offering tool definitions', () => {
     // model's own tools and these are ours, so suppressing them here would send
     // four definitions and forbid calling any of them.
     expect(body.tool_choice).toBe('auto')
-    expect(reply.toolCalls).toEqual([{ name: 'get_weather', args: '{"city":"Lisbon"}' }])
+    // The provider's call id rides along so a REPLAYED tool conversation can
+    // pair a result back to its call (`Message.toolCallId`) — the dry-run loop
+    // is the caller that needs it.
+    expect(reply.toolCalls).toMatchObject([{ name: 'get_weather', args: '{"city":"Lisbon"}' }])
     // Same list, minus the arguments — built through `toolNamesOf` so the two
     // fields cannot report different calls.
     expect(reply.toolNames).toEqual(['get_weather'])
@@ -244,6 +249,37 @@ describe('offering tool definitions', () => {
     expect(built[0]?.body.response_format).toEqual({ type: 'json_object' })
   })
 
+  it('does NOT ask for json_object when the contract is rooted at an ARRAY', async () => {
+    // WHAT THIS COST. `json_object` is not "reply in JSON" — it is "return a JSON
+    // OBJECT", enforced by constrained decoding. `channel-plan` returns a
+    // top-level array of ticket proposals and is non-strict (nullable enums, a
+    // nested array), so it took the loose fallback on every single call: the
+    // wire format forbade the only answer its contract would accept. Five
+    // fixtures in one sweep failed `expected array, got object`, the repair turn
+    // failed the same way, and all five were charged to the model.
+    drops = []
+    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    await gatewayTransport({
+      ...toolRequest,
+      jsonMode: true,
+      jsonSchema: { name: 'channel_plan', strict: false, schema: { type: 'array', items: { type: 'object' } } },
+    })
+    expect(built[0]?.body.response_format).toBeUndefined()
+  })
+
+  it('still asks for json_object when the contract is rooted at an object', async () => {
+    // The array rule must not become "stop asking for structured output". An
+    // object root is exactly what `json_object` was built for and still gets it.
+    drops = []
+    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    await gatewayTransport({
+      ...toolRequest,
+      jsonMode: true,
+      jsonSchema: { name: 'titler', strict: false, schema: { type: 'object', properties: { title: { type: 'string' } } } },
+    })
+    expect(built[0]?.body.response_format).toEqual({ type: 'json_object' })
+  })
+
   it('leaves toolCalls ABSENT on a plain completion — nobody was in a position to observe one', async () => {
     completeViaGateway.mockResolvedValue({ text: 'a title', contractDrops: [] })
     const reply = await gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 't' })
@@ -272,5 +308,42 @@ describe('offersToolDefinitions', () => {
     // throw instead would score as `errored`, which the probe suite reads as a
     // broken deployment — and a healthy persona is not one.
     expect(await offersToolDefinitions('penny-assistant')).toBe(false)
+  })
+})
+
+describe('a tool conversation, replayed', () => {
+  it('sends the tool channel rather than narrating calls in prose', () => {
+    // THE BUG THIS ENDS. `Message` had no slot for a tool call, so the dry-run
+    // loop wrote one into the assistant's TEXT — `[tool] write_file({...})`,
+    // later `(called write_file)`. Models imitated whichever string they were
+    // shown and answered the next turn in prose; 34 replies in one sweep came
+    // back containing Talaria's own narration, so `toolCalls` was empty, the
+    // loop broke, and fixtures reported work the model had done as never done.
+    const assistant = toolWireMessage({
+      role: 'assistant',
+      content: 'Fixing the off-by-one.',
+      toolCalls: [{ name: 'write_file', args: '{"path":"src/paginate.js"}', id: 'call_1' }],
+    })
+    expect(assistant).toMatchObject({
+      role: 'assistant',
+      content: 'Fixing the off-by-one.',
+      tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'write_file', arguments: '{"path":"src/paginate.js"}' } }],
+    })
+    // Nothing about the call is in the prose the model reads back.
+    expect(JSON.stringify(assistant.content)).not.toContain('write_file')
+  })
+
+  it('pairs a result to the call it answers', () => {
+    expect(toolWireMessage({ role: 'tool', content: 'written', toolCallId: 'call_1' })).toEqual({
+      role: 'tool',
+      content: 'written',
+      tool_call_id: 'call_1',
+    })
+  })
+
+  it('leaves an ordinary turn exactly as it was', () => {
+    // Every harness `render` produces these and must be untouched by the change.
+    expect(toolWireMessage({ role: 'user', content: 'hello' })).toEqual({ role: 'user', content: 'hello' })
+    expect(toolWireMessage({ role: 'system', content: 'be terse' })).toEqual({ role: 'system', content: 'be terse' })
   })
 })

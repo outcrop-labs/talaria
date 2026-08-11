@@ -19,10 +19,14 @@
 import type { ChipTone } from '@/components/ui/chip'
 import type { Capability } from '@/server/harness/capability'
 import type { FitnessBand, FitnessReport } from '@/server/fitness/score'
-import type { EvalCaseScore, HarnessScore } from '@/server/fitness/evals'
+import type { EvalCaseScore, HarnessScore, InFlightCase, SweepConcurrency } from '@/server/fitness/evals'
+import type { SpeedReading } from '@/server/fitness/surface'
+import type { FixtureHealth, HealthSummary, Suspicion } from '@/server/fitness/health'
 import type { AdversarialReport, ProvocationScore } from '@/server/fitness/adversarial'
 import type { ProbeReport } from '@/server/fitness/probes'
 import type { Divergence, ObservedHarness, ObservedModel } from '@/server/fitness/observed'
+import type { EvalLogLine } from '@/server/fitness/surface'
+import type { ModelValue, SlotValue, ValueView, Workload } from '@/server/fitness/value'
 import type {
   CapabilityState,
   CapabilityView,
@@ -34,6 +38,27 @@ import type {
   TierId,
 } from '@/routes/api/admin.model-fitness'
 
+/** The run modal's default width. A LITERAL, not an import, and that is the
+ *  whole point of the header above: `import { DEFAULT_CONCURRENCY } from
+ *  '@/server/fitness/evals'` is a VALUE import, and it drags the sweep driver —
+ *  and with it the database, the harness runner and the guard registry — into
+ *  the browser bundle. The Models route stopped loading the moment one appeared.
+ *  Every other import in this file is `import type` for that reason.
+ *
+ *  `fitness.test.ts` asserts this equals the server's constant, so the copy
+ *  cannot drift — a test may import the server module; the browser may not. */
+export const DEFAULT_CONCURRENCY = 4
+
+/** DID THIS CASE LEAVE A HOLE? The predicate behind "Re-run N failures".
+ *
+ *  A COPY, for the reason `DEFAULT_CONCURRENCY` above is a copy: importing the
+ *  sweep driver into the browser takes the route down. `fitness.test.ts` holds
+ *  it to the server's version case by case, so the button's count and the set
+ *  the sweep actually re-runs cannot drift apart — which they would silently,
+ *  and the number on a button nobody can verify is worse than no button. */
+export const worthRetrying = (c: Pick<EvalCaseScore, 'skipped' | 'gap' | 'contractHeld' | 'task'>): boolean =>
+  !(c.skipped === null && c.gap === null && c.contractHeld && c.task === 'pass')
+
 export type {
   AdversarialReport,
   Capability,
@@ -41,19 +66,29 @@ export type {
   CapabilityView,
   Divergence,
   EvalCaseScore,
+  EvalLogLine,
   FitnessBand,
   FitnessIndexEntry,
   FitnessReport,
   FitnessRunStatus,
+  FixtureHealth,
   HarnessScore,
+  HealthSummary,
+  InFlightCase,
   ModelRow,
+  ModelValue,
   ObservedHarness,
   ObservedModel,
   ProbeReport,
   ProvocationScore,
   RunEstimate,
+  SlotValue,
+  SpeedReading,
+  Suspicion,
+  SweepConcurrency,
   TierEstimate,
   TierId,
+  Workload,
 }
 
 export interface Thresholds {
@@ -75,17 +110,38 @@ export interface SlotView {
   taskFloor: number
 }
 
+export type RunView = FitnessRunStatus & { done: number; total: number; harness: string | null; sweepState: string }
+
 export interface MatrixPayload {
   slots: SlotView[]
   models: ModelRow[]
   index: Record<string, FitnessIndexEntry>
-  status: FitnessRunStatus & { done: number; total: number; harness: string | null; sweepState: string }
+  /** Every run, running first. Up to `max` candidates are tested at once. */
+  runs: RunView[]
+  max: number
+  /** True when a further Start would be refused. */
+  full: boolean
   thresholds: Thresholds
-  registry: { harnesses: number; fixtures: number; unfixtured: string[] }
+  registry: { harnesses: number; fixtures: number; provocations: number; unfixtured: string[] }
+}
+
+/** A run in flight, as the drill-down shows it. See `LiveRun` in surface.ts. */
+export interface LiveRun {
+  state: string
+  phase: TierId | 'scoring' | null
+  done: number
+  total: number
+  harness: string | null
+  cases: EvalCaseScore[]
+  dropped: number
+  log: EvalLogLine[]
+  current: InFlightCase[]
 }
 
 export interface DetailPayload {
   model: string
+  /** Non-null only while this candidate is being tested. */
+  live: LiveRun | null
   record: {
     model: string
     at: string
@@ -96,13 +152,29 @@ export interface DetailPayload {
     droppedCases: number
     probes: ProbeReport | null
     adversarial: AdversarialReport | null
-    sweep: { state: string; done: number; total: number; error: string | null; unfixtured: string[] }
+    sweep: { state: string; done: number; total: number; error: string | null; unfixtured: string[]; concurrency: SweepConcurrency }
   } | null
   observed: ObservedHarness[]
   observedModel: ObservedModel | null
   divergences: Divergence[]
   thresholds: Thresholds
 }
+
+export type ValuePayload = ValueView
+
+/** A SIGNATURE OF THE ARCHIVE, for the value query's cache key.
+ *
+ *  Every number on the cost tab is derived from the fitness index, so the index
+ *  changing is precisely when the tab is stale — and a run archiving is the only
+ *  thing that changes it. Model id plus the run's timestamp catches an added
+ *  model, a re-tested one, and a forgotten one, and catches nothing else, which
+ *  is what keeps this from turning into a poll. Sorted so key order cannot make
+ *  two identical archives look different. */
+export const valueVersion = (index: Record<string, FitnessIndexEntry>): string =>
+  Object.entries(index)
+    .map(([model, entry]) => `${model}@${entry.at}`)
+    .sort()
+    .join('|')
 
 // ── The band vocabulary ──────────────────────────────────────────────────────
 
@@ -161,6 +233,18 @@ export const BAND_TEXT: Record<FitnessBand, string> = {
   unbound: 'text-ink-dim',
 }
 
+/** Fill colour per band, for the one place a band is drawn as AREA rather than
+ *  as a glyph: the value panel's coverage bar, where each band's width is the
+ *  share of a day it accounts for. Same five tokens as `BAND_TEXT` and beside it
+ *  for the same reason. */
+export const BAND_BG: Record<FitnessBand, string> = {
+  ready: 'bg-success',
+  workable: 'bg-warning',
+  unfit: 'bg-danger',
+  untested: 'bg-line',
+  unbound: 'bg-line',
+}
+
 /** The band for a cell, treating an absent record as `untested` rather than as
  *  anything else. A model nobody has run has no cells at all, and every one of
  *  them must read grey. */
@@ -213,7 +297,12 @@ export const CAPABILITY_WORDS: Record<Capability, { short: string; plain: string
   'instruction-following': { short: 'instr', plain: 'follow an exact instruction' },
 }
 
-export const TAG_TONE: Record<CapabilityState, ChipTone> = { yes: 'success', no: 'danger', unknown: 'neutral' }
+/** ITS OWN COLOUR, because it is its own fact. `supplied` is neither the green
+ *  of "this model does it" nor the red of "it cannot be done here" — the model
+ *  cannot and the deployment can, which is a real and useful third answer and the
+ *  one a tool-supplemented install lives in. Accent rather than a shade of
+ *  either, so it cannot be mistaken for a weaker yes or a softer no. */
+export const TAG_TONE: Record<CapabilityState, ChipTone> = { yes: 'success', no: 'danger', unknown: 'neutral', supplied: 'accent' }
 
 /** THE TAG SENTENCE, and the distinction the whole capability model rests on:
  *  a tag must say whether a fact is KNOWN-TRUE, KNOWN-FALSE or NEVER-MEASURED.
@@ -221,6 +310,13 @@ export const TAG_TONE: Record<CapabilityState, ChipTone> = { yes: 'success', no:
  *  benchmarked, so an unmeasured tag is an invitation to probe, not a warning. */
 export function tagTitle(view: CapabilityView): string {
   const word = CAPABILITY_WORDS[view.cap].plain
+  if (view.state === 'supplied') {
+    // NAME THE SUPPLIER. "Supplied" on its own is a claim an admin cannot check,
+    // and the supplier is the thing that might be switched off tomorrow — at
+    // which point every model leaning on it silently loses the capability.
+    const via = view.via ? `\`${view.via.server}.${view.via.tool}\`` : 'a registered tool'
+    return `This model cannot ${word} itself, but this deployment can: ${via} supplies it. Assignments that need ${word} will work here and would not on an install without that tool.`
+  }
   if (view.state === 'unknown') {
     return view.detail ?? `Nobody has measured whether this model can ${word}. Unknown is not a no — run the probes to find out.`
   }
@@ -277,9 +373,92 @@ export function assignmentNotice(args: {
   }
 }
 
+// ── Case categories ──────────────────────────────────────────────────────────
+
+/** WHAT KIND OF WORK A FIXTURE IS ABOUT — the tab axis on the drill-down.
+ *
+ *  DERIVED FROM THE HARNESS ID, never a hand-kept table, because a hand-kept
+ *  table is a list that silently stops covering the harnesses added after it and
+ *  quietly files them all under "Other". Harness ids are already namespaced for
+ *  exactly this (`muse:draft`, `research-search`, `workbench:heavy`), so the
+ *  first segment IS the family; the map below only gives the families a human
+ *  name, and anything unmapped keeps its own id as its label rather than
+ *  disappearing into a bucket.
+ *
+ *  WHY CATEGORIES AND NOT SLOTS. A slot is what an admin ASSIGNS; a category is
+ *  what a test is ABOUT, and six harnesses with no assignable slot at all
+ *  (work-session, the briefer's two, outreach) are among the most interesting
+ *  things a sweep measures. Grouping the drill-down by slot would file them
+ *  under "unbound" — which is a fact about our assignment model, not about the
+ *  work. This axis also works mid-sweep, where no report exists yet. */
+const CATEGORY_LABELS: Record<string, string> = {
+  briefer: 'Briefing',
+  muse: 'Muse',
+  inbox: 'Inbox',
+  research: 'Research',
+  workbench: 'Workbench',
+  outreach: 'Outreach',
+  'work-session': 'Agents at work',
+  librarian: 'Knowledge',
+  distiller: 'Knowledge',
+  summarizer: 'Knowledge',
+  concluder: 'Knowledge',
+  titler: 'Naming',
+  'blurb-writer': 'Naming',
+  judge: 'Judging',
+  'channel-plan': 'Planning',
+  'plan-doc': 'Planning',
+}
+
+/** The family key of a harness id: everything before the first `:` or `-`,
+ *  except where the whole id is the family (`work-session`, `blurb-writer`).
+ *
+ *  THE ID COMES FROM THE LABEL, not from the family. Four harnesses map to
+ *  "Knowledge" (`distiller`, `summarizer`, `concluder`, `librarian`) and keying
+ *  the tab by family gave four separate tabs all captioned KNOWLEDGE — which is
+ *  not a grouping, it is the same word four times. Two things called the same
+ *  thing are one tab. */
+export function caseCategory(harness: string): { id: string; label: string } {
+  const label = CATEGORY_LABELS[harness] ?? CATEGORY_LABELS[harness.split(/[:-]/)[0] ?? harness] ?? (harness.split(/[:-]/)[0] ?? harness)
+  return { id: label.toLowerCase().replace(/\s+/g, '-'), label }
+}
+
 // ── Formatting ───────────────────────────────────────────────────────────────
 
 export const pct = (n: number): string => `${Math.round(n * 100)}%`
+
+/** A duration at the scale a fixture actually takes: sub-second in ms, seconds
+ *  to one decimal, minutes above that. "12400ms" is a number an admin has to
+ *  convert before they can compare two rows. */
+export function ms(n: number): string {
+  if (n <= 0) return '—'
+  if (n < 1000) return `${Math.round(n)}ms`
+  if (n < 60_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}s`
+  return `${Math.round(n / 60_000)}m`
+}
+
+/** What the Speed column says under the number, and the caveat it carries.
+ *
+ *  THE WIDTH IS PART OF THE MEASUREMENT. At four cases in flight a per-case
+ *  latency includes queueing at the provider, so a p50 from a 4-wide sweep and
+ *  one from a sequential sweep are different measurements with the same name.
+ *  A column that let an admin compare them silently would be the most
+ *  confidently wrong number on the page. */
+export function speedTitle(s: SpeedReading | null): string {
+  if (!s) return 'Not measured — tier 2 did not run on this model.'
+  return [
+    s.tokensPerSecond === null
+      ? 'No completion was long enough to measure a rate.'
+      : `${s.tokensPerSecond} output tokens per second, median over ${s.sample} fixture(s) — the rate the model generates at, which is comparable between models that ran different fixtures.`,
+    `Median ${ms(s.p50)} per fixture, p95 ${ms(s.p95)}.`,
+    s.elapsedMs > 0 ? `The sweep took ${ms(s.elapsedMs)} at ${s.perMinute} fixtures a minute.` : '',
+    s.concurrency > 1
+      ? `Measured with ${s.concurrency} fixtures in flight, so it includes queueing at the provider — only comparable to another row measured at ${s.concurrency}.`
+      : 'Measured one fixture at a time, so this is what a single call costs.',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
 
 /** Dollars at a scale a fitness run actually costs. A run is often cents, and
  *  "$0.00" for a real four-cent spend is the kind of rounding that makes an
@@ -304,6 +483,78 @@ export const TIER_META: Record<TierId, { label: string; blurb: string }> = {
     label: 'Adversarial',
     blurb: 'Safety provocations scored with the production guard rules. Opt-in, and the one tier where a strong adversary model is a requirement.',
   },
+}
+
+// ── Price against performance ────────────────────────────────────────────────
+
+/** A recurring bill, at the scale a fleet actually runs. `usd` rounds to cents
+ *  and floors at "<$0.01", which is right for a one-off run and wrong here: a
+ *  harness costing $0.004 a day is $1.46 a year, and three of those are a line
+ *  item. Sub-cent daily figures therefore keep four decimals. */
+export function usdRate(n: number | null, per: string): string {
+  if (n === null) return 'unpriced'
+  if (n === 0) return `$0/${per}`
+  // Below the precision printed, say so rather than rendering a real spend as
+  // "$0.0000" — the same rule `usd` follows at its own scale, and the one that
+  // keeps a small fleet's figures from all reading as zero.
+  if (n < 0.0001) return `<$0.0001/${per}`
+  if (n < 0.01) return `$${n.toFixed(4)}/${per}`
+  if (n < 1) return `$${n.toFixed(3)}/${per}`
+  return `$${n.toFixed(2)}/${per}`
+}
+
+/** Per-run cost, which is three or four orders of magnitude below a daily one
+ *  and is the number an admin compares across models. Printed in cents so the
+ *  comparison is legible without a microscope. */
+export function centsPerRun(n: number | null): string {
+  if (n === null) return '—'
+  const cents = n * 100
+  if (cents === 0) return '0¢'
+  if (cents < 0.01) return '<0.01¢'
+  return `${cents.toFixed(cents < 1 ? 3 : 2)}¢`
+}
+
+/** Runs per day, rounded to something readable at both ends of the range a
+ *  fleet spans — 0.03/day (the librarian) and 4,000/day (the ticket worker). */
+export function perDay(n: number): string {
+  if (n === 0) return '0'
+  if (n < 1) return n.toFixed(2)
+  if (n < 100) return n.toFixed(1)
+  return Math.round(n).toLocaleString()
+}
+
+/** WHAT THE WORKLOAD IS, in one sentence, because every number on the value
+ *  panel is weighted by it and an admin who mistakes the uniform basis for
+ *  their traffic would draw exactly the wrong conclusion. Pure and exported for
+ *  the same reason `estimateSentence` is: it stands in front of a spending
+ *  decision. */
+export function workloadSentence(w: Workload): string {
+  if (w.basis === 'uniform') {
+    return `No production runs recorded yet, so this weighs every harness equally — one run of each, ${w.harnesses} in all. Once your fleet has run for a few days these become your actual volumes.`
+  }
+  const runs = `${perDay(w.perDay)} harness runs a day across ${w.harnesses} harnesses`
+  const hole =
+    w.unfixturedPerDay > 0
+      ? ` ${perDay(w.unfixturedPerDay)} of them a day run on harnesses with no fixtures, so no test can speak for that share.`
+      : ''
+  return `Weighted by what your fleet actually did over the last ${w.windowDays} days: ${runs}.${hole}`
+}
+
+/** How much of the cost figure to believe. Kept separate from the workload
+ *  sentence because they fail independently: you can have perfect traffic data
+ *  and no measured tokens, or the reverse. */
+export function costCaveat(v: ModelValue, unmeasured: number): string | null {
+  if (v.usdPerDay === null) return 'Nothing on this install prices this model.'
+  const parts: string[] = []
+  if (v.costCoverage < 0.999) {
+    parts.push(`covers ${pct(v.costCoverage)} of your daily runs — the rest has never been measured, so this is a floor`)
+  } else if (unmeasured > 0) {
+    parts.push('a floor: some harnesses carrying volume have never been measured')
+  }
+  if (v.tokenBasis === 'shared') {
+    parts.push('some harnesses are priced on tokens measured from another model, so a wordier model will cost more than shown')
+  }
+  return parts.length ? `${parts[0]!.charAt(0).toUpperCase()}${parts[0]!.slice(1)}${parts[1] ? `; ${parts[1]}` : ''}.` : null
 }
 
 /** The estimate, as one line an admin can decide on. Exported and pure because

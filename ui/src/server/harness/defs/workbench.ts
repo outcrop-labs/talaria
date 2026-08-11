@@ -33,7 +33,7 @@
 // what an admin SPENDS, not in what the job is; running a harder suite against
 // the heavy slot would make the three columns incomparable, which is the one
 // thing a matrix must not be.
-import { defineHarness, type EvalCase, type EvalContext } from '../define'
+import { defineHarness, type EvalCase, type EvalContext, type CheckResult } from '../define'
 import type { ModelRole } from '../../model-roles'
 
 export interface WorkbenchTaskInput {
@@ -294,7 +294,60 @@ const render = (input: WorkbenchTaskInput): Array<{ role: 'system' | 'user'; con
  *
  *  All three fail when nothing was called at all, which is what keeps them out
  *  of the sweep's garbage census. */
-const usedTools = (ctx: EvalContext): string | null => (ctx.calls.length === 0 ? 'called no tool at all — it answered a coding task in prose, which changes nothing' : null)
+/** Every tool this sandbox offers, so the gap check below can tell a model that
+ *  NARRATED a call from one that never made one. */
+const WORKBENCH_TOOLS = ['list_files', 'read_file', 'search', 'write_file', 'run_tests']
+
+/** DID THE RUN ACTUALLY GET A TOOL LOOP, before any assertion about what the
+ *  model did with one.
+ *
+ *  THREE OUTCOMES, and the middle one is the whole point:
+ *
+ *    null    calls reached the sandbox; ask the real question.
+ *    gap     no call reached us, but the reply NAMES a tool we offered — so the
+ *            model tried and the loop did not receive it. That is our defect,
+ *            and it has happened twice: `[tool] write_file({...})` and then
+ *            `(called write_file)` were both written into the assistant's own
+ *            prose, and models reproduced whichever they were shown instead of
+ *            emitting a structured call. 34 replies in one sweep came back
+ *            containing our narration verbatim, and every one was scored as a
+ *            model that "read the repository and never wrote a file".
+ *    string  no calls and no mention of one: it answered a coding task in prose,
+ *            which is a real failure and changes nothing in the repository.
+ *
+ *  The gap branch cannot mask a genuine failure — a model that never intended to
+ *  call a tool does not name one — and it stops us billing a model for a channel
+ *  we did not give it. */
+/** A FOREIGN CALL SYNTAX, which is the same failure as our own narration wearing
+ *  a different coat. gemma emitted `call:file_control:list_files{path: "."}` — its
+ *  own invented format, on turn one, imitating nothing of ours. The loop cannot
+ *  parse it, so the call never happened as far as the sandbox is concerned.
+ *
+ *  That is still OUR gap and not the model's failure: the model tried to use the
+ *  tool channel and this build could not receive it. Detecting it needs only the
+ *  tool NAME plus a bracket nearby — a model discussing `run_tests` in prose does
+ *  not put a brace after it. */
+const NAMED_CALL = (value: string): string[] =>
+  // The tool name, then at most a few closing/whitespace characters, then an
+  // OPENING bracket — which is what every call syntax has and what prose about a
+  // tool does not. It catches gemma's `list_files{path: "."}` and the older
+  // `(called write_file)\n{"path": …}` alike, and leaves "you should run_tests
+  // after fixing this" as the plain failure it is.
+  WORKBENCH_TOOLS.filter((t) => new RegExp(`${t}[\\s)\\]"']{0,4}[({\\[]`).test(value))
+
+const usedTools = (value: string, ctx: EvalContext): CheckResult => {
+  if (ctx.calls.length > 0) return null
+  const foreign = NAMED_CALL(value)
+  if (foreign.length > 0) {
+    return { gap: `the reply calls ${foreign.join(', ')} in a syntax this build does not parse — the call never reached the sandbox, so this run cannot be scored` }
+  }
+  // A BARE MENTION IS NOT AN ATTEMPTED CALL. The first version matched
+  // `value.includes(toolName)`, which turned "you should run_tests after fixing
+  // this" — a model explaining rather than acting, a real failure — into a gap.
+  // A gap branch that launders real failures is worse than no gap branch, so the
+  // syntax check above is the only one: a call has a bracket after it.
+  return 'called no tool at all — it answered a coding task in prose, which changes nothing'
+}
 
 const workspaceOf = (ctx: EvalContext): { failure: string | null } | null => (ctx.world as { failure: string | null } | null)
 
@@ -303,8 +356,8 @@ const fixturesFor = (task: Task): Array<EvalCase<WorkbenchTaskInput, string>> =>
     name: `${task.name} — the suite goes green`,
     band: task.band,
     input: task.input,
-    check: (_value, ctx) => {
-      const noTools = usedTools(ctx)
+    check: (value, ctx) => {
+      const noTools = usedTools(value, ctx)
       if (noTools) return noTools
       if (!ctx.calls.some((c) => c.tool === 'write_file' && c.error === null)) return 'read the repository and never wrote a file, so nothing was fixed'
       const failure = workspaceOf(ctx)?.failure
@@ -315,8 +368,8 @@ const fixturesFor = (task: Task): Array<EvalCase<WorkbenchTaskInput, string>> =>
     name: `${task.name} — reads a file before replacing it`,
     band: task.band,
     input: task.input,
-    check: (_value, ctx) => {
-      const noTools = usedTools(ctx)
+    check: (value, ctx) => {
+      const noTools = usedTools(value, ctx)
       if (noTools) return noTools
       const wrote = ctx.calls.filter((c) => c.tool === 'write_file' && c.error === null)
       if (wrote.length === 0) return 'read the repository and never wrote a file, so nothing was fixed'
@@ -335,10 +388,21 @@ const fixturesFor = (task: Task): Array<EvalCase<WorkbenchTaskInput, string>> =>
     name: `${task.name} — runs the tests before it calls it done`,
     band: task.band,
     input: task.input,
-    check: (_value, ctx) => {
-      const noTools = usedTools(ctx)
+    check: (value, ctx) => {
+      const noTools = usedTools(value, ctx)
       if (noTools) return noTools
       if (!ctx.calls.some((c) => c.tool === 'write_file' && c.error === null)) return 'read the repository and never wrote a file, so nothing was fixed'
+      // A RUN WE CUT SHORT CANNOT BE ASKED ABOUT ITS ORDER. `exhausted` means the
+      // model was still working when the turn budget ran out, so "did it verify
+      // AFTER its last edit" has no answer — the sequence it would have finished
+      // with never happened. Scoring it said the model verified a state it then
+      // changed, which is a description of something that did not occur.
+      //
+      // This is our budget, not its mistake, and it goes in the gap list where
+      // someone can decide whether six turns is enough.
+      if (ctx.exhausted) {
+        return { gap: `the turn budget ran out while the model was still working, so "did it re-run the tests after its last edit" cannot be asked of this run` }
+      }
       if (!ctx.calls.some((c) => c.tool === 'run_tests')) return 'never ran the tests, so it reported work it had no way to verify'
       // Running them BEFORE the last edit and not after is the same failure
       // wearing a green tick: the model verified a state it then changed.
@@ -392,6 +456,18 @@ const workbenchHarness = (role: ModelRole, id: string, label: string, effort: st
     // The file workspace comes from the FIXTURE, because the repository and the
     // oracle that decides whether its tests pass are properties of the task.
     dryRun: {
+      // TEN TURNS, AND THE EVIDENCE IS ON THE RECORD. At six, nine of gemma's
+      // workbench cases came back as OUR gap — "the turn budget ran out while
+      // the model was still working, so 'did it re-run the tests after its last
+      // edit' cannot be asked of this run" — and one of DeepSeek's did. The job
+      // this harness poses is genuinely a lot of turns: list the tree, read the
+      // file, find the defect, edit, run the tests, read the failure, edit
+      // again, run them again. Six was a budget for a shorter job than the
+      // fixtures describe, and the fixtures then asked whether the job was done.
+      //
+      // This is the raise that was reverted once, correctly, for having no
+      // measurement behind it. It has one now.
+      maxTurns: 10,
       workspace: (input) => ({
         files: input.files,
         passes: (files) => TASKS.find((t) => t.input.task === input.task)?.oracle(files) ?? null,

@@ -79,7 +79,17 @@ import { capabilityKey, getCapabilities, recordCapability, type Capability, type
 import type { HarnessDefinition, Message } from '../harness/define'
 import { personaCapabilityKeys } from '../harness/persona'
 import type { GuardConfig } from '../guardrails'
-import { defaultTransport, offersToolDefinitions, runHarness, type HarnessDeps, type ToolCall, type ToolDefinition, type Transport } from '../harness/run'
+import {
+  defaultTransport,
+  gatewayImageTurn,
+  offersToolDefinitions,
+  personaProbeTurn,
+  runHarness,
+  type HarnessDeps,
+  type ToolCall,
+  type ToolDefinition,
+  type Transport,
+} from '../harness/run'
 import { gatewayPulse, routingFor, type GatewayPulse } from '../llm-gateway'
 import { advertisedWindow } from '../model-catalog'
 import { estimateTokens } from '../usage'
@@ -124,6 +134,22 @@ export type ProbeOutcome =
    *  fleet candidate whose tool loop is not ours to drive). Not a failure and
    *  not a fact — `reason` is the sentence the admin reads instead of a cell. */
   | { kind: 'skipped'; reason: string; trials: Trial[] }
+  /** WE ALREADY MEASURED THIS, so no call was made and the standing fact is
+   *  reported instead.
+   *
+   *  DELIBERATELY NOT `skipped`, and the difference is the whole point of the
+   *  kind. A skip means NO FACT EXISTS — the channel could not be opened, and an
+   *  admin reading it should conclude nothing. This means a fact exists, we
+   *  wrote it, and it still stands; the verdict below is that fact, with the
+   *  date it was measured. Folding the two together would make a probed
+   *  capability read as unmeasured the moment we stopped re-paying for it.
+   *
+   *  WHY IT IS SAFE TO REUSE THE ANSWER. A probe fact is a property of an
+   *  `endpoint:model`, `probeKeys` refuses to write when the id is ambiguous,
+   *  and a re-pointed model id is exactly what "Forget recorded capabilities"
+   *  is for. Nothing else about a deployment can change what a past measurement
+   *  established. */
+  | { kind: 'known'; verdict: ProbeVerdict; at: string; trials: Trial[] }
   /** The deployment failed, not the model. Writes nothing, by rule 2. */
   | { kind: 'errored'; reason: string; trials: Trial[] }
 
@@ -306,16 +332,34 @@ export function scoreJson(trials: readonly Trial[], protocol: { requested: boole
     // record" must not become a recorded fact.
     return null
   }
-  if (protocol.dropped) {
-    return {
-      value: false,
-      score: rate,
-      detail: `the endpoint dropped response_format before the call reached the model - replies still parsed ${pct(rate)} of the time, but the JSON constraint is not honored here`,
-    }
+  // THIS FACT IS ABOUT THE MODEL, NOT THE ENDPOINT, and it used to be about
+  // both. A dropped `response_format` returned `value: false` even when every
+  // reply parsed — the detail said so in as many words ("replies still parsed
+  // 100% of the time, but the JSON constraint is not honored here"). One word
+  // therefore carried two unrelated claims: "this model cannot produce JSON"
+  // and "this server does not implement response_format".
+  //
+  // THAT CONFLATION BECAME LOAD-BEARING the moment a JSON harness put `json` in
+  // its floor: a self-hosted llama.cpp or Ollama box whose models emit perfect
+  // JSON would have had all nine structured harnesses declared unfit, for a
+  // property of the SERVER. The deployment half is already tracked where it
+  // belongs — `contractDropped` on the reply, and the gateway's learned-param
+  // ratchet, which is what suppresses the parameter on later calls.
+  //
+  // So the verdict is the parse rate either way, and the drop only changes the
+  // sentence: on a dropped parameter this measured whether the model returns
+  // JSON when ASKED IN PROSE, which is the harder question and the one a floor
+  // should turn on.
+  if (rate < 1) {
+    return { value: false, score: rate, detail: `only ${pct(rate)} of ${trials.length} JSON-mode calls returned a usable object - ${firstFailure(trials)}` }
   }
-  return rate === 1
-    ? { value: true, score: 1, detail: `honored response_format and returned a valid object on all ${trials.length} calls` }
-    : { value: false, score: rate, detail: `only ${pct(rate)} of ${trials.length} JSON-mode calls returned a usable object - ${firstFailure(trials)}` }
+  return protocol.dropped
+    ? {
+        value: true,
+        score: 1,
+        detail: `returned a valid object on all ${trials.length} calls, though this endpoint dropped response_format - the model produces JSON from the prompt alone`,
+      }
+    : { value: true, score: 1, detail: `honored response_format and returned a valid object on all ${trials.length} calls` }
 }
 
 /** `json-strict` — nested arrays plus a 200-character string field, scored as a
@@ -410,13 +454,19 @@ export function scoreSearch(trials: readonly Trial[]): ProbeVerdict | null {
 /** `long-context` — a needle at 50% and 90% of the window actually tested. Both
  *  depths have to land: a model that finds the needle halfway in and loses it at
  *  90% is exactly the model that will drop the last of a long transcript. */
-export function scoreLongContext(trials: readonly Trial[], tested: number): ProbeVerdict | null {
+export function scoreLongContext(trials: readonly Trial[], tested: number, assumed = false): ProbeVerdict | null {
   const rate = rateOf(trials)
   if (rate === null) return null
   const window = tested.toLocaleString('en-US')
+  // SAY WHEN THE WINDOW WAS ASSUMED. The measurement is exactly as real either
+  // way — a needle either came back or it did not — but "we tested 32,000
+  // tokens because that is our ceiling" and "we tested 32,000 tokens because
+  // that is what this model advertises" support different conclusions, and an
+  // admin reading a green tag deserves to know which they have.
+  const how = assumed ? `${window}-token prompt (this model advertises no window, so the probe used its own ceiling)` : `${window}-token prompt`
   return rate === 1
-    ? { value: true, score: 1, detail: `found the needle at 50% and 90% depth in a ${window}-token prompt` }
-    : { value: false, score: rate, detail: `found the needle in ${pct(rate)} of a ${window}-token prompt - ${firstFailure(trials)}` }
+    ? { value: true, score: 1, detail: `found the needle at 50% and 90% depth in a ${how}` }
+    : { value: false, score: rate, detail: `found the needle in ${pct(rate)} of a ${how} - ${firstFailure(trials)}` }
 }
 
 /** `code` — graded by RUNNING the assertions, never by another model's opinion. */
@@ -625,6 +675,11 @@ export const MIN_LONG_CONTEXT_TOKENS = 8_000
  *  bill. */
 export const DEFAULT_MAX_CONTEXT_TOKENS = 32_000
 
+/** THE CLOCK ONE PROBE RACES. Generous, because `long-context` legitimately
+ *  sends two ~25k-token prompts and a reasoning model is slow per call — this is
+ *  a backstop against a hung transport, not a performance budget. */
+export const PROBE_TIMEOUT_MS = 180_000
+
 // ── Injected edges ───────────────────────────────────────────────────────────
 
 /** One probe call. `ask` is the plain text/JSON turn every probe but two takes;
@@ -709,6 +764,17 @@ export interface ProbeDeps {
    *  failed fetch, a 403, a timeout) makes the trial inconclusive, never failed. */
   fetchText: (url: string) => Promise<string | null>
   record: (key: CapabilityKey, cap: Capability, fact: CapabilityFact) => Promise<void>
+  /** THE FACT WE ALREADY MEASURED for this capability, or null.
+   *
+   *  Only a fact whose `source` is `probe` counts. A `declared`, `catalog` or
+   *  `learned` fact is a CLAIM or an inference, and the whole job of tier 1 is to
+   *  verify those — treating one as "already measured" would mean a model
+   *  catalog's marketing copy could permanently prevent us from checking it.
+   *
+   *  Null for an ambiguous or unroutable id, because nothing was ever written
+   *  under a key for it (`runProbes`'s ambiguity rule), so there is nothing to
+   *  reuse and every probe runs. */
+  measured: (cap: Capability) => Promise<CapabilityFact | null>
   now: () => number
   maxContextTokens: number
   /** The needle. An argument so a test is not at the mercy of a random value. */
@@ -741,6 +807,13 @@ function probeDef<O>(
     render: () => messages,
     output,
     onFailure: 'null',
+    // THE PROBE'S OWN PATIENCE, ON THE SOCKET. `runProbes` races every probe
+    // against `PROBE_TIMEOUT_MS` and moves on; without this the abandoned HTTP
+    // request kept running to the gateway's ten-minute default, holding a
+    // connection nobody was waiting for. Eight candidate sweeps doing that at
+    // once is how a healthy provider starts queueing and every later call blows
+    // its budget too — see `UpstreamCall.signal`.
+    holdMs: PROBE_TIMEOUT_MS,
     // No rule in the registry is meaningful about a probe reply, and a probe
     // must not add rows to the guard statistics the fitness page reads as a
     // per-model confabulation rate.
@@ -771,6 +844,59 @@ function probeRunDeps(transport: Transport): Partial<HarnessDeps> {
     guardText: async (): Promise<never[]> => [],
     recordFindings: async (): Promise<void> => {},
     recordRun: async (): Promise<void> => {},
+  }
+}
+
+/** THE IMAGE CHANNEL, OPENED — without widening `Message`.
+ *
+ *  The argument for leaving `vision` unmeasured was sound about the thing it was
+ *  arguing against: turning `Message.content` into a content-parts union is a
+ *  tree-wide change (26 harness renders, both token estimates, the grounding
+ *  text the guard pass is built from), and a union only some transports honored
+ *  would meter `[object Object]` and ground the guard against nothing.
+ *
+ *  BUT MEASURING A MODEL DOES NOT REQUIRE THE HARNESS TREE TO CARRY IMAGES. This
+ *  builds the multimodal body itself and hands it to the gateway plumbing
+ *  `completeViaGateway` uses — `buildUpstream` for the endpoint's key, defaults
+ *  and learned-parameter stripping, `fetchUpstream` for the call. No shared type
+ *  changes, so there is no half-widened union to go wrong.
+ *
+ *  WHAT THE TAG THEN MEANS, precisely: this model reads images. It does NOT mean
+ *  a harness can send one yet — that still needs the widening above. A capability
+ *  is a fact about the model, and refusing to record one Talaria cannot yet spend
+ *  is how `vision` stayed blank on models that have had it for years.
+ *
+ *  GATEWAY-SERVED CANDIDATES ONLY. A fleet persona takes a rendered turn through
+ *  its own container and has no raw-body seam, exactly as with the tool probes —
+ *  so it skips there, and a skip is never a `false`. */
+/** The image ask, delegated to the transport layer.
+ *
+ *  BOTH BRANCHES LIVE IN `transport.ts` (`gatewayImageTurn`, `personaProbeTurn`)
+ *  because both build a raw upstream body, and raw-body construction is the
+ *  transport's job — `gatewayToolTurn` is the precedent right beside them. Doing
+ *  it here tripped `hand-written-harness`, and the rule was right: a model call
+ *  assembled outside the transport layer is exactly the thing that grew six JSON
+ *  extractors and three unguarded paths the last time.
+ *
+ *  A PERSONA HAS A SEAM AFTER ALL, and the old skip was written before anyone
+ *  looked for it: `proxyChat` forwards its payload to the agent's own
+ *  `/v1/chat/completions`, and `ChatPayload.content` has always accepted OpenAI
+ *  content parts "passed through untouched". What was missing was never the
+ *  fleet path — it was `Message.content` being a string, so a `TransportRequest`
+ *  had no way to say "attach this image". */
+export function runnerImageAsk(model: string): (spec: ImageAskSpec) => Promise<Attempt> {
+  return async (spec) => {
+    const blank: Attempt = { raw: '', transportError: null, jsonRequested: false, contractDropped: false, contractHeld: false }
+    try {
+      const caller = `fitness:probe:${spec.id}`
+      const persona = !(await offersToolDefinitions(model).catch(() => false))
+      const text = persona
+        ? (await personaProbeTurn(model, spec.messages, { images: spec.images, caller })).text
+        : await gatewayImageTurn(model, spec.messages, spec.images, caller, { timeoutMs: PROBE_TIMEOUT_MS })
+      return { ...blank, raw: text }
+    } catch (err) {
+      return { ...blank, transportError: messageOf(err) }
+    }
   }
 }
 
@@ -921,7 +1047,9 @@ export function defaultDeps(model: string, over: Partial<ProbeDeps> = {}): Probe
     // Asked of the TRANSPORT RULE rather than answered here, so this cannot
     // disagree with the transport that would refuse the call.
     offersToolDefinitions: () => offersToolDefinitions(model),
-    askWithImages: null,
+    // Gateway-served candidates only — a persona has no raw-body seam, the same
+    // wall the tool probes hit.
+    askWithImages: runnerImageAsk(model),
     contextWindow: () => smallestWindow(model),
     advertises: async (cap) => {
       // A `declared` fact IS the advertisement — capability.ts's third source is
@@ -937,6 +1065,17 @@ export function defaultDeps(model: string, over: Partial<ProbeDeps> = {}): Probe
     },
     fetchText: fetchCitedPage,
     record: recordCapability,
+    measured: async (cap) => {
+      // ONE key or none. `runProbes` refuses to write facts for a pooled id, so
+      // a pooled id has none to reuse and every probe runs — which is the right
+      // answer twice over: nothing was recorded, and what one pool member can do
+      // is not what another can.
+      const keys = await probeKeys(model)
+      if (keys.length !== 1) return null
+      const facts = await getCapabilities(keys[0]!).catch(() => ({}) as Partial<Record<Capability, CapabilityFact>>)
+      const fact = facts[cap]
+      return fact?.source === 'probe' ? fact : null
+    },
     now: () => Date.now(),
     maxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
     needleToken: 'GRANITE-FOX-7731',
@@ -982,12 +1121,49 @@ const TOOL_SELECT_TRIALS: ReadonlyArray<{ name: string; messages: Message[]; exp
 /** A 1x1 solid red PNG, inline. A `data:` URL rather than a hosted image
  *  because a probe that depended on a host being up would fail as a network
  *  problem and be scored as a model that cannot see. */
+/** An upstream saying the MODEL takes no images, as opposed to an upstream that
+ *  is down. OpenRouter answers a text-only model with `404 No endpoints found
+ *  that support image input`; that is the deployment telling us plainly what the
+ *  model can be sent, not a failure to reach it.
+ *
+ *  Deliberately narrow. Anything this does not recognize stays an `errored`,
+ *  which writes nothing — a wrong `vision: false` never expires. */
+export const noImageInput = (err: string): boolean =>
+  /no endpoints found that support image input|does not support image|image input is not supported|vision is not supported/i.test(err)
+
+/** THREE OPAQUE 128x128 SOLID FIELDS, and the previous fixture is why the size
+ *  and the opacity are both stated.
+ *
+ *  It was a SINGLE PIXEL at RGBA(255, 0, 0, 127) - 1x1, and half transparent.
+ *  Nothing can be concluded from it: a one-pixel image carries less than one
+ *  patch of any vision encoder, and a half-alpha red renders pink on a white
+ *  matte and maroon on a black one, so the "right" answer depended on whichever
+ *  background the provider happened to composite against. claude-haiku answered
+ *  BLUE and would have been recorded `vision: false` - a false negative on a
+ *  model that has read images for years, written into a record that does not
+ *  expire. That is exactly the wrong fact rule 3 of this file exists to prevent,
+ *  arriving from the fixture rather than from the scorer.
+ *
+ *  Three colours rather than one because a single trial cannot separate "reads
+ *  images" from "guessed, and there was only one thing to guess". */
 const VISION_TRIALS: ReadonlyArray<{ name: string; messages: Message[]; image: string; expect: string }> = [
   {
     name: 'solid red',
     messages: [TERSE, usr('What single color fills this image? Reply with one word: RED, GREEN or BLUE.')],
-    image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAAAyElEQVR42u3RQREAAAjDsCmZf1GIQQY8clcFTabVYbEAAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAAcAEAAAEAIAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAAAQAAAC8KEFIPUEG5PrRbsAAAAASUVORK5CYII=',
     expect: 'RED',
+  },
+  {
+    name: 'solid green',
+    messages: [TERSE, usr('What single color fills this image? Reply with one word: RED, GREEN or BLUE.')],
+    image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAAAyElEQVR42u3RQQ0AAAjEsFOCEhSjEhnwaDIFa2pah8UCAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAQAAwAUAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIwIcW6UkD0KHeGfUAAAAASUVORK5CYII=',
+    expect: 'GREEN',
+  },
+  {
+    name: 'solid blue',
+    messages: [TERSE, usr('What single color fills this image? Reply with one word: RED, GREEN or BLUE.')],
+    image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAAAyElEQVR42u3RQQ0AAAjEsJODEvwHRciAR5MpWFM9OiwWAAAgAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAC4AACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAAAgBAAD60hHcEsZKvPusAAAAASUVORK5CYII=',
+    expect: 'BLUE',
   },
 ]
 
@@ -1160,9 +1336,24 @@ export const PROBES: readonly ProbeDefinition[] = [
     promptTokens: DEFAULT_MAX_CONTEXT_TOKENS,
     completionTokens: 40,
     run: async (deps) => {
+      // A WINDOW NOBODY ADVERTISES IS NOT A REASON NOT TO LOOK.
+      //
+      // This used to skip outright, and on the Anthropic endpoint it skipped
+      // every time: Anthropic's /v1/models returns an id and a display name and
+      // nothing else, so `advertisedWindow` is null for every Claude model. The
+      // result was a permanent "nothing advertises a context window" on models
+      // with some of the largest windows in the industry — a gap in the capability
+      // matrix caused entirely by a provider's terse catalog.
+      //
+      // Nothing here is allowed to know Claude's window (see the note on
+      // provider lists: catalogs are fetched, never hardcoded), so the honest
+      // move is to MEASURE instead of guess. Absent an advertisement the probe
+      // tests its own default ceiling, and the verdict says the window was
+      // assumed. A model that cannot hold it fails the needle, or the upstream
+      // rejects the request and that is recorded as an error — both are findings.
+      // Skipping produced neither.
       const advertised = await deps.contextWindow().catch(() => null)
-      if (!advertised) return skipped('nothing advertises a context window for this model')
-      const tested = Math.min(advertised, deps.maxContextTokens)
+      const tested = advertised ? Math.min(advertised, deps.maxContextTokens) : deps.maxContextTokens
       if (tested < MIN_LONG_CONTEXT_TOKENS) {
         return skipped(`the tested window would be ${tested.toLocaleString('en-US')} tokens, below the ${MIN_LONG_CONTEXT_TOKENS.toLocaleString('en-US')} this probe considers long`)
       }
@@ -1182,7 +1373,7 @@ export const PROBES: readonly ProbeDefinition[] = [
       }
       const down = transportFailure(attempts)
       if (down) return errored(down, trials)
-      return settle(scoreLongContext(trials, budget), trials, 'no long-context call completed')
+      return settle(scoreLongContext(trials, budget, advertised === null), trials, 'no long-context call completed')
     },
   },
   {
@@ -1215,7 +1406,14 @@ export const PROBES: readonly ProbeDefinition[] = [
     promptTokens: 400,
     completionTokens: 40,
     run: async (deps) => {
-      if (!(await deps.advertises('vision').catch(() => false))) return skipped('this endpoint does not advertise vision')
+      // THE STRUCTURAL BLOCKER IS CHECKED FIRST, and the catalog gate is gone.
+      //
+      // "This endpoint does not advertise vision" was the reason shown for every
+      // Claude model — which read as a fact about Claude and is not one; it is a
+      // fact about a catalog that publishes no modalities. Worse, it hid the
+      // REAL blocker behind it, so the one thing an admin could act on was
+      // invisible. A catalog that does advertise vision is a reason to believe
+      // the probe will pass, never a precondition for running it.
       if (!deps.askWithImages) {
         return skipped(
           'Talaria cannot put image parts in a harness turn: Message.content is a string across the whole tree, and widening it ' +
@@ -1226,6 +1424,16 @@ export const PROBES: readonly ProbeDefinition[] = [
       const trials: Trial[] = []
       for (const t of VISION_TRIALS) {
         const a = await deps.askWithImages({ id: `vision:${t.name}`, messages: t.messages, images: [t.image] })
+        // A REFUSAL OF THE IMAGE ITSELF IS AN ANSWER. OpenRouter replies to a
+        // text-only model with `404 No endpoints found that support image
+        // input` — which is not a broken deployment, it is the deployment
+        // telling us plainly that this model cannot be sent an image. Rule 2
+        // sends errors to `errored` (writes nothing) because they are facts
+        // about the gateway; this one is a fact about the model on this
+        // endpoint, which is exactly what a capability key addresses.
+        if (a.transportError && noImageInput(a.transportError)) {
+          return settle({ value: false, score: 0, detail: `this endpoint serves no provider that accepts image input for this model` }, trials, '')
+        }
         if (a.transportError) return errored(a.transportError, trials)
         const ok = a.raw.trim().toUpperCase().includes(t.expect)
         trials.push({ name: t.name, ok, note: ok ? 'read correctly' : `answered ${JSON.stringify(a.raw.trim().slice(0, 60))}`, raw: bounded(a.raw) })
@@ -1323,6 +1531,9 @@ export interface ProbeEstimateRow {
   calls: number
   promptTokens: number
   completionTokens: number
+  /** Zero calls because we ALREADY MEASURED IT, not because it cannot run. The
+   *  two are both free and mean opposite things to an admin. */
+  known: boolean
 }
 
 export interface ProbeEstimate {
@@ -1334,11 +1545,14 @@ export interface ProbeEstimate {
   /** Null when nothing prices this model — the UI shows tokens and call count,
    *  which are the numbers that do not depend on a catalog being reachable. */
   usd: number | null
+  /** Probes this run will REUSE rather than re-measure. Reported so the price
+   *  line can say why a probes tier costs less than the last one did. */
+  known: number
 }
 
 /** What a run will cost BEFORE it starts. Returned as data — nothing here
  *  prints, and the admin UI is what turns it into a sentence. */
-export async function estimateProbes(model: string, opts: { ids?: ProbeId[]; deps?: Partial<ProbeDeps> } = {}): Promise<ProbeEstimate> {
+export async function estimateProbes(model: string, opts: { ids?: ProbeId[]; deps?: Partial<ProbeDeps>; reprobe?: boolean } = {}): Promise<ProbeEstimate> {
   const deps = defaultDeps(model, opts.deps)
   const chosen = PROBES.filter((p) => !opts.ids || opts.ids.includes(p.id))
   const window = await deps.contextWindow().catch(() => null)
@@ -1349,28 +1563,32 @@ export async function estimateProbes(model: string, opts: { ids?: ProbeId[]; dep
   // cannot claim a probe will happen that `runProbes` then skips — and, now that
   // the tool probes are armed, cannot claim they will skip when they will
   // actually make five calls.
-  const advertisesVision = await deps.advertises('vision').catch(() => false)
   const offersTools = await deps.offersToolDefinitions().catch(() => false)
   const willSkip = async (id: ProbeId): Promise<boolean> => {
     // THE SAME EDGE THE PROBE ASKS, not a copy of its reasoning: the tool probes
     // skip on a fleet persona and run on a gateway model, and this is billed off
     // that answer rather than off a guess about the deployment.
     if (id === 'tools' || id === 'tool-select') return !offersTools
-    if (id === 'vision') return deps.askWithImages === null || !advertisesVision
-    // Sized from the model's own window rather than from a fixture, so a window
-    // nothing advertises means the probe never runs.
-    if (id === 'long-context') return !window || Math.min(window, deps.maxContextTokens) < MIN_LONG_CONTEXT_TOKENS
+    if (id === 'vision') return deps.askWithImages === null
+    // Sized from the model's own window when one is advertised, and from the
+    // probe's own ceiling when none is — it runs either way now, so the only
+    // skip left is a window too small to call long.
+    if (id === 'long-context') return Math.min(window ?? deps.maxContextTokens, deps.maxContextTokens) < MIN_LONG_CONTEXT_TOKENS
     return false
   }
   const rows: ProbeEstimateRow[] = []
   for (const p of chosen) {
-    const skip = await willSkip(p.id)
+    // ALREADY MEASURED COSTS NOTHING EITHER, and it is the commonest reason a
+    // probes tier is cheap: a model tested last month re-tested this month pays
+    // for the harnesses and nothing else.
+    const known = !opts.reprobe && (await deps.measured(p.id).catch(() => null)) !== null
+    const skip = known || (await willSkip(p.id))
     // The one probe whose prompt is not a fixture: it is sized from the model's
     // own window, so estimating it from the fixture would understate the run by
     // whatever the window happens to be.
     const promptTokens =
-      p.id === 'long-context' ? (window ? Math.floor(Math.min(window, deps.maxContextTokens) * 0.8) : 0) : p.promptTokens
-    rows.push({ id: p.id, calls: skip ? 0 : p.calls, promptTokens, completionTokens: p.completionTokens })
+      p.id === 'long-context' ? Math.floor(Math.min(window ?? deps.maxContextTokens, deps.maxContextTokens) * 0.8) : p.promptTokens
+    rows.push({ id: p.id, calls: skip ? 0 : p.calls, promptTokens, completionTokens: p.completionTokens, known })
   }
   const price = await deps.price().catch(() => null)
   const promptTokens = rows.reduce((n, r) => n + r.calls * r.promptTokens, 0)
@@ -1382,6 +1600,7 @@ export async function estimateProbes(model: string, opts: { ids?: ProbeId[]; dep
     promptTokens,
     completionTokens,
     usd: price ? (promptTokens * price.in + completionTokens * price.out) / 1e6 : null,
+    known: rows.filter((r) => r.known).length,
   }
 }
 
@@ -1433,18 +1652,54 @@ export interface ProbeReport {
  *  are still returned for a human to read — but nothing is recorded, and the
  *  report names the keys so the admin can re-run against the endpoint-qualified
  *  ids ("<endpoint>/<model>"), each of which resolves to exactly one. */
-export async function runProbes(model: string, opts: { ids?: ProbeId[]; deps?: Partial<ProbeDeps> } = {}): Promise<ProbeReport> {
+export async function runProbes(
+  model: string,
+  /** `timeoutMs` overrides the wall clock — a test drives it at milliseconds. */
+  /** `reprobe` re-measures capabilities we already have a probe fact for. Off
+   *  by default: a probe fact is a property of an `endpoint:model` and does not
+   *  go stale on its own, so paying for it again on every sweep is spend with no
+   *  new information behind it. */
+  opts: { ids?: ProbeId[]; deps?: Partial<ProbeDeps>; timeoutMs?: number; reprobe?: boolean } = {},
+): Promise<ProbeReport> {
   const deps = defaultDeps(model, opts.deps)
   const keys = await probeKeys(model)
   const chosen = PROBES.filter((p) => !opts.ids || opts.ids.includes(p.id))
 
   const results: ProbeResult[] = []
   for (const probe of chosen) {
+    // ALREADY MEASURED — report the standing fact and make no call. This is the
+    // single biggest saving available on a re-test: nine probes on a model
+    // tested before is nine calls buying an answer we already wrote down.
+    //
+    // It is reported as `known` rather than omitted, because a capability
+    // missing from the report reads as unmeasured, and the whole point is that
+    // it is not.
+    const had = opts.reprobe ? null : await deps.measured(probe.id).catch(() => null)
+    if (had) {
+      results.push({
+        id: probe.id,
+        label: probe.label,
+        outcome: { kind: 'known', at: had.at, trials: [], verdict: { value: had.value, score: had.score ?? (had.value ? 1 : 0), detail: had.detail ?? 'measured by an earlier run' } },
+      })
+      continue
+    }
     // A probe that THROWS is a probe that errored, which by rule 2 writes
     // nothing. Author code meeting model output has the same standing here as it
     // does in `runHarness`: a throw is a failed measurement, never an exception
     // that escapes the suite and voids the eight probes that already ran.
-    const outcome = await probe.run(deps).catch((err: unknown) => errored(messageOf(err)))
+    // A WALL CLOCK, because tier 2 has one and tier 1 did not. A provider that
+    // accepts the connection and goes away left `runProbes` awaiting a promise
+    // that never settles — holding a run slot forever, unreachable by Stop
+    // (which is only honored between tiers). With eight candidates able to run
+    // at once that is eight slots a few hung calls can take permanently.
+    //
+    // A timeout is an ERROR, never a `false`: nothing about the model was
+    // measured, so by rule 2 it writes nothing.
+    const budget = opts.timeoutMs ?? PROBE_TIMEOUT_MS
+    const outcome = await Promise.race([
+      probe.run(deps).catch((err: unknown) => errored(messageOf(err))),
+      new Promise<ProbeOutcome>((resolve) => setTimeout(() => resolve(errored(`the probe did not finish inside ${budget}ms`)), budget)),
+    ])
     results.push({ id: probe.id, label: probe.label, outcome })
   }
 

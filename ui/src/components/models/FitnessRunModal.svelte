@@ -9,7 +9,8 @@
   import { getJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import CapabilityTags from './CapabilityTags.svelte'
-  import { estimateSentence, TIER_META, usd, type ModelRow, type RunEstimate, type TierId } from './fitness'
+  import Segmented from '@/components/ui/Segmented.svelte'
+  import { DEFAULT_CONCURRENCY, estimateSentence, TIER_META, usd, type ModelRow, type RunEstimate, type TierId } from './fitness'
 
   // START A FITNESS RUN. A run spends real money on someone else's inference
   // bill, so this dialog IS the confirmation step (UI-CONVENTIONS: explicit
@@ -32,20 +33,32 @@
 
   let tiers = $state<TierId[]>(['probes', 'evals'])
   let adversary = $state('')
+  // OFF BY DEFAULT, and that is the change: a probe fact is a property of an
+  // `endpoint:model` and does not go stale on its own, so re-buying nine calls
+  // on every sweep of a model tested last month was spend with no new
+  // information behind it. Ticked, it re-measures — the softer twin of "Forget
+  // recorded capabilities", which throws the facts away instead.
+  let reprobe = $state(false)
+  // HOW MANY FIXTURES RUN AT ONCE. A 247-fixture sweep one at a time is most of
+  // an hour; four wide is minutes. It drops itself if the provider pushes back
+  // (see `DEFAULT_CONCURRENCY`), so this is a ceiling rather than a promise.
+  let concurrency = $state(DEFAULT_CONCURRENCY)
   let starting = $state(false)
   let failure = $state<string | null>(null)
 
   const wantsAdversarial = $derived(tiers.includes('adversarial'))
+  const wantsProbes = $derived(tiers.includes('probes'))
   const tierParam = $derived([...tiers].sort().join(','))
   const adversaryParam = $derived(wantsAdversarial ? adversary : '')
 
   const estimateQuery = createQuery(() => ({
-    queryKey: ['model-fitness-estimate', model, tierParam, adversaryParam],
+    queryKey: ['model-fitness-estimate', model, tierParam, adversaryParam, reprobe],
     enabled: open && tiers.length > 0 && model !== '',
     queryFn: (): Promise<{ estimate: RunEstimate; adversaryRequirement: { capabilities: string[]; note: string } }> =>
       getJson(
         `/api/admin/model-fitness?view=estimate&model=${encodeURIComponent(model)}&tiers=${tierParam}` +
-          (adversaryParam ? `&adversary=${encodeURIComponent(adversaryParam)}` : ''),
+          (adversaryParam ? `&adversary=${encodeURIComponent(adversaryParam)}` : '') +
+          (reprobe ? '&reprobe=1' : ''),
       ),
   }))
   const estimate = $derived(estimateQuery.data?.estimate ?? null)
@@ -68,6 +81,8 @@
           model,
           tiers,
           adversaryModel: wantsAdversarial && adversary ? adversary : null,
+          reprobe,
+          concurrency,
         }),
       })
       if (!res.ok) {
@@ -112,10 +127,57 @@
               label={meta.label}
             />
             <p class="ml-6 max-w-prose font-sans text-xs text-muted">{meta.blurb}</p>
+            <!-- Sub-option of the tier it modifies rather than a separate
+                 section: it is meaningless without tier 1 ticked, and a control
+                 that can be set while doing nothing is a control that misleads. -->
+            {#if id === 'probes' && wantsProbes}
+              <div class="ml-6 mt-1.5" transition:slide={{ duration: 150 }}>
+                <Checkbox
+                  class="gap-2 text-xs text-muted"
+                  checked={reprobe}
+                  onChange={() => (reprobe = !reprobe)}
+                  label="Re-measure capabilities already probed"
+                />
+                <p class="ml-6 max-w-prose font-sans text-xs text-ink-dim">
+                  {#if reprobe}
+                    Every probe runs again and overwrites what we recorded. Use it when this model id has been re-pointed at different weights.
+                  {:else if (estimate?.tiers.find((t) => t.tier === 'probes')?.calls ?? 0) === 0 && estimateQuery.data}
+                    Every capability was already measured on this endpoint, so tier 1 will make no calls at all.
+                  {:else}
+                    Capabilities an earlier run already established are reused, not re-bought — a probe fact belongs to the endpoint serving this
+                    model and does not go stale on its own.
+                  {/if}
+                </p>
+              </div>
+            {/if}
           </div>
         {/each}
       </div>
     </div>
+
+    {#if tiers.includes('evals')}
+      <div transition:slide={{ duration: 150 }}>
+        <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Fixtures at once</div>
+        <Segmented
+          options={[
+            { id: '1', label: '1', title: 'Strictly sequential. Right for a self-hosted model behind one GPU, and the only setting where the latency figures mean "what one call costs".' },
+            { id: '2', label: '2', title: 'Gentle. A good first try against a small self-hosted deployment.' },
+            { id: '4', label: '4', title: 'The default. Unremarkable against a hosted gateway and roughly three times faster than sequential.' },
+            { id: '8', label: '8', title: 'For a hosted gateway you know tolerates it. Remember this multiplies with the number of candidates you test at once.' },
+          ]}
+          value={String(concurrency)}
+          onChange={(id) => (concurrency = Number(id))}
+        />
+        <p class="mt-1.5 max-w-prose font-sans text-xs text-muted">
+          {#if concurrency === 1}
+            One at a time. Slow, and the only setting where p50 latency means what a single call costs.
+          {:else}
+            The sweep halves this by itself if the provider answers with rate limits, and the report says it did — a 429 is a fact about your
+            deployment, never about the model. Latency is reported alongside the width it was measured at.
+          {/if}
+        </p>
+      </div>
+    {/if}
 
     {#if wantsAdversarial}
       <div transition:slide={{ duration: 150 }}>

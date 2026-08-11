@@ -23,6 +23,7 @@ ok "docker, compose, node $(node -v)"
 
 PG_PORT="${TALARIA_PG_PORT:-5544}"
 REDIS_PORT="${TALARIA_REDIS_PORT:-6399}"
+SEARCH_PORT="${TALARIA_SEARCH_PORT:-8888}"
 
 say "App secrets + config (ui/.env)"
 if [ -f ui/.env ]; then
@@ -62,6 +63,16 @@ else
 # Durable state
 DATABASE_URL=postgres://talaria:talaria@127.0.0.1:${PG_PORT}/talaria
 REDIS_URL=redis://127.0.0.1:${REDIS_PORT}
+
+# Live web search. Talaria runs its own SearXNG (docker/dev-compose.yml) so an
+# agent on a model with no native browsing can still answer a question about the
+# world — no API key, no per-query bill, no query leaving this machine. Point it
+# at an instance you already run to use that one instead.
+SEARXNG_URL=http://127.0.0.1:${SEARCH_PORT}
+# Signs SearXNG's own preference cookies. Rendered into
+# docker/searxng/settings.local.yml by scripts/dev.sh — SearXNG reads its secret
+# from that file rather than the environment.
+SEARXNG_SECRET=$(rand 32)
 
 # Session signing (safe to rotate — only invalidates live logins).
 AUTH_SECRET=$(rand 32)
@@ -123,7 +134,7 @@ else
     docker network create talaria >/dev/null && ok "network talaria"
   }
   if docker compose -f docker/dev-compose.yml pull -q; then
-    ok "infra images ready (postgres, redis, qdrant, embeddings, minio)"
+    ok "infra images ready (postgres, redis, qdrant, embeddings, minio, searxng)"
   else
     warn "image pull incomplete — dev.sh will retry; see errors above"
   fi

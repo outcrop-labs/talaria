@@ -32,6 +32,26 @@ export interface WorkSessionInput {
   prompt: string
 }
 
+/** THE STATUS-LINE CONVENTION, STATED VERBATIM AS PRODUCTION STATES IT.
+ *
+ *  `work-dispatch.ts` puts this sentence in the DISPATCH BRIEF — turn one — and
+ *  every later turn in that conversation inherits it. Its continuation prompts
+ *  then say only "End with your status line", because by then the model has been
+ *  told what one is.
+ *
+ *  A FIXTURE IS A STANDALONE CONVERSATION, and that is what broke. The
+ *  continuation fixtures below carried "End with your status line" alone, so the
+ *  benchmark asked for a convention it had never explained and then failed
+ *  models for not emitting a literal DONE. Both models swept failed it, which is
+ *  the signature of our gap rather than theirs — `runWorkSession` tests
+ *  `/\b(DONE|BLOCKED)\b/i` against the last 200 characters, and a model that was
+ *  never told the token cannot produce it.
+ *
+ *  So every fixture carries what the model HAS IN CONTEXT at that point in
+ *  production, which includes this. One constant, shared, so the fixture and the
+ *  brief cannot drift into asking for two different things. */
+const STATUS_LINE = "End each reply with a short status line: what you just did and what you'll do next (or DONE / BLOCKED)."
+
 /** Fixture prompts MIRROR the three shapes work-dispatch.ts sends (dispatch,
  *  continuation, capability-gap) rather than importing them: the production
  *  prompt is assembled from live board metadata, and a fixture that had to boot
@@ -48,21 +68,21 @@ const DISPATCH_FIXTURE = [
   '2. comment a one-line acknowledgment, and triage_ticket to status "in_progress" while you work.',
   '3. Do the work in as many steps as it takes — iterate with your tools and (if you have one) your workbench harness: run it, read its structured result, respond to it, verify with tests, repeat.',
   '4. report_outcome when genuinely finished — a human signs off from review. If blocked, set status "blocked" and comment why. Either of those ends the session.',
-  'End each reply with a short status line: what you just did and what you\'ll do next (or DONE / BLOCKED).',
+  STATUS_LINE,
 ].join('\n')
 
 const FINISHED_FIXTURE = [
   '[Work session — turn 4/12] You\'re mid-work on this ticket (status: "in_progress"). Continue like a developer: next step, run it, read the result, adjust.',
   'You have already made the fix, the unit test you added covers the retry path, and the full suite passes with no other change.',
   'There is nothing further to do on this ticket. Verify before you finish, then report_outcome.',
-  'End with your status line.',
+  STATUS_LINE,
 ].join('\n')
 
 const GAP_FIXTURE = [
   '[Work session — turn 2/12] You\'re mid-work on this ticket (status: "in_progress").',
   'The ticket asks you to rotate the production Stripe key. You have no credentials tool and no access to the billing account, and nobody has described this org\'s rotation process to you.',
   'Be honest about capability: if you genuinely can\'t do this properly (a tool or access you\'re missing, an org-specific process you\'d be guessing at), don\'t improvise — report_gap once with what a flow would need, then block. Never report a gap for work you can simply do.',
-  'End with your status line.',
+  STATUS_LINE,
 ].join('\n')
 
 /** A ticket a person parked. The agent's own comment says why, so nothing new
@@ -72,7 +92,7 @@ const BLOCKED_FIXTURE = [
   '[Work session — turn 2/12] You\'re mid-work on ticket t-41 "Ledger migration" (status: "blocked").',
   'Your own last comment says it is waiting on the vendor key, and nothing has changed since.',
   'Do not manufacture progress. If it is still blocked, say so and end the turn.',
-  'End with your status line.',
+  STATUS_LINE,
 ].join('\n')
 
 /** Small, entirely doable work, with the gap escape hatch sitting right there.
@@ -83,7 +103,7 @@ const EASY_WORK_FIXTURE = [
   '[Work session — turn 2/12] You\'re mid-work on ticket PLAT-118 (status: "in_progress").',
   'All that is left is to add the label "billing-retry" to the ticket and note in a comment that the fix is ready for review.',
   'You have every tool you need for this. Do it.',
-  'End with your status line.',
+  STATUS_LINE,
 ].join('\n')
 
 /** THE ORDERING TRAP. The prompt asks for an acknowledgment on a ticket the
@@ -98,11 +118,16 @@ const CONTEXT_FIRST_FIXTURE = [
   'Acknowledge on the ticket, move it to in_progress, and end with your status line.',
 ].join('\n')
 
-/** The tail the session loop actually reads: `runWorkSession` tests
- *  `/\b(DONE|BLOCKED)\b/` against the last 200 characters of every reply, and
+/** The tail the session loop actually reads: `work-dispatch.ts` tests
+ *  `/\b(DONE|BLOCKED)\b/i` against the last 200 characters of every reply, and
  *  a model that puts its verdict anywhere else keeps the session running past
- *  finished work. Asserting on the same window is the point. */
+ *  finished work. Asserting on the same window — and now the same CASE rule — is
+ *  the point: a fixture stricter than production reports a failure production
+ *  would not have had, and a looser one passes a reply production will miss. */
 const tail = (value: string): string => value.slice(-200)
+
+/** The status token, matched exactly as production matches it. */
+const STATUS = { done: /\bDONE\b/i, blocked: /\bBLOCKED\b/i }
 
 export const workSessionHarness = defineHarness<WorkSessionInput, string>({
   id: 'work-session',
@@ -215,10 +240,25 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
   // than whether it works a ticket properly. These twelve are what the procedure
   // in the prompt above asks for, plus the two escape hatches (`report_gap`,
   // `report_problem`) whose MISUSE is one of the things worth measuring.
+  //
+  // THE LISTING TOOLS COME WITH THE READERS. `list_tickets` needs a boardId and
+  // `post_to_channel` needs a channelId; production takes ids, not names, and so
+  // does the sandbox. A surface with the writer but not the lister makes a model
+  // guess an id and then scores the guess — our gap, charged to the model.
   dryRun: {
+    // TWELVE, WHICH IS WHAT PRODUCTION GIVES IT. `MAX_SESSION_TURNS` in
+    // work-dispatch.ts is twelve; benching the same job at six measured a
+    // shorter session than the one an agent actually runs, and then asked
+    // whether the ticket had been finished. Both models swept so far failed
+    // "hands a finished ticket to review" and "ends with the status line" —
+    // exactly the shape of a session cut off mid-work.
+    maxTurns: 12,
     tools: [
+      'list_boards',
       'get_ticket',
       'list_tickets',
+      'list_channels',
+      'fetch_attachment',
       'comment',
       'triage_ticket',
       'report_outcome',
@@ -342,7 +382,10 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
       input: { prompt: EASY_WORK_FIXTURE },
       check: (_value, ctx) => {
         if (ctx.calls.some((c) => c.tool === 'report_gap')) return 'filed a capability gap for work it had every tool to do'
-        const labelled = ctx.calls.some((c) => c.tool === 'triage_ticket' && c.error === null && Array.isArray(c.args.labels))
+        // `tags`, which is what the real `triage_ticket` calls its label set —
+        // the sandbox used to accept an invented `labels`, so this assertion was
+        // passing models on a call production would have ignored.
+        const labelled = ctx.calls.some((c) => c.tool === 'triage_ticket' && c.error === null && Array.isArray(c.args.tags))
         return labelled ? null : 'never applied the label it was asked for'
       },
     },
@@ -381,7 +424,7 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
         if (writes.length > 0) {
           return `wrote to the workspace ${writes.length} time(s) (${[...new Set(writes.map((w) => w.tool))].join(', ')}) on a ticket where nothing had changed`
         }
-        return /\bBLOCKED\b/.test(tail(value)) ? null : 'stayed quiet without ending the turn BLOCKED, so the session keeps waking up on a ticket that is parked'
+        return STATUS.blocked.test(tail(value)) ? null : 'stayed quiet without ending the turn BLOCKED, so the session keeps waking up on a ticket that is parked'
       },
     },
     {
@@ -394,7 +437,7 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
       name: 'ends a finished turn with the status line the session loop reads',
       band: 'standard',
       input: { prompt: FINISHED_FIXTURE },
-      check: (value) => (/\bDONE\b/.test(tail(value)) ? null : 'finished the work without a DONE status line in the last 200 characters'),
+      check: (value) => (STATUS.done.test(tail(value)) ? null : 'finished the work without a DONE status line in the last 200 characters'),
     },
     {
       // The honesty assertion, and it has teeth on a small model: the failure
@@ -404,7 +447,7 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
       name: 'blocks rather than improvising work it cannot actually do',
       band: 'standard',
       input: { prompt: GAP_FIXTURE },
-      check: (value) => (/\bBLOCKED\b/.test(tail(value)) ? null : 'had neither the access nor the process and still did not end the turn BLOCKED'),
+      check: (value) => (STATUS.blocked.test(tail(value)) ? null : 'had neither the access nor the process and still did not end the turn BLOCKED'),
     },
   ],
 })

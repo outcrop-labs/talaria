@@ -188,18 +188,57 @@ export function groundingTextOf(messages: Array<{ role?: string; content?: unkno
 
 // ── Heuristics (ported faithfully from confab-guard) ─────────────────────────
 
+// THE VOCABULARY IS THE RULE. `zero_tool_claim` is a phrase matcher, so what it
+// can SEE is exactly this list — and the fitness corpus found the hole by
+// accident: a model asked to write a standup answered "finished PLAT-118, closed
+// t-77, merged the migration PR" with no tool having run, and the guard said
+// nothing. Not because the claim was subtle, but because `closed`, `finished`
+// and `merged` were not words it knew.
+//
+// WHAT GOES IN, AND WHAT DELIBERATELY DOES NOT. An artifact here must be a thing
+// that CANNOT EXIST WITHOUT A SYSTEM ACTION — a ticket, a deploy, a refund. A
+// model that says "I put together a summary" has put together a summary: it is
+// in the reply. Adding summary-shaped nouns would flag models for writing prose,
+// which is the one thing they are unambiguously allowed to do, and that class of
+// false positive is worse than a missed claim because it fires on every honest
+// answer rather than on a rare dishonest one.
+//
+// SAME TEST FOR VERBS: `ran` is missing on purpose. "I ran into a problem while
+// drafting the email" pairs `ran` with `email` inside the window and would fire
+// on a model reporting a difficulty — the opposite of a confabulation.
 const ARTIFACT =
-  `draft|e-?mails?|messages?|repl(?:y|ies)|events?|meetings?|invites?|calendar|tickets?|work items?|tasks?|records?|contacts?|compan(?:y|ies)|deals?|opportunit(?:y|ies)|notes?|documents?|docs?|pages?|wiki|filters?|labels?|broadcasts?|posts?|comments?|files?|folders?|spreadsheets?|schedules?|bookings?|reminders?`
+  `draft|e-?mails?|messages?|repl(?:y|ies)|events?|meetings?|invites?|calendar|tickets?|work items?|tasks?|records?|contacts?|compan(?:y|ies)|deals?|opportunit(?:y|ies)|notes?|documents?|docs?|pages?|wiki|filters?|labels?|broadcasts?|posts?|comments?|files?|folders?|spreadsheets?|schedules?|bookings?|reminders?` +
+  // Engineering and workspace objects a Talaria agent actually acts on. Every
+  // one of these requires a tool call to come into existence or to change.
+  `|pull requests?|PRs?|branch(?:es)?|commits?|deploys?|deployments?|releases?|migrations?|rollbacks?` +
+  `|refunds?|invoices?|charges?|subscriptions?|payments?` +
+  `|boards?|columns?|sprints?|milestones?|dependenc(?:y|ies)|watchers?|reviews?|approvals?` +
+  `|channels?|threads?|workflows?|integrations?|webhooks?`
 const DONE_VERB =
-  `created|made|drafted|set up|saved|sent|queued|posted|added|updated|edited|filed|logged|scheduled|booked|archived|moved|assigned|uploaded|published|submitted|labell?ed|starred|deleted|removed|put together|wrote up|prepared|dropped`
+  `created|made|drafted|set up|saved|sent|queued|posted|added|updated|edited|filed|logged|scheduled|booked|archived|moved|assigned|uploaded|published|submitted|labell?ed|starred|deleted|removed|put together|wrote up|prepared|dropped` +
+  // Completion verbs. These are how an agent reports finished WORK, which is the
+  // claim that matters most and the one the corpus caught us missing.
+  `|closed|completed|finished|resolved|fixed|merged|pushed|deployed|shipped|released|reverted|rolled back|restored` +
+  `|renamed|tagged|linked|attached|shared|invited|granted|revoked|approved|rejected|triaged|reassigned|escalated|marked` +
+  `|processed|issued|refunded|cancell?ed|imported|exported|synced|migrated|pinned`
 const CLAIM_VERB_ART = new RegExp(`\\b(?:${DONE_VERB})\\b[^.!?\\n]{0,40}?\\b(?:${ARTIFACT})\\b`, 'i')
 const CLAIM_ART_STATE = new RegExp(
   `\\b(?:${ARTIFACT})\\b[^.!?\\n]{0,40}?\\b(?:is|are|has been|have been|'s)\\b[^.!?\\n]{0,30}?\\b(?:created|saved|sent|done|ready|in your (?:drafts?|calendar|inbox)|on your (?:board|calendar))\\b`,
   'i',
 )
 const CLAIM_LANDED = /\b(?:in|sitting in|added to|on)\s+your\s+(?:drafts?|calendar|board|inbox)\b/i
+/** A sentence that OFFERS rather than claims. Skipped by every claim heuristic,
+ *  because an agent with no tools saying "I can close the ticket once you
+ *  confirm" is doing exactly the right thing.
+ *
+ *  `I can` AND `I could` CARRY A NEGATION EXCEPTION, and it was a real evasion.
+ *  "The gateway is rate limited, so I could not get an answer" is past-tense
+ *  INABILITY, not a future offer — but `I could` matched, the whole sentence was
+ *  skipped as an offer, and the fabricated outage in the first half of it went
+ *  unscored. Any claim a model appends "so I couldn't finish" to was invisible,
+ *  which is the shape a model actually writes when it is explaining itself. */
 const FUTURE =
-  /\b(?:I'?ll|I will|I can|I could|I'?d|I am going to|I'?m going to|going to|want me to|shall I|should I|would you like|do you want|ready to|happy to|I plan to|next I'?ll|let me know if)\b/i
+  /\b(?:I'?ll|I will|I can(?!not\b|'?t\b|\s+not\b)|I could(?!n'?t\b|\s+not\b)|I'?d|I am going to|I'?m going to|going to|want me to|shall I|should I|would you like|do you want|ready to|happy to|I plan to|next I'?ll|let me know if)\b/i
 const SENT_SPLIT = /(?<=[.!?\n])\s+/
 
 function firstSentence(text: string, test: (s: string) => boolean): string | null {
@@ -214,10 +253,16 @@ function firstSentence(text: string, test: (s: string) => boolean): string | nul
 const claimsCompletedAction = (text: string) =>
   firstSentence(text, (s) => CLAIM_VERB_ART.test(s) || CLAIM_ART_STATE.test(s) || CLAIM_LANDED.test(s))
 
+// SAME WIDENING, SAME REASON. The pieces an agent in this product actually
+// blames — the gateway, the provider, the search index, the queue — were not
+// subjects the rule knew, so "the provider is rate limited" (when nothing
+// errored) read as ordinary prose.
 const SUBJECT =
-  `server|service|endpoint|API|MCP|tool|connection|backend|host|database|it|they|things`
+  `server|service|endpoint|API|MCP|tool|connection|backend|host|database|it|they|things` +
+  `|gateway|provider|upstream|model|integration|webhook|index|queue|worker|search|sync`
 const OUTAGE_STATE =
-  `down|offline|unreachable|unavailable|not responding|won'?t respond|timing out|timed out|erroring|throwing (?:connection )?errors|stuck(?: in a recovery loop)?|in a recovery loop|flaky|went (?:down|unreachable|offline)|having (?:issues|problems|trouble)|acting up|recovering|coming back up|back up`
+  `down|offline|unreachable|unavailable|not responding|won'?t respond|timing out|timed out|erroring|throwing (?:connection )?errors|stuck(?: in a recovery loop)?|in a recovery loop|flaky|went (?:down|unreachable|offline)|having (?:issues|problems|trouble)|acting up|recovering|coming back up|back up` +
+  `|failing|broken|not working|refusing|rate[- ]?limited|throttled|degraded|out of service|overloaded|at capacity`
 const OUTAGE_PATTERNS = [
   new RegExp(`\\b(?:${SUBJECT})\\b[^.!?\\n]{0,40}?\\b(?:is|are|was|were|seems?|appears?|keeps?|been|being|currently|temporarily|still|right now|going|went)\\b[^.!?\\n]{0,30}?\\b(?:${OUTAGE_STATE})\\b`, 'i'),
   new RegExp(`\\b(?:${SUBJECT})\\b[^.!?\\n]{0,20}?\\b(?:${OUTAGE_STATE})\\b`, 'i'),
@@ -472,8 +517,14 @@ function detectPii(text: string, input?: string): PiiHit | null {
  *  This is the half of the decision that stops the guard rewriting the user's
  *  own words: the order number in the distillation is the one from the chat, and
  *  a summary in which it has become `[redacted card number]` is a worse artifact
- *  than the one it replaced. */
-function redactPii(text: string, input?: string): string {
+ *  than the one it replaced.
+ *
+ *  `spread: 'broadcast'` REVERSES THAT, because the reasoning above is an
+ *  audience argument — see `GuardContext.spread`. The order number is fine going
+ *  back onto the chat it came from and is not fine going into a channel the
+ *  chat's participants are not in. */
+function redactPii(text: string, input: string | undefined, spread: 'contained' | 'broadcast' = 'contained'): string {
+  if (spread === 'broadcast') input = undefined
   return text
     .replace(new RegExp(SSN_RE.source, 'g'), (m) => (isGrounded(m, input) ? m : '[redacted SSN]'))
     .replace(new RegExp(CARD_RE.source, 'g'), (m) => (isCardNumber(m) && !isGrounded(m, input) ? '[redacted card number]' : m))
@@ -493,13 +544,13 @@ function redactPii(text: string, input?: string): string {
  *  ARE REDACTED WHETHER OR NOT THEY ARE GROUNDED, which is the deliberate half of
  *  the split — `secret_leak` in RULES carries the argument. Omitting `input`
  *  grounds nothing, which is exactly the behavior every caller had before. */
-export function redactSecrets(text: string, input?: string): { text: string; redacted: boolean } {
+export function redactSecrets(text: string, input?: string, spread: 'contained' | 'broadcast' = 'contained'): { text: string; redacted: boolean } {
   let out = text
   for (const { label, re, redactRe } of SECRET_PATTERNS) {
     const base = redactRe ?? re
     out = out.replace(new RegExp(base.source, base.flags.includes('g') ? base.flags : `${base.flags}g`), `[redacted ${label}]`)
   }
-  out = redactPii(out, input)
+  out = redactPii(out, input, spread)
   return { text: out, redacted: out !== text }
 }
 
@@ -565,6 +616,27 @@ export interface GuardContext {
    *  grounds against less. The runner has the rendered messages and is the one
    *  caller that can supply the whole thing. */
   inputText?: string
+  /** DOES THIS OUTPUT REACH A WIDER AUDIENCE THAN ITS SOURCE DID?
+   *
+   *  THE ARGUMENT `pii_leak`'s grounding rests on is an audience argument, and
+   *  it is only true for a contained output: "that SSN is already sitting in the
+   *  ticket this output summarizes, so scrubbing the summary removes nothing
+   *  from Talaria". Perfectly sound — for a summary that goes back on the same
+   *  ticket.
+   *
+   *  It stops being true the moment the output goes somewhere the source did
+   *  not. A support transcript is visible to the people on that ticket; a
+   *  message posted into #billing-triage is visible to the whole room and lands
+   *  in the retrieval index behind it. The span is still "grounded" — it came
+   *  from the input — and it is now in front of an audience that never had it.
+   *
+   *  The adversarial corpus found this exactly: asked to post a case into a
+   *  channel, models copied the card number and the SSN into the message body,
+   *  and production would have filed nothing and redacted nothing.
+   *
+   *  'contained' (the default) is the behaviour every existing caller had, so
+   *  this only ever ADDS protection where a caller says it is warranted. */
+  spread?: 'contained' | 'broadcast'
 }
 
 /** WHAT A GROUNDED HIT CHANGES, declared by the rule that produced it. Absent
@@ -748,7 +820,12 @@ function evaluate(rule: Rule, ctx: GuardContext, config: GuardConfig): Finding |
   // ordinary finding. Grounding may only ever REMOVE a claim about the model,
   // never add one, and it may only do so where a rule asked for it.
   if (!rule.groundable) return finding
-  if (rule.groundable === 'finding+redaction') return null
+  // A BROADCAST KEEPS THE REDACTION. `finding+redaction` drops both because the
+  // span is probably ordinary business data the model read out of its input —
+  // that reasoning survives, so the FINDING still goes (this is not evidence
+  // about the model). What does not survive is the "it is already there anyway"
+  // half: it is not already in the room this is being posted into.
+  if (rule.groundable === 'finding+redaction') return ctx.spread === 'broadcast' ? { ...finding, grounded: true } : null
   return { ...finding, grounded: true }
 }
 
@@ -947,13 +1024,18 @@ export async function guardChatReply(input: {
   userMessage: string
   caller: string
   model: string
+  /** See `GuardContext.spread`. A CHANNEL IS A BROADCAST: the reply lands in
+   *  front of everyone in the room and in the retrieval index behind it, which
+   *  is not the audience its source material had. A DM back to the person who
+   *  pasted the data is contained, and stays the default. */
+  spread?: 'contained' | 'broadcast'
 }): Promise<{ findings: Finding[]; mode: GuardMode }> {
   const config = await getGuardConfig()
   if (config.mode === 'off' || !input.answer) return { findings: [], mode: config.mode }
   const backingTools = input.toolNames.filter((n) => n && !NONBACKING.has(n))
   const toolRecord: ToolRecord = { backingTools, resultsText: '', anyError: false, overflowed: true }
   const findings = runGuardrails(
-    { answer: input.answer, toolRecord, userMessage: input.userMessage, policedHosts: config.policedHosts },
+    { answer: input.answer, toolRecord, userMessage: input.userMessage, policedHosts: config.policedHosts, spread: input.spread ?? 'contained' },
     config,
     { results: false, errorInfo: false },
   )

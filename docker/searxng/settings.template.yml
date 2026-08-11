@@ -1,0 +1,109 @@
+# Talaria's SearXNG instance — the engine behind the `web_search` tool.
+#
+# A TEMPLATE. `scripts/dev.sh` renders it to settings.local.yml (gitignored)
+# with __SEARXNG_SECRET__ replaced by the key in ui/.env, and compose mounts the
+# rendered file. It is done this way because SearXNG reads its secret from
+# settings.yml rather than the environment, and the image's own substitution
+# needs a writable file — which would mean the container rewriting a tracked
+# file in the repo. Rendering keeps the secret out of git and the repo clean.
+#
+# Customising: edit settings.local.yml for a one-off, or this template for
+# something everyone should get.
+#
+# `use_default_settings: true` means this file OVERRIDES upstream's defaults
+# rather than replacing them, so engine definitions, locales and everything else
+# keep tracking the image. Keep it that way: the smaller this file, the less of
+# SearXNG we are on the hook for when it moves.
+#
+# NOT A PATCH. SearXNG is AGPL-3.0 and Talaria is MIT; configuration is not
+# modification, and unmodified upstream is what keeps AGPL §13's source-offer
+# obligation satisfied by a link to the upstream repository. Configure here,
+# never in the image.
+use_default_settings: true
+
+server:
+  # Generated per install into ui/.env as SEARXNG_SECRET and substituted here at
+  # render time. It signs SearXNG's own preference cookies; the control that
+  # matters more is the port binding — compose publishes on 127.0.0.1 only — but
+  # a per-install key costs nothing and means exposing the instance later does
+  # not also mean shipping a key every other install already has.
+  secret_key: '__SEARXNG_SECRET__'
+  # THE RATE LIMITER IS OFF, and that is deliberate rather than lax. It exists to
+  # stop a PUBLIC instance being scraped. This one is reachable only by Talaria,
+  # and left on it throttles our own agents — a sweep of research fixtures looks
+  # exactly like abuse from the limiter's point of view.
+  limiter: false
+  image_proxy: false
+
+search:
+  # THE ONE LINE THAT MAKES THIS USABLE AT ALL. JSON is off by default and a
+  # request for it returns a bare 403 — not a 404, not an auth error — which
+  # sends you looking for a credentials problem that does not exist.
+  # `ui/src/server/search.ts` names this exact failure in its error text because
+  # it is the first thing everybody hits.
+  formats:
+    - html
+    - json
+  # Agents cite what they are given, so a safe default beats a permissive one.
+  safe_search: 1
+  autocomplete: ''
+
+# ── The engines, and why this block has to exist ─────────────────────────────
+#
+# UPSTREAM'S DEFAULT GENERAL ENGINES ARE ALL CAPTCHA WALLS FOR A SELF-HOSTED
+# INSTANCE. Out of the box the only web engines enabled are brave, duckduckgo,
+# google cse and startpage, and a fresh install on a datacenter or a plain home
+# IP gets exactly this back from all four:
+#
+#   unresponsive_engines: [["brave","Suspended: too many requests"],
+#                          ["duckduckgo","CAPTCHA"],
+#                          ["google cse","Suspended: too many requests"],
+#                          ["startpage","Suspended: CAPTCHA"]]
+#
+# The request SUCCEEDS — HTTP 200, valid JSON, `results: []`. So every layer
+# above reports healthy: the container is up, the URL is right, `searchReachable`
+# gets its 200. The only symptom is that web search silently finds nothing, and
+# a model handed an empty result set answers from memory in a confident voice,
+# which is the failure the whole search floor exists to prevent.
+#
+# The engines below are the ones that answer a self-hosted instance without a
+# CAPTCHA, because they either run their own index (mojeek, mwmbl) or do not
+# fingerprint the caller (qwant, bing, yep). The four defaults stay ENABLED
+# rather than being removed — they work fine from a residential IP and recover
+# on their own; brave and qwant already flip between suspended and working here
+# — so this block widens the pool rather than swapping it.
+#
+# NOT EVERY ENGINE THAT ANSWERS IS WORTH ASKING. `wiby` was in this list and is
+# deliberately gone: it indexes the old, hand-made web on purpose, and on
+# "svelte 5 runes" its top hit was the 2013 Xyzzy Awards transcript. A research
+# stage cites what it is given, so an irrelevant result is not free padding —
+# it is context spent on noise and a plausible URL for a model to hang a claim
+# on. Measured contribution is the bar for being in this list, not availability.
+#
+# WHAT THIS SET IS AND IS NOT. Real coverage here is mojeek and bing, roughly
+# twenty results, plus whatever brave/qwant give back on a given day. That is
+# usable and it is materially weaker than a commercial search API — SearXNG has
+# no index of its own, so it is only ever as good as the engines willing to talk
+# to it, and the ones with the best coverage are precisely the ones that block a
+# self-hosted instance. Talaria treats this as the FLOOR, not the ceiling:
+# `supplierFor` consults the org's MCP registry first and only falls back to
+# this instance, so registering Exa or Tavily takes over with no code change,
+# and SearXNG itself accepts API-key engines if you would rather keep one
+# aggregation layer and pay for coverage underneath it.
+#
+# If search comes back empty, ask the instance directly; it will tell you which
+# engines are refusing and why:
+#   curl -s 'http://127.0.0.1:8888/search?q=test&format=json' | jq .unresponsive_engines
+engines:
+  - name: mojeek
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: yep
+    disabled: false
+  - name: mwmbl
+    disabled: false
+  - name: crowdview
+    disabled: false

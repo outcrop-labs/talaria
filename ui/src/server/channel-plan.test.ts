@@ -16,6 +16,7 @@ const runHarness = vi.fn(async (): Promise<HarnessResult<TicketProposal[]>> => (
   value: [],
   model: 'nomad',
   step: 'pin',
+  refused: false,
   widened: false,
   repairs: 0,
   schemaValid: true,

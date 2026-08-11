@@ -79,6 +79,8 @@ const score = (id: string, over: Partial<HarnessScore> = {}): HarnessScore => ({
   repairable: true,
   cases: 10,
   skipped: 0,
+  gaps: 0,
+  gapReasons: [],
   skipReason: null,
   scored: 10,
   contractRate: 1,
@@ -110,6 +112,7 @@ const kase = (harnessId: string, over: Partial<EvalCaseScore> = {}): EvalCaseSco
   answered: true,
   task: 'pass',
   taskError: null,
+  gap: null,
   findings: 0,
   latencyMs: 100,
   promptTokens: 0,
@@ -121,6 +124,11 @@ const kase = (harnessId: string, over: Partial<EvalCaseScore> = {}): EvalCaseSco
   error: null,
   prompt: null,
   raw: null,
+  turns: null,
+  calls: null,
+  upstream: null,
+  startedAt: '2026-08-01T00:00:00.000Z',
+  wallMs: 0,
   ...over,
 })
 
@@ -136,6 +144,8 @@ const sweep = (over: Partial<EvalSweep> = {}): EvalSweep => ({
   cases: [],
   unfixtured: [],
   guarded: true,
+  concurrency: { requested: 1, ended: 1, low: 1, narrowedBecause: null },
+  measured: [],
   ...over,
 })
 

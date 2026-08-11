@@ -163,7 +163,12 @@ describe('the briefing eval fixtures', () => {
     const shape = { check: briefFixture('keeps to the five-bullet shape it was asked for') }
     const grounding = { check: briefFixture('grounds the briefing in the items it was given and invents no references') }
     const allClear = { check: briefFixture('answers the all-clear state with one short line') }
-    expect(shape?.check(['- one', '- two', '- three', '- four', '- five', '- six'].join('\n'), NO_TOOLS)).toContain('over the 5')
+    // MATERIALLY over, not one over. `countProblem` gives a stated preference a
+    // quarter's margin, so a sixth bullet is a briefing that ran slightly long
+    // rather than a different kind of answer — the boundary case used to fail
+    // capable models for reading "at most 5" less literally than we wrote it.
+    expect(shape?.check(['- one', '- two', '- three', '- four', '- five', '- six'].join('\n'), NO_TOOLS)).toBeNull()
+    expect(shape?.check(Array.from({ length: 12 }, (_, i) => `- item ${i}`).join('\n'), NO_TOOLS)).toContain('at most 5')
     expect(shape?.check('A paragraph with no items at all.', NO_TOOLS)).toContain('no bulleted items')
     expect(grounding?.check('**Unread** — 3 messages in #platform.', NO_TOOLS)).toContain('Ledger migration')
     expect(grounding?.check(`${GOOD_BRIEF}\n- see https://talaria.example/t/41`, NO_TOOLS)).toContain('invented')
