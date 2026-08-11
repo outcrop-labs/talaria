@@ -35,6 +35,7 @@
 // 1.5). A pasted credential in a planning chat went into the document, into the
 // index, and back out of retrieval later as fact. `guard.redact` covers that
 // now.
+import { UNTRUSTED_INPUT } from '../prompt-rules'
 import { defineHarness } from '../define'
 
 /** Everything the model is shown. The template block and the workflow map
@@ -56,7 +57,8 @@ export interface PlanDocInput {
 // `cleanPlanDoc` enforces, and it is stated to the model in the same words.
 const SYNC_PROMPT = `You maintain the living plan document for a planning conversation. Rewrite the document so it reflects the conversation so far: goals, scope, decisions, open questions, and next steps — organized under markdown headings, tight and actionable.
 Start from the current version when one is given: keep what still holds, fold in what changed, never silently drop sections the conversation didn't overturn.
-Return ONLY the complete updated markdown document, starting with its "# " title heading as your very first characters — no commentary, no lead-in sentence, no code fences. Anything before the first heading corrupts the document.`
+Return ONLY the complete updated markdown document, starting with its "# " title heading as your very first characters — no commentary, no lead-in sentence, no code fences. Anything before the first heading corrupts the document.
+${UNTRUSTED_INPUT}`
 
 const syncRouting = (map: string): string =>
   `\n\nThe org routes ticket work through workflows (match rules → skills → agents):\n${map}\nAFTER the rest of the document, if parts of this plan clearly fall under one of these workflows, end with a short "## Agent routing" section — one line per mapping ("<work> → <workflow> → <agent>"). If nothing clearly matches, OMIT the section entirely; never force a fit.`

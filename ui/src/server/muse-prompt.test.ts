@@ -47,6 +47,26 @@ describe('the org anchor', () => {
     }
   })
 
+  it('tells the SOUL kind what shape a soul is, not just the agent designer', async () => {
+    // THE GAP THIS CLOSES. `SYSTEM.soul` said "keep the heading structure" — an
+    // instruction about a document that already exists — and this fixture writes
+    // one FROM SCRATCH. The only heading named anywhere in the assembled prompt
+    // was `## Who you are`, from the org anchor, so models opened there and were
+    // failed for not opening with a `# <Name> — <Role>` title nobody had asked
+    // for.
+    const soul = await systemFor('soul')
+    expect(soul).toContain('# <Name> — <Role>')
+    expect(soul).toContain('very first line')
+  })
+
+  it('states the soul shape identically to the agent designer, so they cannot drift', async () => {
+    // A soul written by the agent designer and one written by the soul editor
+    // are the same document; two descriptions of it is how they stop being.
+    const shape = '"# <Name> — <Role>" title as the very first line'
+    expect(await systemFor('soul')).toContain(shape)
+    expect(await systemFor('agent')).toContain(shape)
+  })
+
   it('keeps the anchor a single sentence in every kind that gets one', async () => {
     // Cheap shape guard: the two branches are assembled by string concatenation,
     // and a missing separator is the kind of thing that reads fine in a diff.

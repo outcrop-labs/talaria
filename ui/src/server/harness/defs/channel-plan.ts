@@ -27,6 +27,7 @@
 // feature doing nothing on click. Everything the schema does NOT forgive — a
 // reply that is not a list at all — earns the repair turn instead.
 import { z } from 'zod'
+import { UNTRUSTED_INPUT } from '../prompt-rules'
 import { defineHarness } from '../define'
 
 export interface TicketProposal {
@@ -490,7 +491,10 @@ export const channelPlanHarness = defineHarness<ChannelPlanInput, TicketProposal
   model: { chain: [] },
 
   render: (input, ctx) => {
-    const system = [PLAN_PROMPT, input.templatePrompt, ctx.widened ? WIDENED : null].filter(Boolean).join('\n\n')
+    // The transcript below is what people said in a channel, and the plan
+    // document is whatever anybody last wrote in it. Both are somebody else's
+    // text; `UNTRUSTED_INPUT` is the one sentence that says so.
+    const system = [PLAN_PROMPT, input.templatePrompt, ctx.widened ? WIDENED : null, UNTRUSTED_INPUT].filter(Boolean).join('\n\n')
     // Order preserved from channel-plan.ts: the workflow map first (context for
     // the routing rule), then the document, then the transcript. The document
     // sits ABOVE the transcript because the prompt calls it the source of truth

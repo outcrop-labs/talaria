@@ -33,6 +33,23 @@ export const JSON_KINDS: ReadonlySet<MuseKind> = new Set<MuseKind>(['cron', 'age
 /** Narrows, so the route can index a per-kind message table without a cast. */
 export const isJsonKind = (k: MuseKind): k is MuseJsonKind => JSON_KINDS.has(k)
 
+/** THE SHAPE OF A SOUL.md, STATED ONCE.
+ *
+ *  IT USED TO BE STATED ONLY FOR `agent`, and `soul` — the kind whose entire job
+ *  is writing one — never got it. `SYSTEM.soul` said "keep the heading
+ *  structure", which is an instruction about a document that already exists; the
+ *  fixture that grades a soul written FROM SCRATCH requires it to open with a
+ *  `# <Name> — <Role>` title, and nothing in the prompt had ever asked for one.
+ *  The only heading named anywhere in the assembled prompt was `## Who you are`,
+ *  from the organization anchor — so models opened there, correctly following
+ *  the only structural instruction they were given, and were failed for it.
+ *
+ *  Shared by both kinds so they cannot drift: a soul written by the agent
+ *  designer and a soul written by the soul editor are the same document. */
+const SOUL_SHAPE =
+  'a "# <Name> — <Role>" title as the very first line, then "## Who you are" (identity + mission), ' +
+  '"## Voice & personality" (a distinct, likable working voice), and "## How you work".'
+
 const DOC_RULES =
   'Return ONLY the complete revised document — no commentary, no preamble, no code fences. ' +
   'Start from the current version when one is given: keep what works, change what the request asks, never silently drop sections.'
@@ -40,7 +57,8 @@ const DOC_RULES =
 const SYSTEM: Record<MuseKind, string> = {
   soul:
     'You write SOUL.md files for Hermes agents — the markdown document that defines who an agent is: identity, personality, operating principles, and guardrails. ' +
-    'Keep the heading structure, keep it tight and actionable, and preserve existing guardrails unless explicitly asked to change them. ' +
+    `Writing one from scratch, its shape is ${SOUL_SHAPE} ` +
+    'Revising one, keep the heading structure it already has, keep it tight and actionable, and preserve existing guardrails unless explicitly asked to change them. ' +
     DOC_RULES,
   personality:
     "You write the personality brief for someone's personal AI assistant: how it should come across — tone, priorities, pet peeves. " +
@@ -63,8 +81,7 @@ const SYSTEM: Record<MuseKind, string> = {
     '{"name": "<short human first-name, e.g. \\"Rex\\">", "handle": "<lowercase alphanumeric, starts with a letter, 2-30 chars>", ' +
     '"department": "<lowercase-kebab function word, e.g. \\"release\\" or \\"research\\">", "role": "<human job title, e.g. \\"Release Manager\\">", ' +
     '"soul": "<the full SOUL.md markdown>", "skills": [{"name": "<kebab-case>", "content": "<full SKILL.md markdown>"}]}\n' +
-    'The soul is the agent\'s defining document: a "# <Name> — <Role>" title, then "## Who you are" (identity + mission from the purpose), ' +
-    '"## Voice & personality" (a distinct, likable working voice), and "## How you work" — which MUST keep these guardrails: ' +
+    `The soul is the agent's defining document: ${SOUL_SHAPE} "## How you work" MUST keep these guardrails: ` +
     'keep humans in the loop (create and triage tickets, never assign or close them); prefer the local model tier for routine work, escalate deliberately; ask in the channel instead of guessing. ' +
     'Include 0–3 skills, only ones clearly implied by the purpose (each a # title, a when-to-use line, concrete numbered steps). ' +
     'When a current draft is given, revise it per the request instead of starting over — keep everything not asked about.',
