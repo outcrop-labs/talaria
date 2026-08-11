@@ -21,6 +21,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { db } from './db/pg'
 import { ensureAgentApiKey, legacyMigrationStatus, legacyMigrationWarning } from './agent-auth'
 import { resolveWorkbench, type WorkbenchProfile } from './workbench'
+import { grantedHandlesFor } from './workspace-secrets'
 import { materializeAgentSecrets } from './agent-secrets'
 import { ensureGatewayBrain, gatewayModelSet, routeConfigThroughGateway } from './fleet-brain'
 import { ensureMcpService } from './mcp-service'
@@ -468,7 +469,21 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     // stored soul stays clean; the header tracks the org settings), so every
     // agent knows whose team it's on, including ones authored before org config.
     const coaching = coachOn ? await guardCoachingFor(def.model).catch(() => '') : ''
-    await writeFile(join(agentDir, 'SOUL.md'), `${[soulHeader, coaching].filter(Boolean).join('\n\n')}\n\n${version.soul}`)
+    // WHAT THIS AGENT MAY SPEND WITHOUT SEEING. Handles and kinds only — the
+    // store has no shape that carries a value, so there is nothing here to leak
+    // even if a soul were read by the wrong person.
+    //
+    // IT BELONGS IN THE SOUL rather than in a per-turn prompt because a
+    // credential grant is a standing fact about the agent, like its toolkit: an
+    // agent that learns mid-conversation that it could have pushed is an agent
+    // that already told somebody it could not. A grant changes on the next
+    // render, which is the same cadence every other standing fact here follows.
+    //
+    // An agent granted nothing gets an empty string and is told nothing, which
+    // is also correct — a list of names it cannot use is a map of the
+    // workspace's credentials.
+    const secretHandles = await grantedHandlesFor(def.model).catch(() => '')
+    await writeFile(join(agentDir, 'SOUL.md'), `${[soulHeader, coaching, secretHandles].filter(Boolean).join('\n\n')}\n\n${version.soul}`)
     result.files.push(join(agentDir, 'config.yaml'), join(agentDir, 'SOUL.md'))
 
     // The service name carries the active slot ('a' = bare, 'b' = "-b") so a
