@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { NO_TOOLS, type EvalContext, type CheckResult } from '@/server/harness/define'
+import { toolWireMessage } from '@/server/harness/transport'
 import { runHarness, type HarnessDeps, type Transport, type TransportRequest } from '@/server/harness/run'
 import {
   clampQueries,
@@ -265,6 +266,43 @@ describe('toolSearchTransport', () => {
     }
     return { base, seen }
   }
+
+  it('answers the call with the id the assistant turn actually carried', async () => {
+    // THE BUG, AND IT COST EVERY TOOL-LOOP HARNESS ON ANTHROPIC AND OPENAI. When a
+    // provider omits the tool-call id, two files invented their own and disagreed:
+    // `toolWireMessage` wrote `call_0` into the assistant turn while this loop
+    // wrote the tool NAME into the result. The replay then referred to a call the
+    // provider had never been shown —
+    //
+    //   messages.3.tool.tool_call_id: Field required
+    //
+    // — and the sweep filed it as "could not reach this model" on an endpoint
+    // that was answering everything else. `readToolCalls` assigns the id once
+    // now; a fabricated id is fine, two of them is not.
+    let turn = 0
+    const base: Transport = async () => {
+      turn++
+      // NO ID, which is the case that broke: the fallback has to be shared.
+      if (turn === 1) return { kind: 'gateway', text: '', toolNames: ['web_search'], toolCalls: [{ name: 'web_search', args: '{}' }], usage: null, contractDropped: false }
+      return { kind: 'gateway', text: 'answered', toolNames: [], usage: null, contractDropped: false }
+    }
+    const seen: TransportRequest[] = []
+    const traced: Transport = async (req) => {
+      seen.push(req)
+      return base(req)
+    }
+    const transport = toolSearchTransport('run-1', [], SUPPLIER, { base: traced, callTool: async () => ({ text: 'results', structured: null }) })
+    await transport({ model: 'sonnet', messages: [{ role: 'user', content: 'q' }], jsonMode: false, caller: 't' })
+
+    // ASSERTED ON THE WIRE FORM, which is where the two halves have to agree —
+    // `toolWireMessage` is what fills the assistant turn's `id`, so comparing the
+    // in-memory `Message` objects would compare one side before it is rendered.
+    const replay = seen[1]!.messages
+    const assistant = toolWireMessage(replay.find((m) => m.role === 'assistant' && m.toolCalls?.length)!) as { tool_calls: Array<{ id: string }> }
+    const result = toolWireMessage(replay.find((m) => m.role === 'tool')!) as { tool_call_id: string }
+    expect(result.tool_call_id).toBeTruthy()
+    expect(result.tool_call_id).toBe(assistant.tool_calls[0]?.id)
+  })
 
   it('replays tool calls on the TOOL CHANNEL, never as prose the model can imitate', async () => {
     // THE FAILURE THIS PREVENTS, verbatim from a live sweep. The loop used to

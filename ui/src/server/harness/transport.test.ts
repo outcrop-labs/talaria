@@ -249,6 +249,41 @@ describe('offering tool definitions', () => {
     expect(built[0]?.body.response_format).toEqual({ type: 'json_object' })
   })
 
+  it('renders the tool channel on a turn that REPLAYS one but offers no tools', async () => {
+    // THE FOURTH REQUEST. `toolSearchTransport` ends with a closing turn — the
+    // model has searched, now it writes the answer — which offers no tools and
+    // carries the whole tool conversation behind it. With no defs it fell
+    // through to `completeViaGateway`, which flattens every message to
+    // `{role, content}` and drops `tool_call_id`. Anthropic then refused the
+    // request it had itself produced two turns earlier:
+    //
+    //   messages.3.tool.tool_call_id: Field required
+    //
+    // Three tool turns came back 200 and the fourth 400'd, which is exactly why
+    // this read as "the model cannot reach the search tool".
+    drops = []
+    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    await gatewayTransport({
+      model: 'claude-sonnet-5',
+      caller: 't',
+      jsonMode: false,
+      messages: [
+        { role: 'user', content: 'q' },
+        { role: 'assistant', content: '', toolCalls: [{ name: 'web_search', args: '{}', id: 'toolu_1' }] },
+        { role: 'tool', content: 'results', toolCallId: 'toolu_1' },
+        { role: 'user', content: 'now answer' },
+      ],
+    })
+    const msgs = built[0]?.body.messages as Array<Record<string, unknown>>
+    expect(msgs.find((m) => m.role === 'tool')?.tool_call_id).toBe('toolu_1')
+    // AND IT OFFERS NOTHING, because nothing was asked for. `tools: []` with
+    // `tool_choice: 'auto'` is a request some providers reject and none needs.
+    expect('tools' in (built[0]?.body ?? {})).toBe(false)
+    expect('tool_choice' in (built[0]?.body ?? {})).toBe(false)
+    // `reasoning_effort` belongs to a turn that OFFERS tools, not to every replay.
+    expect('reasoning_effort' in (built[0]?.body ?? {})).toBe(false)
+  })
+
   it('tells the provider to switch reasoning effort off when it offers tools', async () => {
     // THE RUN THAT FOUND THIS. gpt-5.6-terra refused every tool turn with
     // "Function tools with reasoning_effort are not supported ... or set

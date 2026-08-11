@@ -45,6 +45,7 @@ import { z } from 'zod'
 import { defineHarness, type Message } from '../define'
 import { gatewayToolsRefusal, gatewayTransport, toolPolicyOf, type Transport } from '../transport'
 import { UNTRUSTED_INPUT } from '../prompt-rules'
+import { toolCallIdOf } from '../transport'
 import { callPlatformTool, isPlatformServer } from '../../capability-platform'
 import { resultsFromPayload } from '../../web-search'
 import { callMcpTool } from '../../mcp-registry'
@@ -647,7 +648,20 @@ export function toolSearchTransport(
         break
       }
 
-      for (const c of calls.slice(0, MAX_TOOL_CALLS_PER_ROUND)) {
+      // ONE ASSISTANT TURN, ALL ITS CALLS — the transcript the model actually
+      // produced.
+      //
+      // THIS LOOP USED TO PUSH A SEPARATE ASSISTANT MESSAGE PER CALL, which
+      // invents a history that never happened: claude-sonnet-5 answers this
+      // prompt with TWO `web_search` calls in one turn, and replaying them as two
+      // turns is a falsified conversation. Anthropic refused the whole replay —
+      // `messages.3.tool.tool_call_id: Field required` — and every
+      // research-search fixture on that model was filed as "could not reach this
+      // model" on an endpoint that was answering fine. `dry-run.ts` has always
+      // had this right; this loop was the odd one out.
+      const used = calls.slice(0, MAX_TOOL_CALLS_PER_ROUND)
+      convo.push({ role: 'assistant', content: reply.text, toolCalls: used })
+      for (const [index, c] of used.entries()) {
         called++
         let args: Record<string, unknown> = {}
         try {
@@ -674,10 +688,10 @@ export function toolSearchTransport(
         // dry-run sandbox hit — see the note on `Message.toolCalls` in define.ts:
         // changing the wording only moves the imitation, and only giving the
         // calls their own channel ends it.
-        convo.push(
-          { role: 'assistant', content: '', toolCalls: [{ ...c, args: JSON.stringify(args) }] },
-          { role: 'tool', content: out.text.slice(0, 12_000), toolCallId: c.id ?? c.name },
-        )
+        //
+        // `index` is the call's position in the assistant message pushed above,
+        // which is what `toolWireMessage` numbers its `tool_calls` from.
+        convo.push({ role: 'tool', content: out.text.slice(0, 12_000), toolCallId: toolCallIdOf(c, index) })
       }
       // ONCE, WITH THE FIRST RESULTS. Repeating it every round would be nagging,
       // and putting it in the tool message would mix our instructions into
