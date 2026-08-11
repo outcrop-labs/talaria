@@ -672,6 +672,10 @@ export function toolSearchTransport(
           { role: 'tool', content: out.text.slice(0, 12_000), toolCallId: c.id ?? c.name },
         )
       }
+      // ONCE, WITH THE FIRST RESULTS. Repeating it every round would be nagging,
+      // and putting it in the tool message would mix our instructions into
+      // untrusted tool output — the shape `ungrounded_ref` exists to distrust.
+      if (round === 0) convo.push({ role: 'user', content: SYNTHESIS_RULES })
     }
 
     // A MODEL THAT NEVER CALLED THE TOOL ANSWERED FROM MEMORY, and that is the
@@ -729,12 +733,38 @@ const FINAL_ANSWER_ASK =
   'Be specific: dates, numbers, names and versions exactly as the results gave them, and attribute every claim to something above.\n' +
   'If the results only partly answer the question, say what they did and did not establish. Do not fill any gap from memory.'
 
+/** THE SEARCH TURN'S JOB, AND ONLY THAT.
+ *
+ *  WHAT THIS PROMPT USED TO DO TO A MODEL. It also carried the synthesis rules —
+ *  "write dense, factual findings from what came back", "attribute every claim to
+ *  something the tool returned" — instructions about results the model does not
+ *  have yet, on the turn where its only job is to search. deepseek-v4-flash
+ *  answered that prompt with an EMPTY turn: no text, no tool call, ~140
+ *  completion tokens spent and nothing emitted. Five research-search fixtures
+ *  failed on it, and the error read as a connection fault.
+ *
+ *  MEASURED, not reasoned. Same model, same question, same tool definitions,
+ *  only the system prompt varying, two attempts each:
+ *
+ *    full prompt                      0 tool calls, 0 tool calls
+ *    without the "stale" sentence     2, 2
+ *    without the synthesis rules      2, 2
+ *    search instruction only          2, 2
+ *
+ *  Removing EITHER half restores it, so this is not one bad sentence — it is a
+ *  turn being asked to hold two jobs at once. Nothing is weakened: the synthesis
+ *  rules still arrive, on the turn where results do (`SYNTHESIS_RULES`). */
 const TOOL_SEARCH_SYSTEM = (tool: string): string =>
   `You research one question using the \`${tool}\` tool, which searches the live web.\n` +
   `You have NO current knowledge of your own: your training data is stale and the question may be about something that changed yesterday. ` +
-  `Call \`${tool}\` before you answer — always, even when you think you know.\n` +
-  'Then write dense, factual findings from what came back: prefer primary sources and recent data, and state dates and numbers precisely. ' +
-  'Attribute every claim to something the tool returned. If the results do not answer the question, say what they did and did not establish rather than filling the gap from memory.'
+  `Call \`${tool}\` before you answer — always, even when you think you know.`
+
+/** The half that was moved. Delivered once, with the first results — which is
+ *  the turn it is actually about, and the turn a model can act on it. */
+const SYNTHESIS_RULES =
+  'Now write dense, factual findings from what came back: prefer primary sources and recent data, and state dates and numbers precisely. ' +
+  'Attribute every claim to something the tool returned. If the results do not answer the question, say what they did and did not establish rather than filling the gap from memory. ' +
+  'Search again first if you need to.'
 
 /** A refusal shaped like an answer. A model with no live search does not error
  *  - it says it cannot browse, or it answers from memory - and both are how an

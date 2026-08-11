@@ -471,7 +471,10 @@ describe('toolSearchTransport', () => {
     })
     const reply = await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'q' }], jsonMode: false, caller: 't' })
     expect(reply.text).toContain('could not verify')
-    expect(seen[1]?.messages.at(-1)?.content).toContain('upstream 503')
+    // ANYWHERE IN THE REPLAY, not at a fixed position: the synthesis rules now
+    // arrive with the first results, so the tool's failure is no longer the last
+    // message. What the assertion is about is that the model SEES the failure.
+    expect(seen[1]?.messages.map((m) => m.content).join('\n')).toContain('upstream 503')
     expect(sink).toEqual([])
   })
 

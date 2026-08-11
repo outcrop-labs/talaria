@@ -902,12 +902,26 @@ const PER_TURN_TIMEOUT_MS = 60_000
 /** Turns a harness may take in one case, for the clock above. Read off the same
  *  constants the code paths use, so a raised turn budget cannot silently leave
  *  the timeout behind. */
-export function turnsPerCase(def: HarnessDefinition<unknown, unknown>, dryRun: boolean): number {
+export function turnsPerCase(def: HarnessDefinition<unknown, unknown>, dryRun: boolean, supplied = false): number {
   // A dry run drives the loop itself; every other case is one model turn.
-  const loop = dryRun ? turnBudget(def.dryRun?.maxTurns) : 1
+  //
+  // EXCEPT A SUPPLEMENTED ONE, which is the case this missed. When the platform
+  // supplies a capability the model lacks, the harness runs inside
+  // `toolSearchTransport` — up to `MAX_TOOL_ROUNDS` search turns plus a closing
+  // turn to answer — and this function handed that whole loop the budget for ONE
+  // model turn. glm-5.2 filed three research-search cases as
+  // `did not finish inside 60000ms after 1 upstream call(s)`, which reads as a
+  // hung request and was really a four-turn job on a one-turn clock.
+  const loop = dryRun ? turnBudget(def.dryRun?.maxTurns) : supplied ? SUPPLIED_TURNS : 1
   const repair = def.output.kind === 'json' ? Math.max(0, def.output.repair ?? 1) : 0
   return loop + repair
 }
+
+/** Turns the supplement transport may take: `MAX_TOOL_ROUNDS` searching plus one
+ *  to write the answer. Stated here rather than imported so this file does not
+ *  depend on a harness definition for its clock — and if that loop grows, this
+ *  is the number to grow with it. */
+const SUPPLIED_TURNS = 4
 
 const DEFAULT_CASE_TIMEOUT_MS = PER_TURN_TIMEOUT_MS
 /** Bounded for the same reason `HarnessResult.raw` is: a drill-down, not an
@@ -1539,7 +1553,7 @@ async function runOneCase<I, O>(
 
   // SIZED TO WHAT THIS CASE MAY DO, not to a flat single-call figure — see
   // `turnsPerCase`. The caller's budget is the PER-TURN allowance.
-  const caseMs = timeoutMs * turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun)
+  const caseMs = timeoutMs * turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun, supplier !== null)
   const outcome = await Promise.race([
     bounded(work, caseMs, () => {
       capture.timedOut = true
@@ -1638,7 +1652,7 @@ async function runOneCase<I, O>(
       taskError = null
     }
     if (gap === null && taskError !== null && evalContext.exhausted) {
-      gap = `the model was still working when the loop's ${turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun)}-turn budget ran out, and the assertion then judged unfinished work ("${taskError}"). Raise this harness's dryRun.maxTurns or ask the fixture something a bounded loop can answer.`
+      gap = `the model was still working when the loop's ${turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun, supplier !== null)}-turn budget ran out, and the assertion then judged unfinished work ("${taskError}"). Raise this harness's dryRun.maxTurns or ask the fixture something a bounded loop can answer.`
       taskError = null
     }
     task = gap !== null ? 'unscored' : taskError === null ? 'pass' : 'fail'
