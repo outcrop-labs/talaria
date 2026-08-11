@@ -37,7 +37,7 @@
 // the uniform basis — one run of everything — and the payload says so, because
 // "we assumed your traffic is flat" is a materially different claim from "this
 // is your traffic".
-import { BAND_ORDER, harnessBands, type FitnessBand, type FitnessReport, type SlotBinding } from './score'
+import { BAND_ORDER, harnessBands, type FitnessBand, type FitnessReport, type SlotBinding, type SlotKind } from './score'
 import type { RegisteredHarness } from '../harness/registry'
 import type { ObservedHarness } from './observed'
 import type { FitnessIndex, FitnessIndexEntry, ModelPrice, TokenBudget } from './surface'
@@ -303,7 +303,7 @@ export function valueOf(args: {
 export interface SlotValue {
   key: string
   label: string
-  kind: 'role' | 'agent'
+  kind: SlotKind
   live: boolean
   /** Runs per day across the harnesses bound to this slot. A harness bound to
    *  two slots counts in both: this is per-slot demand, not a partition, and

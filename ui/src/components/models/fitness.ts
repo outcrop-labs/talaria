@@ -100,7 +100,9 @@ export interface Thresholds {
 }
 
 export interface SlotView {
-  kind: 'role' | 'agent'
+  /** 'fleet' is the model behind a Hermes persona — see `SlotKind` in
+   *  server/fitness/score.ts for why it had to exist. */
+  kind: 'role' | 'agent' | 'fleet'
   id: string
   key: string
   label: string
