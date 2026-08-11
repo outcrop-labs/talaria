@@ -412,6 +412,33 @@ export interface FitnessInput {
  *  resolver and `model-roles.ts` into the browser bundle. */
 export const BAND_ORDER: Record<FitnessBand, number> = { unfit: 0, untested: 1, unbound: 2, workable: 3, ready: 4 }
 
+/** WHAT EACH HARNESS EARNED, collapsed out of the per-slot verdicts.
+ *
+ *  The report is organized by slot because that is what an admin assigns, but
+ *  production runs a HARNESS, and the value view weights a model's verdicts by
+ *  how much of a real day each harness is. So this inverts it.
+ *
+ *  THE WORST BAND WINS when a harness is bound to more than one slot. A slot's
+ *  task floor varies (`taskFloorFor`), so the same numbers can be Ready under a
+ *  lenient role and Workable under a strict one — and the honest reduction for
+ *  "would I trust this model with this work" is the strict answer. Taking the
+ *  best would let a permissive slot launder a verdict the strict slot refused.
+ *
+ *  `unbound` harnesses are included from `report.unbound`: their model comes
+ *  from the subject of the call rather than from a slot, so they have no column
+ *  in the matrix — but they are a large share of what a fleet actually runs, and
+ *  omitting them would silently shrink the denominator of every share. */
+export function harnessBands(report: FitnessReport): Record<string, FitnessBand> {
+  const out: Record<string, FitnessBand> = {}
+  const keep = (v: HarnessVerdict): void => {
+    const prev = out[v.harness]
+    if (prev === undefined || BAND_ORDER[v.band] < BAND_ORDER[prev]) out[v.harness] = v.band
+  }
+  for (const slot of report.slots) for (const v of slot.harnesses) keep(v)
+  for (const v of report.unbound) keep(v)
+  return out
+}
+
 const pct = (n: number): string => `${Math.round(n * 100)}%`
 const per = (n: number): string => n.toFixed(2)
 

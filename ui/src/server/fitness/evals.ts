@@ -67,7 +67,11 @@ import { runHarness, type HarnessDeps, type HarnessResult, type HarnessRunRow } 
 import { defaultTransport, offersToolDefinitions, runsOwnToolLoop, type Transport, type TransportRequest } from '../harness/transport'
 import { makeSandbox } from './toolbox/sandbox'
 import { makeWorkbench } from './toolbox/hermes-tools'
-import { sandboxTransport, type DryRunResult } from './toolbox/dry-run'
+import { sandboxTransport, turnBudget, type DryRunResult } from './toolbox/dry-run'
+import { toolSearchTransport } from '../harness/defs/research'
+import { supplierFor, PROVIDERS_KEY } from '../capability-reach'
+import { platformSupply } from '../capability-platform'
+import { listMcpServers } from '../mcp-registry'
 
 /** WHAT A DRY RUN NEEDS OF ITS SANDBOX, and no more: the two surfaces
  *  (`toolbox/sandbox.ts` for Talaria's toolkit, `toolbox/hermes-tools.ts` for a
@@ -84,7 +88,7 @@ interface DrySandbox {
 import { estimateTokens } from '../usage'
 import type { Capability } from '../harness/capability'
 import type { ToolPolicy } from '../harness/transport'
-import { NO_TOOLS, type EvalBand, type EvalCase, type EvalContext, type HarnessDefinition } from '../harness/define'
+import { NO_TOOLS, isGap, type EvalBand, type EvalCase, type EvalContext, type HarnessDefinition, type Message } from '../harness/define'
 
 // ── The scoring surface ──────────────────────────────────────────────────────
 
@@ -119,7 +123,13 @@ export interface EvalCaseScore {
    *  Tier 1 already had this distinction — `ProbeOutcome` has a `skipped` kind
    *  and the tool probes use it the moment `offersToolDefinitions` says no. Tier
    *  2 did not, and the two tiers disagreed about the same model on the same
-   *  page. */
+   *  page.
+   *
+   *  IT ALSO COVERS "WE ASKED AND NEVER GOT AN ANSWER": a case the provider
+   *  rate-limited on every attempt (see `rateLimitedCase`). The reading is the
+   *  same one — nothing was measured — and the alternative is a red cell that
+   *  means "your provider was busy" and is read as "this model cannot hold a
+   *  contract". */
   skipped: string | null
 
   /** THE CONTRACT HELD — `harness_runs.schema_valid`, taken from the row the
@@ -151,11 +161,32 @@ export interface EvalCaseScore {
    *  the drill-down, which is why `EvalCase.check` is documented to write it
    *  for a human rather than for a developer. */
   taskError: string | null
+  /** OUR GAP, not the model's failure. Non-null means this fixture could not
+   *  fairly ask its question — the run was never given what the assertion
+   *  demanded — so the case is `unscored` and this sentence is reported to the
+   *  people who own the harness. See `CheckResult` in harness/define.ts. */
+  gap: string | null
 
   /** Guard findings this run is EVIDENCE for — `harness_runs.findings`, which
    *  excludes grounded hits exactly as `recordFindings` does. */
   findings: number
+  /** THE RUNNER'S OWN MEASURE of the final attempt — `harness_runs.latency_ms`,
+   *  covering render, the model turns, the repair round-trip and the guard pass.
+   *  It is what the observed-vs-tested comparison is computed from, so it must
+   *  stay the same number production records. */
   latencyMs: number
+  /** WHEN THE SWEEP STARTED THIS CASE, absolute. Needed to reconstruct a
+   *  timeline: under concurrency, `latencyMs` alone cannot tell a slow model
+   *  from four fast cases queued behind each other, and "which cases were in
+   *  flight together" is the first question a speed comparison asks. */
+  startedAt: string
+  /** WHAT THE CASE COST THE SWEEP, wall clock, INCLUDING everything `latencyMs`
+   *  excludes: sandbox construction, the closing turn of a tool loop, and — the
+   *  big one — every retry of a rate-limited or lost request. A case whose first
+   *  two attempts vanished and whose third took 4s has `latencyMs: 4000` and
+   *  `wallMs: 124000`, and only the second number explains where the sweep's
+   *  afternoon went. */
+  wallMs: number
   promptTokens: number
   completionTokens: number
   /** Null when nothing priced the tokens — see `EvalDeps.price`. */
@@ -199,6 +230,56 @@ export interface EvalCaseScore {
    *  transcripts in a settings row is an archive, not telemetry. */
   prompt: string | null
   raw: string | null
+
+  /** THE WHOLE CONVERSATION, for a case that had one.
+   *
+   *  `prompt`/`raw` above are the FIRST request and the LAST reply, which is the
+   *  entire story of a single-shot structured harness and almost none of the
+   *  story of a tool loop. A dry run is six model turns, up to eighteen tool
+   *  calls and their results; reading its verdict without them means reading
+   *  "never called get_ticket" and having to take it on faith.
+   *
+   *  Null for a case that took one turn (there is nothing here `prompt`/`raw` do
+   *  not already say) and for a clean one (see `prompt`). */
+  turns: EvalTurn[] | null
+
+  /** EVERY UPSTREAM CALL THIS CASE MADE, kept whenever the case did not finish
+   *  cleanly. The evidence behind a timeout: how many requests went out, how
+   *  long each took, and which one never came back. */
+  upstream: UpstreamAttempt[] | null
+
+  /** WHAT THE MODEL ACTUALLY DID — `Sandbox.calls`, verbatim and in order.
+   *
+   *  Kept for EVERY dry-run case including the passing ones, unlike the
+   *  transcript, because it is small and because it is the primary artifact
+   *  every behavioural fixture asserts over. An admin comparing two models on
+   *  the same fixture is comparing these lists; making them available only on
+   *  failure would mean the interesting comparison is the one you cannot see. */
+  calls: EvalToolCall[] | null
+}
+
+/** One turn of a recorded conversation. Mirrors `Message` in harness/define.ts
+ *  rather than reusing it: this shape is PERSISTED into a settings row and read
+ *  back by a UI months later, so it is flat, bounded, and free of anything the
+ *  runner might redefine. */
+export interface EvalTurn {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string
+  /** Names only. The arguments are on `calls`, where they are not duplicated
+   *  once per turn. */
+  toolCalls?: string[]
+}
+
+/** One tool call as the sandbox saw it. */
+export interface EvalToolCall {
+  tool: string
+  /** JSON, bounded. Rendered rather than parsed by the UI. */
+  args: string
+  /** What came back, bounded — the model saw this, so an admin should too. */
+  result: string | null
+  /** The tool refused. A refusal is a real event and reads very differently
+   *  from a call that never happened. */
+  error: string | null
 }
 
 /** Everything the sweep needs to know about a harness that is not a score.
@@ -242,6 +323,13 @@ export interface HarnessScore extends HarnessMeta {
    *  on `skipReason`. Reported so a full-green matrix can still say what it did
    *  not look at. */
   skipped: number
+  /** FIXTURES THAT COULD NOT FAIRLY ASK THEIR QUESTION — our gap, not the
+   *  model's failure. Excluded from `taskScore` for the same reason a skip is
+   *  excluded from `contractRate`: a denominator that counts them turns a hole
+   *  in the test environment into a number about the model. `gapReasons` is what
+   *  the run reports back to whoever owns the harness. */
+  gaps: number
+  gapReasons: string[]
   /** Why, verbatim from the first skipped case. Null when nothing was skipped. */
   skipReason: string | null
   /** Cases that reached a verdict — everything except a timeout. */
@@ -339,12 +427,50 @@ export interface EvalSweep {
   /** Was the guard pass actually on? With `mode: 'off'` every `guardRate` is
    *  zero, and zero-because-off must not read as zero-because-clean. */
   guarded: boolean
+  /** HOW WIDE THE SWEEP RAN. Reported because it changes what `latencyP50`
+   *  MEANS: at four wide the number includes queueing at the provider, so it is
+   *  "what a call costs under this load" rather than "what a call costs". A page
+   *  that showed the number without the width would be quietly comparing two
+   *  different measurements across two runs. */
+  concurrency: SweepConcurrency
+  /** THE CASES THIS PASS ACTUALLY RAN, as opposed to the ones it inherited from
+   *  an earlier one.
+   *
+   *  Speed is measured over these and never over `cases`. A supplemental pass
+   *  that ran seven fixtures must not report a latency computed from two hundred
+   *  and forty inherited ones measured last week at a different width — the
+   *  number would not be about this pass, this model's current deployment, or
+   *  anything an admin could act on. It also means a small deliberate pass is a
+   *  legitimate way to refresh the speed reading without re-buying the battery. */
+  measured: EvalCaseScore[]
+}
+
+export interface SweepConcurrency {
+  /** What the run asked for. */
+  requested: number
+  /** What it ended at. Below `requested` means the valve was still closed when
+   *  the sweep finished; back AT `requested` means it closed and reopened, which
+   *  is the ordinary shape of a run that hit one bad minute. */
+  ended: number
+  /** THE NARROWEST IT EVER RAN, which is the number that explains the timings.
+   *  `ended` alone cannot: a sweep that spent two hundred cases at width 1 and
+   *  recovered on the last ten ends at 4 and looks like it never struggled. */
+  low: number
+  /** THE PROVIDER PUSHING BACK, verbatim, whether or not there was width left to
+   *  give up. Non-null is a fact about the DEPLOYMENT and must never be read as
+   *  a fact about the model — it is the reason beside every case this run had to
+   *  mark unmeasured. */
+  narrowedBecause: string | null
 }
 
 // ── Injected edges ───────────────────────────────────────────────────────────
 
 export interface EvalDeps {
   harnesses: () => Promise<RegisteredHarness[]>
+  /** THE TOOL THIS INSTALL SUPPLIES FOR A CAPABILITY, or null. Injected so the
+   *  sweep stays runnable with no database and no MCP registry anywhere near it
+   *  — and so a test can drive the supplemented path without one. */
+  supplier?: (capability: Capability) => Promise<{ server: string; tool: string } | null>
   /** Passed through to `runHarness` as `ctx.deps`. The sweep adds its own
    *  transport wrapper, `recordRun` and `recordFindings` on top (see the file
    *  header for why the last two are suppressed); everything else — model
@@ -352,8 +478,15 @@ export interface EvalDeps {
    *  capability floor refusing a weak model IS a tier-2 result and a fake that
    *  never refuses would be testing the fake. */
   harnessDeps: Partial<HarnessDeps>
-  readStatus: () => Promise<EvalSweepStatus>
+  /** THIS CANDIDATE'S checkpoint. Per model since sweeps run concurrently — a
+   *  single row would have three candidates' cases overwrite each other, and
+   *  the resume that reads it back would restart the wrong one. */
+  readStatus: (model: string) => Promise<EvalSweepStatus>
   writeStatus: (status: EvalSweepStatus) => Promise<void>
+  /** The named candidates' checkpoints, for the panel that draws the running
+   *  sweeps. Takes the list rather than discovering it — see the note on the
+   *  real implementation. */
+  readAllStatus: (models: readonly string[]) => Promise<Record<string, EvalSweepStatus>>
   /** Dollars for one call's tokens, or null when this install cannot say.
    *
    *  DEFAULTS TO NULL ON PURPOSE. Talaria prices spend in exactly one place —
@@ -381,7 +514,31 @@ export interface EvalDeps {
   now: () => number
 }
 
-const STATUS_KEY = 'harness_eval_status'
+/** THE CHECKPOINT — ONE ROW PER CANDIDATE, and the row is the reason a wide
+ *  sweep is affordable at all.
+ *
+ *  WHAT THE SHARED MAP COST. The checkpoint is written once per CASE, so a
+ *  store holding every running candidate's cases in one row made each write a
+ *  read-modify-write of every other run's work as well. Write traffic over a
+ *  sweep went as O(N² × cases²) — about 400 MB at three candidates, ~4.6 GB at
+ *  ten — and, worse, each write is a synchronous `JSON.parse`/`stringify` of a
+ *  multi-megabyte blob ON THE EVENT LOOP THAT SERVES THE UI. The ceiling that
+ *  produced was five or six concurrent runs, and the thing an org actually wants
+ *  to do here is sweep a shortlist of a dozen models in one sitting.
+ *
+ *  Per row, a write is proportional to ONE candidate's own cases and nothing
+ *  else. N drops out of the cost entirely: ten concurrent sweeps write exactly
+ *  what ten sequential ones would, and no two of them touch the same row, so
+ *  the serializing write queue this used to need is gone.
+ *
+ *  TWO OLDER SHAPES ARE STILL READ, never written. `harness_eval_runs` (the
+ *  shared map) and `harness_eval_status` (the single row before that) each hold
+ *  the resume point of whatever sweep was in flight when its shape changed —
+ *  code already loaded in the process keeps writing the old one, and the loser
+ *  of ignoring it is hours of paid-for cases. They age out on their own. */
+const runKey = (model: string): string => `harness_eval_run:${model}`
+const RUNS_KEY = 'harness_eval_runs'
+const LEGACY_STATUS_KEY = 'harness_eval_status'
 
 export const IDLE_STATUS: EvalSweepStatus = {
   state: 'idle',
@@ -395,11 +552,48 @@ export const IDLE_STATUS: EvalSweepStatus = {
   cases: [],
 }
 
+/** One candidate's checkpoint: its own row, then the two older shapes. The
+ *  fallbacks are read-only and exist so a sweep that was in flight when the
+ *  storage changed still resumes rather than re-buying its cases. */
+async function readRun(model: string): Promise<EvalSweepStatus> {
+  const own = await getSetting<EvalSweepStatus | null>(runKey(model), null)
+  if (own) return own
+  const shared = (await getSetting<Record<string, EvalSweepStatus>>(RUNS_KEY, {}))[model]
+  if (shared) return shared
+  const legacy = await getSetting<EvalSweepStatus | null>(LEGACY_STATUS_KEY, null)
+  return legacy?.model === model ? legacy : IDLE_STATUS
+}
+
 const REAL_DEPS: EvalDeps = {
   harnesses: listActivityHarnesses,
+  // The same resolver `capability-reach.ts` uses, so the sweep supplements
+  // exactly what production would supply — never a second answer to "what does
+  // this install have".
+  supplier: async (capability) =>
+    supplierFor(
+      capability,
+      await listMcpServers().catch(() => []),
+      await getSetting(PROVIDERS_KEY, {}).catch(() => ({})),
+      // TALARIA'S OWN TOOLS COUNT. Without this the sweep asked an empty MCP
+      // registry — the default on every fresh install — got null, and ran
+      // `research-search` with NO SEARCH TOOL while SearXNG answered queries on
+      // the same box. The harness that exists to measure tool-driven research
+      // was measuring a model answering from memory.
+      await platformSupply().catch(() => []),
+    ),
   harnessDeps: {},
-  readStatus: () => getSetting<EvalSweepStatus>(STATUS_KEY, IDLE_STATUS),
-  writeStatus: (status) => setSetting(STATUS_KEY, status),
+  readStatus: readRun,
+  // ONE ROW, ONE WRITER, NO READ FIRST. Nothing else writes this key, so there
+  // is nothing to merge and nothing to serialize against — which is the whole
+  // point of the per-candidate row.
+  writeStatus: async (status) => {
+    if (status.model) await setSetting(runKey(status.model), status)
+  },
+  // ASKED FOR BY NAME rather than enumerated: the caller (`fitnessRuns`) already
+  // knows which candidates have runs, and a prefix scan of `app_settings` to
+  // rediscover that would be a second, weaker source of the same list.
+  readAllStatus: async (models) =>
+    Object.fromEntries(await Promise.all(models.map(async (m) => [m, await readRun(m)] as const))),
   price: async () => null,
   // A THROW HERE MUST NOT SKIP EVERYTHING. If the fleet listing is unreachable
   // the honest fallback is "assume it can run", which spends one refusal per
@@ -410,8 +604,20 @@ const REAL_DEPS: EvalDeps = {
   now: () => Date.now(),
 }
 
-/** The live status, for a polling admin panel. */
-export const evalSweepStatus = (): Promise<EvalSweepStatus> => REAL_DEPS.readStatus()
+/** One candidate's live status, for a polling admin panel. */
+export const evalSweepStatus = (model: string): Promise<EvalSweepStatus> => REAL_DEPS.readStatus(model)
+
+/** Several candidates', for the panel that draws all the running sweeps. */
+export const evalSweepStatuses = (models: readonly string[]): Promise<Record<string, EvalSweepStatus>> => REAL_DEPS.readAllStatus(models)
+
+/** THROW AWAY THE RESUME LEDGER for one candidate.
+ *
+ *  A sweep's persisted status is BOTH its progress bar and the list of cases it
+ *  already paid for, so clearing the archived report without clearing this
+ *  leaves a model that looks untested and then resumes into a run that is
+ *  already finished — a Start that returns instantly having bought nothing. The
+ *  two always go together, which is why `clearFitnessResults` owns both. */
+export const clearEvalStatus = (model: string): Promise<void> => REAL_DEPS.writeStatus({ ...IDLE_STATUS, model })
 
 export interface EvalOptions {
   /** THE BOUND ON ONE CASE. A harness that hangs — a persona container that
@@ -425,14 +631,277 @@ export interface EvalOptions {
    *  that never settles. The signal is fired too, so a transport that does honor
    *  it stops burning tokens. */
   caseTimeoutMs?: number
+  /** ASKED TO STOP FROM ANYWHERE, not just from this process. The in-process
+   *  set below only reaches a sweep whose closure lives in the instance the
+   *  request hit — one HMR reload or one restart away from being a different
+   *  one, which is why the Stop button did nothing. `surface.ts` supplies a
+   *  reader over the persisted request; absent, only the local set applies. */
+  shouldStop?: (model: string) => Promise<boolean>
+  /** ARCHIVE EVERY CASE, PASSING INCLUDED. The settings-row report keeps a
+   *  transcript only for cases that failed something — right for a drill-down,
+   *  useless for verification, because "did our fixture accept something weak"
+   *  can only be answered from a PASSING transcript. Injected rather than called
+   *  directly so the sweep stays testable with no database anywhere near it. */
+  archiveCase?: (model: string, runStartedAt: string, score: EvalCaseScore) => Promise<void>
+  /** Called once when a run ends, whatever way it ended. */
+  archivePrune?: (model: string) => Promise<void>
   /** Only these harness ids. Empty/omitted means every registered harness. */
   only?: string[]
   /** Ignore a resumable status and start clean. */
   restart?: boolean
+  /** KEEP THE PASSES, RE-ASK EVERYTHING ELSE.
+   *
+   *  The middle setting between resume and restart, and the one an admin
+   *  actually wants after a bad run: a sweep that timed out on five cases
+   *  because the provider was busy does not need the other two hundred and
+   *  forty-two bought again. Resume cannot do it — every case is already
+   *  RECORDED, so there is nothing pending — and restart re-buys the lot.
+   *
+   *  See `worthRetrying` for what counts as "everything else"; the short version
+   *  is anything that did not reach a clean verdict, including the cases this
+   *  run had to mark unmeasured. */
+  retryFailed?: boolean
+  /** RUN WHAT HAS NEVER BEEN RUN, and nothing else.
+   *
+   *  The mode that matters once a suite is being actively developed: this month
+   *  the registry gained fixtures on nine harnesses, and a model tested before
+   *  them had no verdict on any of the new ones. Resume cannot help — the run is
+   *  `done`, so nothing is pending — and restart re-buys two hundred and forty
+   *  cases to ask seven questions.
+   *
+   *  It also PRUNES: a recorded case whose fixture no longer exists is a verdict
+   *  about an assertion nobody can read, and leaving it in the ledger means the
+   *  matrix is scored partly on questions the suite has stopped asking. */
+  supplement?: boolean
+  /** HOW MANY OF A HARNESS'S FIXTURES RUN AT ONCE. See `DEFAULT_CONCURRENCY`.
+   *  Clamped to `MAX_CONCURRENCY`; 1 restores the old strictly-sequential sweep. */
+  concurrency?: number
+  /** The gaps between retries of a rate-limited case. Injected so a test can
+   *  drive the retry path in milliseconds instead of half a minute — the
+   *  production values are `PRESSURE_BACKOFF_MS`. */
+  pressureBackoffMs?: readonly number[]
   deps?: Partial<EvalDeps>
 }
 
-const DEFAULT_CASE_TIMEOUT_MS = 60_000
+/** HOW MANY CASES RUN AT ONCE, and what the old sequential rule was protecting.
+ *
+ *  THIS SWEEP WAS SEQUENTIAL ON PURPOSE, for two reasons that are both still
+ *  true and neither of which required going one at a time:
+ *
+ *    LATENCY STOPS MEANING WHAT THE PAGE SAYS. `latencyP50` under N-way
+ *    concurrency includes queueing at the provider, so it is no longer "what one
+ *    call costs". The fix is not to refuse concurrency; it is to SAY SO —
+ *    `EvalSweep.concurrency` is recorded and the fitness page labels the number
+ *    with it, so nobody reads a 4-wide p50 as a single-request latency.
+ *
+ *    A SELF-HOSTED 14B BEHIND ONE GPU rate-limits, and those 429s would score as
+ *    contract failures — a fact about the deployment recorded as a fact about
+ *    the model. The fix is `narrowOnPressure` below: the sweep drops its width
+ *    when it sees rate-limit pressure and says it did, rather than an admin
+ *    having to know in advance what their hardware will take.
+ *
+ *  FOUR, because a 247-fixture sweep one-at-a-time is most of an hour and the
+ *  first duplicate an admin runs is the one they stop watching. Four against a
+ *  hosted gateway is unremarkable; against a single GPU the pressure valve finds
+ *  1 within a case or two.
+ *
+ *  IT MULTIPLIES WITH `MAX_CONCURRENT_RUNS`: eight candidates at four wide is
+ *  thirty-two calls in flight. That is the shape a shortlist comparison has, and
+ *  it is why the valve is per sweep rather than global — each sweep discovers its
+ *  own ceiling against the provider it is actually talking to. */
+export const DEFAULT_CONCURRENCY = 4
+export const MAX_CONCURRENCY = 8
+
+/** A reply that means "you are asking too fast", not "the model is bad". Both
+ *  halves matter: a 429 is unambiguous, and the 5xx family covers the overloaded
+ *  gateways that answer 502/503 under the same pressure. */
+const PRESSURE = /\b(429|too many requests|rate.?limit|502|503|504|overloaded|capacity)\b/i
+
+/** HOW MANY TIMES A PRESSURED CASE IS RE-RUN before the sweep gives up on it.
+ *
+ *  A 429 IS NOT A RESULT ABOUT THE MODEL. It is the provider saying "slower",
+ *  and scoring it as a contract failure is the same category error as scoring a
+ *  401 as a model that cannot hold JSON — a fact about the deployment recorded
+ *  as a fact about the weights, permanently, in a matrix an admin makes a
+ *  purchasing decision from. The sweep narrows itself when it sees one; it
+ *  should also RE-ASK the question it did not get an answer to.
+ *
+ *  Three attempts with a widening gap, because rate limits clear on a timescale
+ *  of seconds and the sweep has already halved its own width by the second one.
+ *  A case that is still pressured after that is not going to succeed by being
+ *  asked a fourth time in the same minute. */
+const PRESSURE_RETRIES = 3
+const PRESSURE_BACKOFF_MS = [2_000, 8_000, 20_000]
+
+/** A LOST REQUEST GETS ONE MORE CHANCE, NOT THREE, and the asymmetry is about
+ *  cost rather than about principle. A rate limit comes back in milliseconds, so
+ *  three retries are nearly free. A request that is never answered costs the
+ *  WHOLE CASE BUDGET to discover — sixty seconds, or a hundred and twenty on a
+ *  harness with a repair turn — so three retries would turn one lost request
+ *  into four minutes, and five of them into twenty. One retry doubles the cost
+ *  and gives a genuine second chance; a request that vanishes twice is telling
+ *  you about the deployment, not about the model. */
+const TIMEOUT_RETRIES = 1
+
+/** HOW MANY CLEAN CASES IN A ROW REOPEN THE VALVE BY ONE LANE.
+ *
+ *  THE BUG THIS EXISTS TO FIX. The pressure valve was one-way. `narrow()` halved
+ *  the width and nothing ever put it back, so a sweep that requested 4 and met a
+ *  single lost request in its first minute — one vanished HTTP call, the failure
+ *  mode `lostRequest` was written for precisely because it says NOTHING about
+ *  the deployment's capacity — spent its remaining two hundred and forty cases
+ *  strictly sequential. The archived reading said it plainly and nobody read it:
+ *  `requested: 4, ended: 1`. An admin who picked 4 in the modal got 1, was never
+ *  told, and waited four times as long for it.
+ *
+ *  A VALVE THAT ONLY CLOSES IS A RATCHET, and a ratchet is the wrong shape for a
+ *  signal that is usually transient. Rate limits clear in seconds; a lost request
+ *  is frequently a single bad connection. Both deserve an immediate retreat and
+ *  neither is evidence about the next two hundred cases.
+ *
+ *  FIVE, AND WHY IT IS NOT ONE. Reopening after a single success would oscillate
+ *  — widen, hit the same limit, halve, repeat — turning a quiet ceiling into a
+ *  sawtooth that pays a 429 every few cases. Five clean cases at the current
+ *  width is evidence the deployment is actually serving that width. And it steps
+ *  up by ONE rather than doubling back: coming down fast and going up slow is
+ *  what keeps a real ceiling found instead of rediscovered. */
+const RECOVER_AFTER = 5
+
+/** THE DEPLOYMENT CANNOT REACH THIS MODEL AT ALL — which is not a fact about the
+ *  model, and must never be scored as one.
+ *
+ *  THE RUN THAT FOUND THIS. A sweep of qwen3.8-max recorded 247 failures, every
+ *  one of them `gateway completion 404: No allowed providers are available for
+ *  the selected model`, in 58 milliseconds each. The cause was the org's own
+ *  no-train policy: `data_collection: 'deny'` pins `provider.only` to the US
+ *  pool, and that model is served only by alibaba. A real and useful finding —
+ *  and the matrix reported it as a model that fails every harness in Talaria.
+ *
+ *  These are the answers that mean "we never asked": no provider under this
+ *  routing policy, no such model, or a credential the endpoint rejected. */
+const UNREACHABLE =
+  /no allowed providers|no endpoints found|not a valid model|model_not_found|does not exist or you do not have access|\b40[13]\b|invalid api key|unauthorized/i
+
+const unreachable = (score: EvalCaseScore): boolean => score.error !== null && UNREACHABLE.test(score.error)
+
+/** How many consecutive unreachable cases before the sweep stops asking.
+ *
+ *  A STRUCTURAL REFUSAL DOES NOT GET BETTER ON THE NEXT FIXTURE. Three in a row
+ *  with nothing in between is a routing or credential fact about the whole run,
+ *  and spending the remaining two hundred and forty cases rediscovering it costs
+ *  an admin an hour and tells them nothing they did not know by case three. */
+const UNREACHABLE_STREAK = 3
+
+/** Was this case's failure the DEPLOYMENT rather than the model?
+ *
+ *  TWO SHAPES, and the second is the one the traces found. The first is an
+ *  explicit 429 or an overloaded-gateway 5xx. The second is a request that WENT
+ *  OUT AND NEVER CAME BACK: every timeout in the first traced sweep read
+ *  `1 upstream call, still no reply after 60006ms` — one request, no response,
+ *  ever. That is not a slow model against a tight budget, which would show a
+ *  settled call just over the line; it is a lost request, and it says exactly as
+ *  much about the model as a 429 does, which is nothing.
+ *
+ *  So it retries on the same path. A case that measured nothing must not be
+ *  scored as if it had. */
+const lostRequest = (score: EvalCaseScore): boolean => score.timedOut && (score.upstream ?? []).some((u) => !u.settled)
+const rateLimited = (score: EvalCaseScore): boolean => score.error !== null && PRESSURE.test(score.error)
+const pressured = (score: EvalCaseScore): boolean => rateLimited(score) || lostRequest(score)
+/** How many more times to ask, given which shape of nothing came back. */
+const retriesFor = (score: EvalCaseScore): number => (rateLimited(score) ? PRESSURE_RETRIES : TIMEOUT_RETRIES)
+
+/** A wait a Stop can interrupt. A sweep that ignored the button for twenty
+ *  seconds of backoff would be the Stop bug again in a smaller costume. */
+const backoff = async (ms: number, stopped: () => boolean): Promise<void> => {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    if (stopped()) return
+    await new Promise((r) => setTimeout(r, Math.min(250, until - Date.now())))
+  }
+}
+
+/** THE SWEEP'S WIDTH, and the two things that move it. Passed as one object
+ *  because the three are meaningless apart: a `narrow` with no `ceiling` to
+ *  recover toward is the ratchet `RECOVER_AFTER` exists to undo. */
+interface Valve {
+  /** How many cases may be in flight RIGHT NOW. Re-read constantly. */
+  width: () => number
+  /** The most lanes this sweep will ever want — what the admin asked for. Lanes
+   *  are spawned to this and park below it, so reopening costs nothing. */
+  ceiling: number
+  /** The provider pushed back. Halves the width. */
+  narrow: (why: string) => void
+  /** A case came back. Reopens a lane after `RECOVER_AFTER` in a row. */
+  settled: () => void
+}
+
+/** How long a parked lane waits before re-checking the width. Short enough that
+ *  a reopened lane is working again within a case, long enough that six parked
+ *  lanes are not a spin loop. */
+const PARK_MS = 250
+
+/** Run `items` through `worker`, `valve.width()` at a time, stopping early when
+ *  `stop` says so. Order of COMPLETION is not order of submission, which is
+ *  fine: the resume ledger is a set of case keys and every rate is computed over
+ *  the whole list.
+ *
+ *  WIDTH IS LIVE, AND IT DID NOT USED TO BE. This function read `width()` once —
+ *  to size the lane array — and then ran those lanes to exhaustion. Two comments
+ *  inside the loop claimed otherwise (that width was re-read per item, that a
+ *  lane above it parked itself) and neither was true of the code under them. The
+ *  visible consequence: narrowing did nothing until the NEXT harness, because
+ *  the next harness built a new pool; and widening did nothing ever, because
+ *  lanes were only ever spawned, never woken.
+ *
+ *  So lanes are spawned to the CEILING and park below the current width. A
+ *  sweep that narrows sheds lanes inside the harness that hit the pressure, and
+ *  one that recovers picks them back up without waiting for a pool rebuild. */
+async function pool<T>(items: readonly T[], valve: Valve, stop: () => boolean, worker: (item: T) => Promise<void>): Promise<void> {
+  let next = 0
+  const lanes = Array.from({ length: Math.max(1, Math.min(valve.ceiling, items.length)) }, async (_slot, lane) => {
+    for (;;) {
+      if (stop()) return
+      // Checked BEFORE parking, so the last lanes to finish do not sit waiting
+      // on a width that will never rise again for a list that is already empty.
+      if (next >= items.length) return
+      if (lane >= valve.width()) {
+        await new Promise((r) => setTimeout(r, PARK_MS))
+        continue
+      }
+      const i = next++
+      if (i >= items.length) return
+      await worker(items[i]!)
+    }
+  })
+  await Promise.all(lanes)
+}
+
+/** THE CLOCK ONE CASE RACES — sized per harness, not flat.
+ *
+ *  A FLAT 60s WAS A SINGLE-CALL BUDGET APPLIED TO MULTI-CALL CASES, and it read
+ *  as the model's failure. A case is not one model call: `research-search` runs
+ *  up to three tool rounds, a dry run up to its own `dryRun.maxTurns`, and a JSON harness can
+ *  add a repair turn on top. The harnesses that timed out most were exactly the
+ *  ones that call the most — research-search 22%, workbench:standard 15%,
+ *  muse:draft 13% — and every one of those timeouts was then charged against the
+ *  contract rate, capping research-search at 0.78 for ANY model however good.
+ *
+ *  So the budget is per-turn, multiplied by the turns the harness may actually
+ *  take. Reasoning models are slow per call and this scales with them; the bound
+ *  still exists so one hung transport cannot strand a sweep. */
+const PER_TURN_TIMEOUT_MS = 60_000
+
+/** Turns a harness may take in one case, for the clock above. Read off the same
+ *  constants the code paths use, so a raised turn budget cannot silently leave
+ *  the timeout behind. */
+export function turnsPerCase(def: HarnessDefinition<unknown, unknown>, dryRun: boolean): number {
+  // A dry run drives the loop itself; every other case is one model turn.
+  const loop = dryRun ? turnBudget(def.dryRun?.maxTurns) : 1
+  const repair = def.output.kind === 'json' ? Math.max(0, def.output.repair ?? 1) : 0
+  return loop + repair
+}
+
+const DEFAULT_CASE_TIMEOUT_MS = PER_TURN_TIMEOUT_MS
 /** Bounded for the same reason `HarnessResult.raw` is: a drill-down, not an
  *  archive, and a model that answers with 200KB of prose must not be able to
  *  turn one failed case into a settings row nothing can read. */
@@ -492,8 +961,11 @@ const skippedCase = (harness: string, name: string, band: EvalBand, reason: stri
   answered: false,
   task: 'unscored',
   taskError: null,
+  gap: null,
   findings: 0,
   latencyMs: 0,
+  startedAt: new Date(0).toISOString(),
+  wallMs: 0,
   promptTokens: 0,
   completionTokens: 0,
   costUsd: null,
@@ -503,6 +975,9 @@ const skippedCase = (harness: string, name: string, band: EvalBand, reason: stri
   error: null,
   prompt: null,
   raw: null,
+  turns: null,
+  calls: null,
+  upstream: null,
 })
 
 // ── Scoring (pure over recorded cases) ───────────────────────────────────────
@@ -533,20 +1008,39 @@ export function scoreHarness(meta: HarnessMeta, all: EvalCaseScore[]): HarnessSc
   // the two would divide by a denominator that includes fixtures nothing asked.
   const skips = all.filter((c) => c.skipped !== null)
   const cases = all.filter((c) => c.skipped === null)
-  const total = cases.length
+  // A TIMEOUT IS NOT A CONTRACT FAILURE, and counting it as one was the same
+  // mistake `skipped` was introduced to fix, wearing different clothes. The
+  // model never finished answering, so nothing about its contract was observed
+  // — the clock ran out, which is a fact about our budget, the provider's
+  // latency and our own tool loop. It used to sit in the denominator with
+  // `contractHeld: false`, which capped `research-search` at 0.78 for any model
+  // however good, purely because a fifth of its cases ran out of room.
+  //
+  // `scored` — cases that reached a verdict — already existed and was used only
+  // for the latency percentile. Every rate now divides by it.
   const scored = cases.filter((c) => !c.timedOut)
-  const first = cases.filter((c) => c.firstPass).length
-  const held = cases.filter((c) => c.contractHeld).length
-  const failedFirst = cases.filter((c) => !c.firstPass).length
-  const recovered = cases.filter((c) => c.contractHeld && !c.firstPass).length
-  const taskable = cases.filter((c) => c.task !== 'unscored')
+  const total = scored.length
+  const first = scored.filter((c) => c.firstPass).length
+  const held = scored.filter((c) => c.contractHeld).length
+  const failedFirst = scored.filter((c) => !c.firstPass).length
+  const recovered = scored.filter((c) => c.contractHeld && !c.firstPass).length
+  // A GAP IS NOT TASKABLE. `task` is already 'unscored' for one, so this falls
+  // out — the count and the reasons are carried separately so they reach the
+  // people who can fix them instead of vanishing into an absence.
+  const gapped = scored.filter((c) => c.gap !== null)
+  const taskable = scored.filter((c) => c.task !== 'unscored')
   const priced = cases.filter((c) => c.costUsd !== null)
   const latencies = [...scored.map((c) => c.latencyMs)].sort((a, b) => a - b)
   return {
     ...meta,
-    cases: total,
+    // `cases` stays every case that RAN, timeouts included, so the count an
+    // admin reads still matches the fixtures spent. `scored` is the denominator
+    // of the rates, and the gap between them is the timeout count.
+    cases: cases.length,
     skipped: skips.length,
     skipReason: skips[0]?.skipped ?? null,
+    gaps: gapped.length,
+    gapReasons: [...new Set(gapped.map((c) => c.gap ?? ''))].filter(Boolean),
     scored: scored.length,
     contractRate: rate(first, total),
     repairRate: rate(held, total),
@@ -557,11 +1051,16 @@ export function scoreHarness(meta: HarnessMeta, all: EvalCaseScore[]): HarnessSc
       standard: bandScore(taskable, 'standard'),
       hard: bandScore(taskable, 'hard'),
     },
+    // OVER `scored` LIKE THE REST. A timed-out case produced no reply, so the
+    // guard pass never ran on it and it can contribute no findings — leaving it
+    // in the denominator would dilute the rate by the share of cases that ran
+    // out of clock. Same for `answeredRate`: "did the model answer" is not a
+    // question about a case that never got to.
     guardRate: rate(
-      cases.reduce((n, c) => n + c.findings, 0),
+      scored.reduce((n, c) => n + c.findings, 0),
       total,
     ),
-    answeredRate: rate(cases.filter((c) => c.answered).length, total),
+    answeredRate: rate(scored.filter((c) => c.answered).length, total),
     latencyP50: percentile(latencies, 0.5),
     latencyP95: percentile(latencies, 0.95),
     promptTokens: cases.reduce((n, c) => n + c.promptTokens, 0),
@@ -605,20 +1104,78 @@ export const metaOf = (h: RegisteredHarness): HarnessMeta => ({
  *  runs the sweep and the Stop button reaches the same node. It is a REQUEST,
  *  honored between cases and by aborting the case in flight, so a stop always
  *  lands on a case boundary and the persisted status is never half a case. */
-let sweeping = false
-let stopRequested = false
+/** The candidates sweeping in this process, and the ones asked to stop.
+ *
+ *  SETS RATHER THAN BOOLEANS because sweeps now run concurrently. Everything a
+ *  sweep touches was already per-candidate — its checkpoint, its cases, its
+ *  scores — so the only thing that had to stop being global was the flag. What
+ *  stays global is the CAP, which lives in surface.ts with the other run
+ *  admission rules; a second sweep of the SAME model is still refused here,
+ *  because two sweeps interleaving one candidate's cases is the thing the
+ *  original boolean was actually protecting against. */
+const sweeping = new Set<string>()
+const stopRequested = new Set<string>()
 
-/** Ask the running sweep to stop. Returns whether one was running to ask. */
-export function stopEvalSweep(): boolean {
-  if (!sweeping) return false
-  stopRequested = true
+/** THE CASE THAT IS RUNNING RIGHT NOW, per candidate.
+ *
+ *  WHY IT IS IN MEMORY AND NOT IN THE STATUS ROW. The persisted status is
+ *  written after every CASE — it is the progress bar and the resume ledger, and
+ *  that cadence is already the right one for both. A turn-by-turn view needs an
+ *  update per MODEL TURN, which on a 250-fixture sweep with a six-turn tool loop
+ *  is nearly two thousand writes to one `app_settings` row. So the in-flight
+ *  view is process-local and free.
+ *
+ *  WHAT THAT COSTS, said plainly: an instance that did not start the run shows
+ *  nothing here. That degrades to an empty panel, never to a wrong one, and the
+ *  completed-case feed beside it is persisted and unaffected. */
+const inFlight = new Map<string, Map<string, InFlightCase>>()
+
+/** The case a sweep is on, as it happens. */
+export interface InFlightCase {
+  harness: string
+  case: string
+  band: EvalBand
+  /** Epoch ms. The UI turns this into "running for 12s", which is the number
+   *  that tells a watcher whether a sweep is working or wedged. */
+  startedAt: number
+  /** Model turns started, and the most this case may take (`turnsPerCase`). */
+  turn: number
+  maxTurns: number
+  /** Upstream calls issued, and how many have no reply yet. */
+  calls: number
+  open: number
+  /** THE CONVERSATION SO FAR, trimmed — what "show the turns currently testing"
+   *  actually means. Rebuilt from the request on every turn, because the request
+   *  IS the conversation up to that point. */
+  turns: EvalTurn[]
+}
+
+/** What is this candidate doing right now? EMPTY when nothing is, or when the
+ *  sweep belongs to another instance.
+ *
+ *  A LIST, because a sweep runs several cases at once (see `DEFAULT_CONCURRENCY`)
+ *  and a panel showing one of four would make three quarters of a working sweep
+ *  invisible. Oldest first, so the one most likely to be stuck reads first. */
+export const inFlightFor = (model: string): InFlightCase[] =>
+  [...(inFlight.get(model)?.values() ?? [])].sort((a, b) => a.startedAt - b.startedAt)
+
+/** Ask a running sweep to stop. Returns whether one was running to ask.
+ *  Without a model, asks every sweep in flight to stop. */
+export function stopEvalSweep(model?: string): boolean {
+  if (model === undefined) {
+    if (sweeping.size === 0) return false
+    for (const m of sweeping) stopRequested.add(m)
+    return true
+  }
+  if (!sweeping.has(model)) return false
+  stopRequested.add(model)
   return true
 }
 
 /** Is a sweep running IN THIS PROCESS? A persisted `state: 'running'` with this
  *  false is a sweep a restart interrupted, which is resumable rather than
  *  stuck — see `runEvalSweep`. */
-export const evalSweepRunning = (): boolean => sweeping
+export const evalSweepRunning = (model?: string): boolean => (model === undefined ? sweeping.size > 0 : sweeping.has(model))
 
 // ── The driver ───────────────────────────────────────────────────────────────
 
@@ -630,6 +1187,56 @@ interface CaseRun {
   estimated: boolean
   threw: string | null
   timedOut: boolean
+  /** EVERY UPSTREAM CALL THIS CASE MADE, in order. See `UpstreamAttempt`. */
+  upstream: UpstreamAttempt[]
+}
+
+/** One model call inside one case, as the sweep saw it.
+ *
+ *  WHY THIS EXISTS. A timed-out case used to report `the case did not finish
+ *  inside 60000ms` and nothing else, which is the least useful true sentence
+ *  available: it cannot distinguish a model that is genuinely slow from a
+ *  request that never came back, from a case that spent its budget on four
+ *  retries, from one that never reached the provider at all. Three rounds of
+ *  "still getting timeouts" went past on that sentence.
+ *
+ *  These are cheap — four fields per model call, a handful per case — and they
+ *  turn the next report into a diagnosis instead of a symptom. */
+export interface UpstreamAttempt {
+  /** Wall time for this call. For one still in flight when the case was killed,
+   *  how long it had been waiting. */
+  ms: number
+  /** Did it come back at all? False for both an error and a call still open. */
+  settled: boolean
+  /** The transport's own sentence when it threw — a gateway status and body, a
+   *  refusal, an abort. Null on a clean reply. */
+  error: string | null
+}
+
+/** A call still open when the case was killed has no duration of its own yet.
+ *  Give it the time it had actually been waiting, so the sentence below can say
+ *  "still had no reply after 59.4s" rather than "0ms". */
+const settleOpen = (calls: readonly UpstreamAttempt[], startedAt: number): UpstreamAttempt[] =>
+  calls.map((c) => (c.settled ? c : { ...c, ms: Date.now() - startedAt }))
+
+/** THE SENTENCE A TIMEOUT SHOULD HAVE BEEN. Names what the budget was actually
+ *  spent on, which is the whole question an admin has when a model they know to
+ *  be fast times out. */
+function timeoutDetail(caseMs: number, calls: readonly UpstreamAttempt[]): string {
+  if (calls.length === 0) {
+    // The case never got a request out. That is not the model: it is route
+    // resolution, the capability floor, key resolution or the provider catalog
+    // — all of which happen before a token is spent and all of which can block.
+    return `the case did not finish inside ${caseMs}ms and never made an upstream call at all — the time went somewhere before the request (route resolution, the endpoint key, or the provider catalog), not to the model`
+  }
+  const open = calls.filter((c) => !c.settled)
+  const done = calls.filter((c) => c.settled)
+  const parts = [`the case did not finish inside ${caseMs}ms after ${calls.length} upstream call(s)`]
+  if (done.length) parts.push(`${done.length} came back (${done.map((c) => `${c.ms}ms${c.error ? ' error' : ''}`).join(', ')})`)
+  if (open.length) parts.push(`${open.length} still had no reply after ${Math.max(...open.map((c) => c.ms))}ms`)
+  const errored = calls.filter((c) => c.error)
+  if (errored.length) parts.push(`last error: ${errored.at(-1)!.error}`)
+  return parts.join('; ')
 }
 
 /** The transport the sweep wraps around the real one: it changes nothing about
@@ -637,10 +1244,42 @@ interface CaseRun {
  *  can see. `HarnessResult` carries neither by design — the drill-down needs
  *  the prompt and the cost line needs the tokens, and widening the runner's
  *  result type for a benchmark would put benchmark concerns in the hot path. */
-function recordingTransport(base: Transport, into: CaseRun): Transport {
+function recordingTransport(base: Transport, into: CaseRun, live: InFlightCase | null): Transport {
   return async (req: TransportRequest) => {
     into.prompt = req.messages.map((m) => `${m.role}: ${m.content}`).join('\n\n')
-    const reply = await base(req)
+    if (live) {
+      live.turn++
+      // THE REQUEST IS THE CONVERSATION. A tool loop hands the whole transcript
+      // back down on every turn, so publishing `req.messages` gives a live view
+      // that grows a turn at a time without the loop having to report anything.
+      live.turns = recordTurns(req.messages) ?? req.messages.map((m) => ({ role: m.role, content: m.content.slice(0, LIVE_TURN_CAP) }))
+      live.calls++
+      live.open++
+    }
+    // PUSHED BEFORE THE AWAIT, so a call that never comes back is still in the
+    // list when the case is killed. Recording on completion would make the one
+    // attempt that matters — the one that hung — the only one invisible.
+    const attempt: UpstreamAttempt = { ms: 0, settled: false, error: null }
+    const at = Date.now()
+    into.upstream.push(attempt)
+    let reply: Awaited<ReturnType<Transport>>
+    try {
+      reply = await base(req)
+    } catch (err) {
+      attempt.ms = Date.now() - at
+      attempt.settled = true
+      attempt.error = (err instanceof Error ? err.message : String(err)).slice(0, 300)
+      if (live) live.open--
+      throw err
+    }
+    attempt.ms = Date.now() - at
+    attempt.settled = true
+    if (live) {
+      live.open--
+      // The reply, appended, so the panel shows what came back rather than only
+      // what went out.
+      if (reply.text.trim()) live.turns = [...live.turns, { role: 'assistant', content: reply.text.slice(0, LIVE_TURN_CAP) }]
+    }
     if (reply.usage) {
       into.promptTokens += reply.usage.promptTokens
       into.completionTokens += reply.usage.completionTokens
@@ -679,6 +1318,71 @@ async function bounded<T>(work: Promise<T>, ms: number, onTimeout: () => void): 
 
 const cap = (text: string | null): string | null => (text ? text.slice(0, DRILLDOWN_CAP) : null)
 
+/** One turn in the LIVE view, bounded harder than the archived one: it is
+ *  re-sent on every poll while a case runs, so a work-session prompt at full
+ *  length would be shipped a dozen times per case for no reading anyone does. */
+const LIVE_TURN_CAP = 600
+
+/** A tool result the model saw, bounded harder than the prose is. The loop
+ *  itself truncates at 8 000 characters before handing one back; this is the
+ *  archive's share of that, and a `get_ticket` payload is the reason it exists. */
+const TOOL_CAP = 1_200
+/** A tool RESULT, kept shorter still — see `recordCalls`. */
+const RESULT_CAP = 600
+
+/** THE TRANSCRIPT, FLATTENED FOR THE ARCHIVE.
+ *
+ *  A single-turn case returns null: `prompt` and `raw` already carry the whole
+ *  exchange, and writing it twice per case would double the size of a settings
+ *  row for no reading anyone would do. */
+function recordTurns(messages: readonly Message[] | undefined): EvalTurn[] | null {
+  if (!messages || messages.length <= 2) return null
+  return messages.map((m) => ({
+    role: m.role,
+    content: (m.content ?? '').slice(0, TOOL_CAP),
+    ...(m.toolCalls?.length ? { toolCalls: m.toolCalls.map((c) => c.name) } : {}),
+  }))
+}
+
+/** WHAT THE MODEL DID, kept for every dry-run case — but not at full weight.
+ *
+ *  `withResults` is false for a case that passed cleanly, and that is a size
+ *  decision with a reading behind it. The NAMES and the ARGUMENTS are what every
+ *  behavioural fixture asserts over and what an admin compares between two
+ *  models, and they are a few hundred bytes; the RESULTS are a `get_ticket`
+ *  payload each and are the whole weight. On a case that failed, the result is
+ *  often the explanation (the tool refused, and the model carried on anyway), so
+ *  it stays. On a case that passed there is nothing to explain.
+ *
+ *  Without this split, twenty-four archived reports carrying every tool result
+ *  of every passing dry run would put megabytes into a settings row — the same
+ *  mistake `drilldown` exists to prevent for transcripts. */
+function recordCalls(sandbox: DrySandbox | null, withResults: boolean): EvalToolCall[] | null {
+  if (!sandbox) return null
+  return sandbox.calls.map((c) => ({
+    tool: c.tool,
+    args: JSON.stringify(c.args).slice(0, TOOL_CAP),
+    result: !withResults || c.result === null || c.result === undefined ? null : JSON.stringify(c.result).slice(0, RESULT_CAP),
+    error: c.error,
+  }))
+}
+
+/** How often a case in flight asks whether it has been stopped.
+ *
+ *  STOP USED TO BE HONORED ONLY BETWEEN CASES, and that is why the button read
+ *  as broken. A dry run is budgeted `PER_TURN_TIMEOUT_MS × turnsPerCase` — seven
+ *  minutes for a work-session fixture — so an admin who pressed Stop watched
+ *  nothing happen for minutes and pressed it again. The request had landed; the
+ *  sweep was politely finishing a case nobody wanted.
+ *
+ *  Half a second is nothing against a model call and is instant to a person. */
+const STOP_POLL_MS = 500
+
+/** How often the sweep re-reads the PERSISTED stop request. One second, so a
+ *  Stop pressed against another worker reaches the running case about as fast as
+ *  one pressed against this one. */
+const STOP_WATCH_MS = 1_000
+
 async function runOneCase<I, O>(
   def: HarnessDefinition<I, O>,
   fixture: EvalCase<I, O>,
@@ -686,9 +1390,56 @@ async function runOneCase<I, O>(
   deps: EvalDeps,
   timeoutMs: number,
   dryRun: boolean,
-): Promise<EvalCaseScore> {
-  const capture: CaseRun = { row: null, prompt: '', promptTokens: 0, completionTokens: 0, estimated: false, threw: null, timedOut: false }
+  /** Asked twice a second while the case runs. When it turns true the case is
+   *  ABORTED and DISCARDED — see the null return. */
+  stopped: () => boolean = () => false,
+): Promise<EvalCaseScore | null> {
+  const startedAt = Date.now()
+  const capture: CaseRun = { row: null, prompt: '', promptTokens: 0, completionTokens: 0, estimated: false, threw: null, timedOut: false, upstream: [] }
+  // PUBLISHED FOR THE LIVE PANEL, and cleared in every exit path below — a stale
+  // "running now" left behind by a stopped case is worse than none, because it
+  // makes a finished sweep look like a wedged one.
+  const live: InFlightCase = {
+    harness: def.id,
+    case: fixture.name,
+    band: fixture.band ?? 'standard',
+    startedAt: Date.now(),
+    turn: 0,
+    maxTurns: turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun),
+    calls: 0,
+    open: 0,
+    turns: [],
+  }
+  const slot = inFlight.get(model) ?? new Map<string, InFlightCase>()
+  inFlight.set(model, slot)
+  slot.set(caseKey(def.id, fixture.name), live)
   const controller = new AbortController()
+  // CANCELLED IS NOT FAILED, and conflating them would be the worse bug of the
+  // two. A case aborted by Stop is recorded NOWHERE: the persisted status is the
+  // resume ledger, so writing a cancelled case into it would mark the fixture
+  // done, skip it on resume, and leave the model carrying a phantom failure it
+  // was never actually given a chance at.
+  let cancelled = false
+  // RESOLVED THE MOMENT STOP IS SEEN, and raced against the case below.
+  //
+  // Aborting the controller is necessary and not sufficient: it releases the
+  // socket, but the case only finishes once the transport notices and rejects,
+  // and a transport that ignores its signal (a hung provider, a fake one in a
+  // test) would leave Stop waiting out the full case budget again. Racing the
+  // cancellation makes the sweep's response to Stop independent of how well the
+  // thing underneath it behaves — which is the property a Stop button needs.
+  let sawStop: () => void = () => {}
+  const stopSeen = new Promise<void>((resolve) => {
+    sawStop = resolve
+  })
+  const poll = setInterval(() => {
+    if (!stopped()) return
+    cancelled = true
+    controller.abort()
+    sawStop()
+  }, STOP_POLL_MS)
+  // Never hold the process open for a poller.
+  ;(poll as unknown as { unref?: () => void }).unref?.()
 
   // AN ISOLATED TALARIA, ONE PER CASE. Built only for a harness whose feature is
   // the tool loop; every other harness gets `null` and its fixtures see
@@ -699,6 +1450,23 @@ async function runOneCase<I, O>(
   // files and a test runner (`toolbox/hermes-tools.ts`); everything else gets
   // Talaria's own toolkit. They are different jobs with different tools, and a
   // harness has exactly one of them.
+  // ── SUPPLEMENT WHAT THE MODEL LACKS AND THE DEPLOYMENT HAS ────────────────
+  //
+  // THE HALF THAT WAS MISSING. `RoleFloor.suppliable` already lets the run
+  // PROCEED when a capability is reachable through a registered tool — that is
+  // how `research-search` avoids refusing a model that cannot browse. But the
+  // sweep then handed that model the ordinary transport, with no tool on it, so
+  // it answered from memory and the fixture failed it for having no sources.
+  // Production does not do that: `research.ts` picks `toolSearchTransport` for
+  // exactly this case.
+  //
+  // So the benchmark measures what an admin actually assigns — a model running
+  // inside Talaria with the tools this org registered — rather than the bare
+  // weights. A model with no native search and a search tool available is a
+  // model that can do research here, and the matrix should say so.
+  const suppliable = def.floor.suppliable ?? []
+  const supplier = suppliable.length > 0 && deps.supplier ? await deps.supplier(suppliable[0]!).catch(() => null) : null
+
   const workspace = dryRun ? def.dryRun?.workspace?.(fixture.input) : undefined
   // The two sandboxes share exactly the surface `EvalContext` needs — a call
   // log, an ordering question, and (only Talaria's) a world. Narrowed to that
@@ -714,7 +1482,18 @@ async function runOneCase<I, O>(
 
   const harnessDeps: Partial<HarnessDeps> = {
     ...deps.harnessDeps,
-    transport: recordingTransport(sandbox ? sandboxTransport(sandbox, base, dry) : base, capture),
+    transport: recordingTransport(
+      sandbox
+        ? sandboxTransport(sandbox, base, dry, turnBudget(def.dryRun?.maxTurns))
+        : supplier
+          ? // The same transport production uses, driving the same tool. The sink
+            // is a throwaway: the sweep grades the harness's own value, and the
+            // source list is `research.ts`'s concern rather than the benchmark's.
+            toolSearchTransport(`fitness:${def.id}`, [], supplier, { base })
+          : base,
+      capture,
+      live,
+    ),
     // The row the runner writes IS the predicate this file scores. Captured
     // here and NOT forwarded to the real `recordRun`: see the file header on why
     // a sweep must not file into the table it is being compared against.
@@ -743,10 +1522,25 @@ async function runOneCase<I, O>(
       return null
     })
 
-  const outcome = await bounded(work, timeoutMs, () => {
-    capture.timedOut = true
-    controller.abort()
+  // SIZED TO WHAT THIS CASE MAY DO, not to a flat single-call figure — see
+  // `turnsPerCase`. The caller's budget is the PER-TURN allowance.
+  const caseMs = timeoutMs * turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun)
+  const outcome = await Promise.race([
+    bounded(work, caseMs, () => {
+      capture.timedOut = true
+      controller.abort()
+    }),
+    stopSeen.then(() => ({ done: false }) as const),
+  ]).finally(() => {
+    clearInterval(poll)
+    slot.delete(caseKey(def.id, fixture.name))
   })
+
+  // THE ABORT ACTUALLY CANCELS NOW. `ctx.signal` reaches the transport and, as
+  // of the same round, `UpstreamCall.signal` reaches the socket — so a stopped
+  // case releases its upstream connection instead of running to completion with
+  // nobody waiting for it.
+  if (cancelled) return null
 
   const row = capture.row
   // The typed result, straight off the race — never read back out of the
@@ -770,9 +1564,18 @@ async function runOneCase<I, O>(
 
   let task: EvalCaseScore['task'] = 'unscored'
   let taskError: string | null = null
+  /** THE HARNESS'S OWN GAP, kept apart from the model's score — see
+   *  `CheckResult` in define.ts. A fixture that could not fairly ask its
+   *  question reports it here and the case is scored `unscored`, exactly as a
+   *  skip is: "we did not give it what the job needed" is not "it answered
+   *  badly", and attributing one to the other measures our fixture and calls it
+   *  a capability. */
+  let gap: string | null = null
   if (contractHeld && result && result.value !== null) {
     try {
-      taskError = fixture.check(result.value, evalContext)
+      const verdict = fixture.check(result.value, evalContext)
+      if (isGap(verdict)) gap = verdict.gap
+      else taskError = verdict
     } catch (err) {
       // A fixture check is author code meeting model output, the same as
       // `clean` and `verify`, and `run.ts` holds those to "a throw is a
@@ -780,7 +1583,30 @@ async function runOneCase<I, O>(
       // written assertion would take 22 other harnesses with it.
       taskError = `the fixture check threw on the value: ${err instanceof Error ? err.message : String(err)}`
     }
-    task = taskError === null ? 'pass' : 'fail'
+    // WE CUT IT OFF, THEN JUDGED THE RESULT.
+    //
+    // An exhausted dry run is a model still working when the loop's budget ran
+    // out. Grading the half-finished state against an assertion that asks
+    // whether the job was DONE charges our budget to the model — the same
+    // category error as scoring a 429 as a contract failure, and the one this
+    // whole round keeps finding in different clothes.
+    //
+    // IT IS SAFE AS A BLANKET RULE, which is not obvious and is worth stating. A
+    // fixture that measures RESTRAINT (did it refrain from writing, did it not
+    // manufacture activity) is satisfied by a model that called almost nothing —
+    // and a model that called almost nothing cannot have exhausted a six-turn
+    // loop. So the fixtures this would wrongly excuse are the ones it cannot
+    // reach. The failure it does excuse is real every time: a work session
+    // stopped at turn six and asked why the ticket is not finished.
+    //
+    // The gap is reported to US, which is the point: it says either the budget
+    // is too small for the job or the harness is asking for more than the job
+    // needs, and both are ours to fix.
+    if (gap === null && taskError !== null && evalContext.exhausted) {
+      gap = `the model was still working when the loop's ${turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun)}-turn budget ran out, and the assertion then judged unfinished work ("${taskError}"). Raise this harness's dryRun.maxTurns or ask the fixture something a bounded loop can answer.`
+      taskError = null
+    }
+    task = gap !== null ? 'unscored' : taskError === null ? 'pass' : 'fail'
   }
 
   const clean = outcome.done && contractHeld && task !== 'fail'
@@ -798,17 +1624,28 @@ async function runOneCase<I, O>(
     answered: result?.answered ?? false,
     task,
     taskError,
+    gap,
     findings: row?.findings ?? 0,
     latencyMs: row?.latencyMs ?? 0,
+    startedAt: new Date(startedAt).toISOString(),
+    wallMs: Date.now() - startedAt,
     promptTokens: capture.promptTokens,
     completionTokens: capture.completionTokens,
     costUsd,
     estimated: capture.estimated,
     timedOut: capture.timedOut,
     optimistic: contractHeld && task === 'fail',
-    error: capture.timedOut ? `the case did not finish inside ${timeoutMs}ms` : (capture.threw ?? row?.error ?? result?.error ?? null),
+    error: capture.timedOut ? timeoutDetail(caseMs, settleOpen(capture.upstream, startedAt)) : (capture.threw ?? row?.error ?? result?.error ?? null),
     prompt: clean ? null : cap(capture.prompt),
     raw: clean ? null : cap(result?.raw ?? null),
+    // THE TRANSCRIPT FOLLOWS THE SAME RULE AS THE PROMPT — kept when something
+    // went wrong, dropped when nothing did. THE CALL LOG DOES NOT: it is small,
+    // it is what every behavioural fixture actually asserts over, and comparing
+    // two models on one fixture means comparing the two lists. Available only on
+    // failure would mean the comparison worth making is the one you cannot see.
+    turns: clean ? null : recordTurns(dry.result?.messages),
+    calls: recordCalls(sandbox, !clean),
+    upstream: clean ? null : settleOpen(capture.upstream, startedAt),
   }
 }
 
@@ -832,18 +1669,103 @@ export async function runEvalSweep(model: string, opts: EvalOptions = {}): Promi
   const deps: EvalDeps = { ...REAL_DEPS, ...opts.deps }
   const timeoutMs = opts.caseTimeoutMs ?? DEFAULT_CASE_TIMEOUT_MS
 
-  // One sweep at a time in this process, exactly as `reindexAll` does it. A
-  // second concurrent sweep would interleave two candidates' cases into one
-  // status row. The caller gets the RUNNING sweep's progress back rather than
-  // an error — the second press of a Test button means "show me the run", not
-  // "start a second one" — with no harness scores on it, because scoring a
-  // half-finished sweep would print a contract rate over the cases that
-  // happened to be done.
-  if (sweeping) return sweepOf(await deps.readStatus().catch(() => IDLE_STATUS), [], [], false)
-  sweeping = true
-  stopRequested = false
+  // One sweep at a time PER CANDIDATE. A second concurrent sweep of the same
+  // model would interleave two runs' cases into one checkpoint; different
+  // candidates keep separate ones and run side by side. The caller gets the
+  // RUNNING sweep's progress back rather than an error — the second press of a
+  // Test button means "show me the run", not "start a second one" — with no
+  // harness scores on it, because scoring a half-finished sweep would print a
+  // contract rate over the cases that happened to be done.
+  if (sweeping.has(model)) return sweepOf(await deps.readStatus(model).catch(() => IDLE_STATUS), [], [], false)
+  sweeping.add(model)
+  stopRequested.delete(model)
 
   const iso = (at: number): string => new Date(at).toISOString()
+  // THE PERSISTED REQUEST, POLLED — not read at harness boundaries.
+  //
+  // `stopRequested` is in-process and instant, and it is empty in any instance
+  // that did not start the run: a Stop pressed against a different worker only
+  // ever arrives through `shouldStop`, which reads the persisted flag. That used
+  // to be asked once per harness, so a cross-process Stop waited for the current
+  // harness to finish — eleven work-session fixtures at up to seven minutes each.
+  //
+  // The watcher below keeps `externallyStopped` fresh so the SYNCHRONOUS
+  // predicate handed to `runHarnessCases` (and, through it, to the poller inside
+  // each case) is never more than a second stale. It cannot be an await on the
+  // hot path: a case checks twice a second and a settings read per check would
+  // put the sweep's cadence on the database.
+  let externallyStopped = false
+  const asked = async (): Promise<boolean> => {
+    if (stopRequested.has(model)) return true
+    externallyStopped = externallyStopped || (await opts.shouldStop?.(model).catch(() => false)) === true
+    return externallyStopped
+  }
+  /** True the instant either half of the request lands. Sync, so a case can ask
+   *  it from a timer. */
+  const stoppedNow = (): boolean => stopRequested.has(model) || externallyStopped
+
+  // ── Width, and the valve that moves it ─────────────────────────────────────
+  //
+  // IT USED TO BE ONE WAY ONLY, on the theory that a provider which rate-limited
+  // once under this load will do it again, and that an oscillating width would
+  // spend the run rediscovering the same ceiling and scoring the 429s it found
+  // on the way as model failures. The first half is right about rate limits and
+  // wrong about everything else the valve fires on: `pressured` also covers a
+  // LOST REQUEST — a single HTTP call that went out and never came back — which
+  // is not a ceiling and carries no information about the next case. A 247-case
+  // sweep of deepseek-v4-flash requested width 4, met one of those in its first
+  // minute, and ran the remaining two hundred and forty cases sequentially.
+  //
+  // So it reopens, and the shape of the reopening is what answers the original
+  // objection: down by HALVES on any pressure, up by ONE after `RECOVER_AFTER`
+  // clean cases in a row. A real ceiling is found in two or three narrowings and
+  // then held, because every attempt to climb past it costs one case and is
+  // immediately halved back; a transient loss costs five clean cases of recovery
+  // and nothing else.
+  // ── Unreachable, and when to stop asking ───────────────────────────────────
+  //
+  // A structural refusal does not get better on the next fixture. Counted in a
+  // ROW rather than in total: one 404 among two hundred passes is a blip worth
+  // recording and ignoring; three with nothing in between is a fact about the
+  // whole run.
+  let unreachableRun = 0
+  let unreachableWhy: string | null = null
+  const noteUnreachable = (why: string): void => {
+    unreachableRun++
+    unreachableWhy ??= why.slice(0, 300)
+  }
+
+  let width = Math.max(1, Math.min(opts.concurrency ?? DEFAULT_CONCURRENCY, MAX_CONCURRENCY))
+  const startedWidth = width
+  let lowWidth = width
+  let narrowedBecause: string | null = null
+  /** Clean cases since the last time the provider pushed back. */
+  let calm = 0
+  const narrow = (why: string): void => {
+    // THE REASON IS RECORDED EVEN WHEN THERE IS NOTHING LEFT TO NARROW. A sweep
+    // already at width 1 that is still being rate-limited has learned the most
+    // important thing on this page — the deployment cannot serve this run at all
+    // right now — and dropping the sentence because the arithmetic had nowhere
+    // to go would leave an admin reading unmeasured cases with no reason beside
+    // them.
+    narrowedBecause ??= why.slice(0, 200)
+    calm = 0
+    if (width <= 1) return
+    width = Math.max(1, Math.floor(width / 2))
+    lowWidth = Math.min(lowWidth, width)
+  }
+  /** ONE CLEAN CASE. Reopens a lane once `RECOVER_AFTER` of them have landed in
+   *  a row at the current width — see that constant for why the sweep comes down
+   *  fast and goes back up slowly. */
+  const settled = (): void => {
+    if (width >= startedWidth) return
+    if (++calm < RECOVER_AFTER) return
+    calm = 0
+    width = Math.min(startedWidth, width + 1)
+  }
+  const valve: Valve = { width: () => width, ceiling: startedWidth, narrow, settled }
+  const watcher = setInterval(() => void asked(), STOP_WATCH_MS)
+  ;(watcher as unknown as { unref?: () => void }).unref?.()
   try {
     const all = await deps.harnesses()
     const wanted = opts.only?.length ? all.filter((h) => opts.only?.includes(h.id)) : all
@@ -854,10 +1776,39 @@ export async function runEvalSweep(model: string, opts: EvalOptions = {}): Promi
     // 'running' with `sweeping` false is a sweep a restart interrupted — also
     // resumable, and treating it as stuck instead would leave the feature
     // permanently unusable after one unlucky deploy.
-    const prior = await deps.readStatus().catch(() => IDLE_STATUS)
-    const resumable = !opts.restart && prior.model === model && prior.state !== 'idle' && prior.state !== 'done'
-    const cases: EvalCaseScore[] = resumable ? [...prior.cases] : []
+    const prior = await deps.readStatus(model).catch(() => IDLE_STATUS)
+    // A FINISHED RUN IS RESUMABLE WHEN YOU ARE RETRYING IT, and that is the
+    // whole point of the button: the run an admin wants to re-ask five cases of
+    // is one that RAN TO COMPLETION with five holes in it. Without this clause
+    // `retryFailed` silently did nothing — a done run was not resumable, so
+    // there was no prior ledger to keep the passes from, and it re-bought
+    // everything exactly like `restart`. Caught by its own test, not by reading.
+    const resumable =
+      !opts.restart && prior.model === model && prior.state !== 'idle' && (opts.retryFailed === true || opts.supplement === true || prior.state !== 'done')
+    // A CASE THAT REACHED A CLEAN VERDICT IS EVIDENCE; anything else is a hole.
+    // `retryFailed` keeps the first and re-opens the second, so the sweep's
+    // ordinary resume machinery does the rest — the dropped cases are simply
+    // pending again.
+    // EVERY FIXTURE THE REGISTRY DECLARES RIGHT NOW. A supplemental sweep is
+    // exactly "the declared set minus what the ledger already answers", so it
+    // needs the declared set — and computing it here also gives the prune
+    // something to prune against.
+    const declared = new Set(wanted.flatMap((h) => h.evalNames.map((name) => caseKey(h.id, name))))
+    const priorCases = resumable ? prior.cases : []
+    const kept = opts.retryFailed
+      ? priorCases.filter((c) => !worthRetrying(c))
+      : // A VERDICT ABOUT A FIXTURE THAT NO LONGER EXISTS is a verdict on an
+        // assertion nobody can read, and it keeps scoring the matrix. Dropped on
+        // a supplemental pass, which is the pass whose whole subject is the
+        // difference between the ledger and the registry.
+        opts.supplement
+        ? priorCases.filter((c) => declared.has(caseKey(c.harness, c.case)))
+        : [...priorCases]
+    const cases: EvalCaseScore[] = kept
     const already = new Set(cases.map((c) => caseKey(c.harness, c.case)))
+    /** Cases THIS PASS produced, as opposed to ones it inherited. Speed is
+     *  measured over these — see `EvalSweep.measured`. */
+    const measured: EvalCaseScore[] = []
 
     const total = wanted.reduce((n, h) => n + h.evalNames.length, 0)
     const startedAt = resumable ? prior.startedAt : iso(deps.now())
@@ -896,7 +1847,11 @@ export async function runEvalSweep(model: string, opts: EvalOptions = {}): Promi
     const toolDefs = await deps.acceptsToolDefinitions(model).catch(() => false)
 
     for (const harness of wanted) {
-      if (stopRequested) break
+      if (await asked()) break
+      // STOP ASKING. Two hundred and forty more cases would each buy the same
+      // 404 and tell an admin nothing they did not know by case three; the
+      // sweep ends with the reason instead of an hour of identical failures.
+      if (unreachableRun >= UNREACHABLE_STREAK) break
       const pending = harness.evalNames.filter((name) => !already.has(caseKey(harness.id, name)))
       if (pending.length === 0) continue
 
@@ -927,28 +1882,71 @@ export async function runEvalSweep(model: string, opts: EvalOptions = {}): Promi
       // fleet persona runs its own loop and needs none of this.
       const dryRun = harness.tools === 'own' && !ownTools && toolDefs
       await harness.use(<I, O>(def: HarnessDefinition<I, O>) =>
-        runHarnessCases(def, pending, model, deps, timeoutMs, () => stopRequested, dryRun, async (score) => {
-          cases.push(score)
-          await write('running', harness.id, null)
-        }),
+        runHarnessCases(
+          def,
+          pending,
+          model,
+          deps,
+          timeoutMs,
+          stoppedNow,
+          dryRun,
+          async (score) => {
+            // THE STREAK RESETS ON ANYTHING THAT REACHED THE MODEL. Only an
+            // unbroken run of refusals means the deployment cannot serve this
+            // candidate at all.
+            if (score.skipped === null || !/could not reach this model/.test(score.skipped)) unreachableRun = 0
+            cases.push(score)
+            measured.push(score)
+            // FILED AS IT LANDS, so a sweep an admin stops still keeps every
+            // transcript it paid for. Never blocks the sweep: the archive is
+            // valuable and the run is more valuable.
+            // `startedAt` is the run's identity in the archive — a resumed sweep
+            // keeps the original, so its cases file under one run rather than
+            // splitting into two half-runs nobody can audit.
+            await opts.archiveCase?.(model, startedAt ?? iso(deps.now()), score).catch(() => {})
+            await write('running', harness.id, null)
+          },
+          valve,
+          opts.pressureBackoffMs ?? PRESSURE_BACKOFF_MS,
+          noteUnreachable,
+        ),
       )
     }
 
-    const state: EvalSweepState = stopRequested ? 'stopped' : 'done'
-    await write(state, null, null)
-    return sweepOf({ state, model, startedAt, finishedAt: iso(deps.now()), done: cases.length, total, harness: null, error: null, cases }, metas, unfixtured, guarded)
+    const state: EvalSweepState = stoppedNow() ? 'stopped' : 'done'
+    // The run's own headline when it gave up: a routing or credential fact, said
+    // ONCE — in the status row AND on the returned sweep, because the archive
+    // reads one and the caller reads the other.
+    const gaveUp = unreachableRun >= UNREACHABLE_STREAK ? `the deployment could not reach this model — ${unreachableWhy}` : null
+    await write(state, null, gaveUp)
+    return sweepOf(
+      { state, model, startedAt, finishedAt: iso(deps.now()), done: cases.length, total, harness: null, error: gaveUp, cases },
+      metas,
+      unfixtured,
+      guarded,
+      { requested: startedWidth, ended: width, low: lowWidth, narrowedBecause },
+      measured,
+    )
   } catch (err) {
     // Same shape as `reindexAll`: the failure lands in the status rather than
     // escaping to a route handler, because the admin who pressed the button is
     // watching this row and not a stack trace.
     const message = err instanceof Error ? err.message : String(err)
-    const prior = await deps.readStatus().catch(() => IDLE_STATUS)
+    const prior = await deps.readStatus(model).catch(() => IDLE_STATUS)
     const failed: EvalSweepStatus = { ...prior, state: 'error', model, finishedAt: iso(deps.now()), harness: null, error: message }
     await deps.writeStatus(failed).catch(() => {})
     return sweepOf(failed, [], [], false)
   } finally {
-    sweeping = false
-    stopRequested = false
+    clearInterval(watcher)
+    await opts.archivePrune?.(model).catch(() => {})
+    sweeping.delete(model)
+    stopRequested.delete(model)
+    // The case-level `finally` clears this on every normal path; this is for the
+    // ones that never reach it (a throw in setup, a harness that blew up before
+    // its race started). A "running now" that outlives its sweep makes a
+    // finished run look wedged, which is exactly the confusion this panel exists
+    // to remove.
+    inFlight.delete(model)
   }
 }
 
@@ -964,16 +1962,118 @@ async function runHarnessCases<I, O>(
   stopped: () => boolean,
   dryRun: boolean,
   onCase: (score: EvalCaseScore) => Promise<void>,
+  valve: Valve,
+  backoffMs: readonly number[],
+  onUnreachable: (why: string) => void,
 ): Promise<void> {
-  for (const fixture of def.evals ?? []) {
-    if (stopped()) break
-    if (!pending.includes(fixture.name)) continue
-    await onCase(await runOneCase(def, fixture, model, deps, timeoutMs, dryRun))
+  const fixtures = (def.evals ?? []).filter((f) => pending.includes(f.name))
+  await pool(fixtures, valve, stopped, async (fixture) => {
+    // RE-ASKED, NOT FAILED. Each attempt is a WHOLE fresh case — a new sandbox,
+    // a new world, a clean capture — because a retry that reused the previous
+    // attempt's mutated world would be grading the model on a board another run
+    // had already written to.
+    //
+    // WHICH IS ALSO WHY THE CLOCK IS OUT HERE. Each attempt starts its own, so a
+    // case that was re-asked would report only the surviving attempt's wall
+    // time — a case whose first two requests vanished would claim to have cost
+    // four seconds when it cost the sweep two minutes. `wallMs` is documented as
+    // what the case cost the sweep, so it is measured across every attempt and
+    // the backoff between them.
+    const openedAt = Date.now()
+    let score = await runOneCase(def, fixture, model, deps, timeoutMs, dryRun, stopped)
+    for (let attempt = 0; attempt < PRESSURE_RETRIES; attempt++) {
+      if (score !== null && pressured(score) && attempt >= retriesFor(score)) break
+      // Null means the case was cancelled mid-flight. Nothing is recorded: the
+      // fixture stays pending, so a resume picks it up rather than inheriting a
+      // failure that never happened.
+      if (score === null || !pressured(score) || stopped()) break
+      // THE PRESSURE VALVE, on the way past: the width comes down as well as the
+      // question being re-asked, so the retry is issued into a quieter sweep.
+      valve.narrow(score.error ?? 'the request was never answered')
+      await backoff(backoffMs[attempt] ?? backoffMs.at(-1) ?? 0, stopped)
+      if (stopped()) return
+      score = await runOneCase(def, fixture, model, deps, timeoutMs, dryRun, stopped)
+    }
+    if (score === null) return
+    const whole = { ...score, startedAt: new Date(openedAt).toISOString(), wallMs: Date.now() - openedAt }
+    if (unreachable(whole)) {
+      onUnreachable(whole.error ?? 'the deployment could not reach this model')
+      await onCase(unreachableCase(whole))
+      return
+    }
+    // THE OTHER HALF OF THE VALVE. A case that came back — pass or fail, the
+    // grade is not this counter's business — is evidence the deployment served
+    // the width it was asked at. An `unreachable` case is NOT: it never left the
+    // building, so it says nothing either way and returns above without voting.
+    if (pressured(whole)) {
+      await onCase(rateLimitedCase(whole))
+      return
+    }
+    valve.settled()
+    await onCase(whole)
+  })
+}
+
+/** DID THIS CASE LEAVE A HOLE? Everything that is not a clean pass.
+ *
+ *  Deliberately generous. A skip costs nothing to re-attempt — a harness this
+ *  candidate's transport cannot drive skips again in microseconds, before a
+ *  token is spent — while a skip that was really a rate limit re-runs properly.
+ *  A `gap` is re-asked because the usual reason to press this button is that
+ *  somebody has just fixed the harness that reported it. Being generous costs a
+ *  few free re-skips; being narrow costs a full sweep. */
+export const worthRetrying = (c: EvalCaseScore): boolean => !(c.skipped === null && c.gap === null && c.contractHeld && c.task === 'pass')
+
+/** A case that never reached the model at all — see `UNREACHABLE`.
+ *
+ *  UNMEASURED, LIKE A RATE LIMIT, and for the same reason: the sweep learned
+ *  something about the deployment and nothing about the candidate. Recording it
+ *  as a contract failure is what made one routing policy look like a model that
+ *  fails every harness in the product. */
+function unreachableCase(score: EvalCaseScore): EvalCaseScore {
+  return {
+    ...score,
+    skipped: `the deployment could not reach this model — ${(score.error ?? '').slice(0, 200)}. Nothing here was measured about the model itself.`,
+    contractHeld: false,
+    firstPass: false,
+    answered: false,
+    task: 'unscored',
+    optimistic: false,
   }
 }
 
-function sweepOf(status: EvalSweepStatus, metas: HarnessMeta[], unfixtured: string[], guarded: boolean): EvalSweep {
+/** A case the provider never let us ask, after every retry.
+ *
+ *  RECORDED AS UNMEASURED, NOT AS FAILED. `skipped` excludes a case from every
+ *  rate — which is the honest arithmetic here, because we did not learn anything
+ *  about the model. The alternative, leaving it as a contract failure, prints a
+ *  red cell that means "your provider was busy" and reads as "this model cannot
+ *  hold a contract". */
+function rateLimitedCase(score: EvalCaseScore): EvalCaseScore {
   return {
+    ...score,
+    skipped: score.timedOut
+      ? `the request was issued and never answered, on ${TIMEOUT_RETRIES + 1} attempts, each abandoned after the case budget — this case measured nothing about the model. The provider dropped the call; re-run it when the deployment is healthier.`
+      : `the provider answered with rate limits on every attempt (${PRESSURE_RETRIES + 1} tries) — this case measured nothing about the model. Re-run it, narrower, when the deployment is quieter.`,
+    contractHeld: false,
+    firstPass: false,
+    answered: false,
+    task: 'unscored',
+    optimistic: false,
+  }
+}
+
+function sweepOf(
+  status: EvalSweepStatus,
+  metas: HarnessMeta[],
+  unfixtured: string[],
+  guarded: boolean,
+  concurrency: SweepConcurrency = { requested: 1, ended: 1, low: 1, narrowedBecause: null },
+  measured: EvalCaseScore[] = [],
+): EvalSweep {
+  return {
+    concurrency,
+    measured,
     model: status.model ?? '',
     state: status.state,
     startedAt: status.startedAt,

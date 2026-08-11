@@ -29,7 +29,7 @@
 //   file. If the librarian ever needs nested output (per-fact provenance, say),
 //   that is the moment it moves to a schema, and the cost of the move is this
 //   function.
-import { defineHarness } from '../define'
+import { countProblem, defineHarness } from '../define'
 
 /** The parsed librarian reply. */
 export interface LibrarianOkf {
@@ -344,9 +344,20 @@ export const librarianHarness = defineHarness<LibrarianInput, LibrarianOkf>({
       check: (value) => {
         const problem = checkOkf(value)
         if (problem) return problem
-        // Summarizing the title rather than the body is the failure here.
-        if (/\bslack\b/i.test(value.body) && !/do not use|no longer|not use slack/i.test(value.body)) {
-          return 'summarized the title — the document says the org does not use Slack at all'
+        // Summarizing the title rather than the body is the failure here — a
+        // summary that presents Slack as the org's tool has read the heading and
+        // not the page.
+        //
+        // THE NEGATION IS DETECTED BY MEANING, NOT BY WORDING, and the first
+        // version was a list of three phrasings (`do not use|no longer|not use
+        // slack`). gemma answered "Slack is not used" — correct, engaged with the
+        // body, and matching none of the three — and was told it had summarized
+        // the title. A fixture only certain wordings can pass measures our
+        // prompt rather than the model, which is the rule `belowAnswerFloor`
+        // already states for the other direction.
+        const NEGATED = /\bslack\b[^.]{0,60}\b(not|never|no longer|isn't|aren't|un(?:used|supported)|deprecated|retired)\b|\b(not|never|no longer|don't|do not|stopped|migrated (?:away|off))\b[^.]{0,60}\bslack\b/i
+        if (/\bslack\b/i.test(value.body) && !NEGATED.test(value.body)) {
+          return 'presented Slack as the tool in use — the document says the org does not use Slack at all'
         }
         return checkMentions(value, ['channel', 'talaria', 'communicat', 'knowledge'])
       },
@@ -386,7 +397,8 @@ function checkOkf(value: LibrarianOkf): string | null {
   if (/^\s*(?:[-*+>]\s*)?\**\s*tags\s*:/im.test(value.body)) return 'a TAGS line was left in the body instead of being parsed out'
   if (value.body.length > MAX_BODY) return `the body is ${value.body.length} characters — this is a summary, not a copy of the document`
   if (value.tags.length === 0) return 'no TAGS line was returned, so the document got no topic tags'
-  if (value.tags.length > 5) return `${value.tags.length} tags were returned; the contract is at most 5`
+  const tooManyTags = countProblem(value.tags.length, { max: 5, unit: 'tag', asked: 'at most 5' })
+  if (tooManyTags) return tooManyTags
   const bad = value.tags.find((t) => !KEBAB.test(t))
   if (bad) return `tag "${bad}" is not lowercase-kebab`
   return null

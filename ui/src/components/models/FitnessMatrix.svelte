@@ -1,9 +1,8 @@
 <script lang="ts">
-  import Chip from '@/components/ui/Chip.svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
   import CapabilityTags from './CapabilityTags.svelte'
-  import { BAND_META, BAND_TEXT, bandOf, reasonOf, rowSummary, type FitnessBand, type FitnessIndexEntry, type ModelRow, type SlotView } from './fitness'
+  import { BAND_META, BAND_TEXT, bandOf, ms, reasonOf, rowSummary, speedTitle, type FitnessBand, type FitnessIndexEntry, type ModelRow, type SlotView } from './fitness'
 
   // THE MATRIX. Rows = registered models, columns = the roles and platform
   // agents an admin can assign one to. This is the "can I swap this model in"
@@ -48,25 +47,52 @@
   }
 </script>
 
-<!-- Twenty-one columns never fit a 4xl page: the table scrolls inside its own
+<!-- Sixteen columns never fit a 4xl page: the table scrolls inside its own
      box (UI-CONVENTIONS: wide content scrolls itself, the page body never
      scrolls sideways) and the model column is sticky so a row stays readable. -->
 <div class="overflow-x-auto rounded-lg border border-line">
   <table class="w-full border-collapse text-left">
     <thead>
-      <tr class="border-b border-line">
-        <th class="sticky left-0 z-10 bg-panel px-3 py-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Model</th>
+      <!-- The header is its own BAND — opaque `bg-card` rather than the panel
+           behind it, closed by a strong hairline. A 15-column grid of 5px
+           glyphs needs its axes to read as axes; before this the head was the
+           same surface as the body in the dimmest ink on the palette. -->
+      <tr class="border-b border-line-strong">
+        <th class="sticky left-0 z-10 bg-card px-3 py-2 font-mono text-[11px] uppercase tracking-[0.08em] text-muted">Model</th>
+        <!-- SPEED SITS BEFORE THE SLOTS, not after them. It is a fact about the
+             MODEL rather than about any one slot — like the safety band — and it
+             is the second thing an admin reads after the name, so putting it at
+             the far end of sixteen columns of glyphs would hide it behind a
+             horizontal scroll. Measured over the same fixtures for every
+             candidate, which is the only reason a column of these is comparable
+             at all. -->
+        <th
+          class="border-l border-line bg-card px-2 py-2 align-bottom font-mono text-[11px] font-normal tracking-[0.04em] text-muted"
+          title="Output tokens per second, median across the fixtures this model ran. A rate rather than a duration, so it is comparable between models that ran different fixtures. Hover a cell for latency and the width it was measured at."
+        >
+          <span class="block min-h-28 [text-orientation:mixed] [writing-mode:vertical-rl] whitespace-nowrap text-end">Speed</span>
+        </th>
         {#each ordered as slot, i (slot.key)}
           <th
             class={cn(
-              'px-1 py-2 align-bottom font-mono text-[10px] font-normal tracking-[0.04em] text-ink-dim',
-              // The one visible seam between the two registries: roles are the
-              // activity classes, platform agents are Talaria's own workers.
-              slot.kind === 'agent' && i > 0 && ordered[i - 1]?.kind === 'role' && 'border-l border-line',
+              'bg-card px-1 py-2 align-bottom font-mono text-[11px] font-normal tracking-[0.04em] text-muted',
+              // A hairline down every column INCLUDING THE FIRST: the eye
+              // tracks one slot through thirteen rows of near-identical dots,
+              // and a grid is the only thing that makes that possible at this
+              // density. The first rule also closes the model column, which
+              // otherwise ran straight into the first slot with nothing
+              // between a model id and a verdict about it.
+              'border-l border-line',
+              // The one seam that MEANS something — roles are the activity
+              // classes, platform agents are Talaria's own workers — so it is a
+              // step stronger than the column rules around it.
+              slot.kind === 'agent' && i > 0 && ordered[i - 1]?.kind === 'role' && 'border-l-line-strong',
+              // The seam between "about the model" and "about a slot".
+              i === 0 && 'border-l-line-strong',
             )}
             title="{slot.label} — {slot.hint}{slot.requires.length ? `\nNeeds: ${slot.requires.join(', ')}` : ''}"
           >
-            <!-- Vertical column heads: 21 horizontal labels would set the
+            <!-- Vertical column heads: 15 horizontal labels would set the
                  table's width from its header text rather than its data.
 
                  MIN-HEIGHT, NOT HEIGHT. `h-28` was a flat 112px against labels
@@ -76,9 +102,22 @@
                  writing mode has no ellipsis to fall back on, so the fix is to
                  let the header row size itself to its longest label: every head
                  keeps a common floor, and the one long one makes the row taller
-                 instead of escaping it. -->
-            <span class="block min-h-28 whitespace-nowrap [writing-mode:vertical-rl] [text-orientation:mixed]">
-              {slot.label}{slot.live ? '' : ' (reserved)'}
+                 instead of escaping it.
+
+                 BOTTOM-ALIGNED, AND IT TAKES BOTH RULES. `align-bottom` on the
+                 cell only sinks the SPAN; inside it the text still started at
+                 the inline-start edge, so a short label floated at the top of
+                 its 112px floor while the long one filled 160px — the labels
+                 raggedly ended wherever their own length ran out. In
+                 `vertical-rl` the inline axis runs top→bottom, so `text-end` is
+                 the bottom, and every label now ends flush against the header
+                 rule with the growth going upward. -->
+            <!-- No "(reserved)" suffix: `slotViews` no longer sends a slot no
+                 harness reaches, so every column here is one a run can speak
+                 about. See its comment for the two reasons a slot has no
+                 column, and why one of them was never "reserved". -->
+            <span class="block min-h-28 [text-orientation:mixed] [writing-mode:vertical-rl] whitespace-nowrap text-end">
+              {slot.label}
             </span>
           </th>
         {/each}
@@ -88,16 +127,46 @@
       {#each rows as m (m.id)}
         {@const entry = index[m.id]}
         {@const summary = rowSummary(entry, ordered)}
+        <!-- `group` so the hover reaches the STICKY cell too: it carries its
+             own opaque background (it has to — the body scrolls under it), so
+             a row-level `hover:bg-hover` stopped dead at the model name and the
+             highlight that helps you track a row across fifteen columns was
+             missing from the one column you read it from.
+
+             `border-line`, not `border-line-subtle`: subtle is #232019 against
+             a #141312 panel, which is a rule you cannot see. -->
         <tr
-          class={cn('border-b border-line-subtle transition-colors last:border-0 hover:bg-hover', selected === m.id && 'bg-card')}
+          class={cn('group border-b border-line transition-colors last:border-0 hover:bg-hover', selected === m.id && 'bg-card')}
         >
-          <th scope="row" class={cn('sticky left-0 z-10 bg-panel px-3 py-1.5 font-normal', selected === m.id && 'bg-card')}>
+          <!-- THE WHOLE CELL IS THE TARGET. The button used to be a shrink-wrapped
+               box around the text, so the dead space beside a short model id —
+               most of a 22rem column — looked clickable (the row highlights) and
+               was not. The padding moved onto the button so the hit area is the
+               cell. -->
+          <th
+            scope="row"
+            class={cn('sticky left-0 z-10 p-0 font-normal transition-colors', selected === m.id ? 'bg-card' : 'bg-panel group-hover:bg-hover')}
+          >
+            <!-- THE ROW OPENS THE REPORT, and it has to look like it does. This
+                 was a bare button with no hover state of its own inside a row
+                 that highlights on hover, so the whole row lit up and nothing
+                 said WHICH part was the door. A dotted underline that sharpens
+                 on hover, plus an arrow that only appears then: legible without
+                 adding a fourth colour to a page already dense with them. -->
             <button
               type="button"
               onclick={() => onSelect(m.id)}
-              class={cn('flex max-w-[22rem] flex-col items-start gap-0.5 rounded text-left', focusGold)}
+              title="Open {m.id} — per-slot verdicts, capabilities and every failing fixture"
+              class={cn('group/row flex w-full max-w-[22rem] cursor-pointer flex-col items-start gap-0.5 px-3 py-1.5 text-left', focusGold)}
             >
-              <span class="truncate font-mono text-xs text-fg">{m.id}</span>
+              <span class="flex min-w-0 items-baseline gap-1.5">
+                <span
+                  class="truncate font-mono text-xs text-fg underline decoration-dotted decoration-line underline-offset-2 transition-colors group-hover/row:decoration-accent"
+                >
+                  {m.id}
+                </span>
+                <span class="shrink-0 font-mono text-[10px] text-ink-dim opacity-0 transition-opacity group-hover/row:opacity-100">open →</span>
+              </span>
               <span class="flex flex-wrap items-center gap-1">
                 <span class="font-mono text-[10px] {BAND_TEXT[summary.band]}">
                   {summary.counts.ready} ready · {summary.counts.workable} workable · {summary.counts.unfit} unfit · {summary.counts.untested + summary.counts.unbound} untested
@@ -121,12 +190,35 @@
               <CapabilityTags row={m} negativeOnly />
             </button>
           </th>
+          <!-- THE SPEED CELL. A number, not a band: there is no threshold that
+               is right for both a frontier API and a 7B on one GPU, and a made-up
+               one would be the page asserting a judgement nobody made. Every row
+               ran the same fixtures, so the COLUMN is the comparison. -->
+          <td class="border-l border-line px-2 py-1.5 text-center">
+            {#if entry?.speed}
+              <span class="font-mono text-[11px] text-fg" title={speedTitle(entry.speed)}>
+                {entry.speed.tokensPerSecond === null ? ms(entry.speed.p50) : `${entry.speed.tokensPerSecond} t/s`}
+              </span>
+              {#if entry.speed.concurrency > 1}
+                <!-- The caveat, visible rather than only in the tooltip: two
+                     medians measured at different widths are not comparable, and
+                     the column invites exactly that comparison. -->
+                <span class="block font-mono text-[9px] text-ink-dim" title={speedTitle(entry.speed)}>×{entry.speed.concurrency}</span>
+              {/if}
+            {:else}
+              <span class="font-mono text-[11px] text-ink-dim" title={speedTitle(null)}>·</span>
+            {/if}
+          </td>
           {#each ordered as slot, i (slot.key)}
             {@const band = bandOf(entry, slot.key)}
             <td
               class={cn(
                 'px-1 py-1.5 text-center',
-                slot.kind === 'agent' && i > 0 && ordered[i - 1]?.kind === 'role' && 'border-l border-line',
+                // The same grid the header rules — see the note there.
+                'border-l border-line',
+                slot.kind === 'agent' && i > 0 && ordered[i - 1]?.kind === 'role' && 'border-l-line-strong',
+              // The seam between "about the model" and "about a slot".
+              i === 0 && 'border-l-line-strong',
               )}
             >
               <button
@@ -156,7 +248,4 @@
       {meta.label}
     </span>
   {/each}
-  <Chip class="ml-auto" title="Reserved slots take effect when their surface lands. A verdict is still produced — telling you now that your pick cannot see beats telling you the week it ships.">
-    reserved = not wired yet
-  </Chip>
 </div>

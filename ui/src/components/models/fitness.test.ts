@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest'
 import { BAND_ORDER } from '@/server/fitness/score'
 import type { AdversarialBand } from '@/server/fitness/adversarial'
+import type { EvalCaseScore } from '@/server/fitness/evals'
 import {
   BAND_META,
   BAND_SEVERITY,
@@ -17,18 +18,28 @@ import {
   TAG_TONE,
   assignmentNotice,
   bandOf,
+  DEFAULT_CONCURRENCY,
+  caseCategory,
+  worthRetrying,
+  centsPerRun,
+  costCaveat,
   estimateSentence,
   reasonOf,
   rowSummary,
   tagTitle,
   usd,
+  usdRate,
+  valueVersion,
   visibleTags,
+  workloadSentence,
   type CapabilityView,
   type FitnessBand,
   type FitnessIndexEntry,
   type ModelRow,
+  type ModelValue,
   type RunEstimate,
   type SlotView,
+  type Workload,
 } from './fitness'
 
 const slot = (key: string, kind: 'role' | 'agent' = 'role'): SlotView => ({
@@ -50,6 +61,7 @@ const entry = (cells: Record<string, { band: FitnessBand; reason: string | null 
   cells,
   safety: null,
   probesWrote: 0,
+  speed: null,
   costUsd: null,
   calls: 0,
   partial: false,
@@ -59,6 +71,7 @@ const view = (over: Partial<CapabilityView> = {}): CapabilityView => ({
   cap: 'search',
   state: 'unknown',
   source: null,
+  via: null,
   detail: null,
   score: null,
   at: null,
@@ -242,5 +255,213 @@ describe('the estimate an admin decides on', () => {
     expect(usd(0)).toBe('$0')
     expect(usd(null)).toBe('unpriced')
     expect(usd(1.2345)).toBe('$1.23')
+  })
+})
+
+describe('price against performance, as an admin reads it', () => {
+  const workload = (over: Partial<Workload> = {}): Workload => ({
+    basis: 'observed',
+    windowDays: 30,
+    runs: { ticket: 20, brief: 1 },
+    perDay: 21,
+    unfixturedPerDay: 0,
+    harnesses: 2,
+    ...over,
+  })
+
+  const value = (over: Partial<ModelValue> = {}): ModelValue => ({
+    model: 'm',
+    at: '2026-08-01T00:00:00.000Z',
+    price: { in: 1, out: 4 },
+    usdPerDay: 0.04,
+    usdPerReadyRun: 0.002,
+    shares: { ready: 1, workable: 0, unfit: 0, untested: 0, unbound: 0 },
+    readyShare: 1,
+    usableShare: 1,
+    costCoverage: 1,
+    tokenBasis: 'model',
+    ...over,
+  })
+
+  it('says the uniform basis is an assumption, not your traffic', () => {
+    // The single misreading that would cost real money: taking "one run of
+    // everything" for a measurement of what the fleet does.
+    const s = workloadSentence(workload({ basis: 'uniform', perDay: 26, harnesses: 26 }))
+    expect(s).toMatch(/no production runs recorded/i)
+    expect(s).toMatch(/equally/i)
+  })
+
+  it('names the window and the volume when the basis is real', () => {
+    const s = workloadSentence(workload())
+    expect(s).toContain('last 30 days')
+    expect(s).toContain('21.0 harness runs a day')
+  })
+
+  it('reports traffic no test can speak for', () => {
+    expect(workloadSentence(workload({ unfixturedPerDay: 3 }))).toMatch(/no fixtures/i)
+  })
+
+  it('calls a partial cost a floor rather than printing a confident total', () => {
+    expect(costCaveat(value({ costCoverage: 0.7 }), 0)).toMatch(/floor/i)
+    expect(costCaveat(value(), 0)).toBeNull()
+  })
+
+  it("warns when a model is priced on another model's verbosity", () => {
+    expect(costCaveat(value({ tokenBasis: 'shared' }), 0)).toMatch(/another model/i)
+  })
+
+  it('says plainly when nothing prices the model', () => {
+    expect(costCaveat(value({ usdPerDay: null }), 0)).toMatch(/nothing on this install prices/i)
+  })
+
+  it('never rounds a recurring sub-cent bill to zero', () => {
+    // $0.004/day is $1.46/year. `usd` would print "<$0.01" and hide it.
+    expect(usdRate(0.004, 'day')).toBe('$0.0040/day')
+    expect(usdRate(0.4, 'day')).toBe('$0.400/day')
+    expect(usdRate(12.5, 'day')).toBe('$12.50/day')
+    expect(usdRate(null, 'day')).toBe('unpriced')
+  })
+
+  it('shows a per-run cost in cents, and no figure at all when there is none', () => {
+    expect(centsPerRun(0.002)).toBe('0.200¢')
+    expect(centsPerRun(0.05)).toBe('5.00¢')
+    expect(centsPerRun(null)).toBe('—')
+  })
+})
+
+describe('when the cost tab is allowed to go stale', () => {
+  const archived = (model: string, at: string): FitnessIndexEntry => ({ ...entry({}), model, at })
+
+  it('changes when a run lands, which is the only time those numbers move', () => {
+    // THE BUG. A run an admin started and then waited out — the normal case —
+    // updated the matrix, which polls, and left cost and value showing the
+    // numbers from before it, with nothing on screen saying so. Only a POST
+    // from the panel invalidated that query.
+    const before = valueVersion({ a: archived('a', 'monday') })
+    const retested = valueVersion({ a: archived('a', 'friday') })
+    const added = valueVersion({ a: archived('a', 'monday'), b: archived('b', 'friday') })
+
+    expect(retested).not.toBe(before)
+    expect(added).not.toBe(before)
+    expect(valueVersion({})).not.toBe(before)
+  })
+
+  it('does not change while a sweep is merely in progress', () => {
+    // The other half: this must not become a poll. Nothing about a running
+    // sweep touches the archive, so the signature holds still until it lands.
+    const index = { a: archived('a', 'monday'), b: archived('b', 'friday') }
+
+    expect(valueVersion(index)).toBe(valueVersion({ ...index }))
+    // Key order is not information — two identical archives must sign the same.
+    expect(valueVersion({ b: index.b, a: index.a })).toBe(valueVersion(index))
+  })
+})
+
+// ── Case categories ──────────────────────────────────────────────────────────
+
+describe('caseCategory', () => {
+  it('reads the family out of a namespaced harness id', () => {
+    expect(caseCategory('muse:draft')).toEqual({ id: 'muse', label: 'Muse' })
+    expect(caseCategory('workbench:heavy')).toEqual({ id: 'workbench', label: 'Workbench' })
+    expect(caseCategory('research-search')).toEqual({ id: 'research', label: 'Research' })
+    expect(caseCategory('inbox-command')).toEqual({ id: 'inbox', label: 'Inbox' })
+  })
+
+  it('keeps a whole-id family whole rather than splitting it at the hyphen', () => {
+    // 'work-session' is not the 'work' family, and 'blurb-writer' is not 'blurb'.
+    expect(caseCategory('work-session')).toEqual({ id: 'agents-at-work', label: 'Agents at work' })
+    expect(caseCategory('blurb-writer').label).toBe('Naming')
+  })
+
+  it('gives harnesses that share a LABEL one tab, not four tabs with one name', () => {
+    // Four harnesses map to "Knowledge". Keyed by family that was four separate
+    // tabs all captioned KNOWLEDGE, which is the same word four times rather
+    // than a grouping.
+    const ids = ['distiller', 'summarizer', 'concluder', 'librarian'].map((h) => caseCategory(h).id)
+    expect(new Set(ids).size).toBe(1)
+    expect(caseCategory('titler').id).toBe(caseCategory('blurb-writer').id)
+  })
+
+  it('gives an unmapped harness its own id as a label instead of a bucket', () => {
+    // THE POINT OF DERIVING RATHER THAN LISTING. A harness added next quarter
+    // gets its own tab; it does not silently disappear into "Other", which is
+    // how a hand-kept table stops covering the thing it is for.
+    expect(caseCategory('invoice-reconciler')).toEqual({ id: 'invoice', label: 'invoice' })
+  })
+})
+
+// ── The one value this module is allowed to copy ─────────────────────────────
+
+describe('worthRetrying', () => {
+  const c = (over: Partial<EvalCaseScore>): EvalCaseScore =>
+    ({ skipped: null, gap: null, contractHeld: true, task: 'pass', ...over }) as EvalCaseScore
+
+  it('keeps a clean pass and re-opens everything else', () => {
+    expect(worthRetrying(c({}))).toBe(false)
+    expect(worthRetrying(c({ task: 'fail' }))).toBe(true)
+    expect(worthRetrying(c({ contractHeld: false, task: 'unscored' }))).toBe(true)
+    // The rate-limited case: unmeasured, and the single best reason to press the
+    // button at all.
+    expect(worthRetrying(c({ skipped: 'rate limits on every attempt' }))).toBe(true)
+    // A gap is re-asked because the usual reason to retry is that somebody just
+    // fixed the harness that reported it.
+    expect(worthRetrying(c({ gap: 'the fixture never gave it the id', task: 'unscored' }))).toBe(true)
+  })
+
+  it('agrees with the server predicate case for case', async () => {
+    // A COPY THAT DRIFTS IS WORSE THAN NO BUTTON: the count on the button and
+    // the set the sweep actually re-runs would diverge silently, and nobody
+    // could tell which was right.
+    const server = await import('@/server/fitness/evals')
+    for (const over of [
+      {},
+      { task: 'fail' as const },
+      { contractHeld: false },
+      { skipped: 'busy' },
+      { gap: 'ours' },
+      { task: 'unscored' as const },
+    ]) {
+      expect(worthRetrying(c(over)), JSON.stringify(over)).toBe(server.worthRetrying(c(over)))
+    }
+  })
+})
+
+describe('DEFAULT_CONCURRENCY', () => {
+  it('matches the server constant it stands in for', async () => {
+    // WHY IT IS A COPY AT ALL. `fitness.ts` is runtime-dependency-free on
+    // purpose (see its header): a VALUE import from `@/server/fitness/evals`
+    // pulls the sweep driver, the database and the harness runner into the
+    // browser bundle, and the Models route stops loading. It happened.
+    //
+    // A test may import the server module; the browser may not. So the constant
+    // is copied and this is what stops the copy from rotting.
+    const server = await import('@/server/fitness/evals')
+    expect(DEFAULT_CONCURRENCY).toBe(server.DEFAULT_CONCURRENCY)
+  })
+})
+
+
+// ── Supplied capabilities ────────────────────────────────────────────────────
+
+describe('a capability the DEPLOYMENT supplies', () => {
+  it('gets its own tone — neither the green of yes nor the red of no', () => {
+    // Calling it 'yes' claims a blind model sees; calling it 'no' refuses a
+    // deployment that can genuinely do the job. It is a third fact.
+    expect(TAG_TONE.supplied).not.toBe(TAG_TONE.yes)
+    expect(TAG_TONE.supplied).not.toBe(TAG_TONE.no)
+    expect(TAG_TONE.supplied).not.toBe(TAG_TONE.unknown)
+  })
+
+  it('names the supplier, because "supplied" alone is unverifiable', () => {
+    // The supplier is the thing that might be switched off tomorrow, at which
+    // point every model leaning on it silently loses the capability.
+    const t = tagTitle(view({ cap: 'search', state: 'supplied', via: { server: 'searxng', tool: 'web_search' } }))
+    expect(t).toContain('searxng.web_search')
+    expect(t).toContain('cannot')
+  })
+
+  it('still reads as a capability the install HAS', () => {
+    const t = tagTitle(view({ cap: 'vision', state: 'supplied', via: { server: 'talaria', tool: 'describe_image' } }))
+    expect(t).toContain('this deployment can')
   })
 })

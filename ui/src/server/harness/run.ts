@@ -72,6 +72,7 @@ import { routingFor } from '../llm-gateway'
 import { reachFor, type Reach } from '../capability-reach'
 import { db } from '../db/pg'
 import { capabilityKey, missingCapabilities, getCapabilities, type Capability, type CapabilitySource } from './capability'
+import { promptShape, wireSchemaOf, type WireSchema } from './json-schema'
 import { personaCapabilityKeys } from './persona'
 import { parseJson, repairPrompt } from './json'
 import { resolveHarnessModel, type ModelChainStep, type ModelSpec } from './model'
@@ -88,17 +89,20 @@ export {
   defaultTransport,
   fleetStream,
   fleetTransport,
+  gatewayImageTurn,
   gatewayStream,
   gatewayTransport,
   ledgerOf,
   meterPersonaTurn,
   personaPayload,
+  personaProbeTurn,
   offersToolDefinitions,
   pickTransport,
   pumpPersonaStream,
   toolDefsOf,
   toolNamesOf,
   toolPolicyOf,
+  toolWireMessage,
 } from './transport'
 export type {
   LedgerAttribution,
@@ -365,11 +369,28 @@ export interface StreamOptions {
  *  across every harness at once. */
 const JSON_ANCHOR = 'Reply with exactly one JSON value and nothing else - no explanation before or after it, and no markdown code fence.'
 
+/** The anchor, plus THE SHAPE when this build can render one.
+ *
+ *  The anchor alone said "reply with JSON" and never said WHAT JSON, while the
+ *  harness sitting one line away held the schema. A frontier model infers the
+ *  shape from the surrounding prose and looks fine — which is exactly why it went
+ *  unnoticed — and a 7-14B model does not. This layer exists so that difference
+ *  is engineered away rather than left to the model, and telling it the shape is
+ *  the cheapest possible way to do that: one line of prompt, no extra call.
+ *
+ *  Sent even when `response_format` carries the schema at the protocol level,
+ *  for the reason the anchor itself is: a provider can drop the parameter, and
+ *  the prompt survives it. */
+const jsonAnchorFor = (wire: WireSchema | null): string => {
+  const shape = wire ? promptShape(wire.schema) : null
+  return shape ? `${JSON_ANCHOR}\n\nIt must match this shape exactly:\n${shape}` : JSON_ANCHOR
+}
+
 /** Appended to the LAST USER TURN rather than sent as a new message: a small
  *  model weights the end of its prompt most heavily, and a trailing standalone
  *  instruction reads as something to acknowledge ("Understood - I'll return
  *  JSON.") instead of as a constraint on the answer. */
-function anchorJson(messages: Message[]): Message[] {
+function anchorJson(messages: Message[], anchor: string = JSON_ANCHOR): Message[] {
   let last = -1
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]?.role === 'user') {
@@ -377,8 +398,8 @@ function anchorJson(messages: Message[]): Message[] {
       break
     }
   }
-  if (last === -1) return [...messages, { role: 'user', content: JSON_ANCHOR }]
-  return messages.map((m, i) => (i === last ? { ...m, content: `${m.content}\n\n${JSON_ANCHOR}` } : m))
+  if (last === -1) return [...messages, { role: 'user', content: anchor }]
+  return messages.map((m, i) => (i === last ? { ...m, content: `${m.content}\n\n${anchor}` } : m))
 }
 
 const lastUserMessage = (messages: Message[]): string => {
@@ -865,15 +886,27 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   // wording in json.ts first, not a branch here.
   const maxRepairs = streaming || def.output.kind !== 'json' ? 0 : Math.max(0, def.output.repair ?? 1)
   // ONE structured-output strategy, applied identically on both transports:
-  // anchor the instruction in the prompt ALWAYS, and additionally constrain at
-  // the protocol level whenever the model is not KNOWN to refuse it. The two
-  // are not redundant and not alternatives — `response_format` constrains
-  // decoding, the anchor tells the model what to produce and survives a
-  // provider that drops the parameter (audit 1.2) or a transport that has no
-  // slot for it yet. Belt and braces is the correct posture on a 14B model, and
-  // it costs one sentence of prompt.
+  // send the HARNESS'S OWN SCHEMA at the protocol level, and anchor the
+  // instruction in the prompt as well. The two are not alternatives —
+  // `response_format` constrains decoding, the anchor tells the model what to
+  // produce and survives a provider that drops the parameter (audit 1.2) or a
+  // transport with no slot for it. Belt and braces is the correct posture on a
+  // 14B model and it costs one sentence of prompt.
+  //
+  // STILL GATED ON `missing`, and the gate now means something narrower than it
+  // used to. A model MEASURED unable to do JSON never reaches this line at all:
+  // a JSON harness carries `json` in its floor (see `defineHarness`) and step 2
+  // refuses it above. What survives here is the LEARNED case — one upstream 400
+  // about one parameter — where re-sending `response_format` would 400 every
+  // call, so the parameter is suppressed and the prompt anchor carries the ask.
+  // That distinction is the whole of `run.test.ts`'s "does NOT refuse on a fact
+  // the gateway merely LEARNED from a 400", and it is worth keeping: the prose
+  // path is no longer a fallback the platform CHOOSES for a model it knows
+  // cannot comply, only the one it is left with when an endpoint rejects the
+  // parameter outright.
+  const wire = def.output.kind === 'json' ? wireSchemaOf(def.id, def.output.schema) : null
   let jsonMode = structured && !missing.includes('json')
-  let sent = structured ? anchorJson(base) : base
+  let sent = structured ? anchorJson(base, jsonAnchorFor(wire)) : base
   let repairs = 0
   let value: O | null = null
   let schemaValid = false
@@ -913,6 +946,7 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
         messages: sent,
         ...(def.temperature !== undefined ? { temperature: def.temperature } : {}),
         jsonMode,
+        ...(wire ? { jsonSchema: wire } : {}),
         ...(def.tools ? { tools: def.tools } : {}),
         // The tools this harness OFFERS, distinct from the policy above (see
         // `ToolPolicy` in transport.ts). A transport that cannot serve them

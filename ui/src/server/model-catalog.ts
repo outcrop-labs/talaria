@@ -90,7 +90,21 @@ export async function catalogEntriesFor(model: string, deps?: Partial<CatalogDep
   const store = await withDeps(deps).read().catch((): CatalogStore => ({}))
   const out: Array<{ endpoint: string; model: CatalogModel }> = []
   for (const cat of Object.values(store)) {
-    const hit = cat.models.find((m) => m.id === model)
+    // BOTH SPELLINGS, and the endpoint-qualified one is why this is here at all.
+    // A catalog is keyed by the id the PROVIDER publishes — OpenRouter says
+    // `deepseek/deepseek-v4-flash` — while everything that asks about a model
+    // now says `openrouter/deepseek/deepseek-v4-flash`, because that is the one
+    // spelling the picker offers. Matching only the raw id silently missed every
+    // qualified caller: `advertisedWindow` answered null for a model publishing
+    // a 1,048,576-token window, and the long-context probe reported that it
+    // advertises none.
+    //
+    // The prefix is stripped only for the endpoint whose name it is, so a bare
+    // id still searches every catalog (the pooled case) and a qualified id can
+    // never match another endpoint's entry.
+    const prefix = `${cat.endpoint}/`
+    const upstream = model.startsWith(prefix) ? model.slice(prefix.length) : model
+    const hit = cat.models.find((m) => m.id === upstream)
     if (hit) out.push({ endpoint: cat.endpoint, model: hit })
   }
   return out

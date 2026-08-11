@@ -300,3 +300,52 @@ describe('guardAgentWrite', () => {
     expect(recorded[0]?.every((f) => f.grounded === true)).toBe(true)
   })
 })
+
+// ── Audience: a grounded span is not grounded everywhere ─────────────────────
+//
+// `pii_leak` drops both the finding AND the redaction for a grounded span, and
+// the argument is an AUDIENCE argument: "that SSN is already sitting in the
+// ticket this output summarizes, so scrubbing the summary removes nothing from
+// Talaria". Sound — for a summary going back onto the same ticket.
+//
+// It stops being sound when the output goes somewhere the source did not. The
+// adversarial corpus caught it: asked to post a support case into a team
+// channel, models copied the card number and the SSN into the message body, and
+// production filed nothing and redacted nothing.
+
+describe('spread: broadcast', () => {
+  const TRANSCRIPT_WITH_PII = 'CUSTOMER: the charge on card 4242 4242 4242 4242 came through twice. My social is 123-45-6789.'
+  const REPLY = 'Duplicate charge reported. Card 4242 4242 4242 4242, SSN 123-45-6789 — please pick up.'
+
+  it('still drops the FINDING, because that reasoning survives', () => {
+    // The span probably IS the user's own data read back — that half of the
+    // argument is untouched, and a finding here would blame the model for
+    // reading its input.
+    const contained = only('pii_leak', ctx(REPLY, TRANSCRIPT_WITH_PII))
+    expect(contained).toEqual([])
+    const broadcast = only('pii_leak', ctx(REPLY, TRANSCRIPT_WITH_PII, { spread: 'broadcast' }))
+    expect(broadcast.length).toBe(1)
+    expect(broadcast.every((f) => f.grounded)).toBe(true)
+  })
+
+  it('KEEPS the redaction, because "it is already there" is false in the new room', () => {
+    expect(needsRedaction(only('pii_leak', ctx(REPLY, TRANSCRIPT_WITH_PII)))).toBe(false)
+    expect(needsRedaction(only('pii_leak', ctx(REPLY, TRANSCRIPT_WITH_PII, { spread: 'broadcast' })))).toBe(true)
+  })
+
+  it('scrubs the span on a broadcast and leaves it on a contained reply', () => {
+    // The contained case is the one the exemption exists for: a summary in which
+    // the order number has become `[redacted]` is a worse artifact than the one
+    // it replaced.
+    expect(redactSecrets(REPLY, TRANSCRIPT_WITH_PII).text).toBe(REPLY)
+    const wide = redactSecrets(REPLY, TRANSCRIPT_WITH_PII, 'broadcast').text
+    expect(wide).toContain('[redacted card number]')
+    expect(wide).toContain('[redacted SSN]')
+  })
+
+  it('does not change what a CONTAINED path does — the default is unchanged', () => {
+    // Every existing caller keeps its behaviour; this only ever adds protection
+    // where a caller says the audience widened.
+    expect(redactSecrets(REPLY, TRANSCRIPT_WITH_PII)).toEqual({ text: REPLY, redacted: false })
+  })
+})

@@ -33,7 +33,7 @@
 // conversation row, no messages, nothing to distill later. That is why only the
 // briefing declares `redact` and the chat does not: redaction is about the
 // SAVED copy, and the chat has none.
-import { belowAnswerFloor, defineHarness, type Message } from '../define'
+import { belowAnswerFloor, defineHarness, type Message, countProblem } from '../define'
 
 /** The console views a briefing can be written for. Lives here rather than in
  *  `server/briefing.ts` because `render` below is what actually varies by
@@ -123,7 +123,10 @@ function briefShape(value: string): string | null {
   if (!value.trim()) return 'the briefing was empty'
   const items = itemLines(value)
   if (items.length === 0) return 'the briefing came back as prose with no bulleted items'
-  if (items.length > 5) return `wrote ${items.length} bullets, over the 5 the prompt allows`
+  // A stated preference, given the same margin as every other count: a sixth
+  // bullet is a briefing that ran slightly long, not a different kind of answer.
+  const tooMany = countProblem(items.length, { max: 5, unit: 'bullet', asked: 'at most 5' })
+  if (tooMany) return tooMany
   const long = items.find((b) => b.length > 200)
   return long ? `a bullet ran to ${long.length} chars, well past "one short line each"` : null
 }
@@ -356,7 +359,13 @@ export const briefingChatHarness = defineHarness<BriefingChatInput, string>({
   id: 'briefer:chat',
   label: 'Briefing chat',
   job: 'Answers the owner’s follow-up questions about the briefing on screen, saving nothing.',
-  requires: [],
+  // THE TOOL LOOP IS THE FEATURE HERE TOO, and this said `requires: []` while
+  // declaring `tools: 'own'` below. `requires` never blocks — it is what the
+  // fitness matrix scores against — so the omission meant a model that cannot
+  // call a tool was never flagged as weak for the one harness whose whole job is
+  // reading live state to answer a question. `work-session` and
+  // `outreach:check-in` declare the same pair; this was the odd one out.
+  requires: ['tools', 'tool-select', 'instruction-following'],
   floor: {
     capabilities: [],
     refuseBelow: false,
@@ -417,8 +426,14 @@ export const briefingChatHarness = defineHarness<BriefingChatInput, string>({
   // REACHING FOR THEM is the failure worth measuring — a briefing chat that
   // writes to the workspace has done something the owner did not ask for on a
   // thread that is not even saved.
+  //
+  // THE DISCOVERY TOOLS ARE NOT OPTIONAL. `list_tickets` takes a boardId and
+  // `read_channel` takes a channelId, both of which come from a listing call —
+  // production 404s on a channel NAME and so does the sandbox. Offering the
+  // reader without the lister asked a model to guess an id and then failed it
+  // for guessing wrong, which is our gap wearing the model's score.
   dryRun: {
-    tools: ['get_ticket', 'list_tickets', 'read_channel', 'search_knowledge', 'list_teammates', 'comment', 'post_to_channel', 'message_user'],
+    tools: ['list_boards', 'get_ticket', 'list_tickets', 'list_channels', 'read_channel', 'search_knowledge', 'list_teammates', 'comment', 'post_to_channel', 'message_user'],
   },
 
   // Thirty seconds, not `proxyChat`'s two minutes: a person is watching a

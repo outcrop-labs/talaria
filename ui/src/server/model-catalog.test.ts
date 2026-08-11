@@ -217,3 +217,39 @@ describe('advertisedWindow', () => {
     expect((await catalogEntriesFor('qwen', b.deps)).map((e) => e.endpoint).sort()).toEqual(['local', 'spark'])
   })
 })
+
+describe('finding a model in the catalog', () => {
+  const store = {
+    openrouter: {
+      endpoint: 'openrouter',
+      at: '2026-08-10T00:00:00.000Z',
+      models: [model({ id: 'deepseek/deepseek-v4-flash', contextLength: 1_048_576 })],
+    },
+    anthropic: { endpoint: 'anthropic', at: '2026-08-10T00:00:00.000Z', models: [model({ id: 'claude-opus-5' })] },
+  }
+  const deps: Partial<CatalogDeps> = { read: async (): Promise<CatalogStore> => store }
+
+  it('matches the ENDPOINT-QUALIFIED id, which is the only spelling callers use now', async () => {
+    // THE REGRESSION THIS LOCKS. A catalog is keyed by the id the provider
+    // publishes (`deepseek/deepseek-v4-flash`), and every caller now says
+    // `openrouter/deepseek/deepseek-v4-flash` because that is the one spelling
+    // the picker offers. Matching the raw id alone answered null for a model
+    // advertising a 1,048,576-token window, and the long-context probe duly
+    // reported that it advertises none.
+    expect(await advertisedWindow('openrouter/deepseek/deepseek-v4-flash', deps)).toBe(1_048_576)
+  })
+
+  it('still matches a bare id across every endpoint that serves it', async () => {
+    expect(await advertisedWindow('deepseek/deepseek-v4-flash', deps)).toBe(1_048_576)
+  })
+
+  it('never lets one endpoint prefix match another endpoint entry', async () => {
+    // `anthropic/deepseek/...` is not a thing anthropic serves, and answering
+    // from OpenRouter's row would credit one endpoint with another's spec.
+    expect(await advertisedWindow('anthropic/deepseek/deepseek-v4-flash', deps)).toBeNull()
+  })
+
+  it('answers null for a model no catalog carries', async () => {
+    expect(await advertisedWindow('openrouter/nothing-here', deps)).toBeNull()
+  })
+})

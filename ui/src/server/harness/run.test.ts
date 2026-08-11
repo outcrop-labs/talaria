@@ -740,6 +740,26 @@ describe('the capability floor', () => {
     ])
   })
 
+  it('sends the harness OWN SCHEMA, not the loose json_object that Anthropic rejects', async () => {
+    // THE BUG THIS LOCKS. Every structured call carried
+    // `response_format: { type: 'json_object' }`, hardcoded in three places.
+    // Anthropic's OpenAI-compatible layer answers that with
+    //   400  response_format.type: Input should be 'json_schema'
+    // so every JSON harness 400'd on every Claude model — and the fitness suite
+    // scored it as the MODEL failing to hold a contract. Nine of twenty-six
+    // harnesses read 0% on claude-haiku while every text harness read 100%.
+    //
+    // The schema was in the harness the whole time; it was only ever used to
+    // reject the reply afterwards.
+    const r = world({})
+    await run(judge, { ticket: 'x' }, r)
+
+    const wire = r.requests[0]?.jsonSchema
+    expect(r.requests[0]?.jsonMode).toBe(true)
+    expect(wire?.schema).toMatchObject({ type: 'object', properties: { verdict: {}, summary: {} } })
+    expect(wire?.name).toMatch(/^[a-zA-Z0-9_-]+$/)
+  })
+
   it('does NOT refuse on a fact the gateway merely LEARNED from a 400', async () => {
     // The judge is the only harness with `refuseBelow`, and the gateway writes
     // `json: false` the first time an upstream rejects `response_format`. Read

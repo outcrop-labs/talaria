@@ -343,15 +343,25 @@ describe('the brief', () => {
     expect(res.widened).toBe(false)
   })
 
-  it('degrades rather than refusing on a model known to have no JSON mode', async () => {
-    // The card keeps its own deterministic question. Refusing would take the
-    // Inbox away from a self-host whose only model failed one probe.
+  it('refuses on a model MEASURED unable to produce JSON, rather than feeding prose to a parser', async () => {
+    // This harness used to degrade here, and the argument was that refusing
+    // would take the Inbox away from a self-host whose only model failed one
+    // probe. That argument was answered by narrowing the fact rather than by
+    // softening the floor: `json: false` no longer means "this endpoint ignores
+    // response_format" (see `scoreJson`), it means the model did not return a
+    // parseable object on ANY trial. A model that produces JSON from the prompt
+    // alone now scores TRUE and still runs.
+    //
+    // What is left is a model that genuinely cannot do the thing this harness is
+    // made of. Sending it anyway spent a call to hand prose to a JSON parser and
+    // recorded the wreckage as the model's failure; `onFailure: 'null'` means
+    // the card keeps its own deterministic question either way, so the only
+    // difference is the wasted call and the missing reason.
     const r = world({ facts: { json: false }, replies: ['{"question":"q?","recommendation":"r"}'] })
     const res = await runHarness(inboxBriefHarness, briefInput, { caller: 'test:inbox', model: 'pl-main', deps: r.deps })
-    expect(r.requests).toHaveLength(1)
-    expect(r.requests[0]?.jsonMode).toBe(false)
-    expect(r.requests[0]?.messages.at(-1)?.content).toContain('exactly one JSON value')
-    expect(res.value?.question).toBe('q?')
+    expect(r.requests).toHaveLength(0)
+    expect(res.error).toContain('cannot run harness "inbox-brief"')
+    expect(res.value).toBeNull()
   })
 })
 

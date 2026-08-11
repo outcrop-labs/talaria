@@ -1318,6 +1318,133 @@ const MIGRATIONS: string[] = [
   // RAW reply deliberately stays out of the table, since it can be large and
   // this row is kept forever.
   `alter table harness_runs add column if not exists error text`,
+  // ── ADOPTED FROM THE `ui-pass` BRANCH, AND WHY THEY ARE HERE ──────────────
+  //
+  // These two statements were written on `worktree-ui-pass` and APPLIED to the
+  // shared development database before this branch appended anything. Migration
+  // identity is an ARRAY INDEX, so two branches that both append claim the same
+  // ids — and the second one to boot refuses to start, because index 232 in its
+  // array is not the statement index 232 in the database ran. That is the
+  // append-only rule working exactly as designed, across a boundary it cannot
+  // see.
+  //
+  // The resolution is the one a merge would reach anyway: the branch that landed
+  // second (this one) puts its statements AFTER the other's. Copied byte for
+  // byte so the checksums match what is already applied and nothing re-runs;
+  // both are idempotent, so a fresh database is unaffected either way.
+  //
+  // WHOEVER MERGES `ui-pass`: these are already here. Drop them from the
+  // incoming diff rather than letting the merge add a second copy.
+  // Agent filing cabinets moved from the root into one "Agents" folder
+  // (see agentCategoryFolder). Existing installs already have one root folder
+  // per agent, which is exactly the wall of names the move exists to clear, so
+  // reparent them rather than leaving old fleets looking different from new.
+  //
+  // A cabinet is a ROOT folder that is either named after a live agent, or —
+  // for agents since retired, whose display name is gone from agent_defs —
+  // carries the category folders only agentCategoryFolder ever writes, filed by
+  // the same creator, with no loose artifacts of its own (a cabinet holds
+  // category folders, never files directly).
+  //
+  // `created_by` deliberately does NOT discriminate here: it records whoever
+  // TRIGGERED the filing, so a cabinet built by a research run carries the
+  // requesting human's email, not the agent's name.
+  //
+  // Two statements, because the root has to exist before anything can point at
+  // it. Both are no-ops once no root cabinets remain.
+  `insert into artifact_folders (name, created_by)
+   select 'Agents', 'system'
+   where not exists (select 1 from artifact_folders where parent_id is null and name = 'Agents')
+     and exists (
+       select 1 from artifact_folders f
+       where f.parent_id is null
+         and f.name <> 'Agents'
+         and (
+           exists (select 1 from agent_defs d where d.display_name = f.name)
+           or (
+             exists (
+               select 1 from artifact_folders c
+               where c.parent_id = f.id
+                 and c.name in ('Documents', 'Media', 'Chat summaries', 'Plans', 'Research')
+                 and c.created_by is not distinct from f.created_by
+             )
+             and not exists (select 1 from artifacts a where a.folder_id = f.id)
+           )
+         )
+     )`,
+  `update artifact_folders f
+   set parent_id = (select id from artifact_folders where parent_id is null and name = 'Agents' order by created_at asc limit 1)
+   where f.parent_id is null
+     and f.name <> 'Agents'
+     and exists (select 1 from artifact_folders where parent_id is null and name = 'Agents')
+     and (
+       exists (select 1 from agent_defs d where d.display_name = f.name)
+       or (
+         exists (
+           select 1 from artifact_folders c
+           where c.parent_id = f.id
+             and c.name in ('Documents', 'Media', 'Chat summaries', 'Plans', 'Research')
+             and c.created_by is not distinct from f.created_by
+         )
+         and not exists (select 1 from artifacts a where a.folder_id = f.id)
+       )
+     )`,
+  // EVERY CASE OF EVERY FITNESS RUN, IN FULL — the audit trail the settings-row
+  // archive could never be.
+  //
+  // WHY IT IS NOT IN `app_settings` WITH THE REST OF THE REPORT. The archived
+  // record keeps transcripts only for cases that FAILED something, capped at
+  // thirty, because it is one JSON row read whole on every page load. That is
+  // the right shape for a drill-down and the wrong shape for verification: the
+  // question "did this model actually do the work, or did our fixture just
+  // accept something weak" can only be answered from a PASSING transcript, and
+  // those were exactly the ones discarded. Several fixtures rewritten this
+  // month were rewritten because a passing transcript turned out to show the
+  // model being failed for obeying us, or passing for the wrong reason — and
+  // each time the evidence had to be re-bought by re-running the sweep.
+  //
+  // A table can hold them: one row per case, written as it lands, pruned by
+  // run rather than by size.
+  `create table if not exists fitness_transcripts (
+     id uuid primary key default gen_random_uuid(),
+     model text not null,
+     run_started_at timestamptz not null,
+     harness text not null,
+     case_name text not null,
+     band text not null default 'standard',
+     verdict text not null default 'pass',
+     prompt text,
+     raw text,
+     turns jsonb,
+     tool_calls jsonb,
+     upstream jsonb,
+     latency_ms integer not null default 0,
+     prompt_tokens integer not null default 0,
+     completion_tokens integer not null default 0,
+     created_at timestamptz not null default now()
+   )`,
+  // Every read is "this model, this run" or "this model, latest run", and the
+  // prune is "this model, older than N runs". One index serves all three.
+  `create index if not exists fitness_transcripts_model_run_idx
+     on fitness_transcripts (model, run_started_at desc, harness, case_name)`,
+  // WHEN THE CASE STARTED, AND WHAT IT COST THE SWEEP.
+  //
+  // `latency_ms` is the runner's own measure of the FINAL attempt — render, the
+  // model turns, the repair round-trip, the guard pass — and it is the number
+  // the observed-vs-tested comparison is computed from, so it has to stay
+  // exactly what production records. It therefore cannot answer either question
+  // a speed comparison actually asks:
+  //
+  //   WHAT DID THIS CASE COST? A case whose first two requests vanished and
+  //   whose third took four seconds has `latency_ms = 4000` and spent two
+  //   minutes of the sweep. `wall_ms` is that two minutes.
+  //
+  //   WHAT WAS RUNNING ALONGSIDE IT? Under concurrency a latency figure cannot
+  //   distinguish a slow model from four fast cases queued behind each other.
+  //   `started_at` makes the run a timeline instead of a bag of durations.
+  `alter table fitness_transcripts
+     add column if not exists started_at timestamptz,
+     add column if not exists wall_ms integer not null default 0`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

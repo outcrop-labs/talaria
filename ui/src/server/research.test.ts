@@ -89,6 +89,10 @@ vi.mock('@/server/llm-gateway', () => ({
   contractDropsOf: () => [],
 }))
 vi.mock('@/server/model-roles', () => ({ resolveRoleModel: async () => 'sonar' }))
+// `reachFor` asks the platform what IT can supply, and the real answer probes
+// SearXNG over HTTP. This file is about the synthesis stage; it must not depend
+// on a container being up, and it must not pay a network round trip to find out.
+vi.mock('@/server/capability-platform', () => ({ platformSupply: async () => [], forgetPlatformSupply: () => {}, PLATFORM_SERVER: 'talaria' }))
 vi.mock('@/server/notifications', () => ({ addNotification: async () => {} }))
 vi.mock('@/server/retrieval/sources', () => ({ indexActivity: async () => {}, indexPersonal: async () => {} }))
 vi.mock('@/server/titler', () => ({ generateTitle: async () => 'A title' }))

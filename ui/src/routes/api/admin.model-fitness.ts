@@ -19,7 +19,7 @@ import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
-import { forgetModel, readFitness, startFitnessRun, stopFitnessRun } from '@/server/fitness/surface'
+import { clearFitnessResults, forgetModel, readFitness, startFitnessRun, stopFitnessRun } from '@/server/fitness/surface'
 
 export type {
   CapabilityState,
@@ -40,15 +40,37 @@ const Post = z.union([
     adversaryModel: z.string().max(200).nullish(),
     only: z.array(z.string().max(120)).max(64).optional(),
     restart: z.boolean().optional(),
+    /** Re-measure capabilities an earlier run already probed. Off by default —
+     *  a probe fact is a property of an endpoint:model and does not go stale. */
+    reprobe: z.boolean().optional(),
+    /** Cases in flight at once. Clamped server-side; 1 is the old strictly
+     *  sequential sweep. */
+    concurrency: z.number().int().min(1).max(8).optional(),
+    /** Keep the passing cases and re-run only what failed, timed out or could
+     *  not be measured. Cheaper than `restart` by two orders of magnitude on a
+     *  run that mostly worked. */
+    retryFailed: z.boolean().optional(),
+    /** Run only fixtures no archived run has answered — the mode for a registry
+     *  that has gained fixtures since the model was last tested. Also prunes
+     *  verdicts for fixtures that no longer exist. */
+    supplement: z.boolean().optional(),
   }),
-  z.object({ action: z.literal('stop') }),
+  // A model stops ONE run; omitted stops every run in flight.
+  z.object({ action: z.literal('stop'), model: z.string().max(200).nullish() }),
   z.object({ action: z.literal('forget'), model: z.string().min(1).max(200) }),
+  // CLEAR is not FORGET. Forget drops what a model CAN DO (probe facts, paid
+  // for once and true until the id is re-pointed); this drops what a RUN FOUND,
+  // so a candidate can be swept again from nothing. `model: null` clears every
+  // tested candidate.
+  z.object({ action: z.literal('clear'), model: z.string().max(200).nullish() }),
 ])
 
-// GET  ?view=matrix (default) → slots + models + capability facts + cells
+// GET  ?view=matrix (default) → slots + models + capability facts + cells + runs
 //      ?view=capabilities     → models + facts only (the model pickers)
 //      ?view=detail&model=    → one archived report + production telemetry
+//      ?view=value            → price against performance, over the measured workload
 //      ?view=estimate&model=&tiers=&adversary= → what a run will cost
+//      ?view=transcripts&model=&run=    → every case of one run, in full (audit)
 // POST { action: 'start' | 'stop' | 'forget' }
 export const Route = defineApi('/api/admin/model-fitness', {
   GET: async ({ request }) => {
@@ -61,6 +83,8 @@ export const Route = defineApi('/api/admin/model-fitness', {
       tiers: q.get('tiers'),
       adversary: q.get('adversary'),
       only: q.get('only'),
+      reprobe: q.get('reprobe') === '1',
+      run: q.get('run'),
     })
     return result.ok ? json(result.body) : json({ error: result.error }, { status: 400 })
   },
@@ -73,11 +97,23 @@ export const Route = defineApi('/api/admin/model-fitness', {
     const actor = actorOf(user)
 
     if (body.action === 'stop') {
-      // `{ stopped, status }` — two things can be running (the tier-2 sweep and
-      // the tier loop) and `stopFitnessRun` signals both.
-      const result = await stopFitnessRun()
-      void logAudit({ actor, action: 'model_fitness.stop', targetType: 'model-fitness', targetId: 'run' })
+      // `{ stopped, status, runs }` — two things can be running per candidate
+      // (the tier-2 sweep and the tier loop) and `stopFitnessRun` signals both.
+      const result = await stopFitnessRun(body.model ?? null)
+      void logAudit({ actor, action: 'model_fitness.stop', targetType: 'model-fitness', targetId: body.model ?? 'all' })
       return json(result)
+    }
+
+    if (body.action === 'clear') {
+      const cleared = await clearFitnessResults(body.model ?? null)
+      void logAudit({
+        actor,
+        action: 'model_fitness.clear',
+        targetType: 'model-fitness',
+        targetId: body.model ?? 'all',
+        after: cleared,
+      })
+      return json(cleared)
     }
 
     if (body.action === 'forget') {
@@ -98,6 +134,10 @@ export const Route = defineApi('/api/admin/model-fitness', {
       tiers: body.tiers,
       adversaryModel: body.adversaryModel ?? null,
       restart: body.restart ?? false,
+      ...(body.reprobe ? { reprobe: true } : {}),
+      ...(body.concurrency !== undefined ? { concurrency: body.concurrency } : {}),
+      ...(body.retryFailed ? { retryFailed: true } : {}),
+      ...(body.supplement ? { supplement: true } : {}),
       ...(body.only?.length ? { only: body.only } : {}),
     })
     if (!started.ok) {
@@ -105,7 +145,19 @@ export const Route = defineApi('/api/admin/model-fitness', {
       // Start shows the run rather than buying a second one. 400 is a request
       // that could never have run.
       return started.reason === 'busy'
-        ? json({ started: false, status: started.status }, { status: 409 })
+        ? json(
+            {
+              started: false,
+              refusal: started.refusal,
+              error:
+                started.refusal === 'at-capacity'
+                  ? `already testing ${started.runs.max} models — stop one, or wait for it to finish`
+                  : 'that model is already being tested',
+              status: started.status,
+              runs: started.runs,
+            },
+            { status: 409 },
+          )
         : json({ error: started.error }, { status: 400 })
     }
     void logAudit({
@@ -113,8 +165,8 @@ export const Route = defineApi('/api/admin/model-fitness', {
       action: 'model_fitness.start',
       targetType: 'model',
       targetId: body.model,
-      after: { tiers: body.tiers, adversary: body.adversaryModel ?? null },
+      after: { tiers: body.tiers, adversary: body.adversaryModel ?? null, reprobe: body.reprobe ?? false },
     })
-    return json({ started: true, status: started.status })
+    return json({ started: true, status: started.status, runs: started.runs })
   },
 })

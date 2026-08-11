@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NO_TOOLS, type EvalContext } from '@/server/harness/define'
+import { NO_TOOLS, type EvalContext, type CheckResult } from '@/server/harness/define'
 import { runHarness, type HarnessDeps, type Transport, type TransportRequest } from '@/server/harness/run'
 import {
   clampQueries,
@@ -131,9 +131,23 @@ describe('the research query planner', () => {
     expect(gave.raw).toContain('pg17 slot failover')
   })
 
-  it('never refuses — a lost plan costs a round, not the run', async () => {
-    const run = await plan(world({ replies: ['{"queries":["a query long enough"]}'], facts: { json: false, 'instruction-following': false } }))
+  it('still plans for a model that merely follows instructions badly', async () => {
+    // `instruction-following: false` is not this harness's floor. A lost plan
+    // costs a round, not the run — research.ts salvages a numbered list and
+    // falls back to a default query — so a weak model gets its attempt.
+    const run = await plan(world({ replies: ['{"queries":["a query long enough"]}'], facts: { 'instruction-following': false } }))
     expect(run.value).toEqual(['a query long enough'])
+  })
+
+  it('refuses on a model MEASURED unable to produce JSON', async () => {
+    // The same tolerance that used to argue for trying anyway now argues for
+    // refusing: a lost plan costs a round, not the run. Under the narrowed fact
+    // (see `scoreJson`) this model returned no parseable object on any trial, so
+    // the attempt would lose the round AND the call — and the salvage path reads
+    // a reply we now know is not coming.
+    const run = await plan(world({ replies: ['{"queries":["a query long enough"]}'], facts: { json: false } }))
+    expect(run.value).toBeNull()
+    expect(run.error).toContain('cannot run harness "research-queries"')
   })
 })
 
@@ -229,6 +243,8 @@ describe('the research search harness', () => {
 
 describe('toolSearchTransport', () => {
   const SUPPLIER = { server: 'exa', tool: 'web_search' }
+  /** Mirrors `MAX_TOOL_ROUNDS` in research.ts — the budget the closing turn follows. */
+  const MAX_ROUNDS = 3
 
   /** A base transport that answers with one tool call, then with prose. */
   const modelThatSearches = (finalText: string): { base: Transport; seen: TransportRequest[] } => {
@@ -249,6 +265,113 @@ describe('toolSearchTransport', () => {
     }
     return { base, seen }
   }
+
+  it('replays tool calls on the TOOL CHANNEL, never as prose the model can imitate', async () => {
+    // THE FAILURE THIS PREVENTS, verbatim from a live sweep. The loop used to
+    // push `Called web_search({...})` as ASSISTANT TEXT and the results as a
+    // USER turn. deepseek-v4-flash read that transcript, concluded that is what
+    // an assistant turn looks like here, and returned
+    //   Called web_search({"query":"AC-2 Account Management NIST 800-53 Rev 5 ..."})
+    // as its FINAL ANSWER on fixture after fixture. Same failure as the dry-run
+    // sandbox (see `Message.toolCalls` in define.ts): changing the wording moves
+    // the imitation, and only the channel ends it.
+    const seen: TransportRequest[] = []
+    const base: Transport = async (req) => {
+      seen.push(req)
+      if (seen.length === 1) {
+        return {
+          kind: 'gateway',
+          text: '',
+          toolNames: ['web_search'],
+          toolCalls: [{ name: 'web_search', args: JSON.stringify({ query: 'node 24 eol' }), id: 'call_7' }],
+          usage: null,
+          contractDropped: false,
+        }
+      }
+      return { kind: 'gateway', text: 'Node.js 24 reaches end of life on 2028-04-30.', toolNames: [], usage: null, contractDropped: false }
+    }
+    const transport = toolSearchTransport('run-1', [], SUPPLIER, { base, callTool: async () => ({ text: 'EOL 2028-04-30', structured: null }) })
+    await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'node 24 eol' }], jsonMode: false, caller: 't' })
+
+    const replay = seen[1]!.messages
+    // NOTHING NARRATES A CALL IN PROSE — that is the string models copy.
+    expect(replay.some((m) => /Called web_search\(/.test(m.content))).toBe(false)
+    // The call rides the assistant turn's own channel...
+    const assistant = replay.find((m) => m.role === 'assistant' && m.toolCalls?.length)
+    expect(assistant?.toolCalls?.[0]?.name).toBe('web_search')
+    // ...and the result is a `tool` message answering it by id, not a user turn
+    // pretending to be a person reading search results aloud.
+    const result = replay.find((m) => m.role === 'tool')
+    expect(result?.toolCallId).toBe('call_7')
+    expect(result?.content).toContain('EOL 2028-04-30')
+  })
+
+  it('ASKS FOR AN ANSWER when the round budget runs out mid-search', async () => {
+    // THE BUG THIS PINS. A model still searching when the rounds ran out had its
+    // INTERSTITIAL turn recorded as its finding. A live sweep of
+    // deepseek-v4-flash failed nine of nine research-search fixtures on text
+    // like "The searches so far have returned mostly generic EU pages ... Let me
+    // try more targeted queries" — the model had gathered the evidence and was
+    // never asked to use it. Three more scored "the model returned nothing",
+    // which is the same bug when the preamble is empty.
+    const seen: TransportRequest[] = []
+    const base: Transport = async (req) => {
+      seen.push(req)
+      // Never stops asking: every turn is another tool call, so the loop can
+      // only ever exit on the budget.
+      if (seen.length <= MAX_ROUNDS) {
+        return {
+          kind: 'gateway',
+          text: 'Let me try more targeted queries.',
+          toolNames: ['web_search'],
+          toolCalls: [{ name: 'web_search', args: JSON.stringify({ query: 'ai act gpai' }) }],
+          usage: null,
+          contractDropped: false,
+        }
+      }
+      return { kind: 'gateway', text: 'The GPAI obligations apply from 2025-08-02.', toolNames: [], usage: null, contractDropped: false }
+    }
+    const sink: SearchSource[] = []
+    const transport = toolSearchTransport('run-1', sink, SUPPLIER, {
+      base,
+      callTool: async () => ({ text: 'GPAI obligations apply from 2 August 2025.', structured: { results: [{ url: 'https://eur-lex.europa.eu/ai-act', title: 'AI Act' }] } }),
+    })
+
+    const reply = await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'when do EU AI Act GPAI rules apply' }], jsonMode: false, caller: 't' })
+
+    // The answer, not the preamble.
+    expect(reply.text).toContain('2025-08-02')
+    expect(reply.text).not.toContain('more targeted queries')
+    // NO TOOLS ON THE CLOSING TURN: leaving them on is an invitation to spend it
+    // on a fourth search and arrive back with nothing again.
+    const closing = seen.at(-1)
+    expect(closing?.toolDefs ?? []).toEqual([])
+    expect(closing?.messages.at(-1)?.content).toContain('do not search again')
+  })
+
+  it('never records a tool-calling turn\u2019s prose as the finding', async () => {
+    // The narrower half of the same rule: even when the model DOES stop on its
+    // own, the text has to come from the turn that stopped — not from an earlier
+    // turn that was still working.
+    const seen: TransportRequest[] = []
+    const base: Transport = async (req) => {
+      seen.push(req)
+      if (seen.length === 1) {
+        return {
+          kind: 'gateway',
+          text: 'First I will check the release schedule.',
+          toolNames: ['web_search'],
+          toolCalls: [{ name: 'web_search', args: '{}' }],
+          usage: null,
+          contractDropped: false,
+        }
+      }
+      return { kind: 'gateway', text: 'Node.js 24 reaches end of life on 2028-04-30.', toolNames: [], usage: null, contractDropped: false }
+    }
+    const transport = toolSearchTransport('run-1', [], SUPPLIER, { base, callTool: async () => ({ text: 'EOL 2028-04-30', structured: null }) })
+    const reply = await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'node 24 eol' }], jsonMode: false, caller: 't' })
+    expect(reply.text).toBe('Node.js 24 reaches end of life on 2028-04-30.')
+  })
 
   it('calls the tool, harvests its sources, and answers from what came back', async () => {
     const sink: SearchSource[] = []
@@ -473,7 +596,7 @@ describe('the research report is grounded against its own search hits', () => {
 // passes everything scores every model identically and is worse than no eval,
 // so each one is exercised against a plausible BAD answer as well as a good one.
 
-const checkOf = <I, O>(evals: Array<{ name: string; input: I; check: (v: O, ctx: EvalContext) => string | null }> | undefined, name: string) => {
+const checkOf = <I, O>(evals: Array<{ name: string; input: I; check: (v: O, ctx: EvalContext) => CheckResult }> | undefined, name: string) => {
   const found = evals?.find((e) => e.name.startsWith(name))
   if (!found) throw new Error(`no eval fixture starting "${name}"`)
   // These fixtures are all single-shot, so the context is the empty one every

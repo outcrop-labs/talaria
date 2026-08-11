@@ -232,7 +232,12 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
         ).catch(() => {})
         return
       }
-      if (/\b(DONE|BLOCKED)\b/.test(last.text.slice(-200))) {
+      // CASE-INSENSITIVE, and the fitness suite is what found it: a model that
+      // ended its turn "**Status:** Blocked" plainly meant blocked, and this
+      // read it as still working — so the session kept waking up on a parked
+      // ticket, which is the exact bug the status line exists to prevent. The
+      // convention asks for a word, not for shouting.
+      if (/\b(DONE|BLOCKED)\b/i.test(last.text.slice(-200))) {
         // The agent says it's finished but the ticket disagrees — one nudge to
         // reconcile (report_outcome / set blocked), then stop pushing.
         last = await sendTurn(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NO_TOOLS } from '@/server/harness/define'
+import { NO_TOOLS, type CheckResult } from '@/server/harness/define'
 import { runHarness, type HarnessDeps, type TransportRequest } from '@/server/harness/run'
 import { redactSecrets } from '@/server/guardrails'
 import {
@@ -106,15 +106,17 @@ describe('the cron harness', () => {
     expect(w.requests[0]?.messages.at(-1)?.content).toContain('exactly one JSON value')
   })
 
-  it('degrades rather than refusing on a model that cannot do JSON', async () => {
-    // refuseBelow is FALSE for every Muse kind, deliberately: the form
-    // underneath is fully usable by hand, so a shortcut that declines to try is
-    // worse than one that sometimes misses.
+  it('refuses on a model MEASURED unable to produce JSON', async () => {
+    // Muse used to degrade here — the form underneath is usable by hand, so a
+    // shortcut that declines to try seemed worse than one that sometimes misses.
+    // Under the narrowed fact (see `scoreJson`) this model does not "sometimes
+    // miss": it returned no parseable object on any trial, so the shortcut would
+    // miss every time and `onFailure: 'null'` leaves the form exactly as it would
+    // have been. Refusing costs the user nothing and saves a call.
     const w = world({ facts: { json: false } })
     const res = await run(museCronHarness, ASK, w)
-    expect(w.requests).toHaveLength(1)
-    expect(w.requests[0]?.jsonMode).toBe(false) // known-false: don't send the parameter
-    expect(res.value).not.toBeNull()
+    expect(w.requests).toHaveLength(0)
+    expect(res.error).toContain('cannot run harness "muse:cron"')
   })
 
   it('returns nothing rather than a half-draft, so the form keeps what it had', async () => {
@@ -224,7 +226,13 @@ describe('the agent widening', () => {
     // model earns is the ability to hold three full playbooks in one nested
     // object without truncating — which is `json-strict` and nothing else.
     expect(museAgentHarness.widen?.requires).toEqual(['json-strict'])
-    expect(museAgentHarness.floor.refuseBelow).toBe(false)
+    // The floor refuses on `json` (derived — see `defineHarness`), which is a
+    // different question from the widening: `json` is whether the model can
+    // produce an object at all, `json-strict` is whether it can hold three
+    // nested playbooks without truncating. Failing the second still earns the
+    // narrow branch, which is a real answer.
+    expect(museAgentHarness.floor.refuseBelow).toBe(true)
+    expect(museAgentHarness.floor.capabilities).toContain('json')
   })
 })
 
@@ -389,7 +397,7 @@ describe('the eval fixtures', () => {
   // exactly two, so every one of them silently re-pointed at a different
   // fixture the moment the suites grew — and the failures read as "the muse
   // check is wrong" rather than "this test is holding the wrong fixture".
-  const named = <T,>(evals: ReadonlyArray<{ name: string; check: (v: T, ctx: typeof NO_TOOLS) => string | null }> | undefined, name: string) => {
+  const named = <T,>(evals: ReadonlyArray<{ name: string; check: (v: T, ctx: typeof NO_TOOLS) => CheckResult }> | undefined, name: string) => {
     const found = evals?.find((e) => e.name === name)
     if (!found) throw new Error(`no fixture called "${name}"`)
     return found.check
@@ -512,7 +520,29 @@ describe('the prose draft harness', () => {
 })
 
 describe('the prose eval fixtures', () => {
-  const check = (i: number, v: string): string | null => {
+  describe('the template line count', () => {
+    it('lets a big process come back as section names, which is what the prompt asks for', () => {
+      // THE CONTRADICTION THIS FIXES. `SYSTEM.template` says both "whole template
+      // under 25 lines" AND "if the request describes a big process, capture it as
+      // section NAMES, not content". An incident runbook needs five sections; five
+      // sections with a description line and placeholder bullets is 26 raw lines
+      // and about ten lines of actual content. gemma produced exactly that — the
+      // skeleton the prompt asked for — and was told it had written a document.
+      const skeleton = ['Detection & Triage', 'Communication Plan', 'Mitigation Steps', 'Verification', 'Postmortem']
+        .map((h) => `## ${h}\n_What this section covers._\n- \n- \n- \n`)
+        .join('\n')
+
+      expect(skeleton.trim().split('\n').length).toBeGreaterThan(25)
+      expect(check(2, skeleton)).toBeNull()
+    })
+
+    it('still catches a model that writes the document instead of the shape', () => {
+      const document = ['## Detection', '## Response', '## Review', ...Array.from({ length: 30 }, (_, i) => `- Step ${i}: do the thing carefully.`)].join('\n')
+      expect(check(2, document)).toContain('a document rather than a skeleton')
+    })
+    })
+
+  const check = (i: number, v: string): CheckResult => {
     const fixture = museDraftHarness.evals?.[i]
     if (!fixture) throw new Error(`no eval fixture at index ${i}`)
     return fixture.check(v, NO_TOOLS)
@@ -560,7 +590,10 @@ describe('the prose eval fixtures', () => {
     // starts, and it trips the shape rule before the section rules are reached.
     expect(check(1, ['# Bug report', '## Summary', '_x_', '## Steps', '- ', '## Expected', '_y_'].join('\n'))).toContain('must BE the document')
     expect(check(1, ['## Summary', '_x_', '### Detail', 'y', '## Steps', '- ', '## Expected', '_z_'].join('\n'))).toContain('"##" only')
-    expect(check(1, ['## Summary', '_x_', '## Steps', '- '].join('\n'))).toContain('2 sections')
+    // One section short of the range is within the margin (see `countProblem`);
+    // a single-section "template" is the different kind of thing the rule is for.
+    expect(check(1, ['## Summary', '_x_', '## Steps', '- '].join('\n'))).toBeNull()
+    expect(check(1, ['## Summary', '_x_'].join('\n'))).toContain('1 section')
     // The overbuild rule: asked for a whole runbook, it wrote the runbook.
     expect(check(2, ['## Detection', ...Array.from({ length: 30 }, (_, i) => `- step ${i}`)].join('\n'))).toContain('under 25')
   })
@@ -671,4 +704,6 @@ describe('the stream redactor', () => {
     expect(r.flush()).not.toBe('')
     expect(r.flush()).toBe('')
   })
+
+
 })
