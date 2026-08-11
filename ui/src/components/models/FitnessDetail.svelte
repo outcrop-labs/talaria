@@ -6,6 +6,8 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
   import { cn } from '@/lib/cn'
+  import { SquareTerminal } from '@lucide/svelte'
+  import { focusGold } from '@/components/chat/chat-chrome'
   import { fly } from '@/lib/motion'
   import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
   import CapabilityTags from './CapabilityTags.svelte'
@@ -36,6 +38,8 @@
 
   const record = $derived(detail.record)
   const live = $derived(detail.live)
+  /** The run's log, live or archived — see `DetailView.consoleLog`. */
+  const consoleLines = $derived(live?.log ?? detail.consoleLog ?? [])
   const harnessLabels = $derived(Object.fromEntries((record?.harnesses ?? []).map((h) => [h.id, h.label])))
 
   // Worst first, assignable slots only. An admin opening a model wants the thing
@@ -123,15 +127,11 @@
   )
   const gapCases = $derived((record?.cases ?? []).filter((c) => c.gap !== null).length)
 
-  type Pane = 'live' | 'console' | 'overview' | 'verdicts' | 'capabilities' | 'fixtures' | 'adversarial' | 'observed'
+  type Pane = 'live' | 'overview' | 'verdicts' | 'capabilities' | 'fixtures' | 'adversarial' | 'observed'
 
   const panes = $derived.by(() => {
     const out: Array<{ id: Pane; label: string }> = []
     if (live) out.push({ id: 'live', label: `Live ${live.done}/${live.total || '?'}` })
-    // THE CONSOLE OUTLIVES THE RUN. It used to vanish the instant a sweep
-    // finished — the moment somebody who had been watching it wants to read it
-    // back — because the only pane that showed it was gated on `live`.
-    else if (detail.consoleLog?.length) out.push({ id: 'console', label: `Console ${detail.consoleLog.length}` })
     // OVERVIEW FIRST among the archived panes, because it is the answer and the
     // rest are the evidence. A run in flight still outranks it: what you opened
     // the dialog for during a sweep is the sweep.
@@ -157,7 +157,18 @@
   /** Whether the live console is expanded. Local rather than in the URL: it is a
    *  reading preference for the minute you are watching a run, not a selection
    *  worth linking to. */
-  let consoleOpen = $state(true)
+  // CLOSED BY DEFAULT NOW THAT IT IS GLOBAL. It used to open with the Live pane,
+  // where opening it WAS the reason you were there; from every other pane an
+  // uninvited console is a third of the dialog somebody has to dismiss.
+  //
+  // A RUN IN FLIGHT IS THE EXCEPTION, and the one case where the console is what
+  // somebody came for. Opening it when one appears — rather than defaulting it
+  // open — means a run that starts while the dialog is already open still shows
+  // itself, and an archived one still opens quiet.
+  let consoleOpen = $state(false)
+  $effect(() => {
+    if (live) consoleOpen = true
+  })
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
@@ -213,8 +224,40 @@
       <p class="mt-2 max-w-prose font-sans text-xs text-warning">{c}</p>
     {/each}
 
-    <Tabs class="mt-3 flex-wrap" items={panes} value={pane} onChange={setPane} />
+    <!-- THE CONSOLE IS NOT A PLACE, IT IS A THING YOU TURN ON. It was a tab,
+         which made it somewhere to GO — and going there meant leaving the
+         verdicts you were reading. A run's log is context for every other pane,
+         so it toggles from the strip and opens above whichever one is showing.
+         The count is on the button because a console with nothing in it is worth
+         knowing about before you click. -->
+    <div class="mt-3 flex items-end gap-2">
+      <Tabs class="flex-wrap" items={panes} value={pane} onChange={setPane} />
+      {#if consoleLines.length > 0}
+        <button
+          type="button"
+          onclick={() => (consoleOpen = !consoleOpen)}
+          aria-pressed={consoleOpen}
+          title={consoleOpen ? 'Hide the run console' : `Show the run console (${consoleLines.length} lines)`}
+          class={cn(
+            'ml-auto mb-1 inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] transition-colors',
+            focusGold,
+            consoleOpen ? 'border-line-strong bg-panel text-fg' : 'border-line text-ink-dim hover:text-fg',
+          )}
+        >
+          <SquareTerminal size={13} aria-hidden="true" />
+          {consoleLines.length}
+        </button>
+      {/if}
+    </div>
   </div>
+
+  <!-- Above the pane rather than inside one: it is bounded, it clips its own
+       content, and it belongs to the RUN rather than to whatever is open. -->
+  {#if consoleOpen && consoleLines.length > 0}
+    <div class="shrink-0 overflow-hidden border-b border-line bg-panel px-7 pb-3">
+      <FitnessTerminal log={consoleLines} {live} bind:open={consoleOpen} />
+    </div>
+  {/if}
 
   <!-- ── The open compartment ──────────────────────────────────────────────
        One pane, its own scroll. Switching tabs returns you to the top of the
@@ -228,28 +271,13 @@
          Every pane but Live is a plain scrolling column; Live is a fixed console
          over a scrolling list, and only it knows that. -->
     <div class="min-h-0 flex-1 overflow-hidden" in:fly={{ y: 6, duration: 180 }}>
-      {#if (pane === 'live' && live) || pane === 'console'}
-        <!-- TWO READINGS OF ONE RUN. The terminal is the run MOVING — every case
-             as it lands, in order, with the slow ones visibly slow, which is the
-             only view in which a provider falling over at 11:04 is legible. The
-             list below it is the run's FAILURES in full, which is what you read
-             once something has gone wrong. Neither substitutes for the other.
-             THEY SCROLL SEPARATELY, and that is the whole layout: the console is
-             pinned and sizes to its own bounded content, the list underneath
-             takes the rest and scrolls inside itself. -->
+      {#if pane === 'live' && live}
+        <!-- THE LIVE PANE IS THE RUN'S FAILURES. The console used to live in here
+             too, which is why this comment used to be about two scroll
+             containers fighting: it is a toggle on the tab strip now, pinned
+             above whichever pane is open, so a log that is context for every
+             pane is no longer trapped inside one of them. -->
         <div class="flex h-full min-h-0 flex-col gap-3 px-7 py-5">
-          <!-- CONTAINER ONE: the console. Bounded, opaque, `overflow-hidden`. -->
-          <div class="shrink-0 overflow-hidden bg-panel">
-            <FitnessTerminal log={live?.log ?? (detail.consoleLog ?? [])} {live} bind:open={consoleOpen} />
-          </div>
-          <!-- CONTAINER TWO: the failures. Its own bounded box, its own scroll,
-               its own opaque background.
-               THE POINT OF THE TWO BEING SEPARATE, stated because three rounds of
-               patching missed it: they were sharing a scroll container, so the
-               list's header escaped upward and the console's log was pushed below
-               the list, and the transparent gaps between the accordion cards let
-               each show through the other. Two boxes that each clip their own
-               content cannot do that, whatever either one does inside. -->
           <div class="min-h-0 flex-1 overflow-hidden rounded-md bg-panel">
             <!-- THE FAILURE LIST IS A LIVE-RUN THING. After the run, the archived
                  Fixtures pane is the better read — it has every case, not the
