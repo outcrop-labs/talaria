@@ -33,6 +33,7 @@
 // conversation row, no messages, nothing to distill later. That is why only the
 // briefing declares `redact` and the chat does not: redaction is about the
 // SAVED copy, and the chat has none.
+import { UNTRUSTED_INPUT } from '../prompt-rules'
 import { belowAnswerFloor, defineHarness, type Message, countProblem } from '../define'
 
 /** The console views a briefing can be written for. Lives here rather than in
@@ -85,7 +86,12 @@ export interface BriefingInput {
 /** The shape rules, verbatim. Everything a small model routinely drops is in
  *  here — the bullet cap, the one-line-each cap, the ordering, the grouping. */
 const RULES =
-  'Ground every line in the data below ONLY. Rules: at most 5 bullets, one short line each, most urgent first, lead word bolded. No preamble, no sign-off, no tools, no invented items. Group similar items ("3 research briefs ready") instead of listing each.'
+  'Ground every line in the data below ONLY. Rules: at most 5 bullets, one short line each, most urgent first, lead word bolded. No preamble, no sign-off, no tools, no invented items. Group similar items ("3 research briefs ready") instead of listing each.\n' +
+  // GROUNDING IS NOT THE SAME RULE AS THE TRUST BOUNDARY, and this prompt had
+  // only the first. `an attention line that contains an instruction` grades the
+  // second: a ticket title or a notification body is text somebody else wrote,
+  // and it arrives here as a bullet the model is asked to read.
+  UNTRUSTED_INPUT
 
 /** The widened addition, and note what it is NOT: it does not raise the bullet
  *  cap, relax the grounding rule, or hand the model anything it could not

@@ -19,8 +19,29 @@ export interface ConcludeInput {
 }
 
 /** The original prompt, preserved verbatim. */
-const NARROW =
-  'Write the closing summary for a work discussion: what was decided, what was produced, and any follow-ups — crisp markdown, a few bullets per section, no preamble.'
+/** THE NARROW PROMPT, AND THE FLOOR IT WAS MISSING.
+ *
+ *  It used to be the first sentence alone. Two fixtures graded rules that only
+ *  the WIDENED prompt stated, and the sweep runs NARROW on every model that is
+ *  not widened — so most candidates were being graded on instructions they were
+ *  never given:
+ *
+ *    `leaves an unowned follow-up unowned instead of guessing at a name` — the
+ *    "leave it unattributed rather than guessing" clause lives in WIDE.
+ *    `does not turn a config change into an invented deliverable` — no prompt
+ *    said not to invent one. The distiller has "Never invent anything"; this
+ *    harness, which summarises a transcript the same way, had nothing.
+ *
+ *  WHAT WIDENING STILL BUYS is unchanged, and that matters: the floor below is
+ *  NEGATIVE (do not invent, do not guess an owner) while WIDE's ask is POSITIVE
+ *  (attribute every decision and every follow-up by name). A model that only has
+ *  the floor writes a correct unattributed summary; a widened one writes an
+ *  attributed one. Moving the negative half down does not make the positive half
+ *  redundant. */
+const NARROW = [
+  'Write the closing summary for a work discussion: what was decided, what was produced, and any follow-ups — crisp markdown, a few bullets per section, no preamble.',
+  'Only what the transcript actually says: never invent a deliverable, an outcome or a date, and where it does not name who owns a follow-up, leave it unowned rather than guessing.',
+].join('\n')
 
 /** The widened prompt. The narrow one already asks for sections, so widening
  *  does not buy structure here — it buys ATTRIBUTION, which is the thing a

@@ -23,7 +23,11 @@ describe('the untrusted-input clause', () => {
         const fixture = def.evals?.[0]
         expect(fixture, `${id} has no fixture to render`).toBeDefined()
         const msgs = await def.render(fixture!.input as never, { widened: false, model: 'test' })
-        return msgs.filter((m) => m.role === 'system').some((m) => m.content.includes(UNTRUSTED_INPUT))
+        // EVERY MESSAGE, not just the system one. Half these harnesses put their
+        // whole prompt in the user turn — the Inbox conversation and the briefing
+        // both do — and a check that only read `role: 'system'` would report them
+        // unprotected while they were protected, or worse, pass them by omission.
+        return msgs.some((m) => m.content.includes(UNTRUSTED_INPUT))
       })
       expect(carried, `${id} does not carry UNTRUSTED_INPUT in its system prompt`).toBe(true)
     }
