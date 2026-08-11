@@ -188,12 +188,31 @@ const evals = [
     check: (v: JudgeVerdict) => wants(v, 'pass'),
   },
   {
+    // THE OUTCOME NAMES ITS CHECKS, and the first version did not — which made
+    // this the most-failed fixture in the harness: glm-5.2, sonnet-5, kimi-k3
+    // and muse-glimmer all answered "revise", all four for the same stated
+    // reason ("no verifiable evidence: no file paths, no diff, no test").
+    //
+    // THEY WERE FOLLOWING THE PROMPT ABOVE. It ends "prefer 'revise' over 'pass'
+    // when the outcome is vague, unverifiable, or skips a requirement", and the
+    // widened branch spells it out further: "an outcome that names the files,
+    // the commands run and the results observed is verifiable; one that asserts
+    // completion in general terms is not". The old outcome asserted that the
+    // shortcut "still works" and that no other surface referenced the label,
+    // with no check named for either. Every other `satisfied:` fixture here
+    // names one — a passing suite, a route test, a query plan — and this was the
+    // only exception, which is why it was also the only one failing everywhere.
+    //
+    // WHAT IS STILL BEING MEASURED, and it is unchanged: that a SHORT outcome
+    // can be a complete one. The claim was never "an unverified outcome should
+    // pass" — that is the opposite of what this harness is for.
     name: 'satisfied: a small ticket with a short but complete outcome',
     band: 'easy' as const,
     input: {
       title: 'Rename the "Archive" button to "Close"',
       description: 'On the ticket detail toolbar only. Keep the keyboard shortcut.',
-      outcome: 'Renamed the toolbar action to "Close" in TaskDetail. The shortcut binding is unchanged and still works. No other surface referenced the old label.',
+      outcome:
+        'Renamed the toolbar action to "Close" in TaskDetail.svelte. Grepped the tree for the old label — no other surface referenced it. The ⌘⌫ binding is untouched and still fires the action; the toolbar test passes.',
     },
     check: (v: JudgeVerdict) => wants(v, 'pass'),
   },

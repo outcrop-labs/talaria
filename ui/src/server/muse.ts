@@ -153,9 +153,27 @@ export async function buildMuseMessages(input: MuseInput, opts?: { widened?: boo
       .then(orgLine)
       .catch(() => null)
     if (org) {
+      // WHERE TO ANCHOR THE IDENTITY IS KIND-SPECIFIC, and naming a heading here
+      // unconditionally contradicted one of the three prompts it is appended to.
+      //
+      // WHAT IT COST. `SYSTEM.personality` asks for "Plain prose ... no
+      // headings". This clause then told the same model to name the business in
+      // `## Who you are`. Every model resolved the contradiction the same way —
+      // by writing the heading — and four of them, across two fixtures, opened
+      // with the identical string `## Who you are`: gemma-4-31b, gemma-4-26b,
+      // haiku-4.5 and muse-glimmer. The suite recorded four model failures for
+      // following the more specific of two instructions we sent.
+      //
+      // It also broke the SOUL fixture beside it, which requires the reply to
+      // OPEN with its `# <Name> — <Role>` title: a model told to name the
+      // business in `## Who you are` starts there instead.
+      //
+      // So the anchor names a place only where a place exists. `personality` is
+      // a paragraph and gets the instruction without the heading.
+      const anchor = input.kind === 'personality' ? 'anchor its voice and priorities to the business' : 'anchor its identity, mission, and voice to the business (name it in "## Who you are")'
       system +=
-        `\n\nOrganization: ${org}. The agent is a member of this business's team — anchor its identity, mission, and voice to the business ` +
-        `(name it in "## Who you are"); it never presents itself as belonging to an underlying platform, framework, or model vendor.`
+        `\n\nOrganization: ${org}. The agent is a member of this business's team — ${anchor}; ` +
+        `it never presents itself as belonging to an underlying platform, framework, or model vendor.`
     }
   }
   if (input.context) system += `\n\nContext: ${input.context}`
