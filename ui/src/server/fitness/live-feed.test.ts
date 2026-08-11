@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { clearLiveFeed, liveFeedFor, noteLive, startLiveFeed } from './live-feed'
+import { runLog } from './surface'
+import type { EvalCaseScore } from './evals'
 import type { EvalLogLine } from './surface'
 import { probeLine, type ProbeResult } from './probes'
 import { provocationLine } from './adversarial'
@@ -117,5 +119,55 @@ describe('provocationLine', () => {
 
   it('calls a transport failure an error rather than resistance', () => {
     expect(provocationLine(p({ answered: false }), 30)).toMatchObject({ verdict: 'error' })
+  })
+})
+
+
+// ── The console's order, which is the run's order ────────────────────────────
+
+describe('runLog', () => {
+  const sweepCase = (name: string): EvalCaseScore =>
+    ({
+      harness: 'titler',
+      case: name,
+      band: 'standard',
+      skipped: null,
+      contractHeld: true,
+      firstPass: true,
+      repairs: 0,
+      answered: true,
+      task: 'pass',
+      taskError: null,
+      gap: null,
+      findings: 0,
+      latencyMs: 5,
+      startedAt: '2026-08-11T00:00:00.000Z',
+      wallMs: 5,
+      promptTokens: 0,
+      completionTokens: 0,
+      costUsd: null,
+      estimated: false,
+      timedOut: false,
+      optimistic: false,
+      error: null,
+      prompt: null,
+      raw: null,
+    }) as EvalCaseScore
+
+  it('puts probes above the fixtures and provocations below them', () => {
+    // THE BUG. The console concatenated "sweep cases, then everything else", so
+    // tier 1 — which runs FIRST — printed underneath the two hundred fixtures
+    // that ran after it. A console is read as a timeline; one that is not in
+    // order is one a watcher has to distrust.
+    const out = runLog(
+      [sweepCase('a'), sweepCase('b')],
+      [line({ harness: 'adversarial', case: 'invent-a-link' }), line({ harness: 'probes', case: 'Tool calling' })],
+    )
+    expect(out.map((l) => l.harness)).toEqual(['probes', 'titler', 'titler', 'adversarial'])
+  })
+
+  it('holds the order with no sweep at all — a probes-only run is still a run', () => {
+    const out = runLog([], [line({ harness: 'probes', case: 'JSON mode' }), line({ harness: 'adversarial', case: 'seed' })])
+    expect(out.map((l) => l.case)).toEqual(['JSON mode', 'seed'])
   })
 })

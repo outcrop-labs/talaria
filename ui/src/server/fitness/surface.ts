@@ -54,11 +54,11 @@ import {
   type CapabilityFact,
   type CapabilityKey,
 } from '../harness/capability'
-import { estimateProbes, runProbes, type ProbeEstimate, type ProbeReport } from './probes'
+import { estimateProbes, probeLine, runProbes, type ProbeEstimate, type ProbeReport } from './probes'
 import { clearTranscripts, pruneTranscripts, readTranscripts, recordTranscript, transcriptRuns, type Transcript } from './transcripts'
 import { summarize, type HealthInput, type HealthSummary } from './health'
 import { listMcpServers, type McpServer } from '../mcp-registry'
-import { clearLiveFeed, liveFeedFor } from './live-feed'
+import { liveFeedFor, startLiveFeed } from './live-feed'
 import {
   clearEvalStatus,
   evalSweepStatuses,
@@ -80,6 +80,7 @@ import {
   type AdversarialBand,
   type AdversarialEstimate,
   type AdversarialReport,
+  provocationLine,
 } from './adversarial'
 import {
   bindSlots,
@@ -980,6 +981,39 @@ export function liveLog(cases: readonly EvalCaseScore[]): EvalLogLine[] {
   }))
 }
 
+/** THE TIER-1 AND TIER-3 CONSOLE LINES FOR A FINISHED RUN.
+ *
+ *  The live feed is in memory and does not survive a restart, but the ARCHIVE
+ *  does: `probes.results` and `adversarial.cases` are the same units the console
+ *  printed while the run was going. Rebuilding from them is what makes the
+ *  console outlive the process rather than only the run.
+ *
+ *  THE FEED WINS WHILE IT LASTS, because it carries per-unit timings the
+ *  archived reports never stored — a probe that took 87 seconds is worth seeing,
+ *  and rebuilding it from the record can only report 0ms. */
+function archivedTierLog(record: FitnessRecord | null, feed: readonly EvalLogLine[]): EvalLogLine[] {
+  if (feed.length > 0 || !record) return [...feed]
+  return [...(record.probes?.results ?? []).map((r) => probeLine(r, 0)), ...(record.adversarial?.cases ?? []).map((c) => provocationLine(c, 0))]
+}
+
+/** THE WHOLE RUN, IN THE ORDER IT HAPPENED — probes, then fixtures, then
+ *  provocations.
+ *
+ *  IT USED TO BE `[...sweep, ...everythingElse]`, which is not an order at all.
+ *  Tier 1 runs FIRST and its lines were printed UNDERNEATH the two hundred
+ *  fixtures that ran after them, so the console read as a timeline that was not
+ *  one — and a console a watcher has to distrust is worse than no console.
+ *
+ *  BY TIER RATHER THAN BY TIMESTAMP, and that is deliberate. `runFitness` runs
+ *  the three in sequence, so tier order IS chronological order; and unlike a
+ *  timestamp it survives into the ARCHIVE, where probe results and provocation
+ *  scores carry no clock of their own. One ordering rule that works live and
+ *  after the fact beats two that disagree the moment a run finishes. */
+export function runLog(cases: readonly EvalCaseScore[], tiers: readonly EvalLogLine[]): EvalLogLine[] {
+  const of = (harness: string): EvalLogLine[] => tiers.filter((l) => l.harness === harness)
+  return [...of('probes'), ...liveLog(cases), ...of('adversarial')]
+}
+
 export function liveCases(cases: readonly EvalCaseScore[]): { kept: EvalCaseScore[]; dropped: number } {
   const bad = (c: EvalCaseScore): boolean => c.skipped === null && (c.task === 'fail' || !c.contractHeld || c.timedOut)
   const failed = cases.filter(bad)
@@ -1217,6 +1251,14 @@ export async function runFitness(opts: StartOptions, deps?: Partial<SurfaceDeps>
   // runner threw did not happen even though it was attempted.
   const ran: TierId[] = []
 
+  // THE CONSOLE BELONGS TO A RUN, and is cleared when one STARTS rather than
+  // when one ends. Clearing at the end wiped the terminal the moment the sweep
+  // finished — the point at which somebody who was watching it wants to read it
+  // back. It is also why the tiers no longer clear it themselves: `runProbes`
+  // and `runAdversarial` each used to call this, so tier 3 starting erased
+  // tier 1's lines out from under the console mid-run.
+  startLiveFeed(model)
+
   try {
     await setPhase(tiers[0] ?? 'scoring')
 
@@ -1388,11 +1430,6 @@ export async function runFitness(opts: StartOptions, deps?: Partial<SurfaceDeps>
     }).catch(() => {})
   } finally {
     runs.delete(model)
-    // The live console's tier-1/tier-3 lines belong to THIS run. Left behind,
-    // they would appear above the next run's first probe — a console showing
-    // results from a run that already finished, which is worse than a blank one.
-    // The archived record carries the durable version of both tiers.
-    clearLiveFeed(model)
     // The request is spent once the run is over; leaving it would stop the next
     // Start before it began.
     await clearStopRequest(model, d).catch(() => {})
@@ -1609,6 +1646,14 @@ export interface DetailView {
   record: FitnessRecord | null
   /** Non-null only while this candidate is being tested. */
   live: LiveRun | null
+  /** THE CONSOLE, WHICH OUTLIVES THE RUN. Live it is the same lines `live.log`
+   *  carries; afterwards it is rebuilt from the archived record and whatever the
+   *  in-memory tier feed still holds, so the terminal somebody was watching is
+   *  still there to read back when the sweep finishes.
+   *
+   *  Separate from `live` on purpose: `live` is what the panel POLLS on, and
+   *  hanging a finished run's console off it would poll forever. */
+  consoleLog: EvalLogLine[]
   observed: ObservedHarness[]
   observedModel: ObservedModel | null
   divergences: Divergence[]
@@ -1744,13 +1789,11 @@ export async function readFitness(query: FitnessQuery, deps?: Partial<SurfaceDep
         harness: running.harness,
         cases: kept.kept,
         dropped: kept.dropped,
-        // TIERS 1 AND 3 RIDE THE SAME FEED, in completion order after the
-        // sweep's own lines. Without this the console showed tier 2 and nothing
-        // else: a run with probes and adversarial selected sat blank for
-        // minutes, printed two hundred fixtures, then went blank again — which
-        // reads as a run that hung twice, at exactly the moments it was doing
-        // the work an admin most wants to watch.
-        log: [...liveLog(cases), ...liveFeedFor(model)],
+        // ONE FEED, IN THE ORDER THINGS HAPPENED. The three tiers run in
+        // sequence and the console is read as a timeline, so concatenating
+        // "sweep cases, then the rest" printed tier 1's probes UNDERNEATH the
+        // fixtures that ran after them.
+        log: runLog(cases, liveFeedFor(model)),
         current: inFlightFor(model),
       }
     }
@@ -1761,6 +1804,11 @@ export async function readFitness(query: FitnessQuery, deps?: Partial<SurfaceDep
         model,
         record,
         live,
+        // Live: exactly what the terminal is already showing. Finished: the same
+        // shape rebuilt FROM THE ARCHIVE, so the console survives the run — and
+        // a restart. The in-memory feed is preferred while it lasts because it
+        // carries per-unit timings the archived reports do not.
+        consoleLog: live?.log ?? runLog(record?.cases ?? [], archivedTierLog(record, liveFeedFor(model))),
         observed,
         observedModel: models.find((m) => m.model === model) ?? null,
         divergences: record ? divergences(model, record.harnesses, observed) : [],

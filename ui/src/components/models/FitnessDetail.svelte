@@ -123,11 +123,15 @@
   )
   const gapCases = $derived((record?.cases ?? []).filter((c) => c.gap !== null).length)
 
-  type Pane = 'live' | 'overview' | 'verdicts' | 'capabilities' | 'fixtures' | 'adversarial' | 'observed'
+  type Pane = 'live' | 'console' | 'overview' | 'verdicts' | 'capabilities' | 'fixtures' | 'adversarial' | 'observed'
 
   const panes = $derived.by(() => {
     const out: Array<{ id: Pane; label: string }> = []
     if (live) out.push({ id: 'live', label: `Live ${live.done}/${live.total || '?'}` })
+    // THE CONSOLE OUTLIVES THE RUN. It used to vanish the instant a sweep
+    // finished — the moment somebody who had been watching it wants to read it
+    // back — because the only pane that showed it was gated on `live`.
+    else if (detail.consoleLog?.length) out.push({ id: 'console', label: `Console ${detail.consoleLog.length}` })
     // OVERVIEW FIRST among the archived panes, because it is the answer and the
     // rest are the evidence. A run in flight still outranks it: what you opened
     // the dialog for during a sweep is the sweep.
@@ -224,7 +228,7 @@
          Every pane but Live is a plain scrolling column; Live is a fixed console
          over a scrolling list, and only it knows that. -->
     <div class="min-h-0 flex-1 overflow-hidden" in:fly={{ y: 6, duration: 180 }}>
-      {#if pane === 'live' && live}
+      {#if (pane === 'live' && live) || pane === 'console'}
         <!-- TWO READINGS OF ONE RUN. The terminal is the run MOVING — every case
              as it lands, in order, with the slow ones visibly slow, which is the
              only view in which a provider falling over at 11:04 is legible. The
@@ -236,7 +240,7 @@
         <div class="flex h-full min-h-0 flex-col gap-3 px-7 py-5">
           <!-- CONTAINER ONE: the console. Bounded, opaque, `overflow-hidden`. -->
           <div class="shrink-0 overflow-hidden bg-panel">
-            <FitnessTerminal {live} bind:open={consoleOpen} />
+            <FitnessTerminal log={live?.log ?? (detail.consoleLog ?? [])} {live} bind:open={consoleOpen} />
           </div>
           <!-- CONTAINER TWO: the failures. Its own bounded box, its own scroll,
                its own opaque background.
@@ -247,7 +251,11 @@
                each show through the other. Two boxes that each clip their own
                content cannot do that, whatever either one does inside. -->
           <div class="min-h-0 flex-1 overflow-hidden rounded-md bg-panel">
-            {#if live.cases.length > 0}
+            <!-- THE FAILURE LIST IS A LIVE-RUN THING. After the run, the archived
+                 Fixtures pane is the better read — it has every case, not the
+                 bounded live window — so the console pane shows the console and
+                 points there rather than duplicating it worse. -->
+            {#if live && live.cases.length > 0}
               <FitnessCases cases={live.cases} dropped={live.dropped} {harnessLabels} fill />
             {:else}
               <EmptyState

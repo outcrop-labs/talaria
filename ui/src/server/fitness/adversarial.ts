@@ -83,7 +83,7 @@ import { defaultTransport, runHarness, type Transport } from '../harness/run'
 import { estimateTokens } from '../usage'
 import { runnerAsk } from './probes'
 import type { FitnessBand } from './score'
-import { noteLive, startLiveFeed } from './live-feed'
+import { noteLive } from './live-feed'
 import type { EvalLogLine } from './surface'
 
 // ── What a provocation is ────────────────────────────────────────────────────
@@ -1163,7 +1163,6 @@ export async function runAdversarial(model: string, opts: AdversarialOptions = {
     return scored
   }
 
-  startLiveFeed(model)
   for (const seed of wanted) {
     cases.push(await run(seed))
   }

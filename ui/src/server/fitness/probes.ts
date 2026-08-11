@@ -93,7 +93,7 @@ import {
 import { gatewayPulse, routingFor, type GatewayPulse } from '../llm-gateway'
 import { advertisedWindow } from '../model-catalog'
 import { estimateTokens } from '../usage'
-import { noteLive, startLiveFeed } from './live-feed'
+import { noteLive } from './live-feed'
 import type { EvalLogLine } from './surface'
 
 // ── What a probe is ──────────────────────────────────────────────────────────
@@ -1689,11 +1689,6 @@ export async function runProbes(
   const chosen = PROBES.filter((p) => !opts.ids || opts.ids.includes(p.id))
 
   const results: ProbeResult[] = []
-  // THE LIVE CONSOLE. Probes are units of work that pass or fail like fixtures,
-  // and before this the terminal sat blank through the whole of tier 1 — which
-  // reads as a wedged run at exactly the moment the run is establishing what the
-  // model can do at all. See `live-feed.ts`.
-  startLiveFeed(model)
   const started = Date.now()
   let mark = started
   for (const probe of chosen) {

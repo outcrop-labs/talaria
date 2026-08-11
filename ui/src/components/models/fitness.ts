@@ -144,6 +144,8 @@ export interface DetailPayload {
   model: string
   /** Non-null only while this candidate is being tested. */
   live: LiveRun | null
+  /** The run's console, which outlives the run — see `DetailView` in surface.ts. */
+  consoleLog: EvalLogLine[]
   record: {
     model: string
     at: string
