@@ -3,7 +3,19 @@ import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requireAdmin } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
-import { createSecretDoc, deleteSecretDoc, grantSecret, listSecretDocs, revokeSecret } from '@/server/workspace-secrets'
+import {
+  createSecretDoc,
+  createSecretFolder,
+  deleteSecretDoc,
+  deleteSecretFolder,
+  grantSecret,
+  handlesHeldBy,
+  listSecretDocs,
+  listSecretFolders,
+  moveSecretToFolder,
+  revokeSecret,
+  shareSecretFolder,
+} from '@/server/workspace-secrets'
 
 const Entry = z.object({
   key: z
@@ -37,6 +49,12 @@ const Post = z.union([
   z.object({ action: z.literal('grant'), name: z.string().max(40), agentModel: z.string().min(1).max(120) }),
   z.object({ action: z.literal('revoke'), name: z.string().max(40), agentModel: z.string().min(1).max(120) }),
   z.object({ action: z.literal('delete'), name: z.string().max(40) }),
+  // Folders, for grouping credentials and granting a whole set to an agent at
+  // once — the same argument that made folder sharing worth building for people.
+  z.object({ action: z.literal('folder-create'), name: z.string().min(1).max(60) }),
+  z.object({ action: z.literal('folder-delete'), id: z.string().uuid() }),
+  z.object({ action: z.literal('folder-grant'), id: z.string().uuid(), agentModel: z.string().min(1).max(120), on: z.boolean() }),
+  z.object({ action: z.literal('file'), name: z.string().max(40), folderId: z.string().uuid().nullable() }),
 ])
 
 // WORKSPACE SECRETS — the credentials agents may USE without ever reading one.
@@ -67,7 +85,15 @@ export const Route = defineApi('/api/admin/workspace-secrets', {
   GET: async ({ request }) => {
     const gate = await requireAdmin(request)
     if (gate instanceof Response) return gate
-    return json({ secrets: await listSecretDocs() })
+    // `?agent=` answers the narrower question an agent's own page asks: what can
+    // THIS one spend. Not derivable from the full listing — `SecretDoc.grants`
+    // carries direct grants only, and a credential reaching the agent through a
+    // shared folder would be missing from it.
+    const agent = new URL(request.url).searchParams.get('agent')
+    if (agent) return json({ held: await handlesHeldBy(agent) })
+    // WORKSPACE folders — owner-less, so they belong to the org rather than to
+    // whichever admin happened to make one and can outlive that account.
+    return json({ secrets: await listSecretDocs(), folders: await listSecretFolders(gate.id, { workspace: true }) })
   },
 
   POST: async ({ request }) => {
@@ -112,6 +138,42 @@ export const Route = defineApi('/api/admin/workspace-secrets', {
     if (body.action === 'revoke') {
       await revokeSecret(body.name, body.agentModel)
       void logAudit({ actor, action: 'secrets.revoke', targetType: 'secret', targetId: body.name, after: { agentModel: body.agentModel } })
+      return json({ secrets: await listSecretDocs() })
+    }
+
+    if (body.action === 'folder-create') {
+      const f = await createSecretFolder(body.name, null)
+      void logAudit({ actor, action: 'secrets.folder.create', targetType: 'secret-folder', targetId: f.id, targetLabel: f.name })
+      return json({ folders: await listSecretFolders(user.id, { workspace: true }) })
+    }
+    if (body.action === 'folder-delete') {
+      // The credentials survive — `on delete set null` returns them to the top
+      // level. Deleting four working keys because somebody tidied a label would
+      // be an unforgivable way to lose them.
+      if (!(await deleteSecretFolder(body.id, user.id, true))) return json({ error: 'no such folder' }, { status: 404 })
+      void logAudit({ actor, action: 'secrets.folder.delete', targetType: 'secret-folder', targetId: body.id })
+      return json({ folders: await listSecretFolders(user.id, { workspace: true }) })
+    }
+    if (body.action === 'folder-grant') {
+      // GRANTS THE WHOLE FOLDER, now and later. A credential added to it next
+      // week is covered without anybody re-granting — which is the step
+      // everybody forgets, and forgetting it looks like the agent silently
+      // lacking a key nobody can explain.
+      if (!(await shareSecretFolder(body.id, { agentModel: body.agentModel }, body.on, user.id, true))) {
+        return json({ error: 'no such folder' }, { status: 404 })
+      }
+      void logAudit({
+        actor,
+        action: `secrets.folder.${body.on ? 'grant' : 'revoke'}`,
+        targetType: 'secret-folder',
+        targetId: body.id,
+        after: { agentModel: body.agentModel },
+      })
+      return json({ folders: await listSecretFolders(user.id, { workspace: true }) })
+    }
+    if (body.action === 'file') {
+      if (!(await moveSecretToFolder(body.name, body.folderId, user.id, true))) return json({ error: 'could not file that' }, { status: 400 })
+      void logAudit({ actor, action: 'secrets.move', targetType: 'secret', targetId: body.name, after: { folderId: body.folderId } })
       return json({ secrets: await listSecretDocs() })
     }
 

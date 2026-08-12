@@ -179,6 +179,19 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
     }
     return Promise.resolve(out)
   }
+  if (text.startsWith('select s.name, s.title, e.key, e.label')) {
+    const out: Row[] = []
+    for (const doc of tables.workspace_secrets) {
+      const direct = tables.workspace_secret_grants.some((g) => g.secret_id === doc.id && g.agent_model === v[0])
+      const viaFolder = tables.secret_folder_grants.some((g) => g.folder_id === doc.secret_folder_id && g.agent_model === v[1])
+      if (!direct && !viaFolder) continue
+      const folder = tables.secret_folders.find((f) => f.id === doc.secret_folder_id)
+      for (const e of tables.workspace_secret_entries.filter((x) => x.secret_id === doc.id)) {
+        out.push({ name: doc.name, title: doc.title, key: e.key, label: e.label, direct, folder: folder?.name ?? null })
+      }
+    }
+    return Promise.resolve(out)
+  }
   if (text.startsWith('insert into secret_folders')) {
     const id = `fold-${++seq}`
     tables.secret_folders.push({ id, name: v[0], owner_user_id: v[1] })
@@ -222,6 +235,7 @@ vi.mock('@/server/secretbox', () => ({ seal: (v: string) => `sealed:${v}`, open:
 const {
   createSecretDoc,
   createSecretFolder,
+  handlesHeldBy,
   grantedHandlesFor,
   grantSecret,
   hostAllowed,
@@ -711,5 +725,49 @@ describe('sharing a whole folder of secrets', () => {
   it('refuses folder sharing from anybody but its owner', async () => {
     const f = tables.secret_folders.find((x) => x.name === 'Checkout rewrite')!
     expect(await shareSecretFolder(String(f.id), { userId: ALICE }, true, BOB)).toBe(false)
+  })
+})
+
+describe('workspace folders group agent credentials', () => {
+  // The same folder machinery, owner-less. A workspace credential belongs to
+  // the ORG, so a folder holding one cannot belong to whichever admin happened
+  // to create it — it would vanish with that account.
+  it('lets an admin grant a whole folder to an agent, covering what lands in it later', async () => {
+    const folder = await createSecretFolder('Deploy', null)
+    expect(folder.ownerUserId).toBeNull()
+    // Granted while EMPTY.
+    expect(await shareSecretFolder(folder.id, { agentModel: 'ops-agent' }, true, ALICE, true)).toBe(true)
+
+    await createSecretDoc({
+      name: 'ws-later',
+      title: 'Added after the grant',
+      entries: [{ key: 'k', label: 'Registry token', value: 'rg_ws_later' }],
+    })
+    expect(await moveSecretToFolder('ws-later', folder.id, ALICE, true)).toBe(true)
+
+    // The agent can spend it, having been granted nothing directly.
+    expect((await resolveHandles('«secret:ws-later»', 'ops-agent')).text).toBe('rg_ws_later')
+    // And it is still unreadable by every human, which is the property a
+    // workspace credential must never lose.
+    expect((await revealEntry('ws-later', 'k', ALICE)).refusal).toBe('not-revealable')
+  })
+
+  it('refuses a non-admin acting on a workspace folder', async () => {
+    const folder = await createSecretFolder('Ops', null)
+    // Nobody OWNS an org folder, so an owner check would make it unmanageable —
+    // the admin flag is what stands in, and without it there is no way in.
+    expect(await shareSecretFolder(folder.id, { agentModel: 'x' }, true, ALICE, false)).toBe(false)
+  })
+
+  it('reports what an agent holds, direct and via folder, in one answer', async () => {
+    // `SecretDoc.grants` carries direct grants only. An agent page built on it
+    // would say "no credentials" about an agent that can spend four.
+    await createSecretDoc({ name: 'ws-direct', title: 'Direct', entries: [{ key: 'k', label: 'Key', value: 'v' }], grantTo: ['ops-agent'] })
+    const held = await handlesHeldBy('ops-agent')
+    const byName = Object.fromEntries(held.map((h) => [h.name, h]))
+    expect(byName['ws-direct']?.via).toBe('direct')
+    expect(byName['ws-later']?.via).toBe('folder')
+    expect(byName['ws-later']?.folder).toBe('Deploy')
+    expect(JSON.stringify(held)).not.toContain('rg_ws_later')
   })
 })
