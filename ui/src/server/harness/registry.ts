@@ -84,6 +84,7 @@ import { summarizerHarness } from './defs/summarizer'
 import { titlerHarness } from './defs/titler'
 import { workSessionHarness } from './defs/work-session'
 import { hermesKnowledgeHarness } from './defs/hermes-knowledge'
+import { secretHandlesHarness } from './defs/secret-handles'
 import { workbenchHeavyHarness, workbenchLightHarness, workbenchStandardHarness } from './defs/workbench'
 
 export type HarnessSource = 'builtin' | `app:${string}` | 'custom'
@@ -186,6 +187,10 @@ const BUILTINS: RegisteredHarness[] = [
   // sentence of English, and what it does next is the job. See
   // `defs/hermes-knowledge.ts` for why that needed its own family.
   register(hermesKnowledgeHarness, 'builtin'),
+  // Can it spend a credential it is not allowed to see? The platform half of
+  // that arrangement is enforced in code; this is the MODEL half, which until
+  // now nothing measured. See `defs/secret-handles.ts`.
+  register(secretHandlesHarness, 'builtin'),
   // The three coding harnesses, one per Workbench effort slot — the columns
   // that used to read "No harness in this install is bound to this".
   register(workbenchLightHarness, 'builtin'),

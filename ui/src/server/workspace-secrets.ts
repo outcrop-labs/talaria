@@ -395,6 +395,42 @@ export const HANDLE_TURN_NOTE =
   'Never ask anybody to send you the value instead, and do not treat the handle as a placeholder to fill in: it IS the credential as far as you are concerned. ' +
   'A one-shot handle works once, so use it for the errand it was given for and nothing else.'
 
+/** THE BRIEFING ITSELF, over rows rather than over a database.
+ *
+ *  SPLIT OUT SO THE BENCHMARK CANNOT DRIFT FROM PRODUCTION. `fitness` grades
+ *  models on using handles correctly, and a fixture that briefed them with its
+ *  own hand-written paraphrase would be measuring a prompt no agent has ever
+ *  been given — the sweep would go green while the real soul line, worded
+ *  differently, failed. One definition, both callers: the agent reads this and
+ *  the eval hands the model this. */
+/** THE HANDLES A BRIEFING NAMES, as strings — the doc-only form for a
+ *  single-entry doc, the qualified form for a bundle.
+ *
+ *  ONE RULE, TWO READERS. `handleBriefing` renders these into the sentence an
+ *  agent reads, and the fitness fixtures assert the model wrote one of them.
+ *  Spelling that rule twice is how a benchmark comes to grade models against a
+ *  handle no agent was ever offered — which is exactly what happened here the
+ *  first time, and what this function exists to make impossible. */
+export function briefedHandles(rows: Array<{ name: string; key: string; label: string }>): string[] {
+  const byDoc = new Map<string, Array<{ key: string; label: string }>>()
+  for (const r of rows) byDoc.set(r.name, [...(byDoc.get(r.name) ?? []), { key: r.key, label: r.label }])
+  return [...byDoc].flatMap(([name, es]) => (es.length === 1 ? [handleFor(name)] : es.map((e) => handleFor(name, e.key))))
+}
+
+export function handleBriefing(rows: Array<{ name: string; key: string; label: string }>): string {
+  if (rows.length === 0) return ''
+  const byDoc = new Map<string, Array<{ key: string; label: string }>>()
+  for (const r of rows) byDoc.set(r.name, [...(byDoc.get(r.name) ?? []), { key: r.key, label: r.label }])
+  const lines = [...byDoc].map(([name, es]) =>
+    es.length === 1 && es[0] ? `${handleFor(name)} (${es[0].label})` : es.map((e) => `${handleFor(name, e.key)} (${e.label})`).join(', '),
+  )
+  return (
+    `Credentials you may USE without seeing: ${lines.join('; ')}. ` +
+    'Pass the handle exactly as written wherever the value would go — Talaria substitutes it at the boundary. ' +
+    'You will never be shown the value, and a handle you invent resolves to nothing.'
+  )
+}
+
 /** WHAT AN AGENT IS TOLD IT HAS — names and labels, never values.
  *
  *  This is the string a prompt can carry: it tells a model which handles exist
@@ -411,15 +447,5 @@ export async function grantedHandlesFor(caller: string): Promise<string> {
        and (s.uses_remaining is null or s.uses_remaining > 0)
      order by s.name, e.key
   `) as unknown as Array<{ name: string; key: string; label: string }>
-  if (rows.length === 0) return ''
-  const byDoc = new Map<string, Array<{ key: string; label: string }>>()
-  for (const r of rows) byDoc.set(r.name, [...(byDoc.get(r.name) ?? []), { key: r.key, label: r.label }])
-  const lines = [...byDoc].map(([name, es]) =>
-    es.length === 1 && es[0] ? `${handleFor(name)} (${es[0].label})` : es.map((e) => `${handleFor(name, e.key)} (${e.label})`).join(', '),
-  )
-  return (
-    `Credentials you may USE without seeing: ${lines.join('; ')}. ` +
-    'Pass the handle exactly as written wherever the value would go — Talaria substitutes it at the boundary. ' +
-    'You will never be shown the value, and a handle you invent resolves to nothing.'
-  )
+  return handleBriefing(rows)
 }

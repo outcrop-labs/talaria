@@ -582,6 +582,17 @@ export interface HarnessDefinition<I, O> {
       files: Array<{ path: string; content: string }>
       passes: (files: ReadonlyArray<{ path: string; content: string }>) => string | null
     }
+
+    /** THE CREDENTIAL SURFACE — a shell and outbound HTTP, where a granted
+     *  handle is actually spent. Declared by a harness whose subject is what the
+     *  model does with a credential it cannot read.
+     *
+     *  Structurally typed for the same reason `workspace` above is: a definition
+     *  must stay importable without the fitness suite, because `registry.ts`
+     *  enumerates every one of them in production. */
+    credentials?: (input: I) => {
+      granted: Array<{ handle: string; value: string; accepts: string }>
+    }
   }
 
   /** Tools this harness OFFERS the model on the turn — a different question from

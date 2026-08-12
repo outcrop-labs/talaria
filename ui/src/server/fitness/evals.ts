@@ -67,6 +67,7 @@ import { runHarness, type HarnessDeps, type HarnessResult, type HarnessRunRow } 
 import { defaultTransport, offersToolDefinitions, runsOwnToolLoop, type Transport, type TransportRequest } from '../harness/transport'
 import { makeSandbox } from './toolbox/sandbox'
 import { makeWorkbench } from './toolbox/hermes-tools'
+import { makeCredentialSandbox } from './toolbox/credential-tools'
 import { sandboxTransport, turnBudget, type DryRunResult } from './toolbox/dry-run'
 import { toolSearchTransport, type SearchSource } from '../harness/defs/research'
 import { supplierFor, PROVIDERS_KEY } from '../capability-reach'
@@ -1494,15 +1495,25 @@ async function runOneCase<I, O>(
   const supplier = suppliable.length > 0 && deps.supplier ? await deps.supplier(suppliable[0]!).catch(() => null) : null
 
   const workspace = dryRun ? def.dryRun?.workspace?.(fixture.input) : undefined
-  // The two sandboxes share exactly the surface `EvalContext` needs — a call
+  const credentials = dryRun ? def.dryRun?.credentials?.(fixture.input) : undefined
+  // The three sandboxes share exactly the surface `EvalContext` needs — a call
   // log, an ordering question, and (only Talaria's) a world. Narrowed to that
-  // rather than to a union, so a third surface adds a branch above and nothing
-  // else here.
+  // rather than to a union, so a fourth surface adds a branch here and nothing
+  // else.
+  //
+  // WHICH SURFACE. `workspace` is a CODING harness (files and a test runner).
+  // `credentials` is a harness whose subject is spending a credential the model
+  // cannot read — a shell and outbound HTTP, because none of Talaria's own
+  // forty-six tools takes a credential: they authenticate by agent identity,
+  // which is the whole point of that design. Everything else gets Talaria's
+  // toolkit. A harness has exactly one of them.
   const sandbox: DrySandbox | null = !dryRun
     ? null
     : workspace
       ? makeWorkbench(workspace)
-      : makeSandbox({ tools: def.dryRun?.tools, ...(def.dryRun?.world ? { world: def.dryRun.world } : {}) })
+      : credentials
+        ? makeCredentialSandbox(credentials)
+        : makeSandbox({ tools: def.dryRun?.tools, ...(def.dryRun?.world ? { world: def.dryRun.world } : {}) })
   const dry: { result?: DryRunResult } = {}
   const base = deps.harnessDeps.transport ?? defaultTransport
 

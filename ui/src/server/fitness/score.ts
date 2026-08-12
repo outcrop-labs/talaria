@@ -110,7 +110,19 @@ const FLEET_SLOTS: Array<{ id: FleetSlotId; label: string; hint: string; require
     hint: 'The model behind a Hermes persona: works tickets, plans channels, and drives the workspace toolkit.',
     // The job IS the tool loop — see the Hermes harness family.
     requires: ['tools', 'tool-select'],
-    harnesses: ['work-session', 'hermes:knowledge', 'channel-plan', 'plan-doc', 'outreach:check-in', 'research-queries', 'research-synthesis'],
+    // `secrets:handles` sits here rather than under a role because spending a
+    // credential is a FLEET behaviour: the workspace grants a handle to an
+    // agent, and it is that agent's model deciding what to do with it.
+    harnesses: [
+      'work-session',
+      'hermes:knowledge',
+      'secrets:handles',
+      'channel-plan',
+      'plan-doc',
+      'outreach:check-in',
+      'research-queries',
+      'research-synthesis',
+    ],
   },
 ]
 
