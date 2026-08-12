@@ -45,19 +45,29 @@
   let error = $state<string | null>(null)
   let label = $state('')
   let value = $state('')
+  let host = $state('')
 
   const close = () => {
     open = false
     error = null
     label = ''
     value = ''
+    host = ''
   }
 
   const mint = async () => {
     if (!label.trim() || !value) return
     busy = true
     error = null
-    const body = JSON.stringify({ agentModel, label: label.trim(), value })
+    const body = JSON.stringify({
+      agentModel,
+      label: label.trim(),
+      value,
+      // PIN IT TO A HOST if the human named one. A relay is already bounded three
+      // ways — one agent, one use, one hour — and this is the fourth: the only
+      // one that survives the agent being talked into spending it elsewhere.
+      ...(host.trim() ? { allowedHosts: [host.trim().toLowerCase()] } : {}),
+    })
     // Cleared before the await resolves rather than after: nothing below reads
     // it again, and the shorter it is bound to a live component the better.
     value = ''
@@ -104,7 +114,7 @@
       <p class="font-sans text-[13px] text-fg">Hand {agentLabel} a credential</p>
       <p class="mt-1 font-sans text-xs text-muted">
         The value goes straight to the vault — it never enters this message, the transcript, or any model's context.
-        {agentLabel} gets a handle it can spend <strong class="text-fg">once</strong>, within the hour.
+        {agentLabel} gets a handle it can spend <strong class="text-fg">once</strong>, within the hour{host.trim() ? ', and only at that host' : ''}.
       </p>
 
       <label class="mt-2.5 block font-sans text-xs text-muted">
@@ -129,6 +139,16 @@
               void mint()
             }
           }}
+          class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg"
+        />
+      </label>
+
+      <label class="mt-2 block font-sans text-xs text-muted">
+        Only for (optional)
+        <input
+          bind:value={host}
+          placeholder="api.stripe.com"
+          spellcheck="false"
           class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg"
         />
       </label>

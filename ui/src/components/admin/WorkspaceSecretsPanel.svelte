@@ -53,6 +53,7 @@
   let title = $state('')
   let note = $state('')
   let relay = $state(false)
+  let hosts = $state('')
   let entries = $state<Array<{ key: string; label: string; value: string }>>([{ key: '', label: '', value: '' }])
 
   const reset = () => {
@@ -60,6 +61,7 @@
     title = ''
     note = ''
     relay = false
+    hosts = ''
     entries = [{ key: '', label: '', value: '' }]
   }
 
@@ -73,6 +75,10 @@
       title: title.trim() || name.trim(),
       kind: relay ? 'relay' : 'vault',
       note: note.trim() || null,
+      allowedHosts: hosts
+        .split(/[\s,]+/)
+        .map((h) => h.trim().toLowerCase())
+        .filter(Boolean),
       entries: clean.map((e) => ({ key: e.key.trim(), label: e.label.trim() || 'Credential', value: e.value })),
     })
     busy = false
@@ -159,6 +165,20 @@
               {#each handlesFor(s) as h (h)}
                 <code class="rounded bg-panel px-1.5 py-0.5 font-mono text-[11px] text-accent">{h}</code>
               {/each}
+            </div>
+
+            <!-- SPENDABLE WHERE. An unrestricted credential is the dangerous
+                 default, and a default that shows as blank space is one nobody
+                 ever notices — so it says so in words. -->
+            <div class="mt-2 flex flex-wrap items-center gap-1.5">
+              <span class="font-mono text-[10px] text-ink-dim">spendable at</span>
+              {#if s.allowedHosts.length === 0}
+                <span class="font-sans text-xs text-warning">any destination</span>
+              {:else}
+                {#each s.allowedHosts as h (h)}
+                  <code class="rounded bg-panel px-1.5 py-0.5 font-mono text-[11px] text-fg">{h}</code>
+                {/each}
+              {/if}
             </div>
 
             <div class="mt-2 flex flex-wrap items-center gap-1.5">
@@ -249,6 +269,22 @@
             <Plus size={13} aria-hidden="true" />
             Another entry
           </Button>
+
+          <label class="mt-3 block font-sans text-xs text-muted">
+            Spendable at (optional) — hosts, space or comma separated
+            <input
+              bind:value={hosts}
+              placeholder="github.com  registry.outcrop.dev"
+              class="mt-1 w-full rounded border border-line bg-panel px-2 py-1 font-mono text-xs text-fg"
+            />
+            <span class="mt-1 block text-[11px] text-ink-dim">
+              {#if hosts.trim()}
+                Talaria refuses to substitute this credential into anything bound elsewhere — including a call whose destination it cannot read.
+              {:else}
+                Leave empty and this credential can be spent against any destination an agent is talked into.
+              {/if}
+            </span>
+          </label>
 
           <label class="mt-3 flex items-center gap-2 font-sans text-xs text-muted">
             <input type="checkbox" bind:checked={relay} />

@@ -1516,6 +1516,17 @@ const MIGRATIONS: string[] = [
      granted_at timestamptz not null default now(),
      primary key (secret_id, agent_model)
    )`,
+  // WHERE A CREDENTIAL MAY BE SPENT. Substitution was blind to destination: a
+  // handle resolved wherever it appeared, so an agent talked into pushing to
+  // somebody else's mirror handed over a live token and every layer downstream
+  // saw an ordinary tool call. The model was the only boundary.
+  //
+  // NULL/EMPTY MEANS UNRESTRICTED, which is what every secret created before
+  // this has — the check is opt-in, so nothing that worked yesterday stops. A
+  // non-empty list is an operator saying "this credential is for these hosts",
+  // and `resolveHandles` then refuses anything else AND anything whose
+  // destination it cannot read at all.
+  `alter table workspace_secrets add column if not exists allowed_hosts text[]`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

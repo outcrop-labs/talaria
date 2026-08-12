@@ -17,6 +17,9 @@ const Body = z.object({
   // and a limit that rejects one pushes somebody to paste it somewhere worse.
   value: z.string().min(1).max(20_000),
   note: z.string().max(400).nullish(),
+  /** Optional: pin the one-shot to the host it is for — the only bound that
+   *  survives the agent being talked into spending it somewhere else. */
+  allowedHosts: z.array(z.string().max(253)).max(10).optional(),
 })
 
 // HAND AN AGENT A CREDENTIAL, MID-CONVERSATION, WITHOUT PUTTING IT IN THE CHAT.
@@ -63,6 +66,7 @@ export const Route = defineApi('/api/secrets/relay', {
       agentModel: body.agentModel,
       createdBy: actorOf(user),
       note: body.note ?? null,
+      ...(body.allowedHosts?.length ? { allowedHosts: body.allowedHosts } : {}),
     }).catch((e: unknown) => (e instanceof Error ? e : new Error(String(e))))
     if (relay instanceof Error) {
       // Never echo the raw error to the caller: this path sits one variable away
@@ -76,7 +80,7 @@ export const Route = defineApi('/api/secrets/relay', {
       action: 'secrets.relay',
       targetType: 'secret',
       targetId: relay.name,
-      after: { agentModel: body.agentModel, label: relay.label, expiresAt: relay.expiresAt, uses: 1 },
+      after: { agentModel: body.agentModel, label: relay.label, expiresAt: relay.expiresAt, uses: 1, allowedHosts: relay.allowedHosts },
     })
     // THE HANDLE, AND NOTHING THAT COULD RECONSTRUCT THE VALUE. There is no read
     // path anywhere in this feature that returns one, and this is not the first.

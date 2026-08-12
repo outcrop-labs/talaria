@@ -30,6 +30,9 @@ const Post = z.union([
     expiresAt: z.string().max(40).nullish(),
     uses: z.number().int().min(1).max(1000).nullish(),
     grantTo: z.array(z.string().max(120)).max(50).optional(),
+    /** Hosts this credential may be spent against. Empty/absent = unrestricted,
+     *  which is what every secret predating the check has. */
+    allowedHosts: z.array(z.string().max(253)).max(30).optional(),
   }),
   z.object({ action: z.literal('grant'), name: z.string().max(40), agentModel: z.string().min(1).max(120) }),
   z.object({ action: z.literal('revoke'), name: z.string().max(40), agentModel: z.string().min(1).max(120) }),
@@ -85,6 +88,7 @@ export const Route = defineApi('/api/admin/workspace-secrets', {
         expiresAt: body.expiresAt ?? null,
         ...(body.uses !== undefined && body.uses !== null ? { uses: body.uses } : {}),
         ...(body.grantTo ? { grantTo: body.grantTo } : {}),
+        ...(body.allowedHosts ? { allowedHosts: body.allowedHosts } : {}),
       }).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err))))
       if (doc instanceof Error) return json({ error: doc.message }, { status: 400 })
       // THE AUDIT LINE CARRIES KINDS, NEVER VALUES — the same rule the store
@@ -94,7 +98,7 @@ export const Route = defineApi('/api/admin/workspace-secrets', {
         action: 'secrets.create',
         targetType: 'secret',
         targetId: doc.name,
-        after: { kind: doc.kind, entries: doc.entries, grants: doc.grants, uses: doc.usesRemaining },
+        after: { kind: doc.kind, entries: doc.entries, grants: doc.grants, uses: doc.usesRemaining, allowedHosts: doc.allowedHosts },
       })
       return json({ secret: doc })
     }

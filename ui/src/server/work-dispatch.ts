@@ -29,7 +29,7 @@ import { statusMeta } from './statuses'
 import { listAllSkills, SHARED } from './agent-skills'
 import { db } from './db/pg'
 import { runHarness } from './harness/run'
-import { workSessionHarness } from './harness/defs/work-session'
+import { dispatchPrompt, workSessionHarness } from './harness/defs/work-session'
 import type { Finding } from './guardrails'
 import type { Task } from '@/lib/task-const'
 
@@ -168,19 +168,18 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
     const step2 = activeHint
       ? `comment a one-line acknowledgment, and triage_ticket to status "${activeHint}" while you work.`
       : `comment a one-line acknowledgment. Leave the status where it is — this board has no working column for you to move it to.`
-    const prompt =
-      `[Assigned work — no human sent this message; a ticket was assigned to you.]\n\n` +
-      `Ticket ${task.ticketRef ?? task.id}: "${task.title}"${boardName ? ` (board: ${boardName})` : ''}\n` +
-      `${task.description ? `\n${task.description}\n` : ''}` +
-      workflowBlock +
-      `\n\nThis is a WORK SESSION, not a single exchange — Talaria keeps this conversation going until the work is done. Work like a developer at a desk: act, read the result, steer, act again.\n` +
-      `1. get_ticket ${task.id} for full context (comments, attachments, dependencies).\n` +
-      `2. ${step2}\n` +
-      `3. Do the work in as many steps as it takes — iterate with your tools and (if you have one) your workbench harness: run it, read its structured result, respond to it, verify with tests, repeat.\n` +
-      `4. report_outcome when genuinely finished — a human signs off from review. If blocked, set status "blocked" and comment why. Either of those ends the session.\n` +
-      `That status move in step 4 is your LAST one on this ticket. Once it is in review, or parked in blocked, only a person moves it again — triage_ticket will refuse you with a 403, and so will add_time once the ticket is closed. Don't retry it; comment instead, which stays open.\n` +
-      `\nBe honest about capability: if you genuinely can't do this properly (a tool or access you're missing, an org-specific process you'd be guessing at), don't improvise — report_gap once with what a flow would need, then block. Never report a gap for work you can simply do.\n` +
-      `End each reply with a short status line: what you just did and what you'll do next (or DONE / BLOCKED).`
+    // BUILT IN work-session.ts, beside the harness that runs it — see
+    // `dispatchPrompt` for why the ticket DESCRIPTION is fenced there rather
+    // than interpolated raw next to the instructions.
+    const prompt = dispatchPrompt({
+      taskId: task.id,
+      ticketRef: task.ticketRef ?? task.id,
+      title: task.title,
+      description: task.description ?? null,
+      boardName,
+      workflowBlock,
+      step2,
+    })
     // ONE TURN = ONE HARNESS RUN, on the runner's own transport. The model is
     // named by the caller (it is the agent assigned to this ticket, not a
     // chain-resolved one); the tool loop and the ten-minute hold are declared on

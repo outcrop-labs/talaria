@@ -27,6 +27,9 @@ export interface WorkspaceSecret {
   lastUsedAt: string | null
   entries: Array<{ key: string; label: string }>
   grants: string[]
+  /** Hosts it may be spent against. Empty = anywhere, which is worth SAYING on
+   *  the row rather than leaving as an absence somebody has to notice. */
+  allowedHosts: string[]
 }
 
 export const WORKSPACE_SECRETS_KEY = ['workspace-secrets']
@@ -38,7 +41,7 @@ export const useWorkspaceSecrets = () =>
   }))
 
 type Action =
-  | { action: 'create'; name: string; title: string; entries: Array<{ key: string; label: string; value: string }>; kind?: SecretKind; note?: string | null; uses?: number | null; grantTo?: string[] }
+  | { action: 'create'; name: string; title: string; entries: Array<{ key: string; label: string; value: string }>; kind?: SecretKind; note?: string | null; uses?: number | null; grantTo?: string[]; allowedHosts?: string[] }
   | { action: 'grant'; name: string; agentModel: string }
   | { action: 'revoke'; name: string; agentModel: string }
   | { action: 'delete'; name: string }
