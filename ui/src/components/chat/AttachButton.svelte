@@ -55,7 +55,7 @@
   <!-- The `+` attach tile: 36×36, radius 6, hairline border, mono glyph (spec §7). -->
   <button
     type="button"
-    title="Attach knowledge, artifacts, or files"
+    title="Attach knowledge, files, or an upload"
     disabled={disabled || busy}
     onclick={() => {
       open = !open
@@ -85,7 +85,7 @@
           <BookOpen size={13} class="text-muted" /> Knowledge doc
         </button>
         <button type="button" class={item} onclick={() => (pick = 'artifact')}>
-          <Gem size={13} class="text-muted" /> Artifact
+          <Gem size={13} class="text-muted" /> File
         </button>
         <button
           type="button"

@@ -8,6 +8,10 @@ const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as ()
 
 export type Visibility = 'private' | 'org' | 'public'
 export type EditPolicy = 'owner' | 'org' | 'restricted'
+
+/** What the Share dialog can be pointed at. All four share one access model,
+ *  one grants table, and one dialog — the kind only picks the REST path. */
+export type PermKind = 'docs' | 'spaces' | 'artifacts' | 'artifact-folders'
 export type GrantRole = 'viewer' | 'editor'
 export interface KbEditor {
   principalType: 'user' | 'agent'
@@ -115,13 +119,18 @@ export const updateSpace = (
  *
  *  A 200 whose `editors` key is missing is a broken contract, not "nobody at
  *  all" — `getList` rejects that too, for the same reason. */
-export const fetchEditors = (kind: 'docs' | 'spaces' | 'artifacts', id: string): Promise<KbEditor[]> =>
-  getList<KbEditor>(kind === 'artifacts' ? `/api/artifacts/${id}` : `/api/kb/${kind}/${id}`, 'editors')
+export const fetchEditors = (kind: PermKind, id: string): Promise<KbEditor[]> =>
+  getList<KbEditor>(
+    kind === 'artifacts' ? `/api/artifacts/${id}`
+    : kind === 'artifact-folders' ? `/api/artifact-folders/${id}`
+    : `/api/kb/${kind}/${id}`,
+    'editors',
+  )
 
 /** The Share modal's read of the current grants. Enabled only while the modal
  *  is open, so reopening re-reads rather than trusting a stale copy. The query
  *  key lives here next to the fetcher — one place owns this read. */
-export const useEditors = (kind: 'docs' | 'spaces' | 'artifacts', id: MaybeGetter<string>, enabled: MaybeGetter<boolean>) =>
+export const useEditors = (kind: PermKind, id: MaybeGetter<string>, enabled: MaybeGetter<boolean>) =>
   createQuery(() => {
     const i = resolve(id)
     return {

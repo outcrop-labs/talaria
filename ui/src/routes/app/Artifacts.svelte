@@ -1,248 +1,488 @@
 <script lang="ts">
   import { searchParams } from 'sv-router'
+  import { navigate } from '@/router'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { DownloadCloud, FolderPlus, Plus } from '@lucide/svelte'
-  import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import EmptyState from '@/components/ui/EmptyState.svelte'
-  import IconButton from '@/components/ui/IconButton.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { confirm } from '@/components/ui/confirm.svelte'
-  import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
-  import { popPanel } from '@/components/chat/chat-chrome'
+  import { ChevronRight, FolderPlus, HardDrive, Plus, Search, Upload, X } from '@lucide/svelte'
+  import Rail from '@/components/app/Rail.svelte'
+  import RailRow from '@/components/app/RailRow.svelte'
+  import RailSection from '@/components/app/RailSection.svelte'
+  import RailSurface from '@/components/app/RailSurface.svelte'
+  import Stage from '@/components/app/Stage.svelte'
+  import StageHeader from '@/components/app/StageHeader.svelte'
+  import Button from '@/components/ui/Button.svelte'
+  import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
+  import Input from '@/components/ui/Input.svelte'
+  import Segmented from '@/components/ui/Segmented.svelte'
+  import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { cn } from '@/lib/cn'
-  import { fade, listStagger, pop, POPOVER, QUICK } from '@/lib/motion'
-  import { createArtifact, createFolder, deleteArtifact, saveArtifact, updateFolder, useArtifacts, useFolders, type Artifact, type ArtifactFolder, type ArtifactKind } from '@/lib/artifacts'
+  import { useSession } from '@/lib/session'
+  import { useUsers } from '@/lib/users'
+  import { createArtifact, createFolder, saveArtifact, updateFolder, uploadFile, useArtifacts, useFolders, type ArtifactKind } from '@/lib/artifacts'
+  import type { PermKind } from '@/lib/kb'
   import ArtifactEditor from './ArtifactEditor.svelte'
-  import ArtifactFolderNode from './ArtifactFolderNode.svelte'
-  import ArtifactRow from './ArtifactRow.svelte'
+  import ArtifactsBrowser from './ArtifactsBrowser.svelte'
   import ArtifactsDriveImportModal from './ArtifactsDriveImportModal.svelte'
-  import { NEW_KINDS, type Drag } from './artifacts'
+  import ArtifactsProperties from './ArtifactsProperties.svelte'
+  import {
+    AGENTS_ROOT,
+    ancestry,
+    DRAG_MIME,
+    folderRow,
+    placeOf,
+    NEW_KINDS,
+    PLACES,
+    sortRows,
+    toRow,
+    type Drag,
+    type Place,
+    type Row,
+    type SortDir,
+    type SortKey,
+  } from './artifacts'
 
+  // Files. A browser, not a tree: the rail lists PLACES and the stage is the
+  // folder you're standing in, which is the shape every person arriving from
+  // Drive or Dropbox already knows. (The code side stays "artifact" — see
+  // artifacts.ts.)
   const qc = useQueryClient()
-  // Two reads build one tree, so both rejections have to survive to the render:
-  // "No artifacts yet." is a claim about the owner's WORK, and a store that is
-  // merely unreachable must never be reported as a store that is empty.
+  const session = useSession()
+  const me = $derived(session.data ?? null)
+  const usersQuery = useUsers()
+  const users = $derived(usersQuery.data ?? [])
+
+  // Two reads build one browser, so both rejections have to survive to the
+  // render: "Nothing here yet" is a claim about the owner's WORK, and a store
+  // that is merely unreachable must never be reported as a store that is empty.
   const artifactsQuery = useArtifacts()
   const foldersQuery = useFolders()
   const artifacts = $derived(artifactsQuery.data ?? [])
   const folders = $derived(foldersQuery.data ?? [])
-  // Whichever half broke, in the words the reader needs. Null = both answered.
-  const treeFailure = $derived(
+  const failure = $derived(
     artifactsQuery.isError && artifactsQuery.data === undefined
-      ? { title: 'Could not load your artifacts', error: artifactsQuery.error, retry: () => void artifactsQuery.refetch() }
+      ? { title: 'Could not load your files', error: artifactsQuery.error, retry: () => void artifactsQuery.refetch() }
       : foldersQuery.isError && foldersQuery.data === undefined
         ? { title: 'Could not load your folders', error: foldersQuery.error, retry: () => void foldersQuery.refetch() }
         : null,
   )
-  // ?a=<artifactId> deep-links an artifact — the URL IS the selection.
-  // searchParams.get parses values (string | number | boolean | null); ids are
-  // strings, so normalize back before comparing/passing down.
+
+  // The URL IS the selection: ?p= place, ?f= folder, ?a= the open file.
+  const place = $derived(((searchParams.get('p') as Place | null) ?? 'my') as Place)
+  const rawFolder = $derived(searchParams.get('f'))
+  const folderId = $derived(rawFolder ? String(rawFolder) : null)
   const rawActive = $derived(searchParams.get('a'))
   const activeId = $derived(rawActive ? String(rawActive) : null)
+
   const setActiveId = (id: string | null) => {
     if (id) searchParams.set('a', id)
     else searchParams.delete('a')
   }
-  let newOpen = $state(false)
+  const goPlace = (p: Place) => {
+    // Leaving for another place abandons the folder AND the open file — the
+    // stage should show the place you just asked for, not the last thing open.
+    searchParams.delete('a')
+    searchParams.delete('f')
+    if (p === 'my') searchParams.delete('p')
+    else searchParams.set('p', p)
+  }
+  const goFolder = (id: string | null) => {
+    searchParams.delete('a')
+    if (id) searchParams.set('f', id)
+    else searchParams.delete('f')
+  }
+
   let importOpen = $state(false)
-  let expanded = $state<Set<string>>(new Set())
-  let drag = $state<Drag>(null)
+  /** The row whose Properties dialog is open (null = closed). */
+  let propsRow = $state<Row | null>(null)
+  /** The artifact whose sharing dialog is open. Sharing reuses the SAME
+   *  PermissionsModal the editor and the knowledgebase use — one access model,
+   *  one dialog, so a file's sharing can't mean two different things depending
+   *  on where you opened it from. */
+  let shareRow = $state<Row | null>(null)
+  const shareFolder = $derived(shareRow?.type === 'folder' ? (folders.find((f) => f.id === shareRow!.id) ?? null) : null)
+  const shareArtifact = $derived(shareRow?.type === 'artifact' ? shareRow.artifact : null)
 
-  const byFolder = $derived.by(() => {
-    const m = new Map<string | null, Artifact[]>()
-    for (const a of artifacts) {
-      const k = a.folderId ?? null
-      if (!m.has(k)) m.set(k, [])
-      m.get(k)!.push(a)
+  /** Mirrors the server's `canGovern`: the owner, or — for an OWNERLESS
+   *  workspace item — an admin. The server is slightly more generous (it also
+   *  admits anyone allowed to use the agent that created it), which needs a DB
+   *  read this side can't do; erring narrow only ever greys the controls out,
+   *  never lets through a change the server would refuse. */
+  const governs = (rec: { ownerUserId: string | null; createdBy: string | null } | null) =>
+    !!rec && !!me && (rec.ownerUserId ? rec.ownerUserId === me.id : rec.createdBy === (me.email ?? me.name) || me.role === 'admin')
+
+  /** One dialog, two kinds. Folders and files share an access model, so they
+   *  share the Share dialog too — only the REST path and the labels differ. */
+  const shareTarget = $derived.by(() => {
+    const rec = shareArtifact ?? shareFolder
+    if (!rec || !shareRow) return null
+    return {
+      kind: (shareArtifact ? 'artifacts' : 'artifact-folders') as PermKind,
+      id: rec.id,
+      label: shareArtifact ? shareArtifact.title : (shareFolder?.name ?? ''),
+      visibility: rec.visibility,
+      editPolicy: rec.editPolicy,
+      // Only artifacts get a public page of their own; a shared folder set to
+      // public makes its CONTENTS reachable, not the folder itself.
+      publicSlug: shareArtifact?.publicSlug ?? null,
+      canManage: governs(rec),
     }
-    return m
   })
-  const foldersByParent = $derived.by(() => {
-    const m = new Map<string | null, ArtifactFolder[]>()
+  let q = $state('')
+  let sortKey = $state<SortKey>('name')
+  let sortDir = $state<SortDir>('asc')
+  let view = $state<'list' | 'grid'>('list')
+  // View mode is a preference, not a selection — it belongs to the person, not
+  // to the link they might paste to someone else.
+  $effect(() => {
+    const saved = localStorage.getItem('files:view')
+    if (saved === 'grid' || saved === 'list') view = saved
+  })
+  const setView = (v: 'list' | 'grid') => {
+    view = v
+    localStorage.setItem('files:view', v)
+  }
+  const onSort = (k: SortKey) => {
+    if (sortKey === k) sortDir = sortDir === 'asc' ? 'desc' : 'asc'
+    else {
+      sortKey = k
+      // Time sorts newest-first on first click; names sort A→Z. Anything else
+      // makes the first click on "Modified" look broken.
+      sortDir = k === 'modified' ? 'desc' : 'asc'
+    }
+  }
+
+  const agentsRootId = $derived(folders.find((f) => !f.parentId && f.name === AGENTS_ROOT)?.id ?? null)
+  const trail = $derived(ancestry(folderId, folders))
+  // Folders are locations; the flat places are views over everything.
+  const canOrganize = $derived(place === 'my')
+
+  const counts = $derived({
+    my: artifacts.filter((a) => placeOf(a, me) === 'my').length,
+    shared: artifacts.filter((a) => placeOf(a, me) === 'shared').length,
+    workspace: artifacts.filter((a) => placeOf(a, me) === 'workspace').length,
+    official: artifacts.filter((a) => a.official).length,
+    recent: 0,
+  })
+
+  /** Newest artifact inside a folder or any of its descendants — what the
+   *  folder's Modified column reports. */
+  const folderModified = $derived.by(() => {
+    const kids = new Map<string | null, string[]>()
     for (const f of folders) {
-      const k = f.parentId ?? null
-      if (!m.has(k)) m.set(k, [])
-      m.get(k)!.push(f)
+      const list = kids.get(f.parentId) ?? []
+      list.push(f.id)
+      kids.set(f.parentId, list)
     }
-    for (const list of m.values()) list.sort((a, b) => a.name.localeCompare(b.name))
-    return m
+    const own = new Map<string, string>()
+    for (const a of artifacts) {
+      if (!a.folderId) continue
+      const cur = own.get(a.folderId)
+      if (!cur || a.updatedAt > cur) own.set(a.folderId, a.updatedAt)
+    }
+    const memo = new Map<string, string>()
+    const walk = (id: string, depth: number): string => {
+      const hit = memo.get(id)
+      if (hit) return hit
+      let best = own.get(id) ?? ''
+      if (depth < 30) {
+        for (const child of kids.get(id) ?? []) {
+          const v = walk(child, depth + 1)
+          if (v > best) best = v
+        }
+      }
+      memo.set(id, best)
+      return best
+    }
+    for (const f of folders) walk(f.id, 0)
+    return memo
   })
 
-  const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ['artifacts'] }), qc.invalidateQueries({ queryKey: ['artifact-folders'] })])
+  const rows = $derived.by(() => {
+    let out: Row[] = []
+    if (place === 'my') {
+      // A location: the folders and files filed directly here.
+      for (const f of folders) {
+        if ((f.parentId ?? null) !== folderId) continue
+        out.push(folderRow(f, users, me, folderModified.get(f.id) || f.createdAt))
+      }
+      for (const a of artifacts) {
+        if ((a.folderId ?? null) !== folderId) continue
+        // The ROOT of My Files is your cabinet — other people's and the
+        // workspace's loose files have their own places. Inside a folder the
+        // filter lifts: a folder shows everything filed in it, or walking into
+        // Agents/ would show an empty room.
+        if (!folderId && placeOf(a, me) !== 'my') continue
+        out.push(toRow(a, users, me))
+      }
+    } else {
+      // A view: flat, across everything, no folders.
+      const pool =
+        place === 'shared' ? artifacts.filter((a) => placeOf(a, me) === 'shared')
+        : place === 'workspace' ? artifacts.filter((a) => placeOf(a, me) === 'workspace')
+        : place === 'official' ? artifacts.filter((a) => a.official)
+        : [...artifacts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 50)
+      out = pool.map((a) => toRow(a, users, me))
+    }
+    const needle = q.trim().toLowerCase()
+    if (needle) out = out.filter((r) => r.name.toLowerCase().includes(needle) || r.owner.toLowerCase().includes(needle))
+    // Recent is already in the order its name promises; re-sorting it by name
+    // would make the place a lie.
+    if (place === 'recent' && sortKey === 'name' && !needle) return out
+    return sortRows(out, sortKey, sortDir)
+  })
+
+  const currentPlace = $derived(PLACES.find((p) => p.id === place) ?? PLACES[0]!)
+  const emptyTitle = $derived(q.trim() ? 'No matches.' : trail.length ? 'This folder is empty.' : currentPlace.empty)
+  const emptyHint = $derived(q.trim() ? 'Try a different search.' : canOrganize ? 'Drop files here to upload, or use New.' : currentPlace.hint)
+
+  const refresh = () =>
+    Promise.all([qc.invalidateQueries({ queryKey: ['artifacts'] }), qc.invalidateQueries({ queryKey: ['artifact-folders'] })])
+
   const create = async (kind: ArtifactKind) => {
-    newOpen = false
     const { artifact } = await createArtifact({ kind, title: 'Untitled' })
-    await qc.invalidateQueries({ queryKey: ['artifacts'] })
+    if (artifact && folderId) await saveArtifact(artifact.id, { folderId })
+    await refresh()
     if (artifact) setActiveId(artifact.id)
   }
-  const newFolder = async (parentId: string | null = null) => {
-    const { folder } = await createFolder('New folder', parentId)
-    await qc.invalidateQueries({ queryKey: ['artifact-folders'] })
-    if (folder) {
-      const n = new Set(expanded).add(folder.id)
-      if (parentId) n.add(parentId) // reveal the new subfolder
-      expanded = n
-    }
-  }
-  const toggleExpanded = (id: string) => {
-    const n = new Set(expanded)
-    if (n.has(id)) n.delete(id)
-    else n.add(id)
-    expanded = n
-  }
-
-  // Right-click menus — shortcuts to actions the tree and editor already offer.
-  const menu = useContextMenu()
-  const artifactMenu = (a: Artifact): ContextMenuEntry[] => {
-    const items: ContextMenuEntry[] = [
-      { label: 'Open', onSelect: () => setActiveId(a.id) },
-      { label: 'Copy link', onSelect: () => copyAppLink(`/artifacts?a=${a.id}`) },
-    ]
-    const slug = a.publicSlug
-    if (slug) items.push({ label: 'Copy public link', onSelect: () => copyAppLink(`/a/${slug}`) })
-    items.push('sep', {
-      label: 'Delete artifact',
-      danger: true,
-      onSelect: async () => {
-        // Same confirm + deleteArtifact flow as the editor's kebab menu.
-        if (!(await confirm({ title: 'Delete artifact', message: `Delete "${a.title}"?`, confirmLabel: 'Delete', danger: true }))) return
-        await deleteArtifact(a.id)
-        await qc.invalidateQueries({ queryKey: ['artifacts'] })
-        if (activeId === a.id) setActiveId(null)
-      },
-    })
-    return items
-  }
-  // Drop the dragged item into a folder (or root when folderId is null).
-  const drop = async (folderId: string | null) => {
-    if (!drag) return
-    if (drag.kind === 'artifact') await saveArtifact(drag.id, { folderId })
-    else await updateFolder(drag.id, { parentId: folderId })
-    drag = null
+  const newFolder = async () => {
+    await createFolder('New folder', folderId)
     await refresh()
   }
 
-  const rootArtifacts = $derived(byFolder.get(null) ?? [])
-  const rootFolders = $derived(foldersByParent.get(null) ?? [])
+  let fileInput = $state<HTMLInputElement | null>(null)
+  /** Upload → one file artifact each, filed where you're standing. The POST
+   *  body can't carry a folder id, so the folder lands with the storage ref. */
+  const upload = async (files: File[], intoFolderId?: string) => {
+    const target = intoFolderId ?? folderId
+    for (const file of files) {
+      try {
+        const { artifact } = await createArtifact({ kind: 'file', title: file.name })
+        if (!artifact) continue
+        const up = await uploadFile(file)
+        await saveArtifact(artifact.id, { storageRef: up.id, contentType: up.mime, folderId: target })
+      } catch {
+        // One bad file must not abandon the rest of the drop.
+      }
+    }
+    await refresh()
+  }
+
+  const move = async (drag: NonNullable<Drag>, target: string | null) => {
+    for (const id of drag.artifacts) await saveArtifact(id, { folderId: target })
+    for (const id of drag.folders) await updateFolder(id, { parentId: target })
+    await refresh()
+  }
+
+  // Breadcrumb segments accept drops, which is the only way to move something
+  // UP a level now that there is no tree to drag it onto. The payload rides on
+  // the dataTransfer (DRAG_MIME) rather than shared state, so the browser and
+  // the header don't have to know about each other.
+  let crumbOver = $state<string | null>(null)
+  const crumbOver_ = (e: DragEvent, id: string) => {
+    if (!canOrganize || !e.dataTransfer?.types.includes(DRAG_MIME)) return
+    e.preventDefault()
+    crumbOver = id
+  }
+  const crumbDrop = async (e: DragEvent, target: string | null) => {
+    crumbOver = null
+    const raw = e.dataTransfer?.getData(DRAG_MIME)
+    if (!raw) return
+    e.preventDefault()
+    try {
+      const d = JSON.parse(raw) as NonNullable<Drag>
+      // Dropping a folder onto itself, or onto the crumb it already sits in,
+      // is a no-op rather than a cycle.
+      if (target && d.folders.includes(target)) return
+      await move(d, target)
+    } catch {
+      /* a drag from somewhere else in the app — not ours to handle */
+    }
+  }
+  const newMenu = (): ContextMenuEntry[] => [
+    ...NEW_KINDS.map((k): ContextMenuEntry => ({ label: k.label, icon: [k.icon, { size: 13 }], onSelect: () => void create(k.kind) })),
+    'sep',
+    { label: 'Upload files', icon: [Upload, { size: 13 }], onSelect: () => fileInput?.click() },
+    { label: 'New folder', icon: [FolderPlus, { size: 13 }], disabled: !canOrganize, onSelect: () => void newFolder() },
+  ]
 </script>
 
-<div class="flex h-full min-h-0">
-  <aside class="flex h-full w-72 shrink-0 flex-col border-r border-line-subtle bg-sidebar font-sans">
-    <div class="relative flex h-12 shrink-0 items-center gap-1.5 border-b border-line-subtle px-4">
-      <span class="min-w-0 flex-1 truncate text-sm font-semibold text-fg">Artifacts</span>
-      <div class="flex items-center gap-0.5">
-        <IconButton size="sm" title="Import from Google Drive" onclick={() => (importOpen = true)}>
-          <DownloadCloud size={15} />
-        </IconButton>
-        <IconButton size="sm" title="New folder" onclick={() => void newFolder()}>
-          <FolderPlus size={15} />
-        </IconButton>
-        <IconButton size="sm" title="New artifact" onclick={() => (newOpen = !newOpen)} active={newOpen}>
-          <Plus size={15} />
-        </IconButton>
-      </div>
-      {#if newOpen}
-        <div
-          in:pop={POPOVER}
-          out:fade={QUICK}
-          class={cn(popPanel, 'absolute right-3 top-full z-30 mt-1 w-44 origin-top-right')}
-          onmouseleave={() => (newOpen = false)}
-          role="menu"
-          tabindex="-1"
-        >
-          {#each NEW_KINDS as { kind, label, icon: Icon } (kind)}
-            <button type="button" onclick={() => void create(kind)} class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-hover">
-              <Icon size={13} /> {label}
+<RailSurface>
+  <Rail title="Files">
+    <RailSection label="Places">
+      {#each PLACES as p (p.id)}
+        <RailRow active={place === p.id && !activeId} onClick={() => goPlace(p.id)}>
+          <span class="grid w-4 shrink-0 place-items-center text-[13px] leading-none">{p.glyph}</span>
+          <span class="min-w-0 flex-1 truncate">{p.label}</span>
+          {#if counts[p.id]}
+            <span class="shrink-0 font-mono text-[10px] tracking-[0.05em] text-ink-dim">{counts[p.id]}</span>
+          {/if}
+        </RailRow>
+      {/each}
+    </RailSection>
+
+    <RailSection label="Sources">
+      <!-- Google Drive is a one-shot import today. It sits here, beside the
+           places, because that is where a browsable connected Drive belongs the
+           moment the connector can serve one. -->
+      <RailRow onClick={() => (importOpen = true)}>
+        <span class="grid w-4 shrink-0 place-items-center"><HardDrive size={13} /></span>
+        <span class="min-w-0 flex-1 truncate">Google Drive</span>
+      </RailRow>
+      <RailRow onClick={() => navigate('/settings')}>
+        <span class="grid w-4 shrink-0 place-items-center"><Plus size={13} /></span>
+        <span class="min-w-0 flex-1 truncate">Connect a source</span>
+      </RailRow>
+    </RailSection>
+  </Rail>
+
+  <Stage>
+    {#snippet header()}
+      <StageHeader>
+        {#snippet title()}
+          <!-- Breadcrumb: the place, then the folders you walked into. Each
+               segment is a drop target for moving things back up. -->
+          <nav class="flex min-w-0 items-center gap-0.5">
+            <button
+              type="button"
+              onclick={() => goFolder(null)}
+              ondragover={(e) => crumbOver_(e, 'root')}
+              ondragleave={() => (crumbOver = crumbOver === 'root' ? null : crumbOver)}
+              ondrop={(e) => void crumbDrop(e, null)}
+              class={cn('shrink-0 rounded px-1.5 py-0.5 font-sans text-sm font-semibold transition-colors', trail.length ? 'text-muted hover:text-fg' : 'text-fg', crumbOver === 'root' && 'bg-raised ring-1 ring-accent/60')}
+            >
+              {currentPlace.label}
             </button>
-          {/each}
-        </div>
-      {/if}
-    </div>
-    <div
-      class="min-h-0 flex-1 overflow-y-auto p-2"
-      ondragover={(e) => e.preventDefault()}
-      ondrop={(e) => {
-        e.preventDefault()
-        void drop(null)
-      }}
-      role="tree"
-      tabindex="-1"
-    >
-      {#if artifactsQuery.isLoading || foldersQuery.isLoading}
-        <!-- Both queries feed the same tree — reveal it once, fully formed. -->
-        <SkeletonRows rows={6} class="px-2 py-3" />
-      {:else if treeFailure && folders.length === 0 && artifacts.length === 0}
-        <div in:fade={{ duration: 150 }}>
-          <QueryError variant="compact" error={treeFailure.error} title={treeFailure.title} onRetry={treeFailure.retry} />
-        </div>
-      {:else if folders.length === 0 && artifacts.length === 0}
-        <div in:fade={{ duration: 150 }}>
-          <EmptyState variant="inline" title="No artifacts yet." class="px-2 py-6 text-center" />
-        </div>
-      {:else}
-        <!-- Any grid or list staggers its items on mount (ANIMATIONS.md). One
-             wrapper over both {#each} runs — folders then loose artifacts —
-             so a single cascade owns the tree. It mounts only once both reads
-             RESOLVED — never on the skeleton branch. An expanded folder's
-             nested rows ride their parent row's rise (direct children only). -->
-        <div use:listStagger>
-        {#each rootFolders as f (f.id)}
-          <ArtifactFolderNode
-            folder={f}
-            depth={0}
-            {foldersByParent}
-            {byFolder}
-            {expanded}
-            onToggle={toggleExpanded}
-            {activeId}
-            onSelect={setActiveId}
-            {drag}
-            setDrag={(d) => (drag = d)}
-            onDrop={drop}
-            onRefresh={refresh}
-            openMenu={menu.openMenu}
-            onArtifactMenu={(e, a) => menu.openMenu(e, artifactMenu(a))}
-            onNewFolder={(parentId) => void newFolder(parentId)}
-          />
-        {/each}
-        {#each rootArtifacts as a (a.id)}
-          <ArtifactRow artifact={a} depth={0} {activeId} onSelect={setActiveId} setDrag={(d) => (drag = d)} onContextMenu={(e) => menu.openMenu(e, artifactMenu(a))} />
-        {/each}
-        </div>
-        <!-- One half answered, the other didn't. Keep what loaded and say
-             the tree is INCOMPLETE — replacing a populated pane over a
-             partial failure loses more than it explains. -->
-        {#if treeFailure}
-          <QueryError
-            variant="inline"
-            class="px-2 py-3"
-            error={treeFailure.error}
-            title={treeFailure.title}
-            onRetry={treeFailure.retry}
-          />
-        {/if}
-      {/if}
-    </div>
-  </aside>
-  <main class="min-h-0 min-w-0 flex-1">
+            {#each trail as f, i (f.id)}
+              <ChevronRight size={13} class="shrink-0 text-ink-dim" />
+              <button
+                type="button"
+                onclick={() => goFolder(f.id)}
+                ondragover={(e) => crumbOver_(e, f.id)}
+                ondragleave={() => (crumbOver = crumbOver === f.id ? null : crumbOver)}
+                ondrop={(e) => void crumbDrop(e, f.id)}
+                class={cn('min-w-0 truncate rounded px-1.5 py-0.5 font-sans text-sm font-semibold transition-colors', i === trail.length - 1 ? 'text-fg' : 'text-muted hover:text-fg', crumbOver === f.id && 'bg-raised ring-1 ring-accent/60')}
+              >
+                {f.id === agentsRootId ? AGENTS_ROOT : f.name}
+              </button>
+            {/each}
+          </nav>
+        {/snippet}
+        {#snippet actions()}
+          <div class="flex items-center gap-2">
+            <div class="relative">
+              <Search size={13} class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted" />
+              <Input size="sm" bind:value={q} placeholder="Search files" class="h-7 w-44 pl-7 pr-6" />
+              {#if q}
+                <button type="button" onclick={() => (q = '')} class="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted hover:text-fg" aria-label="Clear search">
+                  <X size={12} />
+                </button>
+              {/if}
+            </div>
+            <Segmented
+              size="xs"
+              options={[
+                { id: 'list', label: 'List', title: 'List view' },
+                { id: 'grid', label: 'Grid', title: 'Grid view' },
+              ] as const}
+              value={view}
+              onChange={setView}
+            />
+            <DropdownMenu items={newMenu}>
+              {#snippet trigger(_open: boolean)}
+                <Button size="sm">
+                  <Plus size={13} class="mr-1" /> New
+                </Button>
+              {/snippet}
+            </DropdownMenu>
+          </div>
+        {/snippet}
+      </StageHeader>
+    {/snippet}
+
     {#if activeId}
       {#key activeId}
         <ArtifactEditor id={activeId} onDeleted={() => setActiveId(null)} />
       {/key}
     {:else}
-      <EmptyState icon="◆" title="Artifacts" hint="Create an artifact or a folder. Drag artifacts into folders to organize." />
+      <ArtifactsBrowser
+        {rows}
+        loading={artifactsQuery.isLoading || foldersQuery.isLoading}
+        {failure}
+        {view}
+        {sortKey}
+        {sortDir}
+        {onSort}
+        {activeId}
+        {canOrganize}
+        {emptyTitle}
+        {emptyHint}
+        onOpenFolder={goFolder}
+        onOpenArtifact={setActiveId}
+        onMove={move}
+        onUpload={upload}
+        onRefresh={refresh}
+        onDeleted={(id) => activeId === id && setActiveId(null)}
+        onProperties={(row) => (propsRow = row)}
+        onShare={(row) => (shareRow = row)}
+      />
     {/if}
-  </main>
+  </Stage>
+
+  <input
+    bind:this={fileInput}
+    type="file"
+    multiple
+    class="hidden"
+    onchange={(e) => {
+      const files = Array.from(e.currentTarget.files ?? [])
+      e.currentTarget.value = ''
+      if (files.length) void upload(files)
+    }}
+  />
+
+  {#if propsRow}
+    <ArtifactsProperties
+      row={propsRow}
+      {folders}
+      {artifacts}
+      placeLabel={currentPlace.label}
+      onClose={() => (propsRow = null)}
+      onManageAccess={() => {
+        // Hand off rather than stack: two modals over each other would leave
+        // Esc ambiguous about which one it closes.
+        shareRow = propsRow
+        propsRow = null
+      }}
+    />
+  {/if}
+
+  {#if shareTarget}
+    <PermissionsModal
+      open
+      onClose={() => (shareRow = null)}
+      kind={shareTarget.kind}
+      id={shareTarget.id}
+      label={shareTarget.label}
+      visibility={shareTarget.visibility}
+      editPolicy={shareTarget.editPolicy}
+      publicSlug={shareTarget.publicSlug}
+      canManage={shareTarget.canManage}
+      onSave={async (patch) => {
+        if (shareTarget.kind === 'artifacts') await saveArtifact(shareTarget.id, patch)
+        else await updateFolder(shareTarget.id, patch)
+        await refresh()
+      }}
+    />
+  {/if}
+
   {#if importOpen}
     <ArtifactsDriveImportModal
       onClose={() => (importOpen = false)}
       onImported={async (artifactId) => {
         importOpen = false
-        await qc.invalidateQueries({ queryKey: ['artifacts'] })
+        await refresh()
         setActiveId(artifactId)
       }}
     />
   {/if}
-  <ContextMenu {menu} />
-</div>
+</RailSurface>

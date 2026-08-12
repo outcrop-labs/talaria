@@ -41,7 +41,7 @@ export const GATEABLE_VIEWS: { to: string; label: string }[] = [
   { to: '/boards', label: 'Boards' },
   { to: '/research', label: 'Research' },
   { to: '/knowledge', label: 'Knowledge' },
-  { to: '/artifacts', label: 'Artifacts' },
+  { to: '/artifacts', label: 'Files' },
 ]
 
 /** Manage-section views a member can be granted (pairs with the fine-grained
@@ -73,7 +73,7 @@ export const NAV: NavSection[] = [
       { to: '/boards', label: 'Boards', icon: LayoutGrid },
       { to: '/research', label: 'Research', icon: FolderSearch },
       { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
-      { to: '/artifacts', label: 'Artifacts', icon: FileBox },
+      { to: '/artifacts', label: 'Files', icon: FileBox },
     ],
   },
   {
