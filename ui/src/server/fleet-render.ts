@@ -519,14 +519,17 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       '# are no-ops because we ARE the store, and forgetting is done by revoking',
       '# the grant rather than by anything git says.',
       '[ "$1" = "get" ] || exit 0',
-      'host=""; proto=""',
+      'host=""; proto=""; path=""',
       'while IFS="=" read -r k v; do',
       '  [ "$k" = "host" ] && host="$v"',
       '  [ "$k" = "protocol" ] && proto="$v"',
+      '  # PATH IS WHAT SCOPES A GITHUB ANSWER to one repo. Git only sends it',
+      '  # when credential.useHttpPath is set, which the rendered gitconfig does.',
+      '  [ "$k" = "path" ] && path="$v"',
       'done',
       '[ -n "$host" ] || exit 0',
       'url="$TALARIA_API_URL/api/secrets/git-credential"',
-      'body="{\\"host\\":\\"$host\\",\\"protocol\\":\\"$proto\\"}"',
+      'body="{\\"host\\":\\"$host\\",\\"protocol\\":\\"$proto\\",\\"path\\":\\"$path\\"}"',
       'if command -v curl >/dev/null 2>&1; then',
       '  resp=$(curl -sS --fail -X POST "$url" \\',
       '    -H "X-Agent-Name: $API_SERVER_MODEL_NAME" -H "X-Api-Key: $API_SERVER_KEY" \\',
@@ -564,7 +567,11 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     // the root home knows about is a helper that silently does not run. It also
     // has to survive the harness writing its own ~/.gitconfig, which several do.
     const gitconfigPath = join(agentDir, 'gitconfig')
-    await writeFile(gitconfigPath, ['[credential]', '\thelper = talaria', ''].join('\n'))
+    // `useHttpPath` is what makes git send the repository along with the host.
+    // Without it a GitHub answer could only be scoped to github.com — i.e. to
+    // every repo the installation can reach — and repo-scoping is the whole
+    // reason this is safer than the clone URL it replaces.
+    await writeFile(gitconfigPath, ['[credential]', '\thelper = talaria', '\tuseHttpPath = true', ''].join('\n'))
     result.files.push(helperPath, gitconfigPath)
 
     // The service name carries the active slot ('a' = bare, 'b' = "-b") so a

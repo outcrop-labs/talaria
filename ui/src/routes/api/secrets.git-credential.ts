@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { parseBody } from '@/server/api-guard'
 import { requireAgent } from '@/server/agent-auth'
 import { credentialForHost } from '@/server/workspace-secrets'
+import { agentGitCredential } from '@/server/github'
 
 // THE SANDBOX'S WAY IN — where a handle could not otherwise reach.
 //
@@ -51,7 +52,22 @@ export const Route = defineApi('/api/secrets/git-credential', {
       return json({ error: 'https only' }, { status: 400 })
     }
 
-    const cred = await credentialForHost(caller.model, body.host)
+    // TWO SOURCES, workspace store first. A credential somebody deliberately
+    // granted for this host is a more specific answer than the platform's own
+    // GitHub token, and an operator who pinned one expects it to be used.
+    const cred =
+      (await credentialForHost(caller.model, body.host)) ??
+      // Talaria's GitHub installation token, scoped to a repo on THIS agent's
+      // grant list — the credential a workbench job needs to push, and the one
+      // that used to ride into the model's context inside the clone URL.
+      // `caller.id` is null for a LEGACY org-wide key, which names nobody — and
+      // a caller we cannot identify is one we cannot scope to a repo grant. The
+      // workspace store above already refuses those for the same reason
+      // (`grantTo` is per agent model), so this only makes the second source
+      // agree rather than adding a new rule.
+      (caller.id
+        ? await agentGitCredential(caller.id, body.host, body.path).then((g) => (g ? { ...g, name: `github:${g.repo}` } : null))
+        : null)
     if (!cred) {
       // Reported to the OPERATOR, never elaborated to the caller: which
       // credentials exist and which hosts they cover is a map of the workspace,
