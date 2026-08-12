@@ -668,6 +668,26 @@ export async function unshareSecretFrom(name: string, userId: string, actingUser
   return true
 }
 
+/** FILE IT SOMEWHERE. Owner-only, and the folder is an ARTIFACT folder on
+ *  purpose: a person organising their work wants "Checkout rewrite" to hold the
+ *  spec, the notes and the staging key, not to keep two parallel filing systems
+ *  whose names drift apart within a week.
+ *
+ *  What is emphatically NOT shared with artifacts is the STORAGE — a secret has
+ *  no body to index, export or serve. Only the shelf is common. */
+export async function moveSecretToFolder(name: string, folderId: string | null, actingUserId: string): Promise<boolean> {
+  const sql = await db()
+  const rows = (await sql`select id, owner_user_id as "ownerUserId", revealable from workspace_secrets where name = ${name}`) as unknown as Array<{
+    id: string
+    ownerUserId: string | null
+    revealable: boolean
+  }>
+  const doc = rows[0]
+  if (!doc || !doc.revealable || doc.ownerUserId !== actingUserId) return false
+  await sql`update workspace_secrets set folder_id = ${folderId} where id = ${doc.id}`
+  return true
+}
+
 /** The working secrets this person can see: theirs, plus what was shared with
  *  them. Keys and labels only, like every other listing here. */
 export async function listSecretsForUser(userId: string): Promise<SecretDoc[]> {

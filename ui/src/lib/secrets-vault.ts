@@ -74,6 +74,12 @@ export function useSecretsVault() {
       await refresh()
       return r
     },
+    /** File it into a folder, or out of one with `null`. */
+    move: async (name: string, folderId: string | null) => {
+      const r = await post('/api/secrets', { name, folderId }, 'PATCH')
+      await refresh()
+      return r
+    },
     remove: async (name: string) => {
       const r = await post('/api/secrets', { name }, 'DELETE')
       await refresh()
@@ -95,6 +101,19 @@ export function useSecretsVault() {
      *  several credentials. */
     reveal: async (name: string, key: string): Promise<{ value?: string; error?: string }> => post('/api/secrets/reveal', { name, key }),
   }
+}
+
+/** SEARCH, over everything EXCEPT the one field that matters.
+ *
+ *  Titles, notes, entry labels and keys — never a value, and there is not one in
+ *  the client to search anyway. Worth stating because "search your secrets" is a
+ *  sentence somebody could reasonably read as searching their contents, and the
+ *  honest answer is that we cannot and would not. */
+export const matchesSecret = (s: WorkingSecret, needle: string): boolean => {
+  const q = needle.trim().toLowerCase()
+  if (!q) return true
+  const hay = [s.title, s.note ?? '', ...s.entries.map((e) => `${e.label} ${e.key}`), ...s.allowedHosts, ...s.grants].join(' ').toLowerCase()
+  return q.split(/\s+/).every((word) => hay.includes(word))
 }
 
 /** How a refusal reads to the person who hit it. The server answers with a bare

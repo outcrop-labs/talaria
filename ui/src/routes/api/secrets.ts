@@ -3,7 +3,7 @@ import { json } from '@/server/http'
 import { z } from 'zod'
 import { actorOf, parseBody, requireUser } from '@/server/api-guard'
 import { logAudit } from '@/server/audit'
-import { createSecretDoc, deleteSecretDoc, getSecretDoc, listSecretsForUser } from '@/server/workspace-secrets'
+import { createSecretDoc, deleteSecretDoc, getSecretDoc, listSecretsForUser, moveSecretToFolder } from '@/server/workspace-secrets'
 
 // WORKING SECRETS — the ones a PERSON needs back.
 //
@@ -111,6 +111,18 @@ export const Route = defineApi('/api/secrets', {
       after: { entries: doc.entries, readers: doc.readers, grants: doc.grants, allowedHosts: doc.allowedHosts },
     })
     return json({ secret: doc })
+  },
+
+  // Move it into (or out of) a folder. Owner-only, like every other change to
+  // where a credential lives.
+  PATCH: async ({ request }) => {
+    const user = await requireUser(request)
+    if (user instanceof Response) return user
+    const body = await parseBody(request, z.object({ name: z.string().max(80), folderId: z.string().uuid().nullable() }))
+    if (body instanceof Response) return body
+    if (!(await moveSecretToFolder(body.name, body.folderId, user.id))) return json({ error: 'not yours to move' }, { status: 403 })
+    void logAudit({ actor: actorOf(user), action: 'secrets.move', targetType: 'secret', targetId: body.name, after: { folderId: body.folderId } })
+    return json({ secret: await getSecretDoc(body.name) })
   },
 
   DELETE: async ({ request }) => {
