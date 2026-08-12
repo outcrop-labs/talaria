@@ -287,6 +287,15 @@ export interface FitnessRunStatus {
   startedAt?: string
   finishedAt?: string
   error?: string
+  /** LAST SIGN OF LIFE. A run is a background promise inside a process, and the
+   *  status that says `running` outlives the process — so a restart used to
+   *  leave a row claiming to run forever, with the console counting it against
+   *  the concurrency limit and Stop writing a request nothing would ever read.
+   *
+   *  Written whenever the run touches its status, which is at every phase
+   *  boundary. Absent on rows written before this existed; `staleRun` treats
+   *  that as `startedAt`, so old rows age out rather than being trusted. */
+  heartbeatAt?: string
 }
 
 export type FitnessStatusView = FitnessRunStatus & { done: number; total: number; harness: string | null; sweepState: string }
@@ -1240,7 +1249,12 @@ export async function runFitness(opts: StartOptions, deps?: Partial<SurfaceDeps>
    *  persisted request for everything else. Checked between tiers, which is
    *  where `runFitness` honors a stop. */
   const stopped = async (): Promise<boolean> => (runs.get(model)?.stop ?? false) || (await stopRequestedFor(model, d).catch(() => false))
-  const writeStatus = (s: FitnessRunStatus): Promise<void> => writeRunStatus(d, s)
+  // EVERY WRITE IS ALSO A HEARTBEAT. Threading it through the one helper the
+  // run already uses means a new phase, a finish and an error all refresh it
+  // without any caller remembering to — and a second mechanism for "is this
+  // alive" is a second set of stuck-state bugs, which is the note this file
+  // already makes about progress counters.
+  const writeStatus = (s: FitnessRunStatus): Promise<void> => writeRunStatus(d, { ...s, heartbeatAt: d.nowIso() })
   const setPhase = (phase: FitnessRunStatus['phase']): Promise<void> =>
     writeStatus({ state: 'running', model, tiers, phase, startedAt }).catch(() => {})
 
@@ -1500,6 +1514,34 @@ export const slotViews = (): SlotView[] =>
  *  last writer of a tick would otherwise drop its siblings' progress. */
 let statusQueue: Promise<void> = Promise.resolve()
 
+/** HOW LONG A RUN MAY GO QUIET before we call it dead.
+ *
+ *  DELIBERATELY LONGER THAN A PHASE, because a phase is the heartbeat's
+ *  interval: `writeStatus` fires at tier boundaries, so a single adversarial
+ *  pass over a slow model is one long silence with nothing wrong. A first cut at
+ *  twenty minutes was inside that window, and the ordering test caught it
+ *  declaring a live row dead — which is the failure that actually costs
+ *  something.
+ *
+ *  The two errors are not symmetric. Declaring a live run dead loses work
+ *  somebody is paying for and reports a sweep as failed while it is still
+ *  spending; leaving a dead one another half hour costs one stale line on a
+ *  panel that self-heals. So this errs long. */
+const RUN_STALE_MS = 45 * 60_000
+
+/** Has this run stopped breathing? Only ever asked of a `running` row.
+ *
+ *  A HEARTBEAT RATHER THAN "is it in our process map", which was the tempting
+ *  cheaper test. That map is empty in any instance that did not start the run —
+ *  the same fact `stopFitnessRun` is built around — so keying on it would have
+ *  one instance quietly declaring another's live sweep dead. A heartbeat is true
+ *  or false regardless of who is asking. */
+export function staleRun(r: Pick<FitnessRunStatus, 'state' | 'heartbeatAt' | 'startedAt'>, now: number): boolean {
+  if (r.state !== 'running') return false
+  const beat = Date.parse(r.heartbeatAt ?? r.startedAt ?? '')
+  return Number.isFinite(beat) && now - beat > RUN_STALE_MS
+}
+
 const writeRunStatus = (d: SurfaceDeps, status: FitnessRunStatus): Promise<void> =>
   (statusQueue = statusQueue
     .then(async () => {
@@ -1551,7 +1593,21 @@ export async function fitnessRuns(deps?: Partial<SurfaceDeps>): Promise<FitnessR
   // grew with every case of every concurrent run.
   const statuses = await readRuns(d)
   const sweeps = await d.evalSweepStatuses(Object.keys(statuses)).catch((): Record<string, EvalSweepStatus> => ({}))
+  // A STUCK RUN REPORTS AS FAILED, HERE, on the read every surface goes through.
+  //
+  // A run is a promise inside a process and its status is a row in the database,
+  // so a restart used to leave the row claiming `running` for ever: the panel
+  // counted it against the concurrency limit, `full` went true, and Stop wrote a
+  // request that no living thing would ever read. Two of them accumulated in one
+  // afternoon of restarts.
+  //
+  // Reported rather than REWRITTEN, because a read is not the place to take a
+  // durable decision — two instances reading at once would both write, and a run
+  // that is merely slow would have its row destroyed by whoever looked first.
+  // `stopFitnessRun` does the writing, and it does it because somebody asked.
+  const now = Date.parse(d.nowIso())
   const runs = Object.values(statuses)
+    .map((s) => (staleRun(s, now) ? { ...s, state: 'error' as const, error: 'interrupted — the server restarted or the run died' } : s))
     .map((s) => statusView(s, sweeps))
     // Running first, then most recently started — an admin watching three
     // sweeps wants the live ones at the top, not whichever id sorts first.
@@ -1932,10 +1988,21 @@ export async function stopFitnessRun(
   deps?: Partial<SurfaceDeps>,
 ): Promise<{ stopped: boolean; status: FitnessStatusView; runs: FitnessRunsView }> {
   const d = withDeps(deps)
-  // THE TARGETS COME FROM THE PERSISTED STATUS, not from the in-process map.
-  // That map is empty in any instance that did not start the run, which is
-  // exactly the case where Stop was doing nothing at all.
-  const live = (await fitnessRuns(d)).runs.filter((r) => r.state === 'running').map((r) => r.model)
+  // THE TARGETS COME FROM THE RAW PERSISTED ROWS, not from the in-process map
+  // and not from `fitnessRuns`.
+  //
+  // Not the map, because it is empty in any instance that did not start the run
+  // — the case where Stop used to do nothing at all.
+  //
+  // AND NOT `fitnessRuns`, which is the subtler one and was a bug for exactly
+  // one commit: that view reports a stale row as `error` so the panel stops
+  // counting a dead run, which means Stop-all could no longer SEE an orphan and
+  // reported `stopped: false` while the row sat there saying `running` for ever.
+  // The sanitised view is for reading; the thing being stopped is the row.
+  const persistedNow = await readRuns(d).catch((): Record<string, FitnessRunStatus> => ({}))
+  const live = Object.values(persistedNow)
+    .filter((r) => r.state === 'running')
+    .map((r) => r.model)
   const targets = (model === null ? live : [model]).filter((m): m is string => m !== null)
 
   // Written FIRST, so the request outlives this process whatever happens next.
@@ -1952,6 +2019,31 @@ export async function stopFitnessRun(
     const slot = runs.get(m)
     if (slot) slot.stop = true
     d.stopEvalSweep(m)
+  }
+
+  // AND THE ORPHANS, which are the whole reason Stop could look broken. A stop
+  // request is a note left for a running loop to read between cases; a run whose
+  // process died reads nothing, so the request sat there and the row kept saying
+  // `running`. Pressing Stop on one of those has exactly one sensible meaning —
+  // end it — so it is ended here rather than asked.
+  //
+  // ONLY THE STALE ONES. A live run belonging to ANOTHER instance is not
+  // orphaned, and killing its row from here would report a sweep as failed while
+  // it was still spending money. The heartbeat is what tells them apart.
+  const nowMs = Date.parse(d.nowIso())
+  for (const m of targets) {
+    const row = persistedNow[m]
+    if (!row || !staleRun(row, nowMs)) continue
+    await writeRunStatus(d, {
+      ...row,
+      state: 'error',
+      phase: null,
+      error: 'interrupted — the server restarted or the run died',
+      finishedAt: d.nowIso(),
+    }).catch(() => {})
+    // The note is pointless now, and left behind it would stop the NEXT run on
+    // this model after one case — a bug this file has already had once.
+    await clearStopRequest(m, d).catch(() => {})
   }
 
   // `stopped` is about the REQUEST landing, not about which instance owns the
