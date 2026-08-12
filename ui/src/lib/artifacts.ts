@@ -39,6 +39,10 @@ export interface ArtifactFolder {
   name: string
   icon: string | null
   parentId: string | null
+  /** Folders carry the same access model as artifacts and KB docs. */
+  visibility: Visibility
+  editPolicy: EditPolicy
+  ownerUserId: string | null
   createdBy: string | null
   createdAt: string
 }
@@ -80,7 +84,10 @@ export const useFolders = () =>
 export const createFolder = (name: string, parentId?: string | null) =>
   fetch('/api/artifact-folders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, parentId }) }).then((r) => r.json())
 
-export const updateFolder = (id: string, patch: Partial<Pick<ArtifactFolder, 'name' | 'icon' | 'parentId'>>) =>
+export const updateFolder = (
+  id: string,
+  patch: Partial<Pick<ArtifactFolder, 'name' | 'icon' | 'parentId' | 'visibility' | 'editPolicy'>> & { editors?: KbEditor[] },
+) =>
   fetch(`/api/artifact-folders/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }).then((r) => r.json())
 
 export const deleteFolder = (id: string) => fetch(`/api/artifact-folders/${id}`, { method: 'DELETE' })

@@ -45,15 +45,15 @@
   }
 </script>
 
-<Modal open {onClose} title="Save to Artifacts">
+<Modal open {onClose} title="Save to Files">
   {#if savedId}
     <div class="space-y-3">
       <p class="text-sm text-fg">
-        Saved. It's a durable file artifact now: versioned, shareable, folder-organized.
+        Saved. It's a durable file now: versioned, shareable, folder-organized.
       </p>
       <div class="flex justify-end gap-2 border-t border-line-subtle pt-3">
         <a href={p('/artifacts')} class="text-sm text-accent hover:underline" onclick={onClose}>
-          Open Artifacts ↗
+          Open Files ↗
         </a>
         <Button size="sm" onclick={onClose}>
           Done

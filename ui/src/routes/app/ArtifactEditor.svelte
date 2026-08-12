@@ -23,6 +23,7 @@
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { deleteArtifact, saveArtifact, uploadFile, useArtifact } from '@/lib/artifacts'
+  import { KIND_LABEL } from './artifacts'
   import ArtifactHistory from './ArtifactHistory.svelte'
   import ArtifactPageSkeleton from './ArtifactPageSkeleton.svelte'
   import ArtifactSheetView from './ArtifactSheetView.svelte'
@@ -124,11 +125,11 @@
     const driveUrl = artifact.googleFileUrl
     if (driveUrl) entries.push({ label: 'Open in Google Drive', icon: [ExternalLink, { size: 13 }], onSelect: () => window.open(driveUrl, '_blank', 'noopener,noreferrer') })
     entries.push({
-      label: 'Delete artifact',
+      label: 'Delete file',
       icon: [Trash2, { size: 13 }],
       danger: true,
       onSelect: async () => {
-        if (!(await confirm({ title: 'Delete artifact', message: `Delete "${artifact.title}"?`, confirmLabel: 'Delete', danger: true }))) return
+        if (!(await confirm({ title: 'Delete file', message: `Delete "${artifact.title}"?`, confirmLabel: 'Delete', danger: true }))) return
         await deleteArtifact(id)
         await qc.invalidateQueries({ queryKey: ['artifacts'] })
         onDeleted()
@@ -200,7 +201,7 @@
       {:else}
         <h1 class="min-w-0 flex-1 truncate font-sans text-lg font-semibold text-fg">{artifact.title}</h1>
       {/if}
-      <Chip>{artifact.kind}</Chip>
+      <Chip>{KIND_LABEL[artifact.kind]}</Chip>
       <Segmented
         size="xs"
         options={[{ id: 'read', label: 'Read' }, { id: 'edit', label: 'Edit' }] as const}
@@ -218,7 +219,7 @@
           variant={artifact.official ? 'primary' : 'outline'}
           size="sm"
           class="shrink-0"
-          title="Official artifacts are mirrored into the knowledgebase and ground the org brain"
+          title="Official files are mirrored into the knowledgebase and ground the org brain"
           onclick={() => void save({ official: !artifact.official })}
         >
           <Star size={13} class="mr-1" /> {artifact.official ? 'Official' : 'Make official'}
@@ -241,7 +242,7 @@
       {#if artifact.kind === 'doc'}
         {#if mode === 'edit'}
           {#key `${id}-${seed}`}
-            <RichEditor bind:this={editorRef} value={artifact.body} slash prose autosave onSave={() => void saveBody()} placeholder="Draft your artifact" fill class="min-w-0 flex-1" />
+            <RichEditor bind:this={editorRef} value={artifact.body} slash prose autosave onSave={() => void saveBody()} placeholder="Start writing" fill class="min-w-0 flex-1" />
           {/key}
         {:else}
           <!-- Tab-pane grammar on the READ pane only: the edit pane holds live
@@ -253,7 +254,7 @@
             {:else}
               <div class="mx-auto max-w-[46rem] px-6 py-8">
                 <button type="button" onclick={() => (mode = 'edit')} class="text-sm text-muted hover:text-fg">
-                  Empty artifact. Click to start.
+                  Empty document. Click to start.
                 </button>
               </div>
             {/if}
@@ -319,7 +320,7 @@
         </div>
       {:else}
         <div class="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
-          {artifact.kind} artifacts are coming soon.
+          {KIND_LABEL[artifact.kind]} files are coming soon.
         </div>
       {/if}
       {#if showHistory}
