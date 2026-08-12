@@ -15,6 +15,7 @@
   import RetrievalPanel from '@/components/admin/RetrievalPanel.svelte'
   import StoragePanel from '@/components/admin/StoragePanel.svelte'
   import SecretsPanel from '@/components/admin/SecretsPanel.svelte'
+  import WorkspaceSecretsPanel from '@/components/admin/WorkspaceSecretsPanel.svelte'
   import { useAgents } from '@/lib/agents'
   import { useSession } from '@/lib/session'
   import { relativeTime } from '@/lib/fleet'
@@ -117,7 +118,12 @@
       {/if}
       {#if tab === 'retrieval'}<RetrievalPanel />{/if}
       {#if tab === 'storage'}<StoragePanel />{/if}
+      <!-- TWO DIFFERENT NOUNS ON ONE TAB, in the order an operator needs them: the
+           inventory answers "is this instance healthy", the panel below answers
+           "what may my agents spend". Sharing a tab is right — they are both
+           credentials — and sharing a heading would not be. -->
       {#if tab === 'secrets'}<SecretsPanel />{/if}
+      {#if tab === 'secrets'}<WorkspaceSecretsPanel />{/if}
       {#if tab === 'security'}
         <AdminEncryptionPanel />
         <AdminSettingsPanel />
