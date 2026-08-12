@@ -40,15 +40,29 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { useUsers } from '@/lib/users'
   import { useAgents } from '@/lib/agents'
-  import { useSecretsVault, type WorkingSecret } from '@/lib/secrets-vault'
+
   import { listStagger } from '@/lib/motion'
 
   let {
-    secret,
+    title,
+    readers,
+    grants,
+    ownerUserId,
+    handle,
+    onShare,
+    onGrant,
     onClose,
     canManage,
   }: {
-    secret: WorkingSecret
+    title: string
+    readers: string[]
+    grants: string[]
+    ownerUserId: string | null
+    /** Shown beside a granted agent so somebody can copy the string an agent
+     *  would write. Absent for a FOLDER, where there is no single handle. */
+    handle?: string
+    onShare: (userId: string, on: boolean) => Promise<{ error?: string }>
+    onGrant: (agentModel: string, on: boolean) => Promise<{ error?: string }>
     onClose: () => void
     /** Only the owner may change who has access. A reader was let in to USE the
      *  credential; letting them widen the circle turns sharing into forwarding,
@@ -58,7 +72,6 @@
 
   const usersList = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
   const agentsQuery = useAgents()
-  const vault = useSecretsVault()
 
   let busy = $state(false)
   const disabled = $derived(busy)
@@ -86,11 +99,11 @@
   // our data model rather than about their intent. What each choice MEANS is
   // then spelled out on the row it creates.
   const addOptions = $derived.by((): ComboOption[] => {
-    const people = new Set(secret.readers)
-    const agents = new Set(secret.grants)
+    const people = new Set(readers)
+    const agents = new Set(grants)
     return [
       ...usersList.rows
-        .filter((u) => !people.has(u.id) && u.id !== secret.ownerUserId)
+        .filter((u) => !people.has(u.id) && u.id !== ownerUserId)
         .map((u) => ({
           value: `user:${u.id}`,
           label: u.name ?? u.email ?? u.id,
@@ -119,12 +132,12 @@
   const add = (val: string) => {
     const i = val.indexOf(':')
     const [type, id] = [val.slice(0, i), val.slice(i + 1)]
-    if (type === 'user') void run(() => vault.share(secret.name, id, true))
-    else if (type === 'agent') void run(() => vault.grant(secret.name, id, true))
+    if (type === 'user') void run(() => onShare(id, true))
+    else if (type === 'agent') void run(() => onGrant(id, true))
   }
 </script>
 
-<Modal open={true} {onClose} title="Share “{secret.title}”" width="max-w-lg">
+<Modal open={true} {onClose} title="Share “{title}”" width="max-w-lg">
   {#if canManage}
     <Combobox options={addOptions} selected={[]} placeholder="Add a person or an agent" onChange={(v) => add(v[0] ?? '')} {disabled} />
   {/if}
@@ -139,11 +152,11 @@
   <p class="mt-4 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Can reveal it</p>
   <ul class="mt-1 space-y-1" use:listStagger>
     <li class="flex items-center gap-2 rounded-md px-2 py-1.5">
-      <Avatar name={userName(secret.ownerUserId ?? '')} class="h-6 w-6 text-[10px]" />
-      <span class="font-sans text-[13px] text-fg">{userName(secret.ownerUserId ?? '')}</span>
+      <Avatar name={userName(ownerUserId ?? '')} class="h-6 w-6 text-[10px]" />
+      <span class="font-sans text-[13px] text-fg">{userName(ownerUserId ?? '')}</span>
       <span class="ml-auto font-mono text-[10px] text-ink-dim">owner</span>
     </li>
-    {#each secret.readers as r (r)}
+    {#each readers as r (r)}
       <li class="flex items-center gap-2 rounded-md px-2 py-1.5">
         <Avatar name={userName(r)} class="h-6 w-6 text-[10px]" />
         <span class="font-sans text-[13px] text-fg">{userName(r)}</span>
@@ -154,7 +167,7 @@
             type="button"
             title="Remove access"
             disabled={busy}
-            onclick={() => void run(() => vault.share(secret.name, r, false))}
+            onclick={() => void run(() => onShare(r, false))}
             class="ml-auto text-muted hover:text-fg"
           >
             <X size={13} aria-hidden="true" />
@@ -162,7 +175,7 @@
         {/if}
       </li>
     {/each}
-    {#if secret.readers.length === 0}
+    {#if readers.length === 0}
       <li class="px-2 font-sans text-xs text-muted">Nobody else — only you.</li>
     {/if}
   </ul>
@@ -170,18 +183,22 @@
   <!-- AGENTS — a different power, so a different list and different words. -->
   <p class="mt-4 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Can use it, without ever seeing it</p>
   <ul class="mt-1 space-y-1" use:listStagger>
-    {#each secret.grants as g (g)}
+    {#each grants as g (g)}
       <li class="flex items-center gap-2 rounded-md px-2 py-1.5">
         <span class="grid h-6 w-6 place-items-center rounded-full bg-card2 text-muted"><Bot size={12} aria-hidden="true" /></span>
         <span class="font-sans text-[13px] text-fg">{agentLabel(g)}</span>
-        <KeyRound size={12} class="text-muted" aria-hidden="true" />
-        <code class="font-mono text-[10px] text-accent">«secret:{secret.name}»</code>
+        {#if handle}
+          <KeyRound size={12} class="text-muted" aria-hidden="true" />
+          <code class="font-mono text-[10px] text-accent">{handle}</code>
+        {:else}
+          <span class="font-sans text-xs text-muted">everything in this folder</span>
+        {/if}
         {#if canManage}
           <button
             type="button"
             title="Revoke"
             disabled={busy}
-            onclick={() => void run(() => vault.grant(secret.name, g, false))}
+            onclick={() => void run(() => onGrant(g, false))}
             class="ml-auto text-muted hover:text-fg"
           >
             <X size={13} aria-hidden="true" />
@@ -189,7 +206,7 @@
         {/if}
       </li>
     {/each}
-    {#if secret.grants.length === 0}
+    {#if grants.length === 0}
       <li class="px-2 font-sans text-xs text-muted">No agents. Add one and it can spend this credential without the value entering its context.</li>
     {/if}
   </ul>

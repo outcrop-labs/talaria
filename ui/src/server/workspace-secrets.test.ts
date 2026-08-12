@@ -16,6 +16,9 @@ const tables = {
   workspace_secret_entries: [] as Row[],
   workspace_secret_grants: [] as Row[],
   workspace_secret_readers: [] as Row[],
+  secret_folders: [] as Row[],
+  secret_folder_readers: [] as Row[],
+  secret_folder_grants: [] as Row[],
 }
 let seq = 0
 
@@ -36,7 +39,7 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
       allowed_hosts: v[7] ?? [],
       revealable: v[8] ?? false,
       owner_user_id: v[9] ?? null,
-      folder_id: v[10] ?? null,
+      secret_folder_id: v[10] ?? null,
       created_at: new Date().toISOString(),
       last_used_at: null,
     })
@@ -60,7 +63,7 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
   if (text.startsWith('select s.id, s.name, s.title, s.revealable')) {
     return Promise.resolve(
       tables.workspace_secrets
-        .filter((d) => d.name === v[1])
+        .filter((d) => d.name === v[2])
         .map((d) => ({
           id: d.id,
           name: d.name,
@@ -68,7 +71,10 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
           revealable: d.revealable,
           expiresAt: d.expires_at,
           ownerUserId: d.owner_user_id,
-          shared: String(tables.workspace_secret_readers.filter((r) => r.secret_id === d.id && r.user_id === v[0]).length),
+          shared: String(
+            tables.workspace_secret_readers.filter((r) => r.secret_id === d.id && r.user_id === v[0]).length +
+              tables.secret_folder_readers.filter((r) => r.folder_id === d.secret_folder_id && r.user_id === v[1]).length,
+          ),
         })),
     )
   }
@@ -114,7 +120,7 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
           allowedHosts: d.allowed_hosts ?? [],
           revealable: d.revealable ?? false,
           ownerUserId: d.owner_user_id ?? null,
-          folderId: d.folder_id ?? null,
+          folderId: d.secret_folder_id ?? null,
         })),
     )
   }
@@ -127,7 +133,7 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
   if (text.startsWith('select s.id, s.name, s.kind')) {
     return Promise.resolve(
       tables.workspace_secrets
-        .filter((d) => String(d.name).toLowerCase() === v[1])
+        .filter((d) => String(d.name).toLowerCase() === v[2])
         .map((d) => ({
           id: d.id,
           name: d.name,
@@ -135,7 +141,12 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
           expiresAt: d.expires_at,
           usesRemaining: d.uses_remaining,
           allowedHosts: d.allowed_hosts ?? [],
-          granted: String(tables.workspace_secret_grants.filter((g) => g.secret_id === d.id && g.agent_model === v[0]).length),
+          // Direct grant OR a grant on the folder it sits in — the union
+          // production resolves at read time.
+          granted: String(
+            tables.workspace_secret_grants.filter((g) => g.secret_id === d.id && g.agent_model === v[0]).length +
+              tables.secret_folder_grants.filter((g) => g.folder_id === d.secret_folder_id && g.agent_model === v[1]).length,
+          ),
         })),
     )
   }
@@ -153,16 +164,49 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
     for (const e of tables.workspace_secret_entries.filter((x) => x.secret_id === v[0])) e.value_cipher = ''
     return Promise.resolve([])
   }
-  if (text.startsWith('select s.name, e.key, e.label')) {
+  if (text.startsWith('select distinct s.name, e.key, e.label')) {
     const out: Row[] = []
-    for (const g of tables.workspace_secret_grants.filter((x) => x.agent_model === v[0])) {
-      const doc = tables.workspace_secrets.find((d) => d.id === g.secret_id)
+    const direct = tables.workspace_secret_grants.filter((x) => x.agent_model === v[0]).map((x) => x.secret_id)
+    const viaFolder = tables.workspace_secrets
+      .filter((d) => tables.secret_folder_grants.some((g) => g.folder_id === d.secret_folder_id && g.agent_model === v[1]))
+      .map((d) => d.id)
+    for (const secretId of [...new Set([...direct, ...viaFolder])]) {
+      const doc = tables.workspace_secrets.find((d) => d.id === secretId)
       if (!doc) continue
       if (doc.expires_at && new Date(String(doc.expires_at)).getTime() <= Date.now()) continue
       if (doc.uses_remaining !== null && Number(doc.uses_remaining) <= 0) continue
       for (const e of tables.workspace_secret_entries.filter((x) => x.secret_id === doc.id)) out.push({ name: doc.name, key: e.key, label: e.label })
     }
     return Promise.resolve(out)
+  }
+  if (text.startsWith('insert into secret_folders')) {
+    const id = `fold-${++seq}`
+    tables.secret_folders.push({ id, name: v[0], owner_user_id: v[1] })
+    return Promise.resolve([{ id, name: v[0], ownerUserId: v[1], createdAt: new Date().toISOString() }])
+  }
+  if (text.startsWith('select owner_user_id as "owneruserid" from secret_folders')) {
+    return Promise.resolve(tables.secret_folders.filter((f) => f.id === v[0]).map((f) => ({ ownerUserId: f.owner_user_id })))
+  }
+  if (text.startsWith('insert into secret_folder_readers')) {
+    tables.secret_folder_readers.push({ folder_id: v[0], user_id: v[1] })
+    return Promise.resolve([])
+  }
+  if (text.startsWith('insert into secret_folder_grants')) {
+    tables.secret_folder_grants.push({ folder_id: v[0], agent_model: v[1] })
+    return Promise.resolve([])
+  }
+  if (text.startsWith('delete from secret_folder_readers')) {
+    tables.secret_folder_readers = tables.secret_folder_readers.filter((r) => !(r.folder_id === v[0] && r.user_id === v[1]))
+    return Promise.resolve([])
+  }
+  if (text.startsWith('delete from secret_folder_grants')) {
+    tables.secret_folder_grants = tables.secret_folder_grants.filter((g) => !(g.folder_id === v[0] && g.agent_model === v[1]))
+    return Promise.resolve([])
+  }
+  if (text.startsWith('update workspace_secrets set secret_folder_id')) {
+    const doc = tables.workspace_secrets.find((d) => d.id === v[1])
+    if (doc) doc.secret_folder_id = v[0]
+    return Promise.resolve([])
   }
   return Promise.resolve([])
 }) as never
@@ -175,8 +219,23 @@ vi.mock('@/server/audit', () => ({ logAudit: (e: Record<string, unknown>) => { a
 // The envelope is exercised by its own tests; here it only has to round-trip.
 vi.mock('@/server/secretbox', () => ({ seal: (v: string) => `sealed:${v}`, open: (t: string) => t.replace(/^sealed:/, '') }))
 
-const { createSecretDoc, grantedHandlesFor, grantSecret, hostAllowed, hostsIn, mentionsHandle, mintRelay, resolveHandles, revealEntry, shareSecretWith, spendHandlesInToolCall, unshareSecretFrom } =
-  await import('@/server/workspace-secrets')
+const {
+  createSecretDoc,
+  createSecretFolder,
+  grantedHandlesFor,
+  grantSecret,
+  hostAllowed,
+  hostsIn,
+  mentionsHandle,
+  mintRelay,
+  moveSecretToFolder,
+  resolveHandles,
+  revealEntry,
+  shareSecretFolder,
+  shareSecretWith,
+  spendHandlesInToolCall,
+  unshareSecretFrom,
+} = await import('@/server/workspace-secrets')
 
 const PAT = 'github_pat_11ABCDEFG0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 
@@ -592,5 +651,65 @@ describe('sharing with an agent means spending, never reading', () => {
     const told = await grantedHandlesFor('dex-developer')
     expect(told).toContain('«secret:shared-both-ways»')
     expect(told).not.toContain('sk_both_ways')
+  })
+})
+
+describe('sharing a whole folder of secrets', () => {
+  // THE REASON FOLDER SHARING EXISTS is not saving four clicks today — it is
+  // covering the credential that lands in the folder NEXT WEEK. Re-sharing a
+  // growing set is the step everybody forgets, and the forgetting is invisible:
+  // the teammate simply cannot see the new key and assumes it does not exist.
+  it('covers a secret added to the folder AFTER it was shared', async () => {
+    const folder = await createSecretFolder('Checkout rewrite', ALICE)
+    await shareSecretFolder(folder.id, { userId: BOB }, true, ALICE)
+
+    await createSecretDoc({
+      name: 'later-key',
+      title: 'Added later',
+      entries: [{ key: 'k', label: 'Key', value: 'sk_added_later' }],
+      revealable: true,
+      ownerUserId: ALICE,
+    })
+    // Filed into the already-shared folder — nobody re-shares anything.
+    expect(await moveSecretToFolder('later-key', folder.id, ALICE)).toBe(true)
+    expect((await revealEntry('later-key', 'k', BOB)).value).toBe('sk_added_later')
+  })
+
+  it('stops covering it the moment the folder is unshared', async () => {
+    const folder = (await import('@/server/workspace-secrets')).listSecretFolders
+    void folder
+    const f = tables.secret_folders.find((x) => x.name === 'Checkout rewrite')!
+    await shareSecretFolder(String(f.id), { userId: BOB }, false, ALICE)
+    expect((await revealEntry('later-key', 'k', BOB)).refusal).toBe('not-shared')
+  })
+
+  it('gives an agent granted the folder a handle for everything in it', async () => {
+    const f = tables.secret_folders.find((x) => x.name === 'Checkout rewrite')!
+    await shareSecretFolder(String(f.id), { agentModel: 'folder-agent' }, true, ALICE)
+    // It can SPEND it...
+    expect((await resolveHandles('«secret:later-key»', 'folder-agent')).text).toBe('sk_added_later')
+    // ...and what it is TOLD it holds names the handle and the kind, never a value.
+    const told = await grantedHandlesFor('folder-agent')
+    expect(told).toContain('«secret:later-key»')
+    expect(told).not.toContain('sk_added_later')
+  })
+
+  it('will not let somebody file a secret into a folder that is not theirs', async () => {
+    // Filing into someone else's folder would share your credential with
+    // everyone THEY shared it with, which is not what "organise" means.
+    const theirs = await createSecretFolder('Bob only', BOB)
+    await createSecretDoc({
+      name: 'alice-key',
+      title: 'Alice key',
+      entries: [{ key: 'k', label: 'Key', value: 'sk_alice' }],
+      revealable: true,
+      ownerUserId: ALICE,
+    })
+    expect(await moveSecretToFolder('alice-key', theirs.id, ALICE)).toBe(false)
+  })
+
+  it('refuses folder sharing from anybody but its owner', async () => {
+    const f = tables.secret_folders.find((x) => x.name === 'Checkout rewrite')!
+    expect(await shareSecretFolder(String(f.id), { userId: ALICE }, true, BOB)).toBe(false)
   })
 })

@@ -21,11 +21,11 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { listStagger, slide } from '@/lib/motion'
-  import { matchesSecret, REVEAL_ERROR, useSecretsVault, useWorkingSecrets, type WorkingSecret } from '@/lib/secrets-vault'
+  import { matchesSecret, REVEAL_ERROR, useSecretFolders, useSecretsVault, useWorkingSecrets, type SecretFolder, type WorkingSecret } from '@/lib/secrets-vault'
   import { useSession } from '@/lib/session'
-  import { useFolders } from '@/lib/artifacts'
-  import Combobox from '@/components/ui/Combobox.svelte'
-  import { Check, ChevronRight, Copy, Eye, EyeOff, Folder, FolderInput, KeyRound, Plus, Search, Trash2, UserPlus, X } from '@lucide/svelte'
+  import { useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import ContextMenu from '@/components/ui/ContextMenu.svelte'
+  import { Check, ChevronRight, Copy, Eye, EyeOff, Folder, FolderPlus, KeyRound, MoreHorizontal, Plus, Search, Share2, X } from '@lucide/svelte'
   import SecretShareModal from './SecretShareModal.svelte'
 
   const query = useWorkingSecrets()
@@ -47,9 +47,10 @@
   // work wants "Checkout rewrite" to hold the spec, the notes and the staging
   // key, not two filing systems whose names drift apart in a week. Only the
   // shelf is shared; a secret still has no body to index or export.
-  const foldersQuery = useFolders()
-  const folders = $derived(foldersQuery.data ?? [])
+  const foldersQuery = useSecretFolders()
+  const folders = $derived(foldersQuery.data?.folders ?? [])
   const folderName = (id: string | null) => (id ? (folders.find((f) => f.id === id)?.name ?? 'Unknown folder') : null)
+  const menu = useContextMenu()
 
   let folderId = $state<string | null>(null)
   let needle = $state('')
@@ -59,33 +60,81 @@
   // be standing in would answer "not found" about a secret three feet away.
   const searching = $derived(needle.trim().length > 0)
   const visible = $derived(all.filter((s) => matchesSecret(s, needle) && (searching || s.folderId === folderId)))
-  const secrets = $derived(visible)
 
   const mineList = $derived(visible.filter((s) => s.ownerUserId === meId))
   const sharedList = $derived(visible.filter((s) => s.ownerUserId !== meId))
 
-  /** Folders that actually hold a secret of mine, at this level. An empty
-   *  folder listed here would be a promise of something that is not in it. */
-  const childFolders = $derived.by(() => {
-    if (searching) return []
-    const withSecrets = new Set(all.map((s) => s.folderId).filter((id): id is string => !!id))
-    return folders.filter((f) => f.parentId === folderId && withSecrets.has(f.id))
-  })
+  // FLAT, on purpose. Somebody with thirty credentials wants six labelled
+  // piles, not a tree — and a tree is where "which folder was that in" starts
+  // costing more than the tidying saved. Empty folders still show, because a
+  // folder you just made and have not filled yet is not a bug.
+  const childFolders = $derived(searching || folderId ? [] : folders)
   const trail = $derived.by(() => {
-    const out: Array<{ id: string | null; name: string }> = [{ id: null, name: 'Secrets' }]
-    let cur = folders.find((f) => f.id === folderId)
-    const chain: Array<{ id: string; name: string }> = []
-    while (cur) {
-      chain.unshift({ id: cur.id, name: cur.name })
-      cur = folders.find((f) => f.id === cur!.parentId)
-    }
-    return [...out, ...chain]
+    const here = folders.find((f) => f.id === folderId)
+    return here ? [{ id: null, name: 'Secrets' }, { id: here.id, name: here.name }] : [{ id: null, name: 'Secrets' }]
   })
+  const openFolder = $derived(folders.find((f) => f.id === folderId) ?? null)
 
-  const folderOptions = $derived([
-    { value: '', label: 'No folder', sub: 'Top level' },
-    ...folders.map((f) => ({ value: f.id, label: f.name, sub: 'Folder' })),
-  ])
+  let newFolderName = $state('')
+  const addFolder = async () => {
+    const name = newFolderName.trim()
+    if (!name) return
+    newFolderName = ''
+    await run(() => vault.newFolder(name))
+  }
+
+  /** The row's ⋯ menu. A dropdown form control inline in a dense row was the
+   *  first attempt and it was illegible — a full-width input squeezed between
+   *  chips. Row actions belong in the menu idiom the rest of the app uses. */
+  const rowMenu = (e: MouseEvent, s: WorkingSecret) => {
+    const items: ContextMenuEntry[] = [
+      { label: 'Share…', onSelect: () => (sharingName = s.name) },
+      ...(mine(s)
+        ? ([
+            {
+              label: 'Move to',
+              children: [
+                { label: 'No folder', checked: s.folderId === null, onSelect: () => void run(() => vault.move(s.name, null)) },
+                ...folders
+                  .filter((f) => f.ownerUserId === meId)
+                  .map((f) => ({ label: f.name, checked: s.folderId === f.id, onSelect: () => void run(() => vault.move(s.name, f.id)) })),
+              ],
+            },
+            'sep',
+            { label: 'Delete', danger: true, onSelect: () => void remove(s) },
+          ] as ContextMenuEntry[])
+        : []),
+    ]
+    menu.openMenu(e, items)
+  }
+
+  const folderMenu = (e: MouseEvent, f: SecretFolder) =>
+    menu.openMenu(e, [
+      { label: 'Share folder…', onSelect: () => (sharingFolderId = f.id) },
+      'sep',
+      {
+        label: 'Delete folder',
+        danger: true,
+        onSelect: () => void deleteFolder(f),
+      },
+    ])
+
+  const deleteFolder = async (f: SecretFolder) => {
+    const ok = await confirm({
+      title: `Delete “${f.name}”?`,
+      // THE REASSURANCE IS THE POINT. Losing four working keys because somebody
+      // tidied a label would be an unforgivable way to lose them.
+      message:
+        f.count > 0
+          ? `The ${f.count} secret${f.count === 1 ? '' : 's'} in it are NOT deleted — they move back to the top level. Anyone this folder was shared with loses access to them.`
+          : 'This folder is empty.',
+      confirmLabel: 'Delete folder',
+      danger: true,
+    })
+    if (!ok) return
+    await run(() => vault.deleteFolder(f.id))
+    if (folderId === f.id) folderId = null
+  }
 
   let busy = $state(false)
   let msg = $state<string | null>(null)
@@ -200,7 +249,6 @@
 
   const mine = (s: WorkingSecret) => s.ownerUserId === meId
 
-  const moveTo = (s: WorkingSecret, id: string) => void run(() => vault.move(s.name, id || null))
   const run = async (fn: () => Promise<{ error?: string }>) => {
     busy = true
     msg = null
@@ -213,7 +261,9 @@
   // a snapshot, so the modal re-renders as grants land instead of showing the
   // list as it was when it opened.
   let sharingName = $state<string | null>(null)
-  const sharing = $derived(secrets.find((s) => s.name === sharingName) ?? null)
+  const sharing = $derived(all.find((s) => s.name === sharingName) ?? null)
+  let sharingFolderId = $state<string | null>(null)
+  const sharingFolder = $derived(folders.find((f) => f.id === sharingFolderId) ?? null)
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
@@ -253,21 +303,77 @@
   {:else if query.isError}
     <QueryError error={query.error} />
   {:else}
-    {#if childFolders.length > 0}
+    {#if !searching && !folderId}
       <ul class="space-y-1" use:listStagger>
         {#each childFolders as f (f.id)}
-          <li>
-            <button
-              type="button"
-              onclick={() => (folderId = f.id)}
-              class="flex w-full items-center gap-2 rounded-md border border-line px-3 py-2 text-left transition-colors hover:bg-hover"
-            >
+          <li
+            class="flex items-center gap-2 rounded-md border border-line px-3 py-2 transition-colors hover:bg-hover"
+            oncontextmenu={(e) => folderMenu(e, f)}
+          >
+            <button type="button" onclick={() => (folderId = f.id)} class="flex min-w-0 flex-1 items-center gap-2 text-left">
               <Folder size={14} class="text-muted" aria-hidden="true" />
-              <span class="font-sans text-sm text-fg">{f.name}</span>
+              <span class="truncate font-sans text-sm text-fg">{f.name}</span>
+              <span class="font-mono text-[10px] text-ink-dim">{f.count}</span>
+              <!-- WHO ELSE HAS THE WHOLE PILE. The reason folder sharing exists
+                   is that it covers what lands in the folder LATER, so saying
+                   how far it reaches belongs on the folder itself. -->
+              {#if f.readers.length > 0 || f.grants.length > 0}
+                <span class="font-sans text-xs text-muted">
+                  shared · {f.readers.length} {f.readers.length === 1 ? 'person' : 'people'}{#if f.grants.length > 0}, {f.grants.length} agent{f.grants.length === 1 ? '' : 's'}{/if}
+                </span>
+              {/if}
+              {#if f.ownerUserId !== meId}<span class="font-mono text-[10px] text-ink-dim">shared with you</span>{/if}
             </button>
+            {#if f.ownerUserId === meId}
+              <button
+                type="button"
+                title="More"
+                onclick={(e) => folderMenu(e, f)}
+                class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+              >
+                <MoreHorizontal size={14} aria-hidden="true" />
+              </button>
+            {/if}
           </li>
         {/each}
+        <li class="flex items-center gap-2">
+          <FolderPlus size={14} class="text-muted" aria-hidden="true" />
+          <input
+            bind:value={newFolderName}
+            placeholder="New folder"
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void addFolder()
+              }
+            }}
+            class="w-48 rounded border border-line bg-panel px-2 py-1 font-sans text-xs text-fg"
+          />
+          {#if newFolderName.trim()}
+            <Button size="sm" variant="ghost" onclick={addFolder} disabled={busy}>Create</Button>
+          {/if}
+        </li>
       </ul>
+    {/if}
+
+    {#if openFolder}
+      <!-- Standing INSIDE a folder: its sharing is the thing to act on here. -->
+      <div class="flex flex-wrap items-center gap-2 rounded-md border border-line px-3 py-2">
+        <Folder size={14} class="text-muted" aria-hidden="true" />
+        <span class="font-sans text-xs text-muted">
+          {#if openFolder.readers.length === 0 && openFolder.grants.length === 0}
+            This folder is not shared.
+          {:else}
+            Shared with {openFolder.readers.length} {openFolder.readers.length === 1 ? 'person' : 'people'}{#if openFolder.grants.length > 0}, and {openFolder.grants.length} agent{openFolder.grants.length === 1 ? '' : 's'} may spend everything in it{/if}.
+          {/if}
+        </span>
+        {#if openFolder.ownerUserId === meId}
+          <Button size="sm" variant="ghost" onclick={() => (sharingFolderId = openFolder.id)}>
+            <Share2 size={13} aria-hidden="true" />
+            Share folder
+          </Button>
+        {/if}
+      </div>
     {/if}
 
     {#if visible.length === 0}
@@ -290,7 +396,7 @@
           <p class="mt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{section.label}</p>
           <ul class="space-y-2" use:listStagger>
             {#each section.rows as s (s.id)}
-          <li class="rounded-md border border-line p-3" transition:slide>
+          <li class="rounded-md border border-line p-3" transition:slide oncontextmenu={(e) => rowMenu(e, s)}>
             <div class="flex flex-wrap items-baseline gap-2">
               <KeyRound size={14} class="text-muted" aria-hidden="true" />
               <span class="font-sans text-sm text-fg">{s.title}</span>
@@ -336,7 +442,7 @@
                 {#if s.grants.length > 0}· {s.grants.length} agent{s.grants.length === 1 ? '' : 's'}{/if}
               </span>
               <Button size="sm" variant="ghost" onclick={() => (sharingName = s.name)}>
-                <UserPlus size={13} aria-hidden="true" />
+                <Share2 size={13} aria-hidden="true" />
                 Share
               </Button>
               {#if searching && s.folderId}
@@ -347,25 +453,20 @@
                   {folderName(s.folderId)}
                 </span>
               {/if}
-              {#if mine(s) && folders.length > 0}
-                <span class="inline-flex items-center gap-1">
-                  <FolderInput size={12} class="text-muted" aria-hidden="true" />
-                  <Combobox
-                    options={folderOptions}
-                    selected={s.folderId ? [s.folderId] : ['']}
-                    size="sm"
-                    onChange={(v) => moveTo(s, v[0] ?? '')}
-                    disabled={busy}
-                    triggerLabel={folderName(s.folderId) ?? 'File it'}
-                  />
-                </span>
-              {/if}
-              {#if mine(s)}
-                <Button size="sm" variant="ghost" onclick={() => remove(s)} disabled={busy} class="ml-auto">
-                  <Trash2 size={13} aria-hidden="true" />
-                  Delete
-                </Button>
-              {/if}
+              <!-- ONE ⋯ MENU instead of a rank of controls. The first version
+                   put a full-width dropdown inline here and it was illegible —
+                   a form control squeezed between chips, fighting everything
+                   around it. Row actions belong in the menu idiom the rest of
+                   the app already uses, and right-clicking the row opens the
+                   same items. -->
+              <button
+                type="button"
+                title="More"
+                onclick={(e) => rowMenu(e, s)}
+                class="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+              >
+                <MoreHorizontal size={14} aria-hidden="true" />
+              </button>
               </div>
             </li>
             {/each}
@@ -435,6 +536,33 @@
   {#if msg}<p class="font-sans text-xs text-danger">{msg}</p>{/if}
 </div>
 
+<ContextMenu {menu} />
+
 {#if sharing}
-  <SecretShareModal secret={sharing} canManage={mine(sharing)} onClose={() => (sharingName = null)} />
+  <SecretShareModal
+    title={sharing.title}
+    readers={sharing.readers}
+    grants={sharing.grants}
+    ownerUserId={sharing.ownerUserId}
+    handle={`«secret:${sharing.name}»`}
+    canManage={mine(sharing)}
+    onShare={(u, on) => vault.share(sharing.name, u, on)}
+    onGrant={(a, on) => vault.grant(sharing.name, a, on)}
+    onClose={() => (sharingName = null)}
+  />
+{/if}
+
+{#if sharingFolder}
+  <!-- SAME DIALOG, ONE LEVEL UP. Sharing a folder covers what lands in it
+       LATER, which is the whole reason it beats sharing four secrets by hand. -->
+  <SecretShareModal
+    title={sharingFolder.name}
+    readers={sharingFolder.readers}
+    grants={sharingFolder.grants}
+    ownerUserId={sharingFolder.ownerUserId}
+    canManage={sharingFolder.ownerUserId === meId}
+    onShare={(u, on) => vault.shareFolder(sharingFolder.id, { userId: u }, on)}
+    onGrant={(a, on) => vault.shareFolder(sharingFolder.id, { agentModel: a }, on)}
+    onClose={() => (sharingFolderId = null)}
+  />
 {/if}

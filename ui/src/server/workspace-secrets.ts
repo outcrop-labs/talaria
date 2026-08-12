@@ -79,7 +79,8 @@ export interface SecretDoc {
   /** Whose working secret this is. Null for workspace credentials, which belong
    *  to the org rather than to a person. */
   ownerUserId: string | null
-  /** Where it sits in the Files browser. Null = not filed. */
+  /** Which SECRET folder it sits in — see `secret_folders`, which are the
+   *  Secrets view's own and nothing to do with Files. Null = loose. */
   folderId: string | null
   /** People who may reveal it. Names only ever leave here as ids. */
   readers: string[]
@@ -118,7 +119,7 @@ export async function createSecretDoc(input: {
   const uses = input.uses !== undefined ? input.uses : kind === 'relay' ? 1 : null
   const rows = (await sql`
     insert into workspace_secrets (name, title, kind, note, created_by, expires_at, uses_remaining, allowed_hosts,
-                                  revealable, owner_user_id, folder_id)
+                                  revealable, owner_user_id, secret_folder_id)
     values (${input.name}, ${input.title}, ${kind}, ${input.note ?? null}, ${input.createdBy ?? null}, ${input.expiresAt ?? null}, ${uses},
             ${(input.allowedHosts ?? []).map((h) => h.trim().toLowerCase()).filter(Boolean)},
             ${input.revealable ?? false}, ${input.ownerUserId ?? null}, ${input.folderId ?? null})
@@ -206,7 +207,7 @@ export async function getSecretDoc(name: string): Promise<SecretDoc | null> {
     select id, name, title, kind, note, created_by as "createdBy", created_at as "createdAt",
            expires_at as "expiresAt", uses_remaining as "usesRemaining", last_used_at as "lastUsedAt",
            coalesce(allowed_hosts, '{}') as "allowedHosts",
-           revealable, owner_user_id as "ownerUserId", folder_id as "folderId"
+           revealable, owner_user_id as "ownerUserId", secret_folder_id as "folderId"
       from workspace_secrets where name = ${name}
   `) as unknown as Array<Omit<SecretDoc, 'entries' | 'grants'>>
   const row = rows[0]
@@ -363,7 +364,14 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
     const rows = (await sql`
       select s.id, s.name, s.kind, s.expires_at as "expiresAt", s.uses_remaining as "usesRemaining",
              s.allowed_hosts as "allowedHosts",
-             (select count(*) from workspace_secret_grants g where g.secret_id = s.id and g.agent_model = ${caller}) as "granted"
+             -- GRANTED DIRECTLY, OR THROUGH THE FOLDER IT SITS IN. Resolved
+             -- here rather than copied onto the row when a folder is shared,
+             -- so a credential added to that folder next week is covered
+             -- without anybody re-sharing it — which is the step everybody
+             -- forgets, and the reason a stale set stays readable by people
+             -- who should have lost it.
+             ((select count(*) from workspace_secret_grants g where g.secret_id = s.id and g.agent_model = ${caller})
+              + (select count(*) from secret_folder_grants fg where fg.folder_id = s.secret_folder_id and fg.agent_model = ${caller})) as "granted"
         from workspace_secrets s
        where lower(s.name) = ${docName}
     `) as unknown as Array<{
@@ -585,7 +593,10 @@ export async function revealEntry(name: string, entryKey: string, userId: string
   const sql = await db()
   const rows = (await sql`
     select s.id, s.name, s.title, s.revealable, s.expires_at as "expiresAt", s.owner_user_id as "ownerUserId",
-           (select count(*) from workspace_secret_readers r where r.secret_id = s.id and r.user_id = ${userId}) as "shared"
+           -- Shared with them directly, or through the folder. Same union as
+           -- the agent side, same reason.
+           ((select count(*) from workspace_secret_readers r where r.secret_id = s.id and r.user_id = ${userId})
+            + (select count(*) from secret_folder_readers fr where fr.folder_id = s.secret_folder_id and fr.user_id = ${userId})) as "shared"
       from workspace_secrets s
      where s.name = ${name}
   `) as unknown as Array<{
@@ -668,6 +679,103 @@ export async function unshareSecretFrom(name: string, userId: string, actingUser
   return true
 }
 
+// ── SECRET FOLDERS ───────────────────────────────────────────────────────────
+//
+// The Secrets view's own organisation, and nothing to do with Files. Flat, on
+// purpose: a person with thirty credentials wants six labelled piles, not a
+// tree — and a tree is where "which folder was that in" starts costing more
+// than the tidying saved.
+
+export interface SecretFolder {
+  id: string
+  name: string
+  ownerUserId: string | null
+  createdAt: string
+  /** People the whole folder is shared with. */
+  readers: string[]
+  /** Agents that may SPEND everything in it — handle only, as ever. */
+  grants: string[]
+  /** How many secrets are filed here. */
+  count: number
+}
+
+export async function listSecretFolders(userId: string): Promise<SecretFolder[]> {
+  const sql = await db()
+  const rows = (await sql`
+    select distinct f.id, f.name, f.owner_user_id as "ownerUserId", f.created_at as "createdAt"
+      from secret_folders f
+      left join secret_folder_readers fr on fr.folder_id = f.id and fr.user_id = ${userId}
+     where f.owner_user_id = ${userId} or fr.user_id is not null
+     order by f.name
+  `) as unknown as Array<{ id: string; name: string; ownerUserId: string | null; createdAt: string }>
+  const out: SecretFolder[] = []
+  for (const f of rows) {
+    const readers = (await sql`select user_id from secret_folder_readers where folder_id = ${f.id}`) as unknown as Array<{ user_id: string }>
+    const grants = (await sql`select agent_model from secret_folder_grants where folder_id = ${f.id}`) as unknown as Array<{ agent_model: string }>
+    const n = (await sql`select count(*)::int as n from workspace_secrets where secret_folder_id = ${f.id}`) as unknown as Array<{ n: number }>
+    out.push({ ...f, readers: readers.map((r) => r.user_id), grants: grants.map((g) => g.agent_model), count: n[0]?.n ?? 0 })
+  }
+  return out
+}
+
+export async function createSecretFolder(name: string, ownerUserId: string): Promise<SecretFolder> {
+  const sql = await db()
+  const rows = (await sql`insert into secret_folders (name, owner_user_id) values (${name}, ${ownerUserId}) returning id, name, owner_user_id as "ownerUserId", created_at as "createdAt"`) as unknown as Array<{
+    id: string
+    name: string
+    ownerUserId: string | null
+    createdAt: string
+  }>
+  return { ...rows[0]!, readers: [], grants: [], count: 0 }
+}
+
+const ownsFolder = async (id: string, userId: string): Promise<boolean> => {
+  const sql = await db()
+  const rows = (await sql`select owner_user_id as "ownerUserId" from secret_folders where id = ${id}`) as unknown as Array<{ ownerUserId: string | null }>
+  return rows[0]?.ownerUserId === userId
+}
+
+export async function renameSecretFolder(id: string, name: string, userId: string): Promise<boolean> {
+  if (!(await ownsFolder(id, userId))) return false
+  const sql = await db()
+  await sql`update secret_folders set name = ${name} where id = ${id}`
+  return true
+}
+
+/** DELETING A FOLDER DOES NOT DELETE ITS CREDENTIALS. `on delete set null` puts
+ *  them back at the top level — losing four working keys because somebody tidied
+ *  up a label would be an unforgivable way to lose them. */
+export async function deleteSecretFolder(id: string, userId: string): Promise<boolean> {
+  if (!(await ownsFolder(id, userId))) return false
+  const sql = await db()
+  await sql`delete from secret_folders where id = ${id}`
+  return true
+}
+
+/** Share the whole folder — with a person who may then reveal everything in it,
+ *  or with an agent that may spend everything in it and read none of it. */
+export async function shareSecretFolder(
+  id: string,
+  who: { userId?: string; agentModel?: string },
+  on: boolean,
+  actingUserId: string,
+): Promise<boolean> {
+  if (!(await ownsFolder(id, actingUserId))) return false
+  const sql = await db()
+  if (who.userId) {
+    if (on) await sql`insert into secret_folder_readers (folder_id, user_id, granted_by) values (${id}, ${who.userId}, ${actingUserId}) on conflict do nothing`
+    else await sql`delete from secret_folder_readers where folder_id = ${id} and user_id = ${who.userId}`
+    return true
+  }
+  if (who.agentModel) {
+    if (on)
+      await sql`insert into secret_folder_grants (folder_id, agent_model, granted_by) values (${id}, ${who.agentModel}, ${actingUserId}) on conflict do nothing`
+    else await sql`delete from secret_folder_grants where folder_id = ${id} and agent_model = ${who.agentModel}`
+    return true
+  }
+  return false
+}
+
 /** FILE IT SOMEWHERE. Owner-only, and the folder is an ARTIFACT folder on
  *  purpose: a person organising their work wants "Checkout rewrite" to hold the
  *  spec, the notes and the staging key, not to keep two parallel filing systems
@@ -684,7 +792,10 @@ export async function moveSecretToFolder(name: string, folderId: string | null, 
   }>
   const doc = rows[0]
   if (!doc || !doc.revealable || doc.ownerUserId !== actingUserId) return false
-  await sql`update workspace_secrets set folder_id = ${folderId} where id = ${doc.id}`
+  // Filing into somebody else's folder would share your credential with
+  // everyone THEY shared it with, which is not what "organise" means.
+  if (folderId !== null && !(await ownsFolder(folderId, actingUserId))) return false
+  await sql`update workspace_secrets set secret_folder_id = ${folderId} where id = ${doc.id}`
   return true
 }
 
@@ -696,7 +807,10 @@ export async function listSecretsForUser(userId: string): Promise<SecretDoc[]> {
     select distinct s.name, s.created_at
       from workspace_secrets s
       left join workspace_secret_readers r on r.secret_id = s.id and r.user_id = ${userId}
-     where s.revealable = true and (s.owner_user_id = ${userId} or r.user_id is not null)
+      left join secret_folder_readers fr on fr.folder_id = s.secret_folder_id and fr.user_id = ${userId}
+      left join secret_folders f on f.id = s.secret_folder_id
+     where s.revealable = true
+       and (s.owner_user_id = ${userId} or r.user_id is not null or fr.user_id is not null or f.owner_user_id = ${userId})
      order by s.created_at desc
   `) as unknown as Array<{ name: string }>
   const out: SecretDoc[] = []
@@ -769,11 +883,13 @@ export function handleBriefing(rows: Array<{ name: string; key: string; label: s
 export async function grantedHandlesFor(caller: string): Promise<string> {
   const sql = await db()
   const rows = (await sql`
-    select s.name, e.key, e.label
+    select distinct s.name, e.key, e.label
       from workspace_secrets s
-      join workspace_secret_grants g on g.secret_id = s.id and g.agent_model = ${caller}
       join workspace_secret_entries e on e.secret_id = s.id
-     where (s.expires_at is null or s.expires_at > now())
+      left join workspace_secret_grants g on g.secret_id = s.id and g.agent_model = ${caller}
+      left join secret_folder_grants fg on fg.folder_id = s.secret_folder_id and fg.agent_model = ${caller}
+     where (g.agent_model is not null or fg.agent_model is not null)
+       and (s.expires_at is null or s.expires_at > now())
        and (s.uses_remaining is null or s.uses_remaining > 0)
      order by s.name, e.key
   `) as unknown as Array<{ name: string; key: string; label: string }>

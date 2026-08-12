@@ -1563,6 +1563,47 @@ const MIGRATIONS: string[] = [
      primary key (secret_id, user_id)
    )`,
   `create index if not exists workspace_secrets_folder_idx on workspace_secrets(folder_id)`,
+  // ── SECRET FOLDERS: organisation that belongs to the Secrets view ─────────
+  //
+  // THE FIRST ATTEMPT FILED SECRETS INTO ARTIFACT FOLDERS, on the theory that
+  // one filing system beats two. It is the wrong theory here. A folder in Files
+  // is a place for DOCUMENTS — it shows up in the file browser, it carries
+  // artifact sharing, and a secret filed into it was invisible from the folder
+  // it claimed to be in. What people actually want is to tidy their credentials
+  // where their credentials live, and to hand a teammate the whole "Checkout
+  // rewrite" set in one gesture rather than six.
+  //
+  // So these are their own folders, in their own namespace, and `folder_id`
+  // above goes away unused.
+  `alter table workspace_secrets drop column if exists folder_id`,
+  `create table if not exists secret_folders (
+     id uuid primary key default gen_random_uuid(),
+     name text not null,
+     owner_user_id uuid references users(id) on delete cascade,
+     created_at timestamptz not null default now()
+   )`,
+  `alter table workspace_secrets add column if not exists secret_folder_id uuid references secret_folders(id) on delete set null`,
+  `create index if not exists workspace_secrets_secret_folder_idx on workspace_secrets(secret_folder_id)`,
+  // SHARING A FOLDER SHARES WHAT IS IN IT, now and later. That "and later" is
+  // the point: a set somebody is actively working on gains a credential next
+  // week, and re-sharing it to the same four people is the step everybody
+  // forgets. Access is therefore resolved at READ time as the union of a
+  // secret's own grants and its folder's — never copied down onto rows, which
+  // would freeze the membership at the moment of sharing.
+  `create table if not exists secret_folder_readers (
+     folder_id uuid not null references secret_folders(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     granted_by text,
+     granted_at timestamptz not null default now(),
+     primary key (folder_id, user_id)
+   )`,
+  `create table if not exists secret_folder_grants (
+     folder_id uuid not null references secret_folders(id) on delete cascade,
+     agent_model text not null,
+     granted_by text,
+     granted_at timestamptz not null default now(),
+     primary key (folder_id, agent_model)
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

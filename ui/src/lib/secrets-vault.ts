@@ -34,7 +34,26 @@ export interface WorkingSecret {
   allowedHosts: string[]
 }
 
+export interface SecretFolder {
+  id: string
+  name: string
+  ownerUserId: string | null
+  createdAt: string
+  /** People the whole folder is shared with — they can reveal everything in it. */
+  readers: string[]
+  /** Agents that may SPEND everything in it, and read none of it. */
+  grants: string[]
+  count: number
+}
+
 export const WORKING_SECRETS_KEY = ['working-secrets']
+export const SECRET_FOLDERS_KEY = ['secret-folders']
+
+export const useSecretFolders = () =>
+  createQuery(() => ({
+    queryKey: SECRET_FOLDERS_KEY,
+    queryFn: (): Promise<{ folders: SecretFolder[] }> => getJson<{ folders: SecretFolder[] }>('/api/secrets/folders'),
+  }))
 
 export const useWorkingSecrets = () =>
   createQuery(() => ({
@@ -66,7 +85,13 @@ const post = async (url: string, body: unknown, method = 'POST'): Promise<{ erro
 
 export function useSecretsVault() {
   const qc = useQueryClient()
-  const refresh = () => qc.invalidateQueries({ queryKey: WORKING_SECRETS_KEY })
+  // Folder changes move secrets between piles and can change who can see what,
+  // so both lists are refetched together rather than each verb guessing which
+  // it touched.
+  const refresh = async () => {
+    await qc.invalidateQueries({ queryKey: WORKING_SECRETS_KEY })
+    await qc.invalidateQueries({ queryKey: SECRET_FOLDERS_KEY })
+  }
 
   return {
     save: async (s: NewSecret) => {
@@ -99,6 +124,28 @@ export function useSecretsVault() {
      *  caller holds it in a local and drops it. One entry per call, because the
      *  server audits per entry and a bulk reveal would record one look for
      *  several credentials. */
+    newFolder: async (name: string) => {
+      const r = await post('/api/secrets/folders', { action: 'create', name })
+      await refresh()
+      return r
+    },
+    renameFolder: async (id: string, name: string) => {
+      const r = await post('/api/secrets/folders', { action: 'rename', id, name })
+      await refresh()
+      return r
+    },
+    deleteFolder: async (id: string) => {
+      const r = await post('/api/secrets/folders', { action: 'delete', id })
+      await refresh()
+      return r
+    },
+    /** Share a whole folder — with a person (can reveal all of it) or an agent
+     *  (can spend all of it, sees none of it). */
+    shareFolder: async (id: string, who: { userId?: string; agentModel?: string }, on: boolean) => {
+      const r = await post('/api/secrets/folders', { action: 'share', id, on, ...who })
+      await refresh()
+      return r
+    },
     reveal: async (name: string, key: string): Promise<{ value?: string; error?: string }> => post('/api/secrets/reveal', { name, key }),
   }
 }
