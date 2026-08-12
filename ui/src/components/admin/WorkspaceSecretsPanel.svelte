@@ -27,7 +27,20 @@
 
   const query = useWorkspaceSecrets()
   const act = useWorkspaceSecretAction()
-  const secrets = $derived(query.data?.secrets ?? [])
+  const all = $derived(query.data?.secrets ?? [])
+
+  // SPENT ONE-SHOTS ARE NOT THIS PANEL'S SUBJECT. Chat mints relays into the
+  // same table — that is deliberate, one shape to grant, audit and revoke — but
+  // a workspace doing it a few times a day would bury the six durable
+  // credentials an operator actually manages under a month of dead errands.
+  // They are still here, one click away, because "did my key ever reach that
+  // agent" is a real question; the row keeps who minted it and when it was
+  // spent even after the value itself is destroyed.
+  let showSpent = $state(false)
+  const isSpent = (s: WorkspaceSecret) =>
+    (s.usesRemaining !== null && s.usesRemaining <= 0) || (s.expiresAt !== null && new Date(s.expiresAt).getTime() <= Date.now())
+  const spent = $derived(all.filter(isSpent))
+  const secrets = $derived(showSpent ? all : all.filter((s) => !isSpent(s)))
 
   let busy = $state(false)
   let msg = $state<string | null>(null)
@@ -109,8 +122,10 @@
     {#if secrets.length === 0}
       <EmptyState
         variant="compact"
-        title="No agent credentials yet"
-        hint="Add one to let an agent push, publish or authenticate without the value ever entering its context."
+        title={all.length > 0 ? 'No live credentials' : 'No agent credentials yet'}
+        hint={all.length > 0
+          ? 'Every credential here has been spent or has expired.'
+          : 'Add one to let an agent push, publish or authenticate without the value ever entering its context.'}
       />
     {:else}
       <ul class="space-y-2" use:listStagger>
@@ -123,7 +138,11 @@
                 <Chip tone="warn">one-shot{s.usesRemaining !== null ? ` · ${s.usesRemaining} left` : ''}</Chip>
               {/if}
               {#if s.usesRemaining !== null && s.usesRemaining <= 0}
-                <Chip tone="neutral">spent</Chip>
+                <!-- The value behind a spent row is destroyed, not merely
+                     unreachable — see resolveHandles. The row is the receipt. -->
+                <Chip tone="neutral">spent · value destroyed</Chip>
+              {:else if s.expiresAt && new Date(s.expiresAt).getTime() <= Date.now()}
+                <Chip tone="neutral">expired</Chip>
               {/if}
               <span class="ml-auto font-mono text-[10px] text-ink-dim">
                 {s.lastUsedAt ? `last used ${new Date(s.lastUsedAt).toLocaleDateString()}` : 'never used'}
@@ -172,10 +191,18 @@
 
     <div class="mt-3">
       {#if !open}
-        <Button size="sm" onclick={() => (open = true)}>
-          <Plus size={14} aria-hidden="true" />
-          Add credentials
-        </Button>
+        <div class="flex flex-wrap items-center gap-2">
+          <Button size="sm" onclick={() => (open = true)}>
+            <Plus size={14} aria-hidden="true" />
+            Add credentials
+          </Button>
+          {#if spent.length > 0}
+            <Button size="sm" variant="ghost" onclick={() => (showSpent = !showSpent)}>
+              {showSpent ? 'Hide' : 'Show'}
+              {spent.length} spent or expired
+            </Button>
+          {/if}
+        </div>
       {:else}
         <div class="rounded-md border border-line p-3" transition:slide>
           <div class="grid gap-2 sm:grid-cols-2">

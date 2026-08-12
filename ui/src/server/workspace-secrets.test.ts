@@ -94,6 +94,10 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
     return Promise.resolve([{ id: doc.id }])
   }
   if (text.startsWith('update workspace_secrets set last_used_at')) return Promise.resolve([])
+  if (text.startsWith('update workspace_secret_entries set value_cipher')) {
+    for (const e of tables.workspace_secret_entries.filter((x) => x.secret_id === v[0])) e.value_cipher = ''
+    return Promise.resolve([])
+  }
   if (text.startsWith('select s.name, e.key, e.label')) {
     const out: Row[] = []
     for (const g of tables.workspace_secret_grants.filter((x) => x.agent_model === v[0])) {
@@ -112,7 +116,8 @@ vi.mock('@/server/db/pg', () => ({ db: async () => sql }))
 // The envelope is exercised by its own tests; here it only has to round-trip.
 vi.mock('@/server/secretbox', () => ({ seal: (v: string) => `sealed:${v}`, open: (t: string) => t.replace(/^sealed:/, '') }))
 
-const { createSecretDoc, grantedHandlesFor, grantSecret, resolveHandles } = await import('@/server/workspace-secrets')
+const { createSecretDoc, grantedHandlesFor, grantSecret, mentionsHandle, mintRelay, resolveHandles, spendHandlesInToolCall } =
+  await import('@/server/workspace-secrets')
 
 const PAT = 'github_pat_11ABCDEFG0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 
@@ -175,6 +180,98 @@ describe('a relay is spent once', () => {
     const again = await resolveHandles('«secret:oneshot»', 'dex-developer')
     expect(again.text).not.toContain('sk-live-once')
     expect(again.unresolved[0]?.reason).toBe('spent')
+  })
+
+  it('destroys the value once the last use is gone', async () => {
+    // `uses_remaining` already refuses to resolve it, so keeping the ciphertext
+    // buys nothing and costs the one thing worth protecting: a one-shot somebody
+    // pasted into chat this morning should not still be recoverable from a
+    // database dump tonight. The ROW survives — who minted it and who spent it is
+    // the only reason to keep a spent relay at all.
+    const doc = tables.workspace_secrets.find((d) => d.name === 'oneshot')
+    expect(doc).toBeTruthy()
+    const stored = tables.workspace_secret_entries.filter((e) => e.secret_id === doc!.id)
+    expect(stored).toHaveLength(1)
+    expect(stored[0]!.value_cipher).toBe('')
+  })
+
+  it('mints one for a single agent, once, and returns a handle rather than a value', async () => {
+    // The asymmetry IS the feature: the value arrives over one request and what
+    // goes back is a name, so the composer never holds anything it could paste
+    // into a transcript by accident.
+    const minted = await mintRelay({ label: 'Stripe test key', value: 'sk_test_relay_9', agentModel: 'dex-developer', createdBy: 'jon' })
+    expect(minted.handle).toBe(`«secret:${minted.name}»`)
+    expect(JSON.stringify(minted)).not.toContain('sk_test_relay_9')
+    // Random, not derived from the label — a guessable name is one another agent
+    // could ask for, and the grant check would be the only thing stopping it.
+    expect(minted.name).toMatch(/^relay-[0-9a-f]{12}$/)
+    // Bounded three ways, and it has to clear all of them.
+    expect(new Date(minted.expiresAt).getTime()).toBeGreaterThan(Date.now())
+    expect((await resolveHandles(minted.handle, 'dex-developer')).text).toBe('sk_test_relay_9')
+    expect((await resolveHandles(minted.handle, 'dex-developer')).unresolved[0]?.reason).toBe('spent')
+  })
+
+  it('will not resolve a relay for an agent it was not handed to', async () => {
+    const minted = await mintRelay({ label: 'Stripe test key', value: 'sk_test_relay_10', agentModel: 'dex-developer' })
+    const out = await resolveHandles(minted.handle, 'penny-assistant')
+    expect(out.text).not.toContain('sk_test_relay_10')
+    expect(out.unresolved[0]?.reason).toBe('not-granted')
+    // And refusing did not spend it — the agent it WAS handed to still can.
+    expect((await resolveHandles(minted.handle, 'dex-developer')).text).toBe('sk_test_relay_10')
+  })
+})
+
+describe('spending a handle inside an MCP tool call', () => {
+  // The gateway is the ONLY thing an agent's tool call goes through, so it is
+  // the only place the substitution can happen. It did not, for a while:
+  // `callMcpTool` carried the same code and nothing on the agent path reached
+  // it, so an agent told in its soul that it could push sent the literal handle
+  // upstream and got an auth failure it could not explain.
+  it('substitutes into the arguments of a granted caller', async () => {
+    await createSecretDoc({ name: 'push', title: 'Push', entries: [{ key: 'pat', label: 'GitHub token' }].map((e) => ({ ...e, value: PAT })), grantTo: ['dex-developer'] })
+    const rpc = { method: 'tools/call', params: { name: 'run', arguments: { cmd: 'git push https://«secret:push.pat»@github.com/o/r' } } }
+    const out = await spendHandlesInToolCall(rpc, 'dex-developer')
+    expect(out.changed).toBe(true)
+    expect(rpc.params.arguments.cmd).toContain(PAT)
+    expect(out.used[0]?.label).toBe('GitHub token')
+  })
+
+  it('leaves the call untouched for a caller with no grant', async () => {
+    const rpc = { method: 'tools/call', params: { name: 'run', arguments: { cmd: '«secret:push.pat»' } } }
+    const out = await spendHandlesInToolCall(rpc, 'penny-assistant')
+    expect(out.changed).toBe(false)
+    expect(rpc.params.arguments.cmd).toBe('«secret:push.pat»')
+    // The reason goes to the operator, not into the arguments the model sees.
+    expect(out.unresolved[0]?.reason).toBe('not-granted')
+  })
+
+  it('touches nothing but tools/call', async () => {
+    // A tool RESULT re-enters the model's context; resolving a handle anywhere
+    // other than an outbound argument would undo the whole arrangement.
+    for (const rpc of [
+      { method: 'tools/list' },
+      { method: 'initialize', params: { name: 'x', arguments: { cmd: '«secret:push.pat»' } } },
+      null,
+    ]) {
+      const out = await spendHandlesInToolCall(rpc, 'dex-developer')
+      expect(out.changed).toBe(false)
+      expect(out.used).toEqual([])
+    }
+    expect((await spendHandlesInToolCall({ method: 'tools/call', params: { name: 'run' } }, 'dex-developer')).changed).toBe(false)
+  })
+})
+
+describe('noticing a handle in a message', () => {
+  it('answers the same way twice', async () => {
+    // A `/g` regex carries `lastIndex` between calls, so a shared one answers
+    // differently depending on what asked before it — and the caller here is a
+    // per-turn check on the chat path, where an intermittent "no" means the
+    // agent asks a human to paste the real value instead.
+    expect(mentionsHandle('use «secret:deploy» to push')).toBe(true)
+    expect(mentionsHandle('use «secret:deploy» to push')).toBe(true)
+    expect(mentionsHandle('«secret:relay-0123456789ab»')).toBe(true)
+    expect(mentionsHandle('no credentials in this one')).toBe(false)
+    expect(mentionsHandle('talking about «secrets» in general')).toBe(false)
   })
 })
 

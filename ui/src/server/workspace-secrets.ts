@@ -30,6 +30,7 @@
 // credential helper, a tool invocation — and its result must never be written
 // back into a transcript, a tool RESULT, or a record. The guard's `secret_leak`
 // remains the backstop for when something does.
+import { randomUUID } from 'node:crypto'
 import { db } from './db/pg'
 import { open, seal } from './secretbox'
 
@@ -39,6 +40,13 @@ import { open, seal } from './secretbox'
 const HANDLE = /«secret:([a-z0-9][a-z0-9_-]*)(?:\.([a-z0-9][a-z0-9_-]*))?»/gi
 
 export const handleFor = (doc: string, entry?: string): string => `«secret:${entry ? `${doc}.${entry}` : doc}»`
+
+/** Does this text name a handle at all? Cheap enough to ask on every turn, which
+ *  is what the chat path does before spending a word of prompt on explaining the
+ *  mechanism. Built fresh rather than reusing HANDLE: a `/g` regex carries
+ *  `lastIndex` between calls, so `.test()` on the shared one answers differently
+ *  depending on what asked before it. */
+export const mentionsHandle = (text: string): boolean => new RegExp(HANDLE.source, 'i').test(text)
 
 export type SecretKind = 'vault' | 'relay'
 
@@ -105,6 +113,56 @@ export async function createSecretDoc(input: {
   const doc = await getSecretDoc(input.name)
   if (!doc) throw new Error('secret was created but could not be read back')
   return doc
+}
+
+/** HOW LONG AN UNSPENT RELAY LIVES.
+ *
+ *  A relay is for the errand happening in this conversation, now. If the agent
+ *  did not spend it while somebody was sitting there watching, the safe answer
+ *  is to hand it over again rather than to leave a credential in the workspace
+ *  that nobody remembers pasting. An hour is long enough for a queued turn and
+ *  short enough that a changed mind costs nothing.
+ *
+ *  Anything that genuinely needs to outlive the conversation is a vault doc, and
+ *  that is a deliberate trip through the admin panel. */
+export const RELAY_TTL_MS = 60 * 60 * 1000
+
+/** MINT A ONE-SHOT FROM A CONVERSATION.
+ *
+ *  The whole point is the asymmetry: the VALUE arrives here, over one request,
+ *  and what goes back is a NAME. The caller — a chat composer — never holds
+ *  anything it could paste into a transcript by accident, because the only thing
+ *  it was given is the handle.
+ *
+ *  Granted to exactly one agent, spendable exactly once, expiring within the
+ *  hour. Each of those three is a separate bound, and a relay has to clear all
+ *  of them: an errand that needs two uses is an errand somebody should watch
+ *  twice. */
+export async function mintRelay(input: {
+  label: string
+  value: string
+  agentModel: string
+  createdBy?: string | null
+  note?: string | null
+}): Promise<{ name: string; handle: string; label: string; expiresAt: string }> {
+  // Random, not derived from the label: a guessable name is one another agent
+  // could ask for, and the grant check is the only thing that would stop it.
+  const name = `relay-${randomUUID().replace(/-/g, '').slice(0, 12)}`
+  const expiresAt = new Date(Date.now() + RELAY_TTL_MS).toISOString()
+  await createSecretDoc({
+    name,
+    title: input.label,
+    kind: 'relay',
+    // ONE ENTRY, so the bare `«secret:relay-…»` form resolves — a person copying
+    // a handle out of a chat message should not have to also copy a key.
+    entries: [{ key: 'value', label: input.label, value: input.value }],
+    note: input.note ?? null,
+    createdBy: input.createdBy ?? null,
+    expiresAt,
+    uses: 1,
+    grantTo: [input.agentModel],
+  })
+  return { name, handle: handleFor(name), label: input.label, expiresAt }
 }
 
 /** One doc, keys and labels only. */
@@ -232,6 +290,7 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
     // SPEND IT IN THE SAME STATEMENT THAT CHECKS IT. Two concurrent tool calls
     // must not both take the last use of a one-shot, and a read-then-write would
     // let them.
+    let exhausted = false
     if (doc.usesRemaining !== null) {
       const spent = (await sql`
         update workspace_secrets set uses_remaining = uses_remaining - 1, last_used_at = now()
@@ -242,6 +301,7 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
         unresolved.push({ handle, reason: 'spent' })
         continue
       }
+      exhausted = doc.usesRemaining - 1 <= 0
     } else {
       await sql`update workspace_secrets set last_used_at = now() where id = ${doc.id}`
     }
@@ -256,11 +316,84 @@ export async function resolveHandles(text: string, caller: string): Promise<Reso
       continue
     }
     out = out.split(handle).join(value)
+
+    // A CREDENTIAL WITH NO USES LEFT IS DESTROYED, NOT RETAINED. `uses_remaining`
+    // already refuses to resolve it, so keeping the ciphertext buys nothing and
+    // costs the one thing worth protecting: a one-shot somebody pasted into chat
+    // this morning should not still be recoverable from a database dump tonight.
+    // The row survives, so the audit trail — who minted it, who spent it, when —
+    // survives with it. Emptied rather than deleted because that history is the
+    // only reason to keep a spent relay at all.
+    if (exhausted) {
+      await sql`update workspace_secret_entries set value_cipher = '' where secret_id = ${doc.id}`
+    }
     used.push({ name: doc.name, key: entry.key, label: entry.label })
   }
 
   return { text: out, used, unresolved }
 }
+
+/** A JSON-RPC envelope, as much of one as spending a credential needs to know. */
+export interface ToolCallRpc {
+  method?: string
+  params?: { name?: string; arguments?: Record<string, unknown> }
+}
+
+/** SPEND HANDLES INSIDE AN MCP TOOL CALL — the agent-facing half of
+ *  `resolveHandles`, and the one that was missing.
+ *
+ *  `callMcpTool` carries the same substitution, but nothing on the AGENT path
+ *  reaches it: an agent's tool call arrives at `/api/mcp/gw/$server` as JSON-RPC
+ *  over its own credential, and that route forwarded the body it was handed. So
+ *  an agent granted `«secret:deploy.github_pat»` — told in its soul that it may
+ *  push with it — sent the literal handle upstream and got an auth failure it
+ *  could not explain. Advertising a credential we do not substitute is the same
+ *  class of lie as advertising a tool we cannot dispatch: nothing crashes, and
+ *  the agent looks incapable of a thing the platform promised it.
+ *
+ *  ARGUMENTS ONLY, AND ONLY ON `tools/call`. A tool RESULT comes back untouched:
+ *  it re-enters the model's context, and resolving a handle there would undo the
+ *  whole arrangement in one line.
+ *
+ *  MUTATES `rpc.params.arguments` in place and returns whether anything changed,
+ *  because the two dispatch paths downstream want different things — the
+ *  in-process ones take the object, the HTTP one re-serializes — and only when
+ *  something was actually spent. Every other call forwards byte-for-byte as
+ *  before, so a re-serialization round trip is not something a working tool has
+ *  to survive. */
+export async function spendHandlesInToolCall(rpc: ToolCallRpc | null, caller: string): Promise<{ changed: boolean; used: Resolution['used']; unresolved: UnresolvedHandle[] }> {
+  const none = { changed: false, used: [], unresolved: [] }
+  if (rpc?.method !== 'tools/call' || !rpc.params?.arguments) return none
+  const resolved = await resolveHandles(JSON.stringify(rpc.params.arguments), caller)
+  if (resolved.used.length === 0) return { ...none, unresolved: resolved.unresolved }
+  try {
+    rpc.params.arguments = JSON.parse(resolved.text) as Record<string, unknown>
+  } catch {
+    // A credential containing something that broke the round trip. Forward the
+    // call unresolved rather than a malformed body and let the tool refuse —
+    // but still report the spend, because it happened.
+    return { changed: false, used: resolved.used, unresolved: resolved.unresolved }
+  }
+  return { changed: true, used: resolved.used, unresolved: resolved.unresolved }
+}
+
+/** WHAT A HANDLE IN A CONVERSATION MEANS — the per-turn twin of the standing
+ *  soul line below.
+ *
+ *  A STANDING GRANT AND A RELAY ARRIVE DIFFERENTLY, so they are told differently.
+ *  A grant is a fact about the agent and belongs in its soul, rendered with the
+ *  rest of what it is. A relay is minted mid-conversation for one errand, and an
+ *  agent whose soul was written this morning has never heard of it — worse, an
+ *  agent granted NOTHING is told nothing at all, by design, so it has never
+ *  heard of handles either. Without this it would read `«secret:relay-…»` as a
+ *  typo and either paste it verbatim into a tool call and fail, or ask the human
+ *  to send the real value — which is precisely the paste this whole arrangement
+ *  exists to prevent. */
+export const HANDLE_TURN_NOTE =
+  'A handle written «secret:name» in this conversation is a credential you may USE without ever seeing it. ' +
+  'Pass it exactly as written wherever the value would go — in a tool call, a command, a URL — and Talaria substitutes the real value at the boundary that spends it. ' +
+  'Never ask anybody to send you the value instead, and do not treat the handle as a placeholder to fill in: it IS the credential as far as you are concerned. ' +
+  'A one-shot handle works once, so use it for the errand it was given for and nothing else.'
 
 /** WHAT AN AGENT IS TOLD IT HAS — names and labels, never values.
  *

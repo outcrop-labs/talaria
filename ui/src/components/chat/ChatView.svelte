@@ -10,6 +10,7 @@
   import ChatComposer from '@/components/chat/ChatComposer.svelte'
   import type { ChatComposerHandle } from '@/components/chat/chat-composer'
   import AttachButton from '@/components/chat/AttachButton.svelte'
+  import RelayButton from '@/components/chat/RelayButton.svelte'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
   import UserTurn from './UserTurn.svelte'
   import AssistantTurn from './AssistantTurn.svelte'
@@ -374,6 +375,10 @@
         {#snippet leftControls()}
           <AttachButton onAttach={(a) => attachments.push(a)} disabled={streaming} />
           <EmojiButton onPick={(ch) => composer?.insertText(ch)} />
+          <!-- The handle lands in the editor; the value never does. See
+               RelayButton.svelte for why that is a property of the route it
+               took rather than a rule anybody has to remember. -->
+          <RelayButton {agentModel} {agentLabel} onMinted={(h) => composer?.insertText(h)} disabled={streaming} />
         {/snippet}
         {#snippet rightControls()}
           <!-- Spec §7 rail order: agent chip, then model chip. -->

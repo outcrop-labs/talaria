@@ -18,6 +18,7 @@ import { routedModelFor } from './fleet-agents'
 import { estimateTokens, recordUsage } from './usage'
 import { guardChatReply, needsRedaction, redactFindings, redactSecrets } from './guardrails'
 import { notifyPlanMentions, PLAN_MODE_PROMPT, planRoutingBlock } from './plan-doc'
+import { HANDLE_TURN_NOTE, mentionsHandle } from './workspace-secrets'
 import { describeAgent, proxyChat } from './gateway'
 import { indexActivity } from './retrieval/sources'
 
@@ -43,8 +44,17 @@ export async function continueConversation(conversationId: string, meta: TurnMet
     if (await activeStreamingAssistant(conversationId)) return
     const prior = await priorMessages(conversationId)
     if (prior[prior.length - 1]?.role !== 'user') return
-    // Chained plan turns carry the same plan-mode harness as live ones.
-    const messages = meta.plan ? [{ role: 'system' as const, content: PLAN_MODE_PROMPT + (await planRoutingBlock().catch(() => '')) }, ...prior] : prior
+    // Chained plan turns carry the same plan-mode harness as live ones — and the
+    // same handle note, for the same reason `/api/chat` adds it: a relay minted
+    // while a reply was still streaming arrives on a QUEUED message, so the turn
+    // that finally reads it is this one. Without it the chained turn is the one
+    // that asks the human to paste the real value.
+    const last = prior[prior.length - 1]?.content ?? ''
+    const messages = [
+      ...(meta.plan ? [{ role: 'system' as const, content: PLAN_MODE_PROMPT + (await planRoutingBlock().catch(() => '')) }] : []),
+      ...(mentionsHandle(last) ? [{ role: 'system' as const, content: HANDLE_TURN_NOTE }] : []),
+      ...prior,
+    ]
     const routed = (meta.tier ? await routedModelFor(meta.agentModel, meta.tier).catch(() => null) : null) ?? meta.agentModel
     const assistantId = await insertStreamingAssistant(conversationId, await nextSeq(conversationId))
     const upstream = await proxyChat({ model: routed, messages })
