@@ -1527,6 +1527,42 @@ const MIGRATIONS: string[] = [
   // and `resolveHandles` then refuses anything else AND anything whose
   // destination it cannot read at all.
   `alter table workspace_secrets add column if not exists allowed_hosts text[]`,
+  // ── WORKING SECRETS: the ones a PERSON needs back ─────────────────────────
+  //
+  // Everything above this line is a credential an agent SPENDS and nobody ever
+  // reads — no reveal verb, not for an admin, not once. That property is load-
+  // bearing and these columns do not weaken it: `revealable` defaults FALSE, so
+  // every credential that already exists, and every one the admin panel creates,
+  // keeps exactly the guarantee it had.
+  //
+  // What is new is a different noun sharing the same store. Somebody building a
+  // feature has a staging key their two teammates also need, and today the
+  // options are Slack, a sticky note, or a .env passed around — all of which are
+  // worse than a place that seals it, shares it deliberately and writes down
+  // every look. `revealable = true` marks those, and ONLY those, as readable by
+  // the people named in `workspace_secret_readers`.
+  //
+  // IT IS NOT AN ARTIFACT ROW, deliberately, though it wears one's clothes in
+  // the Files browser. An artifact body is indexed for retrieval, exported to
+  // Google, downloadable, and reachable unauthenticated at /api/artifacts/
+  // public/$slug. A credential in that pipeline is a credential on the open
+  // internet one visibility click later. So the value stays here, sealed, with
+  // no content path — and only the PLACEMENT is artifact-shaped.
+  `alter table workspace_secrets add column if not exists revealable boolean not null default false`,
+  `alter table workspace_secrets add column if not exists owner_user_id uuid references users(id) on delete set null`,
+  `alter table workspace_secrets add column if not exists folder_id uuid references artifact_folders(id) on delete set null`,
+  // WHO MAY LOOK. Distinct from `workspace_secret_grants`, which is who may
+  // SPEND — two verbs, two audiences, and conflating them is how an agent ends
+  // up holding a value it only ever needed to use. A human here can reveal; an
+  // agent there can spend and can never read.
+  `create table if not exists workspace_secret_readers (
+     secret_id uuid not null references workspace_secrets(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     granted_by text,
+     granted_at timestamptz not null default now(),
+     primary key (secret_id, user_id)
+   )`,
+  `create index if not exists workspace_secrets_folder_idx on workspace_secrets(folder_id)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

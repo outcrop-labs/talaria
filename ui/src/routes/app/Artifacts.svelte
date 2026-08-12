@@ -22,6 +22,7 @@
   import type { PermKind } from '@/lib/kb'
   import ArtifactEditor from './ArtifactEditor.svelte'
   import ArtifactsBrowser from './ArtifactsBrowser.svelte'
+  import SecretsVault from './SecretsVault.svelte'
   import ArtifactsDriveImportModal from './ArtifactsDriveImportModal.svelte'
   import ArtifactsProperties from './ArtifactsProperties.svelte'
   import {
@@ -156,12 +157,15 @@
   // Folders are locations; the flat places are views over everything.
   const canOrganize = $derived(place === 'my')
 
-  const counts = $derived({
+  const counts = $derived<Record<Place, number>>({
     my: artifacts.filter((a) => placeOf(a, me) === 'my').length,
     shared: artifacts.filter((a) => placeOf(a, me) === 'shared').length,
     workspace: artifacts.filter((a) => placeOf(a, me) === 'workspace').length,
     official: artifacts.filter((a) => a.official).length,
     recent: 0,
+    // Counted by the vault itself — this file deliberately does not fetch
+    // secrets, so that no artifact code path ever holds one.
+    secrets: 0,
   })
 
   /** Newest artifact inside a folder or any of its descendants — what the
@@ -403,6 +407,12 @@
       {#key activeId}
         <ArtifactEditor id={activeId} onDeleted={() => setActiveId(null)} />
       {/key}
+    {:else if place === 'secrets'}
+      <!-- Its own surface, not rows in the table. A secret has no body, no
+           preview, no export and no public page — feeding it through the
+           artifact row pipeline would mean teaching every one of those paths to
+           refuse it, and the first one anybody forgets is the last one. -->
+      <SecretsVault />
     {:else}
       <ArtifactsBrowser
         {rows}

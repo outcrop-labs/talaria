@@ -47,13 +47,20 @@ export const scopeOf = (a: { ownerUserId: string | null }): Scope => (a.ownerUse
  *  else's, or nobody's. Folders exist only inside My Files — the rest are flat
  *  views across the whole store, the way Drive treats them, so a file you were
  *  looking for can't hide one level down. */
-export type Place = 'my' | 'shared' | 'workspace' | 'official' | 'recent'
+export type Place = 'my' | 'shared' | 'workspace' | 'official' | 'recent' | 'secrets'
 export const PLACES: { id: Place; label: string; glyph: string; empty: string; hint?: string }[] = [
   { id: 'my', label: 'My Files', glyph: '◆', empty: 'Nothing here yet.', hint: 'Drop files anywhere to upload, or use New.' },
   { id: 'shared', label: 'Shared with me', glyph: '◇', empty: 'Nothing shared with you yet.' },
   { id: 'workspace', label: 'Workspace', glyph: '⊞', empty: 'No workspace files yet.', hint: 'Files the organization owns, mostly written by agents.' },
   { id: 'official', label: 'Official', glyph: '★', empty: 'No official files yet.', hint: 'Official files are mirrored into the knowledgebase.' },
   { id: 'recent', label: 'Recent', glyph: '◷', empty: 'Nothing edited recently.' },
+  // NOT A FILE, and it gets its own place rather than rows in the table for
+  // exactly that reason. Every other place lists ARTIFACTS, whose bodies are
+  // indexed for retrieval, exported to Google, downloadable, and served
+  // unauthenticated at /api/artifacts/public/$slug. A credential must never
+  // reach any of that, so it is never an artifact row — the cabinet is shared,
+  // the store is not.
+  { id: 'secrets', label: 'Secrets', glyph: '⚿', empty: 'No secrets yet.', hint: 'Credentials you are working with — sealed, shared deliberately, every reveal recorded.' },
 ]
 
 /** How each general-access tier reads to a person, not to the schema. Shared

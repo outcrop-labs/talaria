@@ -11,7 +11,12 @@ import { describe, expect, it, vi } from 'vitest'
 interface Row {
   [k: string]: unknown
 }
-const tables = { workspace_secrets: [] as Row[], workspace_secret_entries: [] as Row[], workspace_secret_grants: [] as Row[] }
+const tables = {
+  workspace_secrets: [] as Row[],
+  workspace_secret_entries: [] as Row[],
+  workspace_secret_grants: [] as Row[],
+  workspace_secret_readers: [] as Row[],
+}
 let seq = 0
 
 const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
@@ -29,6 +34,9 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
       expires_at: v[5],
       uses_remaining: v[6],
       allowed_hosts: v[7] ?? [],
+      revealable: v[8] ?? false,
+      owner_user_id: v[9] ?? null,
+      folder_id: v[10] ?? null,
       created_at: new Date().toISOString(),
       last_used_at: null,
     })
@@ -37,6 +45,47 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
   if (text.startsWith('insert into workspace_secret_entries')) {
     tables.workspace_secret_entries.push({ secret_id: v[0], key: v[1], label: v[2], value_cipher: v[3] })
     return Promise.resolve([])
+  }
+  if (text.startsWith('insert into workspace_secret_readers')) {
+    tables.workspace_secret_readers.push({ secret_id: v[0], user_id: v[1] })
+    return Promise.resolve([])
+  }
+  if (text.startsWith('delete from workspace_secret_readers')) {
+    tables.workspace_secret_readers = tables.workspace_secret_readers.filter((r) => !(r.secret_id === v[0] && r.user_id === v[1]))
+    return Promise.resolve([])
+  }
+  if (text.startsWith('select user_id from workspace_secret_readers')) {
+    return Promise.resolve(tables.workspace_secret_readers.filter((r) => r.secret_id === v[0]))
+  }
+  if (text.startsWith('select s.id, s.name, s.title, s.revealable')) {
+    return Promise.resolve(
+      tables.workspace_secrets
+        .filter((d) => d.name === v[1])
+        .map((d) => ({
+          id: d.id,
+          name: d.name,
+          title: d.title,
+          revealable: d.revealable,
+          expiresAt: d.expires_at,
+          ownerUserId: d.owner_user_id,
+          shared: String(tables.workspace_secret_readers.filter((r) => r.secret_id === d.id && r.user_id === v[0]).length),
+        })),
+    )
+  }
+  if (text.startsWith('select id, owner_user_id as "owneruserid", revealable from workspace_secrets')) {
+    return Promise.resolve(
+      tables.workspace_secrets.filter((d) => d.name === v[0]).map((d) => ({ id: d.id, ownerUserId: d.owner_user_id, revealable: d.revealable })),
+    )
+  }
+  if (text.startsWith('select id, owner_user_id as "owneruserid" from workspace_secrets')) {
+    return Promise.resolve(tables.workspace_secrets.filter((d) => d.name === v[0]).map((d) => ({ id: d.id, ownerUserId: d.owner_user_id })))
+  }
+  if (text.startsWith('select key, label, value_cipher as "cipher" from workspace_secret_entries where secret_id = ? and key')) {
+    return Promise.resolve(
+      tables.workspace_secret_entries
+        .filter((e) => e.secret_id === v[0] && e.key === v[1])
+        .map((e) => ({ key: e.key, label: e.label, cipher: e.value_cipher })),
+    )
   }
   if (text.startsWith('insert into workspace_secret_grants (secret_id, agent_model, granted_by) values')) {
     tables.workspace_secret_grants.push({ secret_id: v[0], agent_model: v[1] })
@@ -63,6 +112,9 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
           usesRemaining: d.uses_remaining,
           lastUsedAt: d.last_used_at,
           allowedHosts: d.allowed_hosts ?? [],
+          revealable: d.revealable ?? false,
+          ownerUserId: d.owner_user_id ?? null,
+          folderId: d.folder_id ?? null,
         })),
     )
   }
@@ -123,7 +175,7 @@ vi.mock('@/server/audit', () => ({ logAudit: (e: Record<string, unknown>) => { a
 // The envelope is exercised by its own tests; here it only has to round-trip.
 vi.mock('@/server/secretbox', () => ({ seal: (v: string) => `sealed:${v}`, open: (t: string) => t.replace(/^sealed:/, '') }))
 
-const { createSecretDoc, grantedHandlesFor, grantSecret, hostAllowed, hostsIn, mentionsHandle, mintRelay, resolveHandles, spendHandlesInToolCall } =
+const { createSecretDoc, grantedHandlesFor, grantSecret, hostAllowed, hostsIn, mentionsHandle, mintRelay, resolveHandles, revealEntry, shareSecretWith, spendHandlesInToolCall, unshareSecretFrom } =
   await import('@/server/workspace-secrets')
 
 const PAT = 'github_pat_11ABCDEFG0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
@@ -414,5 +466,131 @@ describe('what an agent is told it has', () => {
   it('tells an agent with no grants nothing at all', async () => {
     await grantSecret('deploy', 'other-agent')
     expect(await grantedHandlesFor('nobody-agent')).toBe('')
+  })
+})
+
+// ── WORKING SECRETS: the ones a person reads back ────────────────────────────
+//
+// A different noun sharing the same store, and the tests that matter most are
+// the ones proving the OLD noun did not change. Adding a reveal path to a table
+// whose entire premise was "no read path returns a value" is exactly the kind of
+// change that quietly weakens the thing it was built around.
+const ALICE = '11111111-1111-4111-8111-111111111111'
+const BOB = '22222222-2222-4222-8222-222222222222'
+
+describe('a working secret can be read back by the people it is for', () => {
+  it('reveals to its owner, one entry at a time', async () => {
+    await createSecretDoc({
+      name: 'staging-key-abc123',
+      title: 'Staging Stripe key',
+      entries: [
+        { key: 'publishable', label: 'Publishable key', value: 'pk_test_readable' },
+        { key: 'secret', label: 'Secret key', value: 'sk_test_readable' },
+      ],
+      revealable: true,
+      ownerUserId: ALICE,
+    })
+    const one = await revealEntry('staging-key-abc123', 'secret', ALICE)
+    expect(one).toEqual({ ok: true, value: 'sk_test_readable' })
+    // BY KEY, so a bundle cannot be drained by one call and the audit line names
+    // the credential actually looked at.
+    const other = await revealEntry('staging-key-abc123', 'publishable', ALICE)
+    expect(other.value).toBe('pk_test_readable')
+  })
+
+  it('refuses somebody it was never shared with', async () => {
+    expect(await revealEntry('staging-key-abc123', 'secret', BOB)).toEqual({ ok: false, refusal: 'not-shared' })
+  })
+
+  it('reveals once shared, and stops the moment it is unshared', async () => {
+    expect(await shareSecretWith('staging-key-abc123', BOB, ALICE)).toBe(true)
+    expect((await revealEntry('staging-key-abc123', 'secret', BOB)).value).toBe('sk_test_readable')
+    expect(await unshareSecretFrom('staging-key-abc123', BOB, ALICE)).toBe(true)
+    expect(await revealEntry('staging-key-abc123', 'secret', BOB)).toEqual({ ok: false, refusal: 'not-shared' })
+  })
+
+  it('will not let a reader widen the circle they were let into', async () => {
+    // Sharing is not forwarding. The person who put the key in has to keep
+    // knowing who has it, or the audit trail describes a graph nobody drew.
+    await shareSecretWith('staging-key-abc123', BOB, ALICE)
+    expect(await shareSecretWith('staging-key-abc123', ALICE, BOB)).toBe(false)
+  })
+
+  it('writes down every look, and never the value', async () => {
+    audited.length = 0
+    await revealEntry('staging-key-abc123', 'secret', ALICE)
+    const row = audited.find((a) => a.action === 'secrets.reveal')
+    expect(row?.actor).toBe(ALICE)
+    expect(row?.targetLabel).toBe('Secret key')
+    // The whole difference between this and a key in a Slack thread is not that
+    // fewer people can see it — it is that seeing it leaves a mark.
+    expect(JSON.stringify(row)).not.toContain('sk_test_readable')
+  })
+
+  it('says so plainly when a one-shot has already been destroyed', async () => {
+    await createSecretDoc({
+      name: 'burned-abc',
+      title: 'Burned',
+      kind: 'relay',
+      entries: [{ key: 'k', label: 'Key', value: 'sk_gone' }],
+      revealable: true,
+      ownerUserId: ALICE,
+      grantTo: ['dex-developer'],
+    })
+    await resolveHandles('«secret:burned-abc»', 'dex-developer')
+    // An empty string handed back would read as a credential.
+    expect(await revealEntry('burned-abc', 'k', ALICE)).toEqual({ ok: false, refusal: 'destroyed' })
+  })
+})
+
+describe('an AGENT credential is still unreadable by anybody', () => {
+  it('refuses to reveal one, to the person who created it', async () => {
+    // THE GUARANTEE THE WHOLE STORE RESTS ON, and the reason `revealable`
+    // defaults false. Adding a reveal path for a new noun must not open one for
+    // the old one — not for its creator, not for an admin, not once.
+    await createSecretDoc({
+      name: 'agent-only',
+      title: 'Agent credential',
+      entries: [{ key: 'pat', label: 'GitHub token', value: 'ghp_agent_only_value' }],
+      createdBy: ALICE,
+      ownerUserId: ALICE,
+      readers: [ALICE],
+    })
+    const out = await revealEntry('agent-only', 'pat', ALICE)
+    expect(out).toEqual({ ok: false, refusal: 'not-revealable' })
+    expect(JSON.stringify(out)).not.toContain('ghp_agent_only_value')
+  })
+
+  it('checks revealability BEFORE it checks who is asking', async () => {
+    // Ordering matters: if the share check ran first, an agent credential that
+    // happened to carry a reader row would leak. `readers: [ALICE]` above plants
+    // exactly that row, and the refusal is still `not-revealable`.
+    expect((await revealEntry('agent-only', 'pat', ALICE)).refusal).toBe('not-revealable')
+    expect((await revealEntry('agent-only', 'pat', BOB)).refusal).toBe('not-revealable')
+  })
+
+  it('cannot be shared into readability either', async () => {
+    expect(await shareSecretWith('agent-only', BOB, ALICE)).toBe(false)
+  })
+})
+
+describe('sharing with an agent means spending, never reading', () => {
+  it('gives the agent a handle it can spend and no way to look', async () => {
+    await createSecretDoc({
+      name: 'shared-both-ways',
+      title: 'Shared both ways',
+      entries: [{ key: 'k', label: 'API key', value: 'sk_both_ways' }],
+      revealable: true,
+      ownerUserId: ALICE,
+      grantTo: ['dex-developer'],
+    })
+    // The agent spends it.
+    expect((await resolveHandles('curl -H «secret:shared-both-ways» https://api.example.com', 'dex-developer')).text).toContain('sk_both_ways')
+    // The person reads it.
+    expect((await revealEntry('shared-both-ways', 'k', ALICE)).value).toBe('sk_both_ways')
+    // And what the agent is TOLD it holds is a name and a kind, never a value.
+    const told = await grantedHandlesFor('dex-developer')
+    expect(told).toContain('«secret:shared-both-ways»')
+    expect(told).not.toContain('sk_both_ways')
   })
 })

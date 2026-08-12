@@ -73,6 +73,16 @@ export interface SecretDoc {
   /** Hosts this credential may be spent against. EMPTY = unrestricted, which is
    *  what every secret predating the check has. */
   allowedHosts: string[]
+  /** May a PERSON read this back? False for every agent credential, and there
+   *  is no path that flips it after creation — see `revealEntry`. */
+  revealable: boolean
+  /** Whose working secret this is. Null for workspace credentials, which belong
+   *  to the org rather than to a person. */
+  ownerUserId: string | null
+  /** Where it sits in the Files browser. Null = not filed. */
+  folderId: string | null
+  /** People who may reveal it. Names only ever leave here as ids. */
+  readers: string[]
   /** KEYS AND LABELS ONLY. There is no shape of this type that carries a value —
    *  every listing surface, every API response and every log line is built from
    *  this, so the value has nowhere to escape to by accident. */
@@ -94,15 +104,24 @@ export async function createSecretDoc(input: {
   uses?: number | null
   grantTo?: string[]
   allowedHosts?: string[]
+  /** TRUE makes it a WORKING secret — a person can read it back. Defaults false,
+   *  which is what keeps every agent credential unreadable forever. */
+  revealable?: boolean
+  ownerUserId?: string | null
+  folderId?: string | null
+  /** User ids who may reveal it. Meaningless unless `revealable`. */
+  readers?: string[]
 }): Promise<SecretDoc> {
   if (input.entries.length === 0) throw new Error('a secret needs at least one entry')
   const sql = await db()
   const kind: SecretKind = input.kind ?? 'vault'
   const uses = input.uses !== undefined ? input.uses : kind === 'relay' ? 1 : null
   const rows = (await sql`
-    insert into workspace_secrets (name, title, kind, note, created_by, expires_at, uses_remaining, allowed_hosts)
+    insert into workspace_secrets (name, title, kind, note, created_by, expires_at, uses_remaining, allowed_hosts,
+                                  revealable, owner_user_id, folder_id)
     values (${input.name}, ${input.title}, ${kind}, ${input.note ?? null}, ${input.createdBy ?? null}, ${input.expiresAt ?? null}, ${uses},
-            ${(input.allowedHosts ?? []).map((h) => h.trim().toLowerCase()).filter(Boolean)})
+            ${(input.allowedHosts ?? []).map((h) => h.trim().toLowerCase()).filter(Boolean)},
+            ${input.revealable ?? false}, ${input.ownerUserId ?? null}, ${input.folderId ?? null})
     returning id
   `) as unknown as Array<{ id: string }>
   const id = rows[0]!.id
@@ -111,6 +130,10 @@ export async function createSecretDoc(input: {
       insert into workspace_secret_entries (secret_id, key, label, value_cipher)
       values (${id}, ${e.key}, ${e.label}, ${seal(e.value)})
     `
+  }
+  for (const reader of input.readers ?? []) {
+    await sql`insert into workspace_secret_readers (secret_id, user_id, granted_by) values (${id}, ${reader}, ${input.createdBy ?? null})
+              on conflict do nothing`
   }
   for (const agent of input.grantTo ?? []) {
     await sql`insert into workspace_secret_grants (secret_id, agent_model, granted_by) values (${id}, ${agent}, ${input.createdBy ?? null})
@@ -182,7 +205,8 @@ export async function getSecretDoc(name: string): Promise<SecretDoc | null> {
   const rows = (await sql`
     select id, name, title, kind, note, created_by as "createdBy", created_at as "createdAt",
            expires_at as "expiresAt", uses_remaining as "usesRemaining", last_used_at as "lastUsedAt",
-           coalesce(allowed_hosts, '{}') as "allowedHosts"
+           coalesce(allowed_hosts, '{}') as "allowedHosts",
+           revealable, owner_user_id as "ownerUserId", folder_id as "folderId"
       from workspace_secrets where name = ${name}
   `) as unknown as Array<Omit<SecretDoc, 'entries' | 'grants'>>
   const row = rows[0]
@@ -192,7 +216,8 @@ export async function getSecretDoc(name: string): Promise<SecretDoc | null> {
     label: string
   }>
   const grants = (await sql`select agent_model from workspace_secret_grants where secret_id = ${row.id}`) as unknown as Array<{ agent_model: string }>
-  return { ...row, entries, grants: grants.map((g) => g.agent_model) }
+  const readers = (await sql`select user_id from workspace_secret_readers where secret_id = ${row.id}`) as unknown as Array<{ user_id: string }>
+  return { ...row, entries, grants: grants.map((g) => g.agent_model), readers: readers.map((r) => r.user_id) }
 }
 
 export async function listSecretDocs(): Promise<SecretDoc[]> {
@@ -519,6 +544,147 @@ export async function spendHandlesInToolCall(rpc: ToolCallRpc | null, caller: st
     return { changed: false, used: resolved.used, unresolved: resolved.unresolved }
   }
   return { changed: true, used: resolved.used, unresolved: resolved.unresolved }
+}
+
+// ── WORKING SECRETS: read, share, unshare ────────────────────────────────────
+//
+// THE ONE PLACE A VALUE COMES BACK. Everything else in this file moves a
+// credential OUTWARD — to a tool, to a host — and never to a reader. This does
+// the opposite, so every guard it carries is load-bearing rather than decorative.
+
+/** Why a reveal was refused. Told to the CALLER here, unlike the resolve path:
+ *  a person asking for a secret they own or were shared is entitled to know
+ *  which of those failed, and cannot learn anything from it they did not
+ *  already know. */
+export type RevealRefusal = 'unknown' | 'not-revealable' | 'not-shared' | 'expired' | 'no-such-entry' | 'destroyed'
+
+export interface RevealResult {
+  ok: boolean
+  value?: string
+  refusal?: RevealRefusal
+}
+
+/** REVEAL ONE ENTRY, for one person, once.
+ *
+ *  FOUR THINGS HAVE TO BE TRUE, and `revealable` is the one that matters most:
+ *  a credential created for an AGENT to spend has it false, and there is no
+ *  route, permission or admin override that flips it. That is what keeps the
+ *  promise the rest of this file makes — "no read path returns a value" — true
+ *  for every credential it was ever made about. This function adds a reader for
+ *  a DIFFERENT noun rather than punching a hole in the old one.
+ *
+ *  BEING AN ADMIN IS NOT ONE OF THE FOUR. Reveal is a grant, not a role. An
+ *  admin can see that a working secret exists and can delete it — governance is
+ *  their job — but reading somebody's staging key because you administer the
+ *  workspace is the behaviour that makes people go back to pasting keys into
+ *  Slack, where nobody can see them at all.
+ *
+ *  ONE ENTRY AT A TIME, by key, so a bundle cannot be drained by one call and
+ *  the audit line says which credential was actually looked at. */
+export async function revealEntry(name: string, entryKey: string, userId: string, actorLabel?: string): Promise<RevealResult> {
+  const sql = await db()
+  const rows = (await sql`
+    select s.id, s.name, s.title, s.revealable, s.expires_at as "expiresAt", s.owner_user_id as "ownerUserId",
+           (select count(*) from workspace_secret_readers r where r.secret_id = s.id and r.user_id = ${userId}) as "shared"
+      from workspace_secrets s
+     where s.name = ${name}
+  `) as unknown as Array<{
+    id: string
+    name: string
+    title: string
+    revealable: boolean
+    expiresAt: string | null
+    ownerUserId: string | null
+    shared: string
+  }>
+  const doc = rows[0]
+  if (!doc) return { ok: false, refusal: 'unknown' }
+  // THE GUARANTEE, ENFORCED FIRST. An agent credential is not readable by
+  // anybody, including whoever created it.
+  if (!doc.revealable) return { ok: false, refusal: 'not-revealable' }
+  if (doc.ownerUserId !== userId && Number(doc.shared) === 0) return { ok: false, refusal: 'not-shared' }
+  if (doc.expiresAt && new Date(doc.expiresAt).getTime() <= Date.now()) return { ok: false, refusal: 'expired' }
+
+  const entries = (await sql`
+    select key, label, value_cipher as "cipher" from workspace_secret_entries where secret_id = ${doc.id} and key = ${entryKey}
+  `) as unknown as Array<{ key: string; label: string; cipher: string }>
+  const entry = entries[0]
+  if (!entry) return { ok: false, refusal: 'no-such-entry' }
+  // A spent one-shot has had its ciphertext emptied. Say so plainly rather than
+  // handing back an empty string that reads as a credential.
+  if (entry.cipher === '') return { ok: false, refusal: 'destroyed' }
+
+  let value: string
+  try {
+    value = open(entry.cipher)
+  } catch {
+    return { ok: false, refusal: 'destroyed' }
+  }
+
+  // EVERY LOOK IS WRITTEN DOWN. This is the whole difference between a shared
+  // vault and a key in a Slack thread: not that fewer people can see it, but
+  // that seeing it leaves a mark. Names and labels; the value is the one thing
+  // that must never be in the row recording that somebody read the value.
+  void logAudit({
+    // The LABEL, falling back to the id. Access is decided by `userId` and
+    // nothing else; this is only what a human reads at 2am, and an audit log
+    // that mixes emails and uuids for the same actor is one nobody can follow.
+    actor: actorLabel ?? userId,
+    action: 'secrets.reveal',
+    targetType: 'secret',
+    targetId: doc.name,
+    targetLabel: entry.label,
+    after: { key: entry.key, title: doc.title },
+  })
+  await sql`update workspace_secrets set last_used_at = now() where id = ${doc.id}`
+  return { ok: true, value }
+}
+
+/** Let somebody else read it. Owner-only — a reader cannot widen the circle they
+ *  were let into, which is the difference between sharing and forwarding. */
+export async function shareSecretWith(name: string, userId: string, actingUserId: string): Promise<boolean> {
+  const sql = await db()
+  const rows = (await sql`select id, owner_user_id as "ownerUserId", revealable from workspace_secrets where name = ${name}`) as unknown as Array<{
+    id: string
+    ownerUserId: string | null
+    revealable: boolean
+  }>
+  const doc = rows[0]
+  if (!doc || !doc.revealable || doc.ownerUserId !== actingUserId) return false
+  await sql`insert into workspace_secret_readers (secret_id, user_id, granted_by) values (${doc.id}, ${userId}, ${actingUserId})
+            on conflict do nothing`
+  return true
+}
+
+export async function unshareSecretFrom(name: string, userId: string, actingUserId: string): Promise<boolean> {
+  const sql = await db()
+  const rows = (await sql`select id, owner_user_id as "ownerUserId" from workspace_secrets where name = ${name}`) as unknown as Array<{
+    id: string
+    ownerUserId: string | null
+  }>
+  const doc = rows[0]
+  if (!doc || doc.ownerUserId !== actingUserId) return false
+  await sql`delete from workspace_secret_readers where secret_id = ${doc.id} and user_id = ${userId}`
+  return true
+}
+
+/** The working secrets this person can see: theirs, plus what was shared with
+ *  them. Keys and labels only, like every other listing here. */
+export async function listSecretsForUser(userId: string): Promise<SecretDoc[]> {
+  const sql = await db()
+  const rows = (await sql`
+    select distinct s.name, s.created_at
+      from workspace_secrets s
+      left join workspace_secret_readers r on r.secret_id = s.id and r.user_id = ${userId}
+     where s.revealable = true and (s.owner_user_id = ${userId} or r.user_id is not null)
+     order by s.created_at desc
+  `) as unknown as Array<{ name: string }>
+  const out: SecretDoc[] = []
+  for (const r of rows) {
+    const doc = await getSecretDoc(r.name)
+    if (doc) out.push(doc)
+  }
+  return out
 }
 
 /** WHAT A HANDLE IN A CONVERSATION MEANS — the per-turn twin of the standing
