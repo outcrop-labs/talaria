@@ -60,6 +60,34 @@ export function writePanelCollapsed(next: boolean): void {
   window.dispatchEvent(new Event(PANEL_COLLAPSED_EVENT))
 }
 
+// ── Output the user has not seen yet ────────────────────────────────────────
+// The panel used to own this as local state and render it as a dot on its own
+// collapsed rail. That rail is gone — the assistant is launched from the nav
+// sidebar now — so the signal has to outlive the closed panel or the assistant
+// can finish a piece of work with nothing anywhere saying so.
+//
+// Deliberately NOT persisted: "there is something new since you last looked" is
+// true of a session, not of a browser profile. A reload has shown you the
+// timeline, so restoring the dot would be a standing lie. In-memory plus an
+// event is the whole store; the panel writes it, the sidebar reads it.
+export const PANEL_UNSEEN_EVENT = 'talaria:inbox-chat-unseen'
+let unseenOutput = false
+
+export function readPanelUnseen(): boolean {
+  return unseenOutput
+}
+
+export function subscribePanelUnseen(onChange: () => void): () => void {
+  window.addEventListener(PANEL_UNSEEN_EVENT, onChange)
+  return () => window.removeEventListener(PANEL_UNSEEN_EVENT, onChange)
+}
+
+export function writePanelUnseen(next: boolean): void {
+  if (unseenOutput === next) return
+  unseenOutput = next
+  window.dispatchEvent(new Event(PANEL_UNSEEN_EVENT))
+}
+
 export function readPanelWidth(): number {
   try {
     const stored = window.localStorage.getItem(PANEL_WIDTH_KEY)

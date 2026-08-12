@@ -21,7 +21,8 @@
   import NavIcon from './NavIcon.svelte'
   import RailTooltip from './RailTooltip.svelte'
   import CollapsePane from '@/components/ui/CollapsePane.svelte'
-  import SidebarWorkOverview from './SidebarWorkOverview.svelte'
+  import SidebarSearch from './SidebarSearch.svelte'
+  import SidebarAssistant from './SidebarAssistant.svelte'
   import { useNavCollapsed } from './nav-rail.svelte'
   import { cn } from '@/lib/cn'
   import { NAV, type NavItem } from '@/lib/nav'
@@ -152,6 +153,10 @@
     </div>
 
     <div class="mt-3 flex shrink-0 flex-col items-center gap-3">
+      <!-- Same launcher, icon-sized. The assistant panel no longer keeps a
+           strip of its own, so without this it would be unreachable in the
+           collapsed rail. -->
+      <SidebarAssistant collapsed />
       <!-- Collapsed there is no room for the notice itself, but a rail that
            quietly drops every app icon is the original incident in
            miniature: the surface is simply gone and nothing says why. The
@@ -194,7 +199,13 @@
       <Brand />
     </div>
 
-    <SidebarWorkOverview />
+    <SidebarSearch />
+    <!-- The assistant sits above the menu, in the space the project/task meters
+         used to hold: it is the one thing here that is *yours* rather than a
+         place to go, and it is what the removed 44px strip beside the nav used
+         to advertise. -->
+    <SidebarAssistant />
+    <div class="mt-4 h-px shrink-0 bg-line-subtle"></div>
 
     <div class="mt-3 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
       {#each sections as section (section.title)}
@@ -252,9 +263,11 @@
       <div class="mt-3 shrink-0 px-1"><QueryError {...appsList.notice} /></div>
     {/if}
 
+    <!-- "Local · Operator" used to sit here with a green dot: a deployment mode
+         and a role, stated as though they were status, next to an indicator
+         that was hard-coded green and so reported nothing. It answered a
+         question nobody asks mid-work and it was never once actionable. -->
     <div class="mt-4 flex h-5 shrink-0 items-center gap-2 px-1">
-      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-success" aria-hidden="true"></span>
-      <span class="truncate font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Local · Operator</span>
       <button
         type="button"
         onclick={nav.toggleCollapsed}

@@ -1,14 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import {
-    Bot,
-    ChevronLeft,
-    ChevronRight,
-    GripVertical,
-    MessageSquareText,
-    Paperclip,
-    X,
-  } from '@lucide/svelte'
+  import { Bot, ChevronLeft, GripVertical, Paperclip, X } from '@lucide/svelte'
   import { createQuery } from '@tanstack/svelte-query'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
   import ChatComposer from '@/components/chat/ChatComposer.svelte'
@@ -46,6 +38,7 @@
     readPanelWidth,
     subscribePanelCollapsed,
     writePanelCollapsed,
+    writePanelUnseen,
     writePanelWidth,
     type InboxCommandOptions,
     type StreamingTurn,
@@ -142,10 +135,8 @@
   let attachments = $state<Attachment[]>([])
   let attachmentError = $state<string | null>(null)
   let detachedKey = $state<string | null>(null)
-  let hiddenOutput = $state(false)
   let dragWidth = $state<number | null>(null)
   let composer = $state<ChatComposerHandle | null>(null)
-  let expandButton = $state<HTMLButtonElement | null>(null)
   let scroller = $state<HTMLDivElement | null>(null)
   let pinned = true
   let lastOutput: string | null = null
@@ -232,7 +223,7 @@
 
   export function expand() {
     setCollapsed(false)
-    hiddenOutput = false
+    writePanelUnseen(false)
     window.setTimeout(() => composer?.focus(), 0)
   }
   export function focus() {
@@ -243,7 +234,13 @@
   }
   function collapse() {
     setCollapsed(true)
-    window.setTimeout(() => expandButton?.focus(), 0)
+    // Focus follows the control that now owns opening this panel. It used to be
+    // the chevron on the panel's own collapsed rail, which no longer exists —
+    // and closing with the keyboard must not drop focus onto a removed node and
+    // send the user back to the top of the document. The launcher advertises
+    // itself with the attribute rather than being imported, so the panel keeps
+    // knowing nothing about the nav sidebar.
+    window.setTimeout(() => document.querySelector<HTMLElement>('[data-assistant-launcher]')?.focus(), 0)
   }
 
   function beginResize(event: PointerEvent) {
@@ -345,7 +342,7 @@
     [...entries].reverse().find((entry) => entry.kind === 'activity' || (entry.kind === 'message' && entry.role === 'assistant'))?.id ?? null,
   )
   $effect(() => {
-    if (lastOutput && latestOutput && latestOutput !== lastOutput && collapsed) hiddenOutput = true
+    if (lastOutput && latestOutput && latestOutput !== lastOutput && collapsed) writePanelUnseen(true)
     lastOutput = latestOutput
   })
 
@@ -391,35 +388,25 @@
      nav rail. Desktop (≥1400px): the pane's width is the panel width and the
      aside fills it (clipping during the glide). Below 1400px the expanded
      panel is an OVERLAY: the pane contributes no flow width (w-0,
-     overflow-visible) and the aside positions itself absolutely as before. -->
+     overflow-visible) and the aside positions itself absolutely as before.
+
+     COLLAPSED IS NOW ZERO WIDTH, NOT A RAIL. The panel used to keep a 44px
+     strip parked beside the nav for its own expand chevron — a second vertical
+     bar, present on every view, whose entire job was to reopen itself. The
+     assistant is launched from the nav sidebar now (SidebarAssistant), so the
+     strip is pure tax: it narrowed every page by a column and read as a piece
+     of chrome nobody could name. Collapsed renders nothing and gives the width
+     back; the glide is unchanged because CollapsePane only needs two fixed
+     widths and 0 is one. -->
 <CollapsePane
   collapsed={collapsed}
-  collapsedWidth="w-11"
+  collapsedWidth="w-0"
   width="w-0 min-[1400px]:w-[min(var(--panel-w),calc(100%_-_44px))]"
   animate={!resizing}
   style="--panel-w: {panelWidth}px"
   class="relative z-20 h-full shrink-0 overflow-visible min-[1400px]:overflow-hidden"
 >
-{#if collapsed}
-  <aside class="flex h-full w-11 flex-col items-center border-r border-line bg-sidebar py-3" aria-label="Assistant conversation collapsed">
-    <button
-      bind:this={expandButton}
-      type="button"
-      onclick={expand}
-      aria-label="Expand assistant conversation"
-      aria-expanded={false}
-      class="relative grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg"
-    >
-      <ChevronRight size={14} />
-      {#if hiddenOutput}<span class="absolute right-0 top-0 h-1.5 w-1.5 rounded-full bg-accent" aria-label="New assistant output"></span>{/if}
-    </button>
-    <div class="mt-5 grid h-8 w-8 place-items-center rounded-md border border-line text-muted" title={assistantName}>
-      <Bot size={14} />
-    </div>
-    {#if busy || conversation.data?.pages[0]?.working}<span class="mt-2 h-1.5 w-1.5 animate-pulse rounded-full bg-success" aria-label="Assistant is working"></span>{/if}
-    <MessageSquareText size={14} class="mt-auto text-ink-dim" />
-  </aside>
-{:else}
+{#if !collapsed}
   <!-- fixed, not absolute: the pane (nearest positioned ancestor now) has zero
        width in overlay mode, so an absolute inset-0 backdrop would be zero-size. -->
   <button type="button" onclick={collapse} aria-label="Close assistant overlay" class="fixed inset-0 z-30 bg-black/45 min-[1400px]:hidden"></button>
