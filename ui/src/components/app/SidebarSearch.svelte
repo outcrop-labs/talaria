@@ -4,32 +4,34 @@
   interface IndexedTask extends Task {
     boardName: string
   }
-
-  const DONE_STATUSES = new Set(['done', 'completed', 'cancelled'])
-
-  const isDone = (task: Task) => task.completedAt !== null || DONE_STATUSES.has(task.status)
 </script>
 
 <script lang="ts">
   import { createQueries } from '@tanstack/svelte-query'
   import { FolderKanban, ListTodo, Search, X } from '@lucide/svelte'
-  import type { LucideIcon as IconType } from '@lucide/svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
-  import { cn } from '@/lib/cn'
   import { fade, listStagger, slide } from '@/lib/motion'
   import { getList } from '@/lib/fetch-json'
   import { useBoards, type Board } from '@/lib/boards.svelte'
   import { p } from '@/router'
 
+  // Sidebar search. This was `SidebarWorkOverview`, which carried two progress
+  // meters ("2/7 projects", "14/60 tasks") above the box. They were the first
+  // thing in the rail and the least useful: a ratio nobody set a target for,
+  // over boards the person may not even work on, that moved on its own. The
+  // meters are gone; what people came to this corner for is the box.
   let query = $state('')
-  // The rows AND the sentence that says they are missing. This sidebar states
-  // counts ("2/7 projects"); a board read that 500s must never arrive here as
-  // an empty list, or the rail confidently reports that the org has no work.
+  const normalizedQuery = $derived(query.trim().toLowerCase())
+  const searching = $derived(normalizedQuery.length > 0)
+
+  // A board read that 500s must never arrive here as an empty list: "no matches"
+  // and "we could not look" are different sentences, and only one of them is
+  // about the user's search.
   const boardsQuery = useBoards()
   const boardList = listQuery(boardsQuery, {
-    title: 'Could not load your projects',
-    staleTitle: 'These projects may be out of date',
+    title: 'Could not search your projects',
+    staleTitle: 'These results may be out of date',
     variant: 'inline',
   })
   const boards = $derived(boardList.rows)
@@ -37,11 +39,16 @@
   // one key hand each other's consumers the other's row shape. The board name
   // is joined below, out of the cached payload, so what lands in the cache is
   // exactly what the board views expect.
+  //
+  // `enabled` waits for a search. One request per board, on every page, is a
+  // real cost that the meters used to justify and nothing does now — the rows
+  // are only ever read to answer a query that has been typed.
   const taskQueries = createQueries(() => ({
     queries: boardList.rows.map((board) => ({
       queryKey: ['board-tasks', board.id, false],
       queryFn: (): Promise<Task[]> => getList<Task>(`/api/boards/${board.id}/tasks`, 'tasks'),
       staleTime: 30_000,
+      enabled: searching,
     })),
   }))
 
@@ -50,28 +57,20 @@
       (result.data ?? []).map((task) => ({ ...task, boardName: boards[index]?.name ?? '' })),
     ),
   )
+  // `fetchStatus !== 'idle'` is what keeps a query that is merely DISABLED from
+  // reading as "still loading" — pending and idle is the resting state now.
   const tasksPending = $derived(taskQueries.some((result) => result.isPending && result.fetchStatus !== 'idle'))
   const tasksFailed = $derived(taskQueries.filter((result) => result.isError && result.data === undefined))
-  // Nothing came back at all: the counts below would be zeros invented by an
-  // outage, so they are withheld rather than stated.
-  const tasksUnknown = $derived(taskQueries.length > 0 && tasksFailed.length === taskQueries.length)
   const retryTasks = () => {
     for (const result of taskQueries) if (result.isError) void result.refetch()
   }
   const loading = $derived(boardList.pending || tasksPending)
-  const activeProjects = $derived(
-    boards.filter((board) => tasks.some((task) => task.boardId === board.id && !isDone(task))).length,
-  )
-  const completedTasks = $derived(tasks.filter(isDone).length)
-  const normalizedQuery = $derived(query.trim().toLowerCase())
 
   const projectMatches = $derived(
-    normalizedQuery
-      ? boards.filter((board) => board.name.toLowerCase().includes(normalizedQuery)).slice(0, 3)
-      : [],
+    searching ? boards.filter((board) => board.name.toLowerCase().includes(normalizedQuery)).slice(0, 3) : [],
   )
   const taskMatches = $derived(
-    normalizedQuery
+    searching
       ? tasks
           .filter(
             (task) =>
@@ -82,53 +81,12 @@
   )
 </script>
 
-{#snippet segmentMeter(value: number, total: number, segments: number)}
-  {@const filled = total > 0 ? Math.max(value > 0 ? 1 : 0, Math.round((value / total) * segments)) : 0}
-  <span class="flex h-4 shrink-0 items-center gap-[2px]" aria-hidden="true">
-    {#each Array.from({ length: segments }) as _, index (index)}
-      <span
-        class={cn(
-          'h-3 w-[3px] rounded-[1px] bg-line-strong transition-colors',
-          index < filled && 'bg-[#9d87ff] shadow-[0_0_5px_rgba(157,135,255,0.22)]',
-        )}
-      ></span>
-    {/each}
-  </span>
-{/snippet}
-
-{#snippet summaryRow(row: {
-  to: 'projects' | 'tasks'
-  icon: IconType
-  label: string
-  value: number
-  total: number
-  segments: number
-  loading: boolean
-  /** The read failed: state nothing rather than a number the outage produced. */
-  unknown?: boolean
-  hint: string
-})}
-  {@const unknown = row.unknown ?? false}
-  <a
-    href={row.to === 'projects' ? p('/boards') : '/?tab=boards'}
-    title={row.hint}
-    class="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left transition-colors duration-[120ms] hover:bg-hover"
-  >
-    <span class="grid h-4 w-4 shrink-0 place-items-center text-muted"><row.icon size={16} strokeWidth={1.5} /></span>
-    <span class="min-w-0 flex-1 truncate font-sans text-[13px] text-fg">{row.label}</span>
-    {@render segmentMeter(unknown ? 0 : row.value, unknown ? 0 : row.total, row.segments)}
-    <span class="w-[34px] shrink-0 text-right font-mono text-[10px] tracking-[0.02em] text-muted">
-      {row.loading || unknown ? '—' : `${row.value}/${row.total}`}
-    </span>
-  </a>
-{/snippet}
-
 {#snippet searchResults(projects: Board[], taskRows: IndexedTask[])}
   {#if loading}
     <div class="px-2 pt-3 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">Searching…</div>
   {:else if projects.length === 0 && taskRows.length === 0}
     <div in:fade={{ duration: 150 }} class="px-2 pt-3 font-sans text-[11px] leading-4 text-muted">
-      No projects or tasks match “{query.trim()}”.
+      Nothing matches “{query.trim()}”.
     </div>
   {:else}
     <div class="mt-2 max-h-52 space-y-0.5 overflow-y-auto" use:listStagger>
@@ -166,7 +124,7 @@
   {/if}
 {/snippet}
 
-<section aria-label="Project and task overview" class="mt-5 shrink-0 border-b border-line-subtle pb-4">
+<section aria-label="Search" class="mt-5 shrink-0">
   <div class="relative">
     <Search
       size={14}
@@ -179,8 +137,8 @@
       onkeydown={(event) => {
         if (event.key === 'Escape') query = ''
       }}
-      aria-label="Search projects and tasks"
-      placeholder="Search projects & tasks"
+      aria-label="Search"
+      placeholder="Search"
       class="h-9 w-full rounded-lg border border-line bg-raised pl-9 pr-8 font-sans text-xs text-fg outline-none transition-colors placeholder:text-muted hover:border-line-strong focus:border-[color:var(--theme-accent-border)] focus:ring-1 focus:ring-[color:var(--theme-accent-border)]"
     />
     {#if query}
@@ -195,59 +153,25 @@
     {/if}
   </div>
 
-  {#if boardList.failed}
-    <!-- The read broke and there is nothing to show. The notice replaces the
-         rows — an empty list beside an error reads as "and also there are
-         none", which is the lie twice. -->
-    <div class="mt-3 px-2">
-      {#if boardList.notice}<QueryError {...boardList.notice} />{/if}
-    </div>
-  {:else}
+  <!-- Failures are reported while the person is SEARCHING, which is the only
+       time this component reads anything. A standing error box over an idle
+       search field is noise about work nobody asked for; a silent empty result
+       set while a read is failing is the lie this app keeps hunting down. -->
+  {#if searching}
     {#if boardList.notice}
       <div class="mt-3 px-2"><QueryError {...boardList.notice} /></div>
     {/if}
     {#if tasksFailed.length > 0}
       <QueryError
         error={tasksFailed[0]?.error}
-        title={tasksUnknown ? 'Could not load your tasks' : 'Some task counts are missing'}
+        title="Could not search your tasks"
         variant="inline"
         onRetry={retryTasks}
         class="mt-3 px-2"
       />
     {/if}
-    {#if normalizedQuery}
+    {#if !boardList.failed}
       {@render searchResults(projectMatches, taskMatches)}
-    {:else}
-      <div class="mt-3 space-y-0.5">
-        {@render summaryRow({
-          to: 'projects',
-          icon: FolderKanban,
-          label: 'Projects',
-          value: activeProjects,
-          total: boards.length,
-          segments: 3,
-          loading,
-          // "Active" is derived from the tasks on each board, so with the
-          // task reads down the numerator is unknown, not zero.
-          unknown: tasksUnknown,
-          hint: tasksUnknown
-            ? `${boards.length} visible projects; how many are active is unknown while tasks fail to load`
-            : `${activeProjects} active of ${boards.length} visible projects`,
-        })}
-        {@render summaryRow({
-          to: 'tasks',
-          icon: ListTodo,
-          label: 'Tasks',
-          value: completedTasks,
-          total: tasks.length,
-          segments: 10,
-          loading,
-          unknown: tasksUnknown,
-          hint: tasksUnknown
-            ? 'Task counts are unavailable — the task read failed'
-            : `${completedTasks} completed of ${tasks.length} visible tasks`,
-        })}
-      </div>
     {/if}
   {/if}
 </section>
