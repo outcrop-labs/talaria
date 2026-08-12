@@ -179,6 +179,18 @@ const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
     }
     return Promise.resolve(out)
   }
+  if (text.startsWith('select s.id, s.name, s.title, coalesce(s.allowed_hosts')) {
+    return Promise.resolve(
+      tables.workspace_secrets
+        .filter(
+          (d) =>
+            ((d.allowed_hosts as string[]) ?? []).length > 0 &&
+            (tables.workspace_secret_grants.some((g) => g.secret_id === d.id && g.agent_model === v[0]) ||
+              tables.secret_folder_grants.some((g) => g.folder_id === d.secret_folder_id && g.agent_model === v[1])),
+        )
+        .map((d) => ({ id: d.id, name: d.name, title: d.title, allowedHosts: d.allowed_hosts ?? [] })),
+    )
+  }
   if (text.startsWith('select s.name, s.title, e.key, e.label')) {
     const out: Row[] = []
     for (const doc of tables.workspace_secrets) {
@@ -235,6 +247,7 @@ vi.mock('@/server/secretbox', () => ({ seal: (v: string) => `sealed:${v}`, open:
 const {
   createSecretDoc,
   createSecretFolder,
+  credentialForHost,
   handlesHeldBy,
   grantedHandlesFor,
   grantSecret,
@@ -769,5 +782,91 @@ describe('workspace folders group agent credentials', () => {
     expect(byName['ws-later']?.via).toBe('folder')
     expect(byName['ws-later']?.folder).toBe('Deploy')
     expect(JSON.stringify(held)).not.toContain('rg_ws_later')
+  })
+})
+
+describe('the git credential helper — where a handle cannot reach', () => {
+  // Its own agent: other describes in this file grant `dex-developer` several
+  // github.com credentials, and "which one comes back" is not what these are about.
+  const GIT = 'sandbox-agent'
+  // THE GAP THIS CLOSES. A handle substitutes at the MCP gateway, which covers
+  // every tool call an agent makes THROUGH Talaria — but not the shell inside a
+  // workbench sandbox, where a coding harness runs `git push` with its own bash
+  // tool. Pushing code is the main thing a workbench credential is for, so
+  // "handles work everywhere except there" was not a mechanism anybody could
+  // build on. Git asks us instead, and the value goes into git's memory rather
+  // than into the model's context.
+  it('answers for a host the credential is allowed at', async () => {
+    await createSecretDoc({
+      name: 'gh-deploy',
+      title: 'Deploy',
+      entries: [{ key: 'github_pat', label: 'GitHub token', value: 'ghp_for_git' }],
+      allowedHosts: ['github.com'],
+      grantTo: [GIT],
+    })
+    const cred = await credentialForHost(GIT, 'github.com')
+    // A bare token is git's PASSWORD with a throwaway username — the convention
+    // GitHub and every registry already expect.
+    expect(cred).toEqual({ username: 'x-access-token', password: 'ghp_for_git', name: 'gh-deploy' })
+    // Subdomains too, on the same rule the allowlist uses everywhere else.
+    expect((await credentialForHost(GIT, 'api.github.com'))?.password).toBe('ghp_for_git')
+  })
+
+  it('refuses a host it is not allowed at, and an agent with no grant', async () => {
+    expect(await credentialForHost(GIT, 'evil.example')).toBeNull()
+    expect(await credentialForHost('nobody-at-all', 'github.com')).toBeNull()
+  })
+
+  it('will not answer for a credential with NO host allowlist', async () => {
+    // THE RULE THAT MAKES THIS SAFE RATHER THAN TERRIFYING. Everywhere else an
+    // empty allowlist means "unrestricted", which is fine when a human wrote
+    // the handle into a specific command. Here nobody wrote anything — git
+    // names a host and we answer — so without this one grant would hand every
+    // credential an agent holds to any host it can be pointed at.
+    await createSecretDoc({
+      name: 'unpinned',
+      title: 'Unpinned',
+      entries: [{ key: 'k', label: 'Token', value: 'tok_unpinned' }],
+      grantTo: [GIT],
+    })
+    expect(await credentialForHost(GIT, 'anywhere.example')).toBeNull()
+  })
+
+  it('uses a username/password pair when the doc carries one', async () => {
+    await createSecretDoc({
+      name: 'registry-login',
+      title: 'Registry',
+      entries: [
+        { key: 'username', label: 'User', value: 'ci-bot' },
+        { key: 'password', label: 'Password', value: 'pw_registry' },
+      ],
+      allowedHosts: ['registry.outcrop.dev'],
+      grantTo: [GIT],
+    })
+    expect(await credentialForHost(GIT, 'registry.outcrop.dev')).toEqual({
+      username: 'ci-bot',
+      password: 'pw_registry',
+      name: 'registry-login',
+    })
+  })
+
+  it('burns a one-shot handed to a sandbox, which is exactly right', async () => {
+    // A relay given out for one push should not survive the push. Its own agent,
+    // holding nothing else, because "which of two eligible credentials comes
+    // back" is a different question — the code takes the first by title, and
+    // that is arbitrary rather than wrong.
+    const ONCE = 'one-push-agent'
+    await createSecretDoc({
+      name: 'push-once',
+      title: 'One push',
+      kind: 'relay',
+      entries: [{ key: 'k', label: 'Token', value: 'tok_once' }],
+      allowedHosts: ['github.com'],
+      grantTo: [ONCE],
+    })
+    expect((await credentialForHost(ONCE, 'github.com'))?.password).toBe('tok_once')
+    // Spent. The sandbox gets nothing on a second push, which is the whole
+    // point of handing out a one-shot.
+    expect(await credentialForHost(ONCE, 'github.com')).toBeNull()
   })
 })

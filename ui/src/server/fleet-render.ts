@@ -486,6 +486,87 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
     await writeFile(join(agentDir, 'SOUL.md'), `${[soulHeader, coaching, secretHandles].filter(Boolean).join('\n\n')}\n\n${version.soul}`)
     result.files.push(join(agentDir, 'config.yaml'), join(agentDir, 'SOUL.md'))
 
+    // ── THE GIT CREDENTIAL HELPER ─────────────────────────────────────────────
+    //
+    // WHERE A HANDLE CANNOT REACH. Handles substitute at the MCP gateway, which
+    // is every tool call an agent makes through Talaria — but NOT the shell
+    // inside a workbench sandbox, where a coding harness runs `git push` with
+    // its own bash tool and we are not in the path. Pushing code is the main
+    // thing a workbench credential is for, so that gap made handles unusable
+    // exactly where they were needed most.
+    //
+    // Git's credential protocol closes it. Git hands a helper the protocol, host
+    // and path on stdin and reads `username=`/`password=` back; this one asks
+    // Talaria over the agent's OWN key. Git keeps the answer in process memory,
+    // so the value never enters the model's context, never lands in command
+    // output, and is never written to disk — the model runs `git push` and it
+    // simply works, without ever holding a credential.
+    //
+    // WRITTEN PER AGENT because the credential it presents is per agent: the
+    // answer is scoped to what THIS agent was granted, and a shared helper would
+    // have to be told which agent it was speaking for by something the agent
+    // controls.
+    // PORTABLE ACROSS HARNESS IMAGES, and that is not a nicety. The first
+    // version used `curl` unconditionally; `alpine/git` has no curl, so the
+    // helper exited 0 having printed nothing — which git reads as "no
+    // credential exists" and reports as `could not read Username`. A helper
+    // that cannot RUN must not be indistinguishable from a credential that is
+    // not there, so it falls back to wget and says so on stderr if neither is
+    // present. Silence is the one answer this script is not allowed to give.
+    const helper = [
+      '#!/bin/sh',
+      '# Written by Talaria (fleet-render). Answers `get`; `store` and `erase`',
+      '# are no-ops because we ARE the store, and forgetting is done by revoking',
+      '# the grant rather than by anything git says.',
+      '[ "$1" = "get" ] || exit 0',
+      'host=""; proto=""',
+      'while IFS="=" read -r k v; do',
+      '  [ "$k" = "host" ] && host="$v"',
+      '  [ "$k" = "protocol" ] && proto="$v"',
+      'done',
+      '[ -n "$host" ] || exit 0',
+      'url="$TALARIA_API_URL/api/secrets/git-credential"',
+      'body="{\\"host\\":\\"$host\\",\\"protocol\\":\\"$proto\\"}"',
+      'if command -v curl >/dev/null 2>&1; then',
+      '  resp=$(curl -sS --fail -X POST "$url" \\',
+      '    -H "X-Agent-Name: $API_SERVER_MODEL_NAME" -H "X-Api-Key: $API_SERVER_KEY" \\',
+      '    -H "content-type: application/json" -d "$body" 2>/dev/null) || exit 0',
+      'elif command -v wget >/dev/null 2>&1; then',
+      '  # TWO WGETS EXIST and they disagree. BusyBox (every alpine-derived',
+      '  # harness image) takes --post-data; GNU wget takes --body-data with',
+      '  # --method=POST and rejects the other. Trying BusyBox first and falling',
+      '  # through costs one failed call on GNU and works on both, which beats',
+      '  # guessing the image.',
+      '  resp=$(wget -qO- --post-data="$body" \\',
+      '    --header="X-Agent-Name: $API_SERVER_MODEL_NAME" --header="X-Api-Key: $API_SERVER_KEY" \\',
+      '    --header="content-type: application/json" "$url" 2>/dev/null)',
+      '  [ -n "$resp" ] || resp=$(wget -qO- --method=POST --body-data="$body" \\',
+      '    --header="X-Agent-Name: $API_SERVER_MODEL_NAME" --header="X-Api-Key: $API_SERVER_KEY" \\',
+      '    --header="content-type: application/json" "$url" 2>/dev/null) || exit 0',
+      'else',
+      '  echo "talaria: no curl or wget in this image — cannot fetch a credential for $host" >&2',
+      '  exit 0',
+      'fi',
+      '# Parsed with sed rather than jq for the same reason: jq is not guaranteed',
+      '# in every harness image, and a helper that fails because a tool is missing',
+      '# looks exactly like a credential that does not exist.',
+      'u=$(printf %s "$resp" | sed -n \'s/.*"username":"\\([^"]*\\)".*/\\1/p\')',
+      'p=$(printf %s "$resp" | sed -n \'s/.*"password":"\\([^"]*\\)".*/\\1/p\')',
+      '[ -n "$p" ] || exit 0',
+      'echo "username=$u"',
+      'echo "password=$p"',
+      '',
+    ].join('\n')
+    const helperPath = join(agentDir, 'git-credential-talaria')
+    await writeFile(helperPath, helper, { mode: 0o755 })
+    // SYSTEM-WIDE gitconfig rather than the agent's ~/.gitconfig: a workbench
+    // job runs the harness as whatever user that image uses, and a helper only
+    // the root home knows about is a helper that silently does not run. It also
+    // has to survive the harness writing its own ~/.gitconfig, which several do.
+    const gitconfigPath = join(agentDir, 'gitconfig')
+    await writeFile(gitconfigPath, ['[credential]', '\thelper = talaria', ''].join('\n'))
+    result.files.push(helperPath, gitconfigPath)
+
     // The service name carries the active slot ('a' = bare, 'b' = "-b") so a
     // roll can run both generations side by side under one compose project.
     const slot = ((def as unknown as { activeSlot?: string }).activeSlot === 'b' ? 'b' : 'a') as 'a' | 'b'
@@ -635,6 +716,11 @@ export async function renderFleet(opts: { roll?: RollOverlay } = {}): Promise<Re
       `${stateVolume}:/opt/data`,
       `${join(agentDir, 'config.yaml')}:/opt/data/config.yaml:ro`,
       `${join(agentDir, 'SOUL.md')}:/opt/data/SOUL.md:ro`,
+      // THE CREDENTIAL HELPER, on PATH and configured below. Mounted rather
+      // than baked into the image so a grant takes effect on the next render
+      // instead of the next image build.
+      `${join(agentDir, 'git-credential-talaria')}:/usr/local/bin/git-credential-talaria:ro`,
+      `${join(agentDir, 'gitconfig')}:/etc/gitconfig:ro`,
       `${join(agentDir, 'skills')}:/opt/dept-skills:ro`,
       // Fleet-wide skills (e.g. the talaria-toolkit onboarding skill) — every
       // agent gets them; Hermes reads skills per invocation, so edits are live.

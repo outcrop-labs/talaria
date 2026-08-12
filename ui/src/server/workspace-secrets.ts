@@ -899,6 +899,103 @@ export function handleBriefing(rows: Array<{ name: string; key: string; label: s
   )
 }
 
+/** A CREDENTIAL FOR A HOST — the sandbox's way in, and the answer to the gap
+ *  handles could not otherwise cross.
+ *
+ *  THE PROBLEM THIS SOLVES. A handle substitutes at the MCP gateway, which is
+ *  every tool call an agent makes THROUGH TALARIA. It is not the shell inside a
+ *  workbench sandbox: a coding harness runs `git push` with its own bash tool,
+ *  Talaria is not in that path, and the handle goes out as literal text. That is
+ *  the single most common thing a workbench credential is for, so "handles work
+ *  everywhere except where you push code" is not a mechanism anybody can rely on.
+ *
+ *  So git asks US. A credential helper in the container receives the host git
+ *  wants a credential for, calls this over the agent's own key, and hands the
+ *  answer to git — which keeps it in process memory. The value never enters the
+ *  model's context, never appears in command output, and is never written down.
+ *  The model does not even have to know a credential was involved.
+ *
+ *  AN EMPTY ALLOWLIST IS NOT ELIGIBLE HERE, and that is the rule that makes this
+ *  safe rather than terrifying. Everywhere else an empty `allowed_hosts` means
+ *  "unrestricted", which is a reasonable default when a human wrote the handle
+ *  into a specific command. Here nobody wrote anything: git names a host and we
+ *  answer. Without the allowlist requirement, one grant would hand every
+ *  credential an agent holds to any host it could be pointed at — so a
+ *  credential reaches this path only if somebody said which hosts it is for. */
+export async function credentialForHost(
+  agentModel: string,
+  host: string,
+): Promise<{ username: string; password: string; name: string } | null> {
+  const sql = await db()
+  const lower = host.trim().toLowerCase()
+  if (!lower) return null
+  const rows = (await sql`
+    select s.id, s.name, s.title, coalesce(s.allowed_hosts, '{}') as "allowedHosts"
+      from workspace_secrets s
+      left join workspace_secret_grants g on g.secret_id = s.id and g.agent_model = ${agentModel}
+      left join secret_folder_grants fg on fg.folder_id = s.secret_folder_id and fg.agent_model = ${agentModel}
+     where (g.agent_model is not null or fg.agent_model is not null)
+       and array_length(s.allowed_hosts, 1) > 0
+       and (s.expires_at is null or s.expires_at > now())
+       and (s.uses_remaining is null or s.uses_remaining > 0)
+     order by s.title
+  `) as unknown as Array<{ id: string; name: string; title: string; allowedHosts: string[] }>
+
+  const doc = rows.find((r) => hostAllowed(lower, r.allowedHosts))
+  if (!doc) return null
+
+  const entries = (await sql`
+    select key, label, value_cipher as "cipher" from workspace_secret_entries where secret_id = ${doc.id} order by key
+  `) as unknown as Array<{ key: string; label: string; cipher: string }>
+
+  // TWO SHAPES, because credentials arrive in two shapes. A doc carrying
+  // `username` and `password` is a login; anything else is a token, and git
+  // takes a token as the PASSWORD with a throwaway username — the convention
+  // GitHub, GitLab and every registry already expect.
+  const named = (k: string) => entries.find((e) => e.key === k)
+  const userEntry = named('username') ?? named('user')
+  const passEntry = named('password') ?? named('token') ?? entries.find((e) => e !== userEntry)
+  if (!passEntry || passEntry.cipher === '') return null
+
+  let password: string
+  let username = 'x-access-token'
+  try {
+    password = open(passEntry.cipher)
+    if (userEntry && userEntry.cipher !== '') username = open(userEntry.cipher)
+  } catch {
+    return null
+  }
+
+  // SPEND IT, on the same terms as every other boundary — including burning a
+  // one-shot, which is exactly right: a relay handed to a sandbox for one push
+  // should not survive the push.
+  //
+  // THE HOST GOES INTO THE TEXT, and that is not cosmetic. `resolveHandles`
+  // reads the destination out of what it is substituting into, so a bare
+  // `«secret:name»` carries no host, fails the allowlist check it is supposed to
+  // pass, and refuses every credential this route exists to serve. Writing the
+  // URL git actually asked about makes the destination check verify the real
+  // thing rather than a synthetic string — the allowlist is enforced twice, by
+  // `hostAllowed` above and by the substitution itself.
+  // THE QUALIFIED HANDLE, not the bare one. A doc carrying `username` and
+  // `password` — the natural shape for a registry login — has two entries, and
+  // the bare form refuses as AMBIGUOUS by design. Spending it that way meant
+  // every username/password credential silently failed here while single-entry
+  // tokens worked, which is the kind of bug that looks like a flaky login.
+  const spent = await resolveHandles(`https://${lower}/ ${handleFor(doc.name, passEntry.key)}`, agentModel)
+  if (spent.used.length === 0) return null
+
+  void logAudit({
+    actor: agentModel,
+    action: 'secrets.spend',
+    targetType: 'secret',
+    targetId: doc.name,
+    targetLabel: passEntry.label,
+    after: { key: passEntry.key, hosts: [lower], via: 'git-credential', restricted: true },
+  })
+  return { username, password, name: doc.name }
+}
+
 /** WHAT THIS AGENT ACTUALLY HOLDS, structured — the same union `resolveHandles`
  *  enforces, in a shape a UI can render.
  *
