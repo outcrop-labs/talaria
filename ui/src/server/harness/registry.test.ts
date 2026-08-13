@@ -34,6 +34,7 @@ describe('the registry', () => {
       'briefer:chat',
       'work-session',
       'hermes:knowledge',
+      'hermes:documents',
       'secrets:handles',
       'workbench:light',
       'workbench:standard',
@@ -264,6 +265,7 @@ describe('the PLATFORM_AGENTS cross-check', () => {
       // is nothing for an admin to assign and no role to fall back to — the
       // third kind, exactly like work-session.
       'hermes:knowledge',
+      'hermes:documents',
       // Same third kind: the workspace grants a handle to an AGENT, so the
       // model spending it is whichever one that agent runs.
       'secrets:handles',

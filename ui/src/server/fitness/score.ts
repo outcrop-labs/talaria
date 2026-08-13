@@ -116,6 +116,7 @@ const FLEET_SLOTS: Array<{ id: FleetSlotId; label: string; hint: string; require
     harnesses: [
       'work-session',
       'hermes:knowledge',
+      'hermes:documents',
       'secrets:handles',
       'channel-plan',
       'plan-doc',
