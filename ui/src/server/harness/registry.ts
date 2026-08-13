@@ -85,6 +85,7 @@ import { titlerHarness } from './defs/titler'
 import { workSessionHarness } from './defs/work-session'
 import { hermesKnowledgeHarness } from './defs/hermes-knowledge'
 import { hermesDocumentsHarness } from './defs/hermes-documents'
+import { hermesGovernanceHarness } from './defs/hermes-governance'
 import { secretHandlesHarness } from './defs/secret-handles'
 import { workbenchHeavyHarness, workbenchLightHarness, workbenchStandardHarness } from './defs/workbench'
 
@@ -191,6 +192,9 @@ const BUILTINS: RegisteredHarness[] = [
   // The second of the family — the six document tools, none of which had ever
   // been asked of a model. See `defs/hermes-documents.ts`.
   register(hermesDocumentsHarness, 'builtin'),
+  // The third: who can SEE things. Runs as a personal assistant because five of
+  // its six tools refuse a general org agent outright.
+  register(hermesGovernanceHarness, 'builtin'),
   // Can it spend a credential it is not allowed to see? The platform half of
   // that arrangement is enforced in code; this is the MODEL half, which until
   // now nothing measured. See `defs/secret-handles.ts`.

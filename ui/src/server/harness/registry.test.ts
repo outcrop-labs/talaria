@@ -35,6 +35,7 @@ describe('the registry', () => {
       'work-session',
       'hermes:knowledge',
       'hermes:documents',
+      'hermes:governance',
       'secrets:handles',
       'workbench:light',
       'workbench:standard',
@@ -266,6 +267,7 @@ describe('the PLATFORM_AGENTS cross-check', () => {
       // third kind, exactly like work-session.
       'hermes:knowledge',
       'hermes:documents',
+      'hermes:governance',
       // Same third kind: the workspace grants a handle to an AGENT, so the
       // model spending it is whichever one that agent runs.
       'secrets:handles',
