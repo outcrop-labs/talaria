@@ -36,11 +36,18 @@ export const UNTRUSTED_INPUT =
  *  `prompt-rules.test.ts` — a name here that is never wired would be worse than
  *  no list, because it reads as coverage.
  *
- *  NOT YET, AND DELIBERATELY NAMED: `distiller`, `librarian` and `blurb-writer`
- *  read org content too and have no injection fixture, so wiring them would be
- *  an untested prompt change to three working harnesses in the same commit that
- *  fixes a live one. They are the next round, not an oversight. */
-export const STATES_THE_BOUNDARY = ['summarizer', 'channel-plan', 'plan-doc', 'research-queries', 'briefer:brief', 'inbox-reply'] as const
+ *  THE NEXT ROUND, NOW BEING DONE. `distiller`, `librarian` and `blurb-writer`
+ *  were named here as reading untrusted text with no injection fixture, deferred
+ *  because wiring three untested prompt changes in the commit that fixed a live
+ *  one is how a fix becomes three regressions. They land one at a time, prompt
+ *  and fixture together, which is what that sequencing argument actually asked
+ *  for.
+ *
+ *  ONE CORRECTION TO THE OLD NOTE: it called all three "org content", and
+ *  `blurb-writer` is not — its untrusted text is vendor copy pulled live from
+ *  the public model catalog, written by somebody outside the organization
+ *  entirely. That makes it the least trusted of the three, not the most. */
+export const STATES_THE_BOUNDARY = ['summarizer', 'channel-plan', 'plan-doc', 'research-queries', 'briefer:brief', 'inbox-reply', 'librarian', 'distiller', 'blurb-writer'] as const
 
 /** `muse:draft` states it too, through `SYSTEM.document` in muse.ts, but its
  *  system prompt is chosen per KIND at render time — so the test below cannot
