@@ -87,6 +87,7 @@ import { hermesKnowledgeHarness } from './defs/hermes-knowledge'
 import { hermesDocumentsHarness } from './defs/hermes-documents'
 import { hermesGovernanceHarness } from './defs/hermes-governance'
 import { hermesGoogleHarness } from './defs/hermes-google'
+import { hermesResearchHarness } from './defs/hermes-research'
 import { secretHandlesHarness } from './defs/secret-handles'
 import { workbenchHeavyHarness, workbenchLightHarness, workbenchStandardHarness } from './defs/workbench'
 
@@ -199,6 +200,9 @@ const BUILTINS: RegisteredHarness[] = [
   // The fourth: calendar and mail, where a wrong answer reaches somebody
   // outside the company.
   register(hermesGoogleHarness, 'builtin'),
+  // The fifth and last: commissioning research. Narrow on purpose — it measures
+  // the DELEGATION, never the report, which the research-* harnesses own.
+  register(hermesResearchHarness, 'builtin'),
   // Can it spend a credential it is not allowed to see? The platform half of
   // that arrangement is enforced in code; this is the MODEL half, which until
   // now nothing measured. See `defs/secret-handles.ts`.
