@@ -118,6 +118,7 @@ const FLEET_SLOTS: Array<{ id: FleetSlotId; label: string; hint: string; require
       'hermes:knowledge',
       'hermes:documents',
       'hermes:governance',
+      'hermes:google',
       'secrets:handles',
       'channel-plan',
       'plan-doc',

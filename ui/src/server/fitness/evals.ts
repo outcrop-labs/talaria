@@ -1496,6 +1496,13 @@ async function runOneCase<I, O>(
 
   const workspace = dryRun ? def.dryRun?.workspace?.(fixture.input) : undefined
   const credentials = dryRun ? def.dryRun?.credentials?.(fixture.input) : undefined
+  // A FUNCTION OF THE INPUT, or a flat record meaning "the same world every
+  // time". Most harnesses want the record; the ones that do not want it badly —
+  // "Google is not connected: do you say so or invent a link" is the most
+  // valuable fixture in its group and cannot share a harness with "read the
+  // calendar" unless the world can vary per fixture.
+  const declaredWorld = dryRun ? def.dryRun?.world : undefined
+  const dryWorld = typeof declaredWorld === 'function' ? declaredWorld(fixture.input) : declaredWorld
   // The three sandboxes share exactly the surface `EvalContext` needs — a call
   // log, an ordering question, and (only Talaria's) a world. Narrowed to that
   // rather than to a union, so a fourth surface adds a branch here and nothing
@@ -1513,7 +1520,7 @@ async function runOneCase<I, O>(
       ? makeWorkbench(workspace)
       : credentials
         ? makeCredentialSandbox(credentials)
-        : makeSandbox({ tools: def.dryRun?.tools, ...(def.dryRun?.world ? { world: def.dryRun.world } : {}) })
+        : makeSandbox({ tools: def.dryRun?.tools, ...(dryWorld ? { world: dryWorld } : {}) })
   const dry: { result?: DryRunResult } = {}
   const base = deps.harnessDeps.transport ?? defaultTransport
 

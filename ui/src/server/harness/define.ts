@@ -568,8 +568,20 @@ export interface HarnessDefinition<I, O> {
     maxTurns?: number
     /** Overrides on the sandbox's standard world — a ticket in a particular
      *  state, a gap already filed, a DM already sent. Typed loosely here so this
-     *  module stays free of the fitness suite's imports; the suite narrows it. */
-    world?: Record<string, unknown>
+     *  module stays free of the fitness suite's imports; the suite narrows it.
+     *
+     *  A FUNCTION OF THE INPUT, like `workspace` and `credentials` below, and
+     *  for the same reason they are. A flat record is read once per DEFINITION,
+     *  so a harness can only ever pose questions about ONE world — and the most
+     *  valuable fixture in a group is routinely the one that changes it. "Google
+     *  is not connected: do you say so, or invent a link" cannot share a harness
+     *  with "read the calendar" unless this takes the input, and splitting a
+     *  coherent surface into two harnesses to vary one boolean is the tail
+     *  wagging the dog.
+     *
+     *  A plain record still works and still means "the same world for every
+     *  fixture", which is what most harnesses want. */
+    world?: Record<string, unknown> | ((input: I) => Record<string, unknown>)
     /** THE OTHER SURFACE: a FILE workspace with a test runner, for the coding
      *  harnesses. Built per fixture from that fixture's own input, because a
      *  repository and the oracle that decides whether its tests pass are

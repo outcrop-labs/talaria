@@ -86,6 +86,7 @@ import { workSessionHarness } from './defs/work-session'
 import { hermesKnowledgeHarness } from './defs/hermes-knowledge'
 import { hermesDocumentsHarness } from './defs/hermes-documents'
 import { hermesGovernanceHarness } from './defs/hermes-governance'
+import { hermesGoogleHarness } from './defs/hermes-google'
 import { secretHandlesHarness } from './defs/secret-handles'
 import { workbenchHeavyHarness, workbenchLightHarness, workbenchStandardHarness } from './defs/workbench'
 
@@ -195,6 +196,9 @@ const BUILTINS: RegisteredHarness[] = [
   // The third: who can SEE things. Runs as a personal assistant because five of
   // its six tools refuse a general org agent outright.
   register(hermesGovernanceHarness, 'builtin'),
+  // The fourth: calendar and mail, where a wrong answer reaches somebody
+  // outside the company.
+  register(hermesGoogleHarness, 'builtin'),
   // Can it spend a credential it is not allowed to see? The platform half of
   // that arrangement is enforced in code; this is the MODEL half, which until
   // now nothing measured. See `defs/secret-handles.ts`.
