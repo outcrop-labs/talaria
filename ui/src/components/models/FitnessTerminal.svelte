@@ -20,7 +20,16 @@
   // a sweep runs and the wrong thing to keep half the pane once you have moved
   // on to reading a failure, so it collapses to its summary line — the counts and
   // whatever is running right now, which is the part worth keeping on screen.
-  let { live, open = $bindable(true) }: { live: LiveRun; open?: boolean } = $props()
+  // THE LOG IS THE PROP; the run is CONTEXT. They were one thing while the
+  // console only existed during a sweep — and then the console outlived the
+  // sweep, at which point "the lines" and "the run that produced them" stopped
+  // being the same object. `live: null` is a finished run whose console is still
+  // worth reading, which is the whole point of keeping it.
+  let {
+    log,
+    live = null,
+    open = $bindable(true),
+  }: { log: EvalLogLine[]; live?: LiveRun | null; open?: boolean } = $props()
 
   // FOLLOW THE TAIL, but stop the moment the reader scrolls up — a log that
   // yanks you back to the bottom while you are reading the line you paused on is
@@ -35,7 +44,7 @@
 
   $effect(() => {
     // Depend on the line count so this re-runs as lines land.
-    void live.log.length
+    void log.length
     if (follow && pane) pane.scrollTop = pane.scrollHeight
   })
 
@@ -56,18 +65,26 @@
    *  loop and alarming on a local 7B doing single-shot JSON. Anything past four
    *  times the median gets marked. */
   const slowAbove = $derived.by(() => {
-    const ms = live.log.map((l) => l.ms).filter((n) => n > 0).sort((a, b) => a - b)
+    const ms = log.map((l) => l.ms).filter((n) => n > 0).sort((a, b) => a - b)
     const median = ms[Math.floor(ms.length / 2)] ?? 0
     return median > 0 ? median * 4 : Infinity
   })
 
   const counts = $derived.by(() => {
     const by: Record<EvalLogLine['verdict'], number> = { pass: 0, fail: 0, gap: 0, error: 0, timeout: 0, skip: 0 }
-    for (const l of live.log) by[l.verdict]++
+    for (const l of log) by[l.verdict]++
     return by
   })
 
   const pad = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s.padEnd(n))
+
+  /** TIER 1 AND TIER 3 SHARE THIS FEED, and a watcher has to be able to tell
+   *  them apart at a glance: "tools" as a probe and "tools" as a fixture are
+   *  different claims. The verdict column stays in the common vocabulary — a
+   *  probe that failed and a fixture that failed are both red — and only the
+   *  SOURCE column is tinted, which is the column that says which is which. */
+  const TIER_TONE: Record<string, string> = { probes: 'text-accent', adversarial: 'text-warning' }
+  const sourceTone = (harness: string): string => TIER_TONE[harness] ?? 'text-muted'
 
   // ── The case running right now ─────────────────────────────────────────────
   //
@@ -81,7 +98,7 @@
   // sweep look idle, and the case that is stuck is not reliably the first.
   let now = $state(Date.now())
   $effect(() => {
-    if (live.current.length === 0) return
+    if ((live?.current.length ?? 0) === 0) return
     const t = setInterval(() => (now = Date.now()), 1000)
     return () => clearInterval(t)
   })
@@ -131,8 +148,8 @@
       <span class={cn('text-[9px] transition-transform duration-150', open && 'rotate-90')}>▶</span>
       console
     </button>
-    <span class="text-muted">{live.phase === 'scoring' ? 'scoring' : (live.phase ?? 'running')}</span>
-    <span class="text-muted">{live.done}/{live.total || '?'}</span>
+    <span class="text-muted">{live ? (live.phase === 'scoring' ? 'scoring' : (live.phase ?? 'running')) : 'finished'}</span>
+    <span class="text-muted">{live ? `${live.done}/${live.total || '?'}` : `${log.length} lines`}</span>
     {#if counts.pass}<span class="text-success">{counts.pass} pass</span>{/if}
     {#if counts.fail}<span class="text-danger">{counts.fail} fail</span>{/if}
     {#if counts.error}<span class="text-danger">{counts.error} err</span>{/if}
@@ -158,11 +175,11 @@
   <!-- RUNNING NOW, and it stays visible when the console is closed. This is the
        line that answers "is it stuck", so hiding it behind the toggle would
        collapse away the only part of a console that has to stay on screen. -->
-  {#if live.current.length > 0}
+  {#if live && live.current.length > 0}
     <!-- BOUNDED. Four concurrent cases with an open transcript each must not be
          able to push the log out of the console. -->
     <div class="max-h-[40vh] shrink-0 space-y-1 overflow-y-auto border-t border-line px-3 py-1.5">
-      {#each live.current as c (keyOf(c))}
+      {#each live?.current ?? [] as c (keyOf(c))}
         {@const elapsed = secondsOf(c.startedAt)}
         {@const turnsOpen = openTurns[keyOf(c)] === true}
         <div>
@@ -213,15 +230,18 @@
       onscroll={onScroll}
       class="max-h-[38vh] min-h-[8rem] overflow-auto border-t border-line bg-black/40 p-3 font-mono text-[11px] leading-[1.45]"
     >
-      {#if live.log.length === 0}
-        <div class="text-ink-dim">waiting for the first fixture to land…</div>
+      {#if log.length === 0}
+        <!-- Not "the first fixture": tier 1 runs before any fixture does, and a
+             console that says it is waiting for something that is not next is
+             the kind of small lie that makes a watcher distrust the rest. -->
+        <div class="text-ink-dim">waiting for the first result to land…</div>
       {:else}
-        {#each live.log as l, i (`${l.harness}::${l.case}::${i}`)}
+        {#each log as l, i (`${l.harness}::${l.case}::${i}`)}
           {@const v = VERDICT[l.verdict]}
           <div class="whitespace-pre-wrap break-words">
             <span class="text-ink-dim">{String(i + 1).padStart(3, ' ')}</span>
             <span class={v.tone}> {v.mark} {v.word}</span>
-            <span class="text-muted"> {pad(l.harness, 20)}</span>
+            <span class={sourceTone(l.harness)}> {pad(l.harness, 20)}</span>
             <span class="text-fg">{l.case}</span>
             <span class={l.ms > slowAbove ? 'text-warning' : 'text-ink-dim'}> {l.ms}ms</span>
             {#if l.tokens > 0}<span class="text-ink-dim"> {l.tokens}tok</span>{/if}
@@ -239,7 +259,7 @@
           </div>
         {/each}
         <div class="mt-1 text-ink-dim">
-          {#if live.state === 'running'}<span class="animate-pulse">▊</span>{:else}— run {live.state} —{/if}
+          {#if live?.state === 'running'}<span class="animate-pulse">▊</span>{:else}— run {live?.state ?? 'finished'} —{/if}
         </div>
       {/if}
     </div>

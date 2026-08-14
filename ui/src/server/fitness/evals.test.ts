@@ -1379,6 +1379,31 @@ describe('runEvalSweep', () => {
     expect(sweep.cases[0]?.answered).toBe(true)
   })
 
+  it('gives a SUPPLEMENTED case the clock its loop actually needs', async () => {
+    // THE BUG. A supplemented case runs inside `toolSearchTransport` — up to
+    // three search turns plus one to write the answer — and `turnsPerCase`
+    // handed that whole loop the budget for ONE model turn. glm-5.2 filed three
+    // research-search cases as "did not finish inside 60000ms after 1 upstream
+    // call(s)", which reads as a hung request and was really a four-turn job on
+    // a one-turn clock.
+    const def = defineHarness<{ q: string }, string>({
+      id: 'searcher',
+      label: 'Searcher',
+      job: 'Answers from the live web.',
+      requires: ['search'],
+      floor: { capabilities: ['search'], refuseBelow: true, suppliable: ['search'], note: 'Needs live search.' },
+      model: { chain: [] },
+      render: () => [{ role: 'user', content: 'go' }],
+      output: { kind: 'text', clean: (raw) => raw.trim() || null },
+      onFailure: 'null',
+      evals: [{ name: 'a', input: { q: 'go' }, check: () => null }],
+    })
+    // Not dry-run, not supplied: one model turn, as before.
+    expect(turnsPerCase(def as never, false, false)).toBe(1)
+    // Supplied: the loop the transport actually runs.
+    expect(turnsPerCase(def as never, false, true)).toBe(4)
+  })
+
   it('files OUR GAP when the supplied search tool finds nothing, instead of failing the model', async () => {
     // THE INVERSION THIS FIXES. Asked what NIST 800-53 AC-2 requires, a model
     // called the search tool four times, got back NIST's homepage and the NIST

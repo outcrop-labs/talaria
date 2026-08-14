@@ -79,6 +79,62 @@ describe('rejectedParam', () => {
     expect(rejectedParam('{"error":{"message":"\'seed\' is not supported by this model"}}')).toBe('seed')
   })
 
+  it('prefers the provider’s own `param` field over any reading of its prose', () => {
+    // VERBATIM FROM THE RUN THAT FOUND IT. The message names `reasoning_effort`
+    // three times and quotes it none of them, so every prose pattern in the
+    // function misses it — and 28 cases across four harnesses were filed as
+    // "could not reach this model" on an endpoint that was answering fine.
+    const body = JSON.stringify({
+      error: {
+        message:
+          "Function tools with reasoning_effort are not supported for gpt-5.6-terra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.",
+        type: 'invalid_request_error',
+        param: 'reasoning_effort',
+        code: null,
+      },
+    })
+    expect(rejectedParam(body)).toBe('reasoning_effort')
+    expect(classifyParam('reasoning_effort')).toBe('cosmetic')
+  })
+
+  it('reduces a dotted `param` path to the thing we can stop sending', () => {
+    expect(rejectedParam('{"error":{"param":"response_format.json_schema.strict"}}')).toBe('response_format')
+  })
+
+  it('still refuses to strip a load-bearing parameter the provider names', () => {
+    expect(classifyParam(rejectedParam('{"error":{"param":"messages"}}') ?? '')).toBe('protected')
+  })
+
+  it('names the parameter in OpenAI’s two unquoted phrasings', () => {
+    // A PARAMETER THE RATCHET CANNOT NAME IS ONE IT NEVER STOPS SENDING, so the
+    // endpoint 400s on every call for as long as the default is configured.
+    // `reasoning` is the one that reaches us: a legitimate OpenRouter request
+    // default, forwarded to an OpenAI endpoint that refuses it.
+    expect(rejectedParam('Unrecognized request argument supplied: reasoning')).toBe('reasoning')
+    expect(rejectedParam("Unknown parameter: 'reasoning'.")).toBe('reasoning')
+    // And the quoted-dotted shape OpenAI uses for nested ones, which the
+    // existing pattern already reaches — asserted so a rewrite cannot lose it.
+    expect(rejectedParam("Unsupported parameter: 'reasoning.effort' is not supported with this model.")).toBe('reasoning')
+  })
+
+  it('reads a VALUE complaint as the parameter complaint it is', () => {
+    // OpenAI's reasoning models phrase it "does not support", not "is not
+    // supported", so every pattern written for the passive form missed it —
+    // `temperature` was never learned and every harness that declares one 400'd
+    // on that endpoint for ever. Dropping it is right: the model then runs at
+    // its default, which is the only value it has.
+    expect(rejectedParam("Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) is supported.")).toBe('temperature')
+    expect(classifyParam('temperature')).toBe('cosmetic')
+  })
+
+  it('will not let a widened pattern strip something load-bearing', () => {
+    // The patterns are read by `classifyParam`, which refuses to remove `model`,
+    // `messages` or `stream` however the upstream phrases its complaint. Stated
+    // here because the two additions above are the loosest in the file.
+    expect(classifyParam(rejectedParam('Unrecognized request argument supplied: messages') ?? '')).toBe('protected')
+    expect(classifyParam(rejectedParam("Unknown parameter: 'stream'.") ?? '')).toBe('protected')
+  })
+
   it('reads response_format out of a rejection, so it can be classified rather than stripped blind', () => {
     expect(rejectedParam('{"error":{"message":"`response_format` is not supported"}}')).toBe('response_format')
   })

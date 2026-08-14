@@ -70,7 +70,7 @@
           {#if tab === 'memory'}<MemoryTab {def} {isAdmin} />{/if}
           {#if tab === 'crons'}<CronsPanel agentId={def.id} />{/if}
           {#if tab === 'secrets'}
-            {#if isAdmin}<SecretsTab agentId={def.id} />{:else}<div class="text-sm text-muted">Admins only.</div>{/if}
+            {#if isAdmin}<SecretsTab agentId={def.id} agentModel={def.model} agentLabel={def.displayName ?? def.model} />{:else}<div class="text-sm text-muted">Admins only.</div>{/if}
           {/if}
           {#if tab === 'mcp'}<McpTab {def} {isAdmin} />{/if}
           {#if tab === 'versions'}<VersionsTab {def} {isAdmin} />{/if}

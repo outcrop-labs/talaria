@@ -33,16 +33,20 @@ export interface TitlerInput {
 // research run for what it investigates — and the research prompt has to say
 // "not a question" out loud, because the input IS a question and a small model
 // will otherwise hand it straight back.
+/** THE RULES `titleIssue` ENFORCES ON EVERY KIND, so every kind is told them.
+ *
+ *  THE MISMATCH THIS CLOSES. `titleIssue` rejects a generic lead-in for all
+ *  three kinds — it is one function with one `GENERIC_LEAD_IN` — but only the
+ *  `chat` prompt ever mentioned it. A `plan` or `research` title beginning
+ *  "Discussion of…" was graded against a rule its prompt had not stated, which
+ *  is the defect this whole audit is about: a suite is only a measurement of the
+ *  platform if it grades what the platform actually asks for. */
+const TITLE_RULES = 'No quotes, no trailing punctuation, never a generic filler opening like "Chat about" or "Discussion of". Reply with ONLY the title.'
+
 const PROMPT: Record<TitleKind, string> = {
-  chat:
-    'Name this conversation. 3–7 words, specific to what it is actually about — the subject, not the activity. ' +
-    'No quotes, no trailing punctuation, never generic fillers like "Chat about" or "Discussion of". Reply with ONLY the title.',
-  plan:
-    'Name this plan. 3–7 words, outcome-focused — what the plan will deliver, not the conversation around it. ' +
-    'No quotes, no trailing punctuation. Reply with ONLY the title.',
-  research:
-    'Name this research run from its question. 3–7 words capturing the subject under investigation. ' +
-    'No quotes, no trailing punctuation, do not restate it as a question. Reply with ONLY the title.',
+  chat: 'Name this conversation. 3–7 words, specific to what it is actually about — the subject, not the activity. ' + TITLE_RULES,
+  plan: 'Name this plan. 3–7 words, outcome-focused — what the plan will deliver, not the conversation around it. ' + TITLE_RULES,
+  research: 'Name this research run from its question. 3–7 words capturing the subject under investigation. Do not restate it as a question. ' + TITLE_RULES,
 }
 
 /** Naming is worth one short call and no more. A transcript longer than this

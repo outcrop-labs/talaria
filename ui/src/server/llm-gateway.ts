@@ -8,6 +8,7 @@
 // allowlist), streams the reply through, and meters every call into the
 // ledger with the calling key's identity. This is the litellm replacement,
 // engineered into Talaria itself.
+import { newVault, sealText, type SecretVault } from './secret-vault'
 import { db } from './db/pg'
 import { getSetting, setSetting } from './audit'
 import { listEndpoints, type LlmEndpoint } from './agent-defs'
@@ -172,6 +173,14 @@ export interface UpstreamCall {
   url: string
   headers: Record<string, string>
   body: Record<string, unknown>
+  /** THE SUBSTITUTIONS MADE ON THE WAY OUT — see `secret-vault.ts`. Carried on
+   *  the call so a caller that needs to put a real value back at a genuine
+   *  boundary (a tool invocation, a credential helper) can, and so the audit
+   *  line can say WHAT KIND of credential was sealed without ever holding one.
+   *
+   *  Optional for the same reason `contractDrops` is: a structurally-typed
+   *  `{ url, headers, body }` still compiles. `buildUpstream` always sets it. */
+  vault?: SecretVault
   /** Contract-bearing parameters that did NOT reach the model (audit 1.2) —
    *  empty on a clean call, which is the overwhelming majority.
    *
@@ -214,6 +223,9 @@ export interface UpstreamCall {
  *  asked for. */
 export const contractDropsOf = (call: UpstreamCall): ContractDrop[] => call.contractDrops ?? []
 
+/** What this call sealed on the way out — kinds only, never values. */
+export const sealedSecretsOf = (call: UpstreamCall): ReadonlyArray<{ handle: string; label: string }> => call.vault?.sealed ?? []
+
 /** Build the outbound request: provider base/key + request_defaults merged
  *  UNDER the client body (client wins), model swapped to the upstream id. */
 export async function buildUpstream(route: ResolvedRoute, clientBody: Record<string, unknown>): Promise<UpstreamCall> {
@@ -244,6 +256,32 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
   const body: Record<string, unknown> = { ...deepMerge(defaults, clientBody), model: route.upstreamModel }
   if (body.stream) body.stream_options = { include_usage: true, ...(body.stream_options as object | undefined) }
 
+  // ── CREDENTIALS DO NOT LEAVE THIS PROCESS ──────────────────────────────────
+  //
+  // THE LAST POINT AT WHICH WE STILL OWN THE BYTES. Every gateway call in the
+  // tree is assembled here — the blocking transport, the streamed one, the
+  // tool turn, the image turn, `completeViaGateway` — which is the same reason
+  // the learned-parameter ratchet lives here. One chokepoint, so a new caller
+  // cannot forget.
+  //
+  // WHY THE GUARD IS NOT ENOUGH, stated once where the substitution happens:
+  // `secret_leak` is an OUTPUT check. By the time it fires the model has read
+  // the credential, and the provider has logged the prompt on its own
+  // infrastructure. Redaction cleans what we KEEP; it cannot clean what we SENT.
+  // The adversarial tier is the measurement behind that — the four strongest
+  // models on this install each file `secret_leak` on two of four seeds, after
+  // grounding — and a business asking whether its keys are safe here deserves an
+  // answer that does not turn on a model's judgement.
+  //
+  // So what travels is a handle. See `secret-vault.ts` for why it is opaque and
+  // why the vault is per-request and stored nowhere.
+  const vault = newVault()
+  if (Array.isArray(body.messages)) {
+    body.messages = (body.messages as Array<Record<string, unknown>>).map((m) =>
+      typeof m.content === 'string' ? { ...m, content: sealText(m.content, vault) } : m,
+    )
+  }
+
   // Pre-strip parameters this endpoint+model has already rejected (learned live
   // from the 400s below — dynamic specs with no maintained tables). A drop of a
   // CONTRACT parameter is reported here too, not only on the call that first
@@ -269,7 +307,7 @@ export async function buildUpstream(route: ResolvedRoute, clientBody: Record<str
     contractDrops.push(drop)
     warnContractDrop(drop)
   }
-  return { url: `${base}/chat/completions`, headers, body, contractDrops }
+  return { url: `${base}/chat/completions`, headers, body, contractDrops, vault }
 }
 
 // Parameter support, learned from the source: when an upstream 400 names a

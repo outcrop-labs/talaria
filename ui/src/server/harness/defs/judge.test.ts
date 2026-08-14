@@ -245,6 +245,23 @@ describe('the eval fixtures', () => {
     expect(alwaysPass).toHaveLength(7) // the planted gaps and both ambiguous ones
   })
 
+  it('every SATISFIED fixture names a check, because the prompt says to revise without one', () => {
+    // THE INVARIANT THIS LOCKS, and the bug it is the fix for. `SYSTEM` ends
+    // "prefer 'revise' over 'pass' when the outcome is vague, unverifiable, or
+    // skips a requirement", and the widened branch adds that an outcome which
+    // "asserts completion in general terms" is not verifiable. A `satisfied:`
+    // fixture whose outcome names no check is therefore asking the judge to
+    // disobey us, and then scoring it for obeying: four models failed the small
+    // -ticket fixture, all four citing the missing evidence.
+    //
+    // So the fixtures and the prompt are held together here rather than being
+    // rediscovered one sweep at a time. This is a claim about OUR fixtures — it
+    // does not soften a single verdict.
+    const evidence = /test|suite|grep|query plan|passes|passing|verified|confirmed|checked|ran /i
+    const unverifiable = evals.filter((e) => e.name.startsWith('satisfied:')).filter((e) => !evidence.test((e.input as { outcome: string }).outcome))
+    expect(unverifiable.map((e) => e.name)).toEqual([])
+  })
+
   it('will not accept a "revise" that never says what is wrong', () => {
     const gap = evals.find((e) => e.name.startsWith('gap: a required deliverable'))
     expect(gap?.check(verdictOf('revise', []), NO_TOOLS)).toContain('empty issues list')

@@ -29,6 +29,25 @@
 // fills the row — and it is honest besides: the three slots are three different
 // purchases, and an admin comparing them wants the same task run against each.
 //
+// WHAT THIS IS A PROXY FOR, AND WHAT IT IS NOT A REPLAY OF. Read this before
+// trusting a `Workbench · X effort` cell to predict a production run.
+//
+// Production does NOT run this loop. A Workbench run hands the model to an
+// EXTERNAL CODING AGENT — claude-code, opencode, whatever the agent's harness
+// slug resolves to — running in a container with ITS OWN prompt, its own tool
+// surface and its own turn budget (see `workbench-harnesses.ts`, a completely
+// different contract that until a rename shared the spelling `defineHarness`).
+// Talaria chooses the MODEL through the `code-*` roles and controls nothing
+// else about that loop.
+//
+// So what these three harnesses measure is the model's own coding behaviour on a
+// surface Talaria drives: locate the defect, edit the right file, check the
+// work. That is genuinely predictive — a model that patches the wrong file here
+// will patch the wrong file there — and it is NOT the same claim as "this model
+// works under claude-code". A green cell is evidence about the model, not a
+// rehearsal of the production path, and no fixture below should ever be written
+// as though it were.
+//
 // THE TASKS ARE THE SAME ACROSS ALL THREE, deliberately. The efforts differ in
 // what an admin SPENDS, not in what the job is; running a harder suite against
 // the heavy slot would make the three columns incomparable, which is the one
@@ -467,7 +486,20 @@ const workbenchHarness = (role: ModelRole, id: string, label: string, effort: st
       //
       // This is the raise that was reverted once, correctly, for having no
       // measurement behind it. It has one now.
-      maxTurns: 10,
+      //
+      // AND TEN WAS STILL SHORT — same argument, second measurement. Across a
+      // twelve-model archive the workbench harnesses filed THREE more turn-budget
+      // gaps at ten (`workbench:standard` twice, `workbench:light` once), and the
+      // tool-call distribution says why: p50 is 6 calls, p90 is 8, and the tail
+      // reaches 13. A model at the top of that distribution is still editing when
+      // the loop stops, and the fixture then asks whether it re-ran the tests.
+      //
+      // Twelve is `MAX_TURN_CEILING`, so this is the last raise available without
+      // moving that — and moving it is a cost decision (an unbounded loop on a
+      // chatty model outspends the rest of the suite), not a fixture decision.
+      // If twelve still gaps, the honest next move is a smaller task, not a
+      // bigger budget.
+      maxTurns: 12,
       workspace: (input) => ({
         files: input.files,
         passes: (files) => TASKS.find((t) => t.input.task === input.task)?.oracle(files) ?? null,

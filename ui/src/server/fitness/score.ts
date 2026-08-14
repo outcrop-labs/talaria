@@ -69,7 +69,66 @@ import type { EvalCaseScore, EvalSweep, HarnessScore } from './evals'
 
 // ── Slots ────────────────────────────────────────────────────────────────────
 
-export type SlotKind = 'role' | 'agent'
+/** THE THREE KINDS OF ASSIGNMENT AN ADMIN MAKES, and the third was missing.
+ *
+ *  'role' and 'agent' are the two registries an admin picks a model from on the
+ *  Models page. 'fleet' is the one nobody had modelled: the model behind a
+ *  HERMES PERSONA — the containerized agent that works tickets, answers a
+ *  channel, briefs an owner and drives the workspace toolkit.
+ *
+ *  ITS ABSENCE MADE TWELVE HARNESSES INVISIBLE. `work-session`, `channel-plan`,
+ *  `plan-doc`, `outreach:check-in`, all three Inbox harnesses, both briefers,
+ *  research-queries and research-synthesis all declare `model: { chain: [] }`
+ *  because production pins the SUBJECT of the call — the agent on the ticket, in
+ *  the channel, on the plan. So they bound to no slot, and the fitness matrix —
+ *  whose columns ARE the slots — had no column for any of them. They were
+ *  measured, scored and archived into a report with nowhere to appear.
+ *
+ *  That is the largest single consumer of models in the product, and the page an
+ *  admin uses to choose one said nothing about it. */
+export type SlotKind = 'role' | 'agent' | 'fleet'
+
+/** The fleet slots. TWO, NOT ONE, because they are genuinely different jobs and
+ *  an org routinely runs different models behind them: a personal assistant
+ *  reads one owner's inbox and drafts in their voice, while a workspace agent
+ *  works tickets and drives the toolkit against a shared board. A single column
+ *  would average a model's fitness for both and be right about neither. */
+export type FleetSlotId = 'assistant' | 'agent'
+
+const FLEET_SLOTS: Array<{ id: FleetSlotId; label: string; hint: string; requires: Capability[]; harnesses: string[] }> = [
+  {
+    id: 'assistant',
+    label: 'Fleet · Personal assistant',
+    hint: "The model behind an owner's own assistant: reads their inbox, briefs them, drafts replies in their voice.",
+    // It reads a whole inbox and a whole briefing window before it answers.
+    requires: ['instruction-following', 'long-context'],
+    harnesses: ['inbox-brief', 'inbox-command', 'inbox-reply', 'briefer:brief', 'briefer:chat'],
+  },
+  {
+    id: 'agent',
+    label: 'Fleet · Workspace agent',
+    hint: 'The model behind a Hermes persona: works tickets, plans channels, and drives the workspace toolkit.',
+    // The job IS the tool loop — see the Hermes harness family.
+    requires: ['tools', 'tool-select'],
+    // `secrets:handles` sits here rather than under a role because spending a
+    // credential is a FLEET behaviour: the workspace grants a handle to an
+    // agent, and it is that agent's model deciding what to do with it.
+    harnesses: [
+      'work-session',
+      'hermes:knowledge',
+      'hermes:documents',
+      'hermes:governance',
+      'hermes:google',
+      'hermes:research',
+      'secrets:handles',
+      'channel-plan',
+      'plan-doc',
+      'outreach:check-in',
+      'research-queries',
+      'research-synthesis',
+    ],
+  },
+]
 
 /** One assignment an admin can make, normalized across the two registries that
  *  offer them. `requires` is populated for roles only: `MODEL_ROLES` declares
@@ -78,7 +137,7 @@ export type SlotKind = 'role' | 'agent'
  *  file reads them there. */
 export interface FitnessSlot {
   kind: SlotKind
-  id: ModelRole | PlatformAgentId
+  id: ModelRole | PlatformAgentId | FleetSlotId
   label: string
   hint: string
   requires: Capability[]
@@ -114,7 +173,17 @@ export function fitnessSlots(): FitnessSlot[] {
     requires: [],
     live: a.assignable,
   }))
-  return [...roles, ...agents]
+  const fleet: FitnessSlot[] = FLEET_SLOTS.map((f) => ({
+    kind: 'fleet',
+    id: f.id,
+    label: f.label,
+    hint: f.hint,
+    requires: f.requires,
+    // Always live: every install with a fleet has these, and unlike a reserved
+    // role there is no surface still to ship.
+    live: true,
+  }))
+  return [...roles, ...agents, ...fleet]
 }
 
 export type BindingVia = 'chain' | 'pin' | 'declared'
@@ -194,7 +263,15 @@ export async function bindSlots(harnesses: RegisteredHarness[]): Promise<SlotBin
     const agent = platformAgentOf(harness)
     if (agent) add(slotKey({ kind: 'agent', id: agent }), harness.id, 'pin')
   }
+  // THE FLEET SLOTS ARE BOUND BY NAME, and they have to be: their harnesses
+  // declare an EMPTY chain precisely because production pins the subject of the
+  // call, so there is nothing to derive a binding from. This is the same
+  // argument `DECLARED_EDGES` makes for research-search, applied to the twelve
+  // harnesses that had no column at all.
   const ids = new Set(harnesses.map((h) => h.id))
+  for (const f of FLEET_SLOTS) {
+    for (const id of f.harnesses) if (ids.has(id)) add(slotKey({ kind: 'fleet', id: f.id }), id, 'declared')
+  }
   for (const edge of DECLARED_EDGES) {
     if (!ids.has(edge.harness)) continue
     for (const role of edge.roles) add(slotKey({ kind: 'role', id: role }), edge.harness, 'declared')

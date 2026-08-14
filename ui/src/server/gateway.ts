@@ -2,6 +2,7 @@
 // manifest Talaria renders (fleet/fleet.json: { model, url, key } per agent and
 // per model tier). No separate bridge/multiplexer — these helpers run
 // server-side, so the URLs/keys stay off the client and every call is route-gated.
+import { newVault, sealText } from './secret-vault'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { FLEET_DIR } from './fleet-render'
@@ -73,6 +74,33 @@ interface ChatPayload {
  *  and the completion streams the moment the agent is back. The user just sees
  *  a slightly longer thinking state; nobody's work is lost to an edit. */
 export async function proxyChat(payload: ChatPayload, opts: { waitMs?: number; signal?: AbortSignal } = {}): Promise<Response> {
+  // ── CREDENTIALS DO NOT LEAVE THIS PROCESS, PERSONA EDITION ─────────────────
+  //
+  // THE SECOND CHOKEPOINT. `buildUpstream` seals every GATEWAY call; this is the
+  // other door — every Hermes persona turn in the tree is sent from here to the
+  // agent's container, which then talks to a provider we do not control the
+  // request assembly for.
+  //
+  // It is also the door that matters most. A persona holds workspace context all
+  // day and is the agent most likely to have a credential in front of it — the
+  // workbench PAT is handed to a dev agent by design — so an unsealed persona
+  // path would mean the one place a secret is most likely to appear is the one
+  // place nothing was checking.
+  //
+  // The vault is per-call and discarded when this returns: nothing downstream of
+  // a persona turn spends a handle, because a persona's tool loop runs inside
+  // its own container and reaches Talaria back through `callMcpTool`, which does
+  // its own resolution against the agent's grants.
+  const vault = newVault()
+  if (Array.isArray((payload as { messages?: unknown }).messages)) {
+    payload = {
+      ...payload,
+      messages: ((payload as unknown as { messages: Array<Record<string, unknown>> }).messages ?? []).map((m) =>
+        typeof m.content === 'string' ? { ...m, content: sealText(m.content, vault) } : m,
+      ),
+    } as ChatPayload
+    for (const s of vault.sealed) console.warn(`[secrets] sealed ${s.label} out of a turn to ${payload.model}`)
+  }
   const deadline = Date.now() + (opts.waitMs ?? 120_000)
   let attempt = 0
   for (;;) {

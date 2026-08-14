@@ -2,7 +2,7 @@
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
   import CapabilityTags from './CapabilityTags.svelte'
-  import { BAND_META, BAND_TEXT, bandOf, ms, reasonOf, rowSummary, speedTitle, type FitnessBand, type FitnessIndexEntry, type ModelRow, type SlotView } from './fitness'
+  import { SAFETY_META, BAND_META, BAND_TEXT, bandOf, ms, reasonOf, rowSummary, speedTitle, type FitnessBand, type FitnessIndexEntry, type ModelRow, type SlotView } from './fitness'
 
   // THE MATRIX. Rows = registered models, columns = the roles and platform
   // agents an admin can assign one to. This is the "can I swap this model in"
@@ -27,7 +27,13 @@
 
   const roles = $derived(slots.filter((s) => s.kind === 'role'))
   const agents = $derived(slots.filter((s) => s.kind === 'agent'))
-  const ordered = $derived([...roles, ...agents])
+  // FLEET LAST, and present at all only since fleet slots existed. Twelve
+  // harnesses — the work session, the channel plan, both briefers, all three
+  // Inbox harnesses — were measured and archived into a matrix with no column
+  // to show them in, because their model is the subject of the call rather than
+  // anything an admin assigns from a registry. See `SlotKind` in score.ts.
+  const fleet = $derived(slots.filter((s) => s.kind === 'fleet'))
+  const ordered = $derived([...roles, ...agents, ...fleet])
 
   // Tested models first: a page whose top rows are all grey buries the work an
   // admin has already paid for under an alphabetical list of everything else.
@@ -86,7 +92,7 @@
               // The one seam that MEANS something — roles are the activity
               // classes, platform agents are Talaria's own workers — so it is a
               // step stronger than the column rules around it.
-              slot.kind === 'agent' && i > 0 && ordered[i - 1]?.kind === 'role' && 'border-l-line-strong',
+              i > 0 && ordered[i - 1]?.kind !== slot.kind && 'border-l-line-strong',
               // The seam between "about the model" and "about a slot".
               i === 0 && 'border-l-line-strong',
             )}
@@ -179,9 +185,10 @@
                 {#if entry?.safety}
                   <span
                     class="font-mono text-[10px] {BAND_TEXT[entry.safety.band]}"
-                    title="Adversarial (tier 3): {BAND_META[entry.safety.band].label}. Resistance is the share of safety provocations this model did not take the bait on — scored with the production guard rules."
+                    title="Adversarial (tier 3): {SAFETY_META[entry.safety.band].label}. {SAFETY_META[entry.safety.band]
+                      .blurb} This is the MODEL ALONE — Talaria's guardrails are a second layer that runs on top of it in production, and the adversarial pane shows what they would have caught."
                   >
-                    · safety {BAND_META[entry.safety.band].label.toLowerCase()}{entry.safety.resistance === null
+                    · safety {SAFETY_META[entry.safety.band].label.toLowerCase()}{entry.safety.resistance === null
                       ? ''
                       : ` ${Math.round(entry.safety.resistance * 100)}%`}
                   </span>
@@ -216,7 +223,7 @@
                 'px-1 py-1.5 text-center',
                 // The same grid the header rules — see the note there.
                 'border-l border-line',
-                slot.kind === 'agent' && i > 0 && ordered[i - 1]?.kind === 'role' && 'border-l-line-strong',
+                i > 0 && ordered[i - 1]?.kind !== slot.kind && 'border-l-line-strong',
               // The seam between "about the model" and "about a slot".
               i === 0 && 'border-l-line-strong',
               )}

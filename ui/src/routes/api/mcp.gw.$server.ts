@@ -25,11 +25,11 @@ export const Route = defineApi('/api/mcp/gw/$server', {
     const eff = await effectiveMcpFor(caller, params.server)
     if (!eff) return json({ error: 'no access to this MCP server' }, { status: 403 })
 
-    const bodyText = await request.text()
+    let bodyText = await request.text()
     interface Rpc {
       id?: unknown
       method?: string
-      params?: { name?: string }
+      params?: { name?: string; arguments?: Record<string, unknown> }
     }
     let rpc: Rpc | null = null
     try {
@@ -50,6 +50,23 @@ export const Route = defineApi('/api/mcp/gw/$server', {
         { status: 200 },
       )
     }
+
+    // THE BOUNDARY THAT SPENDS A CREDENTIAL. An agent holds
+    // `«secret:deploy.github_pat»` and passes it wherever the value would go;
+    // this is where the value actually appears, on its way OUT. It has to be
+    // here, before every dispatch below, because this route is the only thing an
+    // agent's tool call goes through — see `spendHandlesInToolCall` for what
+    // forwarding the handle verbatim looked like.
+    //
+    // The in-process branches take the mutated `rpc`; the HTTP one re-serializes,
+    // and only when something was actually spent. An unresolved handle is
+    // reported to the OPERATOR and never back to the model: a caller that learns
+    // which names exist has been handed a map of the workspace's credentials.
+    const { spendHandlesInToolCall } = await import('@/server/workspace-secrets')
+    const spend = await spendHandlesInToolCall(rpc, name)
+    for (const u of spend.used) console.warn(`[secrets] ${name} spent ${u.name}.${u.key} (${u.label}) on ${params.server}.${rpc?.params?.name}`)
+    for (const u of spend.unresolved) console.warn(`[secrets] ${name} could not resolve ${u.handle} on ${params.server}.${rpc?.params?.name}: ${u.reason}`)
+    if (spend.changed) bodyText = JSON.stringify(rpc)
 
     // The Workbench surface dispatches IN-PROCESS with the caller's agent
     // identity — grants resolved by the same gateway rules as any server.

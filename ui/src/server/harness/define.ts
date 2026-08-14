@@ -568,8 +568,20 @@ export interface HarnessDefinition<I, O> {
     maxTurns?: number
     /** Overrides on the sandbox's standard world — a ticket in a particular
      *  state, a gap already filed, a DM already sent. Typed loosely here so this
-     *  module stays free of the fitness suite's imports; the suite narrows it. */
-    world?: Record<string, unknown>
+     *  module stays free of the fitness suite's imports; the suite narrows it.
+     *
+     *  A FUNCTION OF THE INPUT, like `workspace` and `credentials` below, and
+     *  for the same reason they are. A flat record is read once per DEFINITION,
+     *  so a harness can only ever pose questions about ONE world — and the most
+     *  valuable fixture in a group is routinely the one that changes it. "Google
+     *  is not connected: do you say so, or invent a link" cannot share a harness
+     *  with "read the calendar" unless this takes the input, and splitting a
+     *  coherent surface into two harnesses to vary one boolean is the tail
+     *  wagging the dog.
+     *
+     *  A plain record still works and still means "the same world for every
+     *  fixture", which is what most harnesses want. */
+    world?: Record<string, unknown> | ((input: I) => Record<string, unknown>)
     /** THE OTHER SURFACE: a FILE workspace with a test runner, for the coding
      *  harnesses. Built per fixture from that fixture's own input, because a
      *  repository and the oracle that decides whether its tests pass are
@@ -581,6 +593,17 @@ export interface HarnessDefinition<I, O> {
     workspace?: (input: I) => {
       files: Array<{ path: string; content: string }>
       passes: (files: ReadonlyArray<{ path: string; content: string }>) => string | null
+    }
+
+    /** THE CREDENTIAL SURFACE — a shell and outbound HTTP, where a granted
+     *  handle is actually spent. Declared by a harness whose subject is what the
+     *  model does with a credential it cannot read.
+     *
+     *  Structurally typed for the same reason `workspace` above is: a definition
+     *  must stay importable without the fitness suite, because `registry.ts`
+     *  enumerates every one of them in production. */
+    credentials?: (input: I) => {
+      granted: Array<{ handle: string; value: string; accepts: string }>
     }
   }
 

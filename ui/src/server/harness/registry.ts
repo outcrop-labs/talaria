@@ -83,6 +83,12 @@ import { researchQueriesHarness, researchSearchHarness, researchSynthesisHarness
 import { summarizerHarness } from './defs/summarizer'
 import { titlerHarness } from './defs/titler'
 import { workSessionHarness } from './defs/work-session'
+import { hermesKnowledgeHarness } from './defs/hermes-knowledge'
+import { hermesDocumentsHarness } from './defs/hermes-documents'
+import { hermesGovernanceHarness } from './defs/hermes-governance'
+import { hermesGoogleHarness } from './defs/hermes-google'
+import { hermesResearchHarness } from './defs/hermes-research'
+import { secretHandlesHarness } from './defs/secret-handles'
 import { workbenchHeavyHarness, workbenchLightHarness, workbenchStandardHarness } from './defs/workbench'
 
 export type HarnessSource = 'builtin' | `app:${string}` | 'custom'
@@ -179,6 +185,28 @@ const BUILTINS: RegisteredHarness[] = [
   // The agent assigned to the ticket, the channel or the plan — including a
   // TIER of it, which the Plan modal lets a user pick per draft.
   register(workSessionHarness, 'builtin'),
+  // THE HERMES FAMILY — "can this model be a workspace agent", as opposed to
+  // "can it run one of Talaria's own features". Every other harness here
+  // measures a platform feature; a fleet persona is handed the toolkit and a
+  // sentence of English, and what it does next is the job. See
+  // `defs/hermes-knowledge.ts` for why that needed its own family.
+  register(hermesKnowledgeHarness, 'builtin'),
+  // The second of the family — the six document tools, none of which had ever
+  // been asked of a model. See `defs/hermes-documents.ts`.
+  register(hermesDocumentsHarness, 'builtin'),
+  // The third: who can SEE things. Runs as a personal assistant because five of
+  // its six tools refuse a general org agent outright.
+  register(hermesGovernanceHarness, 'builtin'),
+  // The fourth: calendar and mail, where a wrong answer reaches somebody
+  // outside the company.
+  register(hermesGoogleHarness, 'builtin'),
+  // The fifth and last: commissioning research. Narrow on purpose — it measures
+  // the DELEGATION, never the report, which the research-* harnesses own.
+  register(hermesResearchHarness, 'builtin'),
+  // Can it spend a credential it is not allowed to see? The platform half of
+  // that arrangement is enforced in code; this is the MODEL half, which until
+  // now nothing measured. See `defs/secret-handles.ts`.
+  register(secretHandlesHarness, 'builtin'),
   // The three coding harnesses, one per Workbench effort slot — the columns
   // that used to read "No harness in this install is bound to this".
   register(workbenchLightHarness, 'builtin'),

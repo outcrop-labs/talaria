@@ -467,7 +467,13 @@ describe('the dry run', () => {
     // The result comes back as a `tool` message paired to the call, which is the
     // shape providers speak — not as a `user` turn narrating one.
     const fed = out.result?.messages.find((m) => m.role === 'tool')
-    expect(fed?.toolCallId).toBe('get_ticket')
+    // THE CALL'S ID, NOT ITS NAME — and this assertion used to encode the bug.
+    // A result names the CALL it answers, so when a provider omits an id the
+    // fallback has to be the same one `toolWireMessage` uses for the assistant
+    // turn (`toolCallIdOf`). Naming the tool instead produced a replay that
+    // referred to a call the provider had never been shown, and Anthropic and
+    // OpenAI both refused every tool round because of it.
+    expect(fed?.toolCallId).toBe('call_0')
     expect(fed?.content).toContain('Ledger rows lose their task id')
   })
 

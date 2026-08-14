@@ -1024,8 +1024,17 @@ describe('testing several candidates at once', () => {
   })
 
   it('puts the running rows first, then the most recently started', async () => {
-    const row = (model: string, state: FitnessRunStatus['state'], startedAt: string): FitnessRunStatus =>
-      ({ state, model, tiers: ['evals'], phase: null, startedAt })
+    // `heartbeatAt: now` on the live row: this test is about ORDERING, and
+    // without a heartbeat a 2026-01-02 row is (correctly) months stale and
+    // reports as failed. See `staleRun`.
+    const row = (model: string, state: FitnessRunStatus['state'], startedAt: string): FitnessRunStatus => ({
+      state,
+      model,
+      tiers: ['evals'],
+      phase: null,
+      startedAt,
+      ...(state === 'running' ? { heartbeatAt: new Date().toISOString() } : {}),
+    })
     const view = await fitnessRuns(
       deps({
         model_fitness_runs: {
@@ -1070,7 +1079,7 @@ describe('the live case list', () => {
 
 describe('the Stop button', () => {
   const settingsWith = (over: Record<string, unknown>): Record<string, unknown> => ({ ...over })
-  const d = (settings: Record<string, unknown>): Partial<SurfaceDeps> => ({
+  const d = (settings: Record<string, unknown>, over: Partial<SurfaceDeps> = {}): Partial<SurfaceDeps> => ({
     readSetting: async <T,>(key: string, fallback: T): Promise<T> => (key in settings ? (settings[key] as T) : fallback),
     writeSetting: async (key, value) => {
       settings[key] = value
@@ -1078,6 +1087,7 @@ describe('the Stop button', () => {
     evalSweepStatuses: async () => ({}),
     stopEvalSweep: () => false,
     models: async () => [],
+    ...over,
   })
 
   const running = (model: string): FitnessRunStatus => ({ state: 'running', model, tiers: ['evals'], phase: 'evals', startedAt: 'now' })
@@ -1109,6 +1119,88 @@ describe('the Stop button', () => {
   it('reports honestly when there is nothing running to stop', async () => {
     const out = await stopFitnessRun(null, d(settingsWith({})))
     expect(out.stopped).toBe(false)
+  })
+
+  // ── ORPHANS ────────────────────────────────────────────────────────────────
+  //
+  // A run is a promise inside a process; its status is a row in the database.
+  // A restart separates the two, and the row went on claiming `running` for
+  // ever: the panel counted it against the concurrency limit, `full` went true,
+  // and Stop wrote a request that no living thing would ever read. Two of them
+  // accumulated in one afternoon of restarts, which is how this was found.
+  const HOUR_AGO = new Date(Date.parse('2026-01-01T12:00:00.000Z') - 60 * 60_000).toISOString()
+  const NOW = '2026-01-01T12:00:00.000Z'
+  const stale = (model: string): FitnessRunStatus => ({
+    state: 'running',
+    model,
+    tiers: ['evals'],
+    phase: 'evals',
+    startedAt: HOUR_AGO,
+    heartbeatAt: HOUR_AGO,
+  })
+  const fresh = (model: string): FitnessRunStatus => ({ ...stale(model), heartbeatAt: NOW })
+
+  it('reports a run that stopped breathing as FAILED, not as running', async () => {
+    const out = await fitnessRuns(d(settingsWith({ model_fitness_runs: { 'spark/dead': stale('spark/dead') } }), { nowIso: () => NOW }))
+    const row = out.runs.find((r) => r.model === 'spark/dead')!
+    expect(row.state).toBe('error')
+    expect(row.error).toMatch(/interrupted/)
+    // And it stops holding a concurrency slot, which is what made the panel
+    // refuse to start anything after two restarts.
+    expect(out.full).toBe(false)
+  })
+
+  it('leaves a run that is still breathing alone', async () => {
+    const out = await fitnessRuns(d(settingsWith({ model_fitness_runs: { 'spark/live': fresh('spark/live') } }), { nowIso: () => NOW }))
+    expect(out.runs.find((r) => r.model === 'spark/live')!.state).toBe('running')
+  })
+
+  it('does not REWRITE the row on a read', async () => {
+    // A read is not the place to take a durable decision: two instances reading
+    // at once would both write, and a merely slow run would have its row
+    // destroyed by whoever looked first. Reporting is enough.
+    const settings = settingsWith({ model_fitness_runs: { 'spark/dead': stale('spark/dead') } })
+    await fitnessRuns(d(settings, { nowIso: () => NOW }))
+    expect((settings.model_fitness_runs as Record<string, FitnessRunStatus>)['spark/dead']!.state).toBe('running')
+  })
+
+  it('CLEARS an orphan when Stop is pressed, rather than leaving a note nobody reads', async () => {
+    const settings = settingsWith({ model_fitness_runs: { 'spark/dead': stale('spark/dead') } })
+    const out = await stopFitnessRun('spark/dead', d(settings, { nowIso: () => NOW }))
+
+    expect(out.stopped).toBe(true)
+    const row = (settings.model_fitness_runs as Record<string, FitnessRunStatus>)['spark/dead']!
+    expect(row.state).toBe('error')
+    expect(row.finishedAt).toBe(NOW)
+    // The note is pointless now, and left behind it would stop the NEXT run on
+    // this model after one case — a bug this file has already had once.
+    expect(settings.model_fitness_stop ?? []).toEqual([])
+  })
+
+  it('clears an orphan on Stop-ALL, which is how the panel button calls it', async () => {
+    // THE CASE THE NAMED-MODEL TEST ABOVE CANNOT REACH, and it was broken for
+    // exactly one commit. Stop-all builds its target list by asking which runs
+    // are live — and once the read started reporting a stale row as `error` to
+    // keep it off the panel, that list no longer contained the orphan. Stop
+    // returned `stopped: false` while the row went on saying `running` for ever,
+    // which is the original bug wearing the fix's clothes.
+    const settings = settingsWith({ model_fitness_runs: { 'spark/dead': stale('spark/dead') } })
+    const out = await stopFitnessRun(null, d(settings, { nowIso: () => NOW }))
+
+    expect(out.stopped).toBe(true)
+    expect((settings.model_fitness_runs as Record<string, FitnessRunStatus>)['spark/dead']!.state).toBe('error')
+    expect(settings.model_fitness_stop ?? []).toEqual([])
+  })
+
+  it('does NOT clear a live run belonging to another instance', async () => {
+    // Killing that row from here would report a sweep as failed while it was
+    // still spending money. The heartbeat is what tells the two apart.
+    const settings = settingsWith({ model_fitness_runs: { 'spark/live': fresh('spark/live') } })
+    await stopFitnessRun('spark/live', d(settings, { nowIso: () => NOW }))
+
+    expect((settings.model_fitness_runs as Record<string, FitnessRunStatus>)['spark/live']!.state).toBe('running')
+    // It gets the ordinary request instead — the run reads it between cases.
+    expect(settings.model_fitness_stop).toEqual(['spark/live'])
   })
 })
 

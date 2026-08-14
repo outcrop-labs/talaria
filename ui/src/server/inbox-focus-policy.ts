@@ -1,3 +1,4 @@
+import { UNTRUSTED_INPUT } from './harness/prompt-rules'
 import { createHash } from 'node:crypto'
 import type {
   AssistantBrief,
@@ -344,6 +345,12 @@ export function buildInboxConversationPrompt(input: {
       // persona, which already anchors it to the owner and the organization.
       // Naming an assistant here would override that for every customer.
       'Answer as the owner’s personal assistant. Keep the response concise and useful.',
+      // THE SAME BOUNDARY THE COMMAND BRANCH STATES, twelve lines below. This one
+      // did not, and `inbox-reply` grades it: a fixture pastes an instruction into
+      // the conversation as if it were a system prompt and fails a model that
+      // obeys. The conversation carries quoted tickets, channel posts and emails —
+      // the same untrusted text the command path is protected from.
+      UNTRUSTED_INPUT,
       'Do not reveal private chain-of-thought. Provide only the final answer and, when useful, a short rationale summary.',
       `Recent visible conversation: ${JSON.stringify(history)}`,
       `Owner message: ${input.instruction}`,

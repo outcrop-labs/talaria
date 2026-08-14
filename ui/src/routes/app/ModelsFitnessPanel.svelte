@@ -5,6 +5,9 @@
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
+  import ContextMenu from '@/components/ui/ContextMenu.svelte'
+  import { useContextMenu } from '@/components/ui/context-menu.svelte'
+  import { MoreHorizontal } from '@lucide/svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
   import Modal from '@/components/ui/Modal.svelte'
@@ -147,6 +150,8 @@
    *  know it CAN DO, which is nine probe calls somebody already paid for. An
    *  admin who has just fixed a fixture wants the first and emphatically not the
    *  second. */
+  const menu = useContextMenu()
+
   const clearResults = async (model: string | null) => {
     const ok = await confirm({
       title: model ? `Clear recorded results for ${model}` : 'Clear every recorded result',
@@ -256,11 +261,30 @@
             {/if}
           </span>
           <span class="ml-auto"></span>
-          <!-- Clearing EVERY result is a panel-level action, not a per-model
-               one: the reason to reach for it is a fixture change that makes the
-               whole matrix meaningless, not one bad run. -->
+          <!-- BEHIND A MENU, not on the strip. Clearing EVERY result is a
+               panel-level action — the reason to reach for it is a fixture
+               change that makes the whole matrix meaningless, not one bad run —
+               and a destructive action of that scope should not sit one stray
+               click from "Test a model", which is the button next to it and the
+               one people actually come here for. It is still one click away,
+               just not an accidental one. -->
           {#if Object.keys(data.index).length > 0}
-            <DangerLink onClick={() => void clearResults(null)}>Clear all results</DangerLink>
+            <button
+              type="button"
+              title="More"
+              aria-label="More actions"
+              onclick={(e) =>
+                menu.openMenu(e, [
+                  {
+                    label: 'Clear all results',
+                    danger: true,
+                    onSelect: () => void clearResults(null),
+                  },
+                ])}
+              class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg"
+            >
+              <MoreHorizontal size={14} aria-hidden="true" />
+            </button>
           {/if}
           <Button
             size="sm"
@@ -449,3 +473,5 @@
     />
   {/if}
 {/if}
+
+<ContextMenu {menu} />

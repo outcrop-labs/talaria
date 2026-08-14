@@ -18,10 +18,12 @@ import {
   touchConversation,
 } from '@/server/conversations'
 import { continueConversation, persistAssistantStream } from '@/server/chat-persist'
+import { markAgentTurn } from '@/server/research-origin'
 import { attachmentAsDataUrl, attachmentTextBlocks, resolveAttachments, isImage } from '@/server/uploads'
 import { refBlocks, resolveRefs } from '@/server/refs'
 import { notifyPlanMentions, PLAN_MODE_PROMPT, planRoutingBlock } from '@/server/plan-doc'
 import { indexActivity } from '@/server/retrieval/sources'
+import { HANDLE_TURN_NOTE, mentionsHandle } from '@/server/workspace-secrets'
 
 const Body = z.object({
   model: z.string().min(1),
@@ -157,12 +159,29 @@ export const Route = defineApi('/api/chat', {
         : spokenContent
     // Plan turns carry the plan-mode harness: think and decide, read
     // freely, create NOTHING — tickets come from Draft tickets later.
+    //
+    // A HANDLE IN THE MESSAGE NEEDS EXPLAINING, and only when one is there.
+    // Standing grants ride in the agent's soul, rendered with everything else it
+    // is; a relay is minted mid-conversation for one errand, so the soul written
+    // this morning has never heard of it — and an agent granted nothing at all is
+    // told nothing at all, by design, so it has never heard of handles either.
+    // Unexplained, it reads `«secret:relay-…»` as a typo and asks the human to
+    // send the real value instead, which is exactly the paste the relay existed
+    // to prevent. Costs a paragraph, on the turns that mention one.
     const messages = [
       ...(kind === 'plan' ? [{ role: 'system' as const, content: PLAN_MODE_PROMPT + (await planRoutingBlock().catch(() => '')) }] : []),
+      ...(mentionsHandle(spokenContent) ? [{ role: 'system' as const, content: HANDLE_TURN_NOTE }] : []),
       ...prior,
       { role: 'user' as const, content: userContent as unknown as string },
     ]
     const assistantId = await insertStreamingAssistant(convId, userSeq + 1)
+
+    // WHERE THIS AGENT IS ANSWERING, recorded before the turn leaves for the
+    // container and not after. Work the agent starts from inside this turn —
+    // a research run, today — reaches Talaria as its own authenticated request
+    // carrying nothing but an agent key, so this is the only place the two can
+    // be tied together. See research-origin.ts for what it is for.
+    void markAgentTurn(agentModel, convId).catch(() => {})
 
     const upstream = await proxyChat({ model: routedModel, messages })
     const headers = new Headers({

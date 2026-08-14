@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { NO_TOOLS, type EvalContext, type CheckResult } from '@/server/harness/define'
+import { toolWireMessage } from '@/server/harness/transport'
 import { runHarness, type HarnessDeps, type Transport, type TransportRequest } from '@/server/harness/run'
 import {
+  citableSource,
   clampQueries,
   queriesFromLines,
   researchQueriesHarness,
@@ -241,6 +243,32 @@ describe('the research search harness', () => {
 
 // ── The tool-driven search path ──────────────────────────────────────────────
 
+describe('what counts as a citable source', () => {
+  it('keeps ordinary pages, including ones whose host merely mentions an account', () => {
+    for (const url of [
+      'https://posthog.com/docs/self-host',
+      'https://plausible.io/blog/google-analytics-gdpr',
+      'https://en.wikipedia.org/wiki/Web_analytics',
+      'https://docs.example.com/accounts/billing-model', // a real doc, under a path with the word in it
+      'https://example.com/register-of-members', // not a sign-up page
+    ]) {
+      expect(citableSource(url), url).toBe(true)
+    }
+  })
+
+  it('drops pages whose whole purpose is signing in', () => {
+    // Straight off a real brief, which recorded 129 "sources" and cited 29 of
+    // them — so the Sources section listed these as *(consulted)*.
+    for (const url of ['https://myaccount.microsoft.com/login', 'https://signup.live.com/', 'https://www.office.com/login', 'https://accounts.google.com/']) {
+      expect(citableSource(url), url).toBe(false)
+    }
+  })
+
+  it('keeps a URL it cannot parse — that is the walker’s business, not this rule’s', () => {
+    expect(citableSource('not a url')).toBe(true)
+  })
+})
+
 describe('toolSearchTransport', () => {
   const SUPPLIER = { server: 'exa', tool: 'web_search' }
   /** Mirrors `MAX_TOOL_ROUNDS` in research.ts — the budget the closing turn follows. */
@@ -265,6 +293,43 @@ describe('toolSearchTransport', () => {
     }
     return { base, seen }
   }
+
+  it('answers the call with the id the assistant turn actually carried', async () => {
+    // THE BUG, AND IT COST EVERY TOOL-LOOP HARNESS ON ANTHROPIC AND OPENAI. When a
+    // provider omits the tool-call id, two files invented their own and disagreed:
+    // `toolWireMessage` wrote `call_0` into the assistant turn while this loop
+    // wrote the tool NAME into the result. The replay then referred to a call the
+    // provider had never been shown —
+    //
+    //   messages.3.tool.tool_call_id: Field required
+    //
+    // — and the sweep filed it as "could not reach this model" on an endpoint
+    // that was answering everything else. `readToolCalls` assigns the id once
+    // now; a fabricated id is fine, two of them is not.
+    let turn = 0
+    const base: Transport = async () => {
+      turn++
+      // NO ID, which is the case that broke: the fallback has to be shared.
+      if (turn === 1) return { kind: 'gateway', text: '', toolNames: ['web_search'], toolCalls: [{ name: 'web_search', args: '{}' }], usage: null, contractDropped: false }
+      return { kind: 'gateway', text: 'answered', toolNames: [], usage: null, contractDropped: false }
+    }
+    const seen: TransportRequest[] = []
+    const traced: Transport = async (req) => {
+      seen.push(req)
+      return base(req)
+    }
+    const transport = toolSearchTransport('run-1', [], SUPPLIER, { base: traced, callTool: async () => ({ text: 'results', structured: null }) })
+    await transport({ model: 'sonnet', messages: [{ role: 'user', content: 'q' }], jsonMode: false, caller: 't' })
+
+    // ASSERTED ON THE WIRE FORM, which is where the two halves have to agree —
+    // `toolWireMessage` is what fills the assistant turn's `id`, so comparing the
+    // in-memory `Message` objects would compare one side before it is rendered.
+    const replay = seen[1]!.messages
+    const assistant = toolWireMessage(replay.find((m) => m.role === 'assistant' && m.toolCalls?.length)!) as { tool_calls: Array<{ id: string }> }
+    const result = toolWireMessage(replay.find((m) => m.role === 'tool')!) as { tool_call_id: string }
+    expect(result.tool_call_id).toBeTruthy()
+    expect(result.tool_call_id).toBe(assistant.tool_calls[0]?.id)
+  })
 
   it('replays tool calls on the TOOL CHANNEL, never as prose the model can imitate', async () => {
     // THE FAILURE THIS PREVENTS, verbatim from a live sweep. The loop used to
@@ -304,6 +369,41 @@ describe('toolSearchTransport', () => {
     const result = replay.find((m) => m.role === 'tool')
     expect(result?.toolCallId).toBe('call_7')
     expect(result?.content).toContain('EOL 2028-04-30')
+  })
+
+  it('spends another round on an EMPTY turn rather than concluding from it', async () => {
+    // THE MOST MISLEADING ERROR IN THE SUITE, now that it is gone. A model that
+    // returned no text and no tool call used to break the loop and throw
+    // "answered the search query without calling web_search" — accusing it of
+    // answering from memory, which is the opposite of what happened — and
+    // `runHarness` wrapped that as "could not reach", which reads as a
+    // connection error. Three wrong statements about one empty reply, and the
+    // reason five research-search cases looked like a network fault.
+    let turn = 0
+    const base: Transport = async () => {
+      turn++
+      // Nothing at all on the first turn; then it works normally.
+      if (turn === 1) return { kind: 'gateway', text: '', toolNames: [], toolCalls: [], usage: null, contractDropped: false }
+      if (turn === 2) {
+        return { kind: 'gateway', text: '', toolNames: ['web_search'], toolCalls: [{ name: 'web_search', args: '{}', id: 'c1' }], usage: null, contractDropped: false }
+      }
+      return { kind: 'gateway', text: 'Node.js 24 reaches end of life on 2028-04-30.', toolNames: [], usage: null, contractDropped: false }
+    }
+    const transport = toolSearchTransport('run-1', [], SUPPLIER, { base, callTool: async () => ({ text: 'EOL 2028-04-30', structured: null }) })
+    const reply = await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'node 24 eol' }], jsonMode: false, caller: 't' })
+    expect(reply.text).toContain('2028-04-30')
+  })
+
+  it('says the DEPLOYMENT failed when every round comes back empty', async () => {
+    // The other half: a model that never answers and never searches has told us
+    // nothing about its research, and the sentence has to say so rather than
+    // blame its judgement — that is the difference between a red cell an admin
+    // should act on and one they should ignore.
+    const base: Transport = async () => ({ kind: 'gateway', text: '', toolNames: [], toolCalls: [], usage: null, contractDropped: false })
+    const transport = toolSearchTransport('run-1', [], SUPPLIER, { base, callTool: async () => ({ text: '', structured: null }) })
+    await expect(
+      transport({ model: 'deepseek', messages: [{ role: 'user', content: 'node 24 eol' }], jsonMode: false, caller: 't' }),
+    ).rejects.toThrow(/empty turn every round.*This is the deployment, not the model/s)
   })
 
   it('ASKS FOR AN ANSWER when the round budget runs out mid-search', async () => {
@@ -436,7 +536,10 @@ describe('toolSearchTransport', () => {
     })
     const reply = await transport({ model: 'deepseek', messages: [{ role: 'user', content: 'q' }], jsonMode: false, caller: 't' })
     expect(reply.text).toContain('could not verify')
-    expect(seen[1]?.messages.at(-1)?.content).toContain('upstream 503')
+    // ANYWHERE IN THE REPLAY, not at a fixed position: the synthesis rules now
+    // arrive with the first results, so the tool's failure is no longer the last
+    // message. What the assertion is about is that the model SEES the failure.
+    expect(seen[1]?.messages.map((m) => m.content).join('\n')).toContain('upstream 503')
     expect(sink).toEqual([])
   })
 
@@ -639,5 +742,41 @@ describe('the research eval fixtures', () => {
     const check = checkOf(researchSynthesisHarness.evals, 'contradictory findings')
     expect(check('# Acme headcount\n\nAcme employs 4,200 people [1].')).toMatch(/reported only 4,200/)
     expect(check('# Acme headcount\n\nThe 2025 annual report says 4,200 [1]; a March 2026 post says over 5,000 [2]. The report is the audited figure.')).toBeNull()
+  })
+})
+
+describe('citation markers past the two-digit line', () => {
+  // THE SHAPE CHANGE THAT EXPOSED THIS. A sonar run answers with a handful of
+  // pre-ranked sources, so a registry never got near [99] and `\d{1,2}` was
+  // invisible. Research is model-agnostic now: an expedition is up to twelve
+  // queries against a web-search tool, each returning a page of results, and the
+  // registry numbers every distinct URL. Three figures is ordinary.
+  const fixture = (name: string) => {
+    const f = (researchSynthesisHarness.evals ?? []).find((e) => e.name.startsWith(name))
+    if (!f) throw new Error(`no fixture starting "${name}"`)
+    return f
+  }
+  const check = (v: string) => fixture('a large registry').check(v, NO_TOOLS)
+
+  it('accepts a three-digit citation the registry actually has', () => {
+    expect(check('# Logical replication at volume\n\nA stalled subscriber pins WAL until it catches up [104].')).toBeNull()
+  })
+
+  it('does not read a report citing ONLY three-digit sources as citing nothing', () => {
+    // The old regex matched none of them, so `cited.length === 0` and the report
+    // failed for having no citations while being fully cited.
+    const out = check('# Logical replication at volume\n\nSlots do not follow a failover [118], and WAL is pinned meanwhile [104].')
+    expect(out).toBeNull()
+  })
+
+  it('still catches an INVENTED three-digit citation, which used to pass unseen', () => {
+    // The registry carries 120. [150] is invention, and two-digit matching could
+    // not see it at all.
+    expect(check('# Logical replication at volume\n\nThroughput collapses above 40k writes per second [150].')).toContain('[150]')
+  })
+
+  it('leaves a four-digit number alone, because that is a year and not a source', () => {
+    // Matching it would strip dates out of reports.
+    expect(check('# Logical replication at volume\n\nThe behaviour has been stable since [2024] per source [7].')).toBeNull()
   })
 })

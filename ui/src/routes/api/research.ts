@@ -6,6 +6,7 @@ import { hasPerm } from '@/server/permissions'
 import { agentCaller } from '@/server/agent-auth'
 import { listResearchRuns, RESEARCH_MODES, startResearch } from '@/server/research'
 import { assistantOwnerFor, canUseAgentModel } from '@/server/users'
+import { currentAgentTurn, rememberResearchOrigin } from '@/server/research-origin'
 import { db } from '@/server/db/pg'
 
 const Body = z.object({
@@ -79,6 +80,15 @@ export const Route = defineApi('/api/research', {
         ownerUserId,
         requestedBy,
       })
+      // WHO IS OWED THE ANSWER. An agent that starts a run mid-conversation
+      // cannot wait for it — the tool returns a runId and the turn ends — so the
+      // run remembers the chat it came out of and reports back there when it
+      // finishes. Only for agent callers: a human who started a run from the
+      // Research page is already looking at the page that updates.
+      if (caller) {
+        const origin = await currentAgentTurn(agentModel)
+        if (origin) await rememberResearchOrigin(run.id, origin)
+      }
       return json({ run })
     } catch (e) {
       return json({ error: (e as Error).message }, { status: 400 })

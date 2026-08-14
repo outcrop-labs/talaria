@@ -67,6 +67,7 @@ import { runHarness, type HarnessDeps, type HarnessResult, type HarnessRunRow } 
 import { defaultTransport, offersToolDefinitions, runsOwnToolLoop, type Transport, type TransportRequest } from '../harness/transport'
 import { makeSandbox } from './toolbox/sandbox'
 import { makeWorkbench } from './toolbox/hermes-tools'
+import { makeCredentialSandbox } from './toolbox/credential-tools'
 import { sandboxTransport, turnBudget, type DryRunResult } from './toolbox/dry-run'
 import { toolSearchTransport, type SearchSource } from '../harness/defs/research'
 import { supplierFor, PROVIDERS_KEY } from '../capability-reach'
@@ -902,12 +903,26 @@ const PER_TURN_TIMEOUT_MS = 60_000
 /** Turns a harness may take in one case, for the clock above. Read off the same
  *  constants the code paths use, so a raised turn budget cannot silently leave
  *  the timeout behind. */
-export function turnsPerCase(def: HarnessDefinition<unknown, unknown>, dryRun: boolean): number {
+export function turnsPerCase(def: HarnessDefinition<unknown, unknown>, dryRun: boolean, supplied = false): number {
   // A dry run drives the loop itself; every other case is one model turn.
-  const loop = dryRun ? turnBudget(def.dryRun?.maxTurns) : 1
+  //
+  // EXCEPT A SUPPLEMENTED ONE, which is the case this missed. When the platform
+  // supplies a capability the model lacks, the harness runs inside
+  // `toolSearchTransport` — up to `MAX_TOOL_ROUNDS` search turns plus a closing
+  // turn to answer — and this function handed that whole loop the budget for ONE
+  // model turn. glm-5.2 filed three research-search cases as
+  // `did not finish inside 60000ms after 1 upstream call(s)`, which reads as a
+  // hung request and was really a four-turn job on a one-turn clock.
+  const loop = dryRun ? turnBudget(def.dryRun?.maxTurns) : supplied ? SUPPLIED_TURNS : 1
   const repair = def.output.kind === 'json' ? Math.max(0, def.output.repair ?? 1) : 0
   return loop + repair
 }
+
+/** Turns the supplement transport may take: `MAX_TOOL_ROUNDS` searching plus one
+ *  to write the answer. Stated here rather than imported so this file does not
+ *  depend on a harness definition for its clock — and if that loop grows, this
+ *  is the number to grow with it. */
+const SUPPLIED_TURNS = 4
 
 const DEFAULT_CASE_TIMEOUT_MS = PER_TURN_TIMEOUT_MS
 /** Bounded for the same reason `HarnessResult.raw` is: a drill-down, not an
@@ -1480,15 +1495,32 @@ async function runOneCase<I, O>(
   const supplier = suppliable.length > 0 && deps.supplier ? await deps.supplier(suppliable[0]!).catch(() => null) : null
 
   const workspace = dryRun ? def.dryRun?.workspace?.(fixture.input) : undefined
-  // The two sandboxes share exactly the surface `EvalContext` needs — a call
+  const credentials = dryRun ? def.dryRun?.credentials?.(fixture.input) : undefined
+  // A FUNCTION OF THE INPUT, or a flat record meaning "the same world every
+  // time". Most harnesses want the record; the ones that do not want it badly —
+  // "Google is not connected: do you say so or invent a link" is the most
+  // valuable fixture in its group and cannot share a harness with "read the
+  // calendar" unless the world can vary per fixture.
+  const declaredWorld = dryRun ? def.dryRun?.world : undefined
+  const dryWorld = typeof declaredWorld === 'function' ? declaredWorld(fixture.input) : declaredWorld
+  // The three sandboxes share exactly the surface `EvalContext` needs — a call
   // log, an ordering question, and (only Talaria's) a world. Narrowed to that
-  // rather than to a union, so a third surface adds a branch above and nothing
-  // else here.
+  // rather than to a union, so a fourth surface adds a branch here and nothing
+  // else.
+  //
+  // WHICH SURFACE. `workspace` is a CODING harness (files and a test runner).
+  // `credentials` is a harness whose subject is spending a credential the model
+  // cannot read — a shell and outbound HTTP, because none of Talaria's own
+  // forty-six tools takes a credential: they authenticate by agent identity,
+  // which is the whole point of that design. Everything else gets Talaria's
+  // toolkit. A harness has exactly one of them.
   const sandbox: DrySandbox | null = !dryRun
     ? null
     : workspace
       ? makeWorkbench(workspace)
-      : makeSandbox({ tools: def.dryRun?.tools, ...(def.dryRun?.world ? { world: def.dryRun.world } : {}) })
+      : credentials
+        ? makeCredentialSandbox(credentials)
+        : makeSandbox({ tools: def.dryRun?.tools, ...(dryWorld ? { world: dryWorld } : {}) })
   const dry: { result?: DryRunResult } = {}
   const base = deps.harnessDeps.transport ?? defaultTransport
 
@@ -1539,7 +1571,7 @@ async function runOneCase<I, O>(
 
   // SIZED TO WHAT THIS CASE MAY DO, not to a flat single-call figure — see
   // `turnsPerCase`. The caller's budget is the PER-TURN allowance.
-  const caseMs = timeoutMs * turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun)
+  const caseMs = timeoutMs * turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun, supplier !== null)
   const outcome = await Promise.race([
     bounded(work, caseMs, () => {
       capture.timedOut = true
@@ -1638,7 +1670,7 @@ async function runOneCase<I, O>(
       taskError = null
     }
     if (gap === null && taskError !== null && evalContext.exhausted) {
-      gap = `the model was still working when the loop's ${turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun)}-turn budget ran out, and the assertion then judged unfinished work ("${taskError}"). Raise this harness's dryRun.maxTurns or ask the fixture something a bounded loop can answer.`
+      gap = `the model was still working when the loop's ${turnsPerCase(def as HarnessDefinition<unknown, unknown>, dryRun, supplier !== null)}-turn budget ran out, and the assertion then judged unfinished work ("${taskError}"). Raise this harness's dryRun.maxTurns or ask the fixture something a bounded loop can answer.`
       taskError = null
     }
     task = gap !== null ? 'unscored' : taskError === null ? 'pass' : 'fail'
@@ -1658,7 +1690,13 @@ async function runOneCase<I, O>(
     return skippedCase(def.id, fixture.name, fixture.band ?? 'standard', result.error ?? 'the capability floor refused this model, so the fixture was never asked')
   }
 
-  const clean = outcome.done && contractHeld && task !== 'fail'
+  // A GAP IS NOT CLEAN. `clean` decides whether the drill-down (the prompt, the
+  // raw reply, the transcript) is kept or dropped, and a gap is exactly the case
+  // where it matters most: the fixture is telling US it could not fairly ask its
+  // question, and the first thing whoever owns that fixture needs is what was
+  // actually sent and what came back. Dropping it because `task !== 'fail'` made
+  // our own bugs the only failures in the suite with no evidence attached.
+  const clean = outcome.done && contractHeld && task !== 'fail' && gap === null
   const costUsd =
     capture.promptTokens + capture.completionTokens > 0 ? await deps.price(model, capture.promptTokens, capture.completionTokens).catch(() => null) : null
 

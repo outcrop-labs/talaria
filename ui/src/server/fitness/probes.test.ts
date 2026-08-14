@@ -356,9 +356,23 @@ describe('quoteAppears', () => {
 })
 
 describe('scoreSearch', () => {
-  it('records true off a single verified citation - a quote we fetched and found is not fakeable', () => {
-    const trials = [pass('a / citation'), fail('b / date', 'said today is 2024-06-01'), unknown('b / citation')]
+  it('records true off ONE attempt that both named today and quoted a page we fetched', () => {
+    const trials = [pass('a / date'), pass('a / citation'), fail('b / date', 'said today is 2024-06-01'), unknown('b / citation')]
     expect(scoreSearch(trials)).toMatchObject({ value: true })
+  })
+
+  it('writes NOTHING for a verified quote the model could not date - that is a good memory, not a search', () => {
+    // deepseek-v4-pro's real shape, and it used to earn a permanent `search:
+    // true` on an endpoint that returns no citations at all. Research then ran
+    // its search stages natively on a model that never searched.
+    expect(scoreSearch([fail('a / date', 'said today is 2024-06-01'), pass('a / citation')])).toBeNull()
+  })
+
+  it('will not pair a passing quote with a passing date from a DIFFERENT reply', () => {
+    // Two half-successes are not one success: the attempt that dated correctly
+    // cited nothing checkable, and the attempt that quoted a real page did not
+    // know what day it was.
+    expect(scoreSearch([pass('a / date'), unknown('a / citation'), fail('b / date', 'said today is 2024-06-01'), pass('b / citation')])).toBeNull()
   })
 
   it('records false only when the model could not name today, which needs no network of ours', () => {

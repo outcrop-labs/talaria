@@ -122,9 +122,54 @@ export function classifyParam(param: string): ParamClass {
  *  more would start stripping parameters that were merely MENTIONED in an error
  *  about something else. */
 export function rejectedParam(errText: string): string | null {
+  // THE PROVIDER'S OWN ANSWER, BEFORE ANY PROSE. OpenAI-compatible errors carry
+  // `"param": "<name>"` beside the message, and it is authoritative where every
+  // pattern below is a guess at English:
+  //
+  //   {"error":{"message":"Function tools with reasoning_effort are not supported
+  //     for gpt-5.6-terra in /v1/chat/completions. ... or set reasoning_effort to
+  //     'none'.", "type":"invalid_request_error", "param":"reasoning_effort"}}
+  //
+  // That message names the parameter three times and quotes it NONE of them, so
+  // every prose pattern in this function misses it — and the run it came from
+  // filed 28 cases as "could not reach this model" across four harnesses, on an
+  // endpoint that was answering fine.
+  //
+  // A dotted path is reduced to its root for the same reason the field-path
+  // pattern below does it: what Talaria can stop sending is `response_format`,
+  // not `response_format.json_schema.strict`.
+  const field = /"param"\s*:\s*"([a-z_]+)(?:\.[A-Za-z0-9_]+)*"/i.exec(errText)
+  if (field?.[1]) return field[1]
+
   const m =
     /[`"']([a-z_]+)[`"'] is (?:deprecated|not supported|unsupported)/i.exec(errText) ??
     /unsupported parameter[:\s`"']+([a-z_]+)/i.exec(errText) ??
+    // OPENAI'S OTHER TWO PHRASINGS, and they are not cosmetic variants — a
+    // parameter the ratchet cannot NAME is one it never stops sending, so the
+    // endpoint 400s on every call for as long as the default is configured.
+    //
+    //   Unrecognized request argument supplied: reasoning
+    //   Unknown parameter: 'reasoning'.
+    //
+    // Neither quotes the name next to "not supported", so none of the patterns
+    // above sees them. `reasoning` is the one that reaches us in practice: it is
+    // a legitimate OpenRouter request default, and an admin who sets it on one
+    // endpoint and points a second at OpenAI gets it forwarded to a provider
+    // that refuses it.
+    /unrecognized request argument supplied[:\s`"']+([a-z_]+)/i.exec(errText) ??
+    /unknown parameter[:\s`"']+([a-z_]+)/i.exec(errText) ??
+    // THE VALUE COMPLAINT, which is a PARAMETER complaint wearing different
+    // words — and the one that bites OpenAI's reasoning models:
+    //
+    //   Unsupported value: 'temperature' does not support 0.2 with this model.
+    //   Only the default (1) is supported.
+    //
+    // Note "does not support", not "is not supported": the patterns above look
+    // for the passive form and miss this entirely, so `temperature` was never
+    // learned and every harness that declares one 400'd on that endpoint for
+    // ever. Dropping it is the right answer — the model then runs at its
+    // default, which is the only value it has.
+    /unsupported value[:\s]*[`"']([a-z_]+)[`"']/i.exec(errText) ??
     /[`"']([a-z_]+)[`"'][^.]{0,40}(?:deprecated|not supported)/i.exec(errText) ??
     // THE FIELD-PATH SHAPE, which is how a provider that validates the request
     // body reports a field it will not accept:

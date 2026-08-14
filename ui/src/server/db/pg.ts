@@ -1470,6 +1470,140 @@ const MIGRATIONS: string[] = [
    where f.owner_user_id is null
      and f.created_by is not null
      and exists (select 1 from users u where u.email = f.created_by or u.name = f.created_by)`,
+  // WORKSPACE SECRETS — the credentials an agent may USE without ever reading.
+  //
+  // A DOC, NOT A ROW, because that is how they actually arrive. A deploy needs a
+  // PAT, a registry password and a signing key together; making somebody create
+  // three unrelated secrets and remember which three go together is how the
+  // wrong one gets used. One doc holds one or more entries, and a single secret
+  // is simply a doc with one — so there is one shape to grant, audit and revoke
+  // rather than two.
+  //
+  // `kind` separates the two lifetimes. A 'vault' doc is durable and belongs to
+  // the workspace. A 'relay' is a ONE-SHOT: somebody pastes a credential into
+  // chat so an agent can do one thing with it, and it is consumed on first
+  // resolve and never persisted anywhere a model can reach.
+  `create table if not exists workspace_secrets (
+     id uuid primary key default gen_random_uuid(),
+     name text unique not null,
+     title text not null,
+     kind text not null default 'vault',
+     note text,
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now(),
+     expires_at timestamptz,
+     uses_remaining integer,
+     last_used_at timestamptz
+   )`,
+  // The entries. `value_cipher` is sealed with the same envelope
+  // `llm_endpoints.api_key_cipher` uses (secretbox.ts), so a database dump is not
+  // a credential dump and one key rotation covers both. Nothing else in the row
+  // is sensitive: the KEY is what a model sees.
+  `create table if not exists workspace_secret_entries (
+     secret_id uuid not null references workspace_secrets(id) on delete cascade,
+     key text not null,
+     label text not null,
+     value_cipher text not null,
+     primary key (secret_id, key)
+   )`,
+  // WHO MAY RESOLVE IT. No grant means nobody — a secret somebody creates and
+  // forgets is inert, which is the safe direction for this table to fail in.
+  `create table if not exists workspace_secret_grants (
+     secret_id uuid not null references workspace_secrets(id) on delete cascade,
+     agent_model text not null,
+     granted_by text,
+     granted_at timestamptz not null default now(),
+     primary key (secret_id, agent_model)
+   )`,
+  // WHERE A CREDENTIAL MAY BE SPENT. Substitution was blind to destination: a
+  // handle resolved wherever it appeared, so an agent talked into pushing to
+  // somebody else's mirror handed over a live token and every layer downstream
+  // saw an ordinary tool call. The model was the only boundary.
+  //
+  // NULL/EMPTY MEANS UNRESTRICTED, which is what every secret created before
+  // this has — the check is opt-in, so nothing that worked yesterday stops. A
+  // non-empty list is an operator saying "this credential is for these hosts",
+  // and `resolveHandles` then refuses anything else AND anything whose
+  // destination it cannot read at all.
+  `alter table workspace_secrets add column if not exists allowed_hosts text[]`,
+  // ── WORKING SECRETS: the ones a PERSON needs back ─────────────────────────
+  //
+  // Everything above this line is a credential an agent SPENDS and nobody ever
+  // reads — no reveal verb, not for an admin, not once. That property is load-
+  // bearing and these columns do not weaken it: `revealable` defaults FALSE, so
+  // every credential that already exists, and every one the admin panel creates,
+  // keeps exactly the guarantee it had.
+  //
+  // What is new is a different noun sharing the same store. Somebody building a
+  // feature has a staging key their two teammates also need, and today the
+  // options are Slack, a sticky note, or a .env passed around — all of which are
+  // worse than a place that seals it, shares it deliberately and writes down
+  // every look. `revealable = true` marks those, and ONLY those, as readable by
+  // the people named in `workspace_secret_readers`.
+  //
+  // IT IS NOT AN ARTIFACT ROW, deliberately, though it wears one's clothes in
+  // the Files browser. An artifact body is indexed for retrieval, exported to
+  // Google, downloadable, and reachable unauthenticated at /api/artifacts/
+  // public/$slug. A credential in that pipeline is a credential on the open
+  // internet one visibility click later. So the value stays here, sealed, with
+  // no content path — and only the PLACEMENT is artifact-shaped.
+  `alter table workspace_secrets add column if not exists revealable boolean not null default false`,
+  `alter table workspace_secrets add column if not exists owner_user_id uuid references users(id) on delete set null`,
+  `alter table workspace_secrets add column if not exists folder_id uuid references artifact_folders(id) on delete set null`,
+  // WHO MAY LOOK. Distinct from `workspace_secret_grants`, which is who may
+  // SPEND — two verbs, two audiences, and conflating them is how an agent ends
+  // up holding a value it only ever needed to use. A human here can reveal; an
+  // agent there can spend and can never read.
+  `create table if not exists workspace_secret_readers (
+     secret_id uuid not null references workspace_secrets(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     granted_by text,
+     granted_at timestamptz not null default now(),
+     primary key (secret_id, user_id)
+   )`,
+  `create index if not exists workspace_secrets_folder_idx on workspace_secrets(folder_id)`,
+  // ── SECRET FOLDERS: organisation that belongs to the Secrets view ─────────
+  //
+  // THE FIRST ATTEMPT FILED SECRETS INTO ARTIFACT FOLDERS, on the theory that
+  // one filing system beats two. It is the wrong theory here. A folder in Files
+  // is a place for DOCUMENTS — it shows up in the file browser, it carries
+  // artifact sharing, and a secret filed into it was invisible from the folder
+  // it claimed to be in. What people actually want is to tidy their credentials
+  // where their credentials live, and to hand a teammate the whole "Checkout
+  // rewrite" set in one gesture rather than six.
+  //
+  // So these are their own folders, in their own namespace, and `folder_id`
+  // above goes away unused.
+  `alter table workspace_secrets drop column if exists folder_id`,
+  `create table if not exists secret_folders (
+     id uuid primary key default gen_random_uuid(),
+     name text not null,
+     owner_user_id uuid references users(id) on delete cascade,
+     created_at timestamptz not null default now()
+   )`,
+  `alter table workspace_secrets add column if not exists secret_folder_id uuid references secret_folders(id) on delete set null`,
+  `create index if not exists workspace_secrets_secret_folder_idx on workspace_secrets(secret_folder_id)`,
+  // SHARING A FOLDER SHARES WHAT IS IN IT, now and later. That "and later" is
+  // the point: a set somebody is actively working on gains a credential next
+  // week, and re-sharing it to the same four people is the step everybody
+  // forgets. Access is therefore resolved at READ time as the union of a
+  // secret's own grants and its folder's — never copied down onto rows, which
+  // would freeze the membership at the moment of sharing.
+  `create table if not exists secret_folder_readers (
+     folder_id uuid not null references secret_folders(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     granted_by text,
+     granted_at timestamptz not null default now(),
+     primary key (folder_id, user_id)
+   )`,
+  `create table if not exists secret_folder_grants (
+     folder_id uuid not null references secret_folders(id) on delete cascade,
+     agent_model text not null,
+     granted_by text,
+     granted_at timestamptz not null default now(),
+     primary key (folder_id, agent_model)
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

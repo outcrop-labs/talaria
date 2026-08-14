@@ -225,6 +225,51 @@ describe('bindSlots', () => {
     }
   })
 
+  it('leaves NO harness without a column', async () => {
+    // THE BUG THIS PINS, and it was quiet for a long time. The matrix's columns
+    // ARE the slots, so a harness bound to no slot is measured, scored, archived
+    // — and invisible. Twelve were: the work session, the channel plan, the plan
+    // doc, outreach, all three Inbox harnesses, both briefers, and both research
+    // stages. Every one declares `model: { chain: [] }` because production pins
+    // the SUBJECT of the call, so there was nothing to derive a binding from and
+    // no registry an admin picks that model out of.
+    //
+    // That is the largest single consumer of models in the product, and the page
+    // an admin chooses one on said nothing about it.
+    const hs = builtinActivityHarnesses()
+    const bindings = await bindSlots(hs)
+    const bound = new Set(bindings.flatMap((b) => b.harnesses.map((h) => h.id)))
+    expect(hs.map((h) => h.id).filter((id) => !bound.has(id))).toEqual([])
+  })
+
+  it('splits the fleet into the two jobs an org runs different models behind', async () => {
+    // A personal assistant reads one owner's inbox and drafts in their voice; a
+    // workspace agent works tickets and drives the toolkit against a shared
+    // board. One column would average a model's fitness for both and be right
+    // about neither.
+    const bindings = await bindSlots(builtinActivityHarnesses())
+    const assistant = bindings.find((b) => slotKey(b.slot) === 'fleet:assistant')
+    const agent = bindings.find((b) => slotKey(b.slot) === 'fleet:agent')
+    expect(assistant?.harnesses.map((h) => h.id)).toEqual(expect.arrayContaining(['inbox-brief', 'inbox-command', 'inbox-reply', 'briefer:brief', 'briefer:chat']))
+    expect(agent?.harnesses.map((h) => h.id)).toEqual(expect.arrayContaining(['work-session', 'hermes:knowledge', 'channel-plan']))
+    // The two are disjoint — a harness in both would be scored twice against
+    // one model and read as corroboration.
+    const inBoth = (assistant?.harnesses ?? []).filter((h) => (agent?.harnesses ?? []).some((a) => a.id === h.id))
+    expect(inBoth).toEqual([])
+  })
+
+  it('locks every fleet binding against the real registry — a typo cannot invent a column', async () => {
+    // Same guarantee `declaredEdges` gets, for the same reason: these bindings
+    // are BY NAME, so a renamed harness silently empties a column rather than
+    // failing anywhere.
+    const ids = new Set(builtinActivityHarnesses().map((h) => h.id))
+    const bindings = await bindSlots(builtinActivityHarnesses())
+    for (const b of bindings.filter((x) => x.slot.kind === 'fleet')) {
+      expect(b.harnesses.length, `${slotKey(b.slot)} has no harnesses`).toBeGreaterThan(0)
+      for (const h of b.harnesses) expect(ids.has(h.id), `${h.id} is not a registered harness`).toBe(true)
+    }
+  })
+
   it('locks every declared edge against the real registry — a typo cannot invent a binding', () => {
     const ids = new Set(builtinActivityHarnesses().map((h) => h.id))
     for (const edge of declaredEdges()) expect(ids.has(edge.harness), `${edge.harness} is not a registered harness`).toBe(true)

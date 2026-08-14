@@ -6,6 +6,8 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
   import { cn } from '@/lib/cn'
+  import { SquareTerminal } from '@lucide/svelte'
+  import { focusGold } from '@/components/chat/chat-chrome'
   import { fly } from '@/lib/motion'
   import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
   import CapabilityTags from './CapabilityTags.svelte'
@@ -13,7 +15,7 @@
   import FitnessObserved from './FitnessObserved.svelte'
   import FitnessOverview from './FitnessOverview.svelte'
   import FitnessTerminal from './FitnessTerminal.svelte'
-  import { BAND_META, BAND_SEVERITY, BAND_TEXT, pct, type DetailPayload, type ModelRow } from './fitness'
+  import { SAFETY_META, BAND_META, BAND_SEVERITY, BAND_TEXT, pct, type DetailPayload, type ModelRow } from './fitness'
 
   // One model, in full: what the run established, where it broke, and what
   // production says about the same model on the same definitions.
@@ -36,6 +38,8 @@
 
   const record = $derived(detail.record)
   const live = $derived(detail.live)
+  /** The run's log, live or archived — see `DetailView.consoleLog`. */
+  const consoleLines = $derived(live?.log ?? detail.consoleLog ?? [])
   const harnessLabels = $derived(Object.fromEntries((record?.harnesses ?? []).map((h) => [h.id, h.label])))
 
   // Worst first, assignable slots only. An admin opening a model wants the thing
@@ -135,7 +139,7 @@
     if (record) out.push({ id: 'verdicts', label: `Verdicts ${slots.length}` })
     if (record?.probes) out.push({ id: 'capabilities', label: `Capabilities ${record.probes.results.length}` })
     if (record) out.push({ id: 'fixtures', label: failingCases > 0 ? `Fixtures ${failingCases}✕` : `Fixtures ${record.cases.length}` })
-    if (record?.adversarial) out.push({ id: 'adversarial', label: `Adversarial ${BAND_META[record.adversarial.band].label}` })
+    if (record?.adversarial) out.push({ id: 'adversarial', label: `Safety ${SAFETY_META[record.adversarial.band].label}` })
     out.push({ id: 'observed', label: 'Vs production' })
     return out
   })
@@ -153,7 +157,17 @@
   /** Whether the live console is expanded. Local rather than in the URL: it is a
    *  reading preference for the minute you are watching a run, not a selection
    *  worth linking to. */
-  let consoleOpen = $state(true)
+  // CLOSED ON OPEN, ALWAYS — including while a run is in flight.
+  //
+  // It briefly auto-opened for a live run, on the theory that watching a sweep is
+  // the one case where the console is what somebody came for. That theory is
+  // wrong in the situation it fires in: anyone who tests models has runs going
+  // most of the time, so "the exception" was every time they opened the dialog,
+  // and the thing they had actually clicked in to read started a third of the way
+  // down the pane. A button carrying its own line count is discoverable enough;
+  // opening a panel nobody asked for is not a shortcut, it is a decision made on
+  // somebody's behalf.
+  let consoleOpen = $state(false)
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
@@ -209,8 +223,40 @@
       <p class="mt-2 max-w-prose font-sans text-xs text-warning">{c}</p>
     {/each}
 
-    <Tabs class="mt-3 flex-wrap" items={panes} value={pane} onChange={setPane} />
+    <!-- THE CONSOLE IS NOT A PLACE, IT IS A THING YOU TURN ON. It was a tab,
+         which made it somewhere to GO — and going there meant leaving the
+         verdicts you were reading. A run's log is context for every other pane,
+         so it toggles from the strip and opens above whichever one is showing.
+         The count is on the button because a console with nothing in it is worth
+         knowing about before you click. -->
+    <div class="mt-3 flex items-end gap-2">
+      <Tabs class="flex-wrap" items={panes} value={pane} onChange={setPane} />
+      {#if consoleLines.length > 0}
+        <button
+          type="button"
+          onclick={() => (consoleOpen = !consoleOpen)}
+          aria-pressed={consoleOpen}
+          title={consoleOpen ? 'Hide the run console' : `Show the run console (${consoleLines.length} lines)`}
+          class={cn(
+            'ml-auto mb-1 inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] transition-colors',
+            focusGold,
+            consoleOpen ? 'border-line-strong bg-panel text-fg' : 'border-line text-ink-dim hover:text-fg',
+          )}
+        >
+          <SquareTerminal size={13} aria-hidden="true" />
+          {consoleLines.length}
+        </button>
+      {/if}
+    </div>
   </div>
+
+  <!-- Above the pane rather than inside one: it is bounded, it clips its own
+       content, and it belongs to the RUN rather than to whatever is open. -->
+  {#if consoleOpen && consoleLines.length > 0}
+    <div class="shrink-0 overflow-hidden border-b border-line bg-panel px-7 pb-3">
+      <FitnessTerminal log={consoleLines} {live} bind:open={consoleOpen} />
+    </div>
+  {/if}
 
   <!-- ── The open compartment ──────────────────────────────────────────────
        One pane, its own scroll. Switching tabs returns you to the top of the
@@ -225,29 +271,18 @@
          over a scrolling list, and only it knows that. -->
     <div class="min-h-0 flex-1 overflow-hidden" in:fly={{ y: 6, duration: 180 }}>
       {#if pane === 'live' && live}
-        <!-- TWO READINGS OF ONE RUN. The terminal is the run MOVING — every case
-             as it lands, in order, with the slow ones visibly slow, which is the
-             only view in which a provider falling over at 11:04 is legible. The
-             list below it is the run's FAILURES in full, which is what you read
-             once something has gone wrong. Neither substitutes for the other.
-             THEY SCROLL SEPARATELY, and that is the whole layout: the console is
-             pinned and sizes to its own bounded content, the list underneath
-             takes the rest and scrolls inside itself. -->
+        <!-- THE LIVE PANE IS THE RUN'S FAILURES. The console used to live in here
+             too, which is why this comment used to be about two scroll
+             containers fighting: it is a toggle on the tab strip now, pinned
+             above whichever pane is open, so a log that is context for every
+             pane is no longer trapped inside one of them. -->
         <div class="flex h-full min-h-0 flex-col gap-3 px-7 py-5">
-          <!-- CONTAINER ONE: the console. Bounded, opaque, `overflow-hidden`. -->
-          <div class="shrink-0 overflow-hidden bg-panel">
-            <FitnessTerminal {live} bind:open={consoleOpen} />
-          </div>
-          <!-- CONTAINER TWO: the failures. Its own bounded box, its own scroll,
-               its own opaque background.
-               THE POINT OF THE TWO BEING SEPARATE, stated because three rounds of
-               patching missed it: they were sharing a scroll container, so the
-               list's header escaped upward and the console's log was pushed below
-               the list, and the transparent gaps between the accordion cards let
-               each show through the other. Two boxes that each clip their own
-               content cannot do that, whatever either one does inside. -->
           <div class="min-h-0 flex-1 overflow-hidden rounded-md bg-panel">
-            {#if live.cases.length > 0}
+            <!-- THE FAILURE LIST IS A LIVE-RUN THING. After the run, the archived
+                 Fixtures pane is the better read — it has every case, not the
+                 bounded live window — so the console pane shows the console and
+                 points there rather than duplicating it worse. -->
+            {#if live && live.cases.length > 0}
               <FitnessCases cases={live.cases} dropped={live.dropped} {harnessLabels} fill />
             {:else}
               <EmptyState
@@ -381,15 +416,19 @@
         {@const adv = record.adversarial}
         <SectionHeader
           title="Adversarial"
-          info="Tier 3 — safety provocations scored with the production guard rules, so the numbers are directly comparable to what the guard files in production. Stricter than the other tiers: there is no repair turn for a fabricated outage, it has already been read."
+          info="Tier 3 — safety provocations, scored TWICE. `resistance` is the model on its own, with the guard's grounding deliberately omitted; `after guardrails` is what production would actually have filed, because Talaria runs guardrails.ts over every harness that declares them. The seeds are built to be hard and strong models land in the eighties on the first number — the gap between the two is the layer the platform adds."
         />
         <div class="mb-3 flex flex-wrap items-center gap-2">
           <!-- Tier 3 bands are a SUBSET of the matrix's bands, not a second
                vocabulary, so this chip reads out of the same table as every
                other band on the page. -->
-          <Chip tone={BAND_META[adv.band].tone}>{BAND_META[adv.band].label}</Chip>
+          <Chip tone={SAFETY_META[adv.band].tone}>{SAFETY_META[adv.band].label}</Chip>
           <span class="font-mono text-[11px] text-muted">
-            resistance {adv.resistance === null ? 'unscorable' : pct(adv.resistance)} · {adv.silent} silent · {adv.errored} voided
+            model alone {adv.resistance === null ? 'unscorable' : pct(adv.resistance)}
+            {#if adv.guardedResistance !== null}
+              · <span class="text-success">after guardrails {pct(adv.guardedResistance)}</span>
+            {/if}
+            · {adv.silent} silent · {adv.errored} voided
           </span>
           {#if adv.escalation.adversary}
             <span class="font-mono text-[11px] text-muted">
@@ -399,12 +438,21 @@
             <span class="font-sans text-xs text-muted">Seed corpus only — no escalation round ran.</span>
           {/if}
         </div>
+        <!-- SAID IN WORDS, ONCE, because the two percentages above are the whole
+             point of this pane and a reader who takes the first for the answer
+             comes away with the wrong conclusion about every model on the page. -->
+        <p class="mb-3 max-w-prose font-sans text-xs text-muted">
+          {SAFETY_META[adv.band].blurb} These provocations score the MODEL, with the guard's grounding deliberately off — it is what the weights do with nothing behind them.
+          <strong class="text-fg">After guardrails</strong> is the same run as production would have recorded it, and it moves in both directions: grounding drops a hit where the
+          provocation planted the span in the prompt, and adds one where a claim is ungrounded against real sources. Neither number is the other's correction — the first is about
+          the model, the second is about this deployment.
+        </p>
         <ul class="space-y-1">
           {#each adv.rules as r (r.rule)}
             <li class="flex flex-wrap items-baseline gap-2 font-mono text-[11px]">
               <span class="w-40 shrink-0 text-fg">{r.rule}</span>
               <span class={r.elicited > 0 ? 'text-danger' : 'text-muted'}>{r.elicited}/{r.scored} elicited</span>
-              <span class="text-muted">· {r.filed} would have been filed in production</span>
+              <span class="text-muted">· {r.filed} filed in production{r.filed !== r.elicited ? ` (${r.filed < r.elicited ? 'grounding dropped' : 'grounding added'} ${Math.abs(r.elicited - r.filed)})` : ''}</span>
             </li>
           {/each}
         </ul>

@@ -20,7 +20,7 @@ const completeViaGateway = vi.fn()
 const proxyChat = vi.fn()
 const resolveRoute = vi.fn()
 const fetchUpstream = vi.fn()
-const recordGatewayUsage = vi.fn(async () => {})
+const recordGatewayUsage = vi.fn(async (..._a: unknown[]) => {})
 
 /** One upstream call, as `buildUpstream` builds it — the body is what the test
  *  reads to prove the definitions went out, and `contractDrops` is how the
@@ -56,9 +56,17 @@ vi.mock('@/server/gateway', () => ({
 }))
 vi.mock('@/server/usage', () => ({ estimateTokens: () => 0, recordUsage: async () => {} }))
 
-const { fleetTransport, fleetStream, gatewayStream, gatewayTransport, offersToolDefinitions, pickTransport, toolWireMessage } = await import(
-  '@/server/harness/run'
-)
+const {
+  fleetTransport,
+  fleetStream,
+  gatewayImageTurn,
+  gatewayStream,
+  gatewayTransport,
+  offersToolDefinitions,
+  personaProbeTurn,
+  pickTransport,
+  toolWireMessage,
+} = await import('@/server/harness/run')
 
 /** A rendered fleet: base ids only, which is what `listAgents` returns. */
 const rendered = (...ids: string[]) => ({ agents: ids.map((id) => ({ id, label: id, role: '' })), source: 'gateway' as const })
@@ -249,6 +257,63 @@ describe('offering tool definitions', () => {
     expect(built[0]?.body.response_format).toEqual({ type: 'json_object' })
   })
 
+  it('renders the tool channel on a turn that REPLAYS one but offers no tools', async () => {
+    // THE FOURTH REQUEST. `toolSearchTransport` ends with a closing turn — the
+    // model has searched, now it writes the answer — which offers no tools and
+    // carries the whole tool conversation behind it. With no defs it fell
+    // through to `completeViaGateway`, which flattens every message to
+    // `{role, content}` and drops `tool_call_id`. Anthropic then refused the
+    // request it had itself produced two turns earlier:
+    //
+    //   messages.3.tool.tool_call_id: Field required
+    //
+    // Three tool turns came back 200 and the fourth 400'd, which is exactly why
+    // this read as "the model cannot reach the search tool".
+    drops = []
+    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    await gatewayTransport({
+      model: 'claude-sonnet-5',
+      caller: 't',
+      jsonMode: false,
+      messages: [
+        { role: 'user', content: 'q' },
+        { role: 'assistant', content: '', toolCalls: [{ name: 'web_search', args: '{}', id: 'toolu_1' }] },
+        { role: 'tool', content: 'results', toolCallId: 'toolu_1' },
+        { role: 'user', content: 'now answer' },
+      ],
+    })
+    const msgs = built[0]?.body.messages as Array<Record<string, unknown>>
+    expect(msgs.find((m) => m.role === 'tool')?.tool_call_id).toBe('toolu_1')
+    // AND IT OFFERS NOTHING, because nothing was asked for. `tools: []` with
+    // `tool_choice: 'auto'` is a request some providers reject and none needs.
+    expect('tools' in (built[0]?.body ?? {})).toBe(false)
+    expect('tool_choice' in (built[0]?.body ?? {})).toBe(false)
+    // `reasoning_effort` belongs to a turn that OFFERS tools, not to every replay.
+    expect('reasoning_effort' in (built[0]?.body ?? {})).toBe(false)
+  })
+
+  it('tells the provider to switch reasoning effort off when it offers tools', async () => {
+    // THE RUN THAT FOUND THIS. gpt-5.6-terra refused every tool turn with
+    // "Function tools with reasoning_effort are not supported ... or set
+    // reasoning_effort to 'none'", and 27 cases across four tool-loop harnesses
+    // were filed as "could not reach this model". We were not SENDING the
+    // parameter — the model's own default effort is what conflicts — so the
+    // strip-and-retry ratchet had nothing to remove and bailed.
+    drops = []
+    fetchUpstream.mockResolvedValue(withToolCall('get_weather', '{}'))
+    await gatewayTransport(toolRequest)
+    expect(built[0]?.body.reasoning_effort).toBe('none')
+  })
+
+  it('does not send it on a turn that offers no tools', async () => {
+    // The incompatibility is with FUNCTION TOOLS. A plain completion has no
+    // reason to touch the model's reasoning, and quietly turning it off
+    // everywhere would be a capability change smuggled in as a bug fix.
+    completeViaGateway.mockResolvedValue({ text: 'a title', contractDrops: [] })
+    await gatewayTransport({ model: 'qwen3-14b', messages: [], jsonMode: false, caller: 't' })
+    expect(built.some((b) => 'reasoning_effort' in b.body)).toBe(false)
+  })
+
   it('does NOT ask for json_object when the contract is rooted at an ARRAY', async () => {
     // WHAT THIS COST. `json_object` is not "reply in JSON" — it is "return a JSON
     // OBJECT", enforced by constrained decoding. `channel-plan` returns a
@@ -345,5 +410,162 @@ describe('a tool conversation, replayed', () => {
     // Every harness `render` produces these and must be untouched by the change.
     expect(toolWireMessage({ role: 'user', content: 'hello' })).toEqual({ role: 'user', content: 'hello' })
     expect(toolWireMessage({ role: 'system', content: 'be terse' })).toEqual({ role: 'system', content: 'be terse' })
+  })
+})
+
+// ── The two turns that carry an IMAGE ────────────────────────────────────────
+//
+// RECONSTRUCTED CODE WITH NO TEST, which is why these exist. Both functions were
+// rebuilt from transcripts after a `git checkout` destroyed the working copy,
+// and nothing in the tree exercised either — the worst combination available:
+// code nobody has read since it was rewritten, on a path a probe run takes.
+//
+// What they share is the rule worth locking. A `TransportRequest` has nowhere to
+// put an image (`Message.content` is a string by construction), so both take
+// images alongside the messages and both must attach them to the LAST USER TURN.
+// Attaching to the system prompt is a shape providers accept and models ignore —
+// it would not error, it would silently return an answer about nothing, and a
+// vision probe would report the model as blind.
+
+/** The wire body the last `buildUpstream` call was given. */
+const lastBody = () => built[built.length - 1]!.body as { messages: Array<{ role: string; content: unknown }> }
+
+const okJson = (text: string) => ({
+  ok: true,
+  status: 200,
+  json: async () => ({ choices: [{ message: { content: text } }], usage: { prompt_tokens: 10, completion_tokens: 2 } }),
+  text: async () => '',
+})
+
+describe('gatewayImageTurn', () => {
+  beforeEach(() => {
+    resolveRoute.mockResolvedValue({ endpoint: { id: 'e1' }, upstreamModel: 'up', capabilities: [] })
+    fetchUpstream.mockResolvedValue(okJson('a cat'))
+  })
+
+  it('puts the image on the last USER turn, not the system prompt', async () => {
+    const out = await gatewayImageTurn(
+      'gw-model',
+      [
+        { role: 'system', content: 'You describe images.' },
+        { role: 'user', content: 'What is this?' },
+      ],
+      ['data:image/png;base64,AAAA'],
+      'probe',
+    )
+    expect(out).toBe('a cat')
+    const msgs = lastBody().messages
+    // The system turn is untouched — still a plain string.
+    expect(msgs[0]).toEqual({ role: 'system', content: 'You describe images.' })
+    // The user turn became parts, text FIRST and the image after it.
+    expect(msgs[1]!.role).toBe('user')
+    expect(msgs[1]!.content).toEqual([
+      { type: 'text', text: 'What is this?' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+    ])
+  })
+
+  it('uses the LAST user turn when there are several', async () => {
+    await gatewayImageTurn(
+      'gw-model',
+      [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'ok' },
+        { role: 'user', content: 'second' },
+      ],
+      ['data:image/png;base64,BBBB'],
+      'probe',
+    )
+    const msgs = lastBody().messages
+    expect(msgs[0]!.content).toBe('first')
+    expect(Array.isArray(msgs[2]!.content)).toBe(true)
+  })
+
+  it('falls back to the last message when there is no user turn at all', async () => {
+    // A degenerate shape, but silently sending the image nowhere would make a
+    // model look blind rather than make the caller look wrong.
+    await gatewayImageTurn('gw-model', [{ role: 'system', content: 'only this' }], ['data:image/png;base64,CCCC'], 'probe')
+    expect(Array.isArray(lastBody().messages[0]!.content)).toBe(true)
+  })
+
+  it('carries several images on the one turn', async () => {
+    await gatewayImageTurn('gw-model', [{ role: 'user', content: 'compare' }], ['data:a', 'data:b'], 'probe')
+    expect((lastBody().messages[0]!.content as unknown[]).length).toBe(3)
+  })
+
+  it('refuses a model the gateway does not serve, and reports an upstream failure', async () => {
+    resolveRoute.mockResolvedValueOnce(null)
+    await expect(gatewayImageTurn('nope', [{ role: 'user', content: 'x' }], [], 'probe')).rejects.toThrow(/not on the gateway/)
+
+    fetchUpstream.mockResolvedValueOnce({ ok: false, status: 502, text: async () => 'upstream exploded' })
+    await expect(gatewayImageTurn('gw-model', [{ role: 'user', content: 'x' }], [], 'probe')).rejects.toThrow(/502/)
+  })
+
+  it('meters the turn, falling back to an estimate when the provider sends no usage', async () => {
+    recordGatewayUsage.mockClear()
+    fetchUpstream.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'hi' } }] }), text: async () => '' })
+    await gatewayImageTurn('gw-model', [{ role: 'user', content: 'x' }], [], 'vision')
+    const call = recordGatewayUsage.mock.calls[0]?.[0] as { caller?: string; estimated?: boolean } | undefined
+    expect(call?.caller).toBe('vision')
+    // `estimated` is what tells an operator the number is ours rather than the
+    // provider's — a metered turn that lies about its provenance is worse than
+    // an unmetered one.
+    expect(call?.estimated).toBe(true)
+  })
+})
+
+describe('personaProbeTurn', () => {
+  /** A fleet reply, as `pumpPersonaStream` expects to read it. */
+  const sse = (chunks: string[]) =>
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        for (const chunk of chunks) c.enqueue(new TextEncoder().encode(chunk))
+        c.close()
+      },
+    })
+
+  it('refuses a model that is not a rendered agent, rather than grading mock output', async () => {
+    // THE ONE THAT MATTERS MOST. The fleet answers in mock mode when nothing is
+    // rendered, and a probe that accepted it would report canned text as a
+    // persona's capability — a green result for an agent that does not exist.
+    proxyChat.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'x-talaria-canned': '1' }),
+      body: sse(['data: [DONE]\n\n']),
+    })
+    await expect(personaProbeTurn('ghost-agent', [{ role: 'user', content: 'hi' }], { caller: 'probe' })).rejects.toThrow(/not a rendered agent/)
+  })
+
+  it('reports a gateway failure instead of returning an empty turn', async () => {
+    proxyChat.mockResolvedValue({ ok: false, status: 503, headers: new Headers(), body: null })
+    await expect(personaProbeTurn('dex-developer', [{ role: 'user', content: 'hi' }], { caller: 'probe' })).rejects.toThrow(/persona gateway 503/)
+  })
+
+  it('puts the image on the last USER turn, exactly as the gateway side does', async () => {
+    // The two sides of the `offersToolDefinitions` fork have to agree, or a
+    // vision probe means different things depending on which model answered it.
+    proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: sse(['data: [DONE]\n\n']) })
+    await personaProbeTurn(
+      'dex-developer',
+      [
+        { role: 'system', content: 'You describe images.' },
+        { role: 'user', content: 'What is this?' },
+      ],
+      { caller: 'probe', images: ['data:image/png;base64,DDDD'] },
+    )
+    const sent = proxyChat.mock.calls.at(-1)![0] as { messages: Array<{ role: string; content: unknown }> }
+    expect(sent.messages[0]!.content).toBe('You describe images.')
+    expect(sent.messages[1]!.content).toEqual([
+      { type: 'text', text: 'What is this?' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,DDDD' } },
+    ])
+  })
+
+  it('leaves the messages alone when there is no image', async () => {
+    proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: sse(['data: [DONE]\n\n']) })
+    await personaProbeTurn('dex-developer', [{ role: 'user', content: 'plain' }], { caller: 'probe' })
+    const sent = proxyChat.mock.calls.at(-1)![0] as { messages: Array<{ content: unknown }> }
+    expect(sent.messages[0]!.content).toBe('plain')
   })
 })

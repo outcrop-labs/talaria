@@ -33,6 +33,12 @@ describe('the registry', () => {
       'briefer:brief',
       'briefer:chat',
       'work-session',
+      'hermes:knowledge',
+      'hermes:documents',
+      'hermes:governance',
+      'hermes:google',
+      'hermes:research',
+      'secrets:handles',
       'workbench:light',
       'workbench:standard',
       'workbench:heavy',
@@ -258,6 +264,17 @@ describe('the PLATFORM_AGENTS cross-check', () => {
       'briefer:brief',
       'briefer:chat',
       'work-session',
+      // The Hermes family: its model is the AGENT IN THE CONVERSATION, so there
+      // is nothing for an admin to assign and no role to fall back to — the
+      // third kind, exactly like work-session.
+      'hermes:knowledge',
+      'hermes:documents',
+      'hermes:governance',
+      'hermes:google',
+      'hermes:research',
+      // Same third kind: the workspace grants a handle to an AGENT, so the
+      // model spending it is whichever one that agent runs.
+      'secrets:handles',
       'channel-plan',
       'plan-doc',
       'outreach:check-in',

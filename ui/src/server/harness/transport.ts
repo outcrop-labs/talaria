@@ -89,11 +89,25 @@ export interface ToolDefinition {
 /** A tool call the model MADE, as the provider reported it. */
 export interface ToolCall {
   name: string
-  /** THE PROVIDER'S OWN ID FOR THIS CALL, when it gave one. A tool RESULT has to
-   *  name the call it answers (`tool_call_id`), and a loop that invents an id —
-   *  or reuses the tool name — desynchronises the moment a model calls the same
-   *  tool twice in one turn. Optional because not every provider emits one and a
-   *  missing id is better than a fabricated one. */
+  /** THE CORRELATION ID. A tool RESULT has to name the call it answers
+   *  (`tool_call_id`), so this is what ties the two halves of a tool round
+   *  together.
+   *
+   *  ASSIGNED ONCE, IN `readToolCalls`, whether or not the provider sent one —
+   *  and that is the whole point. It used to be left absent when a provider
+   *  omitted it, on the theory that a missing id beats a fabricated one, and
+   *  every consumer then fabricated its OWN: `toolWireMessage` wrote `call_0`
+   *  into the assistant turn while `toolSearchTransport` wrote the tool NAME
+   *  into the result. One fact, two spellings, and the replay referred to a call
+   *  the provider had never been shown:
+   *
+   *    messages.3.tool.tool_call_id: Field required
+   *
+   *  It cost every tool-loop harness on Anthropic and OpenAI. A fabricated id is
+   *  fine; two of them is not, so there is exactly one place that invents one.
+   *
+   *  Still optional on the type because a hand-built `Message` in a test may not
+   *  carry one — but nothing that comes off the wire is missing it. */
   id?: string
   /** The raw JSON arguments string, verbatim. Kept unparsed because "the model
    *  called the right tool with arguments that are not JSON" is a distinct and
@@ -406,7 +420,7 @@ interface WireToolCall {
  *  call we can score or guard on, so it is dropped rather than carried as an
  *  empty string that every reader then has to defend against. */
 const readToolCalls = (raw: WireToolCall[] | undefined): ToolCall[] =>
-  (raw ?? []).flatMap((tc) => (tc.function?.name ? [{ name: tc.function.name, args: tc.function.arguments ?? '', ...(tc.id ? { id: tc.id } : {}) }] : []))
+  (raw ?? []).flatMap((tc, i) => (tc.function?.name ? [{ name: tc.function.name, args: tc.function.arguments ?? '', id: tc.id ?? `call_${i}` }] : []))
 
 /** The gateway call that OFFERS TOOLS, and the reason it is not
  *  `completeViaGateway`: that helper's signature has no slot for tool
@@ -425,9 +439,8 @@ async function gatewayToolTurn(req: TransportRequest, defs: ToolDefinition[]): P
   if (!route) throw new Error(`model "${req.model}" is not on the gateway`)
   const body: Record<string, unknown> = {
     model: req.model,
-    // `toolWireMessage`, NOT a flatten to `{role, content}`. THIS IS THE TURN
-    // THAT OFFERS TOOLS, so it is the one turn guaranteed to be replaying a
-    // conversation that CONTAINS tool calls — and flattening dropped
+    // `toolWireMessage`, NOT a flatten to `{role, content}`. This is the one
+    // renderer that speaks the tool channel — flattening dropped
     // `toolCalls`/`toolCallId` on the floor, leaving a caller no way to show the
     // model what it had already called except by narrating it into prose. Models
     // imitate whatever the transcript shows them: `research-search` narrated
@@ -435,10 +448,33 @@ async function gatewayToolTurn(req: TransportRequest, defs: ToolDefinition[]): P
     // answer on a live sweep. See the note on `Message.toolCalls`.
     messages: req.messages.map(toolWireMessage),
     stream: false,
-    tools: defs.map(toolWireShape),
-    tool_choice: 'auto',
+    // NO TOOLS OFFERED IS A REAL CASE HERE, and it is the closing turn of a
+    // search loop: the conversation replays a tool round, but this turn asks for
+    // prose. Sending `tools: []` with `tool_choice: 'auto'` is a request some
+    // providers reject and none of them needs, so the fields are simply absent.
+    ...(defs.length ? { tools: defs.map(toolWireShape), tool_choice: 'auto' } : {}),
   }
   if (req.temperature !== undefined) body.temperature = req.temperature
+  // FUNCTION TOOLS AND A REASONING EFFORT ARE INCOMPATIBLE ON /v1/chat/completions,
+  // and the provider says so in the sentence it refuses with:
+  //
+  //   Function tools with reasoning_effort are not supported for gpt-5.6-terra in
+  //   /v1/chat/completions. To use function tools, use /v1/responses or set
+  //   reasoning_effort to 'none'.
+  //
+  // WE WERE NOT SENDING IT. The model's OWN default effort is what conflicts, so
+  // there was nothing for the strip-and-retry ratchet to remove — it bails when
+  // the named parameter is not in the body — and a sweep of that model filed 27
+  // cases across four tool-loop harnesses as "could not reach this model" on an
+  // endpoint that was answering everything else fine.
+  //
+  // So the tool turn says the one thing that makes tools work. It is sent to
+  // EVERY provider rather than gated on a vendor check, because a table of which
+  // providers accept which parameters is the thing this file refuses to maintain:
+  // an endpoint that does not know the field answers 400 naming it, it IS in the
+  // body, and the existing ratchet strips it for good on the retry. The quirk
+  // costs one 400 once, on providers that have it, and nothing thereafter.
+  if (defs.length) body.reasoning_effort = 'none'
   const toolFormat = responseFormatOf(req)
   if (toolFormat) body.response_format = toolFormat
   const call = await buildUpstream(route, body)
@@ -478,10 +514,30 @@ async function gatewayToolTurn(req: TransportRequest, defs: ToolDefinition[]): P
   }
 }
 
+/** Does this conversation CONTAIN a tool round — an assistant turn that called
+ *  something, or a result answering one? A turn that replays one has to be sent
+ *  through the renderer that speaks the tool channel, whether or not it is
+ *  OFFERING tools on this turn. */
+const replaysTools = (req: TransportRequest): boolean => req.messages.some((m) => m.role === 'tool' || (m.toolCalls?.length ?? 0) > 0)
+
 export const gatewayTransport: Transport = async (req) => {
   if (toolPolicyOf(req) === 'own') throw new Error(gatewayToolsRefusal(req.model))
   const defs = toolDefsOf(req)
-  if (defs.length) return gatewayToolTurn(req, defs)
+  // OFFERING TOOLS IS NOT THE ONLY REASON TO RENDER THEM, and this cost every
+  // research-search fixture on Anthropic.
+  //
+  // `toolSearchTransport` ends with a CLOSING TURN that offers no tools — the
+  // model has searched, now it writes the answer — and that turn carries the
+  // whole tool conversation behind it. With no defs it fell through to
+  // `completeViaGateway`, which flattens every message to `{role, content}` and
+  // drops `tool_call_id` on the floor. Anthropic then refused the request it had
+  // itself produced two turns earlier:
+  //
+  //   messages.3.tool.tool_call_id: Field required
+  //
+  // Three tool turns came back 200 and the fourth 400'd, which is why this read
+  // as "the model cannot reach the search tool" — the search had already worked.
+  if (defs.length || replaysTools(req)) return gatewayToolTurn(req, defs)
   const res = await completeViaGateway(req.model, req.messages, {
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     caller: req.caller,
@@ -564,12 +620,28 @@ export const toolWireMessage = (m: Message): Record<string, unknown> => {
     role: m.role,
     content: m.content,
     tool_calls: m.toolCalls.map((c, i) => ({
-      id: c.id ?? `call_${i}`,
+      id: toolCallIdOf(c, i),
       type: 'function',
       function: { name: c.name, arguments: c.args },
     })),
   }
 }
+
+/** THE ID A TOOL RESULT MUST ANSWER, from the call it answers.
+ *
+ *  ONE FALLBACK, EXPORTED, because two of them is the bug this exists to stop.
+ *  `readToolCalls` assigns an id to everything that comes off the wire, but a
+ *  `TransportReply` built by hand — a fleet transport, a test, a future
+ *  transport — can still carry a call without one, and every loop that replays a
+ *  tool round has to reach the SAME answer as `toolWireMessage` does when it
+ *  renders the assistant turn. When they disagreed, the result named a call the
+ *  provider had never been shown and Anthropic answered
+ *  `messages.3.tool.tool_call_id: Field required`.
+ *
+ *  `index` is the call's position IN ITS ASSISTANT MESSAGE, which is what
+ *  `toolWireMessage` numbers from — a loop that pushes one call per message
+ *  passes 0. */
+export const toolCallIdOf = (call: ToolCall, index: number): string => call.id ?? `call_${index}`
 
 /** ONE TURN THAT CARRIES AN IMAGE, which the ordinary transports cannot.
  *

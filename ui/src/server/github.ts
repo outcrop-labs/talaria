@@ -373,7 +373,48 @@ export async function createPullRequest(
 
 /** An authenticated clone URL for the sandbox harness — app tokens expire in
  *  ~an hour by design; PATs are the org's own choice of blast radius. */
+/** THE CLONE URL AN AGENT IS GIVEN — and it no longer carries the token.
+ *
+ *  It used to be `https://x-access-token:<token>@github.com/…`, returned in the
+ *  `start_job` tool RESULT, which is the model's context. The job prompt even
+ *  said "the token is short-lived — clone now", which is an accurate
+ *  description of a credential we had just handed to a language model.
+ *
+ *  It does not need to be there any more. The sandbox's git is configured with
+ *  Talaria's credential helper, so git asks US when it needs one — see
+ *  `agentGitCredential` below and `secrets.git-credential.ts`. The agent clones
+ *  a plain URL, the push works, and no credential was ever in the transcript.
+ *
+ *  Still nullable: a deployment with no GitHub configured has no repo to offer,
+ *  and every caller already handles that. */
 export async function cloneUrl(repo: string): Promise<string | null> {
+  return (await githubToken(repo)) ? `https://github.com/${repo}.git` : null
+}
+
+/** GIT'S CREDENTIAL, for a repo this agent was actually granted.
+ *
+ *  The second source behind `/api/secrets/git-credential`. The first is the
+ *  workspace credential store; this is Talaria's own GitHub installation token,
+ *  which is what a workbench job needs in order to push and which no workspace
+ *  credential replaces.
+ *
+ *  SCOPED BY THE PATH GIT ASKS ABOUT. Git sends `path` when
+ *  `credential.useHttpPath` is set — the rendered gitconfig sets it — so the
+ *  request names the repository, and an agent gets a token only for a repo on
+ *  its own grant list. Without that, this would hand every agent a token for
+ *  every repo the installation can reach: a far worse deal than the clone URL
+ *  it replaces. */
+export async function agentGitCredential(
+  agentId: string,
+  host: string,
+  path: string | undefined,
+): Promise<{ username: string; password: string; repo: string } | null> {
+  if (host.toLowerCase() !== 'github.com') return null
+  const repo = (path ?? '').replace(/^\/+/, '').replace(/\.git$/, '')
+  // `owner/name` and nothing else: a path we cannot read as a repo is a request
+  // we cannot scope, and an unscoped answer is what this check exists to stop.
+  if (!/^[^/]+\/[^/]+$/.test(repo)) return null
+  if (!(await grantedRepos(agentId)).includes(repo)) return null
   const token = await githubToken(repo)
-  return token ? `https://x-access-token:${token}@github.com/${repo}.git` : null
+  return token ? { username: 'x-access-token', password: token, repo } : null
 }

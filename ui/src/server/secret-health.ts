@@ -113,6 +113,9 @@ function stateOf(cipher: string | null | undefined, envName?: string | null): Se
 const id = {
   llm: (endpointId: string) => `llm:${endpointId}`,
   agentSecret: (agentId: string, name: string) => `agent-secret:${agentId}:${name}`,
+  // Not clearable — see the row below for why a half-deleted bundle is worse
+  // than none — but it still needs a stable id so the list can key on it.
+  workspaceSecret: (name: string, key: string) => `workspace-secret:${name}:${key}`,
   agentKey: (agentId: string) => `agent-key:${agentId}`,
   googleUser: (userId: string) => `google-user:${userId}`,
   googleOrg: () => 'google-org',
@@ -162,6 +165,63 @@ export async function secretHealth(): Promise<SecretHealth> {
     })
   }
 
+  // ── Workspace credentials (the handle store) ───────────────────────────────
+  //
+  // ADDED BECAUSE ITS ABSENCE WAS THE BUG. This page answers "what secret
+  // material does this instance hold, and can it still be decrypted" — and the
+  // newest store in the tree was not in the answer. An operator rotating the
+  // encryption key would have watched every other row go unreadable with no
+  // idea that a dozen agent credentials had gone with them.
+  //
+  // ONE ROW PER ENTRY, not per doc: a bundle can be half-readable if it was
+  // written across a rotation, and a doc-level row would report the whole thing
+  // on the state of whichever entry happened to sort first.
+  const workspaceSecrets = (await sql`
+    select s.name, s.title, s.revealable, s.owner_user_id as "ownerUserId", s.updated_at as "updatedAt",
+           e.key, e.label, e.value_cipher as "cipher",
+           (select count(*)::int from workspace_secret_grants g where g.secret_id = s.id) as "grants"
+      from workspace_secrets s join workspace_secret_entries e on e.secret_id = s.id
+     order by s.title asc, e.key asc
+  `) as unknown as Array<{
+    name: string
+    title: string
+    revealable: boolean
+    ownerUserId: string | null
+    updatedAt: unknown
+    key: string
+    label: string
+    cipher: string
+    grants: number
+  }>
+  for (const w of workspaceSecrets) {
+    rows.push({
+      id: id.workspaceSecret(w.name, w.key),
+      group: 'agents',
+      label: `${w.title} · ${w.label}`,
+      unlocks: w.revealable
+        ? `A working secret. ${w.grants > 0 ? `${w.grants} agent${w.grants === 1 ? '' : 's'} can spend it; ` : ''}the people it is shared with can read it`
+        : `${w.grants > 0 ? `${w.grants} agent${w.grants === 1 ? '' : 's'} can SPEND it` : 'Granted to no agent, so nobody can spend it'} — and nobody can read it`,
+      surface: w.revealable ? 'Files → Secrets' : 'Admin → Secrets',
+      href: w.revealable ? '/artifacts?p=secrets' : '/admin?tab=secrets',
+      // A SPENT ONE-SHOT IS NOT BROKEN. `resolveHandles` empties the ciphertext
+      // once the last use is gone, deliberately — reporting that as an
+      // encryption failure would send an operator hunting a key problem that
+      // does not exist.
+      // A SPENT ONE-SHOT reads as 'missing' rather than 'unreadable': the value
+      // is gone because we destroyed it on purpose, not because a key rotation
+      // broke it, and sending an operator hunting an encryption problem that
+      // does not exist is the whole failure this row exists to avoid.
+      state: w.cipher === '' ? 'missing' : stateOf(w.cipher),
+      scope: w.revealable ? 'user' : 'instance',
+      ...(w.revealable && w.ownerUserId ? { owner: w.ownerUserId } : {}),
+      setAt: iso(w.updatedAt),
+      // NOT CLEARABLE FROM HERE. Deleting one entry out of a bundle leaves a
+      // credential that half-works, and both owning surfaces already delete the
+      // whole doc behind a confirmation that names who loses access.
+      clearable: false,
+    })
+  }
+
   // ── Agents ─────────────────────────────────────────────────────────────────
   const agentSecrets = (await sql`
     select s.agent_id as "agentId", s.name, s.value_enc as "cipher", s.updated_at as "updatedAt",
@@ -174,7 +234,13 @@ export async function secretHealth(): Promise<SecretHealth> {
       id: id.agentSecret(s.agentId, s.name),
       group: 'agents',
       label: s.name,
-      unlocks: `Whatever ${s.agentName} uses ${s.name} for — it reaches the container as an environment variable`,
+      // SAID PLAINLY, because the difference between this row and a handle row
+      // above is the whole security story and it used to be invisible. An env
+      // var is materialised into the container as plaintext, and every fleet
+      // agent runs a harness with a shell — so `echo $NAME` returns the value,
+      // and from there it is in the model's context and on its way to a
+      // provider. Handles exist so that sentence is not true.
+      unlocks: `Whatever ${s.agentName} uses ${s.name} for. Materialised into the container as a PLAINTEXT environment variable, so ${s.agentName} can read it — prefer a credential handle where the value only has to be spent, not seen`,
       surface: 'Agents',
       href: '/agents',
       state: stateOf(s.cipher),

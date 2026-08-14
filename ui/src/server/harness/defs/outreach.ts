@@ -217,6 +217,27 @@ export const outreachCheckInHarness = defineHarness<OutreachCheckInInput, string
   // `report_gap` is here because reaching for it on a periodic check-in is a
   // failure worth seeing.
   dryRun: {
+    // EIGHT, MEASURED. This declared no budget and took the default six, and a
+    // check-in genuinely runs longer than that on the fixtures that have
+    // something to say: list the tickets, read the two that look stale, check who
+    // owns them, then comment or stay quiet. The archive shows a tail of 8 tool
+    // calls and one turn-budget gap at six — a model still working when the loop
+    // stopped, whose silence was then read as the restraint the fixture is about.
+    //
+    // Not twelve: the failure mode this harness exists to catch is an agent that
+    // MANUFACTURES activity, and a generous budget is an invitation to do exactly
+    // that. Eight covers the observed tail and no more.
+    maxTurns: 8,
+    // SEVEN OF FORTY-SIX, and the deviation is deliberate — the same argument
+    // work-session states. Production hands the persona its whole MCP surface;
+    // benching that would measure a model's tolerance for thirty-nine irrelevant
+    // options rather than whether it knows when to stay quiet. These seven are
+    // what the job needs plus the escape hatch whose MISUSE is a thing worth
+    // measuring.
+    //
+    // IT IS STILL A DEVIATION, and it cuts one way: a model that picks correctly
+    // from seven may not from forty-six. This surface is the floor of the claim,
+    // never the ceiling.
     tools: ['comment', 'post_to_channel', 'message_user', 'get_ticket', 'list_tickets', 'list_teammates', 'report_gap'],
   },
   // Thirty seconds, which is what `sweepOutreach` has always waited: this is a

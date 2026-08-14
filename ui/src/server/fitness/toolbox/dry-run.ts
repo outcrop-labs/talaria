@@ -34,6 +34,7 @@
 // that consumes a dry run asserts over `Sandbox.calls` — a list of what happened
 // — with plain code.
 import type { Message } from '../../harness/define'
+import { toolCallIdOf } from '../../harness/transport'
 import type { ToolCall, Transport, TransportReply, TransportRequest } from '../../harness/transport'
 
 /** WHAT THE LOOP NEEDS OF A SANDBOX, and no more.
@@ -157,10 +158,12 @@ export function sandboxTransport(sandbox: DispatchSandbox, base: Transport, out?
       // "did it call write_file" was told no about a call plainly in the
       // transcript. A turn budget bounds how many times the model gets to THINK;
       // it must never discard what the model already decided to do.
-      for (const call of calls) {
+      for (const [i, call] of calls.entries()) {
         names.push(call.name)
         const res = await sandbox.dispatch(call)
-        convo.push({ role: 'tool', content: res.text.slice(0, 8_000), toolCallId: call.id ?? call.name })
+        // `i` is the call's index in the assistant message above, which is what
+        // `toolWireMessage` numbers its `tool_calls` from — see `toolCallIdOf`.
+        convo.push({ role: 'tool', content: res.text.slice(0, 8_000), toolCallId: toolCallIdOf(call, i) })
       }
 
       if (turn === maxTurns - 1) {

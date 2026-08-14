@@ -289,7 +289,32 @@ export interface McpToolResult {
  *  a platform caller has no such human, and quietly using the org headers
  *  instead would act as a shared identity on a server explicitly configured to
  *  never be one. Better to fail and say so. */
-export async function callMcpTool(serverName: string, tool: string, args: Record<string, unknown>): Promise<McpToolResult> {
+export async function callMcpTool(serverName: string, tool: string, args: Record<string, unknown>, caller?: string): Promise<McpToolResult> {
+  // ── THE BOUNDARY THAT SPENDS A CREDENTIAL ──────────────────────────────────
+  //
+  // A model can hold `«secret:deploy.github_pat»` and pass it wherever the value
+  // would go; this is where the value actually appears, on its way OUT to a tool
+  // that needs it. Nothing that comes back is resolved — a tool RESULT re-enters
+  // the model's context, and putting a credential there would undo the whole
+  // arrangement in one line.
+  //
+  // A caller with no grant resolves nothing. The reason is reported to the
+  // OPERATOR rather than to the model: a caller that learns which names exist
+  // has been handed a map of the workspace's credentials.
+  if (caller) {
+    const { resolveHandles } = await import('./workspace-secrets')
+    const resolved = await resolveHandles(JSON.stringify(args), caller)
+    if (resolved.used.length > 0 || resolved.unresolved.length > 0) {
+      try {
+        args = JSON.parse(resolved.text) as Record<string, unknown>
+      } catch {
+        /* a credential containing a quote broke the round trip — send the args
+           unresolved rather than a malformed body, and let the tool refuse. */
+      }
+      for (const u of resolved.used) console.warn(`[secrets] ${caller} spent ${u.name}.${u.key} (${u.label}) on ${serverName}.${tool}`)
+      for (const u of resolved.unresolved) console.warn(`[secrets] ${caller} could not resolve ${u.handle} on ${serverName}.${tool}: ${u.reason}`)
+    }
+  }
   const server = await getMcpServer(serverName)
   if (!server) throw new Error(`MCP server "${serverName}" is not registered`)
   if (!server.enabled) throw new Error(`MCP server "${serverName}" is disabled`)
