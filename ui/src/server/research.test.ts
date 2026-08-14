@@ -85,7 +85,11 @@ vi.mock('@/server/llm-gateway', () => ({
       }),
       { headers: { 'Content-Type': 'application/json' } },
     ),
-  resolveRoute: async () => ({ endpoint: 'e', upstreamModel: 'sonar' }),
+  // SHAPED LIKE A REAL ENDPOINT, because `searchTransport` now reads
+  // `endpoint.provider` to decide whether the provider's own search can be armed
+  // (see native-search.ts). A bare string passed that check silently as
+  // `undefined` and threw inside the stage.
+  resolveRoute: async () => ({ endpoint: { name: 'e', provider: 'perplexity' }, upstreamModel: 'sonar' }),
   contractDropsOf: () => [],
 }))
 vi.mock('@/server/model-roles', () => ({ resolveRoleModel: async () => 'sonar' }))

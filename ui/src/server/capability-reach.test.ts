@@ -132,6 +132,44 @@ describe('reachFor', () => {
     expect(out['search']).toMatchObject({ reached: true, via: 'tool', supplier: { server: 'exa', tool: 'web_search' } })
   })
 
+  it('prefers a REAL search tool over a native search claim, because nothing here ever asks a model to browse', async () => {
+    // The bug this ordering fixes. deepseek-v4-pro was recorded `search: true`,
+    // so the run took the native path — a plain completion, no
+    // `web_search_options`, no plugin — and the model answered from memory. The
+    // registry ended empty on a box where SearXNG was up and answering the very
+    // queries the run had planned.
+    const out = await reachFor(
+      [KEY],
+      ['search'],
+      deps({ servers: async () => [searchServer()], capabilities: async () => ({ search: fact(true), tools: fact(true) }) }),
+    )
+    expect(out['search']).toMatchObject({ reached: true, via: 'tool', supplier: { server: 'exa', tool: 'web_search' } })
+  })
+
+  it('leaves a browsing model on the native path when the admin says nothing supplies search here', async () => {
+    // The escape hatch for a sonar model, whose own index beats looping it
+    // through a web-search tool: pinning `search` to null is an admin saying
+    // nothing supplies it in this install, and native is all that is left.
+    const out = await reachFor(
+      [KEY],
+      ['search'],
+      deps({
+        servers: async () => [searchServer()],
+        providers: async (): Promise<CapabilityProviders> => ({ search: null }),
+        capabilities: async () => ({ search: fact(true), tools: fact(true) }),
+      }),
+    )
+    expect(out['search']).toMatchObject({ reached: true, via: 'native' })
+  })
+
+  it('keeps a model that can SEE on the native path even with describe_image registered', async () => {
+    // Only `search` prefers its tool. Captioning is lossier than a model reading
+    // the image itself, so vision must not be demoted the same way.
+    const eyes = server({ name: 'talaria', tools: [{ name: 'describe_image', description: 'Describe an image.' }] })
+    const out = await reachFor([KEY], ['vision'], deps({ servers: async () => [eyes], capabilities: async () => ({ vision: fact(true), tools: fact(true) }) }))
+    expect(out['vision']).toMatchObject({ reached: true, via: 'native' })
+  })
+
   it('reaches by tool on a model nothing has measured — unknown is not false', async () => {
     const out = await reachFor([KEY], ['search'], deps({ servers: async () => [searchServer()] }))
     expect(out['search']).toMatchObject({ reached: true, via: 'tool' })

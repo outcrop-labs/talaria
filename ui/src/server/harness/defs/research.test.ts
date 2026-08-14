@@ -3,6 +3,7 @@ import { NO_TOOLS, type EvalContext, type CheckResult } from '@/server/harness/d
 import { toolWireMessage } from '@/server/harness/transport'
 import { runHarness, type HarnessDeps, type Transport, type TransportRequest } from '@/server/harness/run'
 import {
+  citableSource,
   clampQueries,
   queriesFromLines,
   researchQueriesHarness,
@@ -241,6 +242,32 @@ describe('the research search harness', () => {
 })
 
 // ── The tool-driven search path ──────────────────────────────────────────────
+
+describe('what counts as a citable source', () => {
+  it('keeps ordinary pages, including ones whose host merely mentions an account', () => {
+    for (const url of [
+      'https://posthog.com/docs/self-host',
+      'https://plausible.io/blog/google-analytics-gdpr',
+      'https://en.wikipedia.org/wiki/Web_analytics',
+      'https://docs.example.com/accounts/billing-model', // a real doc, under a path with the word in it
+      'https://example.com/register-of-members', // not a sign-up page
+    ]) {
+      expect(citableSource(url), url).toBe(true)
+    }
+  })
+
+  it('drops pages whose whole purpose is signing in', () => {
+    // Straight off a real brief, which recorded 129 "sources" and cited 29 of
+    // them — so the Sources section listed these as *(consulted)*.
+    for (const url of ['https://myaccount.microsoft.com/login', 'https://signup.live.com/', 'https://www.office.com/login', 'https://accounts.google.com/']) {
+      expect(citableSource(url), url).toBe(false)
+    }
+  })
+
+  it('keeps a URL it cannot parse — that is the walker’s business, not this rule’s', () => {
+    expect(citableSource('not a url')).toBe(true)
+  })
+})
 
 describe('toolSearchTransport', () => {
   const SUPPLIER = { server: 'exa', tool: 'web_search' }

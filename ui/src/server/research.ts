@@ -56,6 +56,10 @@ import { resolveRoleModel } from './model-roles'
 import { addNotification } from './notifications'
 import { indexActivity, indexPersonal } from './retrieval/sources'
 import { generateTitle } from './titler'
+import { insertUserMessage, nextSeq, touchConversation } from './conversations'
+import { continueConversation } from './chat-persist'
+import { forgetResearchOrigin, researchOrigin } from './research-origin'
+import { resolveRefs } from './refs'
 
 /** Unchanged as a public name and as a type — `ResearchDepth` is declared in
  *  the harness definition because that module cannot import this one, and this
@@ -90,10 +94,10 @@ export interface ResearchSource {
 
 /** Depth budget + search model preference per mode. Query counts bound each
  *  round; rounds bound the expedition loop. Overridable for tests via env. */
-const MODES: Record<ResearchMode, { rounds: number; queries: number; search: string[]; blurb: string }> = {
-  recon: { rounds: 1, queries: 1, search: ['sonar', 'sonar-pro'], blurb: 'one fast pass — a cited answer in minutes' },
-  brief: { rounds: 1, queries: 3, search: ['sonar-pro', 'sonar'], blurb: 'planned angles, one synthesis — a briefing' },
-  expedition: { rounds: 3, queries: 4, search: ['sonar-pro', 'sonar-reasoning-pro', 'sonar'], blurb: 'iterative deep dive — a full report' },
+const MODES: Record<ResearchMode, { rounds: number; queries: number; blurb: string }> = {
+  recon: { rounds: 1, queries: 1, blurb: 'one fast pass — a cited answer in minutes' },
+  brief: { rounds: 1, queries: 3, blurb: 'planned angles, one synthesis — a briefing' },
+  expedition: { rounds: 3, queries: 4, blurb: 'iterative deep dive — a full report' },
 }
 const budgetFor = (mode: ResearchMode) => {
   const b = MODES[mode]
@@ -115,30 +119,92 @@ interface SearchHit {
   sources: SearchSource[]
 }
 
-/** The search model for a tier: its per-tier MODEL ROLE when assigned (and
- *  still routable) — Perplexity's sonar family maps one-to-one onto the modes
- *  — else the first registered sonar from the mode's preference list.
- *  Research needs a search-capable model on the gateway to exist.
+/** WHICH MODEL SEARCHES, AND HOW — resolved once per run, model-agnostic.
  *
- *  AUDIT 1.6: `resolveRoleModel` validates that the assignment still ROUTES and
- *  nothing else, so what comes back here may have no web search at all — the
- *  auto path's careful sonar preference is bypassed the moment an admin picks
- *  something. The RUNTIME defense is one layer down: `researchSearchHarness`
- *  declares `requires: ['search']` with `refuseBelow: true`, so a model
- *  positively known not to search refuses the stage instead of hallucinating a
- *  cited brief. This function stays permissive on purpose — unknown is not
- *  missing, and a fresh self-host has probed nothing. */
-export async function searchModelFor(mode: ResearchMode): Promise<string | null> {
-  const assigned = await resolveRoleModel(`research-${mode}`)
-  if (assigned) return assigned
-  const ids = new Set((await gatewayModels()).map((m) => m.id))
-  for (const want of budgetFor(mode).search) {
-    // bare or endpoint-qualified spelling
-    if (ids.has(want)) return want
-    const qualified = [...ids].find((id) => id.endsWith(`/${want}`))
-    if (qualified) return qualified
+ *  WHAT THIS REPLACED, and why it had to. Research used to require a Perplexity
+ *  sonar model: `MODES[].search` held a hardcoded list of sonar spellings, and
+ *  `startResearch` threw "register a Perplexity sonar model on /models first"
+ *  when none was registered. An org running Llama on its own hardware, or
+ *  anything that is not sonar, could not research at all — on a platform whose
+ *  own SearXNG can search perfectly well for any model that can call a tool.
+ *
+ *  Talaria also has a standing rule against hardcoded model lists (they rot the
+ *  week a vendor renames something), and that list was one.
+ *
+ *  THE ORDER, and each step is a different question:
+ *
+ *    1. THE ADMIN'S CHOICE. A `research-<mode>` role assignment is somebody
+ *       saying "use this one", and nothing here second-guesses it.
+ *    2. A MODEL THAT SEARCHES BY ITSELF, established from CAPABILITY FACTS
+ *       rather than from its name — the catalog derives `search` from
+ *       `web_search_options` (model-catalog.ts), and a probe can too. This is
+ *       where sonar wins when it is registered, without sonar being named.
+ *    3. ANYTHING ROUTABLE, PLUS OUR OWN SEARCH. The tool path: our harness
+ *       drives a registered search tool or the platform's SearXNG. This is the
+ *       step that makes the feature model-agnostic, and it is the common case
+ *       on a self-hosted install.
+ *
+ *  IT FAILS ONLY WHEN BOTH ARE ABSENT, and then it says so in terms an admin can
+ *  act on — a search backend OR a search-capable model, not one vendor. */
+export interface SearchPlan {
+  model: string
+  /** `native`: the model searches as part of answering. `tool`: our harness
+   *  drives a search tool and hands it the results. */
+  via: 'native' | 'tool'
+  supplier: { server: string; tool: string } | null
+}
+
+/** THE REASON A RUN CANNOT START, phrased for the person who can fix it.
+ *  Exported so the route and the MCP tool report the same sentence. */
+export const NO_SEARCH_REASON =
+  'this workspace cannot search yet — either connect a search backend (Settings → Search, e.g. a self-hosted SearXNG) so any model can research through it, or register a model with native web search and assign it to the research role'
+
+export async function planSearch(mode: ResearchMode, deps?: { models?: () => Promise<Array<{ id: string }>> }): Promise<SearchPlan | null> {
+  const pathOf = async (model: string): Promise<SearchPlan | null> => {
+    const keys = await capabilityKeysFor(model).catch((): string[] => [])
+    const reach = await reachFor(keys, ['search']).catch((): Record<string, Reach> => ({}))
+    const r = reach['search']
+    if (!r) return null
+    if (r.via === 'tool') return { model, via: 'tool', supplier: r.supplier }
+    if (r.via === 'native') return { model, via: 'native', supplier: null }
+    return null
   }
-  return null
+
+  // 1. The admin said which one. Their choice, including the choice to use a
+  //    model that turns out to need the tool path.
+  //
+  //    AND UNKNOWN IS NOT MISSING, which is this codebase's cardinal rule about
+  //    capabilities and the reason this step falls through to `native` rather
+  //    than to the next step. A fresh self-host has probed nothing and its
+  //    catalog may say nothing, so `reachFor` answers with silence — and
+  //    treating that silence as "this model cannot search" would refuse the
+  //    admin's own explicit assignment. The runtime defence is one layer down,
+  //    where it belongs: `researchSearchHarness` declares `requires: ['search']`
+  //    with `refuseBelow: true`, so a model POSITIVELY KNOWN not to search fails
+  //    the stage loudly instead of writing a fluent uncited brief.
+  const assigned = await resolveRoleModel(`research-${mode}`)
+  if (assigned) return (await pathOf(assigned)) ?? { model: assigned, via: 'native', supplier: null }
+
+  const models = await (deps?.models ?? gatewayModels)().catch((): Array<{ id: string }> => [])
+  if (models.length === 0) return null
+
+  // 2. A model that searches on its own, if the org has one. Asked of its
+  //    CAPABILITY FACTS, so a new sonar spelling — or any other vendor shipping
+  //    native search — is picked up the day it is registered, with nothing here
+  //    to edit.
+  const plans = await Promise.all(models.map((m) => pathOf(m.id).catch((): SearchPlan | null => null)))
+  const native = plans.find((p): p is SearchPlan => p?.via === 'native')
+  if (native) return native
+
+  // 3. Anything routable, through our own search. The model only has to be able
+  //    to call a tool, which is most of them.
+  return plans.find((p): p is SearchPlan => p !== null) ?? null
+}
+
+/** BACK-COMPAT for callers that only want the model id. `planSearch` is the one
+ *  to reach for — it also says which path the run will take. */
+export async function searchModelFor(mode: ResearchMode): Promise<string | null> {
+  return (await planSearch(mode))?.model ?? null
 }
 
 /** A deep-research-class search model is an agentic researcher in itself
@@ -183,35 +249,22 @@ function adaptBudget(budget: ReturnType<typeof budgetFor>, searchModel: string) 
  *               web-search MCP server and the model calls tools. Sources come
  *               off the tool's payload — `toolSearchTransport`.
  *
- *  Native wins when both are available: it is one round trip rather than three,
- *  the provider has already done the ranking, and it is what an admin who
- *  assigned a sonar model asked for. The stage's OUTPUT is identical either way
- *  — prose findings plus a source list — which is what makes the tool path a
- *  real alternative rather than a downgrade, and why nothing downstream branches
- *  on which one ran. */
-/** WHICH SEARCH PATH THIS RUN TAKES, asked ONCE per run.
+ *  WHICH ONE WINS IS NOT THIS FILE'S DECISION — `capability-reach.ts` makes it,
+ *  and `planSearch` reads the answer. That matters because this comment used to
+ *  say "native wins when both are available", which stopped being true and
+ *  contradicted the code one module away for a while. In a codebase where the
+ *  comments are the design record, a stale one is worse than none.
  *
- *  Asked from `capability-reach.ts` — the same module the floor asks — so the
- *  stage and the refusal that guards it can never disagree about whether search
- *  is reachable. Two spellings of that question is how a stage comes to run a
- *  transport the floor was about to refuse.
+ *  What is true, and worth knowing here: NATIVE IS ONLY WORTH PREFERRING WHEN IT
+ *  IS ACTUALLY ARMED. `buildUpstream` has to send the provider's activation —
+ *  `web_search_options`, a plugin, an `:online` suffix — or "native" degrades
+ *  into a plain completion that happens to have been sent to a model that could
+ *  have searched, and we harvest whatever citations it volunteered. See
+ *  `nativeSearchBody` in llm-gateway.ts.
  *
- *  ONCE PER RUN, not once per query: the answer is a property of the model and
- *  the org's registry, neither of which changes inside a run, and an expedition
- *  issues up to twelve queries. A registry read per query would be eleven reads
- *  for one answer.
- *
- *  A FAILURE HERE CHOOSES THE NATIVE PATH, which is the safe default in the
- *  precise sense that matters: it is the path the floor understands. If search
- *  is genuinely unreachable, the native transport runs, the floor refuses it,
- *  and the run reports the real problem — rather than this function inventing a
- *  tool path out of a failed lookup. */
-async function searchPathFor(model: string): Promise<{ server: string; tool: string } | null> {
-  const keys = await capabilityKeysFor(model).catch((): string[] => [])
-  const reach = await reachFor(keys, ['search']).catch((): Record<string, Reach> => ({}))
-  return reach['search']?.via === 'tool' ? reach['search'].supplier : null
-}
-
+ *  THE STAGE'S OUTPUT IS IDENTICAL EITHER WAY — prose findings plus a source
+ *  list — which is what makes the tool path a real alternative rather than a
+ *  downgrade, and why nothing downstream branches on which one ran. */
 async function searchStage(model: string, query: string, runId: string, viaTool: { server: string; tool: string } | null): Promise<SearchHit> {
   const sources: SearchSource[] = []
   const run = await runHarness(
@@ -298,6 +351,105 @@ class SourceRegistry {
   }
   get size(): number {
     return this.byUrl.size
+  }
+}
+
+/** WHY A RUN ENDED WITH NOTHING TO CITE, in the words of the person who has to
+ *  fix it. The sentence up to the em dash is load-bearing — `fitness/evals.ts`
+ *  matches on it to tell a model's failure apart from a deployment's — and what
+ *  follows it is the part that saves an evening.
+ *
+ *  IT EXISTS BECAUSE THE OLD MESSAGE BLAMED THE WRONG THING. "Search returned
+ *  nothing citable" reads as "the search backend found nothing", so the first
+ *  move it invites is checking the backend — and on the run that prompted this,
+ *  the backend was healthy and answering the very queries the run had planned.
+ *  Nothing had searched at all: a model recorded as searching natively was sent
+ *  a plain completion and wrote three thousand tokens from memory. A run that
+ *  never searched and a run that searched and found nothing are different
+ *  problems with different fixes, and only one of them is about the backend. */
+function noSourcesReason(viaTool: { server: string; tool: string } | null, searchModel: string, searchFailed: boolean): string {
+  const base = 'no sources found — search returned nothing citable'
+  if (searchFailed) return `${base}: every search query for this run errored, so nothing reached the registry.`
+  if (viaTool) {
+    return `${base}: "${viaTool.server}.${viaTool.tool}" was called for every query and no result carried a URL. This one IS the search backend — check that it is answering.`
+  }
+  return (
+    `${base}: "${searchModel}" was asked to search natively and its replies carried no citations, which means it answered from memory rather than searching. ` +
+    `Assign a model whose provider returns citations on a plain completion (the sonar family), or register a web-search tool this model can call.`
+  )
+}
+
+/** The artifact as a ref chip, checked against the person whose conversation it
+ *  is about to appear in. Empty when the conversation is gone or they cannot
+ *  read it — `resolveRefs` already drops what it must, and an attachment is not
+ *  worth failing a delivery over. */
+async function refsForConversation(conversationId: string, artifactId: string): Promise<unknown[]> {
+  try {
+    const sql = await db()
+    const rows = (await sql`
+      select u.id, u.email, u.name from conversations c join users u on u.id = c.user_id where c.id = ${conversationId}
+    `) as unknown as Array<{ id: string; email: string | null; name: string | null }>
+    const reader = rows[0]
+    if (!reader) return []
+    return await resolveRefs(reader, [{ type: 'artifact', id: artifactId }])
+  } catch {
+    return []
+  }
+}
+
+/** TELL THE CONVERSATION THAT ASKED, and let the agent take it from there.
+ *
+ *  A run started from a chat used to end in silence. The tool description says
+ *  "poll research_status", but a chat turn has no way to wait out a six-minute
+ *  brief: the agent checks a few times, sees `running`, and its turn ends. The
+ *  only completion signal was `addNotification(ownerUserId, …)`, and
+ *  `ownerUserId` is set for PERSONAL ASSISTANTS only — so for a departmental
+ *  agent, which is most of them, nothing at all was told.
+ *
+ *  WHAT LANDS: a user-role message carrying the outcome, then a normal
+ *  continuation. The agent answers with the whole conversation still in front of
+ *  it, so it reports in its own voice and can pick up whatever it was doing —
+ *  which is the difference between being told and merely being notified. It has
+ *  `get_document` if it wants to read the report before summarizing.
+ *
+ *  WHY THE NOTE IS ROLE `user` rather than a system line: `continueConversation`
+ *  starts a turn only when the last message is the user's, and that rule is not
+ *  an accident to route around — it is what stops a conversation talking to
+ *  itself. The `metadata.kind` marks it as platform-generated so the UI can
+ *  render it as an event rather than as something the human typed, and
+ *  `authorUserId` stays null for the same reason.
+ *
+ *  NEVER THROWS, AND NEVER BLOCKS THE RUN. The report is saved and the run is
+ *  already `done` by the time this is called; a delivery failure must not undo
+ *  that. If the agent happens to be mid-reply the continuation no-ops, and the
+ *  note simply sits at the end of the conversation for the next turn to cover —
+ *  the same queued-message chaining every other path relies on. */
+async function tellTheAskingConversation(runId: string, agentModel: string, note: string, artifactId?: string): Promise<void> {
+  const convId = await researchOrigin(runId)
+  // Null is ordinary: started from the Research page, by a cron, or long enough
+  // ago that the key expired. Nobody is waiting in a chat.
+  if (!convId) return
+  try {
+    // THE REPORT ITSELF, ATTACHED — not a sentence about where it was filed.
+    // The first run through this path ended with the agent saying the document
+    // was "in Documents under Engineering", which is a description a person then
+    // has to go and act on, and was wrong about the folder besides. A ref chip
+    // is the platform's own object: the UI renders it as a card that opens the
+    // artifact, and `refBlocks` feeds its text to the agent on this turn and
+    // every later history rebuild, so the agent can summarize the report without
+    // a `get_document` round trip.
+    //
+    // ACL-CHECKED AGAINST THE READER, like every other ref: `resolveRefs` drops
+    // anything the conversation's owner cannot read, so a chip can never be the
+    // thing that discloses a private artifact.
+    const attachments = artifactId ? await refsForConversation(convId, artifactId) : []
+    await insertUserMessage(convId, await nextSeq(convId), note, attachments, null, { kind: 'research-complete', runId })
+    await touchConversation(convId)
+    await continueConversation(convId, { agentModel })
+  } catch (e) {
+    console.error(`[research] could not report run ${runId} back to conversation ${convId}:`, (e as Error).message)
+  } finally {
+    await forgetResearchOrigin(runId)
   }
 }
 
@@ -409,10 +561,13 @@ export async function startResearch(input: {
   ownerUserId: string | null
   requestedBy: string
 }): Promise<ResearchRun> {
-  const search = await searchModelFor(input.mode)
-  if (!search) {
-    throw new Error('no search-capable model on the gateway — register a Perplexity sonar model on /models first')
-  }
+  // REFUSES ONLY WHEN THE WORKSPACE GENUINELY CANNOT SEARCH — no search backend
+  // AND no model that searches by itself. It used to refuse whenever no
+  // Perplexity sonar model was registered, which is a different and much
+  // narrower condition: an org with SearXNG and any tool-calling model can
+  // research perfectly well, and was being told to go and buy something.
+  const plan = await planSearch(input.mode)
+  if (!plan) throw new Error(NO_SEARCH_REASON)
   const sql = await db()
   const rows = (await sql`
     insert into research_runs (owner_user_id, requested_by, agent_model, mode, question)
@@ -438,10 +593,20 @@ async function runResearch(runId: string): Promise<void> {
     const got = await getResearchRun(runId)
     if (!got || got.run.status === 'error') return
     const { question, mode, agentModel, ownerUserId, requestedBy } = got.run
-    const searchModel = (await searchModelFor(mode))!
+    // ONE DECISION, MADE ONCE, and both halves come from it. Resolving the
+    // model here and the PATH separately a few lines later was how the two came
+    // to be able to disagree — `planSearch` answers both together, off the same
+    // capability read.
+    // THROWN, not handled here: the catch below already records the error on
+    // the run AND tells the waiting agent why, which is the whole point of that
+    // block. A second failure path would be a second place for the two to
+    // disagree. This can only fire if the org's search config changed between
+    // the run being queued and being picked up — `startResearch` refuses first.
+    const plan = await planSearch(mode)
+    if (!plan) throw new Error(NO_SEARCH_REASON)
+    const searchModel = plan.model
     const budget = adaptBudget(budgetFor(mode), searchModel)
-    // Which search path this run takes — resolved once, before the first query.
-    const searchTool = await searchPathFor(searchModel)
+    const searchTool = plan.via === 'tool' ? plan.supplier : null
     const agentLabel = describeAgent(agentModel).label
     const registry = new SourceRegistry()
     const notes: string[] = []
@@ -471,7 +636,7 @@ async function runResearch(runId: string): Promise<void> {
       nextQueries = []
     }
 
-    if (registry.size === 0) throw new Error('no sources found — search returned nothing citable')
+    if (registry.size === 0) throw new Error(noSourcesReason(searchTool, searchModel, searchFailed))
 
     // Synthesis: the persona writes the document against the global registry.
     // Throws on an unusable reply rather than saving an empty report — the
@@ -594,10 +759,41 @@ async function runResearch(runId: string): Promise<void> {
         href: `/research?r=${runId}`,
       }).catch(() => {})
     }
+
+    // THE REPORT IS ATTACHED, and the note says so — which is what stops the
+    // agent reaching for prose directions. Told only that a document exists
+    // somewhere, a model writes "it's filed under Engineering" and the reader
+    // has to go hunting; told that the reader can already see the card, it
+    // spends its words on what the research actually found. The id is still here
+    // for `get_document`, because a long report is worth opening even when its
+    // first six thousand characters arrived on the chip.
+    await tellTheAskingConversation(
+      runId,
+      agentModel,
+      `Your ${mode} on "${question}" has finished: ${registry.size} source${registry.size === 1 ? '' : 's'}, ` +
+        `${cited.size} cited. The report "${title}" is attached to this message as a card the reader can open (documentId ${artifact.id}).` +
+        (searchFailed ? ' Some search queries failed, so the picture may be incomplete.' : '') +
+        ' Tell whoever asked WHAT YOU FOUND — they can already open the report, so do not describe where it is filed.',
+      artifact.id,
+    )
   } catch (e) {
+    const message = (e as Error).message
     await sql`
-      update research_runs set status = 'error', phase = null, error = ${(e as Error).message.slice(0, 2000)}, updated_at = now()
+      update research_runs set status = 'error', phase = null, error = ${message.slice(0, 2000)}, updated_at = now()
       where id = ${runId}
     `
+    // A FAILED RUN IS REPORTED TOO, and this is the half that matters most for
+    // the person waiting: the old silence was indistinguishable from a run still
+    // working, so an agent asked to research something could only keep saying it
+    // was checking. The agent gets the real reason and can decide whether to try
+    // a different angle or say plainly that it could not find out.
+    const got = await getResearchRun(runId).catch(() => null)
+    if (got) {
+      await tellTheAskingConversation(
+        runId,
+        got.run.agentModel,
+        `Your ${got.run.mode} on "${got.run.question}" failed: ${message} Tell whoever asked, in plain words, and say what you can still do.`,
+      )
+    }
   }
 }

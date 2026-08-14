@@ -242,12 +242,37 @@ export async function reachFor(keys: readonly string[], wanted: readonly Capabil
     : [[] as McpServer[], {} as CapabilityProviders, [] as PlatformSupply[]]
 
   for (const cap of wanted) {
-    if (nativeYes(cap)) {
+    const supplier = supplierFor(cap, servers, providers, platform)
+    // A NATIVE CLAIM THIS DEPLOYMENT CANNOT CASH loses to a tool that works, and
+    // `search` is the capability where that gap is real rather than theoretical.
+    //
+    // Nearly every model that "has web search" only searches WHEN ASKED — an
+    // `web_search_options` block, a provider plugin, an `:online` model suffix —
+    // and Talaria sends none of them. `searchTransport` posts a plain completion
+    // and harvests whatever citations came back unprompted, which in practice is
+    // Perplexity's sonar family and nothing else. So for every other model the
+    // catalog or a probe calls search-capable, "native" means: the model answers
+    // from memory and the run ends with no sources. That is precisely the bug
+    // this ordering fixes — a deployment with SearXNG up, a model measured at
+    // 100% tool calling, and a research run that died having searched nothing.
+    //
+    // WHY IT IS SAFE FOR THE MODELS THAT REALLY DO BROWSE: a supplier has to be
+    // REGISTERED AND CHECKED to exist at all (see `platformSupply`), and an org
+    // that would rather spend a sonar model's own index than loop it through a
+    // web-search tool says so the way it says everything else here — pin
+    // `capability_providers.search` to `null`, which is an admin stating that
+    // nothing supplies search in this install, and the native path is all that
+    // is left.
+    //
+    // ONLY `search`. `vision`'s tool stand-in (`describe_image`) is genuinely
+    // lossier than a model that reads the image itself, so a model that can see
+    // should keep seeing.
+    const toolFirst = cap === 'search' && supplier !== null && !nativeNo('tools')
+    if (nativeYes(cap) && !toolFirst) {
       out[cap] = { capability: cap, reached: true, via: 'native', supplier: null, detail: `the model does '${cap}' itself` }
       continue
     }
 
-    const supplier = supplierFor(cap, servers, providers, platform)
     if (supplier) {
       // THE MODEL STILL HAS TO BE ABLE TO CALL THE TOOL. A search server in
       // front of a model that cannot hold a tool call is not reach — it is a

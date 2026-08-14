@@ -42,6 +42,7 @@
 // function is deleted and the rule is in the guard list below, so there is one
 // pass, one findings row per fabricated link, and one place to look.
 import { z } from 'zod'
+import { harvestSources, nativeSearchBody } from '../../native-search'
 import { defineHarness, type Message } from '../define'
 import { gatewayToolsRefusal, gatewayTransport, toolPolicyOf, type Transport } from '../transport'
 import { UNTRUSTED_INPUT } from '../prompt-rules'
@@ -504,19 +505,25 @@ export function searchTransport(runId: string, sink: SearchSource[]): Transport 
     if (toolPolicyOf(req) === 'own') throw new Error(gatewayToolsRefusal(req.model))
     const route = await resolveRoute(req.model)
     if (!route) throw new Error(`search model "${req.model}" is not routable`)
+    // ARM THE PROVIDER'S OWN SEARCH, where that is possible at all over an
+    // OpenAI-shaped body. This used to send nothing, which meant the "native"
+    // path was a plain completion posted to a model that COULD have searched —
+    // true only of Perplexity, which searches unconditionally, and the reason
+    // this pipeline used to require Perplexity. See `native-search.ts` for what
+    // each provider can and cannot be told from here; three of the four
+    // branches deliberately send nothing.
     const call = await buildUpstream(route, {
       model: req.model,
       stream: false,
       messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+      ...nativeSearchBody(route.endpoint?.provider),
     })
     const res = await fetchUpstream(call, route)
     if (!res.ok) throw new Error(`search stage ${res.status}: ${(await res.text()).slice(0, 300)}`)
     const j = (await res.json()) as {
       choices?: Array<{ message?: { content?: string } }>
       usage?: { prompt_tokens?: number; completion_tokens?: number }
-      search_results?: Array<{ url?: string; title?: string; snippet?: string }>
-      citations?: string[]
     }
     if (j.usage) {
       void recordGatewayUsage({
@@ -528,11 +535,14 @@ export function searchTransport(runId: string, sink: SearchSource[]): Transport 
         estimated: false,
       }).catch(() => {})
     }
-    const sources =
-      j.search_results?.filter((s) => s.url).map((s) => ({ url: s.url!, title: s.title ?? null, snippet: s.snippet ?? null })) ??
-      j.citations?.map((url) => ({ url, title: null, snippet: null })) ??
-      []
-    for (const s of sources) sink.push(s)
+    // EVERY CITATION SHAPE, not just Perplexity's two. This read
+    // `search_results` then `citations` and stopped, so a model citing through
+    // the OPENAI ANNOTATION shape — which is what OpenAI returns and what
+    // OpenRouter normalises all of its engines to — contributed ZERO sources.
+    // The run then wrote findings it could not cite and the fixtures scored the
+    // model for an uncited brief, when the model had done its job and we had
+    // dropped the evidence.
+    for (const s of harvestSources(j)) sink.push(s)
     return { kind: 'gateway', text: j.choices?.[0]?.message?.content ?? '', toolNames: [], usage: null, contractDropped: false }
   }
 }
@@ -552,6 +562,53 @@ export const SEARCH_TOOL_SCHEMA = {
  *  enumerate is a surface nobody can test. */
 export const SEARCH_TOOL_DESCRIPTION = 'Search the live web and return passages with their source URLs.'
 
+/** PAGES THAT CANNOT BE A SOURCE FOR ANYTHING.
+ *
+ *  A general web index answers a query about, say, self-hosted analytics with a
+ *  handful of sign-in and account pages, because the words match. They are not
+ *  wrong results so much as non-results: there is no claim on
+ *  `signup.live.com` for a report to rest on. Left in, they inflated one brief's
+ *  registry to 129 "sources" of which 29 were cited, and every uncited one is
+ *  printed in the Sources section marked *(consulted)* — so the report claimed
+ *  to have consulted a Microsoft login page.
+ *
+ *  DELIBERATELY NARROW. This drops pages whose whole purpose is authentication,
+ *  and nothing else. Judging a source's QUALITY is the synthesis stage's job and
+ *  it has the text to do it with; a filter here can only see a URL, so it earns
+ *  its place by catching things no reading of the page could redeem. Anything
+ *  cleverer — blocking domains, preferring primary sources — belongs where the
+ *  content is. */
+const AUTH_PAGE = new Set(['login', 'signin', 'sign-in', 'signup', 'sign-up', 'register', 'auth', 'sso', 'account', 'accounts', 'password', 'logout'])
+
+/** A host that exists to log people in — the whole site, not one page of it. */
+const AUTH_HOST = /^(?:login|signin|signup|my)?account[s]?\.|^(?:login|signin|signup|auth|sso)\./i
+
+/** True when a URL can hold a citable claim.
+ *
+ *  MATCHED ON THE LAST PATH SEGMENT, EXACTLY, which is the difference between a
+ *  sign-in page and a page about sign-in. `/login` is an auth page;
+ *  `/accounts/billing-model` is documentation that happens to live under
+ *  `/accounts`, and `/register-of-members` is a public register. A substring
+ *  rule drops both of the real ones, and dropping a real source is a worse
+ *  failure than keeping a useless one — the synthesis stage can ignore a bad
+ *  page, but it cannot cite one that never reached the registry.
+ *
+ *  Unparseable URLs are kept: a malformed URL is the walker's problem, and
+ *  narrowing the registry here for a reason unrelated to this rule would hide
+ *  that. */
+export function citableSource(url: string): boolean {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return true
+  }
+  if (AUTH_HOST.test(parsed.hostname)) return false
+  const segments = parsed.pathname.split('/').filter(Boolean)
+  const last = segments[segments.length - 1]
+  return !last || !AUTH_PAGE.has(last.toLowerCase())
+}
+
 /** Anything in a tool payload that looks like a source. MCP search servers
  *  disagree about the envelope — `results`, `data`, a bare array — and agree
  *  about the leaf, which is an object with a URL on it. So this walks the
@@ -563,7 +620,15 @@ function sourcesFromPayload(payload: unknown, cap = 12): SearchSource[] {
   // how a provider that works for an agent silently returns nothing for a
   // research run. `SearchSource` is the same three fields under different
   // names, so this is a projection rather than a parser.
-  return resultsFromPayload(payload, 'tool', cap).map((r) => ({ url: r.url, title: r.title || null, snippet: r.snippet || null }))
+  //
+  // FILTERED AFTER THE CAP RATHER THAN BEFORE, on purpose: `cap` bounds what the
+  // walker pulls out of one payload, and spending part of that budget on pages
+  // that cannot be cited is the waste, not the point. Taking the cap first and
+  // dropping the unusable ones after keeps this a projection of what the tool
+  // actually returned.
+  return resultsFromPayload(payload, 'tool', cap)
+    .filter((r) => citableSource(r.url))
+    .map((r) => ({ url: r.url, title: r.title || null, snippet: r.snippet || null }))
 }
 
 /** THE TOOL-DRIVEN SEARCH TRANSPORT — the same job as `searchTransport` above,

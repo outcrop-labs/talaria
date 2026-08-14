@@ -421,9 +421,8 @@ export function scoreInstruction(trials: readonly Trial[]): ProbeVerdict | null 
 
 /** `search` — ASYMMETRIC, and this is the most carefully-hedged verdict here.
  *
- *  A pass means the model named today's date, cited a URL, and quoted a sentence
- *  WE THEN FETCHED AND FOUND on that page. That is not fakeable, so one is
- *  enough to write `true`.
+ *  A pass means ONE ATTEMPT did the whole thing: named today's date, cited a
+ *  URL, and quoted a sentence WE THEN FETCHED AND FOUND on that page.
  *
  *  A `false` is much harder to earn, because probe facts never expire and this
  *  one gates `research-recon`: it requires a trial that failed the DATE check,
@@ -435,21 +434,46 @@ export function scoreInstruction(trials: readonly Trial[]): ProbeVerdict | null 
 export const SEARCH_DATE_TRIAL = 'date'
 export const SEARCH_CITATION_TRIAL = 'citation'
 
+/** The attempt a trial belongs to. `searchTrials` names both of one reply's
+ *  observations `${name} / date` and `${name} / citation`, so the part before
+ *  the separator is the reply they were read off. */
+const attemptOf = (t: Trial): string => t.name.split(' / ')[0] ?? t.name
+
 export function scoreSearch(trials: readonly Trial[]): ProbeVerdict | null {
   const rate = rateOf(trials)
   if (rate === null) return null
-  // ONLY A VERIFIED CITATION PROVES SEARCH. A passing date trial does not: many
-  // providers stamp the current date into the system prompt, so a model with no
-  // web access at all answers it correctly. Reading any passing trial as proof
-  // would hand `search: true` — permanently — to exactly those models, and
-  // `research-recon` would then run its search stages on one.
-  if (trials.some((t) => t.ok === true && t.name.includes(SEARCH_CITATION_TRIAL))) {
-    return { value: true, score: rate, detail: 'cited a live page and quoted a sentence that is actually on it' }
+  // A VERIFIED QUOTE IS NOT PROOF ON ITS OWN, which this used to assume — the
+  // quote check asks whether the sentence is on the page, and a model with a
+  // large memorized corpus answers that from training data. `deepseek-v4-pro`
+  // did exactly that: it passed the citation check on one attempt out of three
+  // and was written `search: true` FOREVER, on an endpoint that returns no
+  // citations at all. Research then ran its search stages natively on a model
+  // that never searched, and every run died with an empty source registry.
+  //
+  // SO THE TWO OBSERVATIONS HAVE TO CORROBORATE EACH OTHER, and from the SAME
+  // REPLY. A model that really searched knows what day it is; one quoting a page
+  // it remembers is answering a question about the past. Neither check is
+  // sufficient alone — the date is stamped into plenty of system prompts, and
+  // the quote is memorizable — but a reply that lands both did the work. Trials
+  // from different attempts are not evidence about each other, which is what
+  // pairing by attempt enforces.
+  const searchedForReal = trials.some(
+    (t) =>
+      t.ok === true &&
+      t.name.includes(SEARCH_CITATION_TRIAL) &&
+      trials.some((d) => d.ok === true && d.name.includes(SEARCH_DATE_TRIAL) && attemptOf(d) === attemptOf(t)),
+  )
+  if (searchedForReal) {
+    return { value: true, score: rate, detail: 'named today’s date and quoted a sentence that is actually on the page it cited' }
   }
   const staleDate = trials.filter((t) => t.ok === false && t.name.includes(SEARCH_DATE_TRIAL))
   if (staleDate.length >= 2) {
     return { value: false, score: rate, detail: `no live data: ${staleDate[0]?.note ?? 'the model could not name today’s date'}` }
   }
+  // INCONCLUSIVE, and this is where a verified-quote-but-stale-date model now
+  // lands. It is the right answer for it: nothing here can tell a search model
+  // having a bad day from a model with a good memory, and `capability-reach.ts`
+  // sends the run through a real search tool either way.
   return null
 }
 
