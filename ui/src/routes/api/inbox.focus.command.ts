@@ -6,6 +6,9 @@ import { acquireInboxFocusLock, runInboxConversationCommand } from '@/server/inb
 
 const Body = z.object({
   key: z.string().min(1).max(600).nullable().optional(),
+  /** Which view the panel is open over. An ID the server maps to prose — see
+   *  surfaceBrief — never the prose itself. */
+  surface: z.string().max(40).nullable().optional(),
   instruction: z.string().trim().min(1).max(20_000),
   delegateModel: z.string().max(300).nullable().optional(),
   responseModel: z.string().max(300).nullable().optional(),
@@ -32,6 +35,7 @@ export const Route = defineApi('/api/inbox/focus/command', {
           for await (const event of runInboxConversationCommand(user, {
             instruction: body.instruction,
             focusKey: body.key,
+            surface: body.surface,
             delegateModel: body.delegateModel,
             responseModel: body.responseModel,
             mode: body.mode,

@@ -16,7 +16,7 @@
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import { useDeniedViews, useLogout, useSession } from '@/lib/session'
   import { ADMIN_VIEWS } from '@/lib/nav'
-  import { shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
+  import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
 
   // Authenticated app shell (Mercury, spec §5–6): the collapsible nav rail
   // spans the full height on the left; the top strip sits above the active view
@@ -152,20 +152,30 @@
   <MercuryBackdrop />
   <div class="flex h-screen">
     <NavRail {user} />
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-      <TopStrip {user} onLogout={() => void logout()} />
-      <!-- Above the content, below the strip: unreadable secrets fail at USE
-           time, so without a standing signal an admin learns about it from a
-           confused colleague days later. Renders nothing for members, and
-           nothing at all when there is nothing to say. -->
-      <UnreadableSecretsBanner />
-      <!-- vt-view: the View Transitions API animates ONLY this region on nav
-           clicks (styles.css) — the rail and strip stay planted. -->
-      <div class="vt-view min-h-0 min-w-0 flex-1 overflow-hidden">
-        <InboxFocusShell attachActiveDecision={shouldAttachInboxDecision(route.pathname, tab)}>
+    <!-- THE ASSISTANT DRAWER IS A PEER OF THE NAV RAIL, not of the page body.
+         It used to open inside `vt-view`, below the top strip and the banner,
+         so a panel that is conceptually a second rail started a strip's height
+         down the screen and left a notch beside the nav. Out here it spans the
+         viewport, and the strip belongs to the view it titles. It also stops
+         being animated by the view transition on every nav click, which it
+         never should have been — the drawer stays put while the page swaps. -->
+    <InboxFocusShell
+      attachActiveDecision={shouldAttachInboxDecision(route.pathname, tab)}
+      surface={assistantSurface(route.pathname, tab)}
+    >
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+        <TopStrip {user} onLogout={() => void logout()} />
+        <!-- Above the content, below the strip: unreadable secrets fail at USE
+             time, so without a standing signal an admin learns about it from a
+             confused colleague days later. Renders nothing for members, and
+             nothing at all when there is nothing to say. -->
+        <UnreadableSecretsBanner />
+        <!-- vt-view: the View Transitions API animates ONLY this region on nav
+             clicks (styles.css) — the rail, drawer and strip stay planted. -->
+        <div class="vt-view min-h-0 min-w-0 flex-1 overflow-hidden">
           {@render children()}
-        </InboxFocusShell>
+        </div>
       </div>
-    </div>
+    </InboxFocusShell>
   </div>
 {/if}

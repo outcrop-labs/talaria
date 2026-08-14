@@ -55,6 +55,7 @@
   let {
     active,
     focusMode,
+    surfaceLabel,
     assistant,
     busy,
     notice,
@@ -67,6 +68,9 @@
   }: {
     active: FocusItem | null
     focusMode: boolean
+    /** The view the panel is floating over — shown under the assistant name so
+     *  the conversation reads as being about where you are, not about Inbox. */
+    surfaceLabel: string
     assistant: FocusAssistant | undefined
     busy: boolean
     notice: string | null
@@ -445,7 +449,7 @@
       <span class="grid h-7 w-7 place-items-center rounded-md border border-line text-muted"><Bot size={14} /></span>
       <div class="min-w-0 flex-1">
         <div class="truncate font-sans text-[13px] font-medium text-fg">{assistantName}</div>
-        <div class="font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">{focusMode ? 'Inbox conversation' : 'Assistant conversation'}</div>
+        <div class="font-mono text-[9px] uppercase tracking-[0.07em] text-ink-dim">{focusMode ? 'Inbox conversation' : `Assistant · ${surfaceLabel}`}</div>
       </div>
       <span class={cn('h-1.5 w-1.5 rounded-full', busy || conversation.data?.pages[0]?.working ? 'animate-pulse bg-success' : 'bg-line-strong')} aria-hidden="true"></span>
       <button type="button" onclick={collapse} aria-label="Collapse assistant conversation" aria-expanded={true} class="grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg">
@@ -475,7 +479,7 @@
         <div class="grid min-h-[320px] place-items-center text-center">
           <div class="max-w-xs">
             <span class="mx-auto grid h-10 w-10 place-items-center rounded-full border border-line text-muted"><Bot size={16} /></span>
-            <h2 class="mt-4 font-sans text-base font-medium text-fg">{focusMode ? `Work through Inbox with ${assistantName}` : `Talk with ${assistantName} from anywhere`}</h2>
+            <h2 class="mt-4 font-sans text-base font-medium text-fg">{focusMode ? `Work through Inbox with ${assistantName}` : `Talk with ${assistantName} about ${surfaceLabel}`}</h2>
             <p class="mt-2 font-sans text-xs leading-5 text-muted">{focusMode ? 'The active decision is attached by default. Remove it to have a general, non-executing conversation.' : 'This conversation stays with you as you move through Talaria. General messages do not execute tools or mutations.'}</p>
           </div>
         </div>

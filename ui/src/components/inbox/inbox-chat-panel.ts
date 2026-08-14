@@ -30,12 +30,19 @@ export const PANEL_COLLAPSED_EVENT = 'talaria:inbox-chat-collapsed'
 // v2 adopts the 700px composer width from the design spec as the default,
 // while retaining resizing.
 export const PANEL_WIDTH_KEY = 'talaria:inbox-chat-width-v2'
-let collapsedFallback = false
+let collapsedFallback = true
 let widthFallback = DEFAULT_INBOX_PANEL_WIDTH
 
+// NO STORED PREFERENCE MEANS CLOSED. This read used to be `=== '1'`, which
+// answers "not collapsed" for the absent key — so a first load, on any view,
+// opened the assistant over the page the person actually navigated to. Nobody
+// asked for it; it just happened to be what "no key yet" decoded to. Opening
+// is a decision, and the panel remembers it (`writePanelCollapsed` stores '0'),
+// so anyone who has ever opened it still lands open.
 export function readPanelCollapsed(): boolean {
   try {
-    return window.localStorage.getItem(PANEL_COLLAPSED_KEY) === '1'
+    const stored = window.localStorage.getItem(PANEL_COLLAPSED_KEY)
+    return stored === null ? true : stored === '1'
   } catch {
     return collapsedFallback
   }

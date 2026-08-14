@@ -18,12 +18,17 @@
     INBOX_SNOOZE_OPTIONS,
     type InboxFocusWorkspaceValue,
   } from './inbox-focus-shell'
+  import type { AssistantSurface } from '@/lib/inbox-focus-surface'
 
   function sourceTypeFromFocusKey(focusKey: string | null | undefined): FocusItem['sourceType'] | undefined {
     return focusKey?.split(':', 1)[0] as FocusItem['sourceType'] | undefined
   }
 
-  let { children, attachActiveDecision }: { children: Snippet; attachActiveDecision: boolean } = $props()
+  let {
+    children,
+    attachActiveDecision,
+    surface,
+  }: { children: Snippet; attachActiveDecision: boolean; surface: AssistantSurface } = $props()
 
   const queryClient = useQueryClient()
   const focusQuery = useInboxFocus()
@@ -191,6 +196,7 @@
     try {
       for await (const event of streamInboxFocusCommand({
         key: options.focusKey,
+        surface: surface.id,
         instruction: trimmedInstruction,
         delegateModel: options.delegateModel,
         responseModel: options.responseModel,
@@ -327,11 +333,12 @@
   })
 </script>
 
-<div class="relative flex h-full min-h-0 overflow-hidden bg-surface">
+<div class="relative flex h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-surface">
   <InboxChatPanel
     bind:this={panel}
     active={attachActiveDecision ? active : null}
     focusMode={attachActiveDecision}
+    surfaceLabel={surface.label}
     assistant={focusQuery.data?.assistant}
     busy={busyAction !== null}
     notice={failure ?? assistantMessage}

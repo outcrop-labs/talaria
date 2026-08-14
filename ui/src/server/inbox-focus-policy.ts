@@ -324,8 +324,54 @@ export function limitInboxModelHistory(turns: InboxModelTurn[]): InboxModelTurn[
     .map((turn) => ({ role: turn.role, content: turn.content.slice(0, 20_000) }))
 }
 
+// WHAT THE OWNER IS LOOKING AT WHILE THEY TYPE. The assistant panel is opened
+// from the nav rail on every view, but its prompt only ever described the Inbox
+// — so "what's blocking this?" on Boards was answered by a model that had been
+// told it was in a general Inbox conversation and reasonably read the question
+// as being about the queue.
+//
+// The client sends an ID, not a sentence. The command endpoint is reachable by
+// any signed-in client, and prose from the request body would be a free write
+// into the system prompt; an id the server must recognise is not.
+const SURFACE_BRIEFS: Record<string, string> = {
+  inbox: 'the Inbox focus queue — the decisions Talaria has lined up for them',
+  home: 'Home — their overview of work in flight',
+  chat: 'Chat — a direct conversation with one of their agents',
+  comms: 'Comms — channels, group threads and direct messages',
+  boards: 'Boards — ticket boards and the tickets on them',
+  plan: 'Plan — a shared planning document they work on with teammates and agents',
+  research: 'Research — long-form research runs and the reports they produce',
+  knowledge: 'Knowledge — the organization’s document base',
+  artifacts: 'Files — stored artifacts, documents and spreadsheets',
+  agents: 'Agents — the agent roster, and each agent’s soul, tools and secrets',
+  fleet: 'Fleet — the running agent containers and their live state',
+  studio: 'Agent Studio — where agent behaviour and workflows are authored',
+  templates: 'Templates — reusable board, ticket and document templates',
+  models: 'Models — model endpoints, routing tiers and fitness runs',
+  mcp: 'MCP — connected tool servers and which agents may reach them',
+  observability: 'Observability — traces, spend and audit for the instance',
+  apps: 'Apps — installed and available Talaria apps',
+  settings: 'Settings — their own account, profile and preferences',
+  admin: 'Admin — instance-wide configuration, people and permissions',
+}
+
+/** One prompt line naming the view the owner is on, or null for an id we do
+ *  not recognise (an older client, or a route added since this map). Silence
+ *  beats a guess: the detached prompt reads fine without it. */
+export function surfaceBrief(surfaceId: string | null | undefined): string | null {
+  const brief = surfaceId ? SURFACE_BRIEFS[surfaceId] : undefined
+  if (!brief) return null
+  return [
+    `The owner is currently on ${brief}.`,
+    'Answer in that context — do not assume the message is about their Inbox queue.',
+    'You cannot see what is on their screen. Ask for the specifics you need instead of inventing them.',
+  ].join(' ')
+}
+
 export function buildInboxConversationPrompt(input: {
   instruction: string
+  /** Which view the panel is floating over; see surfaceBrief. */
+  surface?: string | null
   focus: null | {
     key: string
     question: string
@@ -338,8 +384,10 @@ export function buildInboxConversationPrompt(input: {
 }): string {
   const history = limitInboxModelHistory(input.history)
   if (!input.focus) {
+    const surface = surfaceBrief(input.surface)
     return [
-      '[Detached general Inbox conversation.]',
+      '[Detached general assistant conversation.]',
+      ...(surface ? [surface] : []),
       'Tools are disabled. Do not call tools or propose executable mutations.',
       // Deliberately unnamed: an agent's identity comes from its own rendered
       // persona, which already anchors it to the owner and the organization.
