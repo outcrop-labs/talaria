@@ -72,12 +72,32 @@ export function sectionKey(pathname: string): string {
   return `/${parts[0]}`
 }
 
-/** Record the current location as this section's last position. */
-export function rememberView(pathname: string, search: string): void {
-  const key = sectionKey(pathname)
-  const href = search ? `${pathname}?${search}` : pathname
+/**
+ * Record a location as its section's last position.
+ *
+ * ONE ARGUMENT, ON PURPOSE. This took a `(pathname, search)` pair, and the
+ * caller sourced them from two different reactive mirrors: `route.pathname`
+ * (sv-router's `location` state) and `searchParams.toString()` (a separate
+ * SvelteURLSearchParams). `onNavigate` updates those a dozen lines apart, so
+ * a flush landing between them recorded a real pathname with the *next* page's
+ * empty search — `/comms` bare, over the agent thread you were in. A pair that
+ * can disagree should not be a signature; an href cannot disagree with itself.
+ *
+ * STRIPPED IS NOT CHOSEN. A record for the very same pathname with no query
+ * never replaces one that has a query. Across these surfaces a bare
+ * `/comms` is not a place anybody sits — the view replaces it with `?c=` or
+ * `?a=` the moment it can — so it only ever shows up mid-flight, whether from
+ * a torn-down view's default-select or a mirror that had not caught up. A
+ * DIFFERENT pathname is a real move and always wins, so the boards index still
+ * overwrites a board.
+ */
+export function rememberView(href: string): void {
+  const path = href.split('?')[0] || '/'
+  const key = sectionKey(path)
   const current = read()
   if (current[key] === href) return
+  const previous = current[key]
+  if (previous && !href.includes('?') && previous.split('?')[0] === path) return
   write({ ...current, [key]: href })
 }
 

@@ -46,8 +46,19 @@
   // there instead of to the bare path. Runs here rather than per view because
   // it is a property of the shell: one recorder, every surface, no view has to
   // opt in or know it exists.
+  //
+  // THE TWO READS ARE TRIGGERS, NOT THE VALUE. `route.pathname` and
+  // `searchParams` are separate reactive mirrors that sv-router updates at
+  // different points inside one navigation, so reading the pair gave a
+  // pathname and a search that could belong to different pages — which is how
+  // leaving Comms recorded a bare `/comms` over the thread you were in. Both
+  // are touched here purely so the effect re-runs (a search-only navigation
+  // never changes the pathname), and the value comes from `location`, which
+  // `history.pushState` has already settled before either mirror moves.
   $effect(() => {
-    rememberView(route.pathname, searchParams.toString())
+    route.pathname
+    searchParams.toString()
+    rememberView(`${window.location.pathname}${window.location.search}`)
   })
 
   // Native context menus are suppressed app-wide — Talaria surfaces provide

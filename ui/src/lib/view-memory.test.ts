@@ -41,29 +41,29 @@ test('an app’s two surfaces are separate sections', () => {
 test('the rail points at where you were, not at the bare path', () => {
   installStorage()
   assert.equal(hrefFor('/comms'), '/comms')
-  rememberView('/comms', 'c=channel-7')
+  rememberView('/comms?c=channel-7')
   assert.equal(hrefFor('/comms'), '/comms?c=channel-7')
   // The board you had open, in the layout you had it in.
-  rememberView('/boards/b1', 'view=list&group=priority')
+  rememberView('/boards/b1?view=list&group=priority')
   assert.equal(hrefFor('/boards'), '/boards/b1?view=list&group=priority')
 })
 
 test('one section’s memory never answers for another', () => {
   installStorage()
-  rememberView('/comms', 'c=channel-7')
+  rememberView('/comms?c=channel-7')
   assert.equal(hrefFor('/boards'), '/boards')
   assert.equal(hrefFor('/'), '/')
 })
 
 test('Home remembers its tab but never a deeper path', () => {
   installStorage()
-  rememberView('/', 'tab=activity')
+  rememberView('/?tab=activity')
   assert.equal(hrefFor('/'), '/?tab=activity')
 })
 
 test('forgetting a section returns the rail to the bare path', () => {
   installStorage()
-  rememberView('/boards/b1', 'view=gantt')
+  rememberView('/boards/b1?view=gantt')
   assert.equal(hrefFor('/boards'), '/boards/b1?view=gantt')
   // What Board.svelte does when the board turns out to be deleted: without it
   // every click on Boards walks back into the same dead end.
@@ -111,12 +111,57 @@ test('storage that throws still remembers for this tab', () => {
     addEventListener: () => {},
     removeEventListener: () => {},
   })
-  rememberView('/comms', 'c=channel-7')
+  rememberView('/comms?c=channel-7')
   assert.equal(hrefFor('/comms'), '/comms?c=channel-7')
 })
 
 test('a location with no state is remembered as the bare path', () => {
   installStorage()
-  rememberView('/knowledge', '')
+  rememberView('/knowledge')
   assert.equal(hrefFor('/knowledge'), '/knowledge')
+})
+
+// ── The bug this file exists to stop coming back ────────────────────────────
+// You are in an agent thread, you go to a board, you click Comms, and you land
+// on the first channel. The memory was not missing — it was overwritten with a
+// bare `/comms` on the way out, by a URL that existed for a few milliseconds
+// and that nobody navigated to.
+
+test('a bare path never overwrites the same page’s remembered state', () => {
+  installStorage()
+  rememberView('/comms?a=hermes&x=conv-4')
+  // What leaving Comms produces: the search is cleared a dozen lines before the
+  // pathname moves, and a still-mounted view re-runs its default selection
+  // against the empty URL. Either way the href is the page with its state
+  // stripped, which is not a place anyone chose to be.
+  rememberView('/comms')
+  assert.equal(hrefFor('/comms'), '/comms?a=hermes&x=conv-4')
+})
+
+test('a real move to a different page in the section still wins', () => {
+  installStorage()
+  rememberView('/boards/b1?view=gantt')
+  // The boards INDEX is a page you can sit on, not a stripped board.
+  rememberView('/boards')
+  assert.equal(hrefFor('/boards'), '/boards')
+  rememberView('/boards/b2')
+  assert.equal(hrefFor('/boards'), '/boards/b2')
+})
+
+test('a later selection on the same page replaces the earlier one', () => {
+  installStorage()
+  rememberView('/comms?c=channel-1')
+  rememberView('/comms?a=hermes&x=conv-4')
+  assert.equal(hrefFor('/comms'), '/comms?a=hermes&x=conv-4')
+  rememberView('/comms?c=channel-9')
+  assert.equal(hrefFor('/comms'), '/comms?c=channel-9')
+})
+
+test('an href is parsed as one value, so a pathname and a search cannot disagree', () => {
+  installStorage()
+  // The old signature took the two separately and the caller read them from two
+  // reactive mirrors that update at different moments in one navigation.
+  rememberView('/comms?a=hermes&x=conv-4')
+  assert.equal(hrefFor('/comms'), '/comms?a=hermes&x=conv-4')
+  assert.equal(hrefFor('/boards'), '/boards')
 })
