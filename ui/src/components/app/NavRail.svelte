@@ -30,6 +30,7 @@
   import { useInboxFocus, useInboxFocusSummary } from '@/lib/inbox-focus.svelte'
   import { useDeniedViews } from '@/lib/session'
   import { route } from '@/router'
+  import { hrefFor, subscribeViewMemory } from '@/lib/view-memory'
 
   // The main application menu. Expanded: WORK/MANAGE/SYSTEM sections with the
   // Boards sublist; collapsed: 36px icon tiles with tooltips. Active state
@@ -95,6 +96,19 @@
 
   // The active match feeding the data-status attribute (was TanStack Link's
   // activeOptions job — same exact/fuzzy semantics).
+  // THE RAIL SENDS YOU BACK WHERE YOU WERE. `item.to` stays the identity of the
+  // nav entry — active matching, keys, the boards sublist test all compare
+  // against it — and only the href it renders picks up the remembered position.
+  // Mirrored into $state because the memory is a plain module (sessionStorage +
+  // an event), so nothing about it is reactive on its own; `revision` is what
+  // makes the hrefs recompute when it changes.
+  let revision = $state(0)
+  $effect(() => subscribeViewMemory(() => (revision += 1)))
+  const linkFor = $derived.by(() => {
+    revision
+    return (item: NavItem) => hrefFor(item.to)
+  })
+
   const statusFor = (item: NavItem): 'active' | undefined =>
     (exactFor(item) ? pathname === item.to : pathname === item.to || pathname.startsWith(item.to + '/'))
       ? 'active'
@@ -124,7 +138,7 @@
         {#each section.items as item (item.to)}
           <RailTooltip label={item.label}>
             <a
-              href={item.to}
+              href={linkFor(item)}
               data-view-transition
               data-status={statusFor(item)}
               aria-label={item.label}
@@ -217,7 +231,7 @@
             {#each section.items as item (item.to)}
               <li>
                 <a
-                  href={item.to}
+                  href={linkFor(item)}
                   data-view-transition
                   data-status={statusFor(item)}
                   class={cn(

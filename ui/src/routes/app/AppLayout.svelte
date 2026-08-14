@@ -17,6 +17,7 @@
   import { useDeniedViews, useLogout, useSession } from '@/lib/session'
   import { ADMIN_VIEWS } from '@/lib/nav'
   import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
+  import { rememberView } from '@/lib/view-memory'
 
   // Authenticated app shell (Mercury, spec §5–6): the collapsible nav rail
   // spans the full height on the left; the top strip sits above the active view
@@ -39,6 +40,14 @@
   // false for it now, which is the whole point: a blip is not a logout.
   $effect(() => {
     if (session.isSuccess && !session.data) void navigate('/login')
+  })
+
+  // WHERE YOU WERE, recorded on every navigation so the rail can send you back
+  // there instead of to the bare path. Runs here rather than per view because
+  // it is a property of the shell: one recorder, every surface, no view has to
+  // opt in or know it exists.
+  $effect(() => {
+    rememberView(route.pathname, searchParams.toString())
   })
 
   // Native context menus are suppressed app-wide — Talaria surfaces provide
@@ -163,18 +172,16 @@
       attachActiveDecision={shouldAttachInboxDecision(route.pathname, tab)}
       surface={assistantSurface(route.pathname, tab)}
     >
-      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-        <TopStrip {user} onLogout={() => void logout()} />
-        <!-- Above the content, below the strip: unreadable secrets fail at USE
-             time, so without a standing signal an admin learns about it from a
-             confused colleague days later. Renders nothing for members, and
-             nothing at all when there is nothing to say. -->
-        <UnreadableSecretsBanner />
-        <!-- vt-view: the View Transitions API animates ONLY this region on nav
-             clicks (styles.css) — the rail, drawer and strip stay planted. -->
-        <div class="vt-view min-h-0 min-w-0 flex-1 overflow-hidden">
-          {@render children()}
-        </div>
+      <TopStrip {user} onLogout={() => void logout()} />
+      <!-- Above the content, below the strip: unreadable secrets fail at USE
+           time, so without a standing signal an admin learns about it from a
+           confused colleague days later. Renders nothing for members, and
+           nothing at all when there is nothing to say. -->
+      <UnreadableSecretsBanner />
+      <!-- vt-view: the View Transitions API animates ONLY this region on nav
+           clicks (styles.css) — the rail, drawer and strip stay planted. -->
+      <div class="vt-view min-h-0 min-w-0 flex-1 overflow-hidden">
+        {@render children()}
       </div>
     </InboxFocusShell>
   </div>

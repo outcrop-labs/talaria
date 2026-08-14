@@ -414,11 +414,19 @@
   <!-- fixed, not absolute: the pane (nearest positioned ancestor now) has zero
        width in overlay mode, so an absolute inset-0 backdrop would be zero-size. -->
   <button type="button" onclick={collapse} aria-label="Close assistant overlay" class="fixed inset-0 z-30 bg-black/45 min-[1400px]:hidden"></button>
+  <!-- WIDTH IS MEASURED AGAINST THE VIEWPORT, NOT THE PANE. Overlay mode floats
+       the aside inside a pane that is deliberately `w-0` (the note above says
+       so, for the backdrop) — so the `calc(100% - 44px)` this used to carry
+       computed to -44px, which is not a legal width, so the declaration was
+       dropped and the aside shrink-to-fit against a zero-width container:
+       a drawer squashed against the left edge. `100vw` is the box the "leave
+       44px of the page showing" rule was always about. In flow mode (≥1400px)
+       the pane already owns that arithmetic, so the aside simply fills it. -->
   <aside
     class={cn(
-      'absolute inset-y-0 left-0 z-40 flex shrink-0 flex-col border-r border-line bg-sidebar shadow-[var(--theme-shadow-3)] min-[1400px]:relative min-[1400px]:z-20 min-[1400px]:shadow-none',
+      'absolute inset-y-0 left-0 z-40 flex w-[var(--aside-w)] shrink-0 flex-col border-r border-line bg-sidebar shadow-[var(--theme-shadow-3)] min-[1400px]:relative min-[1400px]:z-20 min-[1400px]:w-full min-[1400px]:shadow-none',
     )}
-    style:width="min({panelWidth}px, calc(100% - 44px))"
+    style:--aside-w="min({panelWidth}px, calc(100vw - 44px))"
     aria-label="Assistant conversation"
   >
     <div
