@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import { UserPlus, X } from '@lucide/svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import UserPicker from '@/components/app/UserPicker.svelte'
   import { alert } from '@/components/ui/confirm.svelte'
-  import { getJson } from '@/lib/fetch-json'
   import { fade } from '@/lib/motion'
   import { useSession } from '@/lib/session'
+  import { useResearchMembers } from '@/lib/research'
 
   // Members + share, in the run header. Mirrors plan sharing: the owner adds
   // teammates (they get the run AND its report), a collaborator can leave.
@@ -20,11 +20,10 @@
   // the thrown message is the server's own. The avatars stay hidden on failure
   // — the run header has no room for an error, and hiding a SHARE control is
   // the safe direction (it grants nothing and claims nothing).
-  type Member = { userId: string; name: string | null; email: string | null; role: 'owner' | 'collaborator' }
-  const query = createQuery(() => ({
-    queryKey: ['research-members', runId],
-    queryFn: (): Promise<{ members: Member[] }> => getJson<{ members: Member[] }>(`/api/research/${runId}/members`),
-  }))
+  // ONE DEFINITION, in lib/research.ts, because the discussion pane reads the
+  // same list for its @mentions — and a second spelling would eventually offer
+  // a mention to somebody who cannot open the report being discussed.
+  const query = useResearchMembers(() => runId)
   const members = $derived(query.data?.members ?? [])
   const isOwner = $derived(!!session?.id && session.id === members.find((m) => m.role === 'owner')?.userId)
   const refresh = () => qc.invalidateQueries({ queryKey: ['research-members', runId] })

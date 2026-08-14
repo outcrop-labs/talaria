@@ -21,6 +21,8 @@ export interface ResearchRun {
   status: ResearchStatus
   phase: string | null
   artifactId: string | null
+  /** Null until the first message — the conversation is created on demand. */
+  conversationId: string | null
   error: string | null
   stats: { queries?: number; sources?: number; cited?: number }
   createdAt: string
@@ -82,3 +84,33 @@ export async function startResearch(question: string, mode: ResearchMode, agentM
 export async function deleteResearch(id: string): Promise<void> {
   await fetch(`/api/research/${id}`, { method: 'DELETE', credentials: 'same-origin' })
 }
+
+/** OPEN THE THREAD FOR A RUN, creating it on the first call.
+ *
+ *  Returns the conversation id, or an error sentence for the one case that is
+ *  not a failure: a run an AGENT started for the org has no human owner and so
+ *  has no conversation to own. The report is still readable. */
+export async function openResearchConversation(runId: string): Promise<{ conversationId?: string; error?: string }> {
+  const r = await fetch(`/api/research/${runId}/conversation`, { method: 'POST', credentials: 'same-origin' }).catch(() => null)
+  const j = (await r?.json().catch(() => ({}))) as { conversationId?: string; error?: string }
+  if (!r?.ok) return { error: j.error ?? 'could not open the discussion' }
+  return { conversationId: j.conversationId }
+}
+
+/** A person on a run: the owner, or somebody it was shared with. */
+export interface ResearchMember {
+  userId: string
+  name: string | null
+  email: string | null
+  role: 'owner' | 'collaborator'
+}
+
+/** THE ROOM. One definition because two surfaces read it now — the share
+ *  control in the header, and the @mention list in the discussion — and a
+ *  second spelling would eventually offer a mention to somebody who cannot open
+ *  the report being discussed. */
+export const useResearchMembers = (runId: () => string) =>
+  createQuery(() => ({
+    queryKey: ['research-members', runId()],
+    queryFn: (): Promise<{ members: ResearchMember[] }> => getJson<{ members: ResearchMember[] }>(`/api/research/${runId()}/members`),
+  }))

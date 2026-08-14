@@ -56,7 +56,7 @@ import { resolveRoleModel } from './model-roles'
 import { addNotification } from './notifications'
 import { indexActivity, indexPersonal } from './retrieval/sources'
 import { generateTitle } from './titler'
-import { insertUserMessage, nextSeq, touchConversation } from './conversations'
+import { createConversation, insertUserMessage, nextSeq, touchConversation } from './conversations'
 import { continueConversation } from './chat-persist'
 import { forgetResearchOrigin, researchOrigin } from './research-origin'
 import { resolveRefs } from './refs'
@@ -78,6 +78,9 @@ export interface ResearchRun {
   status: ResearchStatus
   phase: string | null
   artifactId: string | null
+  /** The conversation this run is discussed in. Null until somebody says
+   *  something — see `ensureResearchConversation` for why it is on demand. */
+  conversationId: string | null
   error: string | null
   stats: Record<string, number>
   createdAt: string
@@ -511,7 +514,7 @@ async function tellTheAskingConversation(runId: string, agentModel: string, note
 // ── Run lifecycle ─────────────────────────────────────────────────────────────
 
 const ROW = `id, owner_user_id as "ownerUserId", requested_by as "requestedBy", agent_model as "agentModel",
-  mode, question, title, status, phase, artifact_id as "artifactId", error, stats,
+  mode, question, title, status, phase, artifact_id as "artifactId", error, stats, conversation_id as "conversationId",
   created_at as "createdAt", updated_at as "updatedAt", completed_at as "completedAt"`
 
 /** Runs a viewer may see: their own, ones shared with them, and org runs
@@ -845,4 +848,80 @@ async function runResearch(runId: string): Promise<void> {
       )
     }
   }
+}
+
+// ── The conversation a run is discussed in ───────────────────────────────────
+//
+// A research run used to be a one-shot: ask, wait, read. The only thing anyone
+// could do afterwards was read it again, and the two colleagues it was shared
+// with had nowhere to say "dig into the second point" or "this source is a
+// vendor blog". A view whose whole content is a document does not need to be a
+// view.
+//
+// So a run gets a conversation of its own, exactly the shape a plan has —
+// several people, one agent, one document that grows beside the talk.
+
+/** WHAT THE AGENT IS FOR IN THIS ROOM.
+ *
+ *  It already knows the report: the findings, the numbered sources and what each
+ *  one supports. Most turns here are that — answering from what was found, which
+ *  costs one call and no searching.
+ *
+ *  THE RULE THAT MATTERS is the one about not answering past the evidence. This
+ *  is the surface where a confident sentence is most likely to be believed,
+ *  because everything around it carries a citation: the report is cited, the
+ *  sources are listed, and a teammate skim-reading has no way to tell which
+ *  sentence came from a source and which came from the model. So an answer the
+ *  report does not support has to say so and offer to go and find out — which is
+ *  a real offer, because commissioning more research is a tool it holds.
+ *
+ *  IT DOES NOT SEARCH BY REFLEX. A follow-up run costs minutes and money, and a
+ *  question the report already answers is not a reason to spend either. */
+export const RESEARCH_MODE_PROMPT = `This is a conversation ABOUT a research report you produced, on the Research surface. Several teammates may be in it; the report and its numbered sources sit beside the chat.
+
+Answer from the report and its sources first. Cite the same [n] markers the report uses so anyone can check you, and never state something as established that the sources do not support — this is a surface where everything looks cited, so an uncited claim of yours will be read as a finding.
+
+When the answer genuinely is not in what was found, say so plainly and offer to look into it. If a teammate asks you to dig further, commission follow-up research with the research tool rather than answering from memory; its findings are added to the same report, so the document stays the one place the answer lives.
+
+Do not re-research something the report already covers — say what it says and point at the section.`
+
+/** The conversation for a run, created on first use.
+ *
+ *  ON DEMAND rather than at run creation, for a reason worth stating: most runs
+ *  are read once and never discussed, and a conversation row per run would make
+ *  the chat list a list of things nobody said anything about. The first message
+ *  is what makes it exist.
+ *
+ *  Owned by the run's owner and pinned to the agent that DID the research, so
+ *  the teammate answering questions about the report is the one that wrote it. */
+export async function ensureResearchConversation(runId: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select conversation_id as "conversationId", owner_user_id as "ownerUserId", agent_model as "agentModel", question, title
+      from research_runs where id = ${runId}
+  `) as unknown as Array<{ conversationId: string | null; ownerUserId: string | null; agentModel: string; question: string; title: string | null }>
+  const run = rows[0]
+  if (!run) return null
+  if (run.conversationId) return run.conversationId
+  // A run started by an agent with no human owner has nobody to own the
+  // conversation. It is still readable; it just cannot be talked in.
+  if (!run.ownerUserId) return null
+
+  const id = await createConversation(run.ownerUserId, run.agentModel, run.title ?? run.question.slice(0, 80), 'research', null)
+  await sql`update research_runs set conversation_id = ${id} where id = ${runId} and conversation_id is null`
+  // Re-read rather than trusting the write: two clients opening the same run at
+  // once both get here, and the loser must return the winner's conversation
+  // instead of a second one nobody is reading.
+  const after = (await sql`select conversation_id as "conversationId" from research_runs where id = ${runId}`) as unknown as Array<{
+    conversationId: string | null
+  }>
+  return after[0]?.conversationId ?? id
+}
+
+/** The run a conversation belongs to, for the surfaces that start from the chat
+ *  side rather than the report side. */
+export async function researchRunForConversation(conversationId: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`select id from research_runs where conversation_id = ${conversationId}`) as unknown as Array<{ id: string }>
+  return rows[0]?.id ?? null
 }

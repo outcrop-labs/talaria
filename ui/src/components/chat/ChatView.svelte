@@ -53,8 +53,10 @@
     conversationId: string | null
     newChatSignal: number
     onCreated: (id: string) => void
-    /** 'plan' conversations live in the Plan surface and draft tickets. */
-    kind?: 'chat' | 'plan'
+    /** 'plan' conversations live in the Plan surface and draft tickets.
+     *  'research' conversations discuss a report on the Research surface — the
+     *  same multiplayer shape, shared through the RUN's members. */
+    kind?: 'chat' | 'plan' | 'research'
     /** Plan surface: the template the living doc seeds from, chosen before the
      *  first turn (which creates the conversation). Ignored once it exists. */
     templateId?: string | null

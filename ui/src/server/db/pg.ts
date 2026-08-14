@@ -1604,6 +1604,24 @@ const MIGRATIONS: string[] = [
      granted_at timestamptz not null default now(),
      primary key (folder_id, agent_model)
    )`,
+  // ── RESEARCH BECOMES A CONVERSATION ───────────────────────────────────────
+  //
+  // A research run was a one-shot: ask a question, get a cited report, and the
+  // only thing anyone could do with it afterwards was read it. No way to say
+  // "dig into the second point", "this source is stale", or to have that
+  // discussion with the two colleagues the run was shared with. A view whose
+  // whole content is a document does not need to be a view.
+  //
+  // So a run gets a conversation, exactly the way a plan has one — the surface
+  // that already solves this: everyone talks to the same agent beside the same
+  // living document. `kind = 'research'` joins 'chat' and 'plan'.
+  //
+  // MEMBERSHIP IS NOT DUPLICATED. `research_members` already says who a run is
+  // shared with, and conversation access derives from it rather than from a
+  // second list in `conversation_members`. Two spellings of "who can see this"
+  // is how a person keeps access to the talk after losing it to the report.
+  `alter table research_runs add column if not exists conversation_id uuid references conversations(id) on delete set null`,
+  `create index if not exists research_runs_conversation_idx on research_runs(conversation_id)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
