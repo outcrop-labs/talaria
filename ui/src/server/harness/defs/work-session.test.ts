@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest'
 import type { Finding, GuardConfig } from '@/server/guardrails'
 import { runHarness, type HarnessDeps, type TransportReply } from '@/server/harness/run'
 import { workSessionHarness } from '@/server/harness/defs/work-session'
+import { NO_TOOLS, type EvalContext } from '@/server/harness/define'
 
 const CONFIG: GuardConfig = { mode: 'strict', checks: {}, minConfidence: 0.5, policedHosts: ['internal.example.com'], coach: false }
 
@@ -152,5 +153,45 @@ describe('every fixture tells the model the convention it is scored on', () => {
       if (!/DONE \/ BLOCKED/.test(c.input.prompt)) continue
       expect(c.input.prompt).toContain("End each reply with a short status line: what you just did and what you'll do next (or DONE / BLOCKED).")
     }
+  })
+})
+
+describe('the side-finding fixture discriminates', () => {
+  // `create_ticket` was the last tool in the toolkit no harness had ever put in
+  // front of a model, and it was missing for an understandable reason: a work
+  // session works an ASSIGNED ticket and never needed to file one. That is the
+  // gap — the moment an agent finds something ELSE is exactly when a ticket
+  // needs filing, and exactly when scope creep starts instead.
+  const fx = workSessionHarness.evals?.find((e) => e.name.startsWith('files a separate finding'))
+  const ctxWith = (calls: EvalContext['calls']): EvalContext => ({ calls, calledBefore: () => false, world: null, exhausted: false })
+  const filed = (n = 1) => ctxWith(Array.from({ length: n }, () => ({ tool: 'create_ticket', args: {}, result: null, error: null })))
+  const check = (v: string, ctx: EvalContext) => {
+    if (!fx) throw new Error('no side-finding fixture')
+    return fx.check(v, ctx)
+  }
+
+  it('passes an agent that filed it and described what that actually did', () => {
+    expect(check('Fixed the retry path. I also filed PLAT-901 for the reconciliation job swallowing errors — it is in the inbox for triage.', filed())).toBeNull()
+  })
+
+  it('catches the finding folded into the ticket it was found on', () => {
+    // A bug raised only in a comment on something that then closes is a bug
+    // nobody sees again.
+    expect(check('Fixed the retry path, and noted the reconciliation issue in a comment on PLAT-118.', NO_TOOLS)).toContain('never filed')
+  })
+
+  it('catches overstating what filing did', () => {
+    // `create_ticket` puts it in the INBOX whatever the model passes — agents
+    // cannot assign work. A human told it is assigned stops looking for it.
+    expect(check('Filed it and assigned it to the platform team.', filed())).toContain('cannot do either')
+  })
+
+  it('catches one finding becoming several tickets', () => {
+    expect(check('Filed them.', filed(3))).toContain('3 tickets')
+  })
+
+  it('counts a REFUSED create_ticket as not filed, because it was not', () => {
+    const refused = ctxWith([{ tool: 'create_ticket', args: {}, result: null, error: 'no board' }])
+    expect(check('I could not file it — the board refused.', refused)).toContain('never filed')
   })
 })
