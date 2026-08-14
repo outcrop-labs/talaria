@@ -46,7 +46,6 @@
   import { useBoardStatuses, type BoardStatus } from '@/lib/statuses'
   import type { Task } from '@/lib/task-const'
   import { isClosedStatus } from '@/components/board/field-pills'
-  import { forgetView } from '@/lib/view-memory'
 
   // All view state lives in the URL (deep-link convention): view, group, q, and
   // the filter facets (comma-multi within a facet: OR inside, AND across).
@@ -304,29 +303,13 @@
   // false "not found".
   const boardListQuery = $derived(boardsQuery.isError ? boardsQuery : archivedQuery)
 
-  // A BOARD THAT IS GONE MUST NOT BE WHERE THE RAIL KEEPS SENDING YOU. The
-  // rail now walks you back to the last board you had open, which is a trap the
-  // moment that board is deleted: every click on Boards lands on this same
-  // "Board not found" and there is no way back to the index. Same condition as
-  // the template's not-found branch, deliberately — a failed LIST read is not a
-  // deleted board, and forgetting on one would throw away a good memory over a
-  // blip.
-  $effect(() => {
-    const gone = !isLoading && !archivedLoading && !board && !(boardListQuery.isError && boardListQuery.data === undefined)
-    if (gone) forgetView(route.pathname)
-  })
-
   // ── The layout you picked, per board ────────────────────────────────────
   //
-  // DURABLE, unlike the rail's where-you-were memory: which layout suits a
-  // board is a preference, not a position. A roadmap wants gantt every time you
-  // open it; a triage board wants the list. Kanban was not a choice anyone had
-  // made — it is what an absent `?view=` decodes to, and every arrival decoded
-  // it afresh.
-  //
-  // PER BOARD, not per person, because the preference is about the board's
-  // shape. Saved views (`?v=`) stay what they are: a named lens you apply
-  // deliberately, so one of those in the URL is never overridden here.
+  // Kanban was not a choice anyone had made — it is what an absent `?view=`
+  // decodes to, and every arrival decoded it afresh. PER BOARD, not per person,
+  // because the preference is about the board's shape: a roadmap wants gantt,
+  // a triage board wants the list. Saved views (`?v=`) stay what they are — a
+  // named lens you apply deliberately — so one of those is never overridden.
   const viewPrefKey = (id: string) => `talaria:board-view:${id}`
   const setView = (next: 'board' | 'list' | 'gantt') => {
     try {

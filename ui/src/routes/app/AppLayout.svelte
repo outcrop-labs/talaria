@@ -17,7 +17,6 @@
   import { useDeniedViews, useLogout, useSession } from '@/lib/session'
   import { ADMIN_VIEWS } from '@/lib/nav'
   import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
-  import { rememberView } from '@/lib/view-memory'
 
   // Authenticated app shell (Mercury, spec §5–6): the collapsible nav rail
   // spans the full height on the left; the top strip sits above the active view
@@ -40,25 +39,6 @@
   // false for it now, which is the whole point: a blip is not a logout.
   $effect(() => {
     if (session.isSuccess && !session.data) void navigate('/login')
-  })
-
-  // WHERE YOU WERE, recorded on every navigation so the rail can send you back
-  // there instead of to the bare path. Runs here rather than per view because
-  // it is a property of the shell: one recorder, every surface, no view has to
-  // opt in or know it exists.
-  //
-  // THE TWO READS ARE TRIGGERS, NOT THE VALUE. `route.pathname` and
-  // `searchParams` are separate reactive mirrors that sv-router updates at
-  // different points inside one navigation, so reading the pair gave a
-  // pathname and a search that could belong to different pages — which is how
-  // leaving Comms recorded a bare `/comms` over the thread you were in. Both
-  // are touched here purely so the effect re-runs (a search-only navigation
-  // never changes the pathname), and the value comes from `location`, which
-  // `history.pushState` has already settled before either mirror moves.
-  $effect(() => {
-    route.pathname
-    searchParams.toString()
-    rememberView(`${window.location.pathname}${window.location.search}`)
   })
 
   // Native context menus are suppressed app-wide — Talaria surfaces provide

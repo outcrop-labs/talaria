@@ -23,6 +23,7 @@
   import { useSession, useHasPerm } from '@/lib/session'
   import { useUsers } from '@/lib/users'
   import { useConversations } from '@/lib/conversations.svelte'
+  import { readCommsSelection, restorableSelection, writeCommsSelection } from '@/lib/comms-selection'
   import {
     addChannelAgent,
     addChannelMember,
@@ -143,22 +144,51 @@
   const people = $derived(users.filter((u) => u.id !== session.data?.id))
   const dmByPeer = $derived(new Map(dms.map((c) => [c.peer?.userId, c])))
 
+  // REMEMBER WHAT IS SELECTED, so leaving Comms and coming back through the nav
+  // rail does not land on the first channel. `sel` is derived from this view's
+  // own search params and nothing else, so there is no moment at which the
+  // value here disagrees with the URL — and a null `sel` (the transient empty
+  // URL on the way out) writes nothing, so leaving cannot erase the memory.
+  $effect(() => {
+    if (sel) writeCommsSelection(sel)
+  })
+
   // Default selection; heal a selection that vanished (archived). All are
   // replace-navigations — housekeeping shouldn't pollute history.
   // /chat lands here with ?t=agent: the chat workspace must be directly
   // reachable, so default to the first agent's fresh thread (§7 composer)
   // instead of the first channel; no agents → channel default as usual.
   $effect(() => {
-    if (!sel && searchT === 'agent') {
-      if (fleetQuery.isLoading) return
-      if (fleet[0]) {
-        setSel({ t: 'agent', model: fleet[0].id, conversationId: null }, { replace: true })
+    if (!sel) {
+      const saved = readCommsSelection()
+      // Both rosters gate the restore, and only when the saved pick needs them:
+      // validating against a list that has not arrived would discard a good
+      // memory and fall straight through to the first channel.
+      if (saved?.t === 'agent' && fleetQuery.isLoading) return
+      if (channels.length === 0 && channelsQuery.isLoading) return
+      const restorable = restorableSelection(saved, {
+        channelIds: channels.map((c) => c.id),
+        agentModels: fleet.map((a) => a.id),
+        conversationIds: conversationsQuery.isLoading ? null : conversations.map((c) => c.id),
+      })
+      // An explicit ?t=agent (the /chat entry) asked for the chat workspace, so
+      // a remembered CHANNEL does not get to answer it.
+      if (restorable && (searchT !== 'agent' || restorable.t === 'agent')) {
+        setSel(restorable, { replace: true })
         return
       }
+      if (searchT === 'agent') {
+        if (fleetQuery.isLoading) return
+        if (fleet[0]) {
+          setSel({ t: 'agent', model: fleet[0].id, conversationId: null }, { replace: true })
+          return
+        }
+      }
+      if (channels[0]) setSel({ t: 'channel', id: channels[0].id }, { replace: true })
+      return
     }
     if (channels.length === 0 && channelsQuery.isLoading) return
-    if (!sel && channels[0]) setSel({ t: 'channel', id: channels[0].id }, { replace: true })
-    if (sel?.t === 'channel' && channels.length > 0 && !channels.some((c) => c.id === sel.id)) {
+    if (sel.t === 'channel' && channels.length > 0 && !channels.some((c) => c.id === sel.id)) {
       setSel(channels[0] ? { t: 'channel', id: channels[0].id } : null, { replace: true })
     }
   })
