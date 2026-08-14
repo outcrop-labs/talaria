@@ -103,3 +103,36 @@ describe('the harness rests on a sandbox that does not finish instantly', () => 
     }
   })
 })
+
+describe('the follow-up fixture discriminates', () => {
+  const check = (v: string, ctx: EvalContext) => {
+    const f = (hermesResearchHarness.evals ?? []).find((e) => e.name.startsWith('asks a narrower question'))
+    if (!f) throw new Error('no follow-up fixture')
+    return f.check(v, ctx)
+  }
+  const asked = (question: string): EvalContext => ({
+    calls: [{ tool: 'research', args: { question }, result: null, error: null }],
+    calledBefore: () => false,
+    world: null,
+    exhausted: false,
+  })
+
+  it('passes a follow-up that asked the narrower question', async () => {
+    expect(check('Looking into it.', asked('What do enterprise tiers include at comparable platforms?'))).toBeNull()
+  })
+
+  it('catches re-running the original question', () => {
+    // Costs the whole search again and appends a section that mostly repeats
+    // the document above it — which is now the SAME document, so it is visible.
+    expect(check('Looking into it.', asked('What do comparable platforms charge for agent seats?'))).toContain('original question again')
+  })
+
+  it('catches a follow-up that wandered off the thing asked about', () => {
+    expect(check('Looking into it.', asked('How do these platforms handle SSO?'))).toContain('enterprise tiers specifically')
+  })
+
+  it('catches not following up at all', async () => {
+    const { ctx } = await run([])
+    expect(check('I would need to look into that.', ctx)).toContain('never commissioned')
+  })
+})

@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { getSessionUser } from '@/server/auth/session'
 import { hasPerm } from '@/server/permissions'
 import { agentCaller } from '@/server/agent-auth'
-import { listResearchRuns, RESEARCH_MODES, startResearch } from '@/server/research'
+import { listResearchRuns, RESEARCH_MODES, researchRunForConversation, startResearch } from '@/server/research'
 import { assistantOwnerFor, canUseAgentModel } from '@/server/users'
 import { currentAgentTurn, rememberResearchOrigin } from '@/server/research-origin'
 import { db } from '@/server/db/pg'
@@ -72,6 +72,21 @@ export const Route = defineApi('/api/research', {
     `
     if (dupe[0]) return json({ run: null, duplicateOf: (dupe[0] as { id: string }).id }, { status: 409 })
 
+    // ── IS THIS A FOLLOW-UP? ──────────────────────────────────────────────────
+    //
+    // INFERRED, NEVER ASKED FOR. An agent commissioning research from inside a
+    // research conversation is extending THAT report, and it already knows which
+    // one — the conversation it is speaking in belongs to a run. So the parent
+    // is looked up here rather than added as a tool parameter for a model to
+    // fill in, which means a model cannot get it wrong, pass a stale runId, or
+    // forget. The best fix for a mistake is to make it unavailable.
+    //
+    // Agent callers only: a person on the Research page who types a new question
+    // is starting a new subject, and the page they are looking at has its own
+    // "ask a follow-up" affordance for the other case.
+    const origin = caller ? await currentAgentTurn(agentModel).catch(() => null) : null
+    const parentRunId = origin ? await researchRunForConversation(origin).catch(() => null) : null
+
     try {
       const run = await startResearch({
         question: parsed.data.question,
@@ -79,15 +94,15 @@ export const Route = defineApi('/api/research', {
         agentModel,
         ownerUserId,
         requestedBy,
+        parentRunId,
       })
       // WHO IS OWED THE ANSWER. An agent that starts a run mid-conversation
       // cannot wait for it — the tool returns a runId and the turn ends — so the
       // run remembers the chat it came out of and reports back there when it
       // finishes. Only for agent callers: a human who started a run from the
       // Research page is already looking at the page that updates.
-      if (caller) {
-        const origin = await currentAgentTurn(agentModel)
-        if (origin) await rememberResearchOrigin(run.id, origin)
+      if (caller && origin) {
+        await rememberResearchOrigin(run.id, origin)
       }
       return json({ run })
     } catch (e) {

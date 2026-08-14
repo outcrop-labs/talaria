@@ -1622,6 +1622,16 @@ const MIGRATIONS: string[] = [
   // is how a person keeps access to the talk after losing it to the report.
   `alter table research_runs add column if not exists conversation_id uuid references conversations(id) on delete set null`,
   `create index if not exists research_runs_conversation_idx on research_runs(conversation_id)`,
+  // A FOLLOW-UP EXTENDS THE REPORT IT CAME FROM, rather than minting a second
+  // document about the same subject. "Dig into the second point" produced an
+  // unrelated run with its own report and its own source numbering, so the
+  // answer to one question lived in two places that did not reference each
+  // other — and the reader had to assemble it.
+  //
+  // The child row still exists, because provenance is worth keeping: who asked
+  // what, when, and how much it cost. What it does NOT get is its own artifact.
+  `alter table research_runs add column if not exists parent_run_id uuid references research_runs(id) on delete set null`,
+  `create index if not exists research_runs_parent_idx on research_runs(parent_run_id)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
