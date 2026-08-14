@@ -247,14 +247,33 @@ export async function reachFor(keys: readonly string[], wanted: readonly Capabil
     // `search` is the capability where that gap is real rather than theoretical.
     //
     // Nearly every model that "has web search" only searches WHEN ASKED — an
-    // `web_search_options` block, a provider plugin, an `:online` model suffix —
-    // and Talaria sends none of them. `searchTransport` posts a plain completion
-    // and harvests whatever citations came back unprompted, which in practice is
-    // Perplexity's sonar family and nothing else. So for every other model the
-    // catalog or a probe calls search-capable, "native" means: the model answers
-    // from memory and the run ends with no sources. That is precisely the bug
-    // this ordering fixes — a deployment with SearXNG up, a model measured at
-    // 100% tool calling, and a research run that died having searched nothing.
+    // `web_search_options` block, a provider plugin, an `:online` model suffix.
+    // So for a model the catalog or a probe calls search-capable but that nobody
+    // ASKS to search, "native" means: it answers from memory and the run ends
+    // with no sources. That is the bug this ordering fixes — a deployment with
+    // SearXNG up, a model measured at 100% tool calling, and a research run that
+    // died having searched nothing.
+    //
+    // UPDATED, because this comment used to say "Talaria sends none of them" and
+    // that is no longer true. `native-search.ts` now arms what can be armed over
+    // an OpenAI-shaped body: OpenRouter's web plugin, and Perplexity, which
+    // needs nothing. It is still only those two — OpenAI's switch is the MODEL
+    // (`-search-api`) and its parameter 400s elsewhere; Anthropic's search is a
+    // server tool on a body shape the compat layer does not expose.
+    //
+    // SO THE DEFAULT STAYS TOOL-FIRST, and the reason is coverage rather than
+    // quality: the tool path works for every model, arming works for two
+    // providers. A sonar model on an install with SearXNG registered is looped
+    // through the tool rather than spending its own index — which is
+    // suboptimal, not broken, and the escape hatch below is exactly for it.
+    //
+    // THE REFINEMENT, LEFT UNDONE DELIBERATELY: prefer native when it is
+    // genuinely ARMED (`canArmNative`), tool otherwise. That is more correct
+    // than either ordering this file has had. It is not done here because a
+    // capability KEY carries an endpoint NAME, not a provider, so `reachFor`
+    // would need a new dependency to ask — and answering the same question in
+    // `planSearch` instead would be the second spelling this file's own header
+    // warns about.
     //
     // WHY IT IS SAFE FOR THE MODELS THAT REALLY DO BROWSE: a supplier has to be
     // REGISTERED AND CHECKED to exist at all (see `platformSupply`), and an org
