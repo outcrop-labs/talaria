@@ -744,3 +744,39 @@ describe('the research eval fixtures', () => {
     expect(check('# Acme headcount\n\nThe 2025 annual report says 4,200 [1]; a March 2026 post says over 5,000 [2]. The report is the audited figure.')).toBeNull()
   })
 })
+
+describe('citation markers past the two-digit line', () => {
+  // THE SHAPE CHANGE THAT EXPOSED THIS. A sonar run answers with a handful of
+  // pre-ranked sources, so a registry never got near [99] and `\d{1,2}` was
+  // invisible. Research is model-agnostic now: an expedition is up to twelve
+  // queries against a web-search tool, each returning a page of results, and the
+  // registry numbers every distinct URL. Three figures is ordinary.
+  const fixture = (name: string) => {
+    const f = (researchSynthesisHarness.evals ?? []).find((e) => e.name.startsWith(name))
+    if (!f) throw new Error(`no fixture starting "${name}"`)
+    return f
+  }
+  const check = (v: string) => fixture('a large registry').check(v, NO_TOOLS)
+
+  it('accepts a three-digit citation the registry actually has', () => {
+    expect(check('# Logical replication at volume\n\nA stalled subscriber pins WAL until it catches up [104].')).toBeNull()
+  })
+
+  it('does not read a report citing ONLY three-digit sources as citing nothing', () => {
+    // The old regex matched none of them, so `cited.length === 0` and the report
+    // failed for having no citations while being fully cited.
+    const out = check('# Logical replication at volume\n\nSlots do not follow a failover [118], and WAL is pinned meanwhile [104].')
+    expect(out).toBeNull()
+  })
+
+  it('still catches an INVENTED three-digit citation, which used to pass unseen', () => {
+    // The registry carries 120. [150] is invention, and two-digit matching could
+    // not see it at all.
+    expect(check('# Logical replication at volume\n\nThroughput collapses above 40k writes per second [150].')).toContain('[150]')
+  })
+
+  it('leaves a four-digit number alone, because that is a year and not a source', () => {
+    // Matching it would strip dates out of reports.
+    expect(check('# Logical replication at volume\n\nThe behaviour has been stable since [2024] per source [7].')).toBeNull()
+  })
+})

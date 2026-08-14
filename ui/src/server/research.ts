@@ -325,7 +325,62 @@ async function planQueries(agentModel: string, runId: string, question: string, 
 
 // ── The citation registry ─────────────────────────────────────────────────────
 
-class SourceRegistry {
+/** A CITATION MARKER, AND IT IS NOT TWO DIGITS.
+ *
+ *  `\d{1,2}` was correct for exactly as long as research meant Perplexity: sonar
+ *  answers with a handful of pre-ranked sources, so a registry never approached
+ *  [99]. Research is model-agnostic now and the tool path is the common one — an
+ *  expedition is up to twelve queries against a web-search tool, each returning
+ *  a page of results, with every distinct URL numbered. Three figures is
+ *  ordinary there.
+ *
+ *  WHERE IT ACTUALLY BROKE, which is narrower than it first looks and is worth
+ *  writing down because the first version of this comment got it wrong. Both
+ *  failures are on the REPORT, whose markers are global:
+ *
+ *    · AN INVENTED [150] SURVIVED. `finishRun` strips markers the registry does
+ *      not know; a three-digit one was not matched, so it was neither counted
+ *      as dropped nor removed, and it reached the saved document looking exactly
+ *      like a real citation.
+ *    · THE CITED COUNT UNDERCOUNTED, so a thorough report scored as a thin one,
+ *      and `reportProblem` read an all-three-digit report as citing NOTHING.
+ *
+ *  `SourceRegistry.renumber` was NOT affected and never could be: the markers it
+ *  rewrites are LOCAL to one search hit — [1], [2], [3] — and it is the OUTPUT
+ *  that carries the global number. Stated because the mutation test that proved
+ *  it is easy to read as redundant.
+ *
+ *  Bounded at three digits rather than left open: `[2024]` in prose is a year,
+ *  and matching it would strip dates out of reports. */
+const MARKER_RE = /\[(\d{1,3})\]/g
+
+/** Exported for its own test. The renumbering it does is one of the three
+ *  places two-digit markers failed silently, and it is not reachable through
+ *  `runResearch` without standing up the whole pipeline. */
+/** KEEP ONLY THE CITATIONS THAT RESOLVE, and count what was thrown away.
+ *
+ *  Extracted from the pipeline so it can be tested at all: it is the one place
+ *  an invented citation is caught before a human reads the report, and it sat
+ *  inline in a function that needs a database, a gateway and an artifact store
+ *  to reach.
+ *
+ *  `dropped` is COUNTED, not merely stripped. Deleting an invented citation is
+ *  the right thing to save, but it also made a model that fabricates half its
+ *  markers look identical to one that cites perfectly — the exact model-fitness
+ *  signal this run is in the best position to report, thrown away by the line
+ *  that fixed the symptom. */
+export function stripUnknownMarkers(doc: string, knownIdx: readonly number[]): { cleaned: string; dropped: number; cited: Set<number> } {
+  const known = new Set(knownIdx)
+  const dropped = [...doc.matchAll(MARKER_RE)].filter((m) => !known.has(Number(m[1]))).length
+  const cleaned = doc
+    .trim()
+    .replace(/^```[a-z]*\n?|\n?```$/g, '')
+    .replace(MARKER_RE, (m, n) => (known.has(Number(n)) ? m : ''))
+  const cited = new Set([...cleaned.matchAll(MARKER_RE)].map((m) => Number(m[1])))
+  return { cleaned, dropped, cited }
+}
+
+export class SourceRegistry {
   private byUrl = new Map<string, { idx: number; title: string | null; snippet: string | null }>()
   add(s: { url: string; title: string | null; snippet: string | null }): number {
     const existing = this.byUrl.get(s.url)
@@ -341,7 +396,7 @@ class SourceRegistry {
   renumber(hit: SearchHit): string {
     const map = new Map<number, number>()
     hit.sources.forEach((s, i) => map.set(i + 1, this.add(s)))
-    return hit.content.replace(/\[(\d{1,2})\]/g, (m, n) => {
+    return hit.content.replace(MARKER_RE, (m, n) => {
       const g = map.get(Number(n))
       return g ? `[${g}]` : m
     })
@@ -678,13 +733,7 @@ async function runResearch(runId: string): Promise<void> {
     // fabricates half its markers look identical to one that cites perfectly —
     // the exact model-fitness signal this run is in the best position to
     // report, thrown away by the line that fixed the symptom.
-    const known = new Set(registry.list().map((s) => s.idx))
-    const dropped = [...doc.matchAll(/\[(\d{1,2})\]/g)].filter((m) => !known.has(Number(m[1]))).length
-    const cleaned = doc
-      .trim()
-      .replace(/^```[a-z]*\n?|\n?```$/g, '')
-      .replace(/\[(\d{1,2})\]/g, (m, n) => (known.has(Number(n)) ? m : ''))
-    const cited = new Set([...cleaned.matchAll(/\[(\d{1,2})\]/g)].map((m) => Number(m[1])))
+    const { cleaned, dropped, cited } = stripUnknownMarkers(doc, registry.list().map((s) => s.idx))
 
     // The stat, read off the run rather than off a second guard pass. Filtered
     // to `ungrounded_ref` because `synthesis.findings` also carries the

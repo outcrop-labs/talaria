@@ -1102,7 +1102,11 @@ const sourceList = (input: SynthesisInput): string => input.sources.map((s) => `
 const synthPrompt = (input: SynthesisInput): string =>
   `Research question:\n${input.question}\n\nNumbered sources:\n${sourceList(input)}\n\nFindings (citation markers already on global numbering):\n\n${input.findings.join('\n\n').slice(0, NOTES_CAP)}`
 
-const MARKER = /\[(\d{1,2})\]/g
+/** Three digits, not two — see `MARKER_RE` in research.ts for the four places
+ *  this was wrong and what each one did silently once a tool-path run crossed
+ *  99 sources. Kept as its own constant because this module cannot import that
+ *  one, and a test below asserts the two agree. */
+const MARKER = /\[(\d{1,3})\]/g
 
 /** EVERYTHING TRUE OF EVERY REPORT, stated once.
  *
@@ -1288,6 +1292,36 @@ export const researchSynthesisHarness = defineHarness<SynthesisInput, string>({
         if (!has4200 && !has5000) return 'neither headcount figure reached the document'
         return `reported only ${has4200 ? '4,200' : '5,000'} - the sources disagree and the document does not say so`
       },
+    },
+    {
+      // A TOOL-PATH EXPEDITION IS A THREE-FIGURE REGISTRY, and every fixture
+      // above it is a handful of sources — which is what a sonar run looks
+      // like, and which is why nothing here ever exercised a marker past [99].
+      // Twelve queries against a web-search tool, each returning a page of
+      // results, is the ordinary shape now that research no longer requires
+      // Perplexity. See `MARKER_RE` in research.ts for the three silent
+      // failures two-digit markers caused once a run crossed that line.
+      name: 'a large registry is cited correctly past the two-digit line',
+      band: 'standard',
+      input: {
+        question: 'How do teams operate Postgres logical replication at high write volume?',
+        mode: 'expedition',
+        searchFailed: false,
+        sources: Array.from({ length: 120 }, (_, i) => ({
+          idx: i + 1,
+          url: `https://example.com/source-${i + 1}`,
+          title: `Source ${i + 1}`,
+        })),
+        findings: [
+          '### Query: wal amplification\nPublication overhead grows with row width [7].',
+          '### Query: slot retention\nA stalled subscriber pins WAL until it catches up [104].',
+          '### Query: failover\nSlots do not follow a failover without extra tooling [118].',
+        ],
+      },
+      // The registry really does carry all 120, so a three-digit marker is
+      // legitimate and must validate rather than read as invented — and a
+      // report citing ONLY three-digit sources must not read as citing nothing.
+      check: (value) => reportProblem(value, Array.from({ length: 120 }, (_, i) => i + 1)),
     },
     {
       name: 'a one-source recon is still a titled, cited document',
