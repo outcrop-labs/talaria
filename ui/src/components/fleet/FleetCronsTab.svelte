@@ -4,7 +4,6 @@
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
-  import Modal from '@/components/ui/Modal.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -24,7 +23,9 @@
   }
 
   // Fleet-wide schedules (admin): every agent's jobs + create-across-agents.
-  let { onClose }: { onClose: () => void } = $props()
+  // The third tab of AGENTS. It was a takeover modal behind a toolbar icon,
+  // which is an affordance for one action rather than for a surface you come
+  // back to — and schedules are something you review, not something you fire.
 
   const qc = useQueryClient()
   const query = createQuery(() => ({
@@ -104,8 +105,10 @@
 
 {#snippet calendarIcon()}<CalendarClock size={22} />{/snippet}
 
-<Modal open {onClose} takeover {title}>
-  <div class="space-y-5">
+<div class="space-y-5">
+  <div class="flex items-center gap-2">
+    {@render title()}
+  </div>
     <QueryState {query} errorTitle="Could not load fleet schedules" errorVariant="compact" isEmpty={() => withJobs.length === 0}>
       {#snippet skeleton()}<CronListSkeleton />{/snippet}
       {#snippet empty()}<EmptyState icon={calendarIcon} title="Nothing scheduled anywhere" hint="Create the first job below." />{/snippet}
@@ -151,5 +154,4 @@
       </CronForm>
       {#if summary}<p transition:slide={{ duration: 150 }} class="mt-2 text-xs text-muted">{summary}</p>{/if}
     </div>
-  </div>
-</Modal>
+</div>
