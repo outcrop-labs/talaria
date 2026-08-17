@@ -58,4 +58,24 @@ export function ensureMcpService(): void {
   })()
 }
 
+/** Bring the toolkit up and WAIT for it, for the callers that need it answering
+ *  right now rather than soon.
+ *
+ *  `ensureMcpService` is fire-and-forget by design — it is called from renders
+ *  and comms reads, which must not block on a spawn. But "refresh this server's
+ *  tools" is a person pressing a button on a server that is only reachable if
+ *  the child process happens to be up, and on a freshly booted app it is not:
+ *  nothing has rendered or read comms yet, so the probe failed and the button
+ *  reported the toolkit unreachable. Ensure, then wait out the spawn. */
+export async function awaitMcpService(timeoutMs = 8_000): Promise<boolean> {
+  if (await reachable()) return true
+  ensureMcpService()
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250))
+    if (await reachable()) return true
+  }
+  return false
+}
+
 export const mcpServiceEntry = () => join(resolve(process.cwd(), '../mcp'), 'dist/index.js')
