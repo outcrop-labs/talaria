@@ -1,259 +1,138 @@
-// Work dispatch + WORK SESSIONS. When a ticket enters an agent-start column
+// Work dispatch — THE PUSH SIDE. When a ticket enters an agent-start column
 // with agent assignees, Talaria pushes the work into the agent's own persona
-// gateway — and then KEEPS THE SESSION GOING: turn after turn, the agent
-// drives its tools/harness like a developer at a desk (run, read, steer,
-// test, repeat), until the ticket reaches review/blocked/done, the agent
-// stops progressing, or the turn cap lands. One turn is never the budget for
-// real work. Matched task WORKFLOWS ride along; the plugin heartbeat remains
-// the pull-side safety net.
+// gateway as a WORK SESSION: turn after turn, the agent drives its tools/harness
+// like a developer at a desk (run, read, steer, test, repeat), until the ticket
+// reaches review/blocked/done, the agent stops progressing, or the turn cap
+// lands. One turn is never the budget for real work. Matched task WORKFLOWS ride
+// along; the plugin heartbeat remains the pull-side safety net.
 //
-// THE TURN ITSELF IS A HARNESS (harness/defs/work-session.ts). Everything in
-// this file is ticket-state orchestration — who may still work this ticket, when
-// the session stops, what lands in the activity trail — and every predicate in
-// it is unchanged. The one thing that moved is the model call: an agent's reply
-// saying a ticket is DONE now goes through `runHarness`, so `zero_tool_claim`
-// finally runs on the output it was written for (audit 1.5).
+// THE SESSION ITSELF IS A DURABLE RUN (runs/defs/work-session.ts). What used to
+// be a `for` loop inside a fire-and-forget promise, guarded by a process-local
+// `Set`, is a run: the loop index is a checkpoint, the guard is a Redis lease,
+// and a driver that dies is reclaimed and re-enters at the turn it left. The
+// TODO that stood on line 51 of this file for the whole of its life —
 //
-// AND NOTHING IN THIS FILE REACHES A MODEL ANY MORE. It used to carry
-// `sessionTransport` — a hand-written persona transport that existed for three
-// slots `TransportRequest` did not have: the agent's own tools, the ticket the
-// spend belongs to, and a ten-minute hold for an agent restarting under a config
-// propagation. All three exist now, two as declarations on the harness
-// (`tools: 'own'`, `holdMs`) and one as `RunContext.ledger`, so the transport is
-// gone rather than reduced. That matters beyond tidiness: the shim mapped a
-// request onto a `proxyChat` payload by hand and dropped `temperature` and
-// `jsonMode` doing it, which is the exact class of silent divergence the harness
-// layer exists to end.
-import { workflowsForTask } from './workflows'
-import { statusMeta } from './statuses'
-import { listAllSkills, SHARED } from './agent-skills'
-import { db } from './db/pg'
-import { runHarness } from './harness/run'
-import { dispatchPrompt, workSessionHarness } from './harness/defs/work-session'
-import type { Finding } from './guardrails'
+//   const liveSessions = new Set<string>()
+//   TODO(multi-instance): this is process-local; running several app instances
+//   (or restarting mid-session) can double-run a session.
+//
+// — is gone in both of its halves. Two instances cannot start one session
+// because the run id is DERIVED (see `sessionRunId`), and a restart no longer
+// drops the work: the session resumes from its last persisted turn instead of
+// vanishing with the ticket still reading "work pushed to <agent>".
+//
+// THE TURN ITSELF IS A HARNESS (harness/defs/work-session.ts) and nothing in
+// this file reaches a model any more. What is left here is what always belonged
+// here: the one push-side choke point, and the claim that turns a dispatch into
+// exactly one session.
+import { enqueue, pgRunStore } from './runs/run'
+import { isTerminal, type RunRow } from './runs/define'
+import { sessionRunId, workSessionRun, type WorkSessionInput } from './runs/defs/work-session'
 import type { Task } from '@/lib/task-const'
 
-/** Skill names this agent can actually load: the shared root + its own. */
-async function agentSkillNames(agentModel: string): Promise<Set<string>> {
-  const sql = await db()
-  const [def] = (await sql`select slug from agent_defs where model = ${agentModel}`) as unknown as Array<{ slug: string }>
-  const names = new Set<string>()
-  for (const o of await listAllSkills()) {
-    if (o.owner === SHARED || o.owner === def?.slug) for (const sk of o.skills) names.add(sk.name)
-  }
-  return names
+const LOG = '[work-dispatch]'
+
+const errText = (e: unknown): string => (e instanceof Error ? (e.stack ?? e.message) : String(e))
+
+/** How many sessions one ticket+agent pair may ever have.
+ *
+ *  Not a rate limit — it is the bound on the generation walk below, and it is a
+ *  SIGNAL as much as a guard: a ticket that has been handed to the same agent
+ *  twenty-five times is a ticket bouncing between a column and an agent that
+ *  cannot finish it, and the honest response is to say so loudly and stop rather
+ *  than to quietly start a twenty-sixth. */
+const MAX_SESSIONS_PER_TICKET_AGENT = 25
+
+/** A primary-key collision, and the only error `enqueue` can raise that means
+ *  something rather than being broken: somebody else claimed this exact session
+ *  in the time between our read and our insert. postgres.js surfaces the SQLSTATE
+ *  on the error; 23505 is `unique_violation`. */
+const isDuplicateKey = (e: unknown): boolean => typeof e === 'object' && e !== null && (e as { code?: unknown }).code === '23505'
+
+export interface DispatchDeps {
+  getRun: (id: string) => Promise<RunRow | null>
+  startRun: (id: string, input: WorkSessionInput) => Promise<void>
 }
 
-/** Session guard — one live work session per ticket+agent.
- *  TODO(multi-instance): this is process-local; running several app
- *  instances (or restarting mid-session) can double-run a session. Move to
- *  a DB claim (insert … on conflict do nothing) when we scale out. */
-const liveSessions = new Set<string>()
-
-/** Turn budget: generous enough for real feature work, finite enough that a
- *  looping agent can't burn unbounded tokens. The session also ends the
- *  moment the ticket leaves the working statuses. */
-const MAX_SESSION_TURNS = 12
-
-/** Where the ticket is now — the session's continue/stop signal.
- *
- *  THIS ASKS THE ONE PREDICATE. It used to compute its own:
- *  `working = agentStartKeys ∪ {category === 'active'}`, then
- *  `terminal = !assigned || !working.has(status)` — a fourth spelling of "may
- *  this agent still work this ticket?", in the one file the consolidation
- *  rounds treated as a caller rather than as a copy. It omitted BOTH archival
- *  clauses and the board's agent policy, so a person archiving the ticket,
- *  archiving its board, or revoking the agent's grant did not stop the live
- *  session already running: it kept driving turns against work that had been
- *  withdrawn, and every tool call it made came back 403.
- *  Now: `agentTicketRefusal` answers authority, `workingKeys` answers "still in
- *  play", assignment is the one thing left that is genuinely local to a
- *  session — and `stop` carries the reason so the activity line says WHY the
- *  session ended instead of just naming a column. */
-async function sessionState(
-  taskId: string,
-  agentModel: string,
-): Promise<{ status: string; stop: string | null } | null> {
-  const { getTask, agentTicketRefusal } = await import('./tasks')
-  const { boardFacts } = await import('./boards')
-  const t = await getTask(taskId)
-  if (!t) return null
-  const facts = boardFacts()
-  const refusal = await agentTicketRefusal(t, agentModel, 'write', facts)
-  if (refusal) return { status: t.status, stop: refusal }
-  if (!t.assignees.includes(agentModel)) return { status: t.status, stop: 'no longer assigned to this agent' }
-  const meta = await facts.meta(t.boardId)
-  if (!meta.workingKeys.includes(t.status)) return { status: t.status, stop: `ticket moved to "${t.status}"` }
-  return { status: t.status, stop: null }
+const REAL_DEPS: DispatchDeps = {
+  getRun: (id) => pgRunStore.get(id),
+  startRun: async (id, input) => {
+    await enqueue(
+      workSessionRun,
+      input,
+      {
+        id,
+        // NULL OWNER, deliberately. A work session belongs to a TICKET, not to
+        // the person whose click happened to move the column — `maybeDispatchTicket`
+        // is not told who acted, and inventing an owner from the ticket's
+        // assignees would put somebody else's agent session in a person's "my
+        // runs" strip. The subject is the ticket and the audience is its board.
+        ownerUserId: null,
+        subjectType: 'task',
+        subjectId: input.taskId,
+        phase: `queued for ${input.agentModel}`,
+      },
+    )
+  },
 }
-
-/** Guard findings, on the line a HUMAN reads.
- *
- *  `runHarness` already writes them to `guard_findings`, which is where the
- *  fitness page reads a per-model confabulation rate — but nobody reviewing
- *  PLAT-118 opens that table. A turn flagged `zero_tool_claim` on a ticket is
- *  the exact thing the reviewer signing that ticket off needs to see, so the
- *  check ids ride on the activity line, in FRONT of the reply so a bounded
- *  slice can never truncate them away.
- *
- *  IDS ONLY — never `message` and above all never `snippet`, which is a verbatim
- *  excerpt of the flagged text. And this never travels back to the agent: the
- *  next turn's prompt is built from the ticket's state, not from this line.
- *  Feeding a finding back would break guardrails.ts's cardinal invariant and
- *  teach the agent to argue with the guard instead of to call a tool. */
-const noted = (line: string, findings: Finding[]): string =>
-  findings.length ? `[guard: ${[...new Set(findings.map((f) => f.check))].join(', ')}] ${line}` : line
 
 /** Drive one ticket with one agent as a SESSION. Fire-and-forget from task
- *  mutations; re-entry for the same ticket+agent is a no-op. */
-export async function dispatchTicketWork(task: Task, agentModel: string, boardName?: string): Promise<void> {
-  const key = `${task.id}:${agentModel}`
-  if (liveSessions.has(key)) return
-  liveSessions.add(key)
-  try {
-    await runWorkSession(task, agentModel, boardName)
-  } finally {
-    liveSessions.delete(key)
+ *  mutations; re-entry for the same ticket+agent is a no-op.
+ *
+ *  IT NO LONGER WAITS FOR THE WORK. The session is a row before this function
+ *  returns and a driver picks it up detached, which is the same contract the old
+ *  `void dispatchTicketWork(...)` call sites already assumed — except that now
+ *  the session survives them.
+ *
+ *  THE CLAIM, which is what `liveSessions` was:
+ *    `sessionRunId(task, agent, n)` is a DERIVED uuid, so two dispatchers racing
+ *    the same ticket compute the same id and the primary key refuses the second
+ *    — across instances, which a `Set` never could. The walk over `n` is what
+ *    keeps that claim from being permanent: generation 0 is this pair's first
+ *    session ever, and once it is FINISHED a ticket that legitimately comes back
+ *    to the same agent needs somewhere to put the next one. So:
+ *      · a live (or parked) run at generation n → stand down, that is the session
+ *      · a finished run at generation n → that session is over, look at n + 1
+ *      · nothing at generation n → claim it
+ *    A duplicate-key error on the claim is the race resolving itself: somebody
+ *    inserted between our read and our write, and what they inserted is a live
+ *    session for this exact ticket and agent, so standing down is correct. */
+export async function dispatchTicketWork(task: Task, agentModel: string, boardName?: string, deps: Partial<DispatchDeps> = {}): Promise<void> {
+  const d: DispatchDeps = { ...REAL_DEPS, ...deps }
+  const input: WorkSessionInput = {
+    taskId: task.id,
+    agentModel,
+    boardId: task.boardId,
+    ...(boardName === undefined ? {} : { boardName }),
+    generation: 0,
   }
-}
-
-async function runWorkSession(task: Task, agentModel: string, boardName?: string): Promise<void> {
-  const { logActivity } = await import('./tasks')
-  try {
-    const meta = await statusMeta(task.boardId)
-    const workflows = await workflowsForTask(task)
-    // Workflows name SKILLS — Hermes loads the flow content from the skill
-    // mounts it already reads; we never paste flow prose into the prompt.
-    // Skills the target agent can't see are flagged, not silently named
-    // (the future gap loop starts from exactly this signal).
-    const available = workflows.some((w) => w.skills.length) ? await agentSkillNames(agentModel) : new Set<string>()
-    const missing = workflows.flatMap((w) => w.skills.filter((sk) => !available.has(sk)))
-    const workflowBlock = workflows.length
-      ? `\n\nHOW THIS KIND OF WORK IS DONE HERE (workflow${workflows.length > 1 ? 's' : ''}):\n` +
-        workflows
-          .map((w) => {
-            const skills = w.skills.filter((sk) => available.has(sk))
-            const flow = skills.length
-              ? `Load and follow your skill${skills.length > 1 ? 's' : ''}: ${skills.map((sk) => `"${sk}"`).join(', ')}.`
-              : 'Use your judgment — no specific skill is bound to this workflow.'
-            const kits = w.toolkits.length
-              ? `\nExpected toolkits: ${w.toolkits.map((t) => t.server + (t.tools?.length ? ` (${t.tools.join(', ')})` : '')).join('; ')}`
-              : ''
-            return `── ${w.name} ──\n${flow}${kits}`
-          })
-          .join('\n\n')
-      : ''
-    // The lifecycle is auditable from the ticket: every step lands in
-    // task_activity (dispatch start w/ matched workflows + skills, the
-    // agent's reply or the failure, then the agent's own actions).
-    await logActivity(
-      task.id,
-      'talaria',
-      'dispatch',
-      `work pushed to ${agentModel}` +
-        (workflows.length ? ` with workflow ${workflows.map((w) => w.name + (w.skills.length ? ` [${w.skills.join(', ')}]` : '')).join(', ')}` : '') +
-        (missing.length ? ` — skill ${missing.map((m) => `"${m}"`).join(', ')} not available to this agent` : ''),
-    )
-    // THE PROMPT HANDS THIS TO THE AGENT VERBATIM, so it is a destination and
-    // must come from `statusMeta`'s `placeable` list like every other one. It
-    // used to be `listStatuses(...).find(s => s.category === 'active')?.key`,
-    // which does not exclude terminal columns: on a board whose first active
-    // column is labelled "Cancelled" (slug `cancelled`, an off-board terminal
-    // key — legal, and `agentStartConflict` does not refuse it) the hint was
-    // "cancelled", so an agent obeying step 2 of its own work-session prompt
-    // sent a TERMINAL move. `activeKey` is picked from `placeable`, and with no
-    // active column at all we fall back to the pickup queue; with neither we say
-    // so rather than invent `in_progress`, a key the board may not have.
-    const activeHint = meta.activeKey ?? meta.assignedKey
-    const step2 = activeHint
-      ? `comment a one-line acknowledgment, and triage_ticket to status "${activeHint}" while you work.`
-      : `comment a one-line acknowledgment. Leave the status where it is — this board has no working column for you to move it to.`
-    // BUILT IN work-session.ts, beside the harness that runs it — see
-    // `dispatchPrompt` for why the ticket DESCRIPTION is fenced there rather
-    // than interpolated raw next to the instructions.
-    const prompt = dispatchPrompt({
-      taskId: task.id,
-      ticketRef: task.ticketRef ?? task.id,
-      title: task.title,
-      description: task.description ?? null,
-      boardName,
-      workflowBlock,
-      step2,
-    })
-    // ONE TURN = ONE HARNESS RUN, on the runner's own transport. The model is
-    // named by the caller (it is the agent assigned to this ticket, not a
-    // chain-resolved one); the tool loop and the ten-minute hold are declared on
-    // the harness; and everything else is the runner's — the guard pass that
-    // finally covers this output, redaction of the copy that gets persisted, and
-    // the harness_runs row.
-    //
-    // THE LEDGER LINE IS THE ONE THING ONLY THIS FILE CAN SAY. `recordUsage`
-    // writes `task_id`, and `taskUsage` sums a ticket's cost by that column
-    // alone — so without `taskId` here a session's spend lands in the ledger and
-    // never in the number the ticket's owner reads. `source` stays 'chat'
-    // deliberately: 'ticket' rows are agent-SELF-REPORTED through MCP
-    // `log_usage`, and this turn is metered by Talaria on its own request path.
-    //
-    // The policy — a turn that produced nothing usable ends the session with a
-    // logged failure instead of driving eleven more turns off a blank — lives in
-    // `workSessionHarness.onFailure: 'throw'` and nowhere else now. It used to be
-    // restated here because `runHarness` RETURNED rather than threw for the
-    // pre-call failures (nothing resolved, render threw, the transport died
-    // mid-stream); it throws on all of them, and the throw lands in the outer
-    // catch below exactly as the old `throw new Error('gateway ' + status)` did.
-    // What is left is the TYPE narrowing: `HarnessResult.value` is `O | null` on
-    // every result alike, so the compiler cannot see the guarantee.
-    const sendTurn = async (content: string): Promise<{ text: string; findings: Finding[] }> => {
-      const run = await runHarness(
-        workSessionHarness,
-        { prompt: content },
-        { caller: `ticket:${task.id}`, model: agentModel, ledger: { source: 'chat', refId: task.id, taskId: task.id } },
-      )
-      if (run.value === null) throw new Error(run.error ?? `no reply from ${agentModel}`)
-      return { text: run.value, findings: run.findings }
+  for (let generation = 0; generation < MAX_SESSIONS_PER_TICKET_AGENT; generation++) {
+    const id = sessionRunId(task.id, agentModel, generation)
+    let existing: RunRow | null
+    try {
+      existing = await d.getRun(id)
+    } catch (e) {
+      // The claim is the only thing standing between a retried request and two
+      // agents on one ticket, so a store we cannot read is a dispatch we do not
+      // make. The heartbeat is the pull-side safety net for exactly this.
+      console.error(`${LOG} ${task.id}: could not check for a live session with ${agentModel}, not dispatching:`, errText(e))
+      return
     }
-
-    let last = await sendTurn(prompt)
-    await logActivity(task.id, agentModel, 'dispatch', noted(`picked up: ${last.text.slice(0, 300) || '(no reply)'}`, last.findings))
-
-    // The session: keep the agent working until the ticket leaves the working
-    // statuses (review/blocked/done/unassigned), it declares DONE/BLOCKED, or
-    // the turn cap lands. Every continuation carries the live ticket state so
-    // the agent never works a stale picture.
-    for (let turn = 2; turn <= MAX_SESSION_TURNS; turn++) {
-      const state = await sessionState(task.id, agentModel)
-      if (!state || state.stop) {
-        await logActivity(
-          task.id,
-          'talaria',
-          'dispatch',
-          `work session ended after ${turn - 1} turn${turn > 2 ? 's' : ''} — ${state ? state.stop : 'ticket gone'}`,
-        ).catch(() => {})
-        return
-      }
-      // CASE-INSENSITIVE, and the fitness suite is what found it: a model that
-      // ended its turn "**Status:** Blocked" plainly meant blocked, and this
-      // read it as still working — so the session kept waking up on a parked
-      // ticket, which is the exact bug the status line exists to prevent. The
-      // convention asks for a word, not for shouting.
-      if (/\b(DONE|BLOCKED)\b/i.test(last.text.slice(-200))) {
-        // The agent says it's finished but the ticket disagrees — one nudge to
-        // reconcile (report_outcome / set blocked), then stop pushing.
-        last = await sendTurn(
-          `[Work session — reconcile] You said DONE/BLOCKED but the ticket is still "${state.status}". If finished: report_outcome now. If blocked: set status "blocked" with a comment. If neither, keep working.`,
-        )
-        await logActivity(task.id, agentModel, 'dispatch', noted(`session reconcile: ${last.text.slice(0, 200) || '(no reply)'}`, last.findings)).catch(() => {})
-        continue
-      }
-      last = await sendTurn(
-        `[Work session — turn ${turn}/${MAX_SESSION_TURNS}] You're mid-work on this ticket (status: "${state.status}"). Continue like a developer: next step, run it, read the result, adjust. Verify before you finish — tests, your own diff, and for UI work drive it in a real browser (Playwright) and attach evidence. When genuinely done: report_outcome. If stuck: status "blocked" + comment. End with your status line.`,
-      )
-      await logActivity(task.id, agentModel, 'dispatch', noted(`session turn ${turn}: ${last.text.slice(0, 250) || '(no reply)'}`, last.findings)).catch(() => {})
+    if (existing && !isTerminal(existing.state)) return
+    if (existing) continue
+    try {
+      await d.startRun(id, { ...input, generation })
+      return
+    } catch (e) {
+      if (isDuplicateKey(e)) return
+      console.error(`${LOG} ${task.id}: could not start a work session with ${agentModel}:`, errText(e))
+      return
     }
-    await logActivity(task.id, 'talaria', 'dispatch', `work session hit the ${MAX_SESSION_TURNS}-turn cap — leaving the ticket to the agent/heartbeat`).catch(() => {})
-  } catch (e) {
-    await logActivity(task.id, 'talaria', 'dispatch', `work session with ${agentModel} failed: ${(e as Error).message.slice(0, 200)}`).catch(() => {})
   }
+  console.error(
+    `${LOG} ${task.id} has had ${MAX_SESSIONS_PER_TICKET_AGENT} work sessions with ${agentModel} and every one of them finished — ` +
+      `not starting another. This ticket keeps coming back to an agent that cannot close it; a person should look at it.`,
+  )
 }
 
 /** Dispatch to every AGENT assignee when the ticket sits in an agent-start
@@ -281,7 +160,12 @@ async function runWorkSession(task: Task, agentModel: string, boardName?: string
  *  dispatching into one starts a session on a ticket the review-exit rule has
  *  already frozen. And the agent gate is now PER AGENT, because board policy is
  *  part of the question: an agent still listed as an assignee on a board that
- *  has since revoked its grant gets no fresh work session. */
+ *  has since revoked its grant gets no fresh work session.
+ *
+ *  IT IS STILL ASKED AGAIN INSIDE THE SESSION, on every turn. This gate is about
+ *  whether to START; a run may sit in the queue, park, or be reclaimed after a
+ *  deploy, and the first thing every step does is put the same question to
+ *  `agentTicketRefusal` again. */
 export async function maybeDispatchTicket(task: Task, onlyAgents?: string[]): Promise<void> {
   const { agentAssignees, agentTicketRefusal } = await import('./tasks')
   const { boardFacts } = await import('./boards')
@@ -291,6 +175,6 @@ export async function maybeDispatchTicket(task: Task, onlyAgents?: string[]): Pr
   const targets = agentAssignees(task.assignees).filter((a) => !onlyAgents || onlyAgents.includes(a))
   for (const agent of targets) {
     if (await agentTicketRefusal(task, agent, 'write', facts)) continue
-    void dispatchTicketWork(task, agent)
+    void dispatchTicketWork(task, agent).catch((e) => console.error(`${LOG} ${task.id}: dispatch to ${agent} threw:`, errText(e)))
   }
 }

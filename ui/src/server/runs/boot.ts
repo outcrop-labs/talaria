@@ -29,9 +29,6 @@ import './reclaim'
 // definition that is not on this list is a visible omission rather than an
 // invisible one.
 //
-// The list is EMPTY on purpose right now. This change lands the substrate — the
-// run store, the lease, the driver, the decision path and the reclaim sweep —
-// with no kind ported onto it yet, so it alters no existing behaviour: the
-// sweep runs against a table with nothing in it. Each kind arrives in its own
-// change and adds its own line here, which is also what makes those changes
-// reviewable one subsystem at a time.
+// Each kind arrives in its own change and adds its own line here, which is
+// what makes those changes reviewable one subsystem at a time.
+import './defs/work-session'

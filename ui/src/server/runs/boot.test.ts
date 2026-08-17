@@ -3,9 +3,9 @@
 // checkpoints back on a real instance, because that depends entirely on which
 // modules the server graph loads. This file is that assertion.
 //
-// It matters more than usual for this change, which lands the substrate with no
-// kinds ported onto it: the only thing that can go wrong is the wiring, and the
-// only symptom of the wiring being wrong is silence.
+// It matters more than usual here: the symptom of the wiring being wrong is
+// silence — a cold instance finds a row of a kind it never imported, correctly
+// declines to touch it, and nothing anywhere says so.
 //
 // Claims 3 and 4 are read off the SOURCE TREE rather than by importing the
 // route graph, deliberately: importing every route in a unit test would drag
@@ -54,8 +54,8 @@ describe('server/runs/boot.ts', () => {
     // instance that finds one of its rows leaves it alone forever
     // (`drive()` returns `no-definition` and does the right thing, quietly).
     //
-    // Right now both sides are EMPTY, and that is the point: this change ports
-    // no kinds, so the next one that does has to add its line here or fail.
+    // Both sides are read fresh, so a kind that lands in defs/ without its line
+    // here fails this test rather than going quietly unregistered.
     const modules = sources(join(HERE, 'defs'))
       .map((f) => f.slice(f.lastIndexOf('/') + 1).replace(/\.ts$/, ''))
       .sort()
@@ -82,18 +82,17 @@ describe('server/runs/boot.ts', () => {
 
   it('every registered kind states an audience and a step budget', () => {
     // A definition missing either is one the runtime cannot park or cannot time
-    // out, and both are silent until the day they matter. Vacuous today; it
-    // starts biting with the first ported kind.
+    // out, and both are silent until the day they matter.
     for (const def of runDefinitions()) {
       expect(typeof def.audience, `${def.kind} has no audience`).toBe('function')
       expect(def.maxStepMs, `${def.kind} has no maxStepMs`).toBeGreaterThan(0)
     }
   })
 
-  it('registers no kinds yet — this change is the substrate only', () => {
-    // Stated as an assertion rather than left implicit, so that porting a kind
-    // without meaning to shows up here as a failing test rather than as a
-    // behaviour change nobody reviewed.
-    expect(runDefinitions().map((d) => d.kind)).toEqual([])
+  it('registers the kinds this change ports, and no others', () => {
+    // Named explicitly rather than counted, so porting a kind without meaning
+    // to shows up here as a failing test rather than as a behaviour change
+    // nobody reviewed.
+    expect(runDefinitions().map((d) => d.kind).sort()).toEqual(['work-session'])
   })
 })
