@@ -1,4 +1,5 @@
 <script lang="ts">
+  import HomeTabs from '@/routes/app/home/HomeTabs.svelte'
   import type { Snippet } from 'svelte'
   import Materialize from '@/components/ui/Materialize.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -68,6 +69,9 @@
        (ANIMATIONS.md). Runs once at mount; the loaded branch below staggers
        again when data replaces the skeleton. -->
   <main use:staggerIn class="mx-auto w-full max-w-[760px]">
+    <!-- Home's tab strip. It lived in ConsoleHome, which never renders for this
+         tab, so the surface most people land on had no way out of itself. -->
+    <div class="mb-5"><HomeTabs value="inbox" /></div>
     <FocusHeader
       count={failed ? null : (workspace.data?.counts.total ?? 0)}
       current={workspace.active ? 1 : 0}

@@ -33,6 +33,12 @@ export const { p, navigate, isActive, preload, route } = createRouter({
   },
   '/': {
     '/': () => import('./routes/app/Home.svelte'),
+    // Home's console tabs. Under /home rather than at the root because their
+    // names ARE the names of real views: /boards is the board list, /home/boards
+    // is Home's summary of it.
+    '/home': {
+      '/:tab': () => import('./routes/app/Home.svelte'),
+    },
     '/chat': () => import('./routes/app/Chat.svelte'),
     // A DISCRIMINATED path. The selection is a tagged union — a channel, or a
     // thread with an agent — so the tag is a segment: the two kinds cannot be
