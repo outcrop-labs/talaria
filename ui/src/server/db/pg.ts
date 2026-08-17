@@ -1632,6 +1632,25 @@ const MIGRATIONS: string[] = [
   // what, when, and how much it cost. What it does NOT get is its own artifact.
   `alter table research_runs add column if not exists parent_run_id uuid references research_runs(id) on delete set null`,
   `create index if not exists research_runs_parent_idx on research_runs(parent_run_id)`,
+  // ── AGENT ROLE TEMPLATES ──────────────────────────────────────────────────
+  // The starting point for a new agent, expressed as a BUSINESS ROLE rather
+  // than a person. Talaria ships and maintains a common set in code
+  // (server/agent-role-templates.ts); this table is the org's own additions,
+  // which is the half that cannot live in the repo. `slug` is unique so an org
+  // template can deliberately shadow a built-in of the same name — the org's
+  // version of "Support Agent" should win over ours.
+  `create table if not exists agent_role_templates (
+     id uuid primary key default gen_random_uuid(),
+     slug text not null unique,
+     name text not null,
+     role text not null,
+     department text not null,
+     description text not null default '',
+     soul text not null,
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
