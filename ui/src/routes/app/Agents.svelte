@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CalendarClock, Import, LayoutGrid, List, Plus } from '@lucide/svelte'
+  import { CalendarClock, IdCard, Import, LayoutGrid, List, Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Materialize from '@/components/ui/Materialize.svelte'
@@ -10,6 +10,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import CreateAgentModal from '@/components/fleet/CreateAgentModal.svelte'
+  import RoleTemplatesModal from '@/components/fleet/RoleTemplatesModal.svelte'
   import FederateModal from '@/components/fleet/FederateModal.svelte'
   import FleetCronsModal from '@/components/fleet/FleetCronsModal.svelte'
   import { errorMessage } from '@/lib/fetch-json'
@@ -22,6 +23,7 @@
 
   const session = useSession()
   const isAdmin = $derived(session.data?.role === 'admin')
+  let rolesOpen = $state(false)
   const fleetQuery = useFleet()
   const defsQuery = useFleetDefs(() => isAdmin)
   const containersQuery = useFleetContainers(() => isAdmin)
@@ -148,6 +150,19 @@
           >
             <Import size={15} />
           </Button>
+          <!-- The role library lives HERE rather than in Admin: it is part of
+               making an agent, and the person who creates agents is the one who
+               knows what the roles should be. -->
+          <Button
+            variant="outline"
+            size="sm"
+            class="w-9 px-0"
+            onclick={() => (rolesOpen = true)}
+            title="Role templates: what a new agent can start from"
+            aria-label="Role templates"
+          >
+            <IdCard size={15} />
+          </Button>
         {/if}
       {/snippet}
     </ViewHeader>
@@ -230,6 +245,7 @@
     {#if schedulesOpen}<FleetCronsModal onClose={() => (schedulesOpen = false)} />{/if}
     {#if federateOpen}<FederateModal onClose={() => (federateOpen = false)} />{/if}
     {#if creating}<CreateAgentModal open={creating} onClose={() => (creating = false)} templates={defs.filter((d) => d.enabled)} />{/if}
+    {#if rolesOpen}<RoleTemplatesModal open={rolesOpen} onClose={() => (rolesOpen = false)} />{/if}
     {#if duplicateFrom}
       <CreateAgentModal open onClose={() => (duplicateFrom = null)} templates={defs} templateId={duplicateFrom.id} />
     {/if}
