@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { route } from '@/router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { searchParams } from 'sv-router'
   import { navigate } from '@/router'
@@ -76,30 +77,27 @@
   // deep-links an agent conversation (agent-outreach notifications land here).
   // ?t=agent (the /chat redirect) asks for the chat workspace: default to the
   // first agent's fresh thread instead of the first channel.
-  // sv-router auto-parses search values ("5" → number, "true" → boolean); the
-  // ids/models here are opaque strings, so coerce whatever it parsed back.
-  const strParam = (v: string | number | boolean | null): string | null => (v == null ? null : String(v))
+  // THE PATH IS THE SELECTION, and it is discriminated:
+  //   /comms/channel/<id>
+  //   /comms/agent/<model>[/<thread>]
+  // The tag is a segment because the two kinds are different things, and a
+  // one-segment id would be ambiguous between a channel and an agent model
+  // until something resolved it.
   const sel = $derived.by((): Sel => {
-    const c = strParam(searchParams.get('c'))
-    const a = strParam(searchParams.get('a'))
-    const x = strParam(searchParams.get('x'))
-    return c
-      ? { t: 'channel', id: c }
-      : a
-        ? { t: 'agent', model: a, conversationId: x || null }
-        : null
+    const [, , kind, one, two] = route.pathname.split('/')
+    if (kind === 'channel' && one) return { t: 'channel', id: decodeURIComponent(one) }
+    if (kind === 'agent' && one) return { t: 'agent', model: decodeURIComponent(one), conversationId: two ? decodeURIComponent(two) : null }
+    return null
   })
   const searchT = $derived(searchParams.get('t') === 'agent' ? ('agent' as const) : undefined)
-  const setSel = (next: Sel, opts: { replace?: boolean } = {}) =>
-    void navigate('/comms', {
-      search:
-        next?.t === 'channel'
-          ? { c: next.id }
-          : next?.t === 'agent'
-            ? { a: next.model, ...(next.conversationId ? { x: next.conversationId } : {}) }
-            : {},
-      replace: opts.replace,
-    })
+  const setSel = (next: Sel, opts: { replace?: boolean } = {}) => {
+    const replace = opts.replace
+    if (next?.t === 'channel') void navigate('/comms/channel/:id', { params: { id: next.id }, replace })
+    else if (next?.t === 'agent' && next.conversationId)
+      void navigate('/comms/agent/:model/:thread', { params: { model: next.model, thread: next.conversationId }, replace })
+    else if (next?.t === 'agent') void navigate('/comms/agent/:model', { params: { model: next.model }, replace })
+    else void navigate('/comms', { replace })
+  }
   // The agent-flavored selection, pre-narrowed for the template.
   const agentSel = $derived(sel?.t === 'agent' ? sel : null)
   // Agents whose thread list is pinned open (chevron) without being selected.
@@ -222,7 +220,7 @@
 
   const channelRowMenu = (c: Channel): ContextMenuEntry[] => [
     { label: 'Open', onSelect: () => setSel({ t: 'channel', id: c.id }) },
-    { label: 'Copy link', onSelect: () => copyAppLink(`/comms?c=${c.id}`) },
+    { label: 'Copy link', onSelect: () => copyAppLink(`/comms/channel/${c.id}`) },
     { label: 'Mark read', disabled: !c.unreadCount, onSelect: () => void markRead(c.id) },
   ]
 
@@ -451,7 +449,7 @@
                   oncontextmenu={(e) =>
                     menu.openMenu(e, [
                       { label: 'Open', onSelect: () => setSel({ t: 'agent', model: a.id, conversationId: c.id }) },
-                      { label: 'Copy link', onSelect: () => copyAppLink(`/comms?a=${a.id}&x=${c.id}`) },
+                      { label: 'Copy link', onSelect: () => copyAppLink(`/comms/agent/${a.id}/${c.id}`) },
                       {
                         label: 'Rename',
                         onSelect: () => {

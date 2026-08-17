@@ -35,7 +35,7 @@ export async function notifyDmMessage(
   content: string,
 ): Promise<void> {
   const sql = await db()
-  const href = `/comms?c=${channelId}`
+  const href = `/comms/channel/${channelId}`
   for (const m of await listChannelMembers(channelId)) {
     if (m.userId === senderUserId) continue
     const pending = await sql`

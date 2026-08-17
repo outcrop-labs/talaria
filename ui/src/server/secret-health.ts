@@ -202,7 +202,7 @@ export async function secretHealth(): Promise<SecretHealth> {
         ? `A working secret. ${w.grants > 0 ? `${w.grants} agent${w.grants === 1 ? '' : 's'} can spend it; ` : ''}the people it is shared with can read it`
         : `${w.grants > 0 ? `${w.grants} agent${w.grants === 1 ? '' : 's'} can SPEND it` : 'Granted to no agent, so nobody can spend it'} — and nobody can read it`,
       surface: w.revealable ? 'Files → Secrets' : 'Admin → Secrets',
-      href: w.revealable ? '/artifacts?p=secrets' : '/admin/secrets',
+      href: w.revealable ? '/artifacts/secrets' : '/admin/secrets',
       // A SPENT ONE-SHOT IS NOT BROKEN. `resolveHandles` empties the ciphertext
       // once the last use is gone, deliberately — reporting that as an
       // encryption failure would send an operator hunting a key problem that

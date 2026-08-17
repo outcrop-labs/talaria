@@ -21,7 +21,7 @@ export function rowMenuEntries(m: ChannelMessage, ctx: MessageCtx, openThread: (
   const own = m.authorType === 'user' && m.author === ctx.me
   return [
     { label: 'Copy text', disabled: !m.content, onSelect: () => void navigator.clipboard.writeText(m.content) },
-    { label: 'Copy link', onSelect: () => copyAppLink(`/comms?c=${ctx.channelId}`) },
+    { label: 'Copy link', onSelect: () => copyAppLink(`/comms/channel/${ctx.channelId}`) },
     ...(m.threadRootId
       ? []
       : [{ label: 'Reply in thread', onSelect: openThread }]),
