@@ -11,9 +11,34 @@ service:
   image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
   command: gateway run
   restart: unless-stopped
+  # ── Sandbox limits ─────────────────────────────────────────────────────────
+  # An agent with a workbench profile executes model-authored code, so treat the
+  # container as hostile-by-default rather than as trusted infrastructure.
+  #
+  # If a future harness genuinely needs a capability, add it back explicitly
+  # with cap_add rather than widening this.
+  security_opt:
+    - 'no-new-privileges:true'
+  cap_drop:
+    - ALL
+  # Resource ceilings. Without pids_limit, one runaway build or fork bomb inside
+  # a single agent takes down the host — and with it the database, the app, and
+  # every other agent. Tune per deployment; these are headroom for a coding
+  # harness, not a tight budget.
+  pids_limit: ${AGENT_PIDS_LIMIT:-512}
+  mem_limit: ${AGENT_MEM_LIMIT:-4g}
+  cpus: ${AGENT_CPUS:-2}
+  # NOT set, deliberately: `user:`. s6-overlay expects to start as root and drop
+  # privileges itself (fix-attrs chowns the state volume on boot), so pinning a
+  # uid breaks init AND orphans the existing /opt/data volumes of every deployed
+  # agent. Rootless agents need an image built for it, not a compose override.
+  #
   # The app runs on the host in dev; this lets agents reach Talaria's gateway at
-  # host.docker.internal on any docker network (subnet-independent). In a fully
-  # containerized stack, set TALARIA_GATEWAY_SELF_URL to the app's service DNS.
+  # host.docker.internal on any docker network (subnet-independent). NOTE this is
+  # also the agent's route to anything else listening on the host — keep host
+  # services bound to loopback-only (docker/dev-compose.yml does). In a fully
+  # containerized stack, drop this and set TALARIA_GATEWAY_SELF_URL to the app's
+  # service DNS instead.
   extra_hosts:
     - 'host.docker.internal:host-gateway'
   healthcheck:
