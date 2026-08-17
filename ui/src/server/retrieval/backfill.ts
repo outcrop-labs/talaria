@@ -5,14 +5,24 @@
 //   backfillAll()      full re-index of the workspace's history (admin button)
 //   maybeRagSweep()    15-minute incremental catch-up over new rows, so an
 //                      outage self-heals when the services come back
+//
+// THE BACKFILL IS A DURABLE RUN NOW. It used to be `let backfillRunning = false`
+// plus a status blob in `app_settings`, fired as a bare `void backfillAll()`: a
+// deploy in the middle left that blob saying state:'running' FOREVER, with
+// nothing driving it and nothing that would ever notice. The work — the paging,
+// the checkpoint, the resume — is in server/runs/defs/reindex.ts; what stays
+// here is the public verb and the READ SHAPE the admin panel has always
+// consumed, which is now a projection of the run row rather than a second copy
+// of the truth. `components/admin/retrieval.ts` did not change.
 import { db } from '../db/pg'
-import { getArtifact } from '../artifacts'
 import { getSetting, setSetting } from '../audit'
+import { getArtifact } from '../artifacts'
 import { describeAgent } from '../gateway'
 import { applyArtifactRouting } from './artifact-routing'
-import { ensureQdrantFor } from './collections'
 import { embedOne } from './embed'
-import { EFFECTIVE_DOC_SELECT, indexActivity, indexPersonal, indexTicket, indexTicketComment, syncKbDoc, type KbDocSync } from './sources'
+import { EFFECTIVE_DOC_SELECT, indexActivity, indexPersonal, indexTicket, syncKbDoc, type KbDocSync } from './sources'
+import { BACKFILL_KIND, startBackfill, type BackfillCheckpoint } from '../runs/defs/reindex'
+import { latestRunOfKind, type KindRunView } from '../runs/store'
 
 const QDRANT_URL = () => (process.env.TALARIA_QDRANT_URL ?? 'http://localhost:6333').replace(/\/$/, '')
 
@@ -34,6 +44,10 @@ export async function ragHealth(): Promise<RagHealth> {
   return { qdrant, embeddings }
 }
 
+/** THE READ SHAPE, unchanged: `components/admin/retrieval.ts` declares exactly
+ *  these fields and polls while `state === 'running'`. What changed is where the
+ *  answer comes from — a `runs` row rather than an `app_settings` blob nothing
+ *  was driving. */
 export interface BackfillStatus {
   state: 'idle' | 'running' | 'done' | 'error'
   startedAt?: string
@@ -42,147 +56,50 @@ export interface BackfillStatus {
   error?: string
 }
 
-const STATUS_KEY = 'rag_backfill_status'
-export const backfillStatus = () => getSetting<BackfillStatus>(STATUS_KEY, { state: 'idle' })
-const setStatus = (s: BackfillStatus) => setSetting(STATUS_KEY, s)
+/** Whatever the run has indexed so far. Read off the CHECKPOINT while it runs
+ *  and off the RESULT once it is done, which are the same numbers a step apart —
+ *  the driver persists the checkpoint before it takes the next step, so the
+ *  panel's tally can lag by one page and can never overstate. */
+function countsOf(run: KindRunView): Record<string, number> | undefined {
+  const done = run.result as { counts?: Record<string, number> } | null
+  if (done?.counts) return done.counts
+  const cp = run.checkpoint as BackfillCheckpoint | null
+  return cp?.counts
+}
 
-let backfillRunning = false
+/** Project a run row onto the four states the panel knows.
+ *
+ *  `queued` reads as RUNNING, and that is not a fudge: a queued run is one the
+ *  reclaim sweep will pick up within thirty seconds, or one a `retry` has parked
+ *  for a minute because Qdrant is down — in both cases the work is in flight
+ *  from the admin's point of view and the reason is in `phase`. Showing it as
+ *  idle would put the Start button back in front of somebody whose backfill is
+ *  about to resume, which is how you get two.
+ *
+ *  `cancelled` reads as DONE with the reason attached. The panel has no fifth
+ *  state and a stopped repair job is finished, not broken. */
+function projectStatus(run: KindRunView | null): BackfillStatus {
+  if (!run) return { state: 'idle' }
+  const counts = countsOf(run)
+  const at = { ...(run.startedAt ? { startedAt: run.startedAt } : {}), ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}) }
+  const tally = counts ? { counts } : {}
+  if (run.state === 'error') return { state: 'error', error: run.error ?? 'the backfill failed', ...at, ...tally }
+  if (run.state === 'cancelled') return { state: 'done', ...(run.error ? { error: run.error } : {}), ...at, ...tally }
+  if (run.state === 'done') return { state: 'done', ...at, ...tally }
+  return { state: 'running', ...at, ...tally }
+}
+
+export const backfillStatus = async (): Promise<BackfillStatus> => projectStatus(await latestRunOfKind(BACKFILL_KIND).catch(() => null))
 
 /** Full re-index of the workspace's history. Content-hash idempotent — safe to
- *  re-run; unchanged docs are no-ops. Detached-friendly (caller fires it). */
-export async function backfillAll(): Promise<void> {
-  if (backfillRunning) return
-  backfillRunning = true
-  const counts: Record<string, number> = {}
-  try {
-    await setStatus({ state: 'running', startedAt: new Date().toISOString() })
-    const health = await ragHealth()
-    if (!health.qdrant || !health.embeddings) {
-      throw new Error(`retrieval services down (qdrant: ${health.qdrant}, embeddings: ${health.embeddings})`)
-    }
-    const sql = await db()
-
-    // Every registered collection gets its Qdrant collection in its registered
-    // shape (they may have been registered while Qdrant was down).
-    const dim = (await embedOne('dim probe')).length
-    const cols = (await sql`select qdrant_name as name, schema_version as "schemaVersion" from rag_collections`) as unknown as Array<{ name: string; schemaVersion: number }>
-    for (const c of cols) await ensureQdrantFor(c.name, c.schemaVersion, dim).catch(() => {})
-
-    // KB docs — visibility-routed via the same sync every save runs, and with
-    // the same EFFECTIVE visibility that save resolves (kb.syncDocEffective).
-    // Reading d.visibility raw here is how private docs got into the org brain:
-    // perms_inherited defaults true and visibility defaults 'org', so a doc in
-    // a private space reads 'org' until you resolve it through the space.
-    const docs = (await sql.unsafe(EFFECTIVE_DOC_SELECT)) as unknown as KbDocSync[]
-    for (const d of docs) {
-      await syncKbDoc(d).catch(() => {})
-      counts.kbDocs = (counts.kbDocs ?? 0) + 1
-    }
-
-    // Channel messages (relay summaries ride along — they're messages too).
-    const msgs = (await sql`
-      select m.id, m.channel_id as "channelId", m.author_type as "authorType", m.author, m.content, c.name, c.kind
-      from channel_messages m join channels c on c.id = m.channel_id
-      where m.status = 'complete' and m.content <> '' and c.kind <> 'dm'
-    `) as unknown as Array<{ id: string; channelId: string; authorType: string; author: string; content: string; name: string; kind: string }>
-    for (const m of msgs) {
-      const author = m.authorType === 'agent' ? describeAgent(m.author).label : m.author
-      await indexActivity({
-        sourceType: 'channel',
-        sourceId: m.id,
-        title: `#${m.name} · ${author}`,
-        text: m.content,
-        payload: { channelId: m.channelId },
-        href: '/channels',
-      }).catch(() => {})
-      counts.channelMessages = (counts.channelMessages ?? 0) + 1
-    }
-
-    // Tickets + comments.
-    const tasks = (await sql`
-      select t.id, t.board_id as "boardId", t.title, t.description from tasks t where t.archived_at is null
-    `) as unknown as Array<{ id: string; boardId: string; title: string; description: string | null }>
-    for (const t of tasks) {
-      await indexTicket(t).catch(() => {})
-      counts.tickets = (counts.tickets ?? 0) + 1
-    }
-    const comments = (await sql`
-      select c.id, c.task_id as "taskId", t.board_id as "boardId", c.author, c.content
-      from task_comments c join tasks t on t.id = c.task_id where t.archived_at is null
-    `) as unknown as Array<{ id: string; taskId: string; boardId: string; author: string; content: string }>
-    for (const c of comments) {
-      await indexTicketComment(c).catch(() => {})
-      counts.comments = (counts.comments ?? 0) + 1
-    }
-
-    // Plan turns + org-visible doc/research artifacts (incl. plan docs).
-    const planMsgs = (await sql`
-      select m.id, m.conversation_id as "planId", c.user_id as "ownerId", c.title, m.content,
-             coalesce(u.name, u.email) as author
-      from messages m
-      join conversations c on c.id = m.conversation_id and c.kind = 'plan'
-      left join users u on u.id = m.author_user_id
-      where m.role = 'user' and m.content <> ''
-    `) as unknown as Array<{ id: string; planId: string; ownerId: string; title: string | null; content: string; author: string | null }>
-    for (const m of planMsgs) {
-      await indexActivity({
-        sourceType: 'plan',
-        sourceId: m.id,
-        title: `Plan (${m.title || 'Untitled'}) · ${m.author ?? 'someone'}`,
-        text: m.content,
-        payload: { planId: m.planId, planOwnerId: m.ownerId },
-        href: '/plan',
-      }).catch(() => {})
-      counts.planTurns = (counts.planTurns ?? 0) + 1
-    }
-    const arts = (await sql`
-      select a.id, a.title, a.body, a.visibility, a.owner_user_id as "ownerId", a.rag_routing as "ragRouting",
-             l.target_type as "targetType", l.target_id as "targetId"
-      from artifacts a
-      left join artifact_links l on l.artifact_id = a.id and l.target_type in ('plan', 'research')
-      where a.kind = 'doc' and a.body <> ''
-    `) as unknown as Array<{ id: string; title: string; body: string; visibility: string; ownerId: string | null; ragRouting: string; targetType: string | null; targetId: string | null }>
-    for (const a of arts) {
-      // Routed artifacts (explicit brain / none) are placed by their routing,
-      // not the activity flows.
-      if (a.ragRouting && a.ragRouting !== 'auto') {
-        const full = await getArtifact(a.id)
-        if (full) await applyArtifactRouting(full).catch(() => {})
-        counts.routedArtifacts = (counts.routedArtifacts ?? 0) + 1
-        continue
-      }
-      if (a.targetType === 'plan') {
-        await indexActivity({
-          sourceType: 'plan-doc',
-          sourceId: a.id,
-          title: a.title,
-          text: `${a.title}\n\n${a.body}`,
-          payload: { planId: a.targetId, planOwnerId: a.ownerId },
-          href: `/artifacts?a=${a.id}`,
-        }).catch(() => {})
-        counts.planDocs = (counts.planDocs ?? 0) + 1
-      } else if (a.targetType === 'research') {
-        const doc = {
-          sourceType: 'research',
-          sourceId: a.id,
-          title: a.title,
-          text: `${a.title}\n\n${a.body}`,
-          payload: a.ownerId ? { runId: a.targetId } : { runId: a.targetId, orgWide: true },
-          href: `/research/${a.targetId}`,
-        }
-        if (a.visibility === 'private' && a.ownerId) await indexPersonal(a.ownerId, doc).catch(() => {})
-        else if (a.visibility !== 'private') await indexActivity(doc).catch(() => {})
-        counts.research = (counts.research ?? 0) + 1
-      }
-    }
-
-    await setStatus({ state: 'done', startedAt: undefined, finishedAt: new Date().toISOString(), counts })
-  } catch (e) {
-    await setStatus({ state: 'error', error: (e as Error).message, finishedAt: new Date().toISOString(), counts })
-  } finally {
-    backfillRunning = false
-  }
-}
+ *  re-run; unchanged docs are no-ops.
+ *
+ *  SIGNATURE UNCHANGED (`Promise<void>`, detached-friendly, the caller fires
+ *  it), body replaced: it enqueues a durable run instead of starting an
+ *  in-process loop nothing outlives. `startBackfill` refuses to open a second
+ *  one while the first is live — the two-presses rule this function used to
+ *  express with a module-level boolean that only worked on one instance. */
+export const backfillAll = (): Promise<void> => startBackfill()
 
 // ── Incremental catch-up sweep ────────────────────────────────────────────────
 // Event-driven indexing is the primary path; this 15-minute sweep re-indexes
