@@ -46,6 +46,28 @@ function loadEnvFile() {
 const envLoaded = loadEnvFile()
 if (envLoaded) console.log(`[talaria-ui] loaded ${envLoaded} value(s) from ui/.env (existing environment left untouched)`)
 
+// Fail the boot on a bad environment rather than the first request that touches
+// a missing value. env.ts is TypeScript, which Node executes directly from
+// v22.18 (unflagged type stripping) — on an older runtime we say so and carry
+// on rather than refusing to start over a check we couldn't run.
+let validateEnv = null
+try {
+  ;({ validateEnv } = await import('./src/server/env.ts'))
+} catch (err) {
+  console.warn(
+    `[talaria-ui] WARNING: skipping environment validation — this Node (${process.version}) cannot load src/server/env.ts. ` +
+      `Upgrade to Node >= 22.18 to get it. (${err instanceof Error ? err.message : String(err)})`,
+  )
+}
+if (validateEnv) {
+  try {
+    validateEnv()
+  } catch (err) {
+    console.error(`[talaria-ui] ${err instanceof Error ? err.message : String(err)}`)
+    process.exit(1)
+  }
+}
+
 // Imported AFTER the env is in place: a static import is hoisted above every
 // statement here, and the server graph reads process.env as it loads.
 const { default: server } = await import('./dist/server/server.js')
