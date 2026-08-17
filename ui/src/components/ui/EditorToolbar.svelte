@@ -68,6 +68,7 @@
   let imgOpen = $state(false)
   let imgUrl = $state('')
   let docLinkOpen = $state(false)
+  let docLinkAnchor = $state<HTMLSpanElement | null>(null)
 
   const insertDocLink = (doc: { title: string; icon?: string | null; href: string }) => {
     const label = `${doc.icon ? doc.icon + ' ' : ''}${doc.title}`
@@ -210,10 +211,12 @@
     })}
     {@render btn(LinkIcon, 'Link', s.link, openLinkModal)}
     {#if docSearch}
-      <span class="relative">
+      <!-- The span is the popover's anchor: the panel portals to <body>, so it
+           positions from this rect rather than from a `relative` parent. -->
+      <span bind:this={docLinkAnchor} class="relative">
         {@render btn(FileText, 'Link to a document', docLinkOpen, () => (docLinkOpen = !docLinkOpen))}
         {#if docLinkOpen}
-          <DocLinkPopover search={docSearch} onPick={insertDocLink} onClose={() => (docLinkOpen = false)} />
+          <DocLinkPopover anchor={docLinkAnchor} search={docSearch} onPick={insertDocLink} onClose={() => (docLinkOpen = false)} />
         {/if}
       </span>
     {/if}
