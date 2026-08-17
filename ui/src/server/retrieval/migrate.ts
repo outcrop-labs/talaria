@@ -10,11 +10,21 @@
 // shape, purge the content-hash bookkeeping so nothing skips, then run the
 // normal backfill — index-don't-copy means every point can be re-derived from
 // its system of record.
+//
+// THE REBUILD IS A DURABLE RUN NOW, and this was the worst place in the product
+// not to be one: `let reindexRunning = false` plus a status blob, fired as a
+// bare `void reindexAll()`, around the single most destructive sequence Talaria
+// performs — DROP a collection, purge its bookkeeping, refill. A deploy landing
+// in the middle left the blob saying state:'running' forever with the index half
+// rebuilt and nothing coming back for it. The steps, the checkpoint and the
+// re-entry rules live in server/runs/defs/reindex.ts; what stays here is the
+// live upgrade status, the public verb, and the READ SHAPE the admin panel has
+// always consumed — now a projection of the run row.
 import { db } from '../db/pg'
-import { getSetting, setSetting } from '../audit'
-import { backfillAll } from './backfill'
 import { embedInfo, type EmbedInfo } from './embed'
-import { collectionInfo, deleteCollection, ensureHybridCollection } from './qdrant'
+import { collectionInfo } from './qdrant'
+import { REINDEX_KIND, startReindex, type ReindexCheckpoint } from '../runs/defs/reindex'
+import { latestRunOfKind, type KindRunView } from '../runs/store'
 
 export interface CollectionStatus {
   id: string
@@ -75,6 +85,8 @@ export async function retrievalUpgradeStatus(force = false): Promise<RetrievalUp
   return value
 }
 
+/** THE READ SHAPE, unchanged: `components/admin/retrieval.ts` declares exactly
+ *  these fields and polls while `state === 'running'`. */
 export interface ReindexStatus {
   state: 'idle' | 'running' | 'done' | 'error'
   phase?: 'rebuilding' | 'backfilling'
@@ -83,43 +95,41 @@ export interface ReindexStatus {
   error?: string
 }
 
-const STATUS_KEY = 'rag_reindex_status'
-export const reindexStatus = () => getSetting<ReindexStatus>(STATUS_KEY, { state: 'idle' })
-const setStatus = (s: ReindexStatus) => setSetting(STATUS_KEY, s)
+/** Project the run row onto the four states the panel knows. Same rules as the
+ *  backfill's projection next door and for the same reasons: `queued` is
+ *  RUNNING (a reclaim or a `retry` will move it within the minute, and the
+ *  reason is in `phase`), `cancelled` is DONE with the reason attached. */
+function projectStatus(run: KindRunView | null): ReindexStatus {
+  if (!run) return { state: 'idle' }
+  const cp = run.checkpoint as ReindexCheckpoint | null
+  const at = { ...(run.startedAt ? { startedAt: run.startedAt } : {}), ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}) }
+  // The two words the panel prints come straight off the checkpoint, which is
+  // the run's own statement of which half it is in. Before the first checkpoint
+  // there is no half yet, and 'rebuilding' is what it is about to do.
+  const phase = { phase: cp?.phase ?? ('rebuilding' as const) }
+  if (run.state === 'error') return { state: 'error', error: run.error ?? 'the rebuild failed', ...at }
+  if (run.state === 'cancelled') return { state: 'done', ...(run.error ? { error: run.error } : {}), ...at }
+  if (run.state === 'done') return { state: 'done', ...at }
+  return { state: 'running', ...phase, ...at }
+}
 
-let reindexRunning = false
+export const reindexStatus = async (): Promise<ReindexStatus> => projectStatus(await latestRunOfKind(REINDEX_KIND).catch(() => null))
+
+/** Drop the 60s status cache. Called by the reindex run after every collection
+ *  it rebuilds, because the collection's live shape has just changed and
+ *  `/alerts` reads this — a cached "needs reindex" surviving the rebuild that
+ *  fixed it is an alarm that trains people to ignore alarms. */
+export function invalidateUpgradeStatus(): void {
+  statusCache = null
+}
 
 /** Rebuild every collection in the current model's shape (hybrid v2), then
  *  refill from the systems of record. Search runs thin between the swap and
- *  the backfill finishing — the admin UI says so before the button. */
-export async function reindexAll(): Promise<void> {
-  if (reindexRunning) return
-  reindexRunning = true
-  try {
-    await setStatus({ state: 'running', phase: 'rebuilding', startedAt: new Date().toISOString() })
-    const embed = await embedInfo()
-    if (!embed) throw new Error('embedding service unreachable — bring it up, then rebuild')
-    const sql = await db()
-    const cols = (await sql`select id, qdrant_name as "qdrantName" from rag_collections`) as unknown as Array<{
-      id: string
-      qdrantName: string
-    }>
-    for (const c of cols) {
-      await deleteCollection(c.qdrantName)
-      await ensureHybridCollection(c.qdrantName, embed.dim)
-      // Old point ids are gone with the collection; drop the bookkeeping so
-      // content hashes can't skip the re-embed.
-      await sql`delete from rag_points where collection_id = ${c.id}`
-      await sql`update rag_collections set embed_dim = ${embed.dim}, schema_version = 2 where id = ${c.id}`
-    }
-    statusCache = null
-    await setStatus({ state: 'running', phase: 'backfilling', startedAt: new Date().toISOString() })
-    await backfillAll()
-    await setStatus({ state: 'done', finishedAt: new Date().toISOString() })
-  } catch (e) {
-    await setStatus({ state: 'error', error: (e as Error).message, finishedAt: new Date().toISOString() })
-  } finally {
-    reindexRunning = false
-    statusCache = null
-  }
-}
+ *  the backfill finishing — the admin UI says so before the button.
+ *
+ *  SIGNATURE UNCHANGED (`Promise<void>`, the caller fires it), body replaced: it
+ *  enqueues a durable run whose checkpoint remembers which collections have
+ *  already been rebuilt, so a deploy mid-rebuild resumes at the next collection
+ *  instead of dropping the ones that were already refilled. `startReindex`
+ *  refuses a second run while one is live. */
+export const reindexAll = (): Promise<void> => startReindex()
