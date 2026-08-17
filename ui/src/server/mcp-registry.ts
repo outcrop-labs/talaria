@@ -23,6 +23,7 @@ import { seal, open } from './secretbox'
 import { assistantOwnerFor } from './users'
 import { subjectModel, type AgentSubject } from './agent-auth'
 import { hasOauthTokens, oauthTokenFor } from './mcp-oauth'
+import { safeFetch } from './safe-fetch'
 
 export interface McpServer {
   id: string
@@ -245,8 +246,8 @@ async function orgSession(server: McpServer): Promise<{ call: (body: unknown, se
   const bearer = server.oauthEnabled ? await oauthTokenFor(server.id, 'org') : null
   const builtinHeaders: Record<string, string> = server.builtin ? { 'X-Agent-Name': 'talaria', 'X-Api-Key': process.env.TALARIA_AGENT_KEY ?? '' } : {}
   const call = async (body: unknown, sessionId?: string | null) => {
-    const r = await fetch(server.url, {
-      method: 'POST',
+    const init = {
+      method: 'POST' as const,
       headers: {
         'content-type': 'application/json',
         accept: 'application/json, text/event-stream',
@@ -256,8 +257,16 @@ async function orgSession(server: McpServer): Promise<{ call: (body: unknown, se
         ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout((server.timeoutSecs ?? 30) * 1000),
-    })
+    }
+    const timeoutMs = (server.timeoutSecs ?? 30) * 1000
+    // Everything but the built-in toolkit is a URL (and a header set) someone
+    // with agents.manage typed — straight through the SSRF guard. The builtin
+    // row is Talaria's own MCP service on loopback, written by ensureBuiltinMcp()
+    // and un-editable by design (updateMcpServer refuses url/headers patches on
+    // builtin), so it is infrastructure, not input.
+    const r = server.builtin
+      ? await fetch(server.url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+      : await safeFetch(server.url, { ...init, timeoutMs })
     const session = r.headers.get('mcp-session-id')
     const text = await r.text()
     return { json: parseMcpResponse(text), session, status: r.status }

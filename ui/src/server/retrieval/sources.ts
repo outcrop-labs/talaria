@@ -3,7 +3,7 @@
 // All fire-and-forget friendly — indexing must never block the write it follows.
 import { db } from '../db/pg'
 import { ensureAutoCollections, ensurePersonalCollection, personalCollectionFor } from './collections'
-import { indexDocument, unindexDocument, type IndexDoc } from './index'
+import { indexDocument, unindexDocument, type DocAcl, type IndexDoc } from './index'
 import { deleteByFilter } from './qdrant'
 
 async function autoCollectionId(kind: 'activity' | 'org-kb'): Promise<string | null> {
@@ -20,14 +20,21 @@ export async function indexActivity(doc: IndexDoc): Promise<void> {
   if (id) await indexDocument(id, doc).catch(() => {})
 }
 
-export async function indexOrgKb(doc: IndexDoc): Promise<void> {
+/** Index into the org brain. Everything here is org-visible by construction —
+ *  stamp it so the document-scope filter can see that (a point with no
+ *  visibility matches nothing). */
+export async function indexOrgKb(doc: IndexDoc & { acl?: DocAcl }): Promise<void> {
   const id = await autoCollectionId('org-kb')
-  if (id) await indexDocument(id, doc).catch(() => {})
+  const acl: DocAcl = doc.acl ?? { visibility: 'org', ownerUserId: null }
+  if (id) await indexDocument(id, { ...doc, payload: { ...doc.payload, ...acl } }).catch(() => {})
 }
 
 /** Index into a user's PRIVATE brain — their personal collection, retrievable
  *  only by them and their personal assistant. Created lazily (binding the PA
- *  when they have one), so history starts landing without any setup step. */
+ *  when they have one), so history starts landing without any setup step.
+ *  The item ACL is stamped here too: the collection binding already limits the
+ *  brain to owner + PA, and the payload says the same thing at item level, so
+ *  a mis-bound brain still can't hand a private item to a stranger. */
 export async function indexPersonal(userId: string, doc: IndexDoc): Promise<void> {
   try {
     const sql = await db()
@@ -35,7 +42,8 @@ export async function indexPersonal(userId: string, doc: IndexDoc): Promise<void
       select model from agent_defs where owner_user_id = ${userId} limit 1
     `) as unknown as Array<{ model: string }>
     const col = await ensurePersonalCollection(userId, pa ? { agentModel: pa.model } : {})
-    await indexDocument(col.id, doc)
+    const acl: DocAcl = { visibility: 'private', ownerUserId: userId }
+    await indexDocument(col.id, { ...doc, payload: { ...doc.payload, ...acl } })
   } catch {
     /* fire-and-forget — indexing never blocks the write it follows */
   }
@@ -63,10 +71,26 @@ export interface KbDocSync {
   spaceId?: string | null
   title: string
   body: string
+  /** EFFECTIVE visibility — resolved through the doc's space when the doc
+   *  inherits (kb.effectiveDocPerms, or EFFECTIVE_DOC_SELECT for bulk paths).
+   *  Never the raw kb_docs.visibility column: perms_inherited defaults true and
+   *  visibility defaults 'org', so a doc sitting in a PRIVATE space reads
+   *  'org' raw — which is exactly how backfills used to push private docs into
+   *  the org brain. */
   visibility: 'private' | 'org' | 'public'
   official: boolean
   ownerUserId: string | null
 }
+
+/** Bulk-path counterpart to kb.effectiveDocPerms: selects kb_docs with their
+ *  effective visibility folded in, for callers that sync many docs at once
+ *  (backfill, sweep, space resync) and can't afford a per-doc lookup. Append a
+ *  `where` clause; the doc alias is `d`, the space `s`. */
+export const EFFECTIVE_DOC_SELECT = `
+  select d.id, d.space_id as "spaceId", d.title, d.body, d.official,
+         d.owner_user_id as "ownerUserId",
+         case when d.perms_inherited then coalesce(s.visibility, d.visibility) else d.visibility end as visibility
+  from kb_docs d left join kb_spaces s on s.id = d.space_id`
 
 /** The custom collection a KB space feeds (curation: bind a space to a brain
  *  on Admin → Retrieval), if any. */
@@ -103,11 +127,15 @@ export async function syncKbDoc(doc: KbDocSync): Promise<void> {
 
   if (route === 'none') return // deliberately unindexed, everywhere
 
+  // The item ACL rides with the doc into whichever brain it lands in, so the
+  // document-scope filter can re-check it at query time.
+  const acl: DocAcl = { visibility: doc.visibility, ownerUserId: doc.ownerUserId, spaceId: doc.spaceId ?? null }
   const idxDoc: IndexDoc = {
     sourceType: 'kb-doc',
     sourceId: doc.id,
     title: doc.title,
     text: `${doc.title}\n\n${doc.body}`,
+    payload: { ...acl },
     href: `/knowledge/${doc.id}`,
   }
   if (doc.visibility === 'private') {
@@ -140,10 +168,7 @@ export async function unindexKbDoc(id: string, ownerUserId: string | null): Prom
  *  space to a brain, so existing docs move immediately. */
 export async function resyncSpaceDocs(spaceId: string): Promise<number> {
   const sql = await db()
-  const docs = (await sql`
-    select d.id, d.space_id as "spaceId", d.title, d.body, d.visibility, d.official, d.owner_user_id as "ownerUserId"
-    from kb_docs d where d.space_id = ${spaceId}
-  `) as unknown as KbDocSync[]
+  const docs = (await sql.unsafe(`${EFFECTIVE_DOC_SELECT} where d.space_id = $1`, [spaceId])) as unknown as KbDocSync[]
   for (const d of docs) await syncKbDoc(d).catch(() => {})
   return docs.length
 }

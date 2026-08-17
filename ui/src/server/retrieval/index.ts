@@ -1,8 +1,24 @@
 // The retrieval core: index a source document into a collection (chunk → embed
 // → upsert, idempotent by content hash), and search across a principal's
-// accessible collections with ranked, merged results. Index-don't-copy — points
-// carry a pointer (sourceType/sourceId + snippet + ACL), never the system of
-// record; callers fetch the live record from that pointer.
+// accessible collections with ranked, merged results.
+//
+// What a point actually holds — be precise about this, the ACL depends on it:
+// a pointer (sourceType/sourceId/href/title), an ACL payload, and a VERBATIM
+// snippet: the first 400 chars of the chunk. Search RETURNS that snippet and
+// callers do not re-fetch the system of record, so for a channel message, a
+// ticket, or a comment those 400 chars ARE the content. Retrieval is a read of
+// the content itself, never a pointer a later permission check re-gates.
+//
+// Two gates therefore stand between a principal and that text, and nothing
+// else stands behind them:
+//   1. the collection's bindings          (collectionsForPrincipal)
+//   2. the per-item payload filter        (activityScope / docScope below)
+// Both run on every collection kind. Every point written anywhere must carry
+// the ACL payload its kind's filter reads (container ids for activity, DocAcl
+// everywhere else): a point without one simply never matches — fail closed, so
+// an un-ACL'd write is invisible rather than public. The payload is part of the
+// content hash, so a visibility change re-indexes the point rather than leaving
+// a stale ACL behind.
 import { createHash, randomUUID } from 'node:crypto'
 import { db } from '../db/pg'
 import { embed, embedOne } from './embed'
@@ -12,16 +28,44 @@ import { getRerankConfig, rerank } from './rerank'
 import { sparseEncode } from './sparse'
 
 export interface IndexDoc {
-  sourceType: string // 'kb-doc' | 'channel' | 'chat' | 'plan' | 'research' | 'ticket' | 
+  sourceType: string // 'kb-doc' | 'channel' | 'chat' | 'plan' | 'research' | 'ticket' |
   sourceId: string
   title?: string
   text: string
-  /** Extra payload stored on every chunk (e.g. { boardId, channelId } for ACL). */
+  /** Extra payload stored on every chunk. This is the ACL — the activity index
+   *  reads container ids ({ channelId, boardId, planOwnerId, ownerUserId,
+   *  orgWide }); every other kind reads { visibility, ownerUserId } (see
+   *  DocAcl). A point whose payload carries neither is unreachable. */
   payload?: Record<string, unknown>
   href?: string
 }
 
+/** The item ACL carried by kb-doc / artifact / research points — i.e. anything
+ *  landing in an org-kb, custom, or personal collection. `visibility` is the
+ *  EFFECTIVE visibility (a doc inheriting from a private space is private),
+ *  never the raw column. */
+export interface DocAcl {
+  visibility: 'private' | 'org' | 'public'
+  ownerUserId: string | null
+  spaceId?: string | null
+}
+
+/** Bump when the ACL payload shape changes: it feeds the content hash, so
+ *  existing points re-index (and pick the new payload up) on the next
+ *  backfill/sweep instead of lingering with a stale or absent ACL. */
+const ACL_SCHEMA = 2
+
 const hash = (s: string) => createHash('sha256').update(s).digest('hex')
+
+/** Order-independent payload digest — the payload is part of a point's
+ *  identity (it's the ACL), so a visibility change must invalidate the hash
+ *  even when the text is untouched. */
+const payloadDigest = (p?: Record<string, unknown>): string =>
+  JSON.stringify(
+    Object.entries(p ?? {})
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  )
 
 /** Paragraph-aware chunking with a soft size cap (~500 tokens ≈ 2000 chars). */
 function chunk(text: string, max = 2000): string[] {
@@ -50,7 +94,7 @@ export async function indexDocument(collectionId: string, doc: IndexDoc): Promis
   const col = await getCollection(collectionId)
   if (!col) throw new Error('unknown collection')
   const sql = await db()
-  const h = hash(doc.text + (doc.title ?? ''))
+  const h = hash([doc.text, doc.title ?? '', ACL_SCHEMA, payloadDigest(doc.payload)].join('\u0000'))
 
   const [prev] = (await sql`
     select point_ids as "pointIds", content_hash as "contentHash"
@@ -177,6 +221,36 @@ async function activityScope(principal: { userId?: string; agentModel?: string }
   return { should: [] } // no scope → nothing from activity
 }
 
+/** The human a principal retrieves AS: themselves, or — for a personal
+ *  assistant — its owner. Org agents have no human identity. */
+async function effectiveUserId(principal: { userId?: string; agentModel?: string }): Promise<string | null> {
+  if (principal.userId) return principal.userId
+  if (!principal.agentModel) return null
+  const sql = await db()
+  const [pa] = (await sql`
+    select owner_user_id as owner from agent_defs
+    where model = ${principal.agentModel} and owner_user_id is not null
+  `) as unknown as Array<{ owner: string }>
+  return pa?.owner ?? null
+}
+
+/** Item-level ACL for the DOCUMENT collections (org-kb, custom, personal) — the
+ *  counterpart to activityScope. Collection bindings say which brains you may
+ *  read; this says which items inside them you may read, because a brain is not
+ *  uniform: a custom brain fed by a KB space holds docs of mixed visibility,
+ *  and a private doc that landed there (or in the org brain via a backfill bug)
+ *  must not come back for anyone but its owner.
+ *
+ *  Mirrors kb-perms.canRead: org/public → any resolved member; private → owner
+ *  (a personal assistant reading as its owner). Points with no `visibility` in
+ *  their payload match nothing — they re-acquire one on the next backfill. */
+async function docScope(principal: { userId?: string; agentModel?: string }): Promise<Record<string, unknown>> {
+  const uid = await effectiveUserId(principal)
+  const should: Array<Record<string, unknown>> = [{ key: 'visibility', match: { any: ['org', 'public'] } }]
+  if (uid) should.push({ must: [{ key: 'visibility', match: { value: 'private' } }, { key: 'ownerUserId', match: { value: uid } }] })
+  return { should }
+}
+
 /** Search across the principal's accessible collections. Recall per collection
  *  (HYBRID dense+keyword RRF on v2 collections — exact identifiers like env
  *  vars, ticket numbers, and error strings rank alongside semantic matches;
@@ -199,13 +273,13 @@ export async function searchForPrincipal(
   const perColLimit = reranking ? Math.max(limit, Math.ceil((rerankCfg.candidates ?? 30) / cols.length) + 2) : limit
   const vec = await embedOne(query)
   const sparse = sparseEncode(query)
-  const activityFilter = await activityScope(principal)
+  const [activityFilter, documentFilter] = await Promise.all([activityScope(principal), docScope(principal)])
 
   const perCol = await Promise.all(
     cols.map(async (c: RagCollection) => {
-      // Ambient activity is ACL-filtered per item; curated/custom collections
-      // are gated at the collection level (their binding).
-      const filter = c.kind === 'activity' ? activityFilter ?? undefined : undefined
+      // EVERY kind is ACL-filtered per item, not just activity: the collection
+      // binding is the outer gate, this is the inner one.
+      const filter = c.kind === 'activity' ? activityFilter ?? undefined : documentFilter
       const hits =
         c.schemaVersion >= 2
           ? await hybridQuery(c.qdrantName, vec, sparse, perColLimit, filter).catch(() => [])

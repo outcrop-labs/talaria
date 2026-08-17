@@ -86,20 +86,48 @@ let cachedInstallTokens = new Map<string, { token: string; expiresAt: number }>(
 /** repo full_name → installation id, learned from listing; refreshed lazily. */
 let repoInstallCache: { map: Map<string, string>; at: number } | null = null
 
-async function installationToken(cfg: GithubConfig, installationId: string): Promise<string> {
-  const hit = cachedInstallTokens.get(installationId)
+/** Mint an installation access token.
+ *
+ *  When `repo` is given the token is scoped to THAT repository alone. Without a
+ *  body GitHub issues a token valid for EVERY repository in the installation —
+ *  and this token ends up inside a sandbox running model-authored code (see
+ *  cloneUrl), so an unscoped one made a single leaked clone URL equivalent to
+ *  push access across the whole org. `repositories` takes bare names, not
+ *  owner/name.
+ *
+ *  Permissions are deliberately NOT narrowed here: the token inherits whatever
+ *  the installation was granted. Narrowing further is a real improvement, but
+ *  asking for a permission the installation lacks is a hard 422, so it needs to
+ *  be driven off the installation's actual grants rather than assumed. */
+async function installationToken(cfg: GithubConfig, installationId: string, repo?: string): Promise<string> {
+  const cacheKey = repo ? `${installationId}#${repo}` : installationId
+  const hit = cachedInstallTokens.get(cacheKey)
   if (hit && hit.expiresAt > Date.now() + 60_000) return hit.token
   const jwt = appJwt(cfg.app.appId, open(cfg.app.privateKeyEnc!))
-  const res = await gh(`/app/installations/${installationId}/access_tokens`, jwt, { method: 'POST' })
-  if (!res.ok) throw new Error(`GitHub installation token failed (${res.status})`)
+  const name = repo?.split('/').pop()
+  const res = await gh(`/app/installations/${installationId}/access_tokens`, jwt, {
+    method: 'POST',
+    ...(name ? { body: JSON.stringify({ repositories: [name] }), headers: { 'content-type': 'application/json' } } : {}),
+  })
+  if (!res.ok) {
+    // 422 here usually means the repo isn't in THIS installation — worth
+    // saying so, because the caller picked the installation by cache lookup.
+    throw new Error(`GitHub installation token failed (${res.status})${repo ? ` for ${repo}` : ''}`)
+  }
   const j = (await res.json()) as { token: string; expires_at: string }
-  cachedInstallTokens.set(installationId, { token: j.token, expiresAt: Date.parse(j.expires_at) })
+  cachedInstallTokens.set(cacheKey, { token: j.token, expiresAt: Date.parse(j.expires_at) })
   return j.token
 }
 
 /** A usable token for repo operations. PAT passes through; App mode mints a
  *  per-installation token — pass `repo` so multi-org setups route to the
- *  installation that owns it (defaults to the first installation). */
+ *  installation that owns it (defaults to the first installation) AND so the
+ *  token is scoped to that one repository.
+ *
+ *  Callers that genuinely need installation-wide reach (listing repos, probing
+ *  the connection) omit `repo` and get the broad token, as before. PAT mode
+ *  cannot be scoped at all — that blast radius is the org's own choice, and
+ *  the setup guide says so. */
 export async function githubToken(repo?: string): Promise<string | null> {
   const cfg = await getGithubConfig()
   if (cfg.mode === 'pat') return cfg.pat.tokenEnc ? open(cfg.pat.tokenEnc) : null
@@ -109,7 +137,7 @@ export async function githubToken(repo?: string): Promise<string | null> {
     if (!repoInstallCache || Date.now() - repoInstallCache.at > 10 * 60_000) await listReachableRepos()
     installationId = repoInstallCache?.map.get(repo) ?? installationId
   }
-  return installationToken(cfg, installationId)
+  return installationToken(cfg, installationId, repo)
 }
 
 export interface GithubStatus {

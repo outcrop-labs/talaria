@@ -16,6 +16,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { getSetting, setSetting } from './audit'
 import { appHasMcp } from './app-mcp'
+import { safeFetch } from './safe-fetch'
 
 const execFileP = promisify(execFile)
 
@@ -208,7 +209,9 @@ export interface CatalogApp {
 export async function fetchCatalog(): Promise<{ apps: CatalogApp[]; error?: string }> {
   const url = await catalogUrl()
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(10_000), headers: { accept: 'application/json' } })
+    // Admin-settable feed URL — through the SSRF guard, so a mistyped (or
+    // malicious) catalog can't turn the Discover tab into an internal scanner.
+    const r = await safeFetch(url, { timeoutMs: 10_000, maxBytes: 2 * 1024 * 1024, headers: { accept: 'application/json' } })
     if (!r.ok) return { apps: [], error: `catalog fetch failed (${r.status})` }
     const j = (await r.json()) as { apps?: Array<Partial<CatalogApp>> }
     const apps = (j.apps ?? [])
