@@ -42,7 +42,7 @@ export async function applyArtifactRouting(artifact: Artifact): Promise<void> {
       // Item ACL — a custom brain holds items of mixed visibility, so the
       // document-scope filter re-checks this at query time.
       payload: { visibility: artifact.visibility, ownerUserId: artifact.ownerUserId ?? null } satisfies DocAcl,
-      href: '/artifacts',
+      href: `/artifacts?a=${artifact.id}`,
     }).catch(() => {})
     return
   }

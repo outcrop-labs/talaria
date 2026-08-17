@@ -158,7 +158,7 @@ export async function backfillAll(): Promise<void> {
           title: a.title,
           text: `${a.title}\n\n${a.body}`,
           payload: { planId: a.targetId, planOwnerId: a.ownerId },
-          href: '/artifacts',
+          href: `/artifacts?a=${a.id}`,
         }).catch(() => {})
         counts.planDocs = (counts.planDocs ?? 0) + 1
       } else if (a.targetType === 'research') {

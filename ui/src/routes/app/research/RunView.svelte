@@ -130,7 +130,7 @@
                breakpoint there is no discussion pane, so this is its only home. -->
           <span class="lg:hidden"><ResearchMembers {runId} /></span>
           {#if run.artifactId}
-            <a href={p('/artifacts')} class="flex shrink-0 items-center gap-1 text-muted transition-colors hover:text-fg">
+            <a href={`${p('/artifacts')}?a=${run.artifactId}`} class="flex shrink-0 items-center gap-1 text-muted transition-colors hover:text-fg">
               Open in Artifacts <ExternalLink size={12} />
             </a>
           {/if}

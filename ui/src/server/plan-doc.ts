@@ -96,7 +96,10 @@ export async function indexPlanDoc(doc: Artifact, conversationId: string): Promi
     title: doc.title,
     text: `${doc.title}\n\n${doc.body}`,
     payload: { planId: conversationId, planOwnerId: doc.ownerUserId },
-    href: '/artifacts',
+    // Deep-linked: a retrieval hit is a pointer to ONE document, and the id is
+    // right here. `/artifacts` alone made the reader search a list for the
+    // thing the citation had already identified.
+    href: `/artifacts?a=${doc.id}`,
   })
 }
 
