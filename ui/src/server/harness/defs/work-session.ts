@@ -18,9 +18,11 @@
 // WHAT IS AND IS NOT MODELLED HERE
 //   The TURN is the model contract: one prompt in, one reply out. The SESSION —
 //   the turn cap, the reconcile nudge, `sessionState`/`agentTicketRefusal`, the
-//   activity trail — is ticket-state orchestration and stays in work-dispatch.ts
-//   where its shipped bugs are documented. Nothing in this file knows what a
-//   ticket is, which is why it can be replayed against a candidate model.
+//   activity trail — is ticket-state orchestration and lives in
+//   server/runs/defs/work-session.ts, where the session is a checkpointed run.
+//   (It was work-dispatch.ts until the durability port; that file now keeps only
+//   the push-side choke point and the dispatch.) Nothing in this file knows what
+//   a ticket is, which is why it can be replayed against a candidate model.
 import { defineHarness } from '../define'
 import { UNTRUSTED_INPUT } from '../prompt-rules'
 
@@ -130,8 +132,8 @@ const CONTEXT_FIRST_FIXTURE = [
   'Acknowledge on the ticket, move it to in_progress, and end with your status line.',
 ].join('\n')
 
-/** The tail the session loop actually reads: `work-dispatch.ts` tests
- *  `/\b(DONE|BLOCKED)\b/i` against the last 200 characters of every reply, and
+/** The tail the session actually reads: `workSessionStep` carries a 200-char
+ *  `lastTail` on its checkpoint and tests `/\b(DONE|BLOCKED)\b/i` against it, and
  *  a model that puts its verdict anywhere else keeps the session running past
  *  finished work. Asserting on the same window — and now the same CASE rule — is
  *  the point: a fixture stricter than production reports a failure production
@@ -250,9 +252,10 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
   // nothing usable ends the session with a logged failure rather than driving
   // eleven more turns off a blank. The pre-call failures (no model resolved,
   // render threw, the gateway refused) RETURN from `runHarness` rather than
-  // throwing, so work-dispatch.ts states the same policy for those at the call
-  // site; both land in `runWorkSession`'s outer catch, which is exactly what
-  // `throw new Error('gateway ' + status)` did before this port.
+  // throwing, so runs/defs/work-session.ts states the same policy for those at
+  // the call site; both land in the step's own catch, which turns them into a
+  // `failed` checkpoint — exactly what `throw new Error('gateway ' + status)`
+  // did before this port, minus the risk of re-sending the prompt.
   onFailure: 'throw',
 
   guard: {
@@ -343,7 +346,8 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
   },
 
   // TEN MINUTES, against `proxyChat`'s two-minute default — this was
-  // `TURN_WAIT_MS` in work-dispatch.ts. An agent restarting under a config
+  // `TURN_WAIT_MS` in work-dispatch.ts, and it is what the run kind's
+  // `maxStepMs` (eleven minutes) is sized against. An agent restarting under a config
   // propagation refuses connections for tens of seconds, and a fleet re-render
   // mid-session must not kill the session.
   holdMs: 600_000,
@@ -524,12 +528,13 @@ export const workSessionHarness = defineHarness<WorkSessionInput, string>({
       },
     },
     {
-      // THE CONVENTION THE SESSION LOOP DEPENDS ON. `runWorkSession` decides
-      // whether to nudge the agent to reconcile by testing DONE/BLOCKED against
-      // the last 200 characters. A model that finishes the work and says so in
-      // prose halfway up the reply keeps the session driving turns against work
-      // that is already complete, which is exactly the class of bug the session
-      // loop's own comments document.
+      // THE CONVENTION THE SESSION DEPENDS ON. `workSessionStep` decides whether
+      // to nudge the agent to reconcile by testing DONE/BLOCKED against the last
+      // 200 characters, carried on the checkpoint so the decision survives a
+      // restart. A model that finishes the work and says so in prose halfway up
+      // the reply keeps the session driving turns against work that is already
+      // complete, which is exactly the class of bug that file's comments
+      // document.
       name: 'ends a finished turn with the status line the session loop reads',
       band: 'standard',
       input: { prompt: FINISHED_FIXTURE },
