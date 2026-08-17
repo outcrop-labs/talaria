@@ -33,6 +33,33 @@
   const rawTab = $derived(searchParams.get('tab'))
   const tab = $derived(rawTab == null ? undefined : String(rawTab))
 
+  // LEGACY `?tab=` LINKS STILL WORK.
+  //
+  // Tabs became path segments (/admin/security), but URLs with the old shape
+  // are already out in the world and some of them are not ours to fix:
+  // `NOTIFY_SETTINGS_PATH` is embedded in notification EMAILS that have already
+  // been sent. Without this they would still resolve — to the view's default
+  // tab — which is the quiet wrong answer rather than a visible failure.
+  //
+  // Written as literal calls rather than a computed path because the router is
+  // typed on its route strings; seven explicit cases is the price of that, and
+  // it also means a base that stops being tabbed fails to compile here.
+  $effect(() => {
+    const raw = searchParams.get('tab')
+    if (raw == null || raw === true) return
+    const t = String(raw)
+    const at = route.pathname
+    const opts = { params: { tab: t }, replace: true } as const
+    if (at === '/settings') void navigate('/settings/:tab', opts)
+    else if (at === '/admin') void navigate('/admin/:tab', opts)
+    else if (at === '/observability') void navigate('/observability/:tab', opts)
+    else if (at === '/models') void navigate('/models/:tab', opts)
+    else if (at === '/templates') void navigate('/templates/:tab', opts)
+    else if (at === '/agents') void navigate('/agents/:tab', opts)
+    else if (at === '/mcp') void navigate('/mcp/:tab', opts)
+    // `/` is deliberately absent: Home still keeps its tab in the query.
+  })
+
   // Only a SUCCESSFUL session read saying "nobody is signed in" sends anyone to
   // /login. /api/auth/session answers 200 with `{ user: null }` when you're
   // signed out, so a non-2xx means the backend blipped — and `isSuccess` is

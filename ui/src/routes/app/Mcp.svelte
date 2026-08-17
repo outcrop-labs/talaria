@@ -9,6 +9,8 @@
   import Tabs from '@/components/ui/Tabs.svelte'
   import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import { fly, staggerIn } from '@/lib/motion'
+  import { navigate, route } from '@/router'
+  import { tabFromPath } from '@/lib/route-tabs'
   import McpAddServerModal from './McpAddServerModal.svelte'
   import McpMarketplaceModal from './McpMarketplaceModal.svelte'
   import McpServerCard from './McpServerCard.svelte'
@@ -24,7 +26,15 @@
   // half the rows could be repointed and half could not. Internal servers are
   // this deployment's own — you govern access; external ones are third-party
   // endpoints someone registered, and only those can be added or removed.
-  let tab = $state<'internal' | 'external'>('internal')
+  //
+  // THE URL IS THE TAB: /mcp (built-in) and /mcp/external.
+  const TABS = ['internal', 'external'] as const
+  type McpTab = (typeof TABS)[number]
+  const tab = $derived(tabFromPath(route.pathname, '/mcp', TABS, 'internal'))
+  const goTab = (id: McpTab) => {
+    if (id === 'internal') void navigate('/mcp')
+    else void navigate('/mcp/:tab', { params: { tab: 'external' } })
+  }
 
   const qc = useQueryClient()
   const serversQuery = useMcpServers()
@@ -111,7 +121,7 @@
         { id: 'external', label: 'External' },
       ]}
       value={tab}
-      onChange={(id) => (tab = id)}
+      onChange={goTab}
     />
 
     <!-- Skeleton → content as one motion: card-shaped skeletons materialize

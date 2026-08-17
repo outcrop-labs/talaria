@@ -52,13 +52,31 @@ export const { p, navigate, isActive, preload, route } = createRouter({
     '/research': () => import('./routes/app/Research.svelte'),
     '/knowledge': () => import('./routes/app/Knowledge.svelte'),
     '/artifacts': () => import('./routes/app/Artifacts.svelte'),
-    '/agents': () => import('./routes/app/Agents.svelte'),
+    // Each tab is a real location: /agents (roster), /agents/templates,
+    // /agents/schedules. A tab you cannot link to, bookmark, or reach with the
+    // back button is a mode, not a place.
+    '/agents': {
+      '/': () => import('./routes/app/Agents.svelte'),
+      '/:tab': () => import('./routes/app/Agents.svelte'),
+    },
     '/fleet': () => import('./routes/app/Fleet.svelte'),
     '/studio': () => import('./routes/app/Studio.svelte'),
-    '/templates': () => import('./routes/app/Templates.svelte'),
-    '/models': () => import('./routes/app/Models.svelte'),
-    '/mcp': () => import('./routes/app/Mcp.svelte'),
-    '/observability': () => import('./routes/app/Observability.svelte'),
+    '/templates': {
+      '/': () => import('./routes/app/Templates.svelte'),
+      '/:tab': () => import('./routes/app/Templates.svelte'),
+    },
+    '/models': {
+      '/': () => import('./routes/app/Models.svelte'),
+      '/:tab': () => import('./routes/app/Models.svelte'),
+    },
+    '/mcp': {
+      '/': () => import('./routes/app/Mcp.svelte'),
+      '/:tab': () => import('./routes/app/Mcp.svelte'),
+    },
+    '/observability': {
+      '/': () => import('./routes/app/Observability.svelte'),
+      '/:tab': () => import('./routes/app/Observability.svelte'),
+    },
     '/apps': () => import('./routes/app/Apps.svelte'),
     '/x': {
       '/:app': {
@@ -66,8 +84,14 @@ export const { p, navigate, isActive, preload, route } = createRouter({
         '/manage': () => import('./routes/app/XAppManage.svelte'),
       },
     },
-    '/settings': () => import('./routes/app/Settings.svelte'),
-    '/admin': () => import('./routes/app/Admin.svelte'),
+    '/settings': {
+      '/': () => import('./routes/app/Settings.svelte'),
+      '/:tab': () => import('./routes/app/Settings.svelte'),
+    },
+    '/admin': {
+      '/': () => import('./routes/app/Admin.svelte'),
+      '/:tab': () => import('./routes/app/Admin.svelte'),
+    },
     layout: () => import('./routes/app/AppLayout.svelte'),
     hooks: {
       onError(error) {

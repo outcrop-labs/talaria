@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { searchParams } from 'sv-router'
+  import { navigate, route } from '@/router'
+  import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
@@ -78,14 +79,12 @@
     await qc.invalidateQueries({ queryKey: ['admin-users'] })
   }
 
-  // /admin?tab=security deep-links a concern.
-  const tab: AdminTab = $derived.by(() => {
-    const t = ADMIN_TABS.find((v) => v.id === searchParams.get('tab'))
-    return t ? t.id : 'org'
-  })
+  // /admin/security deep-links a concern.
+  // THE URL IS THE TAB — /admin and /admin/<tab>.
+  const tab = $derived(tabFromPath(route.pathname, '/admin', ADMIN_TABS.map((t) => t.id), 'org'))
   const setTab = (t: AdminTab) => {
-    if (t === 'org') searchParams.delete('tab')
-    else searchParams.set('tab', t)
+    if (t === 'org') void navigate('/admin')
+    else void navigate('/admin/:tab', { params: { tab: t } })
   }
 </script>
 

@@ -323,7 +323,7 @@ async function repoRequestApprovals(): Promise<PendingApproval[]> {
     id: row.id,
     title: `${row.agentModel} asked for a new repo: ${row.org}/${row.name}`,
     detail: row.why.trim().slice(0, 240) || 'The agent needs a repository that does not exist yet.',
-    href: '/admin?tab=agents',
+    href: '/admin/agents',
     waitingSince: iso(row.createdAt),
     ownerUserIds: [],
     authority: { by: 'admin' as const, onBoard: row.boardId },

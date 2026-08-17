@@ -19,6 +19,8 @@
   import { fly, slide, staggerIn } from '@/lib/motion'
   import { useFleetContainers, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { useSession } from '@/lib/session'
+  import { navigate, route } from '@/router'
+  import { tabFromPath } from '@/lib/route-tabs'
   import AgentListRow from './AgentListRow.svelte'
   import AgentTile from './AgentTile.svelte'
 
@@ -27,7 +29,21 @@
   // Agents is the home tab; the role library and the fleet's schedules are the
   // other two. Each was a takeover modal behind a toolbar icon — an affordance
   // for one action, not for a surface you come back to and read.
-  let tab = $state<'agents' | 'templates' | 'schedules'>('agents')
+  //
+  // THE URL IS THE TAB. `/agents`, `/agents/templates`, `/agents/schedules` —
+  // so a tab can be linked to, bookmarked and reached with the back button,
+  // and "send me the schedules screen" is a URL rather than a description of
+  // where to click. An unrecognised segment falls back to the roster rather
+  // than rendering nothing.
+  const TABS = ['agents', 'templates', 'schedules'] as const
+  type AgentsTab = (typeof TABS)[number]
+  const tab = $derived(tabFromPath(route.pathname, '/agents', TABS, 'agents'))
+  const goTab = (id: AgentsTab) => {
+    // Two calls rather than one: the typed router wants the params object only
+    // on the parameterised path, and the roster is the bare one.
+    if (id === 'agents') void navigate('/agents')
+    else void navigate('/agents/:tab', { params: { tab: id } })
+  }
   const fleetQuery = useFleet()
   const defsQuery = useFleetDefs(() => isAdmin)
   const containersQuery = useFleetContainers(() => isAdmin)
@@ -158,7 +174,7 @@
         { id: 'schedules', label: 'Schedules' },
       ]}
       value={tab}
-      onChange={(id) => (tab = id)}
+      onChange={goTab}
     />
 
     <!-- Tab-pane grammar: rise in on switch, no exit (ANIMATIONS.md). -->

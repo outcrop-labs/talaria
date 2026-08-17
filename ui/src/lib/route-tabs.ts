@@ -1,0 +1,34 @@
+// Tabs that are LOCATIONS.
+//
+// Every tabbed view in the app used to keep its tab in `?tab=`, or in component
+// state, which meant a tab was a mode rather than a place: you could not link
+// to one, the back button walked past it, and "open the pricing tab" was a
+// description of clicks instead of a URL. They are path segments now —
+// `/models/pricing`, `/admin/security`, `/agents/schedules` — and this is the
+// one rule they share.
+//
+// It lives here rather than in each view because the interesting half is the
+// FALLBACK, and getting that wrong in six places would mean six different
+// answers to "what does /models/nonsense do". One answer: the home tab. A
+// typo'd or stale link lands on something real rather than an empty frame, and
+// a tab removed in a later release keeps its old URLs working.
+
+/** The tab a path selects, or `fallback` when the segment is missing, unknown,
+ *  or deeper than one level.
+ *
+ *  `base` is the view's own path with no trailing slash ('/models'). */
+export function tabFromPath<T extends string>(
+  pathname: string,
+  base: string,
+  tabs: readonly T[],
+  fallback: T,
+): T {
+  if (!pathname.startsWith(`${base}/`)) return fallback
+  const rest = pathname.slice(base.length + 1)
+  // One level only: `/models/pricing/extra` is not a tab, and treating it as
+  // one would quietly render the pricing tab for a URL that means something
+  // else (or nothing).
+  if (!rest || rest.includes('/')) return fallback
+  const seg = decodeURIComponent(rest)
+  return (tabs as readonly string[]).includes(seg) ? (seg as T) : fallback
+}

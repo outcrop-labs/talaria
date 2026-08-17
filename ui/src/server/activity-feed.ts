@@ -115,7 +115,7 @@ export async function activityFeed(
       context: String(r.action).split('.')[0] ?? 'audit',
       detail: `${(r.targetLabel as string) ?? (r.targetType as string)}${r.after ? ` → ${JSON.stringify(r.after)}` : ''}`.slice(0, 200),
       type: r.action as string,
-      href: '/observability?tab=audit',
+      href: '/observability/audit',
     })),
   ]
 

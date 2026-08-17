@@ -746,7 +746,7 @@ async function appUrl(path: string): Promise<string | null> {
   return `${base}${path.startsWith('/') ? '' : '/'}${path}`
 }
 
-export const NOTIFY_SETTINGS_PATH = '/settings?tab=notifications'
+export const NOTIFY_SETTINGS_PATH = '/settings/notifications'
 
 /** Compose one notification email. The shared house style it is built from —
  *  `emailShell`, `emailButton`, the escaping — lives in server/email.ts, which

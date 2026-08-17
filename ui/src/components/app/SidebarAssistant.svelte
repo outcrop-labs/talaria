@@ -70,7 +70,7 @@
   <RailTooltip label={unseen ? `${label} · new output` : label}>
     {#if status === 'none'}
       <a
-        href="/settings?tab=assistant"
+        href="/settings/assistant"
         aria-label="Set up your assistant"
         class="relative grid h-9 w-9 place-items-center rounded-md text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg"
       >
@@ -110,7 +110,7 @@
       <!-- No assistant yet. The launcher would be a button that opens an empty
            conversation, so it points at the thing that fixes that instead. -->
       <a
-        href="/settings?tab=assistant"
+        href="/settings/assistant"
         class="flex h-11 items-center gap-2.5 rounded-lg border border-dashed border-line px-2.5 text-left transition-colors duration-[120ms] hover:border-line-strong hover:bg-hover"
       >
         <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-line text-muted"><Plus size={14} strokeWidth={1.5} /></span>
