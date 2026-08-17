@@ -160,13 +160,22 @@ export async function createPersonalAgent(
   }
 
   const sql = await db()
-  // Base template: prefer an existing personal assistant department, else any
-  // enabled agent. (Role-ready base agents are a future refinement.)
+  // CHASSIS, not identity. The only thing an existing agent supplies here is
+  // model tiers, tools and plugins — the assistant's soul, role and department
+  // are all written below. Cloning one when it exists is a convenience: a new
+  // assistant inherits whatever endpoint the fleet already runs on.
+  //
+  // It used to be a REQUIREMENT, and it failed the case it most needed to
+  // serve: a fresh install has no agents, so the first thing a new user asked
+  // for — their own assistant — answered "import a stack first". There is
+  // nothing to import; Talaria is the stack. `createAgent` has always fallen
+  // back to platform defaults (the first local endpoint, else any), so the
+  // absence of a template is simply the absence of a shortcut. If there is no
+  // endpoint either, createAgent says THAT, which is the real missing piece.
   const tmpl = (await sql`
     select id from agent_defs where enabled
     order by (department = 'administrative-assistant') desc, updated_at desc limit 1
   `) as unknown as Array<{ id: string }>
-  if (!tmpl[0]) throw new Error('no agent to base a personal assistant on — import a stack first')
 
   const ownerName = user.name?.split(' ')[0] ?? user.email?.split('@')[0] ?? 'you'
   const displayName = input.name?.trim() || `${ownerName}'s assistant`
@@ -179,7 +188,7 @@ export async function createPersonalAgent(
     ...identity,
     displayName,
     role: 'Personal assistant',
-    templateId: tmpl[0].id,
+    ...(tmpl[0] ? { templateId: tmpl[0].id } : {}),
     createdBy: user.email ?? user.name ?? 'user',
     soul: personalSoul(displayName, ownerName, personality),
   })
