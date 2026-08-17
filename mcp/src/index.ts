@@ -972,7 +972,7 @@ server.registerTool(
   'set_board_agents',
   {
     description:
-      "Add or remove fleet agents on a board (personal assistants only; your owner needs owner/editor). Pass agent model names (e.g. 'dex-developer'). Returns the board's resulting agent policy.",
+      "Add or remove fleet agents on a board (personal assistants only; your owner needs owner/editor). Pass agent model names (e.g. 'engineer-engineering'). Returns the board's resulting agent policy.",
     inputSchema: {
       boardId: z.string().describe('Board id (from list_boards)'),
       add: z.array(z.string().max(200)).max(100).optional().describe('Agent models to allow on the board'),
