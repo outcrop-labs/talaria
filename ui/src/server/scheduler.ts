@@ -47,6 +47,16 @@
 //   then on completion demote it to a "this period is spent" marker that
 //   expires just before the next tick is due. One run per interval, fleet-wide.
 //
+//   THE MECHANISM NOW LIVES IN server/runs/lease.ts and this file keeps the
+//   POLICY. That split is deliberate and the paragraph above is why: the
+//   runs runtime needs the same compare-and-set-on-a-token discipline, but it
+//   needs the opposite policy — it leases ONE ROW for ONE STEP and releases it
+//   immediately, so the next step is claimable by any instance. Sharing the
+//   primitive and not the policy is what lets both be right. Everything below
+//   that reads as scheduler behavior — the TTL from `maxRunMs`, the hold to the
+//   end of the interval, the `perInstance` exemption, and skipping the tick when
+//   Redis is unreachable — is still decided here.
+//
 //   If Redis is unreachable the tick is SKIPPED, not run unguarded. Fail
 //   closed: a missed hour of archiving is recoverable, a duplicate proactive
 //   DM to a customer is not. The skip is logged, and the next tick retries.
@@ -75,8 +85,7 @@
 //   archiving production chats or sending proactive DMs. Set
 //   TALARIA_SCHEDULER=off to get the same silence in production — the kill
 //   switch to deploy behind if a job ever misbehaves.
-import { randomUUID } from 'node:crypto'
-import { getRedis } from './db/redis'
+import { acquireLease, demoteLease, instanceId, keepLeaseAlive, leaseHolder, leaseKey, type LeaseHeartbeat, type LeaseToken } from './runs/lease'
 
 /** Every job this deployment expects to be running. Adding a name here and
  *  nowhere else fails the boot check below, which is the point: a job whose
@@ -90,6 +99,8 @@ export type JobName =
   | 'daily-digest'
   | 'approval-escalation'
   | 'notification-mail'
+  // server/runs/reclaim.ts — the sweep that re-enters a run whose driver died.
+  | 'run-reclaim'
 
 const REQUIRED_JOBS: JobName[] = [
   'comms-decay',
@@ -106,6 +117,16 @@ const REQUIRED_JOBS: JobName[] = [
   // if this job is not running, notification email is queued and never sent,
   // and the ONLY symptom is mail that does not arrive.
   'notification-mail',
+  // server/runs/reclaim.ts, reached through server/runs/boot.ts. The sharpest
+  // case yet, and the reason this name was held back until a kind shipped: a
+  // deployment missing this job serves every request correctly, starts every
+  // research run, fitness sweep and work session, and writes every checkpoint —
+  // and resumes none of them. The symptom is a long action that stops mid-way
+  // after a deploy, which from the outside is indistinguishable from one that
+  // is merely slow. Kinds ship now (research, fitness-sweep, rag-reindex,
+  // rag-backfill, work-session), so the module has an importer and this is a
+  // real alarm rather than a trained-out one.
+  'run-reclaim',
 ]
 
 export interface JobSpec {
@@ -202,10 +223,6 @@ const jobs: Map<JobName, JobState> = (g.__talariaJobs ??= new Map())
 let started = false
 let stopping = false
 
-/** Identifies this process in the Redis lease value, so a lease can only be
- *  renewed or released by the process that took it. */
-const instanceId = `${process.pid}-${randomUUID().slice(0, 8)}`
-
 const errText = (e: unknown) => (e instanceof Error ? (e.stack ?? e.message) : String(e))
 const errLine = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -241,43 +258,30 @@ export function registerJob(spec: JobSpec): void {
   })
 }
 
-// ── The Redis lease ──────────────────────────────────────────────────────────
+// ── The Redis lease: this file's half of it ──────────────────────────────────
+//
+// The mechanism (SET NX PX, the compare-and-set renewal, the token discipline)
+// is server/runs/lease.ts. What is left here is everything that is a SCHEDULING
+// decision, and none of it should move: which namespace, how long a job's lease
+// runs for, what a holder means in a log line, and — below, in `attempt` — the
+// hold to the end of the interval that makes this once-per-interval rather than
+// merely not-at-once.
 
-const leaseKey = (name: string) => `talaria:sched:v1:${name}`
-
-/** Extend (or demote) a lease we still hold. Compare-and-set: if the value is
- *  no longer ours the lease expired and someone else may have taken it, so we
- *  must not touch it. Returns 1 when the expiry was set, 0 when it was not. */
-const CAS_PEXPIRE = `
-if redis.call('get', KEYS[1]) == ARGV[1] then
-  return redis.call('pexpire', KEYS[1], ARGV[2])
-end
-return 0
-`
-
-async function acquireLease(name: JobName, token: string, ttlMs: number): Promise<boolean> {
-  const res = await getRedis().set(leaseKey(name), token, 'PX', ttlMs, 'NX')
-  return res === 'OK'
-}
-
-async function casPexpire(name: JobName, token: string, ttlMs: number): Promise<boolean> {
-  const res = await getRedis().eval(CAS_PEXPIRE, 1, leaseKey(name), token, String(Math.max(1, Math.floor(ttlMs))))
-  return res === 1
-}
+const jobLeaseKey = (name: JobName) => leaseKey('sched', name)
 
 /** Who is holding a lease we failed to take — for the log line only. Returns
  *  'this instance' when the holder is us (i.e. we already ran this interval and
  *  the key is cooling down), 'another instance' when it is not, and null when
- *  the answer could not be read. */
-async function leaseHolder(name: JobName): Promise<string | null> {
-  try {
-    const held = await getRedis().get(leaseKey(name))
-    if (!held) return null
-    return held.startsWith(`${instanceId}:`) ? 'this instance already ran it this interval' : 'another instance holds it'
-  } catch {
-    // Purely cosmetic; the skip itself is already reported by the caller.
-    return null
-  }
+ *  the answer could not be read.
+ *
+ *  The 'self' case reads as "already ran it this interval" ONLY because of this
+ *  file's demote-on-completion policy — under the runs policy the same fact
+ *  would mean something else entirely — which is why the sentences are written
+ *  here and the primitive answers with a bare 'self' / 'other'. */
+async function jobLeaseHolder(name: JobName): Promise<string | null> {
+  const who = await leaseHolder(jobLeaseKey(name))
+  if (who === null) return null
+  return who === 'self' ? 'this instance already ran it this interval' : 'another instance holds it'
 }
 
 // ── One attempt ──────────────────────────────────────────────────────────────
@@ -302,34 +306,35 @@ async function attempt(state: JobState): Promise<void> {
   }
 
   const ttlMs = Math.max(5_000, spec.maxRunMs ?? DEFAULT_MAX_RUN_MS)
-  // Unique per ATTEMPT, not per successful run: the token is what the
-  // compare-and-set below matches on, so a failing job reusing `runs + 1`
-  // would let a stale token renew a lease that had already expired and been
-  // taken by someone else.
-  const token = `${instanceId}:${randomUUID()}`
 
   // A perInstance job's input is in THIS process's memory (see JobSpec), so
   // there is nothing for another instance to duplicate and nothing for a lease
   // to protect — and taking one would stop every other instance draining its
   // own queue. It also means such a job keeps working when Redis is down,
   // which is right: it is not touching anything Redis is guarding.
+  //
+  // The token is minted inside `acquireLease` and handed back with the claim: it
+  // is unique per ATTEMPT, not per successful run, because it is what the
+  // compare-and-set matches on — a token reused across attempts would let a
+  // stale one renew a lease that had already expired and been taken by someone
+  // else.
+  let lease: LeaseToken | null = null
   if (!spec.perInstance) {
-    let held = false
-    try {
-      held = await acquireLease(name, token, ttlMs)
-    } catch (e) {
+    const claim = await acquireLease(jobLeaseKey(name), ttlMs)
+    if (claim.kind === 'unavailable') {
       // Fail CLOSED. Running unguarded is how the same chat gets archived twice
       // and the same person gets DMed twice.
       state.leaseSkips++
-      console.error(`${LOG} ${name} skipped: Redis lease unavailable (skips=${state.leaseSkips}):`, errText(e))
+      console.error(`${LOG} ${name} skipped: Redis lease unavailable (skips=${state.leaseSkips}):`, errText(claim.error))
       return
     }
-    if (!held) {
+    if (claim.kind === 'held') {
       // Either someone is running it, or someone already ran it this period.
       state.leaseSkips++
-      console.log(`${LOG} ${name} skipped: the lease for this interval is taken (${(await leaseHolder(name)) ?? 'holder unknown'})`)
+      console.log(`${LOG} ${name} skipped: the lease for this interval is taken (${(await jobLeaseHolder(name)) ?? 'holder unknown'})`)
       return
     }
+    lease = claim.token
   }
 
   state.running = true
@@ -337,17 +342,16 @@ async function attempt(state: JobState): Promise<void> {
   state.error = null
 
   // Keep the lease alive while the job runs, so a job that legitimately takes
-  // longer than one TTL is not stolen mid-flight.
-  const renew = spec.perInstance
-    ? null
-    : setInterval(() => {
-        void casPexpire(name, token, ttlMs).then(
-          (ok) => {
-            if (!ok) console.warn(`${LOG} ${name} lost its lease while running — another instance may have started it`)
-          },
-          (e) => console.error(`${LOG} ${name} lease renewal failed:`, errText(e)),
-        )
-      }, Math.max(1_000, Math.floor(ttlMs / 3)))
+  // longer than one TTL is not stolen mid-flight. Two outcomes, two sentences,
+  // deliberately: losing the lease means another instance may already be running
+  // this job, while a renewal that could not reach Redis usually means the lease
+  // is still ours and we simply could not say so.
+  const renew: LeaseHeartbeat | null = lease
+    ? keepLeaseAlive(lease, ttlMs, {
+        onLost: () => console.warn(`${LOG} ${name} lost its lease while running — another instance may have started it`),
+        onError: (e) => console.error(`${LOG} ${name} lease renewal failed:`, errText(e)),
+      })
+    : null
 
   const done = (async () => {
     try {
@@ -366,7 +370,7 @@ async function attempt(state: JobState): Promise<void> {
       state.durationMs = Date.now() - (state.startedAt ?? Date.now())
       console.error(`${LOG} ${name} FAILED after ${state.durationMs}ms (failures=${state.failures}):`, errText(e))
     } finally {
-      if (renew) clearInterval(renew)
+      renew?.stop()
       state.finishedAt = Date.now()
       // Hold the key for the rest of the interval rather than deleting it:
       // that is what makes this "once per interval, fleet-wide" instead of
@@ -375,12 +379,18 @@ async function attempt(state: JobState): Promise<void> {
       // by the run's own duration, and the cadence drifts a little further
       // behind on every pass. Slightly short of a full interval (0.9) so a tick
       // that arrives a few ms early is not deferred a whole period.
+      //
+      // A `lost` outcome here is deliberately silent: it means the run outlived
+      // its own TTL and the lease has already gone, which the renewal loop
+      // above has said out loud once already — and the next tick will simply
+      // find the key free and run, which is the correct recovery.
       const startedAt = state.startedAt ?? Date.now()
       const holdMs = Math.max(1, startedAt + Math.floor(spec.everyMs * 0.9) - Date.now())
-      if (!spec.perInstance) {
-        await casPexpire(name, token, holdMs).catch((e) =>
-          console.error(`${LOG} ${name} could not hold its lease for the rest of the interval:`, errText(e)),
-        )
+      if (lease) {
+        const held = await demoteLease(lease, holdMs)
+        if (held.kind === 'unavailable') {
+          console.error(`${LOG} ${name} could not hold its lease for the rest of the interval:`, errText(held.error))
+        }
       }
       // Cleared LAST, so a tick that arrives between the run ending and the
       // lease being demoted is turned away by the cheap in-process guard rather

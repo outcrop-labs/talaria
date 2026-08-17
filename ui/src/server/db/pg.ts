@@ -1651,6 +1651,85 @@ const MIGRATIONS: string[] = [
      created_at timestamptz not null default now(),
      updated_at timestamptz not null default now()
    )`,
+  // ── APPENDED, because migration identity is an ARRAY INDEX ───────────────
+  // Everything above has already run in real databases at the indices it
+  // holds. New statements take the next free ones; splicing renumbers every
+  // statement after the splice and every existing install refuses to boot on
+  // the checksum mismatch, which is the guard working rather than a bug.
+  // ── Durable runs (server/runs/) ────────────────────────────────────────────
+  // ONE row per long action, and the noun the codebase has been missing. A run
+  // is a SEQUENCE OF STEPS OVER A CHECKPOINT: resuming means re-entering the
+  // definition's `step()` with the last PERSISTED checkpoint, which is what
+  // makes it survive a tab close, a view change, a restart and a deploy.
+  //
+  // What each of those cost before this table existed:
+  //   research.ts:352       a restart mid-run marks the user's run FAILED —
+  //                         'run went stale (app restarted mid-research?)'
+  //   fitness/surface.ts    a status blob in app_settings driven by a bare
+  //   retrieval/migrate.ts  `void fn()`; a deploy leaves state:'running'
+  //                         forever with nothing driving it
+  //   work-dispatch.ts:51   `liveSessions`, a process-local Set with an
+  //                         explicit TODO(multi-instance)
+  //
+  // `state` is not a check constraint on purpose: the six values are declared
+  // in server/runs/define.ts, and a constraint here would make every new state
+  // a migration on a hot table for no protection the driver does not already
+  // give (every write is a compare-and-set on state + lease_owner).
+  //
+  // `awaiting` is the state worth naming: a run PARKED on a human decision.
+  // `decision` carries the question and, later, the answer, because a question
+  // that lives only in the process that raised it is gone the moment you open
+  // the approval on another device. `approval_key` is the dedupe handle
+  // server/approvals.ts's announce and nag machinery already keys on.
+  //
+  // `lease_owner` / `lease_expires_at` mirror the Redis lease that actually
+  // enforces mutual exclusion. Both, deliberately: Redis is what another
+  // instance TESTS before taking a run, and these columns are what the reclaim
+  // query SCANS — Redis has no index over "every run whose lease expired", and
+  // keeping one would mean a second copy of every in-flight run id.
+  `create table if not exists runs (
+     id uuid primary key default gen_random_uuid(),
+     kind text not null,
+     owner_user_id uuid references users(id) on delete cascade,
+     subject_type text,
+     subject_id text,
+     state text not null default 'queued',
+     phase text not null default '',
+     checkpoint jsonb,
+     input jsonb not null default '{}'::jsonb,
+     result jsonb,
+     error text,
+     attempt integer not null default 0,
+     lease_owner text,
+     lease_expires_at timestamptz,
+     approval_key text,
+     decision jsonb,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now(),
+     started_at timestamptz,
+     finished_at timestamptz
+   )`,
+  // THE RECLAIM QUERY: "every run nobody is driving any more". Partial, because
+  // the interesting rows are the live ones and a finished run is dead weight in
+  // an index that a sweep hits every few seconds forever — this stays the size
+  // of the in-flight set, not of the history.
+  `create index if not exists runs_reclaim_idx
+     on runs (lease_expires_at asc nulls first, created_at asc)
+     where state in ('queued', 'running')`,
+  // THE OTHER REAL QUERY: "this user's active runs", newest activity first, for
+  // the strip and the list. `awaiting` is in the partial predicate because a
+  // run parked on a question the user has to answer is the most active thing
+  // they have, and leaving it out would hide exactly the row that needs them.
+  `create index if not exists runs_owner_active_idx
+     on runs (owner_user_id, state, updated_at desc)
+     where state in ('queued', 'running', 'awaiting')`,
+  // Approvals joins back the other way — one pending decision to the run it
+  // parked. Unique so a second row cannot claim the same key: the key is
+  // derived from (kind, run id, question key), so a duplicate would mean two
+  // runs announcing as one approval and one of them never being decided.
+  `create unique index if not exists runs_approval_key_idx
+     on runs (approval_key) where approval_key is not null`,
+
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

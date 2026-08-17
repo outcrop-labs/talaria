@@ -2,8 +2,8 @@
 // in one shape, with the person who owes the answer attached.
 //
 // WHY THIS FILE EXISTS
-//   "Approvals" is not one queue in Talaria. It is four, and they were written
-//   at four different times by four different features:
+//   "Approvals" is not one queue in Talaria. It is five, and they were written
+//   at five different times by five different features:
 //
 //     google_action    google_pending_actions — an agent drafted something that
 //                      LEAVES the building (an email, an invite). Surfaced by
@@ -17,6 +17,14 @@
 //                      Surfaced by Home's review queue and the focus queue.
 //     repo_request     workbench_repo_requests — an agent asked for a repo that
 //                      does not exist. Admin-only; Admin → Agents.
+//     run_decision     runs.state = 'awaiting' — a durable run (server/runs/)
+//                      reached a question its own step cannot answer and
+//                      PARKED. The fifth kind, and the first one with no table
+//                      of its own: the run IS the record, and the question is a
+//                      column on it. It has no surface of its own yet, which is
+//                      exactly why it has to be here — until the runs strip
+//                      lands, the announcement below is the only way anybody
+//                      hears that a run stopped to ask.
 //
 //   Each of those has its own table, its own surface and its own idea of who
 //   decides. None of them had an idea of how OLD it was, which is the whole
@@ -62,6 +70,18 @@
 //                        (any admin may GRANT it; `onBoard` is the ticket the
 //                        agent raised it from, and it bounds who may read the
 //                        agent's free text — not who may act)
+//     run_decision     runs/decide.ts decide():                DECLARED BY THE RUN:
+//                        `mayDecide(census, approval, by)`       `RunDefinition.audience(run)`
+//                        — the same predicate this file           returns one of the four
+//                        already exports, against this            above
+//                        same census
+//
+//   `run_decision` is the first kind that does not hard-code its authority, and
+//   that is the point of it rather than a shortcut: a research run pauses to its
+//   OWNER and a work-session run pauses to the ticket's BOARD, and neither
+//   definition knows how disclosure works — it names an authority and this file
+//   resolves it. A run kind that wanted to invent its own audience would have to
+//   go around `audienceFor`, which is the one thing check-invariants fails on.
 //
 //   `audienceFor()` resolves that to a list of user ids. The digest filters on
 //   it and the SLA job addresses it, so neither can widen an audience by
@@ -75,8 +95,14 @@ import { humanAssigneeIds } from './tasks'
 import { addNotification } from './notifications'
 import { getSetting } from './audit'
 import { statusCategorySql } from './statuses'
+// runs/define.ts is types, one identity function and a registry Map — it
+// imports NOTHING at runtime (its only import of this file is `import type
+// { Authority }`, which is erased). So this edge is one-way and there is no
+// cycle to break with a dynamic import, which is what makes it safe for the
+// census to ask a run's own definition who may decide it.
+import { runDefinition, type RunRow } from './runs/define'
 
-export type ApprovalKind = 'google_action' | 'workbench_plan' | 'ticket_review' | 'repo_request'
+export type ApprovalKind = 'google_action' | 'workbench_plan' | 'ticket_review' | 'repo_request' | 'run_decision'
 
 /** Exactly who a route lets act — and therefore exactly who may be told what
  *  the thing IS. Nothing else in the codebase may widen this.
@@ -330,9 +356,155 @@ async function repoRequestApprovals(): Promise<PendingApproval[]> {
   }))
 }
 
+// ── run_decision: a durable run parked on a question ─────────────────────────
+//
+// The other four kinds read a table that exists to hold a pending decision. This
+// one reads `runs`, where the decision is a COLUMN on the work itself, and that
+// difference is the whole reason the state is worth having: a run in `awaiting`
+// is not failed (nothing is wrong), not running (nothing is burning) and not
+// queued (no amount of driving advances it — server/runs/run.ts refuses to drive
+// it). It is a piece of work stopped at a fork, with its checkpoint intact,
+// waiting for a person. server/research.ts answers the same event today by
+// marking the user's run FAILED.
+//
+// A row is skipped, LOUDLY and unmarked, rather than announced as widely as
+// possible whenever this process cannot establish who may decide it. That is the
+// opposite of the reflex, so it is worth stating: an approval that is announced
+// to the wrong people cannot be un-announced, while an approval that goes round
+// again on the next tick costs five minutes. A skipped key is never marked, so
+// the moment an instance that HAS the definition runs a sweep, it is announced
+// normally.
+//
+// ONE DEBT THIS KIND OPENS, for whoever ports the first run onto the runner: a
+// definition whose `audience` returns `{ by: 'nobody' }` lands in the default
+// branch of `whyUnreachable` in server/digest.ts, which tells an admin "It is
+// not attached to a ticket, so no surface in Talaria can approve or reject it".
+// That sentence was written about a workbench job and is false about a run. No
+// run kind resolves to `nobody` today — nothing is ported onto the runner in
+// this change — so it is a gap rather than a live bug, and the first kind that
+// CAN resolve to nobody owes that branch a sentence of its own.
+
+/** The `runs` row as this file reads it — every column, because `audience(run)`
+ *  is the run definition's own code and it is handed a whole `RunRow`. A subset
+ *  would be a `RunRow` with holes in it, and the first definition that keyed its
+ *  audience off `input` or `subjectId` would resolve an audience from a null it
+ *  was promised would not be there. The set of `awaiting` runs is bounded by the
+ *  number of decisions humans currently owe, so this is a small read however
+ *  large the run history gets. */
+type RawRunRow = Omit<RunRow, 'createdAt' | 'updatedAt' | 'startedAt' | 'finishedAt' | 'leaseExpiresAt'> & {
+  createdAt: Date | string
+  updatedAt: Date | string
+  startedAt: Date | string | null
+  finishedAt: Date | string | null
+  leaseExpiresAt: Date | string | null
+}
+
+const runRowFrom = (raw: RawRunRow): RunRow => ({
+  ...raw,
+  createdAt: iso(raw.createdAt),
+  updatedAt: iso(raw.updatedAt),
+  startedAt: raw.startedAt === null ? null : iso(raw.startedAt),
+  finishedAt: raw.finishedAt === null ? null : iso(raw.finishedAt),
+  leaseExpiresAt: raw.leaseExpiresAt === null ? null : iso(raw.leaseExpiresAt),
+})
+
+/** ONE description of what a parked run is as an approval — the census below and
+ *  `runs/decide.ts`'s authorization check both go through this function.
+ *
+ *  Exported for exactly that reason. `decide()` has to answer "may this person
+ *  decide this run", and the only correct way to answer it is to build the same
+ *  approval the census builds and put it through the same `mayDecide`. A second,
+ *  hand-written answer at the decision route is the shape this file's header
+ *  spends forty lines on: it is how `request_repo` ended up mailing every admin
+ *  the free text the census had carefully bounded to a board.
+ *
+ *  Returns null when the run is not parked, has no question, or when THIS
+ *  process has no definition for its kind. That last one is a real state and not
+ *  an impossible one — a row from a newer deploy, or a kind whose module is not
+ *  in this instance's import graph — and it is the same call server/runs/run.ts
+ *  makes when it declines to drive a kind it does not know: leave it for an
+ *  instance that has it. */
+export function runDecisionApproval(run: RunRow): PendingApproval | null {
+  if (run.state !== 'awaiting') return null
+  const request = run.decision?.request
+  const key = run.approvalKey
+  if (!request || !key) {
+    console.error(`[approvals] run ${run.id} (${run.kind}) is awaiting with no ${request ? 'approval key' : 'question'} on the row — nobody can be told about it`)
+    return null
+  }
+  const def = runDefinition(run.kind)
+  if (!def) {
+    console.warn(
+      `[approvals] run ${run.id} is awaiting a decision but kind "${run.kind}" is not registered on this instance — ` +
+        `leaving it for one that has it. It stays unannounced and UNMARKED, so the next sweep on an instance that ` +
+        `imports the definition announces it normally.`,
+    )
+    return null
+  }
+  let authority: Authority
+  try {
+    // The definition's own code, running inside the census. A throw here means
+    // this process cannot say who may be told, and "cannot say" resolves to
+    // nobody hearing anything rather than to the widest audience available.
+    authority = def.audience(run)
+  } catch (e) {
+    console.error(`[approvals] run ${run.id} (${run.kind}): its definition could not name an audience, so nobody is told what it says:`, e)
+    return null
+  }
+  const options = request.options.map((o) => o.label.trim()).filter(Boolean)
+  const detail = request.detail?.trim() || `${def.label} stopped at "${run.phase}" and cannot go on until somebody chooses.`
+  return {
+    kind: 'run_decision' as const,
+    // The key the DRIVER already wrote on the row. Deriving it a second time
+    // here would be a second opinion about the identity of one approval, and the
+    // announce marks are keyed on it: the two spellings would announce twice.
+    key,
+    id: run.id,
+    title: `${def.label} needs a decision: ${request.question}`,
+    detail: options.length ? `${detail} Options: ${options.join(' · ')}.` : detail,
+    // A run that has nowhere to send a reader is not a bug worth suppressing the
+    // approval over — the notification still says what the question is, and the
+    // runs surface (which will carry the real href) is the next milestone.
+    href: request.href ?? '/',
+    // WHEN IT PARKED, and unusually for this file that is exactly what
+    // `updated_at` means here. Compare the care `ticket_review` needs above: a
+    // ticket's row is touched by every later edit, so its timestamp drifts. An
+    // `awaiting` run's row is touched by nothing — every write in
+    // server/runs/store.ts requires `state = 'running'`, and the only statement
+    // that moves a row out of `awaiting` is the answer itself.
+    waitingSince: iso(run.updatedAt),
+    // The owner is who the run belongs to, NOT proof they may decide it: a
+    // work-session run owned by one person can pause to a board they are not an
+    // editor of. Every stage that uses `ownerUserIds` intersects it with the
+    // resolved audience first, exactly as it does for a ticket's assignees.
+    ownerUserIds: run.ownerUserId ? [run.ownerUserId] : [],
+    authority,
+  }
+}
+
+async function runDecisionApprovals(): Promise<PendingApproval[]> {
+  const sql = await db()
+  const rows = (await sql`
+    select id, kind, owner_user_id as "ownerUserId", subject_type as "subjectType", subject_id as "subjectId",
+           state, phase, checkpoint, input, result, error, attempt,
+           lease_owner as "leaseOwner", lease_expires_at as "leaseExpiresAt",
+           approval_key as "approvalKey", decision,
+           created_at as "createdAt", updated_at as "updatedAt",
+           started_at as "startedAt", finished_at as "finishedAt"
+    from runs
+    where state = 'awaiting' and approval_key is not null
+  `) as unknown as RawRunRow[]
+  const out: PendingApproval[] = []
+  for (const raw of rows) {
+    const approval = runDecisionApproval(runRowFrom(raw))
+    if (approval) out.push(approval)
+  }
+  return out
+}
+
 /** Every pending approval in the workspace, oldest first.
  *
- *  One kind failing must not hide the other three — an escalation sweep that
+ *  One kind failing must not hide the other four — an escalation sweep that
  *  reports nothing because one table was locked is the silence this whole
  *  milestone is about. Each kind is settled independently; a rejection is
  *  logged and rethrown as a partial-failure marker so the caller can say the
@@ -343,6 +515,11 @@ export async function pendingApprovals(): Promise<{ approvals: PendingApproval[]
     ['workbench_plan', workbenchPlanApprovals()],
     ['ticket_review', ticketReviewApprovals()],
     ['repo_request', repoRequestApprovals()],
+    // The newest source is also the one most likely to fail on a tree that has
+    // not migrated yet (no `runs` table at all), which is precisely what
+    // `failedKinds` is for: a workspace mid-deploy still gets its other four
+    // queues, and the sweep below knows not to prune marks it could not see.
+    ['run_decision', runDecisionApprovals()],
   ]
   const settled = await Promise.allSettled(sources.map(([, p]) => p))
   const approvals: PendingApproval[] = []
@@ -638,6 +815,7 @@ export const KIND_LABEL: Record<ApprovalKind, string> = {
   workbench_plan: 'a build plan an agent is blocked on',
   ticket_review: 'a ticket waiting for sign-off',
   repo_request: 'a repository an agent asked for',
+  run_decision: 'a long-running job parked on a question only a person can answer',
 }
 
 /** THE announcement. Both halves of the disclosure, in one call, because they
@@ -771,6 +949,12 @@ const ANNOUNCE_TO_NAMED_ONLY: Record<ApprovalKind, boolean> = {
   ticket_review: true,
   // Admin-only, never has an owner. Narrowing would silence it.
   repo_request: false,
+  // Same argument as `workbench_plan`, and stronger: a parked run is a piece of
+  // work stopped dead, holding a checkpoint, going nowhere until somebody
+  // answers. Narrowing to the named would also silence every ORG-WIDE run —
+  // `owner_user_id` is null for a fitness sweep or a retrieval migration, which
+  // are exactly the runs whose questions nobody currently hears at all.
+  run_decision: false,
 }
 
 export interface AnnounceTarget {
