@@ -26,7 +26,7 @@
           <span class="inline-flex items-center gap-2 rounded-md border border-line bg-raised/50 px-2.5 py-1.5 font-sans text-xs">
             {#if a.refType}
               <a
-                href={a.refType === 'kb-doc' ? p('/knowledge') : p('/artifacts')}
+                href={a.refType === 'kb-doc' ? `${p('/knowledge')}?doc=${encodeURIComponent(a.id)}` : `${p('/artifacts')}?a=${encodeURIComponent(a.id)}`}
                 class="inline-flex max-w-48 items-center gap-2 truncate text-fg transition-colors hover:text-accent"
               >
                 {#if a.refType === 'kb-doc'}<BookOpen size={14} class="shrink-0 text-muted" />{:else}<Gem size={14} class="shrink-0 text-muted" />{/if}

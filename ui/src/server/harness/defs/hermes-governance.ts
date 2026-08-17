@@ -199,7 +199,7 @@ export const hermesGovernanceHarness = defineHarness<HermesGovernanceInput, stri
         const b = platform(w)
         if (!b) return NO_WORLD
         if (!b.agents.includes('nomad-research')) return 'never gave the research agent access to the board'
-        return b.agents.includes('dex-developer')
+        return b.agents.includes('engineer-engineering')
           ? null
           : 'added the research agent by REPLACING the list — the agent already working this board was silently removed'
       },

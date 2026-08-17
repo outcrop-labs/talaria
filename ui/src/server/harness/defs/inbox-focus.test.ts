@@ -222,7 +222,7 @@ describe('the widened command surface', () => {
     const r = world({ facts: WIDE })
     const result = await runHarness(inboxCommandHarness, commandInput(), {
       caller: 'test:inbox',
-      model: 'penny-administrative-assistant',
+      model: 'assistant-operations',
       deps: {
         ...r.deps,
         routing: async () => {

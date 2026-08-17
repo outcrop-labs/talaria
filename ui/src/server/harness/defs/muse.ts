@@ -907,7 +907,7 @@ const templateIssue = (v: string): string | null => {
 }
 
 const SOUL_REVISION = [
-  '# Remy — Release Manager',
+  '# Release Manager',
   '',
   '## Who you are',
   'You keep the deploy trains running for Northwind and chase sign-offs before each cut.',

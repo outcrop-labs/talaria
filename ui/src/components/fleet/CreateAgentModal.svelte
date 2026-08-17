@@ -178,11 +178,11 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-          <Input value={displayName} oninput={(e) => onName(e.currentTarget.value)} placeholder="Remy" autofocus={!generated} />
+          <Input value={displayName} oninput={(e) => onName(e.currentTarget.value)} placeholder="Research Analyst" autofocus={!generated} />
         </div>
         <div>
           <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</label>
-          <Input bind:value={slug} placeholder="remy" />
+          <Input bind:value={slug} placeholder="analyst" />
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">

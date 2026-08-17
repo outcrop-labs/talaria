@@ -662,7 +662,7 @@ describe('runProbes', () => {
     state.endpoints = []
     state.personaKeys = ['pl-main:qwen3-14b']
     const { deps, written } = harness({ reply: () => ({ raw: '{"name":"talaria","count":3,"ok":true}' }) })
-    const report = await runProbes('penny-assistant', { ids: ['json'], deps })
+    const report = await runProbes('assistant-operations', { ids: ['json'], deps })
     expect(report.keys).toEqual(['pl-main:qwen3-14b'])
     expect(written[0]).toMatchObject({ key: 'pl-main:qwen3-14b', cap: 'json' })
   })
@@ -748,7 +748,7 @@ describe('runProbes', () => {
     // the transport refuses the call. A skip writes nothing; scoring it would
     // write `tools: false` — permanently — about a model nobody asked.
     const { deps, written, asked } = harness({ over: { offersToolDefinitions: () => Promise.resolve(false) } })
-    const report = await runProbes('penny-assistant', { ids: ['tools', 'tool-select'], deps })
+    const report = await runProbes('assistant-operations', { ids: ['tools', 'tool-select'], deps })
 
     expect(outcomeOf(report, 'tools')).toMatchObject({ kind: 'skipped', reason: expect.stringContaining('fleet persona') })
     expect(outcomeOf(report, 'tool-select')).toMatchObject({ kind: 'skipped', reason: expect.stringContaining('fleet persona') })
@@ -908,7 +908,7 @@ describe('estimateProbes', () => {
     // cannot run overstates a probes-only run by a fifth — exactly the kind of
     // number that makes an admin stop trusting the rest of the page.
     const { deps } = harness({ over: { offersToolDefinitions: () => Promise.resolve(false) } })
-    const est = await estimateProbes('penny-assistant', { ids: ['tools', 'tool-select', 'vision'], deps })
+    const est = await estimateProbes('assistant-operations', { ids: ['tools', 'tool-select', 'vision'], deps })
     expect(est.calls).toBe(0)
     expect(est.usd).toBeNull()
   })
@@ -1030,7 +1030,7 @@ describe('runnerAsk', () => {
   })
 
   it('reports a refusal from the transport as a transport error, which voids the probe', async () => {
-    const ask = runnerToolAsk('penny-assistant', () => Promise.reject(new Error('its tool loop runs inside the agent container')))
+    const ask = runnerToolAsk('assistant-operations', () => Promise.reject(new Error('its tool loop runs inside the agent container')))
     const a = await ask({ id: 'tools', messages: prompt, tools: [TOOL] })
     expect(a.transportError).toContain('tool loop runs inside the agent')
   })

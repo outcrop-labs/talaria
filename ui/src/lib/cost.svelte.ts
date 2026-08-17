@@ -32,7 +32,7 @@ export function useCost() {
   }))
 }
 
-/** Client-safe "dex-developer" → { label: "Dex", role: "developer" }. */
+/** Client-safe split of an agent id "<slug>-<department>" into label + role. */
 export function agentLabel(id: string): { label: string; role: string } {
   const [first, ...rest] = id.split('-')
   const label = first ? first.charAt(0).toUpperCase() + first.slice(1) : id

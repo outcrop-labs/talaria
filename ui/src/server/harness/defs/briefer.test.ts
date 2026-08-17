@@ -53,7 +53,7 @@ describe('the briefing definition', () => {
 
   it('runs end to end without asking for protocol JSON or setting a temperature', async () => {
     const { deps: d, requests } = deps(GOOD_BRIEF)
-    const res = await runHarness(briefingHarness, brief('inbox'), { caller: 'test', model: 'penny-assistant', deps: d })
+    const res = await runHarness(briefingHarness, brief('inbox'), { caller: 'test', model: 'assistant-operations', deps: d })
     expect(res.value).toBe(GOOD_BRIEF)
     expect(res.schemaValid).toBe(true)
     expect(requests[0]?.jsonMode).toBe(false)
@@ -64,7 +64,7 @@ describe('the briefing definition', () => {
 
   it('sends the scope’s own prompt and the attention lines, and nothing else', async () => {
     const { deps: d, requests } = deps(GOOD_BRIEF)
-    await runHarness(briefingHarness, brief('comms'), { caller: 'test', model: 'penny-assistant', deps: d })
+    await runHarness(briefingHarness, brief('comms'), { caller: 'test', model: 'assistant-operations', deps: d })
     const sent = requests[0]?.messages[0]?.content ?? ''
     expect(sent).toContain('[Automated comms briefing — no human sent this.]')
     expect(sent).toContain('unread channels, relays, DMs, and mentions')
@@ -74,7 +74,7 @@ describe('the briefing definition', () => {
 
   it('asks the empty state for one short line instead of the bullet rules', async () => {
     const { deps: d, requests } = deps('You are all clear.')
-    await runHarness(briefingHarness, brief('boards', [], true), { caller: 'test', model: 'penny-assistant', deps: d })
+    await runHarness(briefingHarness, brief('boards', [], true), { caller: 'test', model: 'assistant-operations', deps: d })
     const sent = requests[0]?.messages[0]?.content ?? ''
     expect(sent).toContain('queues are clear. One short line.')
     expect(sent).not.toContain('at most 5 bullets')
@@ -84,8 +84,8 @@ describe('the briefing definition', () => {
     const narrow = deps(GOOD_BRIEF, false)
     const wide = deps(GOOD_BRIEF, true)
     const input = brief('inbox')
-    const a = await runHarness(briefingHarness, input, { caller: 'test', model: 'penny-assistant', deps: narrow.deps })
-    const b = await runHarness(briefingHarness, input, { caller: 'test', model: 'penny-assistant', deps: wide.deps })
+    const a = await runHarness(briefingHarness, input, { caller: 'test', model: 'assistant-operations', deps: narrow.deps })
+    const b = await runHarness(briefingHarness, input, { caller: 'test', model: 'assistant-operations', deps: wide.deps })
     expect(a.widened).toBe(false)
     expect(b.widened).toBe(true)
     expect(narrow.requests[0]?.messages[0]?.content).not.toContain('what this adds up to')
@@ -97,7 +97,7 @@ describe('the briefing definition', () => {
 
   it('keeps the previous summary when the model answers with nothing', async () => {
     const { deps: d } = deps('   \n  ')
-    const res = await runHarness(briefingHarness, brief('inbox'), { caller: 'test', model: 'penny-assistant', deps: d })
+    const res = await runHarness(briefingHarness, brief('inbox'), { caller: 'test', model: 'assistant-operations', deps: d })
     expect(res.value).toBeNull()
     expect(res.schemaValid).toBe(false)
   })
@@ -194,7 +194,7 @@ describe('the chat-back definition', () => {
     const res = await runHarness(
       briefingChatHarness,
       { scope: 'inbox', summary: GOOD_BRIEF, history: [{ role: 'user', content: 'morning' }], content: 'which one is blocked?' },
-      { caller: 'test', model: 'penny-assistant', deps: d },
+      { caller: 'test', model: 'assistant-operations', deps: d },
     )
     expect(res.value).toBe('The Ledger migration is the blocked one.')
     const messages = requests[0]?.messages ?? []
@@ -206,14 +206,14 @@ describe('the chat-back definition', () => {
 
   it('says so plainly before the first briefing exists', async () => {
     const { deps: d, requests } = deps('Nothing to go on yet.')
-    await runHarness(briefingChatHarness, { scope: 'plans', summary: null, history: [], content: 'anything?' }, { caller: 'test', model: 'penny-assistant', deps: d })
+    await runHarness(briefingChatHarness, { scope: 'plans', summary: null, history: [], content: 'anything?' }, { caller: 'test', model: 'assistant-operations', deps: d })
     expect(requests[0]?.messages[0]?.content).toContain('(none yet)')
   })
 
   it('keeps only the last twelve turns of history', async () => {
     const history = Array.from({ length: 20 }, (_, i) => ({ role: 'user' as const, content: `turn ${i}` }))
     const { deps: d, requests } = deps('ok')
-    await runHarness(briefingChatHarness, { scope: 'inbox', summary: null, history, content: 'now what?' }, { caller: 'test', model: 'penny-assistant', deps: d })
+    await runHarness(briefingChatHarness, { scope: 'inbox', summary: null, history, content: 'now what?' }, { caller: 'test', model: 'assistant-operations', deps: d })
     // 2 framing turns + 12 history + the new one.
     expect(requests[0]?.messages.length).toBe(15)
     expect(requests[0]?.messages[2]?.content).toBe('turn 8')

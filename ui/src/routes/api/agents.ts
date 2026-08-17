@@ -11,10 +11,10 @@ export const Route = defineApi('/api/agents', {
     const user = await requireUser(request)
     if (user instanceof Response) return user
 
-    const { agents, source } = await listFleetAgents()
+    const agents = await listFleetAgents()
     // Owner-aware: a personal assistant is only visible to its owner.
     const usable = await usableAgentGate(user.id, user.role)
     const visible = agents.filter((a) => usable(a.id))
-    return json({ agents: visible, source })
+    return json({ agents: visible })
   },
 })

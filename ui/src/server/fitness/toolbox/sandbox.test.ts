@@ -399,7 +399,7 @@ describe('board governance', () => {
     await ok(s, 'add_board_member', { boardId: 'b-platform', email: 'sam@example.com', role: 'viewer' })
     expect(s.world.boards[0]?.members).toContainEqual({ email: 'sam@example.com', role: 'viewer' })
     await ok(s, 'remove_board_member', { boardId: 'b-platform', email: 'sam@example.com' })
-    await ok(s, 'set_board_agents', { boardId: 'b-platform', add: ['nova-analyst'], remove: ['dex-developer'] })
+    await ok(s, 'set_board_agents', { boardId: 'b-platform', add: ['nova-analyst'], remove: ['engineer-engineering'] })
     expect(s.world.boards[0]?.agents).toEqual(['nova-analyst'])
     await ok(s, 'move_board_to_team', { boardId: 'b-platform', teamName: 'Design' })
     expect(s.world.boards[0]?.team).toBe('Design')

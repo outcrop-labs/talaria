@@ -9,9 +9,9 @@ import { FLEET_DIR } from './fleet-render'
 
 export interface AgentModel {
   id: string
-  /** Friendly first-name label ("Dex"). */
+  /** Display label — the leading segment of the id, capitalised. */
   label: string
-  /** Role remainder of the id ("developer"). */
+  /** Role remainder of the id. */
   role: string
 }
 
@@ -32,29 +32,30 @@ async function readManifest(): Promise<ManifestEntry[]> {
   }
 }
 
-/** "dex-developer" → { label: "Dex", role: "developer" } */
+/** Split an agent id into its display halves: "<slug>-<role>". */
 export function describeAgent(id: string): AgentModel {
   const [first, ...rest] = id.split('-')
   const label = first ? first.charAt(0).toUpperCase() + first.slice(1) : id
   return { id, label, role: rest.join(' ') }
 }
 
-const MOCK_AGENTS: AgentModel[] = ['dex-developer', 'sam-support', 'penny-administrative-assistant'].map(
-  describeAgent,
-)
-
 /** The fleet from the manifest — base models only (tier entries like
- *  "dex-developer-opus" are hidden from the picker). */
-export async function listAgents(): Promise<{ agents: AgentModel[]; source: 'gateway' | 'mock' }> {
+ *  "<base>-<alias>" are hidden from the picker).
+ *
+ *  An unrendered or missing manifest means an empty fleet, and says so. This
+ *  used to fall back to three invented agents, which put names nobody created
+ *  in front of the user on a fresh install and — worse — made "no agents" and
+ *  "three agents" indistinguishable to every caller downstream. */
+export async function listAgents(): Promise<AgentModel[]> {
   const manifest = await readManifest()
-  if (!manifest.length) return { agents: MOCK_AGENTS, source: 'mock' }
+  if (!manifest.length) return []
   const ids = new Set(manifest.map((m) => m.model))
   const isTier = (id: string) => {
     const i = id.lastIndexOf('-')
     return i > 0 && ids.has(id.slice(0, i))
   }
   const bases = [...new Set(manifest.map((m) => m.model).filter((id) => !isTier(id)))]
-  return { agents: bases.map(describeAgent), source: 'gateway' }
+  return bases.map(describeAgent)
 }
 
 interface ChatPayload {

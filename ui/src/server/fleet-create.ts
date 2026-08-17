@@ -65,7 +65,7 @@ export async function createAgent(input: {
   /** Override the starter-soul scaffold (e.g. a personalized assistant soul). */
   soul?: string
 }): Promise<{ def: AgentDef; keyCreated: boolean }> {
-  if (!SLUG_RE.test(input.slug)) throw new Error('slug must be short lowercase alphanumeric (e.g. "remy")')
+  if (!SLUG_RE.test(input.slug)) throw new Error('slug must be short lowercase alphanumeric (e.g. "analyst")')
   if (!DEPT_RE.test(input.department)) throw new Error('department must be lowercase-kebab (e.g. "research")')
 
   const sql = await db()

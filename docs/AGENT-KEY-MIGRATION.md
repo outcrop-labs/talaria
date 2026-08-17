@@ -65,8 +65,7 @@ psql "$DATABASE_URL" -c "
 
 Any row with `personal` or `elevated` true is an agent that will 403 with
 `{"error":"this agent must present its own credential"}` on every toolkit call from the deploy until
-you roll its container. On the reference install that is exactly one agent, `dan-personal-dan`; the
-other four resolve legacy and keep working.
+you roll its container. Typically that is only the personal-assistant agents; the rest resolve legacy and keep working.
 
 **The window must be open.** Absent means on (`legacyOpen()` in `agent-auth.ts` reads
 `process.env.TALARIA_AGENT_KEY_LEGACY ?? 'on'`):
@@ -252,9 +251,9 @@ cannot act for its owner, and cannot use the toolkit at all.** This is not limit
 The failure is **diagnostic, not silent**. The body carries the fix, and the same line is logged at
 error level (every 15 minutes while it keeps happening):
 
-> "dan-personal-dan" acts for a human (personal assistant / elevated), so the org-wide
+> "<agent-model>" acts for a human (personal assistant / elevated), so the org-wide
 > TALARIA_AGENT_KEY cannot authenticate it — it proves fleet membership, not identity. Re-render the
-> fleet and roll this container so it presents TALARIA_AGENT_KEY_DAN.
+> fleet and roll this container so it presents TALARIA_AGENT_KEY_<SLUG>.
 
 If you run personal assistants, roll them **first** — step 3 orders them that way for exactly this
 reason. Nothing else shortens the outage: the legacy flag does not help (the refusal is unconditional

@@ -39,7 +39,7 @@ Agents **never run raw git against origin**. The workbench MCP (a Talaria-owned 
 - `merge_to_testing(jobId)` — into the repo's testing branch, when configured.
 - `finish_job(jobId, summary)` — verifies the branch has real commits, then opens the PR with a templated ticket-linked body (title from the ticket ref, plan + summary inside, the acting agent named). `abandon: true` closes out a dead job from any live state.
 
-**Attribution:** commits are authored as the agent (`Jax (Talaria agent) <jax-engineering@agents.talaria.local>` — provisioned git identity per sandbox), so history and blame show who did the work. API-level actions (branch/PR/merge) show the App's identity; PR footers name the acting agent.
+**Attribution:** commits are authored as the agent (`Analyst (Talaria agent) <analyst-engineering@agents.talaria.local>` — provisioned git identity per sandbox), so history and blame show who did the work. API-level actions (branch/PR/merge) show the App's identity; PR footers name the acting agent.
 
 **Persistence:** harness session state (Claude Code sessions, opencode storage, Codex home, the npm cache, Playwright browsers) lives on the department's state volume — surviving restarts and **shared across the department's agents**, so sessions can be resumed later or picked up by a teammate as a hand-off.
 

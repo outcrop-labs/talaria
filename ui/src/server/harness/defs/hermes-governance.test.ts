@@ -90,7 +90,7 @@ describe('the fixture set discriminates', () => {
     // Treating add/remove as "here is the new list" silently unassigns the agent
     // already working the board, and the tool answers ok.
     const replaced = await run([
-      { tool: 'set_board_agents', args: { boardId: 'b-platform', add: ['nomad-research'], remove: ['dex-developer'] } },
+      { tool: 'set_board_agents', args: { boardId: 'b-platform', add: ['nomad-research'], remove: ['engineer-engineering'] } },
     ])
     expect(grade('puts the agent on the board', 'Nomad can work the board now.', replaced.ctx)).toContain('silently removed')
   })

@@ -165,7 +165,7 @@ describe('the agent contract', () => {
   // database. Everything the client used to do lives in this schema now, so
   // this is where the coercion has to be held still.
   const parse = (v: unknown) => MUSE_AGENT.safeParse(v)
-  const OK = { name: 'Remy', handle: 'remy', department: 'release', role: 'Release Manager', soul: '# Remy\n## Who you are\n...' }
+  const OK = { name: 'Release Manager', handle: 'releasemanager', department: 'release', role: 'Release Manager', soul: '# Release Manager\n## Who you are\n...' }
 
   it('coerces a hostile handle into the identifier alphabet', () => {
     // THE reason this could not stay on the client. A handle becomes a
@@ -177,14 +177,14 @@ describe('the agent contract', () => {
   })
 
   it('derives a missing handle from the name and a missing department from the handle', () => {
-    const out = parse({ name: 'Remy', soul: 's' })
-    expect(out.data?.handle).toBe('remy')
-    expect(out.data?.department).toBe('remy')
+    const out = parse({ name: 'Release Manager', soul: 's' })
+    expect(out.data?.handle).toBe('releasemanager')
+    expect(out.data?.department).toBe('releasemanager')
   })
 
   it('falls back to the handle when the department coerces to nothing', () => {
     // An empty department would produce the fleet model id "remy-".
-    expect(parse({ ...OK, department: '123' }).data?.department).toBe('remy')
+    expect(parse({ ...OK, department: '123' }).data?.department).toBe('releasemanager')
   })
 
   it('fails a handle too short to be an agent id, and says so in words a model can act on', () => {
@@ -207,8 +207,8 @@ describe('the agent contract', () => {
   })
 
   it('requires a soul, because a soul is what an agent IS', () => {
-    expect(parse({ name: 'Remy', handle: 'remy' }).success).toBe(false)
-    expect(parse({ name: 'Remy', soul: '   ' }).success).toBe(false)
+    expect(parse({ name: 'Release Manager', handle: 'releasemanager' }).success).toBe(false)
+    expect(parse({ name: 'Release Manager', soul: '   ' }).success).toBe(false)
   })
 
   it('bounds the free-text fields the way the client did', () => {
@@ -422,11 +422,11 @@ describe('the eval fixtures', () => {
 
   it('catch a soul that skipped a required heading', () => {
     const draft: AgentDraft = {
-      name: 'Remy',
-      handle: 'remy',
+      name: 'Release Manager',
+      handle: 'releasemanager',
       department: 'release',
       role: 'Release Manager',
-      soul: '# Remy — Release Manager\n## Who you are\nx\n## How you work\ny',
+      soul: '# Release Manager\n## Who you are\nx\n## How you work\ny',
       skills: [],
     }
     expect(named(museAgentHarness.evals, 'a release manager')(draft, NO_TOOLS)).toContain('## Voice & personality')
@@ -549,7 +549,7 @@ describe('the prose eval fixtures', () => {
   }
 
   const SOUL = [
-    '# Remy — Release Manager',
+    '# Release Manager',
     '## Who you are',
     'You keep the deploy trains running for Northwind.',
     '## Voice & personality',

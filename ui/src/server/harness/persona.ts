@@ -3,7 +3,7 @@
 // WHY THIS FILE EXISTS — the bug it closes
 //   `runHarness` derives capability keys from `routingFor(model)`, which answers
 //   with the GATEWAY endpoints that serve a catalog model id. A fleet persona
-//   ("penny-assistant", "dex-developer") is not a catalog model: `routingFor`
+//   ("assistant-operations", "engineer-engineering") is not a catalog model: `routingFor`
 //   returns `endpoints: []`, so the key list was empty, so step 3's
 //   `keys.length > 0` guard never passed and `widened` was ALWAYS FALSE on every
 //   persona run.
@@ -39,7 +39,7 @@ import type { ModelTarget } from '../agent-defs'
  *  one must land a harness on the unknown path rather than crash a run. Same
  *  posture as `capability.ts`'s `readFact`. */
 export interface PersonaRow {
-  /** `agent_defs.model` — the routable base id, e.g. "dex-developer". */
+  /** `agent_defs.model` — the routable base id, e.g. "engineer-engineering". */
   agent: string
   config: unknown
 }
@@ -87,9 +87,9 @@ function poolFor(primary: ModelTarget, fallbacks: ModelTarget[]): ModelTarget[] 
 /** Every routable persona id → the targets a call on it could land on.
  *
  *  Two passes, and the order is load-bearing. Base ids are claimed first so that
- *  an agent literally named "dex-developer-opus" (slug "dex", department
+ *  an agent literally named "engineer-engineering-opus" (slug "dex", department
  *  "developer-opus") wins over the reading of that same string as the "opus"
- *  tier of "dex-developer". Both are real routable ids; the agent's own id is
+ *  tier of "engineer-engineering". Both are real routable ids; the agent's own id is
  *  the one whose config we are certain describes it. */
 export function personaIndex(rows: readonly PersonaRow[]): Map<string, ModelTarget[]> {
   const byId = new Map<string, ModelTarget[]>()
@@ -133,7 +133,7 @@ export function personaIndex(rows: readonly PersonaRow[]): Map<string, ModelTarg
  *  That last case is the one worth stating out loud: an unresolvable tier
  *  returns nothing rather than falling back to the agent's main target.
  *  Inheriting the wrong model's capabilities is worse than inheriting none — the
- *  caller of "dex-developer-opus" asked for a different, usually larger model
+ *  caller of "engineer-engineering-opus" asked for a different, usually larger model
  *  than `main`, and crediting main's probe to it would widen (or refuse) on a
  *  fact about something else entirely. */
 export function personaTargets(model: string, rows: readonly PersonaRow[]): ModelTarget[] {

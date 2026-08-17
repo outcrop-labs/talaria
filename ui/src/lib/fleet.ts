@@ -17,7 +17,6 @@ export interface FleetAgentStat {
 
 export interface FleetOverview {
   agents: FleetAgentStat[]
-  source: 'gateway' | 'mock'
   totals: { agents: number; online: number; conversations: number; messages: number; activeToday: number }
 }
 

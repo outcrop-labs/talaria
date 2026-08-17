@@ -25,11 +25,11 @@ describe('planTier', () => {
   it('is null when no tier was picked, so the run is metered against the agent itself', () => {
     // Both plan routes fall back to the bare agent when the modal's tier
     // dropdown is untouched or the pick fails validation.
-    expect(planTier('dex-developer', 'dex-developer')).toBeNull()
+    expect(planTier('engineer-engineering', 'engineer-engineering')).toBeNull()
   })
 
   it('recovers the alias NAME, which is what the ledger prices from', () => {
-    expect(planTier('dex-developer', 'dex-developer-opus')).toBe('opus')
+    expect(planTier('engineer-engineering', 'engineer-engineering-opus')).toBe('opus')
   })
 
   it('inverts routedModelFor for every shape the fleet can produce', () => {
@@ -38,10 +38,10 @@ describe('planTier', () => {
     // FIRST hyphen, or at the last, would both be wrong here. Anchoring on the
     // known agent id is the only reading that works.
     const cases: Array<[string, string | null]> = [
-      ['dex-developer', 'opus'],
-      ['dex-developer', null],
-      ['penny-assistant', 'haiku'],
-      ['remy', 'sonnet-4-5'],
+      ['engineer-engineering', 'opus'],
+      ['engineer-engineering', null],
+      ['assistant-operations', 'haiku'],
+      ['analyst', 'sonnet-4-5'],
       ['a-b-c-d', 'fast'],
     ]
     for (const [agent, tier] of cases) {
@@ -53,8 +53,8 @@ describe('planTier', () => {
     // `runHarness` reassembles `${model}-${tier}` and calls THAT. If this pair
     // did not round-trip, the plan would be drafted by a different model than
     // the user picked — which is the loud half of the same bug.
-    const agent = 'dex-developer'
-    const routed = 'dex-developer-opus'
+    const agent = 'engineer-engineering'
+    const routed = 'engineer-engineering-opus'
     const tier = planTier(agent, routed)
     expect(tier === null ? agent : `${agent}-${tier}`).toBe(routed)
   })
