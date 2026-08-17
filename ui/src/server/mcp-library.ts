@@ -8,6 +8,7 @@
 // Only servers with a hosted (streamable-http) endpoint appear at all: the
 // gateway speaks that transport; stdio packages would need a process runtime.
 import { warmIcons } from './mcp-icons'
+import { safeFetch } from './safe-fetch'
 
 interface RegistryInput {
   name: string
@@ -121,7 +122,9 @@ const TIER_RANK: Record<LibraryServer['tier'], number> = { 'first-party': 0, ver
 const registryPage = async (params: Record<string, string>): Promise<RegistryEntry[]> => {
   const url = new URL(REGISTRY_URL)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
-  const r = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+  // Third-party feed (and, for the well-known probe below, an arbitrary
+  // publisher domain) — both go through the SSRF guard.
+  const r = await safeFetch(url, { timeoutMs: 10_000 })
   if (!r.ok) throw new Error(`registry ${r.status}`)
   return ((await r.json()) as { servers?: RegistryEntry[] }).servers ?? []
 }
@@ -146,7 +149,7 @@ async function wellKnownServer(domain: string): Promise<LibraryServer | null> {
   if (hit && Date.now() - hit.at < 60 * 60 * 1000) return hit.server
   let server: LibraryServer | null = null
   try {
-    const r = await fetch(`https://${domain}/.well-known/mcp.json`, { signal: AbortSignal.timeout(5_000), redirect: 'follow' })
+    const r = await safeFetch(`https://${domain}/.well-known/mcp.json`, { timeoutMs: 5_000, maxBytes: 256 * 1024 })
     if (r.ok) {
       const j = (await r.json()) as { name?: string; description?: string; icon?: string; endpoint?: string }
       if (j.endpoint && /^https:\/\//.test(j.endpoint)) {
