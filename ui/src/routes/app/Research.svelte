@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { searchParams } from 'sv-router'
+  import { pathId } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Gauge, Trash2 } from '@lucide/svelte'
-  import { navigate } from '@/router'
+  import { navigate, route } from '@/router'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import GeneratingDots from '@/components/ui/GeneratingDots.svelte'
   import RailSurface from '@/components/app/RailSurface.svelte'
@@ -64,13 +64,14 @@
   const runs = $derived(runsQuery.data ?? [])
   const runsLoading = $derived(runsQuery.isLoading)
 
-  // URL is the selection: /research?r=<runId> IS the selected run.
-  // ?r=<runId> deep-links a run (completion notifications land here).
-  const selectedId = $derived.by((): string | null => {
-    const r = searchParams.get('r')
-    return r == null || r === '' ? null : String(r)
-  })
-  const setSelectedId = (id: string | null) => void navigate('/research', { search: id ? { r: id } : {} })
+  // THE URL IS THE SELECTION: /research/<runId> IS the selected run, and a
+  // completion notification links straight at it. It was `?r=<runId>`; a run is
+  // what the page is ABOUT, so it belongs in the path.
+  const selectedId = $derived(pathId(route.pathname, '/research'))
+  const setSelectedId = (id: string | null) => {
+    if (id) void navigate('/research/:runId', { params: { runId: id } })
+    else void navigate('/research')
+  }
   let question = $state('')
   const mayRun = useHasPerm('research.run')
   let mode = $state<ResearchMode>('brief')
@@ -165,7 +166,7 @@
             oncontextmenu={(e) =>
               menu.openMenu(e, [
                 { label: 'Open', onSelect: () => setSelectedId(r.id) },
-                { label: 'Copy link', onSelect: () => copyAppLink(`/research?r=${r.id}`) },
+                { label: 'Copy link', onSelect: () => copyAppLink(`/research/${r.id}`) },
                 ...(canDelete(r)
                   ? (['sep', { label: 'Remove', danger: true, onSelect: () => void remove(r) }] as ContextMenuEntry[])
                   : []),

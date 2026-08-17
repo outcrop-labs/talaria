@@ -48,8 +48,16 @@ export const { p, navigate, isActive, preload, route } = createRouter({
         layout: () => import('./routes/app/boards/BoardLayout.svelte'),
       },
     },
-    '/plan': () => import('./routes/app/Plan.svelte'),
-    '/research': () => import('./routes/app/Research.svelte'),
+    // The selected plan / run is a path, not a query: it is the thing the page
+    // is about, and a link to it should look like one.
+    '/plan': {
+      '/': () => import('./routes/app/Plan.svelte'),
+      '/:planId': () => import('./routes/app/Plan.svelte'),
+    },
+    '/research': {
+      '/': () => import('./routes/app/Research.svelte'),
+      '/:runId': () => import('./routes/app/Research.svelte'),
+    },
     '/knowledge': () => import('./routes/app/Knowledge.svelte'),
     '/artifacts': () => import('./routes/app/Artifacts.svelte'),
     // Each tab is a real location: /agents (roster), /agents/templates,

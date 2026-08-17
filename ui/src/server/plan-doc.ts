@@ -221,6 +221,6 @@ export async function notifyPlanMentions(
     sender.label,
     content,
     `a plan (${planTitle || 'Untitled'})`,
-    `/plan?p=${conversationId}`,
+    `/plan/${conversationId}`,
   )
 }

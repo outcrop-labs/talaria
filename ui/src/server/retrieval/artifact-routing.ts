@@ -62,7 +62,7 @@ export async function applyArtifactRouting(artifact: Artifact): Promise<void> {
       title: artifact.title,
       text: `${artifact.title}\n\n${artifact.body}`,
       payload: artifact.ownerUserId ? { runId: research.targetId } : { runId: research.targetId, orgWide: true },
-      href: `/research?r=${research.targetId}`,
+      href: `/research/${research.targetId}`,
     }
     if (artifact.visibility === 'private' && artifact.ownerUserId) await indexPersonal(artifact.ownerUserId, doc).catch(() => {})
     else if (artifact.visibility !== 'private') await indexActivity(doc).catch(() => {})

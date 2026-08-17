@@ -32,3 +32,21 @@ export function tabFromPath<T extends string>(
   const seg = decodeURIComponent(rest)
   return (tabs as readonly string[]).includes(seg) ? (seg as T) : fallback
 }
+
+/** The single id a path selects, or null when the view is showing no selection.
+ *
+ *  The selection twin of `tabFromPath`, for views whose URL names ONE thing —
+ *  /research/<runId>, /plan/<planId>. Same one-level rule: a deeper path is not
+ *  a selection, because it means something this view does not define.
+ *
+ *  Ids are opaque here on purpose. A tab is drawn from a fixed set and can be
+ *  validated against it; an id refers to a row that may have been deleted, and
+ *  "does this exist" is a question for the query that loads it, which already
+ *  has a not-found story. Validating shape here would only turn one honest
+ *  empty state into two. */
+export function pathId(pathname: string, base: string): string | null {
+  if (!pathname.startsWith(`${base}/`)) return null
+  const rest = pathname.slice(base.length + 1)
+  if (!rest || rest.includes('/')) return null
+  return decodeURIComponent(rest)
+}

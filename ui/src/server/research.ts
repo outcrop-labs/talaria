@@ -909,7 +909,7 @@ async function runResearch(runId: string): Promise<void> {
       title,
       text: `${title}\n\n${body}`,
       payload: ownerUserId ? { runId, question, mode } : { runId, question, mode, orgWide: true },
-      href: `/research?r=${runId}`,
+      href: `/research/${runId}`,
     }
     if (ownerUserId) void indexPersonal(ownerUserId, reportDoc).catch(() => {})
     else void indexActivity(reportDoc).catch(() => {})
@@ -918,7 +918,7 @@ async function runResearch(runId: string): Promise<void> {
         kind: 'research',
         title: `Research ready: ${title.slice(0, 120)}`,
         body: `${agentLabel} finished ${mode === 'recon' ? 'a recon' : mode === 'brief' ? 'a brief' : 'an expedition'} — ${registry.size} sources`,
-        href: `/research?r=${runId}`,
+        href: `/research/${runId}`,
       }).catch(() => {})
     }
 

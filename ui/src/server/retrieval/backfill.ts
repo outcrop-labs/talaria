@@ -168,7 +168,7 @@ export async function backfillAll(): Promise<void> {
           title: a.title,
           text: `${a.title}\n\n${a.body}`,
           payload: a.ownerId ? { runId: a.targetId } : { runId: a.targetId, orgWide: true },
-          href: `/research?r=${a.targetId}`,
+          href: `/research/${a.targetId}`,
         }
         if (a.visibility === 'private' && a.ownerId) await indexPersonal(a.ownerId, doc).catch(() => {})
         else if (a.visibility !== 'private') await indexActivity(doc).catch(() => {})
@@ -254,7 +254,7 @@ export async function sweepNewActivity(): Promise<number> {
       title: a.title,
       text: `${a.title}\n\n${a.body}`,
       payload: isPlan ? { planId: a.targetId, planOwnerId: a.ownerId } : a.ownerId ? { runId: a.targetId } : { runId: a.targetId, orgWide: true },
-      href: isPlan ? '/artifacts' : `/research?r=${a.targetId}`,
+      href: isPlan ? '/artifacts' : `/research/${a.targetId}`,
     }
     if (!isPlan && a.visibility === 'private') {
       if (a.ownerId) await indexPersonal(a.ownerId, doc).catch(() => {})

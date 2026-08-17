@@ -2,7 +2,7 @@
 // hand-rolled versions would give six answers to "what does /models/nonsense
 // do". These pin the one answer — the home tab, always something real.
 import { describe, expect, it } from 'vitest'
-import { tabFromPath } from './route-tabs'
+import { pathId, tabFromPath } from './route-tabs'
 
 const TABS = ['models', 'pricing', 'fitness'] as const
 
@@ -51,5 +51,34 @@ describe('tabFromPath', () => {
 
   it('handles a root-level base', () => {
     expect(tabFromPath('/activity', '', ['inbox', 'activity'] as const, 'inbox')).toBe('activity')
+  })
+})
+
+describe('pathId', () => {
+  it('reads the id a path selects', () => {
+    expect(pathId('/research/run-42', '/research')).toBe('run-42')
+  })
+
+  it('is null on the bare view — nothing selected is a real state', () => {
+    expect(pathId('/research', '/research')).toBeNull()
+    expect(pathId('/research/', '/research')).toBeNull()
+  })
+
+  it('does not read a deeper path as a selection', () => {
+    expect(pathId('/research/run-42/extra', '/research')).toBeNull()
+  })
+
+  it('does not match a view that shares a prefix', () => {
+    expect(pathId('/researchers/run-42', '/research')).toBeNull()
+  })
+
+  it('decodes an encoded id', () => {
+    expect(pathId('/plan/a%2Fb', '/plan')).toBe('a/b')
+  })
+
+  it('takes ids as opaque — existence is the loading query’s question', () => {
+    // Deliberately NOT validated as a uuid: an id may name a row that was
+    // deleted, and the query that loads it already has a not-found story.
+    expect(pathId('/plan/not-a-uuid', '/plan')).toBe('not-a-uuid')
   })
 })

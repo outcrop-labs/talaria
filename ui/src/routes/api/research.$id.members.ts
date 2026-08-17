@@ -53,7 +53,7 @@ export const Route = defineApi('/api/research/$id/members', {
       kind: 'research-share',
       title: `${user.name ?? user.email ?? 'Someone'} shared research with you`,
       body: run?.question ?? '',
-      href: `/research?r=${params.id}`,
+      href: `/research/${params.id}`,
     }).catch(() => {})
     return json({ members: await listResearchMembers(params.id) })
   },

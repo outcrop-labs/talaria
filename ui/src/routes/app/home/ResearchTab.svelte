@@ -38,11 +38,11 @@
           <li>
             <button
               type="button"
-              onclick={() => void navigate('/research', { search: { r: r.id } })}
+              onclick={() => void navigate('/research/:runId', { params: { runId: r.id } })}
               oncontextmenu={(e) =>
                 menu.openMenu(e, [
-                  { label: 'Open', onSelect: () => void navigate('/research', { search: { r: r.id } }) },
-                  { label: 'Copy link', onSelect: () => copyAppLink(`/research?r=${r.id}`) },
+                  { label: 'Open', onSelect: () => void navigate('/research/:runId', { params: { runId: r.id } }) },
+                  { label: 'Copy link', onSelect: () => copyAppLink(`/research/${r.id}`) },
                 ])}
               class="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-card2"
             >

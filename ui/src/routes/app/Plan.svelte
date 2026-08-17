@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { searchParams } from 'sv-router'
+  import { pathId } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { navigate } from '@/router'
+  import { navigate, route } from '@/router'
   import ChatView from '@/components/chat/ChatView.svelte'
   import ConversationSidebar from '@/components/chat/ConversationSidebar.svelte'
   import type { SidebarFailure } from '@/components/chat/conversation-sidebar'
@@ -54,13 +54,12 @@
   const sticky = useStickyAgent('plan', () => agents)
   const selectedAgent = $derived(sticky.selected)
   const pickAgent = sticky.select
-  // The URL IS the plan selection (/plan?p=<id>) — linkable, back/forward-able.
-  const selectedConversationId = $derived.by((): string | null => {
-    const p = searchParams.get('p')
-    return p == null || p === '' ? null : String(p)
-  })
-  const setSelectedConversationId = (id: string | null, opts: { replace?: boolean } = {}) =>
-    void navigate('/plan', { search: id ? { p: id } : {}, replace: opts.replace })
+  // THE URL IS THE PLAN SELECTION (/plan/<id>) — linkable, back/forward-able.
+  const selectedConversationId = $derived(pathId(route.pathname, '/plan'))
+  const setSelectedConversationId = (id: string | null, opts: { replace?: boolean } = {}) => {
+    if (id) void navigate('/plan/:planId', { params: { planId: id }, replace: opts.replace })
+    else void navigate('/plan', { replace: opts.replace })
+  }
   // @mention the plan's MEMBERS — the people a mention will actually reach.
   // (Offering the whole org invited mentions that silently notified nobody.)
   // Tokens mirror the server's; a brand-new plan has only you, so it's inert.
