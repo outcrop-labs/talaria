@@ -4,6 +4,8 @@
 //               a retrieval TOOL agents call on demand (never auto-loaded)
 //   org-kb    — the curated knowledgebase; grounds agents by default
 // Others are custom (departmental etc.), bound to users/agents/groups.
+// EVERY collection — auto ones included — is reached through a row in
+// rag_collection_access; there is no unconditional path to any of them.
 import { db } from '../db/pg'
 import { embedDim } from './embed'
 import { ensureCollection, ensureHybridCollection, deleteCollection } from './qdrant'
@@ -53,6 +55,31 @@ export async function ensureAutoCollections(): Promise<void> {
       on conflict (qdrant_name) do nothing
     `
   }
+  await ensureAutoBindings()
+}
+
+/** Auto collections are reachable through a REAL binding like everything else:
+ *  principal_type 'all' — i.e. every KNOWN member of this workspace (a resolved
+ *  user or a registered agent), which is not the same as "any caller holding
+ *  the fleet key". Access used to be an unconditional `c.auto = true` in the
+ *  accessible-collections query, which handed both auto collections to any
+ *  x-agent-name at all. Repair is one idempotent statement, so it also fixes
+ *  registries created before this became a binding. */
+let autoBindingsChecked = false
+export async function ensureAutoBindings(): Promise<void> {
+  const sql = await db()
+  // `unique (collection_id, principal_type, principal_id)` doesn't dedupe rows
+  // with a NULL principal_id, so guard on not-exists rather than on conflict.
+  await sql`
+    insert into rag_collection_access (collection_id, principal_type, principal_id)
+    select c.id, 'all', null from rag_collections c
+    where c.auto
+      and not exists (
+        select 1 from rag_collection_access a
+        where a.collection_id = c.id and a.principal_type = 'all'
+      )
+  `
+  autoBindingsChecked = true
 }
 
 export async function listCollections(): Promise<Array<RagCollection & { bindings: AccessBinding[] }>> {
@@ -174,23 +201,44 @@ export async function setBindings(collectionId: string, bindings: AccessBinding[
   })
 }
 
-/** The collections a principal may search: 'all'-bound ones + those bound to
- *  this user or agent. Org-kb is always readable (it grounds everyone). */
+/** Resolve a principal against the directories. The fleet key authenticates the
+ *  FLEET, not an identity: x-agent-name is self-declared, so a name that isn't
+ *  a registered agent must resolve to nothing at all. Same for a user id that
+ *  isn't a user. Returns the sentinels the access query compares against — ''
+ *  meaning "unresolved", which no binding can match. */
+async function resolvePrincipal(principal: { userId?: string; agentModel?: string }): Promise<{ uid: string; agent: string }> {
+  const sql = await db()
+  const [uid, agent] = await Promise.all([
+    principal.userId
+      ? sql`select 1 from users where id::text = ${principal.userId}`.then((r) => (r.length ? principal.userId! : ''))
+      : Promise.resolve(''),
+    principal.agentModel
+      ? sql`select 1 from agent_defs where model = ${principal.agentModel}`.then((r) => (r.length ? principal.agentModel! : ''))
+      : Promise.resolve(''),
+  ])
+  return { uid, agent }
+}
+
+/** The collections a principal may search — every one of them via an explicit
+ *  binding: 'all' (any resolved member of the workspace, which is how the two
+ *  auto collections are reachable) + those bound to this user, their teams, or
+ *  this agent. An unresolvable principal gets NOTHING; item-level filtering in
+ *  searchForPrincipal then narrows within each collection. */
 export async function collectionsForPrincipal(principal: {
   userId?: string
   agentModel?: string
 }): Promise<RagCollection[]> {
   const sql = await db()
+  if (!autoBindingsChecked) await ensureAutoBindings().catch(() => {})
   // Empty-string sentinels never match a real user id / agent model.
-  const uid = principal.userId ?? ''
-  const agent = principal.agentModel ?? ''
+  const { uid, agent } = await resolvePrincipal(principal)
+  if (!uid && !agent) return []
   const rows = (await sql`
     select distinct c.id, c.name, c.kind, c.qdrant_name as "qdrantName", c.description, c.auto,
            c.created_by as "createdBy", c.created_at as "createdAt", c.schema_version as "schemaVersion"
     from rag_collections c
-    left join rag_collection_access a on a.collection_id = c.id
-    where c.auto = true
-       or a.principal_type = 'all'
+    join rag_collection_access a on a.collection_id = c.id
+    where a.principal_type = 'all'
        or (a.principal_type = 'user' and ${uid} <> '' and a.principal_id = ${uid})
        or (a.principal_type = 'agent' and ${agent} <> '' and a.principal_id = ${agent})
        or (a.principal_type = 'team' and ${uid} <> '' and exists (

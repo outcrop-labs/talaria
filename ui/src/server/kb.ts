@@ -5,7 +5,7 @@
 import { randomBytes } from 'node:crypto'
 import { db } from './db/pg'
 import { snapshot } from './internal-history'
-import { syncKbDoc, unindexKbDoc } from './retrieval/sources'
+import { EFFECTIVE_DOC_SELECT, resyncSpaceDocs, syncKbDoc, unindexKbDoc, type KbDocSync } from './retrieval/sources'
 import { canRead, listEditors, type EditorGrant, type Guarded } from './kb-perms'
 
 /** Resolve a doc's effective audience: when it inherits, visibility / edit
@@ -120,6 +120,10 @@ export async function updateSpace(
   if (next && (patch.body !== undefined || patch.name !== undefined)) {
     await snapshot('kb-space', id, `# ${next.name}\n\n${next.body}`, actor ?? null).catch(() => {})
   }
+  // A space's visibility IS the effective visibility of every doc that inherits
+  // it, so re-place them: making a space private has to pull its docs out of
+  // the org brain, and nothing else would (the docs' own rows didn't change).
+  if (patch.visibility !== undefined) void resyncSpaceDocs(id).catch(() => {})
   return next
 }
 
@@ -286,10 +290,12 @@ export async function setOfficial(id: string, official: boolean, actor: string):
  *  RAG collection — called when they spin up their assistant. */
 export async function syncUserPrivateDocs(userId: string): Promise<void> {
   const sql = await db()
-  const ids = (await sql`select id from kb_docs where owner_user_id = ${userId} and visibility = 'private'`) as unknown as Array<{ id: string }>
-  for (const { id } of ids) {
-    const doc = await getDoc(id)
-    if (doc) await syncKbDoc(doc).catch(() => {})
+  // Effective visibility, like every other sync path: a doc inheriting private
+  // from its space is private even though its own column still says 'org'.
+  const docs = (await sql.unsafe(`${EFFECTIVE_DOC_SELECT} where d.owner_user_id = $1`, [userId])) as unknown as KbDocSync[]
+  for (const doc of docs) {
+    if (doc.visibility !== 'private') continue
+    await syncKbDoc(doc).catch(() => {})
   }
 }
 
