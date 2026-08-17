@@ -324,6 +324,28 @@ export interface KbSearchHit {
   kind: 'doc' | 'space'
 }
 
+// ts_headline does NOT escape the document it excerpts — a doc body carrying
+// `<img src=x onerror=...>` comes back verbatim, and snippets render as HTML
+// in the search panel (KbSearch.svelte renders {@html h.snippet}). So highlight
+// with sentinels no real document carries (STX-delimited control chars), escape
+// the whole snippet here, and only then turn the sentinels into <b>. Escaping
+// lives in this module so every consumer of KbSearchHit.snippet is safe, not
+// just the one that renders today.
+const HL_START = '\u0002hl\u0002'
+const HL_STOP = '\u0002/hl\u0002'
+const HEADLINE_OPTS = `MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1, StartSel="${HL_START}", StopSel="${HL_STOP}"`
+
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+
+/** Exported for tests: this is the whole XSS boundary for KB search. */
+export const safeSnippet = (raw: string | null) =>
+  escapeHtml(raw ?? '')
+    .split(HL_START)
+    .join('<b>')
+    .split(HL_STOP)
+    .join('</b>')
+
 /** Full-text search across everything the caller may read: docs AND the
  *  top-level space overviews (a space is itself a document). */
 /** Full-text search honoring the EFFECTIVE permission model: a doc inside a
@@ -338,7 +360,7 @@ export async function searchDocs(query: string, viewer: { userId: string; who: s
     select * from (
       select d.id, d.space_id as "spaceId", s.name as "spaceName", d.title, d.icon, d.visibility, 'doc' as kind,
              ts_headline('english', coalesce(d.body,''), plainto_tsquery('english', ${q}),
-               'MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1') as snippet,
+               ${HEADLINE_OPTS}) as snippet,
              ts_rank(
                to_tsvector('english', coalesce(d.title,'') || ' ' || coalesce(d.body,'')),
                plainto_tsquery('english', ${q})) as rank
@@ -349,7 +371,7 @@ export async function searchDocs(query: string, viewer: { userId: string; who: s
       union all
       select s.id, s.id as "spaceId", s.name as "spaceName", s.name as title, s.icon, s.visibility, 'space' as kind,
              ts_headline('english', coalesce(s.body,''), plainto_tsquery('english', ${q}),
-               'MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1') as snippet,
+               ${HEADLINE_OPTS}) as snippet,
              ts_rank(
                to_tsvector('english', coalesce(s.name,'') || ' ' || coalesce(s.body,'')),
                plainto_tsquery('english', ${q})) as rank
@@ -378,6 +400,9 @@ export async function searchDocs(query: string, viewer: { userId: string; who: s
       /* fail closed: an unreadable hit is dropped */
     }
   }
+  // Escape once, here, after ACL filtering and before the hit leaves this
+  // module — so no consumer of KbSearchHit.snippet can render an unescaped one.
+  for (const h of out) h.snippet = safeSnippet(h.snippet)
   return out
 }
 

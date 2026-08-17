@@ -10,7 +10,9 @@
 //   workbench: 'off' | 'auto' | 'on'   (+ optional explicit profile slug)
 // 'auto' attaches when a profile's fit rules match the agent (department /
 // role); 'on' forces the explicit profile (else best fit, else 'dev').
+import { resolve } from 'node:path'
 import { db } from './db/pg'
+import { FLEET_DIR } from './fleet-render'
 
 export interface WorkbenchProfile {
   slug: string
@@ -30,6 +32,48 @@ export interface WorkbenchProfile {
 }
 
 const ROW = `slug, name, description, image, env, mounts, harnesses, auto_attach as "autoAttach", config, enabled`
+
+// ── Mount safety ──────────────────────────────────────────────────────────────
+// Profile mounts render verbatim into the fleet's compose volumes, and the
+// sandbox runs as root — so a mount string is an arbitrary host-filesystem
+// grant. Default-deny: sources must sit under a Talaria-owned root (the fleet
+// dir, widenable by the operator) or be named volumes, and the classic escape
+// hatches are refused outright regardless of root.
+const MOUNT_ROOTS = (): string[] =>
+  (process.env.TALARIA_WORKBENCH_MOUNT_ROOTS ?? FLEET_DIR())
+    .split(',')
+    .map((r) => r.trim())
+    .filter(Boolean)
+    .map((r) => resolve(r))
+
+/** Paths that hand the container the host. The docker socket is host root by
+ *  another name; /proc /sys /dev are the escape hatches sitting next to it.
+ *  The socket's parent dirs are denied too — mounting /var/run brings it. */
+const DENIED_SOURCES = ['/proc', '/sys', '/dev', '/var/run', '/run']
+
+const NAMED_VOLUME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/
+const MOUNT_MODES = new Set(['ro', 'rw', 'z', 'Z', 'ro,z', 'rw,z', 'ro,Z', 'rw,Z'])
+
+/** Why a compose volume string is unacceptable, or null when it's fine. */
+export function mountError(mount: string): string | null {
+  const parts = mount.split(':')
+  if (parts.length < 2 || parts.length > 3) return 'expected "source:/dest[:mode]"'
+  const [src, dst, mode] = parts as [string, string, string | undefined]
+  if (mode !== undefined && !MOUNT_MODES.has(mode)) return `unknown mode "${mode}"`
+  if (!dst.startsWith('/') || dst === '/') return 'destination must be an absolute path inside the container'
+  if (!src) return 'source required'
+  if (!src.startsWith('/')) {
+    return NAMED_VOLUME.test(src) ? null : 'source must be an absolute host path or a named volume'
+  }
+  const path = resolve(src)
+  if (path === '/') return 'the host root is never mountable'
+  if (DENIED_SOURCES.some((d) => path === d || path.startsWith(`${d}/`))) return `${path} would hand the container the host`
+  const roots = MOUNT_ROOTS()
+  if (!roots.some((r) => path === r || path.startsWith(`${r}/`))) {
+    return `${path} is outside the allowed mount roots (${roots.join(', ')}) — widen with TALARIA_WORKBENCH_MOUNT_ROOTS`
+  }
+  return null
+}
 
 /** The shipped default — a coding workbench for dev-leaning agents. Seeded
  *  once; admins tune it from the API afterwards (never re-clobbered). */
