@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto'
 import { db } from './db/pg'
 import { listChannels } from './channels'
 import { listPending } from './google/pending-actions'
+import { briefableResearch } from './research'
 import { briefingChatHarness, briefingHarness, type BriefingScope } from './harness/defs/briefer'
 import { fleetStream, runHarness, runHarnessStreamed } from './harness/run'
 
@@ -81,14 +82,13 @@ async function attentionState(userId: string, isAdmin: boolean, scope: BriefingS
     order by c.updated_at desc limit 15
   `) as unknown as Array<{ id: string; title: string | null; bucket: string; working: boolean; failed: boolean }>)
 
-  const runs = scope !== 'research' ? [] : ((await sql`
-    select id, coalesce(title, question) as question, status from research_runs
-    where (owner_user_id = ${userId}
-        or exists(select 1 from research_members rm where rm.run_id = research_runs.id and rm.user_id = ${userId}))
-      and (status in ('queued', 'running')
-        or (status = 'error' and created_at > now() - interval '7 days'))
-    order by created_at desc limit 10
-  `) as unknown as Array<{ id: string; question: string; status: string }>)
+  // ASKED THROUGH research.ts, not with a `status in (...)` of our own. That
+  // column is a TERMINAL outcome since research became a durable run — a run
+  // that is searching right now still reads 'queued', and one a driver gave up
+  // on reads 'queued' for ever — so a raw filter here would put a dead run in
+  // somebody's briefing every morning. `briefableResearch` projects from the
+  // run, which is the one authority on whether it is alive.
+  const runs = scope !== 'research' ? [] : await briefableResearch(userId)
 
   // Fingerprint on IDs + counts (not text): stable across renames, changed by
   // anything appearing, resolving, or accumulating.

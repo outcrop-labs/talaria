@@ -34,32 +34,17 @@
 // against. `HarnessDefinition.ground` closed that, so the rule is in
 // `researchSynthesisHarness`'s own guard list and this file counts the findings
 // the run already reported. Nothing here talks to guardrails.ts any more.
-import { agentCategoryFolder, attachArtifact, createArtifact, getArtifact, saveArtifact } from './artifacts'
-import { setEditors } from './kb-perms'
 import { db } from './db/pg'
-import { describeAgent } from './gateway'
-import {
-  clampQueries,
-  queriesFromLines,
-  researchQueriesHarness,
-  researchSearchHarness,
-  researchSynthesisHarness,
-  searchTransport,
-  toolSearchTransport,
-  type ResearchDepth,
-  type SearchSource,
-} from './harness/defs/research'
-import { capabilityKeysFor, runHarness } from './harness/run'
-import { reachFor, type Reach } from './capability-reach'
-import { gatewayModels } from './llm-gateway'
-import { resolveRoleModel } from './model-roles'
-import { addNotification } from './notifications'
-import { indexActivity, indexPersonal } from './retrieval/sources'
+import { type ResearchDepth } from './harness/defs/research'
 import { generateTitle } from './titler'
-import { createConversation, insertUserMessage, nextSeq, touchConversation } from './conversations'
-import { continueConversation } from './chat-persist'
-import { forgetResearchOrigin, researchOrigin } from './research-origin'
-import { resolveRefs } from './refs'
+import { createConversation } from './conversations'
+import { randomUUID } from 'node:crypto'
+import { NO_SEARCH_REASON, RESEARCH_MODES, planSearch, researchRun, searchModelFor, type ResearchInput, type SearchPlan } from './runs/defs/research'
+import { cancelRun, drive, enqueue } from './runs/run'
+// RE-EXPORTED, not re-declared. `planSearch` and its two companions moved into
+// the run definition with the pipeline they belong to; every caller — the route,
+// the MCP tool, research-plan.test.ts — keeps the import it already had.
+export { NO_SEARCH_REASON, RESEARCH_MODES, planSearch, searchModelFor, type SearchPlan }
 
 /** Unchanged as a public name and as a type — `ResearchDepth` is declared in
  *  the harness definition because that module cannot import this one, and this
@@ -99,198 +84,11 @@ export interface ResearchSource {
   snippet: string | null
 }
 
-/** Depth budget + search model preference per mode. Query counts bound each
- *  round; rounds bound the expedition loop. Overridable for tests via env. */
-const MODES: Record<ResearchMode, { rounds: number; queries: number; blurb: string }> = {
-  recon: { rounds: 1, queries: 1, blurb: 'one fast pass — a cited answer in minutes' },
-  brief: { rounds: 1, queries: 3, blurb: 'planned angles, one synthesis — a briefing' },
-  expedition: { rounds: 3, queries: 4, blurb: 'iterative deep dive — a full report' },
-}
-const budgetFor = (mode: ResearchMode) => {
-  const b = MODES[mode]
-  const rounds = Number(process.env.TALARIA_RESEARCH_MAX_ROUNDS ?? 0) || b.rounds
-  return { ...b, rounds }
-}
 
-export const RESEARCH_MODES: Array<{ mode: ResearchMode; blurb: string }> = (
-  Object.entries(MODES) as Array<[ResearchMode, (typeof MODES)[ResearchMode]]>
-).map(([mode, b]) => ({ mode, blurb: b.blurb }))
 
-/** A run stuck "running" past this is a crashed pipeline — surfaced as error. */
-const STALE_MINUTES = 45
 
-// ── Search stage: sonar through the org gateway, keeping the sources ─────────
 
-interface SearchHit {
-  content: string
-  sources: SearchSource[]
-}
 
-/** WHICH MODEL SEARCHES, AND HOW — resolved once per run, model-agnostic.
- *
- *  WHAT THIS REPLACED, and why it had to. Research used to require a Perplexity
- *  sonar model: `MODES[].search` held a hardcoded list of sonar spellings, and
- *  `startResearch` threw "register a Perplexity sonar model on /models first"
- *  when none was registered. An org running Llama on its own hardware, or
- *  anything that is not sonar, could not research at all — on a platform whose
- *  own SearXNG can search perfectly well for any model that can call a tool.
- *
- *  Talaria also has a standing rule against hardcoded model lists (they rot the
- *  week a vendor renames something), and that list was one.
- *
- *  THE ORDER, and each step is a different question:
- *
- *    1. THE ADMIN'S CHOICE. A `research-<mode>` role assignment is somebody
- *       saying "use this one", and nothing here second-guesses it.
- *    2. A MODEL THAT SEARCHES BY ITSELF, established from CAPABILITY FACTS
- *       rather than from its name — the catalog derives `search` from
- *       `web_search_options` (model-catalog.ts), and a probe can too. This is
- *       where sonar wins when it is registered, without sonar being named.
- *    3. ANYTHING ROUTABLE, PLUS OUR OWN SEARCH. The tool path: our harness
- *       drives a registered search tool or the platform's SearXNG. This is the
- *       step that makes the feature model-agnostic, and it is the common case
- *       on a self-hosted install.
- *
- *  IT FAILS ONLY WHEN BOTH ARE ABSENT, and then it says so in terms an admin can
- *  act on — a search backend OR a search-capable model, not one vendor. */
-export interface SearchPlan {
-  model: string
-  /** `native`: the model searches as part of answering. `tool`: our harness
-   *  drives a search tool and hands it the results. */
-  via: 'native' | 'tool'
-  supplier: { server: string; tool: string } | null
-}
-
-/** THE REASON A RUN CANNOT START, phrased for the person who can fix it.
- *  Exported so the route and the MCP tool report the same sentence. */
-export const NO_SEARCH_REASON =
-  'this workspace cannot search yet — either connect a search backend (Settings → Search, e.g. a self-hosted SearXNG) so any model can research through it, or register a model with native web search and assign it to the research role'
-
-export async function planSearch(mode: ResearchMode, deps?: { models?: () => Promise<Array<{ id: string }>> }): Promise<SearchPlan | null> {
-  const pathOf = async (model: string): Promise<SearchPlan | null> => {
-    const keys = await capabilityKeysFor(model).catch((): string[] => [])
-    const reach = await reachFor(keys, ['search']).catch((): Record<string, Reach> => ({}))
-    const r = reach['search']
-    if (!r) return null
-    if (r.via === 'tool') return { model, via: 'tool', supplier: r.supplier }
-    if (r.via === 'native') return { model, via: 'native', supplier: null }
-    return null
-  }
-
-  // 1. The admin said which one. Their choice, including the choice to use a
-  //    model that turns out to need the tool path.
-  //
-  //    AND UNKNOWN IS NOT MISSING, which is this codebase's cardinal rule about
-  //    capabilities and the reason this step falls through to `native` rather
-  //    than to the next step. A fresh self-host has probed nothing and its
-  //    catalog may say nothing, so `reachFor` answers with silence — and
-  //    treating that silence as "this model cannot search" would refuse the
-  //    admin's own explicit assignment. The runtime defence is one layer down,
-  //    where it belongs: `researchSearchHarness` declares `requires: ['search']`
-  //    with `refuseBelow: true`, so a model POSITIVELY KNOWN not to search fails
-  //    the stage loudly instead of writing a fluent uncited brief.
-  const assigned = await resolveRoleModel(`research-${mode}`)
-  if (assigned) return (await pathOf(assigned)) ?? { model: assigned, via: 'native', supplier: null }
-
-  const models = await (deps?.models ?? gatewayModels)().catch((): Array<{ id: string }> => [])
-  if (models.length === 0) return null
-
-  // 2. A model that searches on its own, if the org has one. Asked of its
-  //    CAPABILITY FACTS, so a new sonar spelling — or any other vendor shipping
-  //    native search — is picked up the day it is registered, with nothing here
-  //    to edit.
-  const plans = await Promise.all(models.map((m) => pathOf(m.id).catch((): SearchPlan | null => null)))
-  const native = plans.find((p): p is SearchPlan => p?.via === 'native')
-  if (native) return native
-
-  // 3. Anything routable, through our own search. The model only has to be able
-  //    to call a tool, which is most of them.
-  return plans.find((p): p is SearchPlan => p !== null) ?? null
-}
-
-/** BACK-COMPAT for callers that only want the model id. `planSearch` is the one
- *  to reach for — it also says which path the run will take. */
-export async function searchModelFor(mode: ResearchMode): Promise<string | null> {
-  return (await planSearch(mode))?.model ?? null
-}
-
-/** A deep-research-class search model is an agentic researcher in itself
- *  (each call runs its own multi-search sweep) — shrink OUR loop so effort
- *  doesn't multiply: fewer, bigger stages instead of many small ones.
- *
- *  AUDIT NOTE, left as-is deliberately: this is capability reasoning done by
- *  REGEX ON A MODEL NAME, which is the shape `harness/capability.ts` exists to
- *  replace. It is not converted here because "runs its own multi-search sweep"
- *  is a genuinely new capability, not one of the nine that module declares, and
- *  inventing a capability id that only one regex writes is worse than leaving
- *  the regex where a reader can see it. The right end state is a
- *  `deep-research` capability that a probe or a catalog declares, at which
- *  point this becomes a `widen` on the search harness — a capable model
- *  earning the fewer-bigger-stages loop — rather than a name match. Until then
- *  the regex is honest about being a heuristic. */
-const isDeepResearchModel = (model: string) => /deep-research/i.test(model)
-function adaptBudget(budget: ReturnType<typeof budgetFor>, searchModel: string) {
-  if (!isDeepResearchModel(searchModel)) return budget
-  return { ...budget, rounds: Math.min(budget.rounds, 2), queries: 1 }
-}
-
-/** One search query → the search model's cited answer + its source list.
- *
- *  Signature unchanged, and so is what a THROW means: the round loop catches
- *  per query and records "(search failed: ...)" against that angle, so one dead
- *  query costs one angle rather than the run, and a run where every query died
- *  ends with no citable sources — which the pipeline already treats as a hard
- *  error.
- *
- *  The capability floor is what keeps it honest. The harness declares `requires:
- *  ['search']` and refuses below it, so a model an admin assigned to a
- *  `research-*` role that CANNOT REACH search fails loudly here instead of
- *  answering fluently from training data and handing the synthesis stage an
- *  uncited brief to write up (audit 1.6).
- *
- *  TWO WAYS TO REACH IT, and this stage picks between them:
- *
- *    natively   the model browses. Sources come off the provider's own
- *               `search_results`/`citations` fields — `searchTransport`.
- *    by tool    the model does not browse, but this org has registered a
- *               web-search MCP server and the model calls tools. Sources come
- *               off the tool's payload — `toolSearchTransport`.
- *
- *  WHICH ONE WINS IS NOT THIS FILE'S DECISION — `capability-reach.ts` makes it,
- *  and `planSearch` reads the answer. That matters because this comment used to
- *  say "native wins when both are available", which stopped being true and
- *  contradicted the code one module away for a while. In a codebase where the
- *  comments are the design record, a stale one is worse than none.
- *
- *  What is true, and worth knowing here: NATIVE IS ONLY WORTH PREFERRING WHEN IT
- *  IS ACTUALLY ARMED. `buildUpstream` has to send the provider's activation —
- *  `web_search_options`, a plugin, an `:online` suffix — or "native" degrades
- *  into a plain completion that happens to have been sent to a model that could
- *  have searched, and we harvest whatever citations it volunteered. See
- *  `nativeSearchBody` in llm-gateway.ts.
- *
- *  THE STAGE'S OUTPUT IS IDENTICAL EITHER WAY — prose findings plus a source
- *  list — which is what makes the tool path a real alternative rather than a
- *  downgrade, and why nothing downstream branches on which one ran. */
-async function searchStage(model: string, query: string, runId: string, viaTool: { server: string; tool: string } | null): Promise<SearchHit> {
-  const sources: SearchSource[] = []
-  const run = await runHarness(
-    researchSearchHarness,
-    { query },
-    {
-      caller: `research:${runId}`,
-      model,
-      deps: { transport: viaTool ? toolSearchTransport(runId, sources, viaTool) : searchTransport(runId, sources) },
-    },
-  )
-  // `researchSearchHarness` declares `onFailure: 'throw'` and `runHarness` now
-  // honors it on every path that fails to produce a value — the transport and
-  // the pre-call ones included — so this is a TYPE narrowing rather than a
-  // second copy of the policy. `HarnessResult.value` is `O | null` on every
-  // result alike, and the compiler cannot see the guarantee the runner makes.
-  if (run.value === null) throw new Error(run.error ?? `search stage produced nothing on "${model}"`)
-  return { content: run.value, sources }
-}
 
 // ── Persona stages: the agent's own brain plans and synthesizes ──────────────
 // Both pin `RunContext.model` to the requesting agent's own persona, which is
@@ -298,37 +96,6 @@ async function searchStage(model: string, query: string, runId: string, viaTool:
 // the fleet transport for it, sends no tools, and guards the reply with an
 // honest `Available` for a stream that reports tool names and nothing else.
 
-/** This round's search queries, or an empty list when the persona says the
- *  question is saturated. Never throws — a failed plan is one lost round, and
- *  the loop already treats an empty list as "stop".
- *
- *  THE LINE-BASED SALVAGE, which used to live inside the extractor. On a small
- *  model a numbered list is likelier than a JSON array, and the old
- *  `parseQueryList` quietly read one — so a model that never once produced the
- *  declared contract was indistinguishable from a model that always did. The
- *  tolerance is kept and the silence is not: the harness records the contract
- *  failure on its `harness_runs` row, and the salvage runs afterwards, here,
- *  where it is visible.
- *
- *  It runs ONLY on a reply the guard found nothing in. These strings are sent
- *  onward to a third-party search model, and guardrails.ts's cardinal invariant
- *  is that flagged content never re-enters a model's context — a rule the
- *  runner honors for its own repair turn and which a salvage path must not
- *  quietly route around. */
-async function planQueries(agentModel: string, runId: string, question: string, findingsSoFar: string[], max: number): Promise<string[]> {
-  const run = await runHarness(
-    researchQueriesHarness,
-    { question, max, findingsSoFar },
-    // Both persona stages of a run carry the same attribution — see the
-    // synthesis call for why `source: 'research'` exists at all. An expedition
-    // plans up to three times, so leaving this off would make the planning half
-    // of a run's cost the half nobody could find.
-    { caller: `research:${runId}`, model: agentModel, ledger: { source: 'research', refId: runId } },
-  )
-  if (run.value !== null) return clampQueries(run.value, max)
-  if (run.raw && run.findings.length === 0) return clampQueries(queriesFromLines(run.raw), max)
-  return []
-}
 
 // ── The citation registry ─────────────────────────────────────────────────────
 
@@ -467,8 +234,12 @@ export class SourceRegistry {
     this.byUrl.set(s.url, { idx, title: s.title, snippet: s.snippet })
     return idx
   }
-  /** Rewrite one search hit's LOCAL [n] markers onto global numbering. */
-  renumber(hit: SearchHit): string {
+  /** Rewrite one search hit's LOCAL [n] markers onto global numbering.
+   *
+   *  The hit SHAPE is declared here rather than imported from the run
+   *  definition: the pipeline depends on this module, so importing back the
+   *  other way would close a cycle for the sake of two fields. */
+  renumber(hit: { content: string; sources: Array<{ url: string; title: string | null; snippet: string | null }> }): string {
     const map = new Map<number, number>()
     hit.sources.forEach((s, i) => map.set(i + 1, this.add(s)))
     return hit.content.replace(MARKER_RE, (m, n) => {
@@ -484,126 +255,76 @@ export class SourceRegistry {
   }
 }
 
-/** WHY A RUN ENDED WITH NOTHING TO CITE, in the words of the person who has to
- *  fix it. The sentence up to the em dash is load-bearing — `fitness/evals.ts`
- *  matches on it to tell a model's failure apart from a deployment's — and what
- *  follows it is the part that saves an evening.
- *
- *  IT EXISTS BECAUSE THE OLD MESSAGE BLAMED THE WRONG THING. "Search returned
- *  nothing citable" reads as "the search backend found nothing", so the first
- *  move it invites is checking the backend — and on the run that prompted this,
- *  the backend was healthy and answering the very queries the run had planned.
- *  Nothing had searched at all: a model recorded as searching natively was sent
- *  a plain completion and wrote three thousand tokens from memory. A run that
- *  never searched and a run that searched and found nothing are different
- *  problems with different fixes, and only one of them is about the backend. */
-function noSourcesReason(viaTool: { server: string; tool: string } | null, searchModel: string, searchFailed: boolean): string {
-  const base = 'no sources found — search returned nothing citable'
-  if (searchFailed) return `${base}: every search query for this run errored, so nothing reached the registry.`
-  if (viaTool) {
-    return `${base}: "${viaTool.server}.${viaTool.tool}" was called for every query and no result carried a URL. This one IS the search backend — check that it is answering.`
-  }
-  return (
-    `${base}: "${searchModel}" was asked to search natively and its replies carried no citations, which means it answered from memory rather than searching. ` +
-    `Assign a model whose provider returns citations on a plain completion (the sonar family), or register a web-search tool this model can call.`
-  )
-}
 
-/** The artifact as a ref chip, checked against the person whose conversation it
- *  is about to appear in. Empty when the conversation is gone or they cannot
- *  read it — `resolveRefs` already drops what it must, and an attachment is not
- *  worth failing a delivery over. */
-async function refsForConversation(conversationId: string, artifactId: string): Promise<unknown[]> {
-  try {
-    const sql = await db()
-    const rows = (await sql`
-      select u.id, u.email, u.name from conversations c join users u on u.id = c.user_id where c.id = ${conversationId}
-    `) as unknown as Array<{ id: string; email: string | null; name: string | null }>
-    const reader = rows[0]
-    if (!reader) return []
-    return await resolveRefs(reader, [{ type: 'artifact', id: artifactId }])
-  } catch {
-    return []
-  }
-}
 
-/** TELL THE CONVERSATION THAT ASKED, and let the agent take it from there.
- *
- *  A run started from a chat used to end in silence. The tool description says
- *  "poll research_status", but a chat turn has no way to wait out a six-minute
- *  brief: the agent checks a few times, sees `running`, and its turn ends. The
- *  only completion signal was `addNotification(ownerUserId, …)`, and
- *  `ownerUserId` is set for PERSONAL ASSISTANTS only — so for a departmental
- *  agent, which is most of them, nothing at all was told.
- *
- *  WHAT LANDS: a user-role message carrying the outcome, then a normal
- *  continuation. The agent answers with the whole conversation still in front of
- *  it, so it reports in its own voice and can pick up whatever it was doing —
- *  which is the difference between being told and merely being notified. It has
- *  `get_document` if it wants to read the report before summarizing.
- *
- *  WHY THE NOTE IS ROLE `user` rather than a system line: `continueConversation`
- *  starts a turn only when the last message is the user's, and that rule is not
- *  an accident to route around — it is what stops a conversation talking to
- *  itself. The `metadata.kind` marks it as platform-generated so the UI can
- *  render it as an event rather than as something the human typed, and
- *  `authorUserId` stays null for the same reason.
- *
- *  NEVER THROWS, AND NEVER BLOCKS THE RUN. The report is saved and the run is
- *  already `done` by the time this is called; a delivery failure must not undo
- *  that. If the agent happens to be mid-reply the continuation no-ops, and the
- *  note simply sits at the end of the conversation for the next turn to cover —
- *  the same queued-message chaining every other path relies on. */
-async function tellTheAskingConversation(runId: string, agentModel: string, note: string, artifactId?: string): Promise<void> {
-  const convId = await researchOrigin(runId)
-  // Null is ordinary: started from the Research page, by a cron, or long enough
-  // ago that the key expired. Nobody is waiting in a chat.
-  if (!convId) return
-  try {
-    // THE REPORT ITSELF, ATTACHED — not a sentence about where it was filed.
-    // The first run through this path ended with the agent saying the document
-    // was "in Documents under Engineering", which is a description a person then
-    // has to go and act on, and was wrong about the folder besides. A ref chip
-    // is the platform's own object: the UI renders it as a card that opens the
-    // artifact, and `refBlocks` feeds its text to the agent on this turn and
-    // every later history rebuild, so the agent can summarize the report without
-    // a `get_document` round trip.
-    //
-    // ACL-CHECKED AGAINST THE READER, like every other ref: `resolveRefs` drops
-    // anything the conversation's owner cannot read, so a chip can never be the
-    // thing that discloses a private artifact.
-    const attachments = artifactId ? await refsForConversation(convId, artifactId) : []
-    await insertUserMessage(convId, await nextSeq(convId), note, attachments, null, { kind: 'research-complete', runId })
-    await touchConversation(convId)
-    await continueConversation(convId, { agentModel })
-  } catch (e) {
-    console.error(`[research] could not report run ${runId} back to conversation ${convId}:`, (e as Error).message)
-  } finally {
-    await forgetResearchOrigin(runId)
-  }
-}
 
 // ── Run lifecycle ─────────────────────────────────────────────────────────────
 
-const ROW = `id, owner_user_id as "ownerUserId", requested_by as "requestedBy", agent_model as "agentModel",
-  mode, question, title, status, phase, artifact_id as "artifactId", error, stats, conversation_id as "conversationId",
-  parent_run_id as "parentRunId",
-  created_at as "createdAt", updated_at as "updatedAt", completed_at as "completedAt"`
+/** THE PROJECTION. `status` and `phase` are read off the RUN, not off the
+ *  research record, and this join is the whole of "one source of truth for
+ *  whether a run is alive".
+ *
+ *  The run row is the authority because it is the thing that is actually being
+ *  driven: it is claimed under a lease, it is re-entered by the reclaim sweep,
+ *  and its state is the only one that changes when a driver dies. The research
+ *  record's own columns are a TERMINAL outcome — written by the run's last step
+ *  and by its failure mirror — and they are what this reads when there is no
+ *  run at all, which is every row created before this port.
+ *
+ *  `awaiting` maps to 'running' because `ResearchStatus` has four values, all
+ *  of them on the wire and in the client. A parked run is not idle — it is in
+ *  somebody's approvals queue with the question on it — and 'running' with the
+ *  question in `phase` is the honest four-value spelling of that. A fifth value
+ *  is a client change, and it belongs with the runs surface rather than here.
+ *  `cancelled` maps to 'error' for the same reason, with the cancel's own
+ *  reason carried in `error`.
+ *
+ *  ONE RUN PER RESEARCH RECORD, AND THE SAME UUID NAMES BOTH — see
+ *  `startResearch`. That is what makes this a primary-key join rather than a
+ *  scan for the newest run with a matching subject. */
+/** THE four-value projection, on its own so it has exactly one spelling. Two
+ *  reads need it in different shapes (a full row, and the briefing's filtered
+ *  subquery) and a second copy of this CASE is a second answer to "is this run
+ *  alive" — which is the whole thing this file is trying not to have. */
+const STATUS = `case
+    when r.state is null then research_runs.status
+    when r.state in ('running', 'awaiting') then 'running'
+    when r.state = 'cancelled' then 'error'
+    when r.state = 'error' then 'error'
+    when r.state = 'done' then 'done'
+    else 'queued'
+  end`
+
+const ROW = `research_runs.id, research_runs.owner_user_id as "ownerUserId", research_runs.requested_by as "requestedBy",
+  research_runs.agent_model as "agentModel", research_runs.mode, research_runs.question, research_runs.title,
+  ${STATUS} as status,
+  case when r.state in ('queued', 'running', 'awaiting') then nullif(r.phase, '') else research_runs.phase end as phase,
+  research_runs.artifact_id as "artifactId",
+  coalesce(research_runs.error, r.error) as error,
+  research_runs.stats,
+  research_runs.created_at as "createdAt",
+  greatest(research_runs.updated_at, coalesce(r.updated_at, research_runs.updated_at)) as "updatedAt",
+  research_runs.completed_at as "completedAt"`
+
+/** Always joined, never selected from alone: the projection above needs `r`. */
+const FROM = `from research_runs left join runs r on r.id = research_runs.id and r.kind = 'research'`
 
 /** Runs a viewer may see: their own, ones shared with them, and org runs
  *  (no owner — general agents researching for the org). null viewer (a
  *  general agent) sees org runs only. */
 export async function listResearchRuns(viewerUserId: string | null, limit = 60): Promise<ResearchRun[]> {
   const sql = await db()
-  await sweepStale()
   if (viewerUserId === null) {
-    return (await sql.unsafe(`select ${ROW} from research_runs where owner_user_id is null order by created_at desc limit $1`, [limit])) as unknown as ResearchRun[]
+    return (await sql.unsafe(
+      `select ${ROW} ${FROM} where research_runs.owner_user_id is null order by research_runs.created_at desc limit $1`,
+      [limit],
+    )) as unknown as ResearchRun[]
   }
   return (await sql.unsafe(
-    `select ${ROW} from research_runs
-     where owner_user_id is null or owner_user_id = $1
+    `select ${ROW} ${FROM}
+     where research_runs.owner_user_id is null or research_runs.owner_user_id = $1
         or exists(select 1 from research_members rm where rm.run_id = research_runs.id and rm.user_id = $1)
-     order by created_at desc limit $2`,
+     order by research_runs.created_at desc limit $2`,
     [viewerUserId, limit],
   )) as unknown as ResearchRun[]
 }
@@ -652,6 +373,94 @@ export async function removeResearchMember(runId: string, userId: string): Promi
 }
 
 /** The run's report artifact (via artifact_links), if it exists yet. */
+/** Research this person should be told about in an ambient briefing: what is in
+ *  flight, plus anything that failed in the last week.
+ *
+ *  IT EXISTS SO THE PROJECTION IS SPELLED ONCE. `briefing.ts` asked
+ *  `research_runs` directly — `where status in ('queued','running')` — and under
+ *  the port that column is a TERMINAL outcome: a run that is happily searching
+ *  right now still reads 'queued', and a run a driver GAVE UP on from the
+ *  outside (attempts spent, a step over its budget, a cancel) reads 'queued'
+ *  for ever. The briefing would have told somebody "research queued: ..." every
+ *  morning about a run that stopped weeks ago, which is the same class of bug as
+ *  the sentence this project deleted: a stale column narrating a run nobody is
+ *  driving.
+ *
+ *  Same join, same CASE, same file as every other read — see `ROW`. */
+/** The in-flight run for a question, if there is one — the double-click guard.
+ *
+ *  IT ASKS THE RUN, which is the point of it existing. /api/research does this
+ *  today with `where question = $1 and status in ('queued','running')` in raw
+ *  SQL against the research record, and that column is now a TERMINAL outcome
+ *  rather than a live state: it is written when a run finishes or when a step
+ *  records its own failure, and NOT when a driver gives up on a run from the
+ *  outside (attempts spent, a step over its budget, a cancel). Left on the raw
+ *  column, one of those would make a question unaskable for ever — the record
+ *  would still read 'queued' with nothing driving it.
+ *
+ *  `awaiting` counts as in flight: a run parked on "search again?" is very much
+ *  the same question, still open, waiting on the person about to ask it twice. */
+export async function activeResearchOn(question: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select research_runs.id from research_runs
+    left join runs r on r.id = research_runs.id and r.kind = 'research'
+    where research_runs.question = ${question}
+      and case when r.state is null then research_runs.status in ('queued', 'running')
+               else r.state in ('queued', 'running', 'awaiting') end
+    limit 1
+  `) as unknown as Array<{ id: string }>
+  return rows[0]?.id ?? null
+}
+
+export async function briefableResearch(userId: string, limit = 10): Promise<Array<{ id: string; question: string; status: ResearchStatus }>> {
+  const sql = await db()
+  return (await sql.unsafe(
+    `select id, question, status from (
+       select research_runs.id,
+              coalesce(research_runs.title, research_runs.question) as question,
+              ${STATUS} as status,
+              research_runs.created_at
+       ${FROM}
+       where research_runs.owner_user_id = $1
+          or exists(select 1 from research_members rm where rm.run_id = research_runs.id and rm.user_id = $1)
+     ) s
+     where s.status in ('queued', 'running')
+        or (s.status = 'error' and s.created_at > now() - interval '7 days')
+     order by s.created_at desc limit $2`,
+    [userId, limit],
+  )) as unknown as Array<{ id: string; question: string; status: ResearchStatus }>
+}
+
+/** Throw the run away: STOP IT FIRST, then delete the record.
+ *
+ *  DELETE /api/research/:id used to be one `delete from research_runs`, which
+ *  under the port stops nothing — the work lives on the `runs` row, and the
+ *  driver holding it goes on planning, searching and synthesizing a report for a
+ *  record that no longer exists. The run's own steps do check `rowExists` and
+ *  stop, so nothing was permanently wrong; the cost was up to one whole step
+ *  (eleven minutes, and a billed search inside it) spent on work somebody had
+ *  just thrown away.
+ *
+ *  THE ORDER IS THE POINT. `cancelRun` is a compare-and-set with no lease
+ *  predicate, so it lands from any instance and every subsequent write by the
+ *  driver that owns the run is refused — the stop is real before the row goes.
+ *  The other order leaves a window where the record is gone and the run is still
+ *  `running`, which is the state a reclaim sweep would happily re-enter.
+ *
+ *  The report artifact SURVIVES, unchanged: deleting a run clears the queue
+ *  entry, not the knowledge. */
+export async function deleteResearchRun(runId: string): Promise<void> {
+  // Not conditional on the result: `missing` (a row from before this port) and
+  // `terminal` (a finished run) are both perfectly normal here, and neither is
+  // a reason to leave the record behind.
+  await cancelRun({ runId, reason: 'the research run was deleted' }).catch((e) =>
+    console.error('[research] could not cancel', runId, 'before deleting it:', e),
+  )
+  const sql = await db()
+  await sql`delete from research_runs where id = ${runId}`
+}
+
 export async function researchArtifactFor(runId: string): Promise<string | null> {
   const sql = await db()
   const rows = (await sql`
@@ -662,303 +471,112 @@ export async function researchArtifactFor(runId: string): Promise<string | null>
 
 export async function getResearchRun(id: string): Promise<{ run: ResearchRun; sources: ResearchSource[] } | null> {
   const sql = await db()
-  await sweepStale()
-  const rows = (await sql.unsafe(`select ${ROW} from research_runs where id = $1`, [id])) as unknown as ResearchRun[]
-  if (!rows[0]) return null
+  // NO SWEEP HERE, AND NONE IN THE LIST EITHER. Both reads used to call
+  // `sweepStale()` first, so OPENING THE RESEARCH PAGE was what failed a run
+  // that had outlived a deploy: the person who asked the question triggered the
+  // sentence telling them it had gone stale. A restart is not a failure, no
+  // read of this table decides anything about a run's health any more, and the
+  // event that used to produce an epitaph now produces a resume — see
+  // `runs/reclaim.ts`, which is where that sweep went.
+  const rows = (await sql.unsafe(`select ${ROW} ${FROM} where research_runs.id = $1`, [id])) as unknown as ResearchRun[]
+  const run = rows[0]
+  if (!run) return null
   const sources = (await sql`
     select idx, url, title, snippet from research_sources where run_id = ${id} order by idx asc
   `) as unknown as ResearchSource[]
-  return { run: rows[0], sources }
+  return { run, sources }
 }
 
-async function sweepStale(): Promise<void> {
-  const sql = await db()
-  await sql`
-    update research_runs set status = 'error', error = 'run went stale (app restarted mid-research?)', updated_at = now()
-    where status in ('queued', 'running') and updated_at < now() - make_interval(mins => ${STALE_MINUTES})
-  `
-}
 
-async function setPhase(runId: string, phase: string): Promise<void> {
-  const sql = await db()
-  await sql`update research_runs set phase = ${phase}, status = 'running', updated_at = now() where id = ${runId}`
-}
 
-/** Create a run and kick the pipeline detached. Returns the queued run. */
+/** Create the run and start it. Returns the queued research record.
+ *
+ *  THE ORDER IS THE DURABILITY. The `runs` row goes in FIRST, because it is the
+ *  record that survives: it carries the question, the mode, the agent and the
+ *  owner on its `input`, so a process that dies between the two inserts leaves
+ *  something the reclaim sweep can pick up — and the run's first step writes
+ *  the research record from that input when it is not there. The other order
+ *  leaves the opposite: a research record nobody is driving, nothing to
+ *  reclaim, and no stale sweep left to notice it.
+ *
+ *  ONE RUN PER RESEARCH RECORD, AND ONE UUID NAMING BOTH. `enqueue`
+ *  deduplicates nothing above the row (risk 6 in runs/define.ts), so the id is
+ *  passed in rather than generated inside it: a caller that retried this
+ *  function with the same id would collide on the primary key instead of
+ *  starting a second run doing the same work. The duplicate-QUESTION check that
+ *  stops a double click is /api/research's, and it is unchanged.
+ *
+ *  SIGNATURE UNCHANGED, including the up-front refusal when no sonar model is
+ *  registered: that is a 400 the caller shows in the form, and turning it into
+ *  a run that fails a second later would be a worse answer to the same
+ *  question. The run's first step re-checks it, for the resume case. */
 export async function startResearch(input: {
   question: string
   mode: ResearchMode
   agentModel: string
   ownerUserId: string | null
   requestedBy: string
-  /** The run this extends. Its findings are written into that run's report and
-   *  numbered against its sources — see `extendReport`. */
+  /** Set when this is a follow-up asked from a report's own conversation. */
   parentRunId?: string | null
 }): Promise<ResearchRun> {
-  // REFUSES ONLY WHEN THE WORKSPACE GENUINELY CANNOT SEARCH — no search backend
-  // AND no model that searches by itself. It used to refuse whenever no
-  // Perplexity sonar model was registered, which is a different and much
-  // narrower condition: an org with SearXNG and any tool-calling model can
-  // research perfectly well, and was being told to go and buy something.
-  const plan = await planSearch(input.mode)
-  if (!plan) throw new Error(NO_SEARCH_REASON)
+  const search = await searchModelFor(input.mode)
+  if (!search) {
+    throw new Error('no search-capable model on the gateway — register a Perplexity sonar model on /models first')
+  }
+  const id = randomUUID()
+  const runInput: ResearchInput = {
+    question: input.question,
+    mode: input.mode,
+    agentModel: input.agentModel,
+    ownerUserId: input.ownerUserId,
+    requestedBy: input.requestedBy,
+    parentRunId: input.parentRunId ?? null,
+  }
+  // `start: false`, then the domain row, then drive. The detached drive is a
+  // nicety and never the guarantee (see `EnqueueOptions`) — but starting it
+  // here would have the first step racing this function to write the research
+  // record, and the loser of that race is the caller: `ensureRow` is `on
+  // conflict do nothing`, so the insert below would return no row to render.
+  await enqueue(researchRun, runInput, {
+    id,
+    ownerUserId: input.ownerUserId,
+    subjectType: 'research',
+    subjectId: id,
+    phase: 'queued',
+    start: false,
+  })
+
   const sql = await db()
-  const rows = (await sql`
-    insert into research_runs (owner_user_id, requested_by, agent_model, mode, question, parent_run_id)
-    values (${input.ownerUserId}, ${input.requestedBy}, ${input.agentModel}, ${input.mode}, ${input.question}, ${input.parentRunId ?? null})
-    returning ${sql.unsafe(ROW)}
-  `) as unknown as ResearchRun[]
-  const run = rows[0]!
+  await sql`
+    insert into research_runs (id, owner_user_id, requested_by, agent_model, mode, question, parent_run_id)
+    values (${id}, ${input.ownerUserId}, ${input.requestedBy}, ${input.agentModel}, ${input.mode}, ${input.question}, ${input.parentRunId ?? null})
+    on conflict (id) do nothing
+  `
+  // Read back through the projection rather than `returning`, so the row this
+  // hands to the caller is spelled by the same join every other read uses. One
+  // indexed read at the start of a run that is about to make model calls.
+  const created = await getResearchRun(id)
+  if (!created) throw new Error('could not create the research run')
+
   // The Titler names the run from its question — fire-and-forget, the list
-  // shows the raw question until the title lands.
+  // shows the raw question until the title lands. Deliberately NOT a step: its
+  // only output is one idempotent column write that nothing waits on, and a
+  // step would put another billable call in the run's critical path (and in the
+  // set of calls a reclaim repeats) to save a title.
   void generateTitle('research', input.question)
     .then(async (t) => {
-      if (t) await sql`update research_runs set title = ${t} where id = ${run.id}`
+      if (t) await sql`update research_runs set title = ${t} where id = ${id}`
     })
     .catch(() => {})
-  void runResearch(run.id).catch(() => {})
-  return run
+
+  // Detached, exactly as `void runResearch(id)` was — and the difference is
+  // everything behind it: if this process never gets to the work, or dies in
+  // the middle of it, the row is `queued` or `running` with a stale lease and
+  // the reclaim sweep takes it from the last checkpoint.
+  void drive(id).catch((e) => console.error('[research] detached drive of', id, 'threw:', e))
+  return created.run
 }
 
-/** The pipeline. Never throws — failures land on the run row. */
-async function runResearch(runId: string): Promise<void> {
-  const sql = await db()
-  try {
-    const got = await getResearchRun(runId)
-    if (!got || got.run.status === 'error') return
-    const { question, mode, agentModel, ownerUserId, requestedBy } = got.run
-    // ONE DECISION, MADE ONCE, and both halves come from it. Resolving the
-    // model here and the PATH separately a few lines later was how the two came
-    // to be able to disagree — `planSearch` answers both together, off the same
-    // capability read.
-    // THROWN, not handled here: the catch below already records the error on
-    // the run AND tells the waiting agent why, which is the whole point of that
-    // block. A second failure path would be a second place for the two to
-    // disagree. This can only fire if the org's search config changed between
-    // the run being queued and being picked up — `startResearch` refuses first.
-    const plan = await planSearch(mode)
-    if (!plan) throw new Error(NO_SEARCH_REASON)
-    const searchModel = plan.model
-    const budget = adaptBudget(budgetFor(mode), searchModel)
-    const searchTool = plan.via === 'tool' ? plan.supplier : null
-    const agentLabel = describeAgent(agentModel).label
-    // A FOLLOW-UP CONTINUES ITS PARENT'S NUMBERING. Seeded from the parent's
-    // source list so [1]..[n] keep meaning what the already-written prose says
-    // they mean, and anything new starts above the highest.
-    const parent = got.run.parentRunId ? await getResearchRun(got.run.parentRunId) : null
-    const registry = parent ? SourceRegistry.from(parent.sources) : new SourceRegistry()
-    const notes: string[] = []
-    let queriesRun = 0
-    let searchFailed = false
-
-    // Round loop: plan queries (persona), search each (sonar), then — in
-    // expedition — let the persona name what's still missing and go again.
-    let nextQueries: string[] = mode === 'recon' ? [question] : []
-    for (let round = 1; round <= budget.rounds; round++) {
-      if (nextQueries.length === 0) {
-        await setPhase(runId, round === 1 ? 'planning search angles' : `round ${round}: chasing gaps`)
-        nextQueries = await planQueries(agentModel, runId, question, round === 1 ? [] : notes, budget.queries)
-        if (nextQueries.length === 0) break // the persona says we're saturated
-      }
-      for (const q of nextQueries) {
-        queriesRun++
-        await setPhase(runId, `searching (${queriesRun}): ${q.slice(0, 80)}`)
-        try {
-          const hit = await searchStage(searchModel, q, runId, searchTool)
-          notes.push(`### Query: ${q}\n${registry.renumber(hit)}`)
-        } catch (e) {
-          searchFailed = true
-          notes.push(`### Query: ${q}\n(search failed: ${(e as Error).message})`)
-        }
-      }
-      nextQueries = []
-    }
-
-    if (registry.size === 0) throw new Error(noSourcesReason(searchTool, searchModel, searchFailed))
-
-    // Synthesis: the persona writes the document against the global registry.
-    // Throws on an unusable reply rather than saving an empty report — the
-    // searches are already paid for and this document is the run's only
-    // deliverable, so "keep what you had" is not an option here.
-    //
-    // THE GROUNDING PASS IS INSIDE THIS CALL. `searchFailed` and the findings
-    // are on the INPUT because `researchSynthesisHarness` declares `ground`
-    // (see its comment): the search hits are this turn's tool results, so
-    // `ungrounded_ref` — the definitive research failure mode — runs on the
-    // report, from the runner, with one findings row per fabricated link. This
-    // adapter used to run that rule itself in a `guardSynthesis` function; the
-    // rule moved into the harness's declared list and the function is gone.
-    await setPhase(runId, 'writing the report')
-    const synthesis = await runHarness(
-      researchSynthesisHarness,
-      { question, mode, sources: registry.list().map((s) => ({ idx: s.idx, url: s.url, title: s.title })), findings: notes, searchFailed },
-      // `source: 'research'` + the run id is what makes a run's COST answerable.
-      // The persona stages used to meter as an ownerless chat turn, so research
-      // spend was indistinguishable from every other persona call in
-      // `usage_events`. The search stages meter themselves through the gateway.
-      { caller: `research:${runId}`, model: agentModel, ledger: { source: 'research', refId: runId } },
-    )
-    // A TYPE NARROWING, not a policy — `researchSynthesisHarness` declares
-    // `onFailure: 'throw'` and the runner honors it on every path that fails to
-    // produce a value. It used to be a policy, restated here by hand, because
-    // 'throw' covered a CONTRACT failure and nothing else: a persona gateway
-    // answering 502 mid-synthesis arrived as `value: null`, and the `?? ''` this
-    // replaced saved an artifact containing only the Sources list, marked the
-    // run `done`, indexed the empty report and notified the requester — with the
-    // gateway's own sentence dropped on the floor.
-    if (synthesis.value === null) throw new Error(synthesis.error ?? 'the report came back empty')
-    const doc = synthesis.value
-
-    // Keep only markers that resolve; append the mechanical Sources section.
-    //
-    // `dropped` is counted rather than only stripped. Deleting an invented
-    // citation is the right thing to save, but it also made a model that
-    // fabricates half its markers look identical to one that cites perfectly —
-    // the exact model-fitness signal this run is in the best position to
-    // report, thrown away by the line that fixed the symptom.
-    const { cleaned, dropped, cited } = stripUnknownMarkers(doc, registry.list().map((s) => s.idx))
-
-    // The stat, read off the run rather than off a second guard pass. Filtered
-    // to `ungrounded_ref` because `synthesis.findings` also carries the
-    // `secret_leak` / `pii_leak` hits, and this number has one meaning on the
-    // research surface: how many links this model asserted that no search
-    // result backs. `dropped` above is its deterministic sibling — invented [n]
-    // markers — and the two are counted separately on purpose.
-    //
-    // The guard ran on the RAW reply, not on `cleaned`. That is not a widening:
-    // `ungrounded_ref` looks for URLs on policed hosts and for UUIDs, and
-    // `cleaned` only strips code fences and unresolvable [n] markers, neither of
-    // which can be either.
-    const ungrounded = synthesis.findings.filter((f) => f.check === 'ungrounded_ref').length
-    const sourcesMd = registry
-      .list()
-      .map((s) => `${s.idx}. [${s.title ?? s.url}](${s.url})${cited.has(s.idx) ? '' : ' *(consulted)*'}`)
-      .join('\n')
-    const body = `${cleaned}\n\n## Sources\n\n${sourcesMd}\n`
-    const title = cleaned.match(/^# (.+)$/m)?.[1]?.trim() ?? `Research — ${question.slice(0, 80)}`
-
-
-    // The report is a real artifact, filed under the researching agent's
-    // cabinet. Ownership decides reach: an ORG run (no owner) publishes
-    // org-visible; a user's run stays PRIVATE to them, with members granted
-    // editor on the doc — sharing the run is the only way anyone else sees it.
-    // ── ONE SUBJECT, ONE DOCUMENT ────────────────────────────────────────────
-    //
-    // A follow-up writes into the report it came from instead of minting a
-    // second one about the same subject — which is what made "dig into the
-    // second point" produce two documents that did not reference each other,
-    // with two source lists numbered from [1], and left the reader to assemble
-    // the answer.
-    //
-    // ONLY THE DESTINATION BRANCHES. Everything after this — the sources rows,
-    // the stats, indexing, the notification, the report back into the
-    // conversation — is identical for both, and duplicating it here to save one
-    // conditional is how the two paths would drift.
-    const parentArtifactId = parent?.run.artifactId ?? null
-    const artifact = parentArtifactId
-      ? { id: parentArtifactId }
-      : await createArtifact({
-          kind: 'doc',
-          title,
-          createdBy: requestedBy,
-          ownerUserId,
-          folderId: await agentCategoryFolder(agentLabel, 'Research', requestedBy),
-        })
-
-    if (parentArtifactId) {
-      // Read the parent's CURRENT body rather than anything cached: a human may
-      // have edited the report between the follow-up being asked for and it
-      // finishing, and overwriting that would be the worst outcome here.
-      const current = (await getArtifact(parentArtifactId))?.body ?? ''
-      await saveArtifact(parentArtifactId, { body: extendReport(current, { question, markdown: cleaned }, registry.list()) }, agentLabel)
-    } else {
-      await saveArtifact(artifact.id, { body, visibility: ownerUserId ? 'private' : 'org' }, agentLabel)
-      if (ownerUserId) {
-        const members = (await sql`select user_id as id from research_members where run_id = ${runId}`) as unknown as Array<{ id: string }>
-        if (members.length) {
-          await setEditors('artifact', artifact.id, members.map((m) => ({ principalType: 'user' as const, principalId: m.id, role: 'editor' as const }))).catch(() => {})
-        }
-      }
-      await attachArtifact(artifact.id, { targetType: 'research', targetId: runId }, agentLabel)
-    }
-
-    // SOURCES BELONG TO THE REPORT'S RUN. When extending, the numbering they
-    // were given is the parent's and the report's citations resolve against the
-    // parent's list — writing them under the child would leave the document
-    // citing rows nothing can find.
-    const sourceRunId = parent?.run.id ?? runId
-    for (const s of registry.list()) {
-      await sql`
-        insert into research_sources (run_id, idx, url, title, snippet)
-        values (${sourceRunId}, ${s.idx}, ${s.url}, ${s.title}, ${s.snippet}) on conflict do nothing
-      `
-    }
-    await sql`
-      update research_runs set status = 'done', phase = null, artifact_id = ${artifact.id},
-        stats = ${sql.json({ queries: queriesRun, sources: registry.size, cited: cited.size, dropped, ungrounded })},
-        updated_at = now(), completed_at = now()
-      where id = ${runId}
-    `
-
-    // Placement follows ownership: a personal run's report goes to the owner's
-    // private brain (them + their assistant); an org-wide run's report goes to
-    // the ambient index, marked orgWide so scopes actually match it.
-    const reportDoc = {
-      sourceType: 'research',
-      sourceId: artifact.id,
-      title,
-      text: `${title}\n\n${body}`,
-      payload: ownerUserId ? { runId, question, mode } : { runId, question, mode, orgWide: true },
-      href: `/research/${runId}`,
-    }
-    if (ownerUserId) void indexPersonal(ownerUserId, reportDoc).catch(() => {})
-    else void indexActivity(reportDoc).catch(() => {})
-    if (ownerUserId) {
-      void addNotification(ownerUserId, {
-        kind: 'research',
-        title: `Research ready: ${title.slice(0, 120)}`,
-        body: `${agentLabel} finished ${mode === 'recon' ? 'a recon' : mode === 'brief' ? 'a brief' : 'an expedition'} — ${registry.size} sources`,
-        href: `/research/${runId}`,
-      }).catch(() => {})
-    }
-
-    // THE REPORT IS ATTACHED, and the note says so — which is what stops the
-    // agent reaching for prose directions. Told only that a document exists
-    // somewhere, a model writes "it's filed under Engineering" and the reader
-    // has to go hunting; told that the reader can already see the card, it
-    // spends its words on what the research actually found. The id is still here
-    // for `get_document`, because a long report is worth opening even when its
-    // first six thousand characters arrived on the chip.
-    await tellTheAskingConversation(
-      runId,
-      agentModel,
-      `Your ${mode} on "${question}" has finished: ${registry.size} source${registry.size === 1 ? '' : 's'}, ` +
-        `${cited.size} cited. The report "${title}" is attached to this message as a card the reader can open (documentId ${artifact.id}).` +
-        (searchFailed ? ' Some search queries failed, so the picture may be incomplete.' : '') +
-        ' Tell whoever asked WHAT YOU FOUND — they can already open the report, so do not describe where it is filed.',
-      artifact.id,
-    )
-  } catch (e) {
-    const message = (e as Error).message
-    await sql`
-      update research_runs set status = 'error', phase = null, error = ${message.slice(0, 2000)}, updated_at = now()
-      where id = ${runId}
-    `
-    // A FAILED RUN IS REPORTED TOO, and this is the half that matters most for
-    // the person waiting: the old silence was indistinguishable from a run still
-    // working, so an agent asked to research something could only keep saying it
-    // was checking. The agent gets the real reason and can decide whether to try
-    // a different angle or say plainly that it could not find out.
-    const got = await getResearchRun(runId).catch(() => null)
-    if (got) {
-      await tellTheAskingConversation(
-        runId,
-        got.run.agentModel,
-        `Your ${got.run.mode} on "${got.run.question}" failed: ${message} Tell whoever asked, in plain words, and say what you can still do.`,
-      )
-    }
-  }
-}
 
 // ── The conversation a run is discussed in ───────────────────────────────────
 //
