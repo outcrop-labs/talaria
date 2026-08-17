@@ -96,7 +96,10 @@ export async function indexPlanDoc(doc: Artifact, conversationId: string): Promi
     title: doc.title,
     text: `${doc.title}\n\n${doc.body}`,
     payload: { planId: conversationId, planOwnerId: doc.ownerUserId },
-    href: '/artifacts',
+    // Deep-linked: a retrieval hit is a pointer to ONE document, and the id is
+    // right here. `/artifacts` alone made the reader search a list for the
+    // thing the citation had already identified.
+    href: `/artifacts?a=${doc.id}`,
   })
 }
 
@@ -108,7 +111,7 @@ export async function indexPlanDoc(doc: Artifact, conversationId: string): Promi
  *  A function rather than a slice at each call site because getting it wrong is
  *  invisible rather than loud: `recordUsage` prices a row by finding
  *  `agent_defs.model = agentModel` and then the alias named by `tier`, so a run
- *  handed "dex-developer-opus" as its model with no tier misses BOTH lookups —
+ *  handed "engineer-engineering-opus" as its model with no tier misses BOTH lookups —
  *  the row lands on an agent that does not exist, with no endpoint class, which
  *  means no price. A plan drafted on a tier would quietly be free. This was the
  *  second of the two gaps `plan-persona-turn.ts` existed to work around; the
@@ -218,6 +221,6 @@ export async function notifyPlanMentions(
     sender.label,
     content,
     `a plan (${planTitle || 'Untitled'})`,
-    `/plan?p=${conversationId}`,
+    `/plan/${conversationId}`,
   )
 }

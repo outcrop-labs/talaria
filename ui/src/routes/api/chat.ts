@@ -6,6 +6,7 @@ import { routedModelFor } from '@/server/fleet-agents'
 import { parseBody, requireUser } from '@/server/api-guard'
 import { hasPerm } from '@/server/permissions'
 import { canUseAgentModel } from '@/server/users'
+import type { ConversationKind } from '@/server/conversations'
 import {
   accessibleConversation,
   activeStreamingAssistant,
@@ -19,6 +20,7 @@ import {
 } from '@/server/conversations'
 import { continueConversation, persistAssistantStream } from '@/server/chat-persist'
 import { markAgentTurn } from '@/server/research-origin'
+import { listResearchMembers, RESEARCH_MODE_PROMPT, researchRunForConversation } from '@/server/research'
 import { attachmentAsDataUrl, attachmentTextBlocks, resolveAttachments, isImage } from '@/server/uploads'
 import { refBlocks, resolveRefs } from '@/server/refs'
 import { notifyPlanMentions, PLAN_MODE_PROMPT, planRoutingBlock } from '@/server/plan-doc'
@@ -36,7 +38,9 @@ const Body = z.object({
   /** Knowledge docs / artifacts attached as references (ACL-checked). */
   refs: z.array(z.object({ type: z.enum(['kb-doc', 'artifact']), id: z.string().uuid() })).max(3).optional(),
   /** New conversations are 'chat' unless started from the Plan surface. */
-  kind: z.enum(['chat', 'plan']).optional(),
+  /** 'research' is a conversation ABOUT a report, on the Research surface —
+   *  same multiplayer shape as a plan, shared through the RUN's members. */
+  kind: z.enum(['chat', 'plan', 'research']).optional(),
   /** Explicit plan template pick (plan surface, new plan only); server ignores
    *  it for chats and for turns on an existing conversation. */
   templateId: z.string().uuid().nullish(),
@@ -63,7 +67,7 @@ export const Route = defineApi('/api/chat', {
     // member of) or create a new one.
     let convId = conversationId ?? null
     let agentModel = model
-    let kind: 'chat' | 'plan' = body.kind ?? 'chat'
+    let kind: ConversationKind = body.kind ?? 'chat'
     let planTitle: string | null = null
     let planOwnerId = user.id
     let multiVoice = false
@@ -74,7 +78,15 @@ export const Route = defineApi('/api/chat', {
       kind = conv.kind
       planTitle = conv.title
       planOwnerId = conv.ownerUserId
+      // WHO ELSE IS IN THE ROOM. Both shared surfaces prefix a turn with the
+      // speaker's name when there is more than one human, so the agent can tell
+      // voices apart — research reads its roster off the RUN's members rather
+      // than `conversation_members`, which is the same rule its access follows.
       if (kind === 'plan') multiVoice = (await listPlanMembers(convId)).length > 1
+      else if (kind === 'research') {
+        const runId = await researchRunForConversation(convId).catch(() => null)
+        multiVoice = runId !== null && (await listResearchMembers(runId).catch(() => [])).length > 0
+      }
     }
 
     // Owner-aware gate: blocks another user from driving someone's personal
@@ -170,6 +182,7 @@ export const Route = defineApi('/api/chat', {
     // to prevent. Costs a paragraph, on the turns that mention one.
     const messages = [
       ...(kind === 'plan' ? [{ role: 'system' as const, content: PLAN_MODE_PROMPT + (await planRoutingBlock().catch(() => '')) }] : []),
+      ...(kind === 'research' ? [{ role: 'system' as const, content: RESEARCH_MODE_PROMPT }] : []),
       ...(mentionsHandle(spokenContent) ? [{ role: 'system' as const, content: HANDLE_TURN_NOTE }] : []),
       ...prior,
       { role: 'user' as const, content: userContent as unknown as string },

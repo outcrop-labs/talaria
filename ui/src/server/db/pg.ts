@@ -1604,6 +1604,53 @@ const MIGRATIONS: string[] = [
      granted_at timestamptz not null default now(),
      primary key (folder_id, agent_model)
    )`,
+  // ── RESEARCH BECOMES A CONVERSATION ───────────────────────────────────────
+  //
+  // A research run was a one-shot: ask a question, get a cited report, and the
+  // only thing anyone could do with it afterwards was read it. No way to say
+  // "dig into the second point", "this source is stale", or to have that
+  // discussion with the two colleagues the run was shared with. A view whose
+  // whole content is a document does not need to be a view.
+  //
+  // So a run gets a conversation, exactly the way a plan has one — the surface
+  // that already solves this: everyone talks to the same agent beside the same
+  // living document. `kind = 'research'` joins 'chat' and 'plan'.
+  //
+  // MEMBERSHIP IS NOT DUPLICATED. `research_members` already says who a run is
+  // shared with, and conversation access derives from it rather than from a
+  // second list in `conversation_members`. Two spellings of "who can see this"
+  // is how a person keeps access to the talk after losing it to the report.
+  `alter table research_runs add column if not exists conversation_id uuid references conversations(id) on delete set null`,
+  `create index if not exists research_runs_conversation_idx on research_runs(conversation_id)`,
+  // A FOLLOW-UP EXTENDS THE REPORT IT CAME FROM, rather than minting a second
+  // document about the same subject. "Dig into the second point" produced an
+  // unrelated run with its own report and its own source numbering, so the
+  // answer to one question lived in two places that did not reference each
+  // other — and the reader had to assemble it.
+  //
+  // The child row still exists, because provenance is worth keeping: who asked
+  // what, when, and how much it cost. What it does NOT get is its own artifact.
+  `alter table research_runs add column if not exists parent_run_id uuid references research_runs(id) on delete set null`,
+  `create index if not exists research_runs_parent_idx on research_runs(parent_run_id)`,
+  // ── AGENT ROLE TEMPLATES ──────────────────────────────────────────────────
+  // The starting point for a new agent, expressed as a BUSINESS ROLE rather
+  // than a person. Talaria ships and maintains a common set in code
+  // (server/agent-role-templates.ts); this table is the org's own additions,
+  // which is the half that cannot live in the repo. `slug` is unique so an org
+  // template can deliberately shadow a built-in of the same name — the org's
+  // version of "Support Agent" should win over ours.
+  `create table if not exists agent_role_templates (
+     id uuid primary key default gen_random_uuid(),
+     slug text not null unique,
+     name text not null,
+     role text not null,
+     department text not null,
+     description text not null default '',
+     soul text not null,
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

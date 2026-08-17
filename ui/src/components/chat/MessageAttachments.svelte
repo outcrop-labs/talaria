@@ -24,10 +24,15 @@
       </div>
     {/if}
     {#each refs as a (a.id)}
+      <!-- Deep-linked, not index-linked. A chip that opened /artifacts left the
+           reader to find the document themselves in a list that may be hundreds
+           long — which is the same dead end as an agent describing where a
+           report is filed instead of pointing at it. Both surfaces take an id:
+           /artifacts?a=<id> and /knowledge?doc=<id>. -->
       <a
-        href={a.refType === 'kb-doc' ? p('/knowledge') : p('/artifacts')}
+        href={a.refType === 'kb-doc' ? `${p('/knowledge')}?doc=${encodeURIComponent(a.id)}` : `${p('/artifacts')}?a=${encodeURIComponent(a.id)}`}
         class="inline-flex items-center gap-2 rounded-md border border-line bg-raised px-2.5 py-1.5 font-sans text-xs text-fg transition-colors hover:border-line-strong"
-        title={a.refType === 'kb-doc' ? 'Attached knowledge doc' : 'Attached artifact'}
+        title={a.refType === 'kb-doc' ? 'Open this knowledge doc' : 'Open this artifact'}
       >
         <!-- Ref chips: knowledge docs get the book, artifacts the gem. -->
         {#if a.refType === 'kb-doc'}

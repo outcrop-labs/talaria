@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { CalendarRange, Layers, LayoutGrid, List, Plus } from '@lucide/svelte'
@@ -302,6 +303,42 @@
   // false "not found".
   const boardListQuery = $derived(boardsQuery.isError ? boardsQuery : archivedQuery)
 
+  // ── The layout you picked, per board ────────────────────────────────────
+  //
+  // Kanban was not a choice anyone had made — it is what an absent `?view=`
+  // decodes to, and every arrival decoded it afresh. PER BOARD, not per person,
+  // because the preference is about the board's shape: a roadmap wants gantt,
+  // a triage board wants the list. Saved views (`?v=`) stay what they are — a
+  // named lens you apply deliberately — so one of those is never overridden.
+  const viewPrefKey = (id: string) => `talaria:board-view:${id}`
+  const setView = (next: 'board' | 'list' | 'gantt') => {
+    try {
+      localStorage.setItem(viewPrefKey(boardId), next)
+    } catch {
+      /* private mode: the URL still carries this session's choice */
+    }
+    setSearch({ view: next === 'board' ? undefined : next })
+  }
+  // Restore once per board. Keyed on the id rather than a boolean so that
+  // walking between boards restores each one, while changing a filter — which
+  // re-runs this effect through `search` — does not drag the view back.
+  let restoredFor: string | null = null
+  $effect(() => {
+    const id = boardId
+    if (restoredFor === id) return
+    restoredFor = id
+    // An explicit `?view=` or a saved view already answers the question, and a
+    // pasted link must survive: only a bare board URL is ours to fill in.
+    if (untrack(() => search.view || search.v)) return
+    let saved: string | null = null
+    try {
+      saved = localStorage.getItem(viewPrefKey(id))
+    } catch {
+      /* ignore */
+    }
+    if (saved === 'list' || saved === 'gantt') setSearch({ view: saved }, true)
+  })
+
   const toggleCls = (active: boolean) =>
     cn(
       'grid h-7 w-7 place-items-center rounded-md transition-colors',
@@ -369,7 +406,7 @@
       <div class="flex rounded-md border border-line p-0.5">
         <button
           class={toggleCls(view === 'board')}
-          onclick={() => setSearch({ view: undefined })}
+          onclick={() => setView('board')}
           title="Board view"
           aria-label="Board view"
         >
@@ -377,7 +414,7 @@
         </button>
         <button
           class={toggleCls(view === 'list')}
-          onclick={() => setSearch({ view: 'list' })}
+          onclick={() => setView('list')}
           title="List view"
           aria-label="List view"
         >
@@ -385,7 +422,7 @@
         </button>
         <button
           class={toggleCls(view === 'gantt')}
-          onclick={() => setSearch({ view: 'gantt' })}
+          onclick={() => setView('gantt')}
           title="Gantt view"
           aria-label="Gantt view"
         >

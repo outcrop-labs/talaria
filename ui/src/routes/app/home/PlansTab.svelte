@@ -44,11 +44,11 @@
           <li>
             <button
               type="button"
-              onclick={() => void navigate('/plan', { search: { p: c.id } })}
+              onclick={() => void navigate('/plan/:planId', { params: { planId: c.id } })}
               oncontextmenu={(e) =>
                 menu.openMenu(e, [
-                  { label: 'Open', onSelect: () => void navigate('/plan', { search: { p: c.id } }) },
-                  { label: 'Copy link', onSelect: () => copyAppLink(`/plan?p=${c.id}`) },
+                  { label: 'Open', onSelect: () => void navigate('/plan/:planId', { params: { planId: c.id } }) },
+                  { label: 'Copy link', onSelect: () => copyAppLink(`/plan/${c.id}`) },
                 ])}
               class="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-card2"
             >

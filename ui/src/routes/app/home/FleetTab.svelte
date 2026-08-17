@@ -65,7 +65,7 @@
         </div>
       </Panel>
       <div class="grid grid-cols-2 gap-3">
-        <a href={`${p('/observability')}?tab=alerts`} class="block">
+        <a href={`${p('/observability')}/alerts`} class="block">
           <Panel class="p-4">
             <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Alerts</div>
             <div
@@ -78,7 +78,7 @@
             </div>
           </Panel>
         </a>
-        <a href={`${p('/observability')}?tab=cost`} class="block">
+        <a href={`${p('/observability')}/cost`} class="block">
           <Panel class="p-4">
             <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Spend today</div>
             <div class="mt-1 truncate font-sans text-2xl font-semibold text-fg">

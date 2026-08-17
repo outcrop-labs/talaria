@@ -608,7 +608,7 @@ describe('runEvalSweep', () => {
     const looper = { ...reg(picker('looper', [{ name: 'a', want: 'a' }])), tools: 'own' as const }
     const b = bench([looper], { replies: [obj('a')], ownTools: true })
 
-    const sweep = await runEvalSweep('dex-developer', { deps: b.deps })
+    const sweep = await runEvalSweep('engineer-engineering', { deps: b.deps })
 
     expect(b.calls).toHaveLength(1)
     expect(sweep.cases[0]?.skipped).toBeNull()

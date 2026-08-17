@@ -260,7 +260,7 @@ const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T
  *  assertion is readable — a world with fifty tickets measures a model's
  *  patience for enumeration. */
 export const BASE_WORLD: SandboxWorld = {
-  agent: 'dex-developer',
+  agent: 'engineer-engineering',
   // A GENERAL ORG AGENT BY DEFAULT, which is the common case and the stricter
   // one: the six governance tools refuse it. A fixture that wants the other side
   // of that line sets `assistantFor` in its own `dryRun.world`.
@@ -276,7 +276,7 @@ export const BASE_WORLD: SandboxWorld = {
         { email: 'priya@example.com', role: 'owner' },
         { email: 'dana@example.com', role: 'editor' },
       ],
-      agents: ['dex-developer'],
+      agents: ['engineer-engineering'],
     },
     {
       id: 'b-helpdesk',
@@ -284,7 +284,7 @@ export const BASE_WORLD: SandboxWorld = {
       ownerEmail: 'dana@example.com',
       team: null,
       members: [{ email: 'dana@example.com', role: 'owner' }],
-      agents: ['dex-developer'],
+      agents: ['engineer-engineering'],
     },
   ],
   tickets: [
@@ -295,7 +295,7 @@ export const BASE_WORLD: SandboxWorld = {
       description: "A retried usage write drops taskId, so the turn's spend never lands in the ticket cost.",
       status: 'assigned',
       priority: 'high',
-      assignees: ['dex-developer'],
+      assignees: ['engineer-engineering'],
       labels: ['billing'],
       comments: [{ author: 'user:priya', body: 'Repro is in the retry path only — first write is fine.' }],
       outcome: null,
@@ -310,9 +310,9 @@ export const BASE_WORLD: SandboxWorld = {
       description: 'Move the ledger from SQLite to Postgres.',
       status: 'blocked',
       priority: 'urgent',
-      assignees: ['dex-developer'],
+      assignees: ['engineer-engineering'],
       labels: [],
-      comments: [{ author: 'dex-developer', body: 'Waiting on the vendor key.' }],
+      comments: [{ author: 'engineer-engineering', body: 'Waiting on the vendor key.' }],
       outcome: null,
       dependsOn: [],
       minutesLogged: 0,
@@ -325,7 +325,7 @@ export const BASE_WORLD: SandboxWorld = {
       description: 'The production Stripe key is due for rotation.',
       status: 'assigned',
       priority: 'high',
-      assignees: ['dex-developer'],
+      assignees: ['engineer-engineering'],
       labels: ['security'],
       comments: [],
       outcome: null,

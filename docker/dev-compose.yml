@@ -3,6 +3,12 @@
 # host (`scripts/dev.sh` → vite on :5273); agents render into fleet/ and run
 # under the separate `talaria-fleet` compose project.
 #
+# Every published port binds 127.0.0.1 on purpose: these carry dev-default
+# credentials (talaria/talaria) and, in Qdrant's and TEI's case, no auth at all,
+# so a bare '<port>:<port>' would hand the whole dev stack — and the org's KB
+# vectors — to anyone on the laptop's network. The env overrides still work;
+# they only choose the host port.
+#
 # Every image below is FULLY QUALIFIED (docker.io/...). A short name like
 # `redis:7-alpine` is resolved by whatever unqualified-search registries the
 # local engine is configured with (Podman, Rancher Desktop, corporate mirrors,
@@ -20,7 +26,7 @@ services:
       POSTGRES_PASSWORD: talaria
       POSTGRES_DB: talaria
     ports:
-      - '${TALARIA_PG_PORT:-5544}:5432'
+      - '127.0.0.1:${TALARIA_PG_PORT:-5544}:5432'
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
@@ -33,7 +39,7 @@ services:
     container_name: ${TALARIA_REDIS_CONTAINER:-talaria-redis-dev}
     restart: unless-stopped
     ports:
-      - '${TALARIA_REDIS_PORT:-6399}:6379'
+      - '127.0.0.1:${TALARIA_REDIS_PORT:-6399}:6379'
     volumes:
       - redis-data:/data
     healthcheck:
@@ -46,7 +52,7 @@ services:
     container_name: ${TALARIA_QDRANT_CONTAINER:-talaria-qdrant-dev}
     restart: unless-stopped
     ports:
-      - '${TALARIA_QDRANT_PORT:-6333}:6333'
+      - '127.0.0.1:${TALARIA_QDRANT_PORT:-6333}:6333'
     volumes:
       - qdrant-data:/qdrant/storage
     healthcheck:
@@ -67,7 +73,7 @@ services:
     restart: unless-stopped
     command: ['--model-id', '${TALARIA_EMBED_MODEL:-BAAI/bge-small-en-v1.5}']
     ports:
-      - '${TALARIA_EMBED_PORT:-8055}:80'
+      - '127.0.0.1:${TALARIA_EMBED_PORT:-8055}:80'
     volumes:
       - tei-cache:/data
     healthcheck:
@@ -108,7 +114,7 @@ services:
   #   restart: unless-stopped
   #   command: ['--model-id', '${TALARIA_RERANK_MODEL:-BAAI/bge-reranker-base}']
   #   ports:
-  #     - '${TALARIA_RERANK_PORT:-8056}:80'
+  #     - '127.0.0.1:${TALARIA_RERANK_PORT:-8056}:80'
   #   volumes:
   #     - tei-cache:/data
   # LIVE WEB SEARCH — SearXNG, a metasearch aggregator that fans one query

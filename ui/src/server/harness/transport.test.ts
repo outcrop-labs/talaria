@@ -3,7 +3,7 @@
 //
 // `pickTransport` answers "gateway or persona?" for a model id. Every other test
 // in run.test.ts injects a transport and therefore never exercises it, which is
-// exactly why a tier id ("dex-developer-opus") could stop routing without a
+// exactly why a tier id ("engineer-engineering-opus") could stop routing without a
 // single assertion noticing: the Plan modal and the Inbox delegate picker both
 // produce one, `listAgents` deliberately hides tier entries from its list, and
 // the fall-through classified them as gateway models that the gateway does not
@@ -69,7 +69,7 @@ const {
 } = await import('@/server/harness/run')
 
 /** A rendered fleet: base ids only, which is what `listAgents` returns. */
-const rendered = (...ids: string[]) => ({ agents: ids.map((id) => ({ id, label: id, role: '' })), source: 'gateway' as const })
+const rendered = (...ids: string[]) => ids.map((id) => ({ id, label: id, role: '' }))
 
 /** Which transport came back, without calling it: the gateway transport reaches
  *  for `completeViaGateway` and the fleet transport for `proxyChat`, so one
@@ -88,7 +88,7 @@ async function kindOf(model: string): Promise<'gateway' | 'fleet'> {
 beforeEach(() => {
   vi.clearAllMocks()
   gatewayModels.mockResolvedValue([])
-  listAgents.mockResolvedValue({ agents: [], source: 'mock' as const })
+  listAgents.mockResolvedValue([])
   built = []
   drops = []
   resolveRoute.mockResolvedValue({ endpoint: { name: 'spark' }, upstreamModel: 'qwen3-14b' })
@@ -97,52 +97,54 @@ beforeEach(() => {
 describe('pickTransport', () => {
   it('sends a gateway catalog model to the gateway', async () => {
     gatewayModels.mockResolvedValue([{ id: 'qwen3-14b' }])
-    listAgents.mockResolvedValue(rendered('dex-developer'))
+    listAgents.mockResolvedValue(rendered('engineer-engineering'))
     expect(await kindOf('qwen3-14b')).toBe('gateway')
   })
 
   it('sends a live persona to the persona gateway', async () => {
-    listAgents.mockResolvedValue(rendered('dex-developer'))
-    expect(await kindOf('dex-developer')).toBe('fleet')
+    listAgents.mockResolvedValue(rendered('engineer-engineering'))
+    expect(await kindOf('engineer-engineering')).toBe('fleet')
   })
 
   it('sends a TIER of a live persona to the persona gateway', async () => {
-    // THE REGRESSION. `listAgents` hides "dex-developer-opus", but the manifest
+    // THE REGRESSION. `listAgents` hides "engineer-engineering-opus", but the manifest
     // has it and `proxyChat` matches the full id — so this must route as a
     // persona, exactly as the hand-written calls did before the port. Reached
     // from the Plan modal's tier dropdown and from `validDelegate`.
-    listAgents.mockResolvedValue(rendered('dex-developer'))
-    expect(await kindOf('dex-developer-opus')).toBe('fleet')
+    listAgents.mockResolvedValue(rendered('engineer-engineering'))
+    expect(await kindOf('engineer-engineering-opus')).toBe('fleet')
   })
 
   it('does not treat an unrelated hyphenated id as a tier', async () => {
     // The split is at the LAST hyphen and the prefix must be a LIVE agent, so a
     // model that merely contains hyphens is not adopted into the fleet.
-    listAgents.mockResolvedValue(rendered('dex-developer'))
+    listAgents.mockResolvedValue(rendered('engineer-engineering'))
     expect(await kindOf('llama-3-70b')).toBe('gateway')
   })
 
-  it('never treats a MOCK fleet as a persona', async () => {
-    // `listAgents` answers with three mock agents when the fleet has never been
-    // rendered, and `proxyChat` answers an unknown model with a canned "this is
-    // a mock" stream. Handing that to a harness would give it a chatty English
-    // sentence to parse as its verdict.
-    listAgents.mockResolvedValue({ agents: [{ id: 'dex-developer', label: 'Dex', role: 'developer' }], source: 'mock' as const })
-    expect(await kindOf('dex-developer')).toBe('gateway')
-    expect(await kindOf('dex-developer-opus')).toBe('gateway')
+  it('never treats an UNRENDERED fleet as a persona', async () => {
+    // `listAgents` used to answer with three invented agents when the fleet had
+    // never been rendered, and `proxyChat` answers an unknown model with a
+    // canned "this is a mock" stream — which would have handed a harness a
+    // chatty English sentence to parse as its verdict. The invented agents are
+    // gone; an unrendered fleet is now an empty list, and nothing in it can
+    // match, so every model falls through to the gateway.
+    listAgents.mockResolvedValue([])
+    expect(await kindOf('engineer-engineering')).toBe('gateway')
+    expect(await kindOf('engineer-engineering-opus')).toBe('gateway')
   })
 
   it('lets the gateway win when a model is somehow both', async () => {
     // The gateway is the metered, fully-inspectable path: it knows the endpoint,
     // writes its own ledger row, and hands the runner the whole message history
     // to guard against.
-    gatewayModels.mockResolvedValue([{ id: 'dex-developer' }])
-    listAgents.mockResolvedValue(rendered('dex-developer'))
-    expect(await kindOf('dex-developer')).toBe('gateway')
+    gatewayModels.mockResolvedValue([{ id: 'engineer-engineering' }])
+    listAgents.mockResolvedValue(rendered('engineer-engineering'))
+    expect(await kindOf('engineer-engineering')).toBe('gateway')
   })
 
   it('lets the gateway report an unknown model rather than mocking one', async () => {
-    listAgents.mockResolvedValue(rendered('dex-developer'))
+    listAgents.mockResolvedValue(rendered('engineer-engineering'))
     expect(await kindOf('nothing-serves-this')).toBe('gateway')
   })
 })
@@ -170,12 +172,12 @@ describe('the persona transport', () => {
     // reads back, twelve `task_activity` lines. An outage recorded as a perfect
     // contract rate is the exact number the fitness page is built to read.
     proxyChat.mockResolvedValue(canned('Penny is restarting (or down) and did not come back.', 'unavailable'))
-    await expect(fleetTransport({ model: 'penny-assistant', messages: [], jsonMode: false, caller: 't' })).rejects.toThrow(/did not come back/)
+    await expect(fleetTransport({ model: 'assistant-operations', messages: [], jsonMode: false, caller: 't' })).rejects.toThrow(/did not come back/)
   })
 
   it('fails the run on a mock-mode reply too', async () => {
     proxyChat.mockResolvedValue(canned("Hi — this is Dex (mock mode: the fleet isn't rendered yet).", 'mock'))
-    await expect(fleetTransport({ model: 'dex-developer', messages: [], jsonMode: false, caller: 't' })).rejects.toThrow(/not a rendered agent/)
+    await expect(fleetTransport({ model: 'engineer-engineering', messages: [], jsonMode: false, caller: 't' })).rejects.toThrow(/not a rendered agent/)
   })
 })
 
@@ -353,8 +355,8 @@ describe('offering tool definitions', () => {
   })
 
   it('a FLEET PERSONA refuses them: the tool loop belongs to the agent, and the stream reports bare names', async () => {
-    await expect(fleetTransport({ ...toolRequest, model: 'penny-assistant' })).rejects.toThrow(/tool loop runs inside the agent/)
-    await expect(fleetStream({ ...toolRequest, model: 'penny-assistant' }, () => {})).rejects.toThrow(/tool loop runs inside the agent/)
+    await expect(fleetTransport({ ...toolRequest, model: 'assistant-operations' })).rejects.toThrow(/tool loop runs inside the agent/)
+    await expect(fleetStream({ ...toolRequest, model: 'assistant-operations' }, () => {})).rejects.toThrow(/tool loop runs inside the agent/)
     expect(proxyChat).not.toHaveBeenCalled()
   })
 
@@ -367,12 +369,12 @@ describe('offering tool definitions', () => {
 describe('offersToolDefinitions', () => {
   it('answers for the transport that would actually take the call', async () => {
     gatewayModels.mockResolvedValue([{ id: 'qwen3-14b' }])
-    listAgents.mockResolvedValue(rendered('penny-assistant'))
+    listAgents.mockResolvedValue(rendered('assistant-operations'))
     expect(await offersToolDefinitions('qwen3-14b')).toBe(true)
     // The probe reads this and SKIPS a persona candidate. Letting the refusal
     // throw instead would score as `errored`, which the probe suite reads as a
     // broken deployment — and a healthy persona is not one.
-    expect(await offersToolDefinitions('penny-assistant')).toBe(false)
+    expect(await offersToolDefinitions('assistant-operations')).toBe(false)
   })
 })
 
@@ -539,7 +541,7 @@ describe('personaProbeTurn', () => {
 
   it('reports a gateway failure instead of returning an empty turn', async () => {
     proxyChat.mockResolvedValue({ ok: false, status: 503, headers: new Headers(), body: null })
-    await expect(personaProbeTurn('dex-developer', [{ role: 'user', content: 'hi' }], { caller: 'probe' })).rejects.toThrow(/persona gateway 503/)
+    await expect(personaProbeTurn('engineer-engineering', [{ role: 'user', content: 'hi' }], { caller: 'probe' })).rejects.toThrow(/persona gateway 503/)
   })
 
   it('puts the image on the last USER turn, exactly as the gateway side does', async () => {
@@ -547,7 +549,7 @@ describe('personaProbeTurn', () => {
     // vision probe means different things depending on which model answered it.
     proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: sse(['data: [DONE]\n\n']) })
     await personaProbeTurn(
-      'dex-developer',
+      'engineer-engineering',
       [
         { role: 'system', content: 'You describe images.' },
         { role: 'user', content: 'What is this?' },
@@ -564,7 +566,7 @@ describe('personaProbeTurn', () => {
 
   it('leaves the messages alone when there is no image', async () => {
     proxyChat.mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: sse(['data: [DONE]\n\n']) })
-    await personaProbeTurn('dex-developer', [{ role: 'user', content: 'plain' }], { caller: 'probe' })
+    await personaProbeTurn('engineer-engineering', [{ role: 'user', content: 'plain' }], { caller: 'probe' })
     const sent = proxyChat.mock.calls.at(-1)![0] as { messages: Array<{ content: unknown }> }
     expect(sent.messages[0]!.content).toBe('plain')
   })

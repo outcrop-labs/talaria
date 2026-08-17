@@ -16,7 +16,7 @@
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import { useDeniedViews, useLogout, useSession } from '@/lib/session'
   import { ADMIN_VIEWS } from '@/lib/nav'
-  import { shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
+  import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
 
   // Authenticated app shell (Mercury, spec §5–6): the collapsible nav rail
   // spans the full height on the left; the top strip sits above the active view
@@ -32,6 +32,33 @@
   // decision check compares tab names, so keep it a string.
   const rawTab = $derived(searchParams.get('tab'))
   const tab = $derived(rawTab == null ? undefined : String(rawTab))
+
+  // LEGACY `?tab=` LINKS STILL WORK.
+  //
+  // Tabs became path segments (/admin/security), but URLs with the old shape
+  // are already out in the world and some of them are not ours to fix:
+  // `NOTIFY_SETTINGS_PATH` is embedded in notification EMAILS that have already
+  // been sent. Without this they would still resolve — to the view's default
+  // tab — which is the quiet wrong answer rather than a visible failure.
+  //
+  // Written as literal calls rather than a computed path because the router is
+  // typed on its route strings; seven explicit cases is the price of that, and
+  // it also means a base that stops being tabbed fails to compile here.
+  $effect(() => {
+    const raw = searchParams.get('tab')
+    if (raw == null || raw === true) return
+    const t = String(raw)
+    const at = route.pathname
+    const opts = { params: { tab: t }, replace: true } as const
+    if (at === '/settings') void navigate('/settings/:tab', opts)
+    else if (at === '/admin') void navigate('/admin/:tab', opts)
+    else if (at === '/observability') void navigate('/observability/:tab', opts)
+    else if (at === '/models') void navigate('/models/:tab', opts)
+    else if (at === '/templates') void navigate('/templates/:tab', opts)
+    else if (at === '/agents') void navigate('/agents/:tab', opts)
+    else if (at === '/mcp') void navigate('/mcp/:tab', opts)
+    // `/` is deliberately absent: Home still keeps its tab in the query.
+  })
 
   // Only a SUCCESSFUL session read saying "nobody is signed in" sends anyone to
   // /login. /api/auth/session answers 200 with `{ user: null }` when you're
@@ -152,7 +179,17 @@
   <MercuryBackdrop />
   <div class="flex h-screen">
     <NavRail {user} />
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+    <!-- THE ASSISTANT DRAWER IS A PEER OF THE NAV RAIL, not of the page body.
+         It used to open inside `vt-view`, below the top strip and the banner,
+         so a panel that is conceptually a second rail started a strip's height
+         down the screen and left a notch beside the nav. Out here it spans the
+         viewport, and the strip belongs to the view it titles. It also stops
+         being animated by the view transition on every nav click, which it
+         never should have been — the drawer stays put while the page swaps. -->
+    <InboxFocusShell
+      attachActiveDecision={shouldAttachInboxDecision(route.pathname, tab)}
+      surface={assistantSurface(route.pathname, tab)}
+    >
       <TopStrip {user} onLogout={() => void logout()} />
       <!-- Above the content, below the strip: unreadable secrets fail at USE
            time, so without a standing signal an admin learns about it from a
@@ -160,12 +197,10 @@
            nothing at all when there is nothing to say. -->
       <UnreadableSecretsBanner />
       <!-- vt-view: the View Transitions API animates ONLY this region on nav
-           clicks (styles.css) — the rail and strip stay planted. -->
+           clicks (styles.css) — the rail, drawer and strip stay planted. -->
       <div class="vt-view min-h-0 min-w-0 flex-1 overflow-hidden">
-        <InboxFocusShell attachActiveDecision={shouldAttachInboxDecision(route.pathname, tab)}>
-          {@render children()}
-        </InboxFocusShell>
+        {@render children()}
       </div>
-    </div>
+    </InboxFocusShell>
   </div>
 {/if}

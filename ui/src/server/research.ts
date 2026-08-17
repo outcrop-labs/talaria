@@ -34,7 +34,7 @@
 // against. `HarnessDefinition.ground` closed that, so the rule is in
 // `researchSynthesisHarness`'s own guard list and this file counts the findings
 // the run already reported. Nothing here talks to guardrails.ts any more.
-import { agentCategoryFolder, attachArtifact, createArtifact, saveArtifact } from './artifacts'
+import { agentCategoryFolder, attachArtifact, createArtifact, getArtifact, saveArtifact } from './artifacts'
 import { setEditors } from './kb-perms'
 import { db } from './db/pg'
 import { describeAgent } from './gateway'
@@ -56,7 +56,7 @@ import { resolveRoleModel } from './model-roles'
 import { addNotification } from './notifications'
 import { indexActivity, indexPersonal } from './retrieval/sources'
 import { generateTitle } from './titler'
-import { insertUserMessage, nextSeq, touchConversation } from './conversations'
+import { createConversation, insertUserMessage, nextSeq, touchConversation } from './conversations'
 import { continueConversation } from './chat-persist'
 import { forgetResearchOrigin, researchOrigin } from './research-origin'
 import { resolveRefs } from './refs'
@@ -78,6 +78,13 @@ export interface ResearchRun {
   status: ResearchStatus
   phase: string | null
   artifactId: string | null
+  /** The conversation this run is discussed in. Null until somebody says
+   *  something — see `ensureResearchConversation` for why it is on demand. */
+  conversationId: string | null
+  /** The run this one extends. A follow-up writes into its PARENT's report and
+   *  source list rather than minting a second document about one subject; the
+   *  child row survives for provenance — who asked what, and what it cost. */
+  parentRunId: string | null
   error: string | null
   stats: Record<string, number>
   createdAt: string
@@ -357,6 +364,56 @@ const MARKER_RE = /\[(\d{1,3})\]/g
 /** Exported for its own test. The renumbering it does is one of the three
  *  places two-digit markers failed silently, and it is not reachable through
  *  `runResearch` without standing up the whole pipeline. */
+/** THE SOURCES SECTION THE PIPELINE APPENDS, matched so it can be replaced.
+ *
+ *  Anchored to a line start and to the END of the document, because a report may
+ *  legitimately discuss the word "Sources" in its prose and a loose match would
+ *  truncate a report at the first mention of one. */
+const SOURCES_SECTION = /\n*^## Sources\s*$[\s\S]*$/m
+
+/** The report's prose, without the mechanical source list. */
+export const reportBodyOnly = (body: string): string => body.replace(SOURCES_SECTION, '').trimEnd()
+
+/** EXTEND A REPORT WITH WHAT A FOLLOW-UP FOUND, keeping it one document.
+ *
+ *  A follow-up used to produce a SECOND report about the same subject, with its
+ *  own source numbering, and nothing linking the two. The answer to one question
+ *  lived in two places and the reader assembled it.
+ *
+ *  WHAT THIS HAS TO GET RIGHT, and each one silently corrupts a document if it
+ *  does not:
+ *
+ *    THE OLD PROSE IS UNTOUCHED. Somebody has read it and may have quoted it.
+ *    THE SOURCE LIST IS REBUILT, not appended to — it is mechanical output, and
+ *      two of them at the bottom of one document is the failure that made the
+ *      old `## Sources` regex worth anchoring.
+ *    CITED IS RECOMPUTED OVER THE WHOLE DOCUMENT. A source the parent cites and
+ *      the follow-up does not must not become "(consulted)" because this pass
+ *      only looked at the new section.
+ *    THE NEW SECTION SAYS WHAT ASKED FOR IT. A reader coming back a week later
+ *      needs to see that the last three paragraphs answer a different question
+ *      than the top of the document does. */
+export function extendReport(
+  parentBody: string,
+  addition: { question: string; markdown: string },
+  sources: readonly ResearchSource[],
+): string {
+  const prose = reportBodyOnly(parentBody)
+  // The follow-up's own `# Title` is dropped: the document already has one, and
+  // a second H1 mid-document reads as a new document to every renderer and
+  // every table of contents.
+  const section = addition.markdown.trim().replace(/^#\s+.*$/m, '').trim()
+  const heading = `## Follow-up: ${addition.question.trim()}`
+  const merged = `${prose}\n\n${heading}\n\n${section}`
+  const cited = new Set([...merged.matchAll(MARKER_RE)].map((m) => Number(m[1])))
+  const list = sources
+    .slice()
+    .sort((a, b) => a.idx - b.idx)
+    .map((s) => `${s.idx}. [${s.title ?? s.url}](${s.url})${cited.has(s.idx) ? '' : ' *(consulted)*'}`)
+    .join('\n')
+  return `${merged}\n\n## Sources\n\n${list}\n`
+}
+
 /** KEEP ONLY THE CITATIONS THAT RESOLVE, and count what was thrown away.
  *
  *  Extracted from the pipeline so it can be tested at all: it is the one place
@@ -382,13 +439,31 @@ export function stripUnknownMarkers(doc: string, knownIdx: readonly number[]): {
 
 export class SourceRegistry {
   private byUrl = new Map<string, { idx: number; title: string | null; snippet: string | null }>()
+
+  /** SEED FROM A REPORT ALREADY WRITTEN, so a follow-up continues its numbering
+   *  instead of starting again at [1].
+   *
+   *  THIS IS WHAT KEEPS THE OLD TEXT TRUE. Every [n] in the parent's prose
+   *  points at a row in its source list; renumbering — or reusing [3] for a new
+   *  URL — would silently re-aim citations that a human already read and
+   *  believed. So the parent's indices are taken verbatim and new sources
+   *  continue from the highest, whatever gaps that leaves. */
+  static from(sources: readonly ResearchSource[]): SourceRegistry {
+    const reg = new SourceRegistry()
+    for (const s of sources) reg.byUrl.set(s.url, { idx: s.idx, title: s.title, snippet: s.snippet })
+    return reg
+  }
   add(s: { url: string; title: string | null; snippet: string | null }): number {
     const existing = this.byUrl.get(s.url)
     if (existing) {
       if (!existing.title && s.title) existing.title = s.title
       return existing.idx
     }
-    const idx = this.byUrl.size + 1
+    // HIGHEST + 1, not size + 1. A seeded registry can carry gaps — a parent
+    // whose source [4] was deleted leaves size 3 and a highest of 5 — and
+    // `size + 1` would hand [4] to a brand new URL, quietly re-aiming every
+    // citation the parent's text makes to [4].
+    const idx = Math.max(0, ...[...this.byUrl.values()].map((v) => v.idx)) + 1
     this.byUrl.set(s.url, { idx, title: s.title, snippet: s.snippet })
     return idx
   }
@@ -511,7 +586,8 @@ async function tellTheAskingConversation(runId: string, agentModel: string, note
 // ── Run lifecycle ─────────────────────────────────────────────────────────────
 
 const ROW = `id, owner_user_id as "ownerUserId", requested_by as "requestedBy", agent_model as "agentModel",
-  mode, question, title, status, phase, artifact_id as "artifactId", error, stats,
+  mode, question, title, status, phase, artifact_id as "artifactId", error, stats, conversation_id as "conversationId",
+  parent_run_id as "parentRunId",
   created_at as "createdAt", updated_at as "updatedAt", completed_at as "completedAt"`
 
 /** Runs a viewer may see: their own, ones shared with them, and org runs
@@ -615,6 +691,9 @@ export async function startResearch(input: {
   agentModel: string
   ownerUserId: string | null
   requestedBy: string
+  /** The run this extends. Its findings are written into that run's report and
+   *  numbered against its sources — see `extendReport`. */
+  parentRunId?: string | null
 }): Promise<ResearchRun> {
   // REFUSES ONLY WHEN THE WORKSPACE GENUINELY CANNOT SEARCH — no search backend
   // AND no model that searches by itself. It used to refuse whenever no
@@ -625,8 +704,8 @@ export async function startResearch(input: {
   if (!plan) throw new Error(NO_SEARCH_REASON)
   const sql = await db()
   const rows = (await sql`
-    insert into research_runs (owner_user_id, requested_by, agent_model, mode, question)
-    values (${input.ownerUserId}, ${input.requestedBy}, ${input.agentModel}, ${input.mode}, ${input.question})
+    insert into research_runs (owner_user_id, requested_by, agent_model, mode, question, parent_run_id)
+    values (${input.ownerUserId}, ${input.requestedBy}, ${input.agentModel}, ${input.mode}, ${input.question}, ${input.parentRunId ?? null})
     returning ${sql.unsafe(ROW)}
   `) as unknown as ResearchRun[]
   const run = rows[0]!
@@ -663,7 +742,11 @@ async function runResearch(runId: string): Promise<void> {
     const budget = adaptBudget(budgetFor(mode), searchModel)
     const searchTool = plan.via === 'tool' ? plan.supplier : null
     const agentLabel = describeAgent(agentModel).label
-    const registry = new SourceRegistry()
+    // A FOLLOW-UP CONTINUES ITS PARENT'S NUMBERING. Seeded from the parent's
+    // source list so [1]..[n] keep meaning what the already-written prose says
+    // they mean, and anything new starts above the highest.
+    const parent = got.run.parentRunId ? await getResearchRun(got.run.parentRunId) : null
+    const registry = parent ? SourceRegistry.from(parent.sources) : new SourceRegistry()
     const notes: string[] = []
     let queriesRun = 0
     let searchFailed = false
@@ -754,30 +837,60 @@ async function runResearch(runId: string): Promise<void> {
     const body = `${cleaned}\n\n## Sources\n\n${sourcesMd}\n`
     const title = cleaned.match(/^# (.+)$/m)?.[1]?.trim() ?? `Research — ${question.slice(0, 80)}`
 
+
     // The report is a real artifact, filed under the researching agent's
     // cabinet. Ownership decides reach: an ORG run (no owner) publishes
     // org-visible; a user's run stays PRIVATE to them, with members granted
     // editor on the doc — sharing the run is the only way anyone else sees it.
-    const artifact = await createArtifact({
-      kind: 'doc',
-      title,
-      createdBy: requestedBy,
-      ownerUserId,
-      folderId: await agentCategoryFolder(agentLabel, 'Research', requestedBy),
-    })
-    await saveArtifact(artifact.id, { body, visibility: ownerUserId ? 'private' : 'org' }, agentLabel)
-    if (ownerUserId) {
-      const members = (await sql`select user_id as id from research_members where run_id = ${runId}`) as unknown as Array<{ id: string }>
-      if (members.length) {
-        await setEditors('artifact', artifact.id, members.map((m) => ({ principalType: 'user' as const, principalId: m.id, role: 'editor' as const }))).catch(() => {})
-      }
-    }
-    await attachArtifact(artifact.id, { targetType: 'research', targetId: runId }, agentLabel)
+    // ── ONE SUBJECT, ONE DOCUMENT ────────────────────────────────────────────
+    //
+    // A follow-up writes into the report it came from instead of minting a
+    // second one about the same subject — which is what made "dig into the
+    // second point" produce two documents that did not reference each other,
+    // with two source lists numbered from [1], and left the reader to assemble
+    // the answer.
+    //
+    // ONLY THE DESTINATION BRANCHES. Everything after this — the sources rows,
+    // the stats, indexing, the notification, the report back into the
+    // conversation — is identical for both, and duplicating it here to save one
+    // conditional is how the two paths would drift.
+    const parentArtifactId = parent?.run.artifactId ?? null
+    const artifact = parentArtifactId
+      ? { id: parentArtifactId }
+      : await createArtifact({
+          kind: 'doc',
+          title,
+          createdBy: requestedBy,
+          ownerUserId,
+          folderId: await agentCategoryFolder(agentLabel, 'Research', requestedBy),
+        })
 
+    if (parentArtifactId) {
+      // Read the parent's CURRENT body rather than anything cached: a human may
+      // have edited the report between the follow-up being asked for and it
+      // finishing, and overwriting that would be the worst outcome here.
+      const current = (await getArtifact(parentArtifactId))?.body ?? ''
+      await saveArtifact(parentArtifactId, { body: extendReport(current, { question, markdown: cleaned }, registry.list()) }, agentLabel)
+    } else {
+      await saveArtifact(artifact.id, { body, visibility: ownerUserId ? 'private' : 'org' }, agentLabel)
+      if (ownerUserId) {
+        const members = (await sql`select user_id as id from research_members where run_id = ${runId}`) as unknown as Array<{ id: string }>
+        if (members.length) {
+          await setEditors('artifact', artifact.id, members.map((m) => ({ principalType: 'user' as const, principalId: m.id, role: 'editor' as const }))).catch(() => {})
+        }
+      }
+      await attachArtifact(artifact.id, { targetType: 'research', targetId: runId }, agentLabel)
+    }
+
+    // SOURCES BELONG TO THE REPORT'S RUN. When extending, the numbering they
+    // were given is the parent's and the report's citations resolve against the
+    // parent's list — writing them under the child would leave the document
+    // citing rows nothing can find.
+    const sourceRunId = parent?.run.id ?? runId
     for (const s of registry.list()) {
       await sql`
         insert into research_sources (run_id, idx, url, title, snippet)
-        values (${runId}, ${s.idx}, ${s.url}, ${s.title}, ${s.snippet}) on conflict do nothing
+        values (${sourceRunId}, ${s.idx}, ${s.url}, ${s.title}, ${s.snippet}) on conflict do nothing
       `
     }
     await sql`
@@ -796,7 +909,7 @@ async function runResearch(runId: string): Promise<void> {
       title,
       text: `${title}\n\n${body}`,
       payload: ownerUserId ? { runId, question, mode } : { runId, question, mode, orgWide: true },
-      href: `/research?r=${runId}`,
+      href: `/research/${runId}`,
     }
     if (ownerUserId) void indexPersonal(ownerUserId, reportDoc).catch(() => {})
     else void indexActivity(reportDoc).catch(() => {})
@@ -805,7 +918,7 @@ async function runResearch(runId: string): Promise<void> {
         kind: 'research',
         title: `Research ready: ${title.slice(0, 120)}`,
         body: `${agentLabel} finished ${mode === 'recon' ? 'a recon' : mode === 'brief' ? 'a brief' : 'an expedition'} — ${registry.size} sources`,
-        href: `/research?r=${runId}`,
+        href: `/research/${runId}`,
       }).catch(() => {})
     }
 
@@ -845,4 +958,80 @@ async function runResearch(runId: string): Promise<void> {
       )
     }
   }
+}
+
+// ── The conversation a run is discussed in ───────────────────────────────────
+//
+// A research run used to be a one-shot: ask, wait, read. The only thing anyone
+// could do afterwards was read it again, and the two colleagues it was shared
+// with had nowhere to say "dig into the second point" or "this source is a
+// vendor blog". A view whose whole content is a document does not need to be a
+// view.
+//
+// So a run gets a conversation of its own, exactly the shape a plan has —
+// several people, one agent, one document that grows beside the talk.
+
+/** WHAT THE AGENT IS FOR IN THIS ROOM.
+ *
+ *  It already knows the report: the findings, the numbered sources and what each
+ *  one supports. Most turns here are that — answering from what was found, which
+ *  costs one call and no searching.
+ *
+ *  THE RULE THAT MATTERS is the one about not answering past the evidence. This
+ *  is the surface where a confident sentence is most likely to be believed,
+ *  because everything around it carries a citation: the report is cited, the
+ *  sources are listed, and a teammate skim-reading has no way to tell which
+ *  sentence came from a source and which came from the model. So an answer the
+ *  report does not support has to say so and offer to go and find out — which is
+ *  a real offer, because commissioning more research is a tool it holds.
+ *
+ *  IT DOES NOT SEARCH BY REFLEX. A follow-up run costs minutes and money, and a
+ *  question the report already answers is not a reason to spend either. */
+export const RESEARCH_MODE_PROMPT = `This is a conversation ABOUT a research report you produced, on the Research surface. Several teammates may be in it; the report and its numbered sources sit beside the chat.
+
+Answer from the report and its sources first. Cite the same [n] markers the report uses so anyone can check you, and never state something as established that the sources do not support — this is a surface where everything looks cited, so an uncited claim of yours will be read as a finding.
+
+When the answer genuinely is not in what was found, say so plainly and offer to look into it. If a teammate asks you to dig further, commission follow-up research with the research tool rather than answering from memory; its findings are added to the same report, so the document stays the one place the answer lives.
+
+Do not re-research something the report already covers — say what it says and point at the section.`
+
+/** The conversation for a run, created on first use.
+ *
+ *  ON DEMAND rather than at run creation, for a reason worth stating: most runs
+ *  are read once and never discussed, and a conversation row per run would make
+ *  the chat list a list of things nobody said anything about. The first message
+ *  is what makes it exist.
+ *
+ *  Owned by the run's owner and pinned to the agent that DID the research, so
+ *  the teammate answering questions about the report is the one that wrote it. */
+export async function ensureResearchConversation(runId: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`
+    select conversation_id as "conversationId", owner_user_id as "ownerUserId", agent_model as "agentModel", question, title
+      from research_runs where id = ${runId}
+  `) as unknown as Array<{ conversationId: string | null; ownerUserId: string | null; agentModel: string; question: string; title: string | null }>
+  const run = rows[0]
+  if (!run) return null
+  if (run.conversationId) return run.conversationId
+  // A run started by an agent with no human owner has nobody to own the
+  // conversation. It is still readable; it just cannot be talked in.
+  if (!run.ownerUserId) return null
+
+  const id = await createConversation(run.ownerUserId, run.agentModel, run.title ?? run.question.slice(0, 80), 'research', null)
+  await sql`update research_runs set conversation_id = ${id} where id = ${runId} and conversation_id is null`
+  // Re-read rather than trusting the write: two clients opening the same run at
+  // once both get here, and the loser must return the winner's conversation
+  // instead of a second one nobody is reading.
+  const after = (await sql`select conversation_id as "conversationId" from research_runs where id = ${runId}`) as unknown as Array<{
+    conversationId: string | null
+  }>
+  return after[0]?.conversationId ?? id
+}
+
+/** The run a conversation belongs to, for the surfaces that start from the chat
+ *  side rather than the report side. */
+export async function researchRunForConversation(conversationId: string): Promise<string | null> {
+  const sql = await db()
+  const rows = (await sql`select id from research_runs where conversation_id = ${conversationId}`) as unknown as Array<{ id: string }>
+  return rows[0]?.id ?? null
 }

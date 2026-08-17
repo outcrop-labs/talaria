@@ -10,6 +10,7 @@
   import Select from '@/components/ui/Select.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { createFleetAgent, type AgentDef } from '@/lib/fleet-defs'
+  import { listRoleTemplates, type RoleTemplate } from '@/lib/agent-role-templates'
   import { fade, listStagger, slide } from '@/lib/motion'
   import { draftAgent, type AgentDraft } from '@/lib/muse.svelte'
   import RefineBar from './RefineBar.svelte'
@@ -17,9 +18,18 @@
 
   // Spin up a brand-new agent two ways: DESCRIBE it (the AI designs the whole
   // agent — identity, soul, starter skills — for review before anything is
-  // created) or configure it by hand from a template. Either way a template
-  // supplies the chassis: model tiers, tools, and plugins carry over with
-  // identity re-stamped; Talaria allocates the key, writes v1, renders, starts.
+  // created) or start from a ROLE TEMPLATE and adjust.
+  //
+  // TWO DIFFERENT "TEMPLATES", and they are different axes:
+  //   • ROLE template — what the agent is FOR. Prefills name, handle, role,
+  //     department and a starter soul from a common business role (Talaria
+  //     maintains a set; an org adds its own). This is the one that helps on a
+  //     fresh install, where there is no existing agent to copy.
+  //   • CHASSIS template — what it RUNS ON. Clones an existing agent's model
+  //     tiers, tools and plugins with the identity re-stamped. Unavailable
+  //     until at least one agent exists, which is exactly why it could never
+  //     be the only answer.
+  // Talaria allocates the key, writes v1, renders, starts.
   let {
     open,
     onClose,
@@ -55,6 +65,28 @@
   let soulRev = $state(0)
   let skills = $state<AgentDraft['skills']>([])
   let templateId = $state(preselect ?? templates[0]?.id ?? '') // '' = platform defaults
+  // Role templates: fetched once the dialog is open. Choosing one FILLS the
+  // fields rather than binding to them — every value stays editable, and a
+  // template is a starting point, not a mode you are stuck in.
+  let roleTemplates = $state<RoleTemplate[]>([])
+  let roleSlug = $state('')
+  $effect(() => {
+    if (!open) return
+    void listRoleTemplates()
+      .then((t) => (roleTemplates = t))
+      .catch(() => (roleTemplates = []))
+  })
+  const applyRole = (slugPicked: string) => {
+    roleSlug = slugPicked
+    const t = roleTemplates.find((x) => x.slug === slugPicked)
+    if (!t) return
+    displayName = t.name
+    slug = t.slug.replace(/-/g, '')
+    department = t.department
+    role = t.role
+    soul = t.soul
+    soulRev += 1
+  }
   let start = $state(true)
   let busy = $state(false)
   let err = $state<string | null>(null)
@@ -174,15 +206,44 @@
 {:else}
   <!-- ── Step 2: review + create ──────────────────────────────────────────── -->
   <Modal {open} {onClose} title="New agent" takeover>
-    <div class="max-h-[75vh] space-y-5 overflow-y-auto pr-1">
+    <div class="space-y-5">
+      <!-- Start from a role. Fills the fields below and leaves every one of
+           them editable — a template is a starting point, not a mode. -->
+      {#if roleTemplates.length}
+        <div>
+          <label for="role-template" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+            Start from a role
+          </label>
+          <Select id="role-template" bind:value={roleSlug} onchange={() => applyRole(roleSlug)} class="w-full">
+            <option value="">Blank — fill it in myself</option>
+            {#if roleTemplates.some((t) => !t.builtIn)}
+              <optgroup label="Your organization">
+                {#each roleTemplates.filter((t) => !t.builtIn) as t (t.slug)}
+                  <option value={t.slug}>{t.name}</option>
+                {/each}
+              </optgroup>
+            {/if}
+            <optgroup label="Common roles">
+              {#each roleTemplates.filter((t) => t.builtIn) as t (t.slug)}
+                <option value={t.slug}>{t.name}</option>
+              {/each}
+            </optgroup>
+          </Select>
+          {#if roleSlug}
+            <p class="mt-1.5 font-sans text-xs text-muted">
+              {roleTemplates.find((t) => t.slug === roleSlug)?.description}
+            </p>
+          {/if}
+        </div>
+      {/if}
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-          <Input value={displayName} oninput={(e) => onName(e.currentTarget.value)} placeholder="Remy" autofocus={!generated} />
+          <Input value={displayName} oninput={(e) => onName(e.currentTarget.value)} placeholder="Research Analyst" autofocus={!generated} />
         </div>
         <div>
           <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</label>
-          <Input bind:value={slug} placeholder="remy" />
+          <Input bind:value={slug} placeholder="analyst" />
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">

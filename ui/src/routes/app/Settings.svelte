@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { searchParams } from 'sv-router'
+  import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { navigate } from '@/router'
+  import { navigate, route } from '@/router'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -42,17 +42,24 @@
   let name = $state('')
   const savedFlash = useSavedFlash()
   let busy = $state(false)
-  // /settings?tab=assistant deep-links a tab. `app:<slug>` tabs come from
+  // /settings/assistant deep-links a tab. `app:<slug>` tabs come from
   // enabled apps' settings surfaces — validated at render (the app list is
   // async), unknown slugs fall back to Profile.
+  // THE URL IS THE TAB — /settings and /settings/<tab>. App-provided tabs are
+  // keyed `app:<slug>`, a legal path segment, so they route like any other:
+  // `tabFromPath` covers the static set and the pattern covers the dynamic
+  // ones, which cannot be enumerated here (they depend on which apps this
+  // person is granted).
   const tab = $derived.by((): SettingsTab => {
-    const raw = searchParams.get('tab')
-    const t = SETTINGS_TABS.find((v) => v.id === raw)
-    if (t) return t.id
-    if (typeof raw === 'string' && /^app:[a-z0-9-]+$/.test(raw)) return raw as SettingsTab
-    return 'profile'
+    const seg = tabFromPath(route.pathname, '/settings', SETTINGS_TABS.map((v) => v.id), 'profile')
+    if (seg !== 'profile') return seg
+    const raw = route.pathname.startsWith('/settings/') ? decodeURIComponent(route.pathname.slice('/settings/'.length)) : ''
+    return /^app:[a-z0-9-]+$/.test(raw) ? (raw as SettingsTab) : 'profile'
   })
-  const setTab = (t: SettingsTab) => void navigate('/settings', { search: t === 'profile' ? {} : { tab: t } })
+  const setTab = (t: SettingsTab) => {
+    if (t === 'profile') void navigate('/settings')
+    else void navigate('/settings/:tab', { params: { tab: t } })
+  }
   // Enabled apps with a settings surface get their own tab, labeled by the
   // app — only for people granted the app (apps are explicit-grant).
   // A failed /api/apps used to remove app settings TABS with no trace — the

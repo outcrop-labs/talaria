@@ -12,7 +12,7 @@ import { describeAgent } from '../gateway'
 import { applyArtifactRouting } from './artifact-routing'
 import { ensureQdrantFor } from './collections'
 import { embedOne } from './embed'
-import { indexActivity, indexPersonal, indexTicket, indexTicketComment, syncKbDoc } from './sources'
+import { EFFECTIVE_DOC_SELECT, indexActivity, indexPersonal, indexTicket, indexTicketComment, syncKbDoc, type KbDocSync } from './sources'
 
 const QDRANT_URL = () => (process.env.TALARIA_QDRANT_URL ?? 'http://localhost:6333').replace(/\/$/, '')
 
@@ -68,11 +68,12 @@ export async function backfillAll(): Promise<void> {
     const cols = (await sql`select qdrant_name as name, schema_version as "schemaVersion" from rag_collections`) as unknown as Array<{ name: string; schemaVersion: number }>
     for (const c of cols) await ensureQdrantFor(c.name, c.schemaVersion, dim).catch(() => {})
 
-    // KB docs — visibility-routed via the same sync every save runs.
-    const docs = (await sql`
-      select d.id, d.space_id as "spaceId", d.title, d.body, d.visibility, d.official, d.owner_user_id as "ownerUserId"
-      from kb_docs d
-    `) as unknown as Array<{ id: string; spaceId: string; title: string; body: string; visibility: 'private' | 'org' | 'public'; official: boolean; ownerUserId: string | null }>
+    // KB docs — visibility-routed via the same sync every save runs, and with
+    // the same EFFECTIVE visibility that save resolves (kb.syncDocEffective).
+    // Reading d.visibility raw here is how private docs got into the org brain:
+    // perms_inherited defaults true and visibility defaults 'org', so a doc in
+    // a private space reads 'org' until you resolve it through the space.
+    const docs = (await sql.unsafe(EFFECTIVE_DOC_SELECT)) as unknown as KbDocSync[]
     for (const d of docs) {
       await syncKbDoc(d).catch(() => {})
       counts.kbDocs = (counts.kbDocs ?? 0) + 1
@@ -157,7 +158,7 @@ export async function backfillAll(): Promise<void> {
           title: a.title,
           text: `${a.title}\n\n${a.body}`,
           payload: { planId: a.targetId, planOwnerId: a.ownerId },
-          href: '/artifacts',
+          href: `/artifacts?a=${a.id}`,
         }).catch(() => {})
         counts.planDocs = (counts.planDocs ?? 0) + 1
       } else if (a.targetType === 'research') {
@@ -167,7 +168,7 @@ export async function backfillAll(): Promise<void> {
           title: a.title,
           text: `${a.title}\n\n${a.body}`,
           payload: a.ownerId ? { runId: a.targetId } : { runId: a.targetId, orgWide: true },
-          href: `/research?r=${a.targetId}`,
+          href: `/research/${a.targetId}`,
         }
         if (a.visibility === 'private' && a.ownerId) await indexPersonal(a.ownerId, doc).catch(() => {})
         else if (a.visibility !== 'private') await indexActivity(doc).catch(() => {})
@@ -200,10 +201,9 @@ export async function sweepNewActivity(): Promise<number> {
   const now = new Date().toISOString()
   let indexed = 0
 
-  const docs = (await sql`
-    select d.id, d.space_id as "spaceId", d.title, d.body, d.visibility, d.official, d.owner_user_id as "ownerUserId"
-    from kb_docs d where d.updated_at > ${watermark}
-  `) as unknown as Array<{ id: string; spaceId: string; title: string; body: string; visibility: 'private' | 'org' | 'public'; official: boolean; ownerUserId: string | null }>
+  // Effective visibility, exactly as the live save path resolves it — a doc
+  // inheriting from a private space must never reach the org brain.
+  const docs = (await sql.unsafe(`${EFFECTIVE_DOC_SELECT} where d.updated_at > $1`, [watermark])) as unknown as KbDocSync[]
   for (const d of docs) {
     await syncKbDoc(d).catch(() => {})
     indexed++
@@ -254,7 +254,7 @@ export async function sweepNewActivity(): Promise<number> {
       title: a.title,
       text: `${a.title}\n\n${a.body}`,
       payload: isPlan ? { planId: a.targetId, planOwnerId: a.ownerId } : a.ownerId ? { runId: a.targetId } : { runId: a.targetId, orgWide: true },
-      href: isPlan ? '/artifacts' : `/research?r=${a.targetId}`,
+      href: isPlan ? '/artifacts' : `/research/${a.targetId}`,
     }
     if (!isPlan && a.visibility === 'private') {
       if (a.ownerId) await indexPersonal(a.ownerId, doc).catch(() => {})

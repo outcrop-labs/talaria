@@ -2,29 +2,20 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { MoreHorizontal, RefreshCw } from '@lucide/svelte'
   import GeneratingBars from '@/components/ui/GeneratingBars.svelte'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Chip from '@/components/ui/Chip.svelte'
-  import Combobox from '@/components/ui/Combobox.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import EmptyState from '@/components/ui/EmptyState.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
-  import { listQuery } from '@/components/ui/query-state'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import { cn } from '@/lib/cn'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
-  import { useAgents } from '@/lib/agents'
-  import { useUsers } from '@/lib/users'
-  import McpAccessRow from './McpAccessRow.svelte'
-  import McpAddPickerButton from './McpAddPickerButton.svelte'
+  import McpAccessModal from './McpAccessModal.svelte'
   import McpOauthAppSetup from './McpOauthAppSetup.svelte'
   import McpServerMark from './McpServerMark.svelte'
-  import { ALL_TOOLS, NO_ACCESS, connectPopup, patchServer, resolveScopePick, type McpServerRow } from './mcp'
+  import { connectPopup, patchServer, type McpServerRow } from './mcp'
 
   /** One registered server. Design grammar: a calm header (identity left, one
    *  status cluster right, actions in a kebab), the tool strip, then a single
@@ -33,15 +24,9 @@
   let { server: s }: { server: McpServerRow } = $props()
 
   const qc = useQueryClient()
-  const fleetQuery = useAgents()
-  // Access RULES are shown per person by name. Defaulted to `[]` a failed
-  // directory read rendered each existing rule as a truncated raw id and the
-  // "add a person" picker as empty — an access table that looks like it is
-  // about strangers, on a server that grants tool use.
-  const usersList = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
-  const users = $derived(usersList.rows)
   let error = $state<string | null>(null)
   let refreshing = $state(false)
+  let accessOpen = $state(false)
   const menu = useContextMenu()
   const refresh = () => qc.invalidateQueries({ queryKey: ['mcp-servers'] })
 
@@ -52,13 +37,6 @@
     await refresh()
   }
 
-  const agentOptions = $derived((fleetQuery.data?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role })))
-  const agentLabel = (model: string) => agentOptions.find((o) => o.value === model)?.label ?? model
-  const toolOptions = $derived(s.tools.map((t) => ({ value: t.name, label: t.name })))
-  const userLabel = (id: string) => {
-    const u = users.find((x) => x.id === id)
-    return u?.name ?? u?.email ?? id.slice(0, 8)
-  }
   // A "domain" only exists for real web URLs — pseudo-schemes like
   // talaria-workbench://core carry a routing token, not a hostname.
   const domain = $derived.by(() => {
@@ -193,124 +171,34 @@
     {/if}
   </div>
 
-  <!-- ── Access: two bounded groups — agents, then people ── -->
-  <div class="mt-4 border-t border-line pt-3">
-    <div class="mb-2 flex items-center gap-2">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Access</span>
-      <InfoTip text="Which agents carry this server, and which people may exercise it through agents acting for them. Tool cells narrow a row to a subset; empty = every tool. The gateway enforces all of it." />
-    </div>
-
-    <!-- Agents -->
-    <div>
-      <div class="flex items-center gap-3 pb-1">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agents</span>
-        {#if s.builtin}
-          <span class="text-xs text-muted">every agent — rows below narrow individual agents</span>
-        {:else}
-          <Checkbox
-            checked={s.allAgents}
-            onChange={(checked) => void patch({ allAgents: checked })}
-            label="all agents"
-            title="Every enabled agent carries this server; rows below become per-agent tool overrides"
-          />
-        {/if}
-        <span class="flex-1"></span>
-        <McpAddPickerButton
-          title={s.allAgents ? 'Add a per-agent tool override' : 'Add an agent'}
-          placeholder="Search agents"
-          options={agentOptions.filter((o) => !s.assignments.some((a) => a.agentModel === o.value))}
-          onPick={(m) => void patch({ assign: { agentModel: m, tools: null } })}
-        />
-      </div>
-      {#if s.assignments.length === 0}
-        <EmptyState
-          variant="inline"
-          class="px-1.5 py-1 text-muted/70"
-          title={s.allAgents ? 'Every enabled agent, every tool. Add a row to narrow one agent.' : 'No agents yet — add one, or check “all agents”.'}
-        />
+  <!-- ── Access: the SHAPE of it, and a door to the table ──
+       The full governance table (a row per agent, a row per person, tool
+       subsets on each) used to sit open inside every card, so a registry of
+       eight servers rendered eight copies of it and the thing you came to read
+       — what this server is, whether it is connected — was the smallest part
+       of the page. The counts are the part worth seeing at a glance; editing
+       is a deliberate act and gets a dialog. -->
+  <div class="mt-4 flex items-center gap-3 border-t border-line pt-3">
+    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Access</span>
+    <span class="min-w-0 flex-1 truncate font-sans text-xs text-muted">
+      {#if s.allAgents || s.builtin}
+        Every agent{#if s.assignments.length}, {s.assignments.length} narrowed{/if}
+      {:else if s.assignments.length}
+        {s.assignments.length} agent{s.assignments.length === 1 ? '' : 's'}
       {:else}
-        <div class="space-y-0.5">
-          {#if s.allAgents}
-            <div class="px-1.5 pb-0.5 text-[11px] text-muted/70">Every enabled agent carries this server; these rows narrow individual agents.</div>
-          {/if}
-          {#each s.assignments as a (a.agentModel)}
-            <McpAccessRow
-              name={agentLabel(a.agentModel)}
-              onRemove={() => void patch({ unassign: a.agentModel })}
-              removeTitle="Remove this agent"
-            >
-              {#snippet tools()}
-                <Combobox
-                  options={[{ value: ALL_TOOLS, label: 'All tools' }, ...toolOptions]}
-                  selected={a.tools ?? [ALL_TOOLS]}
-                  onChange={(sel) => {
-                    const next = resolveScopePick(sel, { denied: false, tools: a.tools })
-                    void patch({ assign: { agentModel: a.agentModel, tools: next.tools } })
-                  }}
-                  multiple
-                  size="sm"
-                  placeholder="All tools"
-                  class="w-full"
-                />
-              {/snippet}
-            </McpAccessRow>
-          {/each}
-        </div>
+        No agents yet
       {/if}
-    </div>
-
-    <!-- People -->
-    <div class="mt-3 border-t border-line-subtle pt-2.5">
-      <div class="flex items-center gap-2 pb-1">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">People</span>
-        <InfoTip text="No rules = everyone with an assigned agent may use it. A rule narrows one person to specific tools, or denies them outright." />
-        <span class="flex-1"></span>
-        <McpAddPickerButton
-          title="Add a person rule"
-          placeholder="Search people"
-          options={users
-            .filter((u) => !s.userAccess.some((r) => r.userId === u.id))
-            .map((u) => ({ value: u.id, label: u.name ?? u.email ?? u.id.slice(0, 8), sub: u.email ?? undefined }))}
-          onPick={(id) => void patch({ userAccess: { userId: id, allowed: true, tools: null } })}
-        />
-      </div>
-      {#if usersList.notice}<QueryError {...usersList.notice} />{/if}
-      {#if s.userAccess.length === 0}
-        <EmptyState variant="inline" class="px-1.5 py-1 text-muted/70" title="Everyone with an assigned agent may use it." />
+      ·
+      {#if s.userAccess.length}
+        {s.userAccess.length} {s.userAccess.length === 1 ? 'person' : 'people'}
       {:else}
-        <div class="space-y-0.5">
-          {#each s.userAccess as ua (ua.userId)}
-            <McpAccessRow
-              name={userLabel(ua.userId)}
-              dim={!ua.allowed}
-              onRemove={() => void patch({ userAccess: { userId: ua.userId, allowed: null, tools: null } })}
-              removeTitle="Remove this rule (back to default access)"
-            >
-              {#snippet tools()}
-                <Combobox
-                  options={[
-                    { value: ALL_TOOLS, label: 'All tools' },
-                    { value: NO_ACCESS, label: 'No access' },
-                    ...toolOptions,
-                  ]}
-                  selected={ua.allowed ? (ua.tools ?? [ALL_TOOLS]) : [NO_ACCESS]}
-                  onChange={(sel) => {
-                    const next = resolveScopePick(sel, { denied: !ua.allowed, tools: ua.tools })
-                    void patch({ userAccess: { userId: ua.userId, allowed: !next.denied, tools: next.tools } })
-                  }}
-                  multiple
-                  size="sm"
-                  placeholder="All tools"
-                  class="w-full"
-                />
-              {/snippet}
-            </McpAccessRow>
-          {/each}
-        </div>
+        no per-person rules
       {/if}
-    </div>
+    </span>
+    <Button size="sm" variant="outline" onclick={() => (accessOpen = true)}>Manage access</Button>
   </div>
 
   {#if error}<div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">{error}</div>{/if}
+  {#if accessOpen}<McpAccessModal server={s} onClose={() => (accessOpen = false)} />{/if}
   <ContextMenu {menu} />
 </Panel>

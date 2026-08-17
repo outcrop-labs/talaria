@@ -10,8 +10,22 @@ export interface FleetAgentEntry extends AgentModel {
   tiers: string[]
 }
 
-export async function listFleetAgents(): Promise<{ agents: FleetAgentEntry[]; source: 'gateway' | 'mock' }> {
-  const { agents, source } = await listAgents()
+/** The agents that EXIST, which is a question only `agent_defs` can answer.
+ *
+ *  `fleet/fleet.json` is a render OUTPUT — the transport table of where each
+ *  agent's gateway lives — not a roster. Treating it as one meant a manifest
+ *  left on disk resurrected agents the database no longer had: delete every
+ *  agent, or restore a checkout onto a fresh database, and the stale file put
+ *  them all back, complete with their old gateway keys.
+ *
+ *  The `defs.length === 0` early return made that worse rather than better. It
+ *  was meant as a bootstrap convenience — "the DB isn't populated yet, don't
+ *  filter" — but an empty definition table does not mean "unknown", it means
+ *  NONE, and returning the whole manifest for it is the one case where the
+ *  answer must be empty. So the filter is unconditional now: the manifest can
+ *  only ever narrow what the database already claims. */
+export async function listFleetAgents(): Promise<FleetAgentEntry[]> {
+  const agents = await listAgents()
   const sql = await db()
   const defs = (await sql`
     select d.model, v.config
@@ -19,18 +33,14 @@ export async function listFleetAgents(): Promise<{ agents: FleetAgentEntry[]; so
     left join agent_versions v on v.agent_id = d.id and v.version = d.current_version
     where d.enabled
   `) as unknown as Array<{ model: string; config: AgentConfig | null }>
-  if (defs.length === 0) return { agents: agents.map((a) => ({ ...a, tiers: [] })), source }
   const byModel = new Map(defs.map((d) => [d.model, d.config?.aliases?.map((a) => a.name) ?? []]))
-  return {
-    agents: agents.filter((a) => byModel.has(a.id)).map((a) => ({ ...a, tiers: byModel.get(a.id)! })),
-    source,
-  }
+  return agents.filter((a) => byModel.has(a.id)).map((a) => ({ ...a, tiers: byModel.get(a.id)! }))
 }
 
 /** Validate a tier for an agent; returns the routed gateway model id. */
 export async function routedModelFor(agentModel: string, tier?: string | null): Promise<string | null> {
   if (!tier) return agentModel
-  const { agents } = await listFleetAgents()
+  const agents = await listFleetAgents()
   const a = agents.find((x) => x.id === agentModel)
   if (!a || !a.tiers.includes(tier)) return null
   return `${agentModel}-${tier}`

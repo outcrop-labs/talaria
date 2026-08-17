@@ -11,9 +11,51 @@ service:
   image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
   command: gateway run
   restart: unless-stopped
+  # ── Sandbox limits ─────────────────────────────────────────────────────────
+  # An agent with a workbench profile executes model-authored code, so treat the
+  # container as hostile-by-default rather than as trusted infrastructure.
+  #
+  # If a future harness genuinely needs a capability, add it back explicitly
+  # with cap_add rather than widening this.
+  security_opt:
+    - 'no-new-privileges:true'
+  cap_drop:
+    - ALL
+  # The five below are what s6-overlay needs to boot at all — dropping ALL with
+  # no cap_add crash-loops every agent. The image starts as root and drops to
+  # the hermes uid itself (see the `user:` note below); taking the capabilities
+  # away takes away its ability to do the dropping. What fails, in order:
+  # s6-setuidgid's setgroups() dies "Operation not permitted", both cont-init
+  # hooks exit 111, so the /opt/data bootstrap never runs, so /opt/data stays
+  # hermes-owned 0700 and root can't even cd into it. KILL is not about boot —
+  # without it s6 can't signal its hermes-uid children, so `docker stop` falls
+  # through to SIGKILL and every fleetStop/fleetRestart/roll hard-kills the
+  # agent at the timeout instead of shutting it down. Verified minimal: FOWNER
+  # and the rest are genuinely not needed.
+  cap_add:
+    - CHOWN # stage2 chowns the /opt/data state volume
+    - DAC_OVERRIDE # root must traverse hermes-owned 0700 /opt/data
+    - SETUID # s6-setuidgid drops the supervision tree to hermes
+    - SETGID # setgroups() — the syscall that fails first without this
+    - KILL # s6 signals hermes-uid children; graceful stop
+  # Resource ceilings. Without pids_limit, one runaway build or fork bomb inside
+  # a single agent takes down the host — and with it the database, the app, and
+  # every other agent. Tune per deployment; these are headroom for a coding
+  # harness, not a tight budget.
+  pids_limit: ${AGENT_PIDS_LIMIT:-512}
+  mem_limit: ${AGENT_MEM_LIMIT:-4g}
+  cpus: ${AGENT_CPUS:-2}
+  # NOT set, deliberately: `user:`. s6-overlay expects to start as root and drop
+  # privileges itself (fix-attrs chowns the state volume on boot), so pinning a
+  # uid breaks init AND orphans the existing /opt/data volumes of every deployed
+  # agent. Rootless agents need an image built for it, not a compose override.
+  #
   # The app runs on the host in dev; this lets agents reach Talaria's gateway at
-  # host.docker.internal on any docker network (subnet-independent). In a fully
-  # containerized stack, set TALARIA_GATEWAY_SELF_URL to the app's service DNS.
+  # host.docker.internal on any docker network (subnet-independent). NOTE this is
+  # also the agent's route to anything else listening on the host — keep host
+  # services bound to loopback-only (docker/dev-compose.yml does). In a fully
+  # containerized stack, drop this and set TALARIA_GATEWAY_SELF_URL to the app's
+  # service DNS instead.
   extra_hosts:
     - 'host.docker.internal:host-gateway'
   healthcheck:

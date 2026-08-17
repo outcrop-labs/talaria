@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { tabFromPath } from '@/lib/route-tabs'
   import { searchParams } from 'sv-router'
-  import { navigate } from '@/router'
+  import { navigate, route } from '@/router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ChevronRight, FolderPlus, HardDrive, Plus, Search, Upload, X } from '@lucide/svelte'
   import Rail from '@/components/app/Rail.svelte'
@@ -67,8 +68,10 @@
         : null,
   )
 
-  // The URL IS the selection: ?p= place, ?f= folder, ?a= the open file.
-  const place = $derived(((searchParams.get('p') as Place | null) ?? 'my') as Place)
+  // The URL IS the selection: /artifacts/<place>, then ?f= folder and ?a= the
+  // open file. Place is a PLACE — the same kind of thing as a tab — so it is a
+  // path segment; the folder and the open file are selection within it.
+  const place = $derived(tabFromPath(route.pathname, '/artifacts', PLACES.map((p) => p.id), 'my'))
   const rawFolder = $derived(searchParams.get('f'))
   const folderId = $derived(rawFolder ? String(rawFolder) : null)
   const rawActive = $derived(searchParams.get('a'))
@@ -81,10 +84,9 @@
   const goPlace = (p: Place) => {
     // Leaving for another place abandons the folder AND the open file — the
     // stage should show the place you just asked for, not the last thing open.
-    searchParams.delete('a')
-    searchParams.delete('f')
-    if (p === 'my') searchParams.delete('p')
-    else searchParams.set('p', p)
+    // Navigating with no `search` is what drops them.
+    if (p === 'my') void navigate('/artifacts')
+    else void navigate('/artifacts/:place', { params: { place: p } })
   }
   const goFolder = (id: string | null) => {
     searchParams.delete('a')

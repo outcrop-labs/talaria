@@ -18,12 +18,17 @@
     INBOX_SNOOZE_OPTIONS,
     type InboxFocusWorkspaceValue,
   } from './inbox-focus-shell'
+  import type { AssistantSurface } from '@/lib/inbox-focus-surface'
 
   function sourceTypeFromFocusKey(focusKey: string | null | undefined): FocusItem['sourceType'] | undefined {
     return focusKey?.split(':', 1)[0] as FocusItem['sourceType'] | undefined
   }
 
-  let { children, attachActiveDecision }: { children: Snippet; attachActiveDecision: boolean } = $props()
+  let {
+    children,
+    attachActiveDecision,
+    surface,
+  }: { children: Snippet; attachActiveDecision: boolean; surface: AssistantSurface } = $props()
 
   const queryClient = useQueryClient()
   const focusQuery = useInboxFocus()
@@ -191,6 +196,7 @@
     try {
       for await (const event of streamInboxFocusCommand({
         key: options.focusKey,
+        surface: surface.id,
         instruction: trimmedInstruction,
         delegateModel: options.delegateModel,
         responseModel: options.responseModel,
@@ -327,11 +333,12 @@
   })
 </script>
 
-<div class="relative flex h-full min-h-0 overflow-hidden bg-surface">
+<div class="relative flex h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-surface">
   <InboxChatPanel
     bind:this={panel}
     active={attachActiveDecision ? active : null}
     focusMode={attachActiveDecision}
+    surfaceLabel={surface.label}
     assistant={focusQuery.data?.assistant}
     busy={busyAction !== null}
     notice={failure ?? assistantMessage}
@@ -342,5 +349,12 @@
     onRetry={retryTimeline}
     onUndo={(entry) => void undoTimeline(entry)}
   />
-  <div class="min-h-0 min-w-0 flex-1 overflow-hidden">{@render children()}</div>
+  <!-- A COLUMN, not a plain block. This slot used to hold one page element that
+       sized itself with `h-full`, so a block was enough. It now holds the top
+       strip, the banner and the page stacked vertically, and a block parent
+       gives its child `height: auto` — every `flex-1 min-h-0` scroll region
+       below here then measures against nothing, grows to its content, and the
+       page stops scrolling. The height chain has to be unbroken from `h-screen`
+       all the way down. -->
+  <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{@render children()}</div>
 </div>

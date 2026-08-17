@@ -113,6 +113,7 @@ export async function* streamInboxFocusCommand(
   input: {
     key?: string | null
     instruction: string
+    surface?: string | null
     delegateModel?: string | null
     responseModel?: string | null
     mode?: 'normal' | 'fast' | 'plan'

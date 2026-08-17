@@ -952,7 +952,7 @@ describe('capability records on a fleet persona', () => {
 
   /** Penny: a 14B local main, a frontier "opus" tier, no fallbacks. */
   const penny: PersonaRow = {
-    agent: 'penny-assistant',
+    agent: 'assistant-operations',
     config: {
       main: { endpoint: 'spark', model: 'qwen3-14b' },
       aliases: [{ name: 'opus', endpoint: 'anthropic', model: 'claude-opus-4' }],
@@ -960,7 +960,7 @@ describe('capability records on a fleet persona', () => {
   }
 
   it('inherits the probe of the model actually behind it, and widens', async () => {
-    const r = world({ model: onPersona('penny-assistant'), personas: [penny], facts: { spark: { 'tool-select': true } } })
+    const r = world({ model: onPersona('assistant-operations'), personas: [penny], facts: { spark: { 'tool-select': true } } })
     const res = await run(wide, { ticket: 'x' }, r)
 
     expect(res.widened).toBe(true)
@@ -969,7 +969,7 @@ describe('capability records on a fleet persona', () => {
   })
 
   it('does not widen on a persona whose backing model nobody has probed — but runs', async () => {
-    const r = world({ model: onPersona('penny-assistant'), personas: [penny], facts: {} })
+    const r = world({ model: onPersona('assistant-operations'), personas: [penny], facts: {} })
     const res = await run(wide, { ticket: 'x' }, r)
 
     expect(res.widened).toBe(false)
@@ -978,12 +978,12 @@ describe('capability records on a fleet persona', () => {
   })
 
   it('resolves the TIER being called, not the agent main', async () => {
-    // "penny-assistant-opus" is a different, larger model than "penny-assistant"
+    // "assistant-operations-opus" is a different, larger model than "assistant-operations"
     // even though one id is a prefix of the other. Crediting main's probe to the
     // tier would widen on a fact about something else entirely.
     const facts = { anthropic: { 'tool-select': true } }
-    const base = world({ model: onPersona('penny-assistant'), personas: [penny], facts })
-    const tier = world({ model: onPersona('penny-assistant-opus'), personas: [penny], facts })
+    const base = world({ model: onPersona('assistant-operations'), personas: [penny], facts })
+    const tier = world({ model: onPersona('assistant-operations-opus'), personas: [penny], facts })
 
     expect((await run(wide, { ticket: 'x' }, base)).widened).toBe(false)
     expect((await run(wide, { ticket: 'x' }, tier)).widened).toBe(true)
@@ -992,7 +992,7 @@ describe('capability records on a fleet persona', () => {
   it('yields NO keys for a tier the agent does not have', async () => {
     // Inheriting the wrong model's capabilities is worse than inheriting none:
     // unknown is safe in both directions by design, and a wrong fact is not.
-    const r = world({ model: onPersona('penny-assistant-turbo'), personas: [penny], facts: { spark: { 'tool-select': true } } })
+    const r = world({ model: onPersona('assistant-operations-turbo'), personas: [penny], facts: { spark: { 'tool-select': true } } })
     const res = await run(wide, { ticket: 'x' }, r)
 
     expect(res.widened).toBe(false)
@@ -1000,9 +1000,9 @@ describe('capability records on a fleet persona', () => {
   })
 
   it('an agent whose own id looks like another agent tier keeps its own config', async () => {
-    const impostor: PersonaRow = { agent: 'penny-assistant-opus', config: { main: { endpoint: 'spark', model: 'qwen3-14b' } } }
+    const impostor: PersonaRow = { agent: 'assistant-operations-opus', config: { main: { endpoint: 'spark', model: 'qwen3-14b' } } }
     const r = world({
-      model: onPersona('penny-assistant-opus'),
+      model: onPersona('assistant-operations-opus'),
       personas: [penny, impostor],
       facts: { anthropic: { 'tool-select': true } },
     })
@@ -1016,15 +1016,15 @@ describe('capability records on a fleet persona', () => {
     // answers is genuinely unknowable in advance — the same situation as a
     // gateway model served by several endpoints, and it gets the same answer.
     const withFallback: PersonaRow = {
-      agent: 'dex-developer',
+      agent: 'engineer-engineering',
       config: {
         main: { endpoint: 'spark', model: 'qwen3-14b' },
         fallbacks: [{ endpoint: 'thunder', model: 'llama3-8b' }],
       },
     }
-    const half = world({ model: onPersona('dex-developer'), personas: [withFallback], facts: { spark: { 'tool-select': true } } })
+    const half = world({ model: onPersona('engineer-engineering'), personas: [withFallback], facts: { spark: { 'tool-select': true } } })
     const all = world({
-      model: onPersona('dex-developer'),
+      model: onPersona('engineer-engineering'),
       personas: [withFallback],
       facts: { spark: { 'tool-select': true }, thunder: { 'tool-select': true } },
     })
@@ -1036,7 +1036,7 @@ describe('capability records on a fleet persona', () => {
   it('refuses below the floor when EVERY model behind the persona is known to fail it', async () => {
     // The keys feed step 2 as well as step 3: a persona backed by a model known
     // to be unable to return JSON is a judge that would escalate everything.
-    const r = world({ model: onPersona('penny-assistant'), personas: [penny], facts: { spark: { json: false } } })
+    const r = world({ model: onPersona('assistant-operations'), personas: [penny], facts: { spark: { json: false } } })
     const res = await run(judge, { ticket: 'x' }, r)
 
     expect(r.requests).toHaveLength(0)
@@ -1045,10 +1045,10 @@ describe('capability records on a fleet persona', () => {
 
   it('does not refuse when one member of a persona pool is merely unprobed', async () => {
     const withFallback: PersonaRow = {
-      agent: 'dex-developer',
+      agent: 'engineer-engineering',
       config: { main: { endpoint: 'spark', model: 'qwen3-14b' }, fallbacks: [{ endpoint: 'thunder', model: 'llama3-8b' }] },
     }
-    const r = world({ model: onPersona('dex-developer'), personas: [withFallback], facts: { spark: { json: false } } })
+    const r = world({ model: onPersona('engineer-engineering'), personas: [withFallback], facts: { spark: { json: false } } })
     const res = await run(judge, { ticket: 'x' }, r)
 
     expect(r.requests).toHaveLength(1)
@@ -1059,7 +1059,7 @@ describe('capability records on a fleet persona', () => {
     // Resolving a persona hits the database. That lookup exists to make a run
     // BETTER; it is not a precondition for running one, and a database blip must
     // never be the reason a harness fails.
-    const r = world({ model: onPersona('penny-assistant'), personasThrow: true })
+    const r = world({ model: onPersona('assistant-operations'), personasThrow: true })
     const res = await run(wide, { ticket: 'x' }, r)
 
     expect(res.widened).toBe(false)
@@ -1427,16 +1427,16 @@ describe('ledger attribution', () => {
     const r = world({ replies: ['on it'] })
     await runHarness(titler, { transcript: 'x' }, {
       caller: 'ticket:t-41',
-      model: 'dex-developer',
+      model: 'engineer-engineering',
       ledger: { source: 'chat', refId: 't-41', taskId: 't-41' },
       deps: r.deps,
     })
-    expect(r.requests[0]?.ledger).toMatchObject({ agentModel: 'dex-developer', refId: 't-41', taskId: 't-41' })
+    expect(r.requests[0]?.ledger).toMatchObject({ agentModel: 'engineer-engineering', refId: 't-41', taskId: 't-41' })
   })
 })
 
 describe('routing a persona TIER', () => {
-  const onTier = { caller: 'plan:c-1', model: 'dex-developer', tier: 'opus' as const }
+  const onTier = { caller: 'plan:c-1', model: 'engineer-engineering', tier: 'opus' as const }
 
   it('calls the tier id and attributes the spend to the base agent', async () => {
     // `recordUsage` prices a row by finding `agent_defs.model = agentModel` and
@@ -1446,17 +1446,17 @@ describe('routing a persona TIER', () => {
     const r = world({ replies: ['drafted'] })
     const res = await runHarness(titler, { transcript: 'x' }, { ...onTier, deps: r.deps })
 
-    expect(r.requests[0]?.model).toBe('dex-developer-opus')
-    expect(r.requests[0]?.ledger).toMatchObject({ agentModel: 'dex-developer', tier: 'opus' })
+    expect(r.requests[0]?.model).toBe('engineer-engineering-opus')
+    expect(r.requests[0]?.ledger).toMatchObject({ agentModel: 'engineer-engineering', tier: 'opus' })
     // The RESULT names the id that answered, because that is the model the
     // fitness matrix is scoring.
-    expect(res.model).toBe('dex-developer-opus')
-    expect(r.runs[0]?.model).toBe('dex-developer-opus')
+    expect(res.model).toBe('engineer-engineering-opus')
+    expect(r.runs[0]?.model).toBe('engineer-engineering-opus')
   })
 
   it('asks the capability index about the TIER, not the agent main', async () => {
-    // "dex-developer-opus" is a different, usually larger model than
-    // "dex-developer"; crediting main's probe to the tier would widen on a fact
+    // "engineer-engineering-opus" is a different, usually larger model than
+    // "engineer-engineering"; crediting main's probe to the tier would widen on a fact
     // about something else. `persona.ts` already resolves it — the runner just
     // has to ask about the right id.
     const asked: string[] = []
@@ -1465,7 +1465,7 @@ describe('routing a persona TIER', () => {
       ...onTier,
       deps: { ...r.deps, routing: async () => ({ endpoints: [], upstreamModel: '' }), personaKeys: async (m) => (asked.push(m), []) },
     })
-    expect(asked).toEqual(['dex-developer-opus'])
+    expect(asked).toEqual(['engineer-engineering-opus'])
   })
 })
 
@@ -1592,7 +1592,7 @@ describe('runHarnessStreamed', () => {
     await runHarnessStreamed(
       { ...titler, tools: 'own' },
       { transcript: 'x' },
-      { caller: 'briefer:chat', model: 'penny-assistant', ledger: { refId: 'c-3' }, deps: r.deps },
+      { caller: 'briefer:chat', model: 'assistant-operations', ledger: { refId: 'c-3' }, deps: r.deps },
       {
         stream: async (req, emit) => {
           seen = req
@@ -1601,7 +1601,7 @@ describe('runHarnessStreamed', () => {
         },
       },
     )
-    expect(seen).toMatchObject({ model: 'penny-assistant', tools: 'own', ledger: { refId: 'c-3', agentModel: 'penny-assistant' } })
+    expect(seen).toMatchObject({ model: 'assistant-operations', tools: 'own', ledger: { refId: 'c-3', agentModel: 'assistant-operations' } })
   })
 })
 

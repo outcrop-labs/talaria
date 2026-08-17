@@ -99,7 +99,7 @@
         {syncing ? 'Syncing' : 'Sync from chat'}
       </Button>
       <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">Auto-saves</span>
-      <a href={p('/artifacts')} class="shrink-0 text-[11px] text-accent hover:underline" title="Open in Artifacts">
+      <a href={`${p('/artifacts')}?a=${id}`} class="shrink-0 text-[11px] text-accent hover:underline" title="Open in Files">
         Open ↗
       </a>
       <Button variant="ghost" size="sm" class="shrink-0" title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'} onclick={() => (fullscreen = !fullscreen)}>

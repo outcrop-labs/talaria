@@ -1,17 +1,18 @@
 <script lang="ts">
-  import { searchParams } from 'sv-router'
+  import { route } from '@/router'
+  import { tabFromPath } from '@/lib/route-tabs'
   import FocusInbox from '@/components/inbox/FocusInbox.svelte'
   import ConsoleHome from './home/ConsoleHome.svelte'
   import MailPanel from './home/MailPanel.svelte'
   import AgendaPanel from './home/AgendaPanel.svelte'
-  import { HOME_TABS, type HomeTab } from './home/home'
+  import { HOME_TABS } from './home/home'
 
   // Home/Today — the seamless landing. Surfaces the human's real job in Talaria's
   // guardrail model (triage · review · unblock), unread mentions, fleet health,
   // and one-tap entries into the work surfaces.
   //
-  // /?tab=boards deep-links a console tab (the old route's validateSearch).
-  const tab = $derived.by((): HomeTab => HOME_TABS.find((v) => v === searchParams.get('tab')) ?? 'inbox')
+  // `/` is the inbox; `/home/<tab>` is a console tab.
+  const tab = $derived(tabFromPath(route.pathname, '/home', HOME_TABS, 'inbox'))
 </script>
 
 {#snippet mail()}

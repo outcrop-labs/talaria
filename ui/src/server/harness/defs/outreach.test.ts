@@ -47,7 +47,7 @@ describe('the check-in definition', () => {
     const res = await runHarness(
       outreachCheckInHarness,
       { work: WORK, recent: [{ kind: 'dm', note: 'asked Ana about the rota' }] },
-      { caller: 'test', model: 'dex-developer', deps: d },
+      { caller: 'test', model: 'engineer-engineering', deps: d },
     )
     expect(res.value).toBe('Flagged t-77 to Priya — blocked 52h on the vendor key.')
     const sent = requests[0]?.messages[0]?.content ?? ''
@@ -59,7 +59,7 @@ describe('the check-in definition', () => {
 
   it('says so plainly when the agent has nothing on its plate', async () => {
     const { deps: d, requests } = deps(NOTHING_TO_SURFACE)
-    await runHarness(outreachCheckInHarness, { work: [], recent: [] }, { caller: 'test', model: 'dex-developer', deps: d })
+    await runHarness(outreachCheckInHarness, { work: [], recent: [] }, { caller: 'test', model: 'engineer-engineering', deps: d })
     const sent = requests[0]?.messages[0]?.content ?? ''
     expect(sent).toContain('(no assigned tickets)')
     expect(sent).toContain('(none)')
@@ -71,7 +71,7 @@ describe('the check-in definition', () => {
     // answer, not evidence the model produced one — so the fitness matrix sees
     // a model that cannot hold the "reply with exactly X" instruction.
     const { deps: d } = deps('   ')
-    const res = await runHarness(outreachCheckInHarness, { work: WORK, recent: [] }, { caller: 'test', model: 'dex-developer', deps: d })
+    const res = await runHarness(outreachCheckInHarness, { work: WORK, recent: [] }, { caller: 'test', model: 'engineer-engineering', deps: d })
     expect(res.value).toBe(NOTHING_TO_SURFACE)
     expect(res.schemaValid).toBe(false)
   })
@@ -80,8 +80,8 @@ describe('the check-in definition', () => {
     const narrow = deps('ok')
     const wide = deps('ok', { capable: true })
     const input = { work: WORK, recent: [] }
-    const a = await runHarness(outreachCheckInHarness, input, { caller: 'test', model: 'dex-developer', deps: narrow.deps })
-    const b = await runHarness(outreachCheckInHarness, input, { caller: 'test', model: 'dex-developer', deps: wide.deps })
+    const a = await runHarness(outreachCheckInHarness, input, { caller: 'test', model: 'engineer-engineering', deps: narrow.deps })
+    const b = await runHarness(outreachCheckInHarness, input, { caller: 'test', model: 'engineer-engineering', deps: wide.deps })
     expect(a.widened).toBe(false)
     expect(b.widened).toBe(true)
     expect(narrow.requests[0]?.messages[0]?.content).not.toContain('Be concrete')
@@ -95,13 +95,13 @@ describe('the check-in definition', () => {
     // The whole reason this harness exists (audit 1.5): `zero_tool_claim` is
     // written for exactly this output and had never run on it.
     const { deps: d } = deps("I've messaged Priya and updated the ticket.", { toolNames: [] })
-    const res = await runHarness(outreachCheckInHarness, { work: WORK, recent: [] }, { caller: 'test', model: 'dex-developer', deps: d })
+    const res = await runHarness(outreachCheckInHarness, { work: WORK, recent: [] }, { caller: 'test', model: 'engineer-engineering', deps: d })
     expect(res.findings.map((f) => f.check)).toContain('zero_tool_claim')
   })
 
   it('does not flag the same line when the agent really did message someone', async () => {
     const { deps: d } = deps("I've messaged Priya and updated the ticket.", { toolNames: ['message_user', 'comment'] })
-    const res = await runHarness(outreachCheckInHarness, { work: WORK, recent: [] }, { caller: 'test', model: 'dex-developer', deps: d })
+    const res = await runHarness(outreachCheckInHarness, { work: WORK, recent: [] }, { caller: 'test', model: 'engineer-engineering', deps: d })
     expect(res.findings.map((f) => f.check)).not.toContain('zero_tool_claim')
   })
 

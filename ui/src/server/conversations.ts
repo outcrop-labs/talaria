@@ -36,10 +36,19 @@ export interface MessageRow {
   metadata?: Record<string, unknown>
 }
 
+/** THE THREE KINDS OF DURABLE CONVERSATION.
+ *
+ *  'chat' is one person and an agent. 'plan' is a shared thinking surface with a
+ *  living document beside it. 'research' is the same shape as a plan — several
+ *  people, one agent, one document that grows — over a cited report rather than
+ *  a plan, and shared through `research_members` rather than
+ *  `conversation_members`. */
+export type ConversationKind = 'chat' | 'plan' | 'research'
+
 /** The user's conversations of a given kind, newest activity first. `working`
  *  marks threads with a reply streaming right now — the sidebar shows them and
  *  selecting the agent lands on them instead of a fresh thread. */
-export async function listConversations(userId: string, kind: 'chat' | 'plan' = 'chat'): Promise<ConversationRow[]> {
+export async function listConversations(userId: string, kind: ConversationKind = 'chat'): Promise<ConversationRow[]> {
   const sql = await db()
   // Plans are multiplayer: you see your own AND ones shared with you (with the
   // owner's label for the sidebar). Chats stay strictly your own.
@@ -125,10 +134,24 @@ export async function getConversation(
     select c.id, c.agent_model as "agentModel", c.title, c.updated_at as "updatedAt",
            case when c.user_id = ${userId} then 'owner' else 'collaborator' end as role
     from conversations c
-    where c.id = ${conversationId} and c.kind in ('chat', 'plan')
-      and (c.user_id = ${userId} or (c.kind = 'plan' and exists(
-      select 1 from conversation_members cm where cm.conversation_id = c.id and cm.user_id = ${userId}
-    )))
+    where c.id = ${conversationId} and c.kind in ('chat', 'plan', 'research')
+      and (
+        c.user_id = ${userId}
+        or (c.kind = 'plan' and exists(
+          select 1 from conversation_members cm where cm.conversation_id = c.id and cm.user_id = ${userId}
+        ))
+        -- RESEARCH ACCESS FOLLOWS THE RUN, not a second membership list.
+        -- research_members already says who the run is shared with; deriving
+        -- from it means a person cannot keep the conversation after losing the
+        -- report, which two lists would eventually allow. (No backticks in here:
+        -- this is inside a template literal and one would end the string.)
+        or (c.kind = 'research' and exists(
+          select 1 from research_runs r
+            left join research_members rm on rm.run_id = r.id and rm.user_id = ${userId}
+           where r.conversation_id = c.id
+             and (r.owner_user_id = ${userId} or rm.user_id is not null)
+        ))
+      )
   `
   if (conv.length === 0) return null
   const messages = await sql`
@@ -147,7 +170,7 @@ export async function createConversation(
   userId: string,
   agentModel: string,
   title: string,
-  kind: 'chat' | 'plan' = 'chat',
+  kind: ConversationKind = 'chat',
   planTemplateId: string | null = null,
 ): Promise<string> {
   const sql = await db()
@@ -168,13 +191,13 @@ export async function ownedConversationModel(userId: string, conversationId: str
 export async function ownedConversation(
   userId: string,
   conversationId: string,
-): Promise<{ agentModel: string; kind: 'chat' | 'plan'; title: string | null } | null> {
+): Promise<{ agentModel: string; kind: ConversationKind; title: string | null } | null> {
   const sql = await db()
   const rows = await sql`
     select agent_model as "agentModel", kind, title from conversations
     where id = ${conversationId} and user_id = ${userId} and kind in ('chat', 'plan')
   `
-  return rows.length ? (rows[0] as { agentModel: string; kind: 'chat' | 'plan'; title: string | null }) : null
+  return rows.length ? (rows[0] as { agentModel: string; kind: ConversationKind; title: string | null }) : null
 }
 
 /** Like ownedConversation, but a PLAN also admits its collaborators — chats
@@ -182,7 +205,7 @@ export async function ownedConversation(
 export async function accessibleConversation(
   userId: string,
   conversationId: string,
-): Promise<{ agentModel: string; kind: 'chat' | 'plan'; title: string | null; ownerUserId: string; role: 'owner' | 'collaborator'; planTemplateId: string | null } | null> {
+): Promise<{ agentModel: string; kind: ConversationKind; title: string | null; ownerUserId: string; role: 'owner' | 'collaborator'; planTemplateId: string | null } | null> {
   const sql = await db()
   const rows = await sql`
     select agent_model as "agentModel", kind, title, user_id as "ownerUserId",
@@ -195,7 +218,7 @@ export async function accessibleConversation(
     )))
   `
   return rows.length
-    ? (rows[0] as { agentModel: string; kind: 'chat' | 'plan'; title: string | null; ownerUserId: string; role: 'owner' | 'collaborator'; planTemplateId: string | null })
+    ? (rows[0] as { agentModel: string; kind: ConversationKind; title: string | null; ownerUserId: string; role: 'owner' | 'collaborator'; planTemplateId: string | null })
     : null
 }
 

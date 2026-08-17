@@ -109,7 +109,18 @@ fi
 
 say "Fleet config plane (fleet/)"
 mkdir -p fleet/skills fleet/hooks fleet/agents stack
-if [ -f fleet/chassis.yml ]; then skip "fleet/chassis.yml"; else
+if [ -f fleet/chassis.yml ]; then
+  skip "fleet/chassis.yml"
+  # The chassis is user-owned config, so it is never overwritten — but one
+  # shape of it cannot work, and silently leaves every agent crash-looping:
+  # cap_drop ALL with no cap_add. s6-overlay needs SETUID/SETGID to drop to the
+  # hermes uid and CHOWN/DAC_OVERRIDE to bootstrap /opt/data; without them the
+  # cont-init hooks exit 111 and the container never gets past `cd /opt/data`.
+  if grep -q '^\s*-\s*ALL\s*$' fleet/chassis.yml && ! grep -q '^\s*cap_add:' fleet/chassis.yml; then
+    warn "fleet/chassis.yml drops ALL capabilities with no cap_add — agents will crash-loop."
+    warn "  Copy the cap_add block from scripts/chassis.template.yml, then restart your agents."
+  fi
+else
   cp scripts/chassis.template.yml fleet/chassis.yml && ok "fleet/chassis.yml (from template)"
 fi
 if [ -f fleet/.env ]; then skip "fleet/.env"; else

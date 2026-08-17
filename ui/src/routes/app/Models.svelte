@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { searchParams } from 'sv-router'
+  import { navigate, route } from '@/router'
+  import { tabFromPath } from '@/lib/route-tabs'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -24,14 +25,13 @@
   const isAdmin = $derived(session.data?.role === 'admin')
   const endpointsQuery = useEndpoints(() => isAdmin)
   const endpoints = $derived(endpointsQuery.data ?? [])
-  // /models?tab=roles deep-links a tab.
-  const tab: ModelsTab = $derived.by(() => {
-    const t = MODEL_TABS.find((v) => v.id === searchParams.get('tab'))
-    return t && t.id !== 'models' ? t.id : 'models'
-  })
+  // /models/roles deep-links a tab.
+  // THE URL IS THE TAB — /models and /models/<tab>. lib/route-tabs.ts holds
+  // the shared fallback rule.
+  const tab = $derived(tabFromPath(route.pathname, '/models', MODEL_TABS.map((t) => t.id), 'models'))
   const setTab = (t: ModelsTab) => {
-    if (t === 'models') searchParams.delete('tab')
-    else searchParams.set('tab', t)
+    if (t === 'models') void navigate('/models')
+    else void navigate('/models/:tab', { params: { tab: t } })
   }
   let adding = $state(false)
   // A just-added provider: jump straight into its manage modal so models get

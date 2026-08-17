@@ -168,6 +168,8 @@ export async function* runInboxConversationCommand(
   input: {
     instruction: string
     focusKey?: string | null
+    /** Which view the assistant panel is floating over (see surfaceBrief). */
+    surface?: string | null
     delegateModel?: string | null
     responseModel?: string | null
     mode?: 'normal' | 'fast' | 'plan'
@@ -260,6 +262,7 @@ export async function* runInboxConversationCommand(
     } else {
       const prompt = buildInboxConversationPrompt({
         instruction: `${input.instruction}${modeInstruction}${attachmentContext}`,
+        surface: input.surface ?? null,
         focus: null,
         history,
         allowedActionIds: [],

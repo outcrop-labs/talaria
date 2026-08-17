@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { tabFromPath } from '@/lib/route-tabs'
   import { createRawSnippet, type Snippet } from 'svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Plus } from '@lucide/svelte'
-  import { navigate } from '@/router'
+  import { navigate, route } from '@/router'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
@@ -40,17 +41,27 @@
   // default turned its failure into a confident "Tickets 0 / Plans 0" —
   // a count is an assertion, so it must not be printed from a read that failed.
   const failed = $derived(templatesQuery.isError && templatesQuery.data === undefined)
-  // /templates?tab=plan&t=<id> deep-links a tab + template.
-  const tab = $derived.by((): TemplateKind => {
-    const raw = searchParams.get('tab')
-    return TEMPLATE_TABS.some((v) => v.id === raw) ? (raw as TemplateKind) : 'ticket'
-  })
+  // /templates/plan&t=<id> deep-links a tab + template.
+  // THE URL IS THE TAB — /templates and /templates/plan. The SELECTED template
+  // stays `?t=`: it is a different axis (which item is open, inside whichever
+  // kind you are looking at), and collapsing both into the path would make
+  // "the plan tab with nothing selected" unexpressible.
+  const tab = $derived(tabFromPath(route.pathname, '/templates', TEMPLATE_TABS.map((v) => v.id), 'ticket'))
   const selectedId = $derived.by((): string | null => {
     const t = searchParams.get('t')
     return t == null || t === '' ? null : String(t)
   })
-  const setTab = (t: TemplateKind) => void navigate('/templates', { search: t === 'ticket' ? {} : { tab: t } })
-  const select = (id: string | null) => void navigate('/templates', { search: { ...(tab !== 'ticket' ? { tab } : {}), ...(id ? { t: id } : {}) } })
+  const setTab = (t: TemplateKind) => {
+    // Changing kind clears the selection, as it did before: a ticket template
+    // id means nothing on the plan tab.
+    if (t === 'ticket') void navigate('/templates')
+    else void navigate('/templates/:tab', { params: { tab: t } })
+  }
+  const select = (id: string | null) => {
+    const search: Record<string, string> = id ? { t: id } : {}
+    if (tab === 'ticket') void navigate('/templates', { search })
+    else void navigate('/templates/:tab', { params: { tab }, search })
+  }
   const menu = useContextMenu()
 
   let newName = $state('')
@@ -144,7 +155,7 @@
                   oncontextmenu={(e) =>
                     menu.openMenu(e, [
                       { label: 'Open', onSelect: () => select(t.id) },
-                      { label: 'Copy link', onSelect: () => copyAppLink(`/templates?tab=${t.kind}&t=${t.id}`) },
+                      { label: 'Copy link', onSelect: () => copyAppLink(`/templates/${t.kind}?t=${t.id}`) },
                       'sep',
                       { label: 'Delete', danger: true, onSelect: () => void remove(t) },
                     ])}

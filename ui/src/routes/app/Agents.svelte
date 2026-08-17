@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CalendarClock, Import, LayoutGrid, List, Plus } from '@lucide/svelte'
+  import { Import, LayoutGrid, List, Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Materialize from '@/components/ui/Materialize.svelte'
@@ -8,20 +8,42 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import Tabs from '@/components/ui/Tabs.svelte'
   import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import CreateAgentModal from '@/components/fleet/CreateAgentModal.svelte'
+  import RoleTemplatesTab from '@/components/fleet/RoleTemplatesTab.svelte'
   import FederateModal from '@/components/fleet/FederateModal.svelte'
-  import FleetCronsModal from '@/components/fleet/FleetCronsModal.svelte'
+  import FleetCronsTab from '@/components/fleet/FleetCronsTab.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { useFleet } from '@/lib/fleet'
   import { fly, slide, staggerIn } from '@/lib/motion'
   import { useFleetContainers, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { useSession } from '@/lib/session'
+  import { navigate, route } from '@/router'
+  import { tabFromPath } from '@/lib/route-tabs'
   import AgentListRow from './AgentListRow.svelte'
   import AgentTile from './AgentTile.svelte'
 
   const session = useSession()
   const isAdmin = $derived(session.data?.role === 'admin')
+  // Agents is the home tab; the role library and the fleet's schedules are the
+  // other two. Each was a takeover modal behind a toolbar icon — an affordance
+  // for one action, not for a surface you come back to and read.
+  //
+  // THE URL IS THE TAB. `/agents`, `/agents/templates`, `/agents/schedules` —
+  // so a tab can be linked to, bookmarked and reached with the back button,
+  // and "send me the schedules screen" is a URL rather than a description of
+  // where to click. An unrecognised segment falls back to the roster rather
+  // than rendering nothing.
+  const TABS = ['agents', 'templates', 'schedules'] as const
+  type AgentsTab = (typeof TABS)[number]
+  const tab = $derived(tabFromPath(route.pathname, '/agents', TABS, 'agents'))
+  const goTab = (id: AgentsTab) => {
+    // Two calls rather than one: the typed router wants the params object only
+    // on the parameterised path, and the roster is the bare one.
+    if (id === 'agents') void navigate('/agents')
+    else void navigate('/agents/:tab', { params: { tab: id } })
+  }
   const fleetQuery = useFleet()
   const defsQuery = useFleetDefs(() => isAdmin)
   const containersQuery = useFleetContainers(() => isAdmin)
@@ -35,7 +57,6 @@
   let view = $state<'grid' | 'list'>('grid')
   let creating = $state(false)
   let duplicateFrom = $state<AgentDef | null>(null)
-  let schedulesOpen = $state(false)
   let federateOpen = $state(false)
 
   // Defs AND containers gate the roster together: tiles built from
@@ -115,6 +136,9 @@
         {/if}
       {/snippet}
       {#snippet actions()}
+        <!-- Roster controls, and only on the roster: a grid/list toggle means
+             nothing next to a template library or a schedule list. -->
+        {#if tab === 'agents'}
         <!-- Grid / list toggle — the §8 segmented tile pair. -->
         <Segmented
           options={[
@@ -132,16 +156,6 @@
             variant="outline"
             size="sm"
             class="w-9 px-0"
-            onclick={() => (schedulesOpen = true)}
-            title="Schedules: crons across the fleet"
-            aria-label="Schedules"
-          >
-            <CalendarClock size={15} />
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            class="w-9 px-0"
             onclick={() => (federateOpen = true)}
             title="Federate outside agents into Talaria"
             aria-label="Federate agents"
@@ -149,9 +163,28 @@
             <Import size={15} />
           </Button>
         {/if}
+        {/if}
       {/snippet}
     </ViewHeader>
 
+    <Tabs
+      items={[
+        { id: 'agents', label: 'Agents' },
+        { id: 'templates', label: 'Role templates' },
+        { id: 'schedules', label: 'Schedules' },
+      ]}
+      value={tab}
+      onChange={goTab}
+    />
+
+    <!-- Tab-pane grammar: rise in on switch, no exit (ANIMATIONS.md). -->
+    {#key tab}
+      <div in:fly={{ y: 6, duration: 200 }} class="space-y-6">
+        {#if tab === 'templates'}
+          <RoleTemplatesTab />
+        {:else if tab === 'schedules'}
+          <FleetCronsTab />
+        {:else}
     <!-- Docker unreachable ≠ every agent stopped. Without this the dots all
          go red and the roster quietly libels the fleet. -->
     {#if containersQuery.isError && defsQuery.data !== undefined}
@@ -226,8 +259,10 @@
         </Materialize>
       </div>
     {/key}
+        {/if}
+      </div>
+    {/key}
 
-    {#if schedulesOpen}<FleetCronsModal onClose={() => (schedulesOpen = false)} />{/if}
     {#if federateOpen}<FederateModal onClose={() => (federateOpen = false)} />{/if}
     {#if creating}<CreateAgentModal open={creating} onClose={() => (creating = false)} templates={defs.filter((d) => d.enabled)} />{/if}
     {#if duplicateFrom}

@@ -2,7 +2,16 @@
 // the DuckDuckGo favicon CDN — fast — else the site's own favicon) and are
 // WARMED in bulk whenever a library page is served, so cards paint from cache
 // instead of fanning out cold fetches per image.
+//
+// Both inputs are attacker-reachable: `domain` comes straight off a signed-in
+// user's ?domain= query, and `src` off the public MCP registry. The proxy then
+// returns the BYTES it fetched, so an unguarded fetch here is a read primitive
+// against the private network. `publicIconDomain` screens the domain candidates
+// but says nothing about `src`, and neither screens what a redirect lands on —
+// safeFetch (redirects re-validated per hop, size capped) is what keeps this a
+// favicon fetcher.
 import { publicIconDomain } from '@/lib/icon-domain'
+import { safeFetch } from './safe-fetch'
 
 const cache = new Map<string, { at: number; buf: ArrayBuffer; ct: string } | { at: number; miss: true }>()
 const CACHE_MS = 24 * 60 * 60 * 1000
@@ -10,7 +19,7 @@ const MAX_BYTES = 512 * 1024
 
 const fetchIcon = async (url: string): Promise<{ buf: ArrayBuffer; ct: string } | null> => {
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(5_000), redirect: 'follow' })
+    const r = await safeFetch(url, { timeoutMs: 5_000, maxBytes: MAX_BYTES })
     if (!r.ok) return null
     const ct = r.headers.get('content-type') ?? ''
     if (!/^image\//.test(ct)) return null

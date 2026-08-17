@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { route } from '@/router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { searchParams } from 'sv-router'
   import { navigate } from '@/router'
@@ -23,6 +24,7 @@
   import { useSession, useHasPerm } from '@/lib/session'
   import { useUsers } from '@/lib/users'
   import { useConversations } from '@/lib/conversations.svelte'
+  import { readCommsSelection, restorableSelection, writeCommsSelection } from '@/lib/comms-selection'
   import {
     addChannelAgent,
     addChannelMember,
@@ -75,30 +77,27 @@
   // deep-links an agent conversation (agent-outreach notifications land here).
   // ?t=agent (the /chat redirect) asks for the chat workspace: default to the
   // first agent's fresh thread instead of the first channel.
-  // sv-router auto-parses search values ("5" → number, "true" → boolean); the
-  // ids/models here are opaque strings, so coerce whatever it parsed back.
-  const strParam = (v: string | number | boolean | null): string | null => (v == null ? null : String(v))
+  // THE PATH IS THE SELECTION, and it is discriminated:
+  //   /comms/channel/<id>
+  //   /comms/agent/<model>[/<thread>]
+  // The tag is a segment because the two kinds are different things, and a
+  // one-segment id would be ambiguous between a channel and an agent model
+  // until something resolved it.
   const sel = $derived.by((): Sel => {
-    const c = strParam(searchParams.get('c'))
-    const a = strParam(searchParams.get('a'))
-    const x = strParam(searchParams.get('x'))
-    return c
-      ? { t: 'channel', id: c }
-      : a
-        ? { t: 'agent', model: a, conversationId: x || null }
-        : null
+    const [, , kind, one, two] = route.pathname.split('/')
+    if (kind === 'channel' && one) return { t: 'channel', id: decodeURIComponent(one) }
+    if (kind === 'agent' && one) return { t: 'agent', model: decodeURIComponent(one), conversationId: two ? decodeURIComponent(two) : null }
+    return null
   })
   const searchT = $derived(searchParams.get('t') === 'agent' ? ('agent' as const) : undefined)
-  const setSel = (next: Sel, opts: { replace?: boolean } = {}) =>
-    void navigate('/comms', {
-      search:
-        next?.t === 'channel'
-          ? { c: next.id }
-          : next?.t === 'agent'
-            ? { a: next.model, ...(next.conversationId ? { x: next.conversationId } : {}) }
-            : {},
-      replace: opts.replace,
-    })
+  const setSel = (next: Sel, opts: { replace?: boolean } = {}) => {
+    const replace = opts.replace
+    if (next?.t === 'channel') void navigate('/comms/channel/:id', { params: { id: next.id }, replace })
+    else if (next?.t === 'agent' && next.conversationId)
+      void navigate('/comms/agent/:model/:thread', { params: { model: next.model, thread: next.conversationId }, replace })
+    else if (next?.t === 'agent') void navigate('/comms/agent/:model', { params: { model: next.model }, replace })
+    else void navigate('/comms', { replace })
+  }
   // The agent-flavored selection, pre-narrowed for the template.
   const agentSel = $derived(sel?.t === 'agent' ? sel : null)
   // Agents whose thread list is pinned open (chevron) without being selected.
@@ -143,22 +142,51 @@
   const people = $derived(users.filter((u) => u.id !== session.data?.id))
   const dmByPeer = $derived(new Map(dms.map((c) => [c.peer?.userId, c])))
 
+  // REMEMBER WHAT IS SELECTED, so leaving Comms and coming back through the nav
+  // rail does not land on the first channel. `sel` is derived from this view's
+  // own search params and nothing else, so there is no moment at which the
+  // value here disagrees with the URL — and a null `sel` (the transient empty
+  // URL on the way out) writes nothing, so leaving cannot erase the memory.
+  $effect(() => {
+    if (sel) writeCommsSelection(sel)
+  })
+
   // Default selection; heal a selection that vanished (archived). All are
   // replace-navigations — housekeeping shouldn't pollute history.
   // /chat lands here with ?t=agent: the chat workspace must be directly
   // reachable, so default to the first agent's fresh thread (§7 composer)
   // instead of the first channel; no agents → channel default as usual.
   $effect(() => {
-    if (!sel && searchT === 'agent') {
-      if (fleetQuery.isLoading) return
-      if (fleet[0]) {
-        setSel({ t: 'agent', model: fleet[0].id, conversationId: null }, { replace: true })
+    if (!sel) {
+      const saved = readCommsSelection()
+      // Both rosters gate the restore, and only when the saved pick needs them:
+      // validating against a list that has not arrived would discard a good
+      // memory and fall straight through to the first channel.
+      if (saved?.t === 'agent' && fleetQuery.isLoading) return
+      if (channels.length === 0 && channelsQuery.isLoading) return
+      const restorable = restorableSelection(saved, {
+        channelIds: channels.map((c) => c.id),
+        agentModels: fleet.map((a) => a.id),
+        conversationIds: conversationsQuery.isLoading ? null : conversations.map((c) => c.id),
+      })
+      // An explicit ?t=agent (the /chat entry) asked for the chat workspace, so
+      // a remembered CHANNEL does not get to answer it.
+      if (restorable && (searchT !== 'agent' || restorable.t === 'agent')) {
+        setSel(restorable, { replace: true })
         return
       }
+      if (searchT === 'agent') {
+        if (fleetQuery.isLoading) return
+        if (fleet[0]) {
+          setSel({ t: 'agent', model: fleet[0].id, conversationId: null }, { replace: true })
+          return
+        }
+      }
+      if (channels[0]) setSel({ t: 'channel', id: channels[0].id }, { replace: true })
+      return
     }
     if (channels.length === 0 && channelsQuery.isLoading) return
-    if (!sel && channels[0]) setSel({ t: 'channel', id: channels[0].id }, { replace: true })
-    if (sel?.t === 'channel' && channels.length > 0 && !channels.some((c) => c.id === sel.id)) {
+    if (sel.t === 'channel' && channels.length > 0 && !channels.some((c) => c.id === sel.id)) {
       setSel(channels[0] ? { t: 'channel', id: channels[0].id } : null, { replace: true })
     }
   })
@@ -192,7 +220,7 @@
 
   const channelRowMenu = (c: Channel): ContextMenuEntry[] => [
     { label: 'Open', onSelect: () => setSel({ t: 'channel', id: c.id }) },
-    { label: 'Copy link', onSelect: () => copyAppLink(`/comms?c=${c.id}`) },
+    { label: 'Copy link', onSelect: () => copyAppLink(`/comms/channel/${c.id}`) },
     { label: 'Mark read', disabled: !c.unreadCount, onSelect: () => void markRead(c.id) },
   ]
 
@@ -421,7 +449,7 @@
                   oncontextmenu={(e) =>
                     menu.openMenu(e, [
                       { label: 'Open', onSelect: () => setSel({ t: 'agent', model: a.id, conversationId: c.id }) },
-                      { label: 'Copy link', onSelect: () => copyAppLink(`/comms?a=${a.id}&x=${c.id}`) },
+                      { label: 'Copy link', onSelect: () => copyAppLink(`/comms/agent/${a.id}/${c.id}`) },
                       {
                         label: 'Rename',
                         onSelect: () => {

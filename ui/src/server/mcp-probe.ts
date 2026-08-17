@@ -2,10 +2,17 @@
 // transport speaks JSON-RPC over POST; we send an `initialize` and classify the
 // response so the UI can show a real connection status instead of hoping.
 //
-// Dev note: fleet MCP servers live on the docker network (agent-mail:9500),
-// which the host can't resolve — the docker-hostname→localhost fallback lets
-// the probe work in dev when the port is published; otherwise it honestly
-// reports unreachable.
+// The URL is admin-supplied, so the probe goes through safeFetch: http(s)
+// only, no private/loopback/link-local targets, and every redirect re-checked.
+//
+// This used to carry a dev convenience: a bare docker hostname that failed to
+// resolve (agent-mail:9500) was retried against localhost. That is exactly the
+// SSRF primitive we are removing — "type a name that doesn't resolve, get a
+// probe of the app's own loopback" — so it's gone. Operators who genuinely
+// need to reach an internal MCP server put the host or CIDR in
+// TALARIA_FETCH_ALLOW_HOSTS and enter the real URL.
+import { safeFetch, BlockedUrlError } from './safe-fetch'
+
 export type McpProbeState = 'ok' | 'auth' | 'unreachable' | 'error'
 
 export interface McpProbeResult {
@@ -26,30 +33,21 @@ const INITIALIZE = {
   },
 }
 
-async function post(url: string, headers: Record<string, string>, body: unknown): Promise<Response> {
-  const init = {
-    method: 'POST' as const,
+const post = (url: string, headers: Record<string, string>, body: unknown): Promise<Response> =>
+  safeFetch(url, {
+    method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(8_000),
-  }
-  try {
-    return await fetch(url, init)
-  } catch (err) {
-    const m = /^(https?):\/\/([^/:]+)(:\d+)?(\/.*)?$/.exec(url)
-    const host = m?.[2] ?? ''
-    if (m && host && !host.includes('.') && host !== 'localhost') {
-      return await fetch(`${m[1]}://localhost${m[3] ?? ''}${m[4] ?? ''}`, init)
-    }
-    throw err
-  }
-}
+    timeoutMs: 8_000,
+  })
 
 export async function probeMcp(url: string, headers: Record<string, string> = {}): Promise<McpProbeResult> {
   let res: Response
   try {
     res = await post(url, headers, INITIALIZE)
   } catch (e) {
+    // A refused target is an answer, not a failure — say which it was.
+    if (e instanceof BlockedUrlError) return { state: 'error', detail: e.message }
     return { state: 'unreachable', detail: (e as Error).message.includes('timeout') ? 'timed out (8s)' : 'could not connect' }
   }
 

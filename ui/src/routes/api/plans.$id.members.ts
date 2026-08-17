@@ -57,7 +57,7 @@ export const Route = defineApi('/api/plans/$id/members', {
       kind: 'plan-share',
       title: `${user.name ?? user.email ?? 'Someone'} added you to a plan`,
       body: plan?.title ?? 'Untitled plan',
-      href: `/plan?p=${params.id}`,
+      href: `/plan/${params.id}`,
     }).catch(() => {})
     return json({ members: await listPlanMembers(params.id) })
   },

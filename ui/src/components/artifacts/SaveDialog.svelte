@@ -52,7 +52,7 @@
         Saved. It's a durable file now: versioned, shareable, folder-organized.
       </p>
       <div class="flex justify-end gap-2 border-t border-line-subtle pt-3">
-        <a href={p('/artifacts')} class="text-sm text-accent hover:underline" onclick={onClose}>
+        <a href={`${p('/artifacts')}?a=${savedId}`} class="text-sm text-accent hover:underline" onclick={onClose}>
           Open Files ↗
         </a>
         <Button size="sm" onclick={onClose}>

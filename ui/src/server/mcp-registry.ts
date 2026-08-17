@@ -23,6 +23,7 @@ import { seal, open } from './secretbox'
 import { assistantOwnerFor } from './users'
 import { subjectModel, type AgentSubject } from './agent-auth'
 import { hasOauthTokens, oauthTokenFor } from './mcp-oauth'
+import { safeFetch } from './safe-fetch'
 
 export interface McpServer {
   id: string
@@ -245,8 +246,8 @@ async function orgSession(server: McpServer): Promise<{ call: (body: unknown, se
   const bearer = server.oauthEnabled ? await oauthTokenFor(server.id, 'org') : null
   const builtinHeaders: Record<string, string> = server.builtin ? { 'X-Agent-Name': 'talaria', 'X-Api-Key': process.env.TALARIA_AGENT_KEY ?? '' } : {}
   const call = async (body: unknown, sessionId?: string | null) => {
-    const r = await fetch(server.url, {
-      method: 'POST',
+    const init = {
+      method: 'POST' as const,
       headers: {
         'content-type': 'application/json',
         accept: 'application/json, text/event-stream',
@@ -256,8 +257,16 @@ async function orgSession(server: McpServer): Promise<{ call: (body: unknown, se
         ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout((server.timeoutSecs ?? 30) * 1000),
-    })
+    }
+    const timeoutMs = (server.timeoutSecs ?? 30) * 1000
+    // Everything but the built-in toolkit is a URL (and a header set) someone
+    // with agents.manage typed — straight through the SSRF guard. The builtin
+    // row is Talaria's own MCP service on loopback, written by ensureBuiltinMcp()
+    // and un-editable by design (updateMcpServer refuses url/headers patches on
+    // builtin), so it is infrastructure, not input.
+    const r = server.builtin
+      ? await fetch(server.url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+      : await safeFetch(server.url, { ...init, timeoutMs })
     const session = r.headers.get('mcp-session-id')
     const text = await r.text()
     return { json: parseMcpResponse(text), session, status: r.status }
@@ -372,6 +381,30 @@ export async function refreshMcpTools(id: string): Promise<{ tools: Array<{ name
     const sql = await db()
     await sql`update mcp_servers set tools = ${sql.json(tools)}, tools_refreshed_at = now(), updated_at = now() where id = ${id}`
     return { tools }
+  }
+  // The Workbench is IN-PROCESS, and `talaria-workbench://core` is a routing
+  // token rather than an endpoint — there is nothing to connect to, so this
+  // never had a working discovery path. It only looked fine because
+  // ensureBuiltinMcp seeds the row from the same module export; pressing
+  // refresh then tried to fetch a URL with a scheme no client resolves. Read
+  // the catalog the way the app-server branch above does.
+  if (!/^https?:\/\//i.test(server.url)) {
+    const { WORKBENCH_TOOLS } = await import('./workbench-mcp')
+    const tools = WORKBENCH_TOOLS.map((t) => ({ name: t.name, description: t.description.slice(0, 300) }))
+    const sql = await db()
+    await sql`update mcp_servers set tools = ${sql.json(tools)}, tools_refreshed_at = now(), updated_at = now() where id = ${id}`
+    return { tools }
+  }
+  // The built-in toolkit runs as a child of this app, spawned OPPORTUNISTICALLY
+  // (renders, comms reads). On a freshly booted instance none of those has
+  // happened, so the endpoint is simply not up yet and refresh reported the
+  // platform's own tools unreachable. Start it and wait, rather than probing a
+  // port nothing is listening on.
+  if (server.builtin) {
+    const { awaitMcpService } = await import('./mcp-service')
+    if (!(await awaitMcpService())) {
+      return { error: 'the Talaria toolkit service did not start — check the app logs' }
+    }
   }
   try {
     const { call } = await orgSession(server)

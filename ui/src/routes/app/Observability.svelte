@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { searchParams } from 'sv-router'
-  import { navigate } from '@/router'
+  import { tabFromPath } from '@/lib/route-tabs'
+  import { navigate, route } from '@/router'
   import Tabs from '@/components/ui/Tabs.svelte'
   import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import { fly, staggerIn } from '@/lib/motion'
@@ -11,12 +11,13 @@
   import OverviewPanel from './observability/OverviewPanel.svelte'
   import { OBS_TABS, type ObsTab } from './observability/observability'
 
-  // /observability?tab=cost deep-links a detail view; the root is Overview.
-  const tab = $derived.by((): ObsTab => {
-    const t = OBS_TABS.find((v) => v.id === searchParams.get('tab'))
-    return t && t.id !== 'overview' ? t.id : 'overview'
-  })
-  const setTab = (t: ObsTab) => void navigate('/observability', { search: t === 'overview' ? {} : { tab: t } })
+  // /observability/cost deep-links a detail view; the root is Overview.
+  // THE URL IS THE TAB — /observability and /observability/<tab>.
+  const tab = $derived(tabFromPath(route.pathname, '/observability', OBS_TABS.map((t) => t.id), 'overview'))
+  const setTab = (t: ObsTab) => {
+    if (t === 'overview') void navigate('/observability')
+    else void navigate('/observability/:tab', { params: { tab: t } })
+  }
 </script>
 
 <div class="h-full overflow-y-auto p-8">

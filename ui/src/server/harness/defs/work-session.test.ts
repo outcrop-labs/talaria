@@ -57,7 +57,7 @@ const world = (turn: Turn): { deps: Partial<HarnessDeps>; findings: Finding[] } 
 
 const run = (turn: Turn) => {
   const w = world(turn)
-  return runHarness(workSessionHarness, { prompt: '[Work session — turn 3/12] Continue.' }, { caller: 'ticket:t1', model: 'dex-developer', deps: w.deps }).then(
+  return runHarness(workSessionHarness, { prompt: '[Work session — turn 3/12] Continue.' }, { caller: 'ticket:t1', model: 'engineer-engineering', deps: w.deps }).then(
     (result) => ({ result, recorded: w.findings }),
   )
 }

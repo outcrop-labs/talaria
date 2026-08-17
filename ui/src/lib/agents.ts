@@ -12,10 +12,9 @@ export interface AgentModel {
 export function useAgents() {
   return createQuery(() => ({
     queryKey: ['agents'],
-    // `source: 'mock'` describes a gateway that answered without a real fleet.
-    // A failed request is not a mock fleet — it is a failure.
-    queryFn: (): Promise<{ agents: AgentModel[]; source: 'gateway' | 'mock' }> =>
-      getJson<{ agents: AgentModel[]; source: 'gateway' | 'mock' }>('/api/agents'),
+    // An empty list means an empty fleet. A failed request is not an empty
+    // fleet — it is a failure, and getJson throws so it surfaces as one.
+    queryFn: (): Promise<{ agents: AgentModel[] }> => getJson<{ agents: AgentModel[] }>('/api/agents'),
     staleTime: 30_000,
   }))
 }

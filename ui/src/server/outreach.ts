@@ -155,7 +155,7 @@ export async function agentMessageUser(agentModel: string, to: string, message: 
     kind: 'agent-outreach',
     title: `${label} reached out`,
     body: body.length > 140 ? `${body.slice(0, 140)}…` : body,
-    href: `/comms?a=${encodeURIComponent(agentModel)}&x=${convId}`,
+    href: `/comms/agent/${encodeURIComponent(agentModel)}/${convId}`,
   }).catch(() => {})
 
   // THE EVENT NOTE IS NOT JUST AUDIT — `checkInTurn` reads recent notes back

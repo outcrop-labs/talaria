@@ -624,7 +624,7 @@ function grounded(reply: string) {
   const recorded: Array<{ check: string }> = []
   const config: GuardConfig = { ...GUARD, policedHosts: ['talaria.internal'] }
   const deps: Partial<HarnessDeps> = {
-    resolveModel: async () => ({ model: 'dex-developer', step: 'utility' }),
+    resolveModel: async () => ({ model: 'engineer-engineering', step: 'utility' }),
     routing: async (model) => ({ endpoints: ['fleet'], upstreamModel: model }),
     personaKeys: async () => [],
     missingCapabilities: async () => [],

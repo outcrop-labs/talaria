@@ -1,7 +1,7 @@
 import { defineApi } from '@/server/api-route'
 import { json } from '@/server/http'
 import { z } from 'zod'
-import { actorOf, parseBody, requirePerm, requireUser } from '@/server/api-guard'
+import { actorOf, parseBody, requirePerm } from '@/server/api-guard'
 import { agentCaller } from '@/server/agent-auth'
 import { assistantOwnerFor } from '@/server/users'
 import { createDoc, getSpace, listDocs, saveDoc } from '@/server/kb'
@@ -75,9 +75,18 @@ export const Route = defineApi('/api/kb/spaces/$id/docs', {
       return json({ doc: saved ?? doc })
     }
 
-    const gate = await requireUser(request)
+    // Humans create where they can read: the same gate the GET on this route
+    // uses, so a private space stays closed on write as well as on read. This
+    // was `requireUser` alone, which let any signed-in member drop a doc into
+    // someone else's private space.
+    const gate = await requirePerm(request, 'kb.edit')
     if (gate instanceof Response) return gate
     const user = gate
+    const space = await getSpace(params.id)
+    if (!space) return json({ error: 'not found' }, { status: 404 })
+    if (!canRead(space, user.id, user.email ?? user.name, await listEditors('space', params.id))) {
+      return json({ error: 'forbidden' }, { status: 403 })
+    }
     const doc = await createDoc({
       spaceId: params.id,
       parentId: body.parentId ?? null,

@@ -1,6 +1,7 @@
 // Ticket/plan templates: an org-wide library of markdown skeletons + prompt
 // guidance. Boards bind the ticket templates they use (one default); agents may
-// carry their own override ("Jax always writes eng tickets"). Resolution order,
+// carry their own override (an engineering agent always writing eng tickets).
+// Resolution order,
 // everywhere a template applies:
 //   explicit pick → agent binding → board default → none (freeform).
 import { db } from './db/pg'

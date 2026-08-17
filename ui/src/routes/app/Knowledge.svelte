@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { route } from '@/router'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Plus } from '@lucide/svelte'
@@ -15,7 +16,7 @@
   import { navigate } from '@/router'
   import { fade, slide } from '@/lib/motion'
   import {
-    createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, updateSpace, useDocs, useSpaces,
+    createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, updateSpace, useDoc, useDocs, useSpaces,
     type KbDocMeta, type KbSpace,
   } from '@/lib/kb'
   import KbDocEditor from './KbDocEditor.svelte'
@@ -50,11 +51,21 @@
     const v = searchParams.get(k)
     return v == null || v === true ? null : String(v)
   }
-  const spaceId = $derived(idParam('space') || idParam('s') || null)
-  const docId = $derived(idParam('doc') || idParam('d') || null)
+  // THE PATH IS THE SELECTION: /knowledge/<space>/<doc>. The query forms
+  // (`?space=` / `?doc=`, and the short `?s=` / `?d=`) remain the BY-ID
+  // PERMALINK, because a link can know a document without knowing which space
+  // holds it — an attachment chip has only the doc id — and resolving that is
+  // this view's job, not the linker's.
+  const pathSpace = $derived(route.pathname.startsWith('/knowledge/') ? route.pathname.split('/')[2] ?? null : null)
+  const pathDoc = $derived(route.pathname.startsWith('/knowledge/') ? route.pathname.split('/')[3] ?? null : null)
+  const spaceId = $derived(pathSpace || idParam('space') || idParam('s') || null)
+  const docId = $derived(pathDoc || idParam('doc') || idParam('d') || null)
   // One navigation per selection change — space + doc move together.
-  const setLoc = (space: string | null, doc: string | null) =>
-    navigate('/knowledge', { search: { ...(space ? { space } : {}), ...(doc ? { doc } : {}) } })
+  const setLoc = (space: string | null, doc: string | null) => {
+    if (space && doc) void navigate('/knowledge/:space/:doc', { params: { space, doc } })
+    else if (space) void navigate('/knowledge/:space', { params: { space } })
+    else void navigate('/knowledge')
+  }
   const setSpaceId = (id: string | null) => setLoc(id, null)
   const setDocId = (id: string | null) => setLoc(spaceId, id)
   let creatingSpace = $state(false)
@@ -67,9 +78,17 @@
   // alone, so the document the link pointed at was thrown away between the
   // click and the first paint, and the reader got the folder overview with no
   // sign anything had been asked for.
+  // A by-id permalink resolves to the canonical path, and a doc resolves to ITS
+  // OWN space rather than to the first one in the list. That guess was a real
+  // bug: `?doc=<id>` for a document in the second space rendered the first
+  // space's overview and quietly dropped the request.
+  const permalinkDoc = useDoc(() => (!pathSpace && docId ? docId : null))
   $effect(() => {
-    if (!spaceId && spaces[0])
-      navigate('/knowledge', { search: { space: spaces[0].id, ...(docId ? { doc: docId } : {}) }, replace: true })
+    if (pathSpace) return // already canonical
+    const home = permalinkDoc.data?.spaceId ?? (docId ? null : spaces[0]?.id)
+    if (!home) return
+    if (docId) void navigate('/knowledge/:space/:doc', { params: { space: home, doc: docId }, replace: true })
+    else void navigate('/knowledge/:space', { params: { space: home }, replace: true })
   })
 
   const newSpace = async (name: string) => {

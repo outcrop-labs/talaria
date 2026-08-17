@@ -54,7 +54,7 @@
           : `${data.counts.unreadable} stored secret${data.counts.unreadable === 1 ? ' is' : 's are'} sealed with a key this instance no longer has.`}
     </span>
     <a
-      href={`${p('/admin')}?tab=secrets`}
+      href={`${p('/admin')}/secrets`}
       class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-danger underline-offset-2 hover:underline"
     >
       Review secrets

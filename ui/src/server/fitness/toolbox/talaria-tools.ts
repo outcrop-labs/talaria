@@ -624,7 +624,7 @@ export const TALARIA_TOOLS: readonly SandboxTool[] = [
     group: 'governance',
     assistantOnly: true,
     description:
-      "Add or remove fleet agents on a board (personal assistants only; your owner needs owner/editor). Pass agent model names (e.g. 'dex-developer'). Returns the board's resulting agent policy.",
+      "Add or remove fleet agents on a board (personal assistants only; your owner needs owner/editor). Pass agent model names (e.g. 'engineer-engineering'). Returns the board's resulting agent policy.",
     parameters: {
       type: 'object',
       properties: { boardId: str('Board id (from list_boards)'), add: strs('Agent models to allow on the board'), remove: strs('Agent models to remove from the board') },

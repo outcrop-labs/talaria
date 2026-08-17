@@ -24,12 +24,11 @@ export interface FleetAgentStat {
 
 export interface FleetOverview {
   agents: FleetAgentStat[]
-  source: 'gateway' | 'mock'
   totals: { agents: number; online: number; conversations: number; messages: number; activeToday: number }
 }
 
 export async function getFleetOverview(): Promise<FleetOverview> {
-  const { agents, source } = await listFleetAgents()
+  const agents = await listFleetAgents()
   // Seed the registry from the fleet so every agent shows (offline until it
   // heartbeats to Talaria), then read owned status.
   await seedFleetNames(agents.map((a) => a.id))
@@ -91,5 +90,5 @@ export async function getFleetOverview(): Promise<FleetOverview> {
     activeToday: stats.filter((s) => s.lastUsed && new Date(s.lastUsed).getTime() > dayAgo).length,
   }
 
-  return { agents: stats, source, totals }
+  return { agents: stats, totals }
 }

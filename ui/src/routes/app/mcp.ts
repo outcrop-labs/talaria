@@ -1,6 +1,7 @@
 // Shared types + helpers for the MCP page (Mcp.svelte + its cards/modals).
 import { createQuery } from '@tanstack/svelte-query'
 import { getList } from '@/lib/fetch-json'
+export { isInternalServer } from '@/lib/mcp-servers'
 
 export interface McpServerRow {
   id: string

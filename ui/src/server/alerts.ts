@@ -63,9 +63,9 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
     where managed and enabled order by slug
   `) as unknown as Array<{ slug: string; department: string; displayName: string }>
   // Everything independent, at once — the wall-clock is max(probe), not sum.
-  const [states, gatewaySource, mcpUp, rag, upgrade, brains, cost, stuck] = await Promise.all([
+  const [states, manifestCount, mcpUp, rag, upgrade, brains, cost, stuck] = await Promise.all([
     managed.length ? containerStatus(managed.map((m) => m.department)).catch(() => null) : Promise.resolve(null),
-    listAgents().then((a) => a.source).catch(() => 'mock' as const),
+    listAgents().then((a) => a.length).catch(() => 0),
     fetch(`http://127.0.0.1:${MCP_PORT()}/mcp`, { method: 'POST', signal: AbortSignal.timeout(2_500) })
       .then((r) => r.status === 401 || r.ok)
       .catch(() => false),
@@ -111,7 +111,11 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
   }
 
   // ── Gateway plane reachability ──────────────────────────────────────────────
-  if (gatewaySource !== 'gateway') {
+  // Only a failure when agents EXIST but nothing is rendered. An empty manifest
+  // on an instance with no managed agents is a fresh install, not an outage —
+  // this used to fire a critical alert at everybody who had not created an
+  // agent yet, because "no manifest" and "unreachable" were the same value.
+  if (managed.length > 0 && manifestCount === 0) {
     alerts.push({
       severity: 'critical',
       title: 'Gateway plane unreachable',
@@ -343,7 +347,7 @@ async function computeAlertsFresh(userId: string): Promise<Alert[]> {
         severity: 'warning',
         title: 'Token counts are mostly estimates',
         detail: `${Math.round(cost.totals.estimatedShare * 100)}% of the last 30 days' generations lack real usage from the gateway.`,
-        href: '/observability?tab=cost',
+        href: '/observability/cost',
       })
     }
   }

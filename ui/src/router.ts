@@ -33,8 +33,28 @@ export const { p, navigate, isActive, preload, route } = createRouter({
   },
   '/': {
     '/': () => import('./routes/app/Home.svelte'),
+    // Home's console tabs. Under /home rather than at the root because their
+    // names ARE the names of real views: /boards is the board list, /home/boards
+    // is Home's summary of it.
+    '/home': {
+      '/:tab': () => import('./routes/app/Home.svelte'),
+    },
     '/chat': () => import('./routes/app/Chat.svelte'),
-    '/comms': () => import('./routes/app/Comms.svelte'),
+    // A DISCRIMINATED path. The selection is a tagged union — a channel, or a
+    // thread with an agent — so the tag is a segment: the two kinds cannot be
+    // confused, and a thread hangs off the agent that owns it.
+    '/comms': {
+      '/': () => import('./routes/app/Comms.svelte'),
+      '/channel': {
+        '/:id': () => import('./routes/app/Comms.svelte'),
+      },
+      '/agent': {
+        '/:model': {
+          '/': () => import('./routes/app/Comms.svelte'),
+          '/:thread': () => import('./routes/app/Comms.svelte'),
+        },
+      },
+    },
     '/channels': () => import('./routes/app/Channels.svelte'),
     '/inbox': () => import('./routes/app/Inbox.svelte'),
     '/boards': {
@@ -48,17 +68,60 @@ export const { p, navigate, isActive, preload, route } = createRouter({
         layout: () => import('./routes/app/boards/BoardLayout.svelte'),
       },
     },
-    '/plan': () => import('./routes/app/Plan.svelte'),
-    '/research': () => import('./routes/app/Research.svelte'),
-    '/knowledge': () => import('./routes/app/Knowledge.svelte'),
-    '/artifacts': () => import('./routes/app/Artifacts.svelte'),
-    '/agents': () => import('./routes/app/Agents.svelte'),
+    // The selected plan / run is a path, not a query: it is the thing the page
+    // is about, and a link to it should look like one.
+    '/plan': {
+      '/': () => import('./routes/app/Plan.svelte'),
+      '/:planId': () => import('./routes/app/Plan.svelte'),
+    },
+    '/research': {
+      '/': () => import('./routes/app/Research.svelte'),
+      '/:runId': () => import('./routes/app/Research.svelte'),
+    },
+    // Space then doc — genuinely hierarchical, so it reads as a path.
+    // `/knowledge?doc=<id>` still resolves: it is the by-id permalink for
+    // links that know a document but not which space it lives in.
+    '/knowledge': {
+      '/': () => import('./routes/app/Knowledge.svelte'),
+      '/:space': {
+        '/': () => import('./routes/app/Knowledge.svelte'),
+        '/:doc': () => import('./routes/app/Knowledge.svelte'),
+      },
+    },
+    // PLACE is the path; the folder you are browsing and the file you have
+    // open stay in the query. They are a different axis — selection WITHIN a
+    // place — and they are independent of each other, so a file can be open
+    // with no folder. A positional path could not say that without a
+    // placeholder segment.
+    '/artifacts': {
+      '/': () => import('./routes/app/Artifacts.svelte'),
+      '/:place': () => import('./routes/app/Artifacts.svelte'),
+    },
+    // Each tab is a real location: /agents (roster), /agents/templates,
+    // /agents/schedules. A tab you cannot link to, bookmark, or reach with the
+    // back button is a mode, not a place.
+    '/agents': {
+      '/': () => import('./routes/app/Agents.svelte'),
+      '/:tab': () => import('./routes/app/Agents.svelte'),
+    },
     '/fleet': () => import('./routes/app/Fleet.svelte'),
     '/studio': () => import('./routes/app/Studio.svelte'),
-    '/templates': () => import('./routes/app/Templates.svelte'),
-    '/models': () => import('./routes/app/Models.svelte'),
-    '/mcp': () => import('./routes/app/Mcp.svelte'),
-    '/observability': () => import('./routes/app/Observability.svelte'),
+    '/templates': {
+      '/': () => import('./routes/app/Templates.svelte'),
+      '/:tab': () => import('./routes/app/Templates.svelte'),
+    },
+    '/models': {
+      '/': () => import('./routes/app/Models.svelte'),
+      '/:tab': () => import('./routes/app/Models.svelte'),
+    },
+    '/mcp': {
+      '/': () => import('./routes/app/Mcp.svelte'),
+      '/:tab': () => import('./routes/app/Mcp.svelte'),
+    },
+    '/observability': {
+      '/': () => import('./routes/app/Observability.svelte'),
+      '/:tab': () => import('./routes/app/Observability.svelte'),
+    },
     '/apps': () => import('./routes/app/Apps.svelte'),
     '/x': {
       '/:app': {
@@ -66,8 +129,14 @@ export const { p, navigate, isActive, preload, route } = createRouter({
         '/manage': () => import('./routes/app/XAppManage.svelte'),
       },
     },
-    '/settings': () => import('./routes/app/Settings.svelte'),
-    '/admin': () => import('./routes/app/Admin.svelte'),
+    '/settings': {
+      '/': () => import('./routes/app/Settings.svelte'),
+      '/:tab': () => import('./routes/app/Settings.svelte'),
+    },
+    '/admin': {
+      '/': () => import('./routes/app/Admin.svelte'),
+      '/:tab': () => import('./routes/app/Admin.svelte'),
+    },
     layout: () => import('./routes/app/AppLayout.svelte'),
     hooks: {
       onError(error) {

@@ -202,7 +202,7 @@ export async function secretHealth(): Promise<SecretHealth> {
         ? `A working secret. ${w.grants > 0 ? `${w.grants} agent${w.grants === 1 ? '' : 's'} can spend it; ` : ''}the people it is shared with can read it`
         : `${w.grants > 0 ? `${w.grants} agent${w.grants === 1 ? '' : 's'} can SPEND it` : 'Granted to no agent, so nobody can spend it'} — and nobody can read it`,
       surface: w.revealable ? 'Files → Secrets' : 'Admin → Secrets',
-      href: w.revealable ? '/artifacts?p=secrets' : '/admin?tab=secrets',
+      href: w.revealable ? '/artifacts/secrets' : '/admin/secrets',
       // A SPENT ONE-SHOT IS NOT BROKEN. `resolveHandles` empties the ciphertext
       // once the last use is gone, deliberately — reporting that as an
       // encryption failure would send an operator hunting a key problem that
@@ -431,7 +431,7 @@ export async function secretHealth(): Promise<SecretHealth> {
       label: 'Object storage secret key',
       unlocks: 'Uploads, attachments and artifact files',
       surface: 'Admin → Storage',
-      href: '/admin?tab=storage',
+      href: '/admin/storage',
       state: stateOf(dig(storage?.value, 'secretAccessKey')),
       scope: 'instance',
       setAt: iso(storage?.updatedAt),
@@ -444,7 +444,7 @@ export async function secretHealth(): Promise<SecretHealth> {
         label: 'Object storage replica secret key',
         unlocks: 'Mirroring uploads to the replica bucket',
         surface: 'Admin → Storage',
-        href: '/admin?tab=storage',
+        href: '/admin/storage',
         state: stateOf(dig(storage?.value, 'replica', 'secretAccessKey')),
         scope: 'instance',
         setAt: iso(storage?.updatedAt),
@@ -480,7 +480,7 @@ export async function secretHealth(): Promise<SecretHealth> {
       label: 'Reranker API key',
       unlocks: 'Reranking retrieval results — search still works without it, less well',
       surface: 'Admin → Retrieval',
-      href: '/admin?tab=retrieval',
+      href: '/admin/retrieval',
       state: stateOf(dig(rerank?.value, 'keySealed')),
       scope: 'instance',
       setAt: iso(rerank?.updatedAt),

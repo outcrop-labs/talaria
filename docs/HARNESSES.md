@@ -46,7 +46,7 @@ failure behavior — it *declares* them, and `runHarness` honors the declaration
 | `server/harness/capability.ts` | What a model can actually do, and who says so. |
 | `server/harness/transport.ts` | The gateway and fleet-persona transports (blocking + streaming), the request that reaches them, and the refusals a transport raises rather than dropping a field it cannot honor. |
 | `server/harness/registry.ts` | The 23 shipped harnesses, merged builtin < app-shipped < admin-custom. |
-| `server/harness/defs/*.ts` | The definitions themselves — 32 harnesses, 291 eval fixtures. |
+| `server/harness/defs/*.ts` | The definitions themselves — 32 harnesses, 292 eval fixtures. |
 | `server/harness/recorded.ts` | Run any harness against written-down replies: no gateway, no fleet, no DB, no clock. |
 
 **One chokepoint, and CI holds it.** `node scripts/check-invariants.mjs` fails the build on a call to

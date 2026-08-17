@@ -12,7 +12,7 @@ import { personaIndex, personaKeysFrom, personaTargets, type PersonaRow } from '
 // through the runner in run.test.ts, where it belongs.
 
 const penny: PersonaRow = {
-  agent: 'penny-assistant',
+  agent: 'assistant-operations',
   config: {
     main: { endpoint: 'spark', model: 'qwen3-14b' },
     aliases: [
@@ -25,19 +25,19 @@ const penny: PersonaRow = {
 
 describe('resolving a persona to its backing targets', () => {
   it('maps the base id to main plus the fallback chain', () => {
-    expect(personaTargets('penny-assistant', [penny])).toEqual([
+    expect(personaTargets('assistant-operations', [penny])).toEqual([
       { endpoint: 'spark', model: 'qwen3-14b' },
       { endpoint: 'thunder', model: 'llama3-8b' },
     ])
   })
 
   it('maps every declared tier to its own target', () => {
-    expect(personaKeysFrom('penny-assistant-opus', [penny])).toEqual(['anthropic:claude-opus-4', 'thunder:llama3-8b'])
-    expect(personaKeysFrom('penny-assistant-fast', [penny])).toEqual(['spark:qwen3-4b', 'thunder:llama3-8b'])
+    expect(personaKeysFrom('assistant-operations-opus', [penny])).toEqual(['anthropic:claude-opus-4', 'thunder:llama3-8b'])
+    expect(personaKeysFrom('assistant-operations-fast', [penny])).toEqual(['spark:qwen3-4b', 'thunder:llama3-8b'])
   })
 
   it('answers nothing for an unknown id or an undeclared tier', () => {
-    expect(personaKeysFrom('penny-assistant-turbo', [penny])).toEqual([])
+    expect(personaKeysFrom('assistant-operations-turbo', [penny])).toEqual([])
     expect(personaKeysFrom('nobody-here', [penny])).toEqual([])
     expect(personaKeysFrom('penny', [penny])).toEqual([])
   })
@@ -46,16 +46,16 @@ describe('resolving a persona to its backing targets', () => {
     // Otherwise the same endpoint:model would be asked twice on the hot path and
     // counted twice in a unanimity vote.
     const rows: PersonaRow[] = [
-      { agent: 'dex-developer', config: { main: { endpoint: 'spark', model: 'q' }, fallbacks: [{ endpoint: 'spark', model: 'q' }] } },
+      { agent: 'engineer-engineering', config: { main: { endpoint: 'spark', model: 'q' }, fallbacks: [{ endpoint: 'spark', model: 'q' }] } },
     ]
-    expect(personaKeysFrom('dex-developer', rows)).toEqual(['spark:q'])
+    expect(personaKeysFrom('engineer-engineering', rows)).toEqual(['spark:q'])
   })
 
   it('refuses to stand in the fallbacks for a missing main', () => {
     // A fallback only serves when the primary fails, so a pool that omits the
     // primary is a claim about a model that will usually not be answering.
-    const rows: PersonaRow[] = [{ agent: 'dex-developer', config: { fallbacks: [{ endpoint: 'thunder', model: 'llama3-8b' }] } }]
-    expect(personaTargets('dex-developer', rows)).toEqual([])
+    const rows: PersonaRow[] = [{ agent: 'engineer-engineering', config: { fallbacks: [{ endpoint: 'thunder', model: 'llama3-8b' }] } }]
+    expect(personaTargets('engineer-engineering', rows)).toEqual([])
   })
 
   it('drops a half-written target rather than keying on a blank half', () => {
@@ -82,9 +82,9 @@ describe('resolving a persona to its backing targets', () => {
   })
 
   it("lets an agent's own id outrank another agent's tier spelling", () => {
-    const impostor: PersonaRow = { agent: 'penny-assistant-opus', config: { main: { endpoint: 'spark', model: 'qwen3-14b' } } }
+    const impostor: PersonaRow = { agent: 'assistant-operations-opus', config: { main: { endpoint: 'spark', model: 'qwen3-14b' } } }
     // Row order must not decide this, so assert it both ways round.
-    expect(personaTargets('penny-assistant-opus', [penny, impostor])).toEqual([{ endpoint: 'spark', model: 'qwen3-14b' }])
-    expect(personaTargets('penny-assistant-opus', [impostor, penny])).toEqual([{ endpoint: 'spark', model: 'qwen3-14b' }])
+    expect(personaTargets('assistant-operations-opus', [penny, impostor])).toEqual([{ endpoint: 'spark', model: 'qwen3-14b' }])
+    expect(personaTargets('assistant-operations-opus', [impostor, penny])).toEqual([{ endpoint: 'spark', model: 'qwen3-14b' }])
   })
 })

@@ -127,7 +127,7 @@ export interface ToolCall {
  *    source   id, so a run's cost stopped being answerable at all.
  *    tier     `recordUsage` prices a row by looking up `agent_defs.model =
  *             agentModel` and then the alias named by `tier`. Hand it the routed
- *             id "dex-developer-opus" with a null tier and BOTH lookups miss:
+ *             id "engineer-engineering-opus" with a null tier and BOTH lookups miss:
  *             the row is attributed to an agent that does not exist, with no
  *             endpoint class, which means no price. A tier draft becomes free.
  *
@@ -884,8 +884,8 @@ export const fleetStream: StreamingTransport = (req, emit) => personaTurn(req, e
  *  TIERS ROUTE TOO. The Plan modal has a model-tier dropdown and `routedModelFor`
  *  turns that pick into exactly such an id; `inbox-focus.ts` `validDelegate`
  *  returns one for a delegate chosen with a tier. `listAgents` deliberately HIDES
- *  tier entries from the picker ("dex-developer-opus" is not something you
- *  assign; "dex-developer" is), so matching on its list alone classified a tier
+ *  tier entries from the picker ("engineer-engineering-opus" is not something you
+ *  assign; "engineer-engineering" is), so matching on its list alone classified a tier
  *  as a gateway model and failed the call with "model X is not on the gateway" —
  *  a live regression against the hand-written `proxyChat` calls this runner
  *  replaced, which passed the tier id straight through.
@@ -899,14 +899,15 @@ export const fleetStream: StreamingTransport = (req, emit) => personaTurn(req, e
  *  ids for capability keys, and does it from the database. */
 export async function pickTransport(model: string): Promise<Transport> {
   if ((await gatewayModels()).some((m) => m.id === model)) return gatewayTransport
+  // An empty fleet simply matches nothing here — there is no longer a "did the
+  // manifest answer at all" flag to consult, because an unrendered manifest and
+  // a fleet with no agents are the same fact.
   const fleet = await listAgents()
-  if (fleet.source === 'gateway') {
-    if (fleet.agents.some((a) => a.id === model)) return fleetTransport
-    const cut = model.lastIndexOf('-')
-    if (cut > 0 && fleet.agents.some((a) => a.id === model.slice(0, cut))) return fleetTransport
-  }
+  if (fleet.some((a) => a.id === model)) return fleetTransport
+  const cut = model.lastIndexOf('-')
+  if (cut > 0 && fleet.some((a) => a.id === model.slice(0, cut))) return fleetTransport
   // Neither: let the gateway say so. `completeViaGateway` throws a precise
-  // "model X is not on the gateway", which is a better failure than a mock
+  // "model X is not on the gateway", which is a better failure than a
   // persona stream that looks like an answer.
   return gatewayTransport
 }

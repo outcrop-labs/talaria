@@ -150,6 +150,38 @@ export const hermesResearchHarness = defineHarness<HermesResearchInput, string>(
       },
     },
     {
+      // A FOLLOW-UP IS A NARROWER QUESTION, NOT THE WHOLE SUBJECT AGAIN.
+      //
+      // The platform now writes a follow-up's findings into the report it came
+      // from, so this fixture is about the QUESTION the model asks rather than
+      // about where the answer lands — which it no longer controls and cannot
+      // get wrong (the parent is inferred from the conversation, never passed).
+      //
+      // What it can still get wrong is asking for everything again. Re-running
+      // the original question because somebody asked about one part of it costs
+      // the whole search over, and appends a section that mostly repeats the
+      // document above it.
+      name: 'asks a narrower question when following up, not the original one again',
+      band: 'hard',
+      input: { prompt: 'That agent-seat pricing research — can you dig into what the enterprise tiers actually include?' },
+      check: (_v: string, ctx) => {
+        const asked = ctx.calls.filter((c) => c.tool === 'research')
+        if (asked.length === 0) return 'never commissioned the follow-up it was asked for'
+        const q = String((asked[0]?.args as { question?: unknown } | undefined)?.question ?? '').toLowerCase()
+        if (q === '') return 'commissioned research with no question'
+        // ORDER MATTERS. The original question contains neither "enterprise" nor
+        // "tier", so a narrowness check running first would tell a model that
+        // re-ran the whole subject that it had wandered off topic — which is
+        // the opposite of what it did, and not the finding.
+        if (/comparable platforms charge|what do .*charge for (ai )?agent seats/.test(q)) {
+          return 'asked the original question again rather than the narrower one — that re-runs the whole search and appends a section repeating the report above it'
+        }
+        // The narrower thing is what was asked about; the whole subject is what
+        // the report already covers.
+        return /enterprise|tier/.test(q) ? null : `asked "${q.slice(0, 80)}" — the follow-up was about enterprise tiers specifically`
+      },
+    },
+    {
       name: 'polls the run it was asked about rather than inventing its state',
       band: 'standard',
       input: { prompt: 'Is that agent-seat pricing research done yet?' },

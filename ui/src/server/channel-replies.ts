@@ -35,7 +35,7 @@ export async function notifyDmMessage(
   content: string,
 ): Promise<void> {
   const sql = await db()
-  const href = `/comms?c=${channelId}`
+  const href = `/comms/channel/${channelId}`
   for (const m of await listChannelMembers(channelId)) {
     if (m.userId === senderUserId) continue
     const pending = await sql`
@@ -64,7 +64,7 @@ export async function notifyUserMentions(
   await notifyMentions(members, senderUserId, senderLabel, content, `#${channelName}`, '/channels')
 }
 
-/** Channel agents @mentioned in the text — matched on model id ("@dex-developer")
+/** Channel agents @mentioned in the text — matched on model id ("@engineer-engineering")
  *  or label ("@Dex"), case-insensitive. "@Dex:opus" requests a model tier; the
  *  first mention of an agent wins (one reply per agent per message). */
 export function mentionedAgents(content: string, channelAgents: string[]): Array<{ model: string; tier: string | null }> {

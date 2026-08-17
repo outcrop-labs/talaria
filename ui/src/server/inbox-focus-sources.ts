@@ -218,7 +218,7 @@ export async function channelItems(userId: string, sourceId?: string): Promise<R
       recommendedActionId: 'reply',
       evidence: [{ label: row.author ?? peer, text: (row.excerpt ?? 'Unread direct message').slice(0, 1_000) }],
       metadata: { peer, unread: row.unreadCount, maxSeq: row.maxSeq },
-      sourceHref: `/comms?c=${row.id}`,
+      sourceHref: `/comms/channel/${row.id}`,
       briefStatus: 'fallback',
       actions: [
         focusAction('reply', 'Reply', 'confirmation'),
