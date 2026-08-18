@@ -43,27 +43,22 @@
 
   const wantsVignette = $derived(vignette ?? variant === 'full')
 
-  // Four edges inward, plus one very slow crest drifting across them.
+  // A VIGNETTE AND NOTHING ELSE — four edges inward, no travelling source.
   //
   // The centre stays clear on purpose: density belongs at the boundary, where
   // it says "this surface is real", and away from the words, which have to
   // stay the most legible thing in the frame.
   //
-  // The crest is the daily brief hero's motif — a 320px wavelength at 9px/s,
-  // so a band takes the better part of a minute to cross. That is the point:
-  // an empty pane should look inhabited rather than animated, and anything
-  // fast enough to notice competes with the one sentence in the frame. It also
-  // must not read as PROGRESS — nothing is loading here, this is the resolved
-  // answer — which is why it drifts sideways forever instead of sweeping.
-  //
-  // Under reduced motion the engine stops driving waves and the field settles
-  // at its current phase: still textured, just still.
+  // A drifting crest was tried here for the movement and it was wrong: a wave
+  // is a SHAPE, so it necessarily paints bands across the middle of the pane,
+  // and bands in an empty pane read as content. The vignette has to stay a
+  // vignette. Motion comes from `shimmer` instead (below), which is per-cell
+  // and has no shape at all.
   const sources: DitherSource[] = [
     { id: 'n', kind: 'edge', side: 'top', depth: 60, strength: 0.28 },
     { id: 's', kind: 'edge', side: 'bottom', depth: 60, strength: 0.28 },
     { id: 'w', kind: 'edge', side: 'left', depth: 80, strength: 0.2 },
     { id: 'e', kind: 'edge', side: 'right', depth: 80, strength: 0.2 },
-    { id: 'drift', kind: 'wave', axis: 'x', wavelength: 320, speed: 9, strength: 0.22 },
   ]
 </script>
 
@@ -94,7 +89,15 @@
       className,
     )}
   >
-    {#if wantsVignette}<DitherLayer {sources} organic={0.55} alphaFloor={0.04} maxAlpha={0.38} />{/if}
+    <!-- `shimmer` is the movement: a small per-cell threshold jitter re-rolled
+         a few times a second. It has no direction and no shape, so it cannot
+         band — and the engine only applies it where density is already between
+         0.03 and 0.97, which is exactly the vignette's gradient and never the
+         clear centre. The field breathes at its edges and the middle stays
+         still. Off entirely under reduced motion. -->
+    {#if wantsVignette}
+      <DitherLayer {sources} organic={0.55} shimmer={0.1} alphaFloor={0.04} maxAlpha={0.38} />
+    {/if}
     <div
       class={cn(
         'relative max-w-xs',

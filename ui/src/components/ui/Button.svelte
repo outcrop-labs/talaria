@@ -135,12 +135,19 @@
     <DitherLayer {sources} bleed={BLEED} organic={0} alphaFloor={0.02} maxAlpha={0.85} />
     <!-- The bloom's handlers come AFTER {...rest} and CALL the caller's, so a
          call site that wants its own hover behaviour does not silently replace
-         the bloom's — both run. -->
+         the bloom's — both run.
+
+         `relative` on the control is load-bearing: the field's canvas is
+         absolutely positioned, so it paints ABOVE a static in-flow sibling no
+         matter which comes first in the DOM. Positioning the control puts the
+         two on the same footing, paint order falls back to source order, and
+         the field — first in the markup — sits behind. Without it the band
+         lies over the button's own edges instead of ringing them. -->
     <button
       bind:this={ref}
       {type}
       {disabled}
-      class={buttonClasses({ variant, size, className: split.inner || null })}
+      class={buttonClasses({ variant, size, className: `relative ${split.inner}`.trim() || null })}
       {...rest}
       onmouseenter={(e) => {
         arm()

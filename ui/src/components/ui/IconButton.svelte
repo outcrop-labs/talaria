@@ -91,7 +91,9 @@
     class={cn(
       // Mercury icon tile (spec §8): radius 6, raised when active,
       // hover-token fill, danger only ever tints the glyph — never a fill.
-      'grid shrink-0 place-items-center rounded-md transition-colors disabled:opacity-40',
+      // `relative` so the absolutely-positioned field paints BEHIND the tile
+      // rather than over its edges — see the note in Button.
+      'relative grid shrink-0 place-items-center rounded-md transition-colors disabled:opacity-40',
       focusRing,
       size === 'sm' ? 'h-7 w-7' : 'h-8 w-8',
       active ? 'bg-raised text-fg' : 'text-muted hover:bg-hover',
