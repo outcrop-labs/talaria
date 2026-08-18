@@ -100,6 +100,11 @@ async function loadContext(user: SessionUser, sourceKey: string | null): Promise
   return { briefId: row.id, agentModel, brief, since, focus }
 }
 
+/** How often to send a keep-alive comment while the run is in flight. Fifteen
+ *  seconds is comfortably inside the idle timeout of every proxy in the usual
+ *  path and is invisible to the client. */
+const HEARTBEAT_MS = 15_000
+
 export interface BriefChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -144,33 +149,60 @@ async function appendTurn(
   `
 }
 
-/** Stream the assistant's answer. Same wire arrangement as `briefingChat` in
- *  server/briefing.ts, and the same reasons behind it: the run is what closes
- *  the stream (so the guard pass and the telemetry row happen on the tail of
- *  the response rather than being skipped), `handOver` may fire only once
- *  because `new Response(body)` may be constructed only once, and a run that
- *  streamed and then failed its contract does not retroactively turn a
- *  delivered answer into an error. */
+/** Stream the assistant's answer.
+ *
+ *  The response is constructed and returned IMMEDIATELY; the run fills the
+ *  stream behind it and closes it when it settles. That ordering is the whole
+ *  point — see the note inside — because this harness can spend a minute or two
+ *  in a tool loop before it writes a word, and a response that has not been
+ *  handed over yet is a request that looks hung.
+ *
+ *  The stream closes when the RUN settles rather than when the persona stops
+ *  talking, which adds the guard pass and two telemetry rows to the tail of the
+ *  response. That is milliseconds of regex and one insert, and it is the price
+ *  of the delta accumulation living inside the runner instead of in a tee here. */
 export async function briefChat(user: SessionUser, input: BriefChatInput): Promise<Response> {
   const loaded = await loadContext(user, input.sourceKey)
   if (!loaded) throw new Error('there is no brief to talk about yet')
 
-  let deliver!: (response: Response) => void
-  let fail!: (error: Error) => void
-  const streamed = new Promise<Response>((resolve, reject) => {
-    deliver = resolve
-    fail = reject
-  })
-
   const encoder = new TextEncoder()
   const wire = new TransformStream<Uint8Array, Uint8Array>()
   const writer = wire.writable.getWriter()
-  let delivered = false
-  const handOver = (): void => {
-    if (delivered) return
-    delivered = true
-    deliver(new Response(wire.readable, { headers: { 'content-type': 'text/event-stream' } }))
-  }
+
+  // THE RESPONSE IS HANDED OVER NOW, BEFORE THE MODEL IS ASKED. This used to
+  // wait for the first content delta, and that is what "the chat is totally
+  // broken" actually was.
+  //
+  // This harness declares `tools: 'own'`, so a real question — "why is this
+  // ticket stuck?" — spends a minute or two calling `get_ticket` and friends
+  // before it writes a word. Deferring the handover meant the route's promise
+  // stayed pending for that whole time: no status, no headers, no open stream.
+  // The browser had nothing to render, the loader never appeared (there was no
+  // response to attach it to), and the request looked hung — because it was.
+  //
+  // Handing over immediately gives the client a 200 and an open stream at once,
+  // so the waiting mark shows while the assistant works and tokens land as they
+  // are produced. It is safe now in a way it was not before: EVERY outcome
+  // writes a frame (see the settle handler below), so a failure arrives as an
+  // honest sentence in the thread rather than as an empty stream the panel
+  // would render as the assistant saying nothing.
+  const response = new Response(wire.readable, { headers: { 'content-type': 'text/event-stream' } })
+
+  // PRIME THE STREAM. An SSE response that has been handed over but has sent no
+  // bytes is, from the far end, indistinguishable from a request that hung: the
+  // headers may not have flushed, nothing has arrived, and every layer in
+  // between is free to assume the worst. A comment frame costs nine bytes and
+  // makes the connection real at once — `parseAgentStream` reads only `event:`
+  // and `data:` lines, so a comment is invisible to the client.
+  void writer.write(encoder.encode(': open\n\n')).catch(() => {})
+
+  // And keep it alive while the assistant works. This harness declares
+  // `tools: 'own'`, so a real question spends a minute or two calling tools
+  // before it writes a word — a silence long enough for an idle proxy to close
+  // the connection underneath a person who is still waiting for their answer.
+  const heartbeat = setInterval(() => {
+    void writer.write(encoder.encode(': working\n\n')).catch(() => {})
+  }, HEARTBEAT_MS)
 
   // The question is saved BEFORE the answer is attempted. A turn whose model
   // fell over still shows the person what they asked when they come back —
@@ -184,29 +216,64 @@ export async function briefChat(user: SessionUser, input: BriefChatInput): Promi
     {
       stream: fleetStream,
       onDelta: (delta) => {
-        handOver()
+        // Write ordering is the writer's own queue, so these need no chaining.
         void writer.write(encoder.encode(contentFrame(delta))).catch(() => {})
       },
     },
   )
     .then(async (run) => {
-      if (run.value) {
-        handOver()
-        // `run.value`, not the accumulated deltas: the runner's value is the
-        // GUARDED copy, and this harness now redacts (it persists). Saving the
-        // raw stream instead would keep a credential in the table that the
-        // guard had already removed from the run.
-        await appendTurn(loaded.briefId, user.id, input.sourceKey, 'assistant', run.value).catch((e: unknown) =>
-          console.error('[brief-chat] could not save the reply:', e),
+      // `run.value`, not the accumulated deltas: the runner's value is the
+      // GUARDED copy, and this harness redacts (it persists). Saving the raw
+      // stream instead would keep a credential in the table that the guard had
+      // already removed from the run.
+      //
+      // EVERY OUTCOME WRITES AN ASSISTANT TURN, including the failures, and
+      // that is the fix for the way this broke. The question is persisted
+      // BEFORE the model is asked (so a dead turn still shows the person what
+      // they typed), and a failure used to reject the promise — a 500, no
+      // assistant row, and a saved question that would never have an answer
+      // under it. Reload and the thread was a column of your own messages into
+      // silence, permanently, with the retry button the only thing that looked
+      // broken.
+      //
+      // TWO FAILURES, TWO SENTENCES, because they are different facts and the
+      // person's next move differs. `answered` is the runner's own distinction:
+      // a model that spoke and wrote no prose is a TOOL-ONLY TURN — this
+      // harness declares `tools: 'own'`, so "add a comment saying I don't know"
+      // is answered by calling `comment` and returning nothing, which is the
+      // model doing exactly what it was asked. Reporting that as an outage was
+      // the bug; the reply really is empty, and saying so is the honest answer.
+      const text =
+        run.value ??
+        (run.answered
+          ? '_Done — I acted on that and had nothing to add._'
+          : '_I could not reach your assistant just now. Your question is saved; ask again and it will retry._')
+      // The reason is LOGGED, not swallowed. The person gets a sentence they can
+      // act on; an operator needs the runner's own error, and a failure that
+      // reports nothing anywhere is how "the chat is broken" stays a mystery.
+      if (!run.value) {
+        console.error(
+          `[brief-chat] no reply for ${user.id} (answered=${run.answered}, model=${loaded.agentModel}): ${run.error ?? 'no error given'}`,
         )
-      } else {
-        fail(new Error(run.error ?? 'the assistant produced no reply'))
       }
+      if (!run.value) void writer.write(encoder.encode(contentFrame(text))).catch(() => {})
+      await appendTurn(loaded.briefId, user.id, input.sourceKey, 'assistant', text).catch((e: unknown) =>
+        console.error('[brief-chat] could not save the reply:', e),
+      )
     })
-    .catch((err: unknown) => fail(err instanceof Error ? err : new Error(String(err))))
+    .catch((err: unknown) => {
+      // A throw from the runner itself. The stream is already open, so the only
+      // way to tell the person is on the wire — rejecting here would reject a
+      // promise nobody is holding any more.
+      console.error('[brief-chat] the run threw:', err)
+      void writer
+        .write(encoder.encode(contentFrame('_Something went wrong answering that. Your question is saved; ask again to retry._')))
+        .catch(() => {})
+    })
     .finally(() => {
+      clearInterval(heartbeat)
       void writer.close().catch(() => {})
     })
 
-  return streamed
+  return response
 }

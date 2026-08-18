@@ -19,8 +19,23 @@ export type BriefSection = (typeof BRIEF_SECTIONS)[number]
  *    change    the same source, materially different — supersedes the last
  *    resolved  the source stopped needing the owner — supersedes the last
  *    note      the assistant narrating a batch of appends */
-export const BRIEF_ENTRY_KINDS = ['lede', 'item', 'change', 'resolved', 'note'] as const
+export const BRIEF_ENTRY_KINDS = ['lede', 'item', 'change', 'resolved', 'checked', 'dismissed', 'note'] as const
 export type BriefEntryKind = (typeof BRIEF_ENTRY_KINDS)[number]
+
+/** The kinds that CLOSE a line.
+ *
+ *  Three of them, because who closed it is worth keeping: the source stopped
+ *  needing you (`resolved`), you did the thing (`checked`), or you decided it
+ *  did not need doing (`dismissed`). All three sink the line and strike it
+ *  through; none of them removes it, because nothing here removes anything.
+ *
+ *  A SET RATHER THAN A COMPARISON, because the fold, the sweep and the render
+ *  each have to ask "is this line closed" and the version of this feature with
+ *  `kind === 'resolved'` written out three times is the version where adding a
+ *  fourth kind silently un-closes lines in whichever place got missed. */
+export const TERMINAL_KINDS: ReadonlySet<BriefEntryKind> = new Set<BriefEntryKind>(['resolved', 'checked', 'dismissed'])
+
+export const isTerminal = (kind: BriefEntryKind): boolean => TERMINAL_KINDS.has(kind)
 
 export type BriefPriority = 'p0' | 'p1' | 'p2' | 'ok'
 

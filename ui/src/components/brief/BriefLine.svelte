@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowUpRight, Check, MessageSquareText } from '@lucide/svelte'
+  import { ArrowUpRight, Check, MessageSquareText, Undo2, X } from '@lucide/svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import { cn } from '@/lib/cn'
@@ -32,6 +32,7 @@
     comms,
     onDecideReply,
     onDelegate,
+    onMark,
   }: {
     line: BriefLine
     /** Ask the assistant about this line specifically. */
@@ -40,7 +41,18 @@
     comms?: CommsState
     onDecideReply?: (draftId: string, decision: 'approve' | 'reject') => Promise<{ ok: boolean; error?: string }>
     onDelegate?: (channelId: string, granted: boolean) => void
+    /** The owner's own verdict on this line. */
+    onMark?: (sourceKey: string, action: 'check' | 'dismiss' | 'restore') => Promise<boolean>
   } = $props()
+
+  let marking = $state(false)
+
+  async function mark(action: 'check' | 'dismiss' | 'restore'): Promise<void> {
+    if (!onMark || marking) return
+    marking = true
+    await onMark(line.key, action)
+    marking = false
+  }
 
   // The reply block renders only on an OPEN conversation. On a resolved one the
   // question has been answered, and offering to send a reply under it would be
@@ -137,6 +149,21 @@
   <!-- Above the stretched link (`z-10`), so a click on Ask does not also
        navigate. Revealed on hover, and on focus so it is reachable by keyboard. -->
   <div class="relative z-10 flex shrink-0 items-start gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+    <!-- A CLOSED LINE KEEPS ONE CONTROL — the way back. Hiding it would make a
+         mis-click permanent on the one surface where nothing else is, and undo
+         is the first thing anybody reaches for after striking the wrong row. -->
+    {#if onMark && line.resolved}
+      <IconButton size="sm" title="Put this back" disabled={marking} onclick={() => void mark('restore')}>
+        <Undo2 size={13} />
+      </IconButton>
+    {:else if onMark}
+      <IconButton size="sm" title="Check this off — you have handled it" disabled={marking} onclick={() => void mark('check')}>
+        <Check size={13} />
+      </IconButton>
+      <IconButton size="sm" title="Dismiss — this does not need doing" disabled={marking} onclick={() => void mark('dismiss')}>
+        <X size={13} />
+      </IconButton>
+    {/if}
     <IconButton size="sm" title="Ask your assistant about this" onclick={() => onAsk(line)}>
       <MessageSquareText size={13} />
     </IconButton>

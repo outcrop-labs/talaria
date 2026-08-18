@@ -159,3 +159,61 @@ describe('foldEntries', () => {
     expect(foldEntries([morning, noon], 0).updates).toHaveLength(2)
   })
 })
+
+// THE OWNER CAN CLOSE A LINE TOO. `resolved` is the source saying so; `checked`
+// and `dismissed` are the person saying so, and all three have to read as
+// closed everywhere or a line struck through in one place is live in another.
+describe('lines the owner closes by hand', () => {
+  for (const kind of ['checked', 'dismissed'] as const) {
+    it(`treats a ${kind} entry as closing the line`, () => {
+      const first = entry({ sourceKey: 'task:1', fingerprint: 'a' })
+      const closed = entry({ sourceKey: 'task:1', kind, supersedes: first.id, fingerprint: 'a' })
+
+      const { lines } = foldEntries([first, closed], 0)
+
+      expect(lines).toHaveLength(1)
+      expect(lines[0]!.resolved).toBe(true)
+      // Still on the page, like every other closed line — nothing here removes
+      // anything, and a dismissal you cannot find is a deletion.
+      expect(lines[0]!.history).toHaveLength(2)
+    })
+  }
+
+  it('carries the source fingerprint onto the closing entry', () => {
+    // THE FIELD THAT MAKES A DISMISSAL STICK. `sweepBrief` skips a line whose
+    // source fingerprint has not moved; if the dismissal dropped it, every
+    // sweep would see a mismatch and reopen what the owner just closed.
+    const first = entry({ sourceKey: 'task:1', fingerprint: 'a' })
+    const dismissed = entry({ sourceKey: 'task:1', kind: 'dismissed', supersedes: first.id, fingerprint: 'a' })
+
+    const { lines } = foldEntries([first, dismissed], 0)
+
+    expect(lines[0]!.current.fingerprint).toBe('a')
+  })
+
+  it('reopens on a later change, because the source really did move', () => {
+    // Dismissing a conversation must not become a mute button on the person in
+    // it: if they say something else, that is new information.
+    const first = entry({ sourceKey: 'channel:c1', fingerprint: 'a' })
+    const dismissed = entry({ sourceKey: 'channel:c1', kind: 'dismissed', supersedes: first.id, fingerprint: 'a' })
+    const moved = entry({ sourceKey: 'channel:c1', kind: 'change', supersedes: dismissed.id, fingerprint: 'b' })
+
+    const { lines } = foldEntries([first, dismissed, moved], 0)
+
+    expect(lines[0]!.resolved).toBe(false)
+    expect(lines[0]!.history).toHaveLength(3)
+  })
+
+  it('lets a restore reopen a checked line', () => {
+    // `restore` appends a `change` carrying the last live state — the way to
+    // take something back in an append-only log is to say the next thing.
+    const first = entry({ sourceKey: 'task:1', fingerprint: 'a', statusLabel: 'FAILED' })
+    const checked = entry({ sourceKey: 'task:1', kind: 'checked', supersedes: first.id, fingerprint: 'a' })
+    const restored = entry({ sourceKey: 'task:1', kind: 'change', supersedes: checked.id, fingerprint: 'a', statusLabel: 'FAILED' })
+
+    const { lines } = foldEntries([first, checked, restored], 0)
+
+    expect(lines[0]!.resolved).toBe(false)
+    expect(lines[0]!.current.statusLabel).toBe('FAILED')
+  })
+})

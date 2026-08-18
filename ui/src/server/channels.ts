@@ -4,6 +4,7 @@
 // channel_agents and reply (streamed) when @mentioned. Message seq comes from
 // a per-channel counter so concurrent writers can't collide.
 import { db } from './db/pg'
+import { briefsFollowMessage } from './daily-brief-stale'
 import { guardAgentWrite } from './agent-writes'
 import { publishChannel } from './realtime'
 import { isElevatedAssistant } from './users'
@@ -364,6 +365,12 @@ export async function insertChannelMessage(
     return rows[0] as unknown as ChannelMessage
   })
   publishChannel(channelId, { type: 'message', messageId: row.id, seq: row.seq })
+  // THE BRIEF FOLLOWS THE CONVERSATION. A brief line says who is waiting on a
+  // reply, and until this existed it learned that the reply had happened on the
+  // next scheduled sweep — up to five minutes of the document telling you to
+  // answer somebody you had just answered. This clears the sweep throttle and
+  // rings the bell; it does not sweep (see daily-brief-stale.ts).
+  briefsFollowMessage(channelId)
   return row
 }
 

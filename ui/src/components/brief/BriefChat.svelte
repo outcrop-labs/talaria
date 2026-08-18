@@ -3,7 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import { CornerDownLeft, Sparkles, X } from '@lucide/svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
-  import Generating from '@/components/ui/Generating.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
@@ -160,13 +160,17 @@
         </div>
       {:else}
         <div class="font-sans text-[13px] leading-5">
-          <!-- GENERATING, NOT SKELETON. An assistant turn with no tokens yet is
-               MODEL OUTPUT being written, not a fetch that has not resolved —
-               see the taxonomy in WaitingMark.svelte. The border and padding
-               are dropped because this reply is bare text in a thread, not a
-               block with a surface of its own; `site` is left at its default
-               since it only reaches a WaitingMark when a `label` is given. -->
-          {#if message.content}<Markdown children={message.content} />{:else}<Generating lines={2} class="border-none p-0" />{/if}
+          <!-- THE CHAT LOADER, not `Generating`.
+               This is a chat reply bubble, and the app already has an answer for
+               "an assistant turn with nothing streamed yet" — `AssistantTurn`
+               uses `chat/first-token`, whose own note calls it "the gap this
+               whole set exists for". `Generating` is the other tier: bars shaped
+               like the prose that is coming, sitting in a dither field, which
+               reads as a BLOCK being composed. Correct for a plan document or a
+               briefing panel; in a thread it is a wipe where the app everywhere
+               else shows a mark. Two loaders for one moment is the drift, and
+               the fix is to use theirs rather than to tune mine. -->
+          {#if message.content}<Markdown children={message.content} />{:else}<WaitingMark site="chat/first-token" class="py-1 text-accent" />{/if}
         </div>
       {/if}
     {/each}

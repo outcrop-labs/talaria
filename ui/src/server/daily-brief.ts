@@ -62,6 +62,7 @@ import {
   type BriefResponse,
   type BriefSection,
   type BriefView,
+  isTerminal,
 } from './daily-brief-types'
 
 export * from './daily-brief-types'
@@ -436,6 +437,101 @@ export async function markBriefRead(userId: string, briefId: string, seq: number
   `
 }
 
+/** What the owner can say about a line themselves.
+ *
+ *  `check` — I have done this. `dismiss` — this did not need doing. `restore` —
+ *  I did neither, put it back. */
+export type BriefItemAction = 'check' | 'dismiss' | 'restore'
+
+/** Close a line by hand, or reopen one.
+ *
+ *  AN APPEND, NOT AN EDIT, like everything else here. Checking something off
+ *  does not delete it or set a flag on it — it writes a new row that supersedes
+ *  the one on the page, so the line stays visible, struck through, with its
+ *  whole history intact. `restore` is the same move in reverse rather than an
+ *  undo: it appends a row carrying the last live state, because the way to take
+ *  something back in an append-only log is to say the next thing, not to remove
+ *  the last one.
+ *
+ *  THE FINGERPRINT IS CARRIED FORWARD, and that is what makes a dismissal
+ *  stick. `sweepBrief` skips a line whose source fingerprint has not moved, so
+ *  copying it onto the closing row means the next sweep sees a dismissed line
+ *  against an unchanged source and leaves it alone. Drop it and the sweep finds
+ *  a mismatch every five minutes and reopens what the owner just closed.
+ *
+ *  A dismissed line still COMES BACK if the source actually moves — Priya
+ *  saying something else is new information, and burying it would make dismiss
+ *  a mute button on a person rather than on a row. */
+export async function markBriefItem(
+  user: SessionUser,
+  sourceKey: string,
+  action: BriefItemAction,
+  at = new Date(),
+): Promise<{ ok: boolean; reason?: string }> {
+  const config = await briefConfig()
+  const zone = zoneFor(user.id, config)
+  const { date } = briefWindow(config, zone, at)
+  const row = await loadRow(user.id, date)
+  if (!row) return { ok: false, reason: 'no brief today' }
+
+  const entries = await loadEntries(row.id)
+  const { lines } = foldEntries(entries, row.readSeq)
+  const line = lines.find((l) => l.key === sourceKey)
+  if (!line) return { ok: false, reason: 'that line is not on today’s brief' }
+
+  if (action === 'restore') {
+    if (!line.resolved) return { ok: true }
+    // The last state the line had before anything closed it. Searched from the
+    // end so a line closed, reopened and closed again restores to the most
+    // recent LIVE row rather than to the one it started the day with.
+    const live = [...line.history].reverse().find((e) => !isTerminal(e.kind))
+    if (!live) return { ok: false, reason: 'nothing to restore this line to' }
+    await appendEntries(row.id, user.id, [
+      {
+        kind: 'change',
+        section: live.section,
+        sourceKey: live.sourceKey,
+        sourceType: live.sourceType,
+        sourceId: live.sourceId,
+        sourceHref: live.sourceHref,
+        fingerprint: live.fingerprint,
+        supersedes: line.current.id,
+        priority: live.priority,
+        statusLabel: live.statusLabel,
+        badge: live.badge,
+        title: live.title,
+        body: live.body,
+        evidence: live.evidence,
+      },
+    ])
+    return { ok: true }
+  }
+
+  // Already closed — by the source, or by an earlier click. Nothing to add, and
+  // appending anyway would put two identical strike-throughs in the timeline
+  // for one double-click.
+  if (line.resolved) return { ok: true }
+
+  const current = line.current
+  await appendEntries(row.id, user.id, [
+    {
+      kind: action === 'check' ? 'checked' : 'dismissed',
+      section: current.section,
+      sourceKey: current.sourceKey,
+      sourceType: current.sourceType,
+      sourceId: current.sourceId,
+      sourceHref: current.sourceHref,
+      fingerprint: current.fingerprint,
+      supersedes: current.id,
+      priority: 'ok',
+      statusLabel: action === 'check' ? 'CHECKED OFF' : 'DISMISSED',
+      title: current.title,
+      body: '',
+    },
+  ])
+  return { ok: true }
+}
+
 // ── The single writer ────────────────────────────────────────────────────────
 
 /** Append rows. THE ONLY WRITE PATH INTO A BRIEF'S CONTENT.
@@ -645,16 +741,29 @@ export async function sweepBrief(user: SessionUser, at = new Date()): Promise<Sw
       added++
       continue
     }
-    // Unchanged, or back after a resolution. Both are decided by the
-    // fingerprint against the LAST entry for the key, which is what makes a
-    // thing that resolves and returns append a fresh row rather than nothing.
-    if (line.current.fingerprint === candidate.fingerprint && line.resolved === (candidate.kind === 'resolved')) continue
     if (candidate.kind === 'resolved') {
+      // The source says it is done. Nothing to add if the line is already
+      // closed — by the source earlier, or by the owner checking it off.
       if (line.resolved) continue
       appends.push({ ...candidate, supersedes: line.current.id })
       resolved++
       continue
     }
+
+    // The source says it is still live. THE FINGERPRINT DECIDES, AND ONLY THE
+    // FINGERPRINT — a closed line whose source has not moved stays closed.
+    //
+    // This used to also compare `line.resolved` against whether the candidate
+    // was a resolution, which was correct while the source was the only thing
+    // that could close a line. It stopped being correct the moment the owner
+    // could: a dismissed item is still LIVE in its source, so every sweep found
+    // a closed line against an unchanged live candidate and appended a change —
+    // undoing the dismissal, five minutes later, for ever.
+    if (line.current.fingerprint === candidate.fingerprint) continue
+
+    // Moved. A closed line reopens here on purpose: if you dismissed "Reply to
+    // Priya" and Priya has since said something else, that is new information
+    // and burying it would make dismissal a mute button on a person.
     appends.push({ ...candidate, kind: 'change', supersedes: line.current.id })
     changed++
   }

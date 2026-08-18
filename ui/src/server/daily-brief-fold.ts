@@ -9,7 +9,7 @@
 // The second reason is duller: `daily-brief-artifact.ts` renders the same fold
 // to markdown, and importing it from `daily-brief.ts` would close a cycle
 // between the two.
-import type { BriefEntry, BriefLine, BriefUpdate } from './daily-brief-types'
+import { isTerminal, type BriefEntry, type BriefLine, type BriefUpdate } from './daily-brief-types'
 
 /** Replay the log into the document.
  *
@@ -28,7 +28,7 @@ export function foldEntries(entries: BriefEntry[], readSeq: number): { lines: Br
     if (existing) {
       existing.history.push(entry)
       existing.current = entry
-      existing.resolved = entry.kind === 'resolved'
+      existing.resolved = isTerminal(entry.kind)
       existing.unseen = existing.unseen || entry.seq > readSeq
       continue
     }
@@ -37,7 +37,7 @@ export function foldEntries(entries: BriefEntry[], readSeq: number): { lines: Br
       section: entry.section,
       current: entry,
       history: [entry],
-      resolved: entry.kind === 'resolved',
+      resolved: isTerminal(entry.kind),
       unseen: entry.seq > readSeq,
     })
   }

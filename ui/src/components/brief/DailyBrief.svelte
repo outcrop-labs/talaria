@@ -199,6 +199,7 @@
                           comms={day.comms.find((c) => c.sourceKey === line.key)}
                           onDecideReply={actions.decideReply}
                           onDelegate={(channelId, granted) => void actions.setDelegated(channelId, granted)}
+                          onMark={actions.markItem}
                         />
                       {/each}
                     </div>

@@ -84,6 +84,21 @@ export function useBriefActions() {
       await refresh()
       return res.ok ? { ok: true } : { ok: false, error: payload?.error ?? `Failed (${res.status})` }
     },
+    /** The owner's own verdict on a line: done, not needed, or put it back.
+     *
+     *  Awaited so the refetch lands before the caller clears its busy state —
+     *  a strike-through that appears a beat after the spinner stops reads as
+     *  the click not having worked. */
+    async markItem(sourceKey: string, action: 'check' | 'dismiss' | 'restore'): Promise<boolean> {
+      const res = await fetch('/api/brief/item', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sourceKey, action }),
+      })
+      await refresh()
+      return res.ok
+    },
     /** Hand a conversation to the assistant, or take it back. */
     async setDelegated(channelId: string | null, granted: boolean): Promise<boolean> {
       const res = await fetch('/api/brief/delegate', {

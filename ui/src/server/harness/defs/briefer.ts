@@ -1119,7 +1119,18 @@ export interface DailyChatInput {
 
 const dailyChatContext = (input: DailyChatInput): string => {
   const parts = [
-    '[Ephemeral daily-brief chat — this thread is NOT saved. Keep replies short and direct; use tools only if the question truly needs them.]',
+    // "THIS THREAD IS NOT SAVED" IS NO LONGER TRUE — see `brief_chat_messages`.
+    // Left corrected rather than deleted because it changes what the model may
+    // assume it can say.
+    '[Daily-brief chat. Keep replies short and direct; use tools only if the question truly needs them.]',
+    // THE INSTRUCTION THAT WAS MISSING, and its absence read as an outage.
+    // This harness declares `tools: 'own'`, so "why is this ticket stuck?" is
+    // answered by calling `get_ticket` — and the model then ended its turn with
+    // tool calls and NO prose. An empty reply fails the output contract, so a
+    // question the assistant had actually gone and researched came back to the
+    // owner as "could not reach your assistant". A tool call is how it finds
+    // out; it is not the answer.
+    'After using a tool you MUST still write the answer in prose. Ending your turn with only tool calls is not a reply.',
     "Your owner is reading today's brief, which you wrote for them this morning and have been appending to since. It is never rewritten — every line on it is the line that was written when that thing first needed them.",
     `The brief as it stands:\n${input.brief || '(empty)'}`,
   ]
