@@ -115,12 +115,19 @@
 <!-- The one button. Reuse everywhere — do not re-style buttons inline. -->
 {#if wantsBloom}
   <span bind:this={wrap} class={`relative inline-flex ${split.outer}`}>
-    <!-- `organic={0}` — PURE BAYER, no clumping. The engine can multiply a
-         static clump-noise into the field, which gives large ambient surfaces
-         a hand-made texture; on a band that is only a few px wide it instead
-         makes the taper cluster and thin unevenly, which reads as ragged
-         rather than organic. An even, clump-free gradient is exactly what
-         ordered dithering is for, so here it does that job unassisted.
+    <!-- `organic={0.12}` — a LOW setting, and both extremes were tried on
+         screen. The engine multiplies a static clump-noise into the density.
+         At 0.5 the band clustered and thinned unevenly, which reads as ragged.
+         At 0 it is pure Bayer, and pure Bayer is mechanical by construction —
+         the matrix puts dots in ranks, which reads as blocky. 0.25 was still
+         on the ragged side once the band tightened, because the same amount of
+         clumping is more visible across fewer dots. 0.12 is enough to break
+         the matrix's rows without the clumps becoming the texture.
+
+         The engine's own note says 0 for precision fields and ~0.6 for ambient
+         chrome. A control band is neither, and where it sits between them
+         depends on how wide the band is — which is why this moved when the
+         reach did.
 
          `alphaFloor` near zero is what makes the band TAPER. The engine lights
          a dot at `alphaFloor + (maxAlpha - alphaFloor) * density`, so the
@@ -132,7 +139,7 @@
 
          Grain is the engine's own default now (2px pitch, 1px dots) rather
          than an override here, so every field in the app shares it. -->
-    <DitherLayer {sources} bleed={BLEED} organic={0} alphaFloor={0.02} maxAlpha={0.85} />
+    <DitherLayer {sources} bleed={BLEED} organic={0.12} alphaFloor={0.02} maxAlpha={0.85} />
     <!-- The bloom's handlers come AFTER {...rest} and CALL the caller's, so a
          call site that wants its own hover behaviour does not silently replace
          the bloom's — both run.

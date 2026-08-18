@@ -26,13 +26,16 @@
     // steep falloff overcorrected the other way: 28 dots reaching 2px, which
     // reads as scattered specks rather than as an edge.
     //
-    // The band is WIDE and DENSE at the boundary and tapers out — density
-    // falls with distance AND so does opacity (see `alphaFloor` on the
-    // callers), so the outer dots approach nothing instead of stopping at a
-    // visible floor. Reach alone was never the problem; a wide field of
-    // uniformly-lit sparse dots is the cloud. A wide field that fades is a
-    // glow that Mercury is allowed to have.
-    return Math.max(14, Math.min(36, Math.round(shortSide * 0.60)))
+    // A TIGHT EDGE, because the fill now carries the weight. This started
+    // wide — the halo was the only treatment a control had, so it had to say
+    // everything. Once hover and selection grew their own dithered FILL
+    // (`dither-bloom`, styles.css), the halo stopped being the main event and
+    // a wide one competed with the surface it was supposed to be edging.
+    //
+    // It still tapers: density falls with distance and so does opacity (see
+    // `alphaFloor` at the callers), so the outer dots approach nothing rather
+    // than stopping at a visible floor. Short and fading, not short and hard.
+    return Math.max(6, Math.min(14, Math.round(shortSide * 0.25)))
   }
 
   /** The bleed a field needs so nothing is clipped: the widest reach in the

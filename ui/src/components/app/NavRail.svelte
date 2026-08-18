@@ -160,7 +160,8 @@
       <WingMark class="h-5 w-5" />
     </div>
 
-    <div class="mt-3 flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
+    <!-- Collapsed tiles get the same room, for the same reason. -->
+    <div class="mt-3 flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto">
       {#each sections as section, si (section.title)}
         {#if si > 0}<div class="my-2 h-px w-6 shrink-0 bg-line"></div>{/if}
         {#each section.items as item (item.to)}
@@ -249,13 +250,19 @@
     <SidebarAssistant />
     <div class="mt-4 h-px shrink-0 bg-line-subtle"></div>
 
-    <div class="mt-3 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+    <div class="mt-3 flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto">
       {#each sections as section (section.title)}
         <div>
           <div class="flex h-6 items-center px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             {section.title}
           </div>
-          <ul class="space-y-px">
+          <!-- `space-y-1.5` rather than `space-y-px`: the row treatment blooms
+               OUTWARD — the hover texture fades past the row's edge and the
+               active halo reaches further still — so rows a single pixel apart
+               had their fields touching, which reads as one continuous band
+               instead of a marked row. 6px is the smallest gap at which each
+               row's field resolves as its own. -->
+          <ul class="space-y-1.5">
             {#each section.items as item (item.to)}
               <li>
                 <a
